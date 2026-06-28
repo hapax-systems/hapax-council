@@ -50,6 +50,10 @@ class WorktreeRecord(BaseModel):
     task_id: str | None = None
     pr: int | None = None
     status: Status = "active"
+    # When True, `status` is an explicit operator/owner decision (set_status) that is AUTHORITATIVE:
+    # the live-signal derive refreshes only NON-pinned records, so a pinned `infra`/`active`/`merging`
+    # is never silently re-derived and reaped.
+    pinned: bool = False
     created_at: datetime
     last_heartbeat: datetime
     host: str | None = None
@@ -88,7 +92,11 @@ def load(path: str) -> WorktreeRecord | None:
     except Exception as exc:
         # A present-but-unparseable record is a real problem (schema drift / corruption), NOT the
         # same as absent — surface it so it isn't silently masked, then treat as missing.
-        print(f"hapax-worktree-registry: WARN unparseable record {rp}: {exc}", file=sys.stderr)
+        print(
+            f"hapax-worktree-registry: WARN unparseable record {rp}: {exc} — "
+            f"Next: inspect the file; if stale, `rm {rp}` then `hapax-worktree-register backfill`.",
+            file=sys.stderr,
+        )
         return None
 
 
@@ -117,14 +125,21 @@ def register(
     host: str | None = None,
     now: datetime | None = None,
     last_heartbeat: datetime | None = None,
+    pinned: bool | None = None,
 ) -> WorktreeRecord:
     """Create or refresh a registration. Preserves ``created_at`` across re-registration. ``now`` is
     the creation timestamp; ``last_heartbeat`` defaults to ``now`` but can be set to a worktree's REAL
     last-activity (e.g. its mtime) on back-fill, so a freshly-written record does not falsely look
-    just-heartbeated."""
+    just-heartbeated. A REFRESH (no explicit ``pinned``) never clobbers an explicit pin's status."""
     ts = _now(now)
     existing = load(path)
     created = existing.created_at if existing else ts
+    if existing is not None and existing.pinned and pinned is None:
+        eff_status: Status = existing.status
+        eff_pinned = True
+    else:
+        eff_status = status
+        eff_pinned = pinned if pinned is not None else (existing.pinned if existing else False)
     rec = WorktreeRecord(
         path=path,
         branch=branch if branch is not None else (existing.branch if existing else None),
@@ -134,7 +149,8 @@ def register(
         else (existing.session_id if existing else None),
         task_id=task_id if task_id is not None else (existing.task_id if existing else None),
         pr=pr if pr is not None else (existing.pr if existing else None),
-        status=status,
+        status=eff_status,
+        pinned=eff_pinned,
         created_at=created,
         last_heartbeat=last_heartbeat if last_heartbeat is not None else ts,
         host=host if host is not None else (existing.host if existing else None),
@@ -152,11 +168,14 @@ def heartbeat(path: str, *, now: datetime | None = None) -> WorktreeRecord | Non
     return rec
 
 
-def set_status(path: str, status: Status) -> WorktreeRecord | None:
+def set_status(path: str, status: Status, *, pinned: bool = True) -> WorktreeRecord | None:
+    """Explicitly set a worktree's status. ``pinned=True`` (the default) marks it AUTHORITATIVE — the
+    live-signal refresh will not re-derive it, so an operator/owner decision sticks until deregistered."""
     rec = load(path)
     if rec is None:
         return None
     rec.status = status
+    rec.pinned = pinned
     save(rec)
     return rec
 
@@ -204,10 +223,13 @@ def classify(
     heartbeat_age_s: float | None,
     abandoned_after_s: int,
     has_open_pr: bool,
+    pr_signal_available: bool = True,
 ) -> Status:
-    """Derive explicit status. Order matters: infra and merged are terminal; a live owner or a
-    fresh heartbeat means active; an open PR with an idle owner is mid-flight (merging); only a
-    dead owner with no PR and no fresh heartbeat is abandoned."""
+    """Derive explicit status. Order matters: infra and merged are terminal; a live owner or a fresh
+    heartbeat means active; an open PR with an idle owner is mid-flight (merging); only a dead owner
+    with no PR and no fresh heartbeat is abandoned. FAIL-CLOSED on the PR signal: if the open-PR set
+    is unavailable (gh down/unauthed), we cannot confirm there is no PR, so an otherwise-abandoned
+    worktree is treated as ``merging`` and KEPT rather than reaped on an unverified no-PR assumption."""
     if is_infra:
         return "infra"
     if merged:
@@ -217,6 +239,8 @@ def classify(
     if heartbeat_age_s is not None and heartbeat_age_s < abandoned_after_s:
         return "active"
     if has_open_pr:
+        return "merging"
+    if not pr_signal_available:
         return "merging"
     return "abandoned"
 
@@ -320,29 +344,34 @@ def probe_worktree(
     canonical: str,
     open_pr_branches: set[str] | None,
     abandoned_after_s: int = DEFAULT_ABANDONED_AFTER_S,
-    live_count_fn: Callable[[str], int] = live_process_count,
+    live_count_fn: Callable[[str], int] | None = None,
     now_epoch: float | None = None,
 ) -> dict | None:
-    """Derive a worktree's full status from live signals (the real reap code path; unit-tested with an
-    injected ``live_count_fn``). Returns None if the path is gone. Staleness folds BOTH the registry
-    ``last_heartbeat`` (set by the ``heartbeat`` subcommand / the P3 hook) AND the filesystem mtime —
-    the FRESHEST wins — so a heartbeated-but-quiet session reads ``active``, while a back-filled record
-    (whose ``last_heartbeat`` is seeded from mtime) reflects real activity. Keys: path, branch, infra,
-    live, clean, merged, has_pr, status."""
+    """Derive a worktree's effective status (the real reap code path; unit-tested with an injected
+    ``live_count_fn``). Returns None if the path is gone.
+
+    Status authority: an explicit PIN in the registry (``set_status``) is AUTHORITATIVE and returned
+    as-is — only NON-pinned records are refreshed from live signals. The derive folds BOTH the registry
+    ``last_heartbeat`` AND the filesystem mtime (freshest wins), so a heartbeated-but-quiet session
+    reads ``active``. ``open_pr_branches=None`` means the PR signal is UNAVAILABLE (gh down): the derive
+    fails closed (``merging``, kept) rather than assuming no PR. Keys: path, branch, infra, live, clean,
+    merged, has_pr, status, pinned."""
     real = os.path.realpath(path)
     if not os.path.isdir(real):
         return None
+    live_fn = live_count_fn if live_count_fn is not None else live_process_count
     infra = is_infra_path(real, canonical=canonical)
-    live = live_count_fn(real) > 0
+    live = live_fn(real) > 0
     clean = is_clean(real)
     merged = is_merged(canonical, branch) if branch else False
-    has_pr = bool(open_pr_branches is not None and branch and branch in open_pr_branches)
+    pr_signal_available = open_pr_branches is not None
+    has_pr = bool(pr_signal_available and branch and branch in open_pr_branches)
     now = now_epoch if now_epoch is not None else datetime.now(UTC).timestamp()
     ages = [mtime_age_seconds(real, now_epoch=now)]
     rec = load(real)
     if rec is not None:
         ages.append(max(0.0, now - rec.last_heartbeat.timestamp()))
-    status = classify(
+    derived = classify(
         is_infra=infra,
         live=live,
         clean=clean,
@@ -350,7 +379,10 @@ def probe_worktree(
         heartbeat_age_s=min(ages),
         abandoned_after_s=abandoned_after_s,
         has_open_pr=has_pr,
+        pr_signal_available=pr_signal_available,
     )
+    pinned = bool(rec is not None and rec.pinned)
+    status = rec.status if pinned else derived
     return {
         "path": real,
         "branch": branch,
@@ -360,4 +392,5 @@ def probe_worktree(
         "merged": merged,
         "has_pr": has_pr,
         "status": status,
+        "pinned": pinned,
     }

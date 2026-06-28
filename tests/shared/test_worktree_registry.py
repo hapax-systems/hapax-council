@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import argparse
+import importlib.machinery
+import importlib.util
 import os
 import subprocess
 from datetime import UTC, datetime
+from pathlib import Path
 
 from shared import worktree_registry as wr
 
@@ -14,6 +18,17 @@ def _init_repo(path) -> None:
     (path / "f.txt").write_text("hi")
     subprocess.run(["git", "-C", str(path), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "init"], check=True)
+
+
+def _load_cli():
+    """Import the extensionless CLI script as a module so its cmd_* handlers can be driven directly."""
+    src = Path(__file__).resolve().parents[2] / "scripts" / "hapax-worktree-register"
+    loader = importlib.machinery.SourceFileLoader("hwr_cli_under_test", str(src))
+    spec = importlib.util.spec_from_loader("hwr_cli_under_test", loader)
+    assert spec is not None
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
 
 
 _NOW = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
@@ -342,6 +357,128 @@ def test_probe_live_is_active_kept(tmp_path, monkeypatch) -> None:
     )
     assert p is not None
     assert p["status"] == "active"
+    assert wr.is_reapable(p["status"], p["clean"], live=p["live"]) is False
+
+
+# --- cmd_reap / cmd_heartbeat through the real CLI module (the destructive path, end-to-end) ---------
+
+
+def test_cli_reap_reaps_abandoned_keeps_merging_and_live(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    abandoned, _ab = _add_worktree(repo, "ab")
+    merging, mg_branch = _add_worktree(repo, "mg")
+    live_wt, _lv = _add_worktree(repo, "lv")
+    live_real = os.path.realpath(str(live_wt))
+
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: {mg_branch})
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda p: 1 if p == live_real else 0)
+    monkeypatch.setattr(cli.wr, "DEFAULT_ABANDONED_AFTER_S", 0)  # any idle age counts as stale
+
+    # dry-run: only the abandoned lane is reap-eligible; merging + live are silently kept.
+    assert cli.cmd_reap(argparse.Namespace(apply=False, min_idle_hours=0.0)) == 0
+    out = capsys.readouterr().out
+    assert "abandoned" in out and str(abandoned) in out
+    assert str(merging) not in out
+    assert str(live_wt) not in out
+
+    # apply: the abandoned checkout is removed; merging + live survive (live gate + open-PR keep).
+    assert cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=0.0)) == 0
+    assert not os.path.isdir(str(abandoned))
+    assert os.path.isdir(str(merging))
+    assert os.path.isdir(str(live_wt))
+
+
+def test_cli_reap_self_is_protected(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    self_wt, _b = _add_worktree(repo, "self")
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
+    monkeypatch.setattr(cli.wr, "DEFAULT_ABANDONED_AFTER_S", 0)
+    monkeypatch.setattr(cli, "SELF", os.path.realpath(str(self_wt)))
+    cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=0.0))
+    assert os.path.isdir(str(self_wt))  # would be abandoned, but SELF-protected
+
+
+def test_cli_heartbeat_missing_registration_returns_1(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    cli = _load_cli()
+    rc = cli.cmd_heartbeat(argparse.Namespace(path=str(tmp_path / "nope")))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "no registration" in err
+    assert "register" in err  # carries a next-action
+
+
+def test_classify_pr_signal_unavailable_keeps_as_merging() -> None:
+    # gh down -> open_pr set is None -> cannot confirm no-PR -> NOT abandoned (kept, fail-closed).
+    assert (
+        wr.classify(
+            is_infra=False,
+            live=False,
+            clean=True,
+            merged=False,
+            heartbeat_age_s=None,
+            abandoned_after_s=3600,
+            has_open_pr=False,
+            pr_signal_available=False,
+        )
+        == "merging"
+    )
+
+
+def test_probe_pr_signal_unavailable_keeps_idle_lane(tmp_path, monkeypatch) -> None:
+    # CRITICAL: when _open_pr_branches returns None, an idle non-live lane must NOT be reaped.
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, branch = _add_worktree(repo, "wt")
+    p = wr.probe_worktree(
+        path=str(wt),
+        branch=branch,
+        canonical=str(repo),
+        open_pr_branches=None,
+        abandoned_after_s=3600,
+        live_count_fn=lambda _p: 0,
+        now_epoch=_FUTURE_EPOCH,
+    )
+    assert p is not None
+    assert p["status"] == "merging"
+    assert wr.is_reapable(p["status"], p["clean"], live=p["live"]) is False
+
+
+def test_probe_respects_pinned_infra_for_custom_path(tmp_path, monkeypatch) -> None:
+    # CRITICAL: an explicit set_status pin is AUTHORITATIVE — not re-derived from signals.
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, branch = _add_worktree(repo, "wt")
+    real = os.path.realpath(str(wt))
+    wr.register(real, branch=branch)
+    wr.set_status(real, "infra")  # custom infra pin; path does not match the infra patterns
+    p = wr.probe_worktree(
+        path=str(wt),
+        branch=branch,
+        canonical=str(repo),
+        open_pr_branches=set(),
+        abandoned_after_s=3600,
+        live_count_fn=lambda _p: 0,
+        now_epoch=_FUTURE_EPOCH,
+    )
+    assert p is not None
+    assert p["pinned"] is True
+    assert p["status"] == "infra"
     assert wr.is_reapable(p["status"], p["clean"], live=p["live"]) is False
 
 
