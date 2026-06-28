@@ -220,7 +220,7 @@ if [[ "${HAPAX_WORKTREE_GC_REGISTRY:-1}" == "1" && -f "$registry_cli" ]]; then
             if ((dry_run)); then
                 HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" reap \
                     --min-idle-hours "$idle_h" \
-                    || printf 'hapax-worktree-gc: WARN registry reap (dry-run) errored — not fatal, protection intact\n' >&2
+                    || printf 'hapax-worktree-gc: WARN registry reap (dry-run) errored — not fatal, protection intact. Next: run `HAPAX_WORKTREE_GC_REPO=%s python3 %s reap --min-idle-hours %s` directly to see the error.\n' "$repo" "$registry_cli" "$idle_h" >&2
             else
                 HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" reap --apply \
                     --min-idle-hours "$idle_h" \

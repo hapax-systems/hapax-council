@@ -100,19 +100,36 @@ def test_classify_fresh_heartbeat_is_active() -> None:
     )
 
 
-def test_classify_open_pr_idle_is_merging() -> None:
-    # PR exists (follow-through) but owner is idle + heartbeat stale -> merging, not abandoned.
+def test_classify_open_pr_idle_but_fresh_is_merging() -> None:
+    # PR exists (follow-through) + owner idle (no live process) but heartbeat FRESH -> merging, kept.
     assert (
         wr.classify(
             is_infra=False,
             live=False,
             clean=True,
             merged=False,
-            heartbeat_age_s=99999.0,
+            heartbeat_age_s=600.0,  # < abandoned_after_s: recent owner activity
             abandoned_after_s=3600,
             has_open_pr=True,
         )
         == "merging"
+    )
+
+
+def test_classify_open_pr_but_stale_is_abandoned() -> None:
+    # The round-11 fix / the operator's model ("stale PR -> abandoned"): a STALE open-PR lane with a dead
+    # owner is abandoned, NOT kept as merging — the checkout reap is non-destructive (branch + PR survive).
+    assert (
+        wr.classify(
+            is_infra=False,
+            live=False,
+            clean=True,
+            merged=False,
+            heartbeat_age_s=99999.0,  # >> abandoned_after_s: session stopped
+            abandoned_after_s=3600,
+            has_open_pr=True,
+        )
+        == "abandoned"
     )
 
 
@@ -328,6 +345,7 @@ def test_probe_merging_open_pr_is_kept(tmp_path, monkeypatch) -> None:
     repo.mkdir()
     _init_repo(repo)
     wt, branch = _add_worktree(repo, "wt")
+    # FRESH lane (just created -> recent mtime) with an open PR -> merging (idle owner mid-flight, kept).
     p = wr.probe_worktree(
         path=str(wt),
         branch=branch,
@@ -335,7 +353,6 @@ def test_probe_merging_open_pr_is_kept(tmp_path, monkeypatch) -> None:
         open_pr_branches={branch},
         abandoned_after_s=3600,
         live_count_fn=lambda _p: 0,
-        now_epoch=_FUTURE_EPOCH,
     )
     assert p is not None
     assert p["status"] == "merging"
@@ -375,11 +392,21 @@ def test_cli_reap_reaps_abandoned_keeps_merging_and_live(tmp_path, monkeypatch, 
     live_wt, _lv = _add_worktree(repo, "lv")
     live_real = os.path.realpath(str(live_wt))
 
+    # Age ONLY the abandoned lane's activity signals into the past; mg + lv stay fresh (just created).
+    # With the heartbeat-driven model a fresh open-PR lane is `merging`, a stale one would be abandoned —
+    # so the merging lane MUST stay fresh, and we use the real (non-zero) threshold rather than 0.
+    ab_real = os.path.realpath(str(abandoned))
+    ab_gd = wr._resolve_git_dir(ab_real)
+    old = 1_000_000_000.0  # 2001
+    for p in (ab_real, os.path.join(ab_gd, "index"), os.path.join(ab_gd, "HEAD")):
+        if os.path.exists(p):
+            os.utime(p, (old, old))
+
     cli = _load_cli()
     monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "SELF", "")
     monkeypatch.setattr(cli, "_open_pr_branches", lambda: {mg_branch})
     monkeypatch.setattr(cli.wr, "live_process_count", lambda p: 1 if p == live_real else 0)
-    monkeypatch.setattr(cli.wr, "DEFAULT_ABANDONED_AFTER_S", 0)  # any idle age counts as stale
 
     cli.cmd_backfill(
         argparse.Namespace()
@@ -444,8 +471,10 @@ def test_cli_reap_skips_unregistered_worktree(tmp_path, monkeypatch, capsys) -> 
     assert os.path.isdir(str(wt))  # kept despite being idle/abandoned-by-inference
 
 
-def test_cli_reap_pr_signal_unavailable_keeps_all(tmp_path, monkeypatch) -> None:
-    # gh unavailable -> no registered idle lane is reaped (fail-closed merging).
+def test_cli_reap_abandons_stale_lane_without_gh(tmp_path, monkeypatch) -> None:
+    # ROUND-11 CRITICAL: the production timer runs WITHOUT a GH_TOKEN (open_pr_branches=None). A stopped,
+    # non-merged, non-live lane MUST still flip to abandoned and be reaped — abandonment is heartbeat-
+    # driven, NOT gated on the unavailable PR signal. (Reaping the checkout keeps the branch + any PR.)
     monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
     repo = tmp_path / "r"
     repo.mkdir()
@@ -453,12 +482,15 @@ def test_cli_reap_pr_signal_unavailable_keeps_all(tmp_path, monkeypatch) -> None
     wt, _b = _add_worktree(repo, "wt")
     cli = _load_cli()
     monkeypatch.setattr(cli, "CANONICAL", str(repo))
-    monkeypatch.setattr(cli, "_open_pr_branches", lambda: None)  # gh down
+    monkeypatch.setattr(cli, "SELF", "")
+    monkeypatch.setattr(
+        cli, "_open_pr_branches", lambda: None
+    )  # gh DOWN — the production timer mode
     monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
-    monkeypatch.setattr(cli.wr, "DEFAULT_ABANDONED_AFTER_S", 0)
+    monkeypatch.setattr(cli.wr, "DEFAULT_ABANDONED_AFTER_S", 0)  # any idle age counts as stale
     cli.cmd_backfill(argparse.Namespace())
     cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=0.0))
-    assert os.path.isdir(str(wt))  # PR signal unavailable -> merging, not abandoned
+    assert not os.path.isdir(str(wt))  # stale non-merged lane reaped even with gh unavailable
 
 
 def test_cli_reap_apply_failure_keeps_record(tmp_path, monkeypatch, capsys) -> None:
@@ -489,8 +521,9 @@ def test_cli_reap_apply_failure_keeps_record(tmp_path, monkeypatch, capsys) -> N
     assert wr.load(real) is not None  # record NOT deregistered on failure
 
 
-def test_classify_pr_signal_unavailable_keeps_as_merging() -> None:
-    # gh down -> open_pr set is None -> cannot confirm no-PR -> NOT abandoned (kept, fail-closed).
+def test_classify_stale_without_pr_signal_is_abandoned() -> None:
+    # gh down -> has_open_pr can't be confirmed (False at the probe). A STALE non-live lane is abandoned
+    # regardless (round-11 fix): abandonment is heartbeat-driven, not gated on the PR signal.
     assert (
         wr.classify(
             is_infra=False,
@@ -500,14 +533,14 @@ def test_classify_pr_signal_unavailable_keeps_as_merging() -> None:
             heartbeat_age_s=None,
             abandoned_after_s=3600,
             has_open_pr=False,
-            pr_signal_available=False,
         )
-        == "merging"
+        == "abandoned"
     )
 
 
-def test_probe_pr_signal_unavailable_keeps_idle_lane(tmp_path, monkeypatch) -> None:
-    # CRITICAL: when _open_pr_branches returns None, an idle non-live lane must NOT be reaped.
+def test_probe_pr_signal_unavailable_abandons_stale_idle_lane(tmp_path, monkeypatch) -> None:
+    # ROUND-11: when _open_pr_branches is None (gh down — the production timer mode), a STALE, non-live
+    # lane is abandoned (reapable). Abandonment is heartbeat-driven, not gated on the unknowable PR set.
     monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
     repo = tmp_path / "r"
     repo.mkdir()
@@ -523,8 +556,8 @@ def test_probe_pr_signal_unavailable_keeps_idle_lane(tmp_path, monkeypatch) -> N
         now_epoch=_FUTURE_EPOCH,
     )
     assert p is not None
-    assert p["status"] == "merging"
-    assert wr.is_reapable(p["status"], p["clean"], live=p["live"]) is False
+    assert p["status"] == "abandoned"
+    assert wr.is_reapable(p["status"], p["clean"], live=p["live"]) is True
 
 
 def test_probe_respects_pinned_infra_for_custom_path(tmp_path, monkeypatch) -> None:

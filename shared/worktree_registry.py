@@ -11,10 +11,13 @@ Record store: one atomic JSON file per worktree under ``$HAPAX_WORKTREE_REGISTRY
 (default ``~/.cache/hapax/worktree-registry``), keyed by a slug of the worktree path.
 
 Status precedence (``classify``, highest first): ``infra`` > ``done`` > ``active`` > ``merging`` >
-``abandoned``. A merged worktree is ``done`` even with a live process; a live owner or fresh heartbeat
-is ``active``; an idle owner with an open PR is ``merging``; only a dead owner with no PR and a stale
-heartbeat is ``abandoned``. Reaping (``is_reapable``) acts ONLY on ``done``/``abandoned`` — never on a
-paused ``active`` or follow-through ``merging`` lane.
+``abandoned``. A merged worktree is ``done`` even with a live process; a live owner is ``active``.
+Within the freshness window (heartbeat/mtime activity newer than the abandoned threshold) a non-live lane
+is ``merging`` if it has an open PR (idle owner mid-flight on it) else ``active``. Past the window with no
+live owner the session has STOPPED, so the lane is ``abandoned`` REGARDLESS of any (stale) PR — abandonment
+is HEARTBEAT-DRIVEN and gh-INDEPENDENT, so it holds on the production timer that runs without a GH_TOKEN.
+Reaping (``is_reapable``) acts ONLY on ``done``/``abandoned`` — never on a paused ``active`` or
+follow-through (fresh) ``merging`` lane; the checkout reap keeps the branch + PR.
 """
 
 from __future__ import annotations
@@ -291,25 +294,25 @@ def classify(
     heartbeat_age_s: float | None,
     abandoned_after_s: int,
     has_open_pr: bool,
-    pr_signal_available: bool = True,
 ) -> Status:
-    """Derive explicit status. Order matters: infra and merged are terminal; a live owner or a fresh
-    heartbeat means active; an open PR with an idle owner is mid-flight (merging); only a dead owner
-    with no PR and no fresh heartbeat is abandoned. FAIL-CLOSED on the PR signal: if the open-PR set
-    is unavailable (gh down/unauthed), we cannot confirm there is no PR, so an otherwise-abandoned
-    worktree is treated as ``merging`` and KEPT rather than reaped on an unverified no-PR assumption."""
+    """Derive explicit status, HEARTBEAT-DRIVEN and gh-INDEPENDENT. Order: infra and merged are
+    terminal; a live owner is ``active``. Within the freshness window (heartbeat/mtime activity newer
+    than ``abandoned_after_s``) a non-live lane is ``merging`` if it has an open PR (idle owner mid-flight
+    on it) else ``active``. Past the window with no live owner the session has STOPPED, so the lane is
+    ``abandoned`` REGARDLESS of the PR signal — this is the operator's model (``abandoned`` = stale
+    heartbeat AND dead owner AND (no PR OR *stale PR*)), and reaping the checkout is non-destructive (the
+    branch + PR survive ``git worktree remove``). Driving abandonment off the heartbeat, not the open-PR
+    set, is what makes the exit predicate hold on the production timer, which runs WITHOUT a GH_TOKEN: a
+    stopped non-merged lane flips to abandoned and is reaped even when ``has_open_pr`` is unknowable."""
     if is_infra:
         return "infra"
     if merged:
         return "done"
     if live:
         return "active"
-    if heartbeat_age_s is not None and heartbeat_age_s < abandoned_after_s:
-        return "active"
-    if has_open_pr:
-        return "merging"
-    if not pr_signal_available:
-        return "merging"
+    fresh = heartbeat_age_s is not None and heartbeat_age_s < abandoned_after_s
+    if fresh:
+        return "merging" if has_open_pr else "active"
     return "abandoned"
 
 
@@ -487,10 +490,11 @@ def probe_worktree(
     Status authority: an explicit PIN in the registry (``set_status``) is AUTHORITATIVE and returned
     as-is — only NON-pinned records are refreshed from live signals. The derive folds BOTH the registry
     ``last_heartbeat`` AND the filesystem mtime (freshest wins), so a heartbeated-but-quiet session
-    reads ``active``. ``open_pr_branches=None`` means the PR signal is UNAVAILABLE (gh down): the derive
-    fails closed (``merging``, kept) rather than assuming no PR. A CORRUPT record (present but
-    unparseable) also fails closed: the worktree is returned registered + pinned + ``corrupt=True`` so it
-    is protected and never reaped on a guess. Keys: path, branch, infra, live, clean, merged, has_pr,
+    reads ``active``. ``open_pr_branches=None`` means the PR signal is UNAVAILABLE (gh down): ``has_pr``
+    is then False and abandonment falls back to the HEARTBEAT — a stale, non-live lane is abandoned even
+    without gh (the production timer path). A CORRUPT record (present but unparseable) fails closed: the
+    worktree is returned registered + pinned + ``corrupt=True`` so it is protected and never reaped on a
+    guess. Keys: path, branch, infra, live, clean, merged, has_pr,
     status, pinned, registered, corrupt."""
     real = os.path.realpath(path)
     if not os.path.isdir(real):
@@ -536,7 +540,6 @@ def probe_worktree(
         heartbeat_age_s=min(ages),
         abandoned_after_s=abandoned_after_s,
         has_open_pr=has_pr,
-        pr_signal_available=pr_signal_available,
     )
     pinned = bool(rec is not None and rec.pinned)
     status = rec.status if pinned else derived

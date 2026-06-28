@@ -224,13 +224,16 @@ Two timers keep the count bounded without manual cleanup:
     and the stale-*unmerged* alerts are separate and not registry-gated.
   - **Idle window.** The module default `abandoned` threshold is 12h, but the timer
     passes `--min-idle-hours 48` — so the automatic cycle reaps `abandoned` lanes
-    only after ~48h idle, not 12h. The open-PR signal needs `gh`; when the timer
-    runs without it the classify fails CLOSED on the *PR* signal (an idle, non-merged
-    lane stays `merging`/kept rather than `abandoned`). Merge detection itself is
-    git-only and needs no `gh`: BOTH ancestry merges AND squash/rebase merges
-    (remote-branch deleted+pruned AND content-already-in-base, via `merge-tree`) are
-    detected, so `done` lanes — including the council's default squash merges — still
-    reap without `gh`. This 48h
+    only after ~48h idle, not 12h. **Abandonment is heartbeat-driven and gh-INDEPENDENT:**
+    a stopped, non-live, clean lane that is stale past the window flips to `abandoned`
+    and is reaped *even without `gh`* (the open-PR set only distinguishes a FRESH idle
+    lane as `merging` vs `active` — once stale, an open PR no longer keeps it, because
+    the checkout reap is non-destructive: the branch + PR survive `git worktree
+    remove`). So the production timer, which runs without a `GH_TOKEN`, still satisfies
+    the "stopped → abandoned → reaped" predicate. Merge detection is likewise git-only:
+    BOTH ancestry merges AND squash/rebase merges (remote-branch deleted+pruned AND
+    content-already-in-base, via `merge-tree`) are detected, so `done` lanes — including
+    the council's default squash merges — also reap without `gh`. This 48h
     lives in the SCRIPT, not the unit — verify it with
     `grep REGISTRY_IDLE_HOURS scripts/hapax-worktree-gc.sh` (the
     `HAPAX_WORKTREE_GC_REGISTRY_IDLE_HOURS:-48` default) and the schedule with
