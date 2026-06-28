@@ -225,7 +225,12 @@ Two timers keep the count bounded without manual cleanup:
   - **Idle window.** The module default `abandoned` threshold is 12h, but the timer
     passes `--min-idle-hours 48` — so the automatic cycle reaps `abandoned` lanes
     only after ~48h idle, not 12h. The open-PR signal needs `gh`; when the timer
-    runs without it the classify fails CLOSED (only `done`/merged reaped). This 48h
+    runs without it the classify fails CLOSED on the *PR* signal (an idle, non-merged
+    lane stays `merging`/kept rather than `abandoned`). Merge detection itself is
+    git-only and needs no `gh`: BOTH ancestry merges AND squash/rebase merges
+    (remote-branch deleted+pruned AND content-already-in-base, via `merge-tree`) are
+    detected, so `done` lanes — including the council's default squash merges — still
+    reap without `gh`. This 48h
     lives in the SCRIPT, not the unit — verify it with
     `grep REGISTRY_IDLE_HOURS scripts/hapax-worktree-gc.sh` (the
     `HAPAX_WORKTREE_GC_REGISTRY_IDLE_HOURS:-48` default) and the schedule with
@@ -242,10 +247,13 @@ Two timers keep the count bounded without manual cleanup:
     status. Registration *at creation time* is P4 (`hapax-worktree-create` + dispatch
     wiring); until it lands, a freshly dispatch-created lane is unregistered only until
     the next backfill.
-  - **Rechecks.** `hapax-worktree-register list` (per-worktree status; shows `corrupt`),
-    `hapax-worktree-register protected-paths` (what the legacy sweep will NOT touch),
-    and `hapax-worktree-gc.sh --dry-run` (the actual removal decisions, including the
-    registry-gate `keep … registry-protected` / `fail-closed` lines).
+  - **Rechecks** (the CLI ships as a repo script, not on `PATH` — run from the repo
+    root with the `scripts/` prefix, or `python3 scripts/hapax-worktree-register`):
+    `scripts/hapax-worktree-register list` (per-worktree status; shows `corrupt`),
+    `scripts/hapax-worktree-register protected-paths` (what the legacy sweep will NOT
+    touch), and `scripts/hapax-worktree-gc.sh --dry-run` (the actual removal
+    decisions, including the registry-gate `keep … registry-protected` /
+    `fail-closed` lines).
   - A live-PID guard refuses to remove any worktree a running process maps via
     `/proc/<pid>/cwd|exe` (the F1 release-ghost incident).
 - **`hapax-lane-reaper.timer`** (every 30m) → reaps *dead lanes that still have

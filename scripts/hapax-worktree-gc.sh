@@ -224,7 +224,7 @@ if [[ "${HAPAX_WORKTREE_GC_REGISTRY:-1}" == "1" && -f "$registry_cli" ]]; then
             else
                 HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" reap --apply \
                     --min-idle-hours "$idle_h" \
-                    || printf 'hapax-worktree-gc: WARN registry reap errored — done/abandoned lanes unreaped this cycle (not fatal, protection intact)\n' >&2
+                    || printf 'hapax-worktree-gc: WARN registry reap errored — done/abandoned lanes unreaped this cycle (not fatal, protection intact). Next: run `HAPAX_WORKTREE_GC_REPO=%s python3 %s reap --min-idle-hours %s` to see the error, then `%s --apply ...` once fixed.\n' "$repo" "$registry_cli" "$idle_h" "$registry_cli" >&2
             fi
             registry_mode="governed"
         fi

@@ -1029,3 +1029,73 @@ def test_cli_heartbeat_corrupt_message(tmp_path, monkeypatch, capsys) -> None:
     assert (
         "corrupt" in err
     )  # distinguishes corrupt from "absent" -> sends operator to repair, not register
+
+
+# --- exit-predicate proofs through the real GC path (review round 9) ---------------------------------
+
+
+def test_gc_cycle_flips_idle_lane_to_abandoned_and_reaps(tmp_path, monkeypatch) -> None:
+    # CORE EXIT PREDICATE (acceptance #3): a non-live, no-PR, idle, clean lane flips to abandoned across
+    # the real backfill->reap path and is reaped. Guards the is_clean()-refreshes-the-idle-clock bug: we
+    # build the racy condition (a tracked file whose stat differs from the index's cached stat) that
+    # makes a plain `git status` REWRITE the index mtime; --no-optional-locks must prevent that, else the
+    # backfill probe would reset the idle clock and the lane would stay `active` forever.
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, branch = _add_worktree(repo, "idle")
+    real = os.path.realpath(str(wt))
+    git_dir = wr._resolve_git_dir(real)
+    assert git_dir is not None
+    index = os.path.join(git_dir, "index")
+    old = datetime.now(UTC).timestamp() - 100 * 3600  # 100h idle (> 48h)
+    # Age the activity signals AND the tracked file (its stat now differs from the index's cached stat,
+    # so a plain `git status` would refresh+rewrite the index — the bug this proves is prevented).
+    for p in (str(Path(wt) / "f.txt"), index, os.path.join(git_dir, "HEAD"), real):
+        if os.path.exists(p):
+            os.utime(p, (old, old))
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "SELF", "")
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())  # gh available, empty -> no PR
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)  # not live
+    cli.cmd_backfill(
+        argparse.Namespace()
+    )  # runs is_clean() inside the probe; must not refresh the clock
+    p = wr.probe_worktree(
+        path=real,
+        branch=branch,
+        canonical=str(repo),
+        open_pr_branches=set(),
+        abandoned_after_s=48 * 3600,
+        live_count_fn=lambda _p: 0,
+    )
+    assert p["status"] == "abandoned"  # idle clock survived backfill's is_clean()
+    assert wr.is_reapable(p["status"], p["clean"], live=p["live"]) is True
+    cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=48.0))
+    assert not os.path.isdir(real)  # the idle lane was actually reaped through the real GC path
+
+
+def test_classify_squash_merged_lane_is_done_without_gh(tmp_path, monkeypatch) -> None:
+    # Critical 2 end-to-end: a squash-merged lane classifies `done` (reapable) even with gh UNAVAILABLE
+    # (open_pr_branches=None) — so the legacy sweep is NOT blocked from cleaning the council's default
+    # merge style. is_merged detects the squash (remote-deleted + content-merged); classify: merged->done.
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    _squash_setup(repo, content_in_main=True)
+    wt = tmp_path / "feat-wt"
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", str(wt), "feat"], check=True)
+    p = wr.probe_worktree(
+        path=str(wt),
+        branch="feat",
+        canonical=str(repo),
+        open_pr_branches=None,  # gh UNAVAILABLE (the no-gh timer mode the critical is about)
+        live_count_fn=lambda _p: 0,
+    )
+    assert p is not None
+    assert p["merged"] is True  # squash detected git-only
+    assert p["status"] == "done"  # NOT "merging" -> reapable
+    assert wr.is_inference_protected(p["status"], pinned=p["pinned"]) is False  # not protected

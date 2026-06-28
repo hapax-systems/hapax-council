@@ -499,6 +499,11 @@ def probe_worktree(
     live_fn = live_count_fn if live_count_fn is not None else live_process_count
     infra = is_infra_path(real, canonical=canonical)
     live = live_fn(real) > 0
+    # Capture the mtime-based idle age BEFORE is_clean(): is_clean() already uses --no-optional-locks so
+    # `git status` cannot rewrite the index mtime, but reading the staleness signal first is belt-and-
+    # suspenders — no status read this probe makes can advance the idle clock it then classifies on.
+    now = now_epoch if now_epoch is not None else datetime.now(UTC).timestamp()
+    mtime_age = mtime_age_seconds(real, now_epoch=now)
     clean = is_clean(real)
     merged = is_merged(canonical, branch) if branch else False
     pr_signal_available = open_pr_branches is not None
@@ -520,8 +525,7 @@ def probe_worktree(
             "registered": True,
             "corrupt": True,
         }
-    now = now_epoch if now_epoch is not None else datetime.now(UTC).timestamp()
-    ages = [mtime_age_seconds(real, now_epoch=now)]
+    ages = [mtime_age]
     if rec is not None:
         ages.append(max(0.0, now - rec.last_heartbeat.timestamp()))
     derived = classify(
