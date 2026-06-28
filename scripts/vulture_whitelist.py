@@ -4591,11 +4591,11 @@ from shared.worktree_registry import (
     is_clean,  # noqa: E402
     is_infra_path,  # noqa: E402
     is_merged,  # noqa: E402
+    is_reapable,  # noqa: E402
     list_records,  # noqa: E402
     live_process_count,  # noqa: E402
     mtime_age_seconds,  # noqa: E402
     set_status,  # noqa: E402
-    should_reap_worktree,  # noqa: E402
 )
 
 _ = (
@@ -4607,5 +4607,5 @@ _ = (
     live_process_count,
     mtime_age_seconds,
     set_status,
-    should_reap_worktree,
+    is_reapable,
 )

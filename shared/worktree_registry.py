@@ -9,6 +9,12 @@ so abandoned != paused is KNOWABLE.
 
 Record store: one atomic JSON file per worktree under ``$HAPAX_WORKTREE_REGISTRY_DIR``
 (default ``~/.cache/hapax/worktree-registry``), keyed by a slug of the worktree path.
+
+Status precedence (``classify``, highest first): ``infra`` > ``done`` > ``active`` > ``merging`` >
+``abandoned``. A merged worktree is ``done`` even with a live process; a live owner or fresh heartbeat
+is ``active``; an idle owner with an open PR is ``merging``; only a dead owner with no PR and a stale
+heartbeat is ``abandoned``. Reaping (``is_reapable``) acts ONLY on ``done``/``abandoned`` — never on a
+paused ``active`` or follow-through ``merging`` lane.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -75,7 +82,10 @@ def load(path: str) -> WorktreeRecord | None:
         return None
     try:
         return WorktreeRecord.model_validate_json(raw)
-    except Exception:
+    except Exception as exc:
+        # A present-but-unparseable record is a real problem (schema drift / corruption), NOT the
+        # same as absent — surface it so it isn't silently masked, then treat as missing.
+        print(f"hapax-worktree-registry: WARN unparseable record {rp}: {exc}", file=sys.stderr)
         return None
 
 
@@ -204,12 +214,13 @@ def classify(
     return "abandoned"
 
 
-def should_reap_worktree(*, is_infra: bool, live: bool, clean: bool) -> bool:
-    """A checkout is disposable when nobody is editing it: not infra, no live process, and
-    clean (no uncommitted work). A green PR merges server-side without its worktree, so an
-    open PR does NOT protect the checkout — only an active editor (live) or unsaved work
-    (dirty) does. The branch + commits survive ``git worktree remove``; only the checkout goes."""
-    return (not is_infra) and (not live) and clean
+def is_reapable(status: Status, clean: bool) -> bool:
+    """Reap a checkout ONLY by EXPLICIT status — never by inference. Reapable iff ``done`` (merged,
+    work is already in base) or ``abandoned`` (no live owner, no open PR, stale). An ``active`` or
+    ``merging`` (open-PR, follow-through-in-progress) lane is KEPT — that is the whole point of the
+    registry: abandoned must be distinguishable from paused BEFORE cleanup. Dirty worktrees are never
+    reaped (unsaved work). The branch + commits survive ``git worktree remove``; only the checkout goes."""
+    return status in ("done", "abandoned") and clean
 
 
 # --- probes (integration: read git + /proc; exercised via the CLI on real worktrees) -----------------
@@ -251,11 +262,33 @@ def is_merged(canonical: str, branch: str, base_ref: str = "origin/main") -> boo
     return res.returncode == 0
 
 
+def _resolve_git_dir(path: str) -> str | None:
+    """The real git dir for a worktree. In a LINKED worktree ``.git`` is a FILE
+    (``gitdir: <main>/.git/worktrees/<name>``), not a directory — so ``index``/``HEAD`` live there,
+    NOT under ``<path>/.git/``. Returns the resolved dir, or None if it can't be determined."""
+    dotgit = os.path.join(path, ".git")
+    if os.path.isdir(dotgit):
+        return dotgit
+    try:
+        with open(dotgit, encoding="utf-8") as fh:
+            first = fh.readline().strip()
+    except OSError:
+        return None
+    if first.startswith("gitdir:"):
+        gd = first[len("gitdir:") :].strip()
+        return gd if os.path.isabs(gd) else os.path.normpath(os.path.join(path, gd))
+    return None
+
+
 def mtime_age_seconds(path: str, *, now_epoch: float | None = None) -> float:
-    """Seconds since the worktree's freshest activity signal (max of the dir, the git index, and
-    HEAD mtimes). A staleness GATE for automatic reaping: combined with non-live, a worktree idle
-    for many hours is abandoned, not paused. Returns inf if the path is gone (so callers reap it)."""
-    candidates = [path, os.path.join(path, ".git", "index"), os.path.join(path, ".git", "HEAD")]
+    """Seconds since the worktree's freshest activity signal — the max mtime of the worktree dir and
+    (resolving a linked-worktree ``.git`` file to its real git dir) its ``index`` + ``HEAD``. A
+    staleness GATE for automatic reaping: combined with non-live, a worktree idle for many hours is
+    abandoned, not paused. Returns inf if the path is gone (callers treat it as maximally stale)."""
+    candidates = [path]
+    git_dir = _resolve_git_dir(path)
+    if git_dir:
+        candidates += [os.path.join(git_dir, "index"), os.path.join(git_dir, "HEAD")]
     newest = 0.0
     found = False
     for c in candidates:

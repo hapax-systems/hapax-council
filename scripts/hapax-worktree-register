@@ -6,12 +6,13 @@ Subcommands:
   backfill             register every current worktree with its derived status
   register <path>      register/refresh one worktree (--role --branch --task --pr --session)
   heartbeat <path>     stamp last_heartbeat (the "still being worked" signal)
-  reap [--apply]       remove non-live + clean checkouts (branches PRESERVED unless merged)
+  reap [--apply]       remove ONLY done/abandoned checkouts by explicit STATUS (branch always kept)
 
-The registry makes "abandoned vs paused" KNOWABLE: a checkout with no live owner and no
-unsaved work is disposable (a green PR merges server-side without its worktree). Reap keeps
-the branch + commits in .git for everything except merged (done) branches, so it is
-non-destructive and reversible via `git worktree add`.
+The registry makes "abandoned vs paused" KNOWABLE so cleanup acts on STATUS, not inference. Reap
+removes a checkout ONLY when its status is `done` (merged) or `abandoned` (no live owner, no open PR,
+stale) — never an `active` or `merging` (open-PR) lane. It ALWAYS keeps the branch (commits stay in
+.git, reversible via `git worktree add`); deleting a merged branch is left to hapax-worktree-gc.sh,
+which proves content-is-in-base first. `--min-idle-hours N` sets the abandoned staleness threshold.
 """
 
 from __future__ import annotations
@@ -20,7 +21,6 @@ import argparse
 import os
 import subprocess
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -98,28 +98,30 @@ def _open_pr_branches() -> set[str] | None:
     return set(res.stdout.split())
 
 
-def _probe(wt: dict, open_prs: set[str] | None) -> dict | None:
-    path = wt["path"]
+def _probe(wt: dict, open_prs: set[str] | None, abandoned_after_s: int) -> dict | None:
+    # realpath the worktree path so the registry key matches register/heartbeat (which realpath too),
+    # even when symlinks are present in the path.
+    path = os.path.realpath(wt["path"])
     branch = wt["branch"]
     if not os.path.isdir(path):
         return None
-    real = os.path.realpath(path)
     infra = wr.is_infra_path(path, canonical=CANONICAL)
-    live = wr.live_process_count(real) > 0
+    live = wr.live_process_count(path) > 0
     clean = wr.is_clean(path)
     merged = wr.is_merged(CANONICAL, branch) if branch else False
     has_pr = bool(open_prs is not None and branch and branch in open_prs)
-    rec = wr.load(path)
-    hb_age = None
-    if rec is not None:
-        hb_age = (datetime.now(UTC) - rec.last_heartbeat).total_seconds()
+    # Staleness = real filesystem activity (the worktree + its resolved git index/HEAD mtime). We do
+    # NOT use the registration's last_heartbeat yet: back-filled records carry a synthetic-recent
+    # heartbeat that would make every lane look freshly active. P3 (the session heartbeat hook) folds
+    # a real heartbeat in here; until then mtime is the activity proxy and `live` is the primary signal.
+    hb_age = wr.mtime_age_seconds(path)
     status = wr.classify(
         is_infra=infra,
         live=live,
         clean=clean,
         merged=merged,
         heartbeat_age_s=hb_age,
-        abandoned_after_s=wr.DEFAULT_ABANDONED_AFTER_S,
+        abandoned_after_s=abandoned_after_s,
         has_open_pr=has_pr,
     )
     return {
@@ -137,9 +139,12 @@ def _probe(wt: dict, open_prs: set[str] | None) -> dict | None:
 def cmd_list(_args: argparse.Namespace) -> int:
     open_prs = _open_pr_branches()
     if open_prs is None:
-        print("(gh unavailable — PR signal degraded; status uses git/proc/heartbeat only)")
+        print(
+            "(gh unavailable — PR signal degraded; status uses git/proc/mtime only. "
+            "Next: run `gh auth status` or set GH_TOKEN to restore the open-PR signal.)"
+        )
     for wt in _worktrees(CANONICAL):
-        p = _probe(wt, open_prs)
+        p = _probe(wt, open_prs, wr.DEFAULT_ABANDONED_AFTER_S)
         if p is None:
             print(f"  gone       {wt['path']}")
             continue
@@ -154,7 +159,7 @@ def cmd_backfill(_args: argparse.Namespace) -> int:
     open_prs = _open_pr_branches()
     n = 0
     for wt in _worktrees(CANONICAL):
-        p = _probe(wt, open_prs)
+        p = _probe(wt, open_prs, wr.DEFAULT_ABANDONED_AFTER_S)
         if p is None:
             continue
         wr.register(p["path"], branch=p["branch"], status=p["status"])
@@ -177,32 +182,41 @@ def cmd_register(args: argparse.Namespace) -> int:
 
 
 def cmd_heartbeat(args: argparse.Namespace) -> int:
-    rec = wr.heartbeat(os.path.realpath(args.path))
-    print("heartbeat ok" if rec else "no registration for that path")
-    return 0 if rec else 1
+    rp = os.path.realpath(args.path)
+    rec = wr.heartbeat(rp)
+    if rec:
+        print("heartbeat ok")
+        return 0
+    print(
+        f"no registration for {rp} (registry record {wr.record_path(rp)} absent). "
+        f"Next: `hapax-worktree-register register {rp}` (or `backfill` to register all worktrees).",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def cmd_reap(args: argparse.Namespace) -> int:
+    # --min-idle-hours sets how long a non-live, PR-less lane must be idle (by filesystem mtime)
+    # before classify calls it `abandoned`. 0 -> the module default.
+    abandoned_after_s = (
+        int(args.min_idle_hours * 3600) if args.min_idle_hours > 0 else wr.DEFAULT_ABANDONED_AFTER_S
+    )
     open_prs = _open_pr_branches()
     reaped = kept = 0
     for wt in _worktrees(CANONICAL):
-        p = _probe(wt, open_prs)
+        p = _probe(wt, open_prs, abandoned_after_s)
         if p is None:
             continue
         if SELF and os.path.realpath(p["path"]) == os.path.realpath(SELF):
             kept += 1
-            print(f"KEEP self        {p['path']}")
+            print(f"KEEP self        {p['path']} [{p['status']}]")
             continue
-        if not wr.should_reap_worktree(is_infra=p["infra"], live=p["live"], clean=p["clean"]):
+        # Reap ONLY by explicit status — `done` (merged) or `abandoned`. `active`/`merging` are KEPT.
+        if not wr.is_reapable(p["status"], p["clean"]):
             kept += 1
             continue
-        if args.min_idle_hours > 0 and wr.mtime_age_seconds(p["path"]) < args.min_idle_hours * 3600:
-            kept += 1
-            continue
-        label = "done/merged" if p["merged"] else ("merging" if p["has_pr"] else "abandoned")
         if not args.apply:
-            tail = " +branch-D" if p["merged"] else " (branch kept)"
-            print(f"REAP? {label:<11} {p['path']} [{p['branch'] or '-'}]{tail}")
+            print(f"REAP? {p['status']:<10} {p['path']} [{p['branch'] or '-'}] (branch kept)")
             reaped += 1
             continue
         r = subprocess.run(
@@ -214,18 +228,12 @@ def cmd_reap(args: argparse.Namespace) -> int:
         if r.returncode != 0:
             print(f"FAIL remove      {p['path']}: {r.stderr.strip()[:90]}")
             continue
+        # Remove only the checkout — ALWAYS keep the branch (commits stay in .git, recoverable via
+        # `git worktree add`). Deleting a merged branch is left to hapax-worktree-gc.sh, which proves
+        # content-is-in-base first; a bare `branch -D` here could drop a squash-merge's real commits.
         wr.deregister(p["path"])
         reaped += 1
-        if p["merged"] and p["branch"]:
-            subprocess.run(
-                ["git", "-C", CANONICAL, "branch", "-D", p["branch"]],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            print(f"REAP {label:<11} {p['path']} [{p['branch']}] +branch-D")
-        else:
-            print(f"REAP {label:<11} {p['path']} [{p['branch'] or '-'}] (branch kept)")
+        print(f"REAP {p['status']:<10} {p['path']} [{p['branch'] or '-'}] (branch kept)")
     print(f"--- reap{'ed' if args.apply else '?'}={reaped} kept={kept}")
     return 0
 

@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from datetime import UTC, datetime
 
 from shared import worktree_registry as wr
+
+
+def _init_repo(path) -> None:
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(path), "config", "user.name", "t"], check=True)
+    (path / "f.txt").write_text("hi")
+    subprocess.run(["git", "-C", str(path), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "init"], check=True)
+
 
 _NOW = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
 _CANON = "/p/hapax-council"
@@ -103,23 +115,32 @@ def test_classify_no_pr_dead_owner_stale_is_abandoned() -> None:
     )
 
 
-# --- should_reap_worktree(): a checkout is disposable when nobody is editing it ----------------------
+# --- is_reapable(): reap ONLY by explicit status, never inference -----------------------------------
 
 
-def test_reap_nonlive_clean() -> None:
-    assert wr.should_reap_worktree(is_infra=False, live=False, clean=True) is True
+def test_is_reapable_abandoned() -> None:
+    assert wr.is_reapable("abandoned", clean=True) is True
 
 
-def test_no_reap_live() -> None:
-    assert wr.should_reap_worktree(is_infra=False, live=True, clean=True) is False
+def test_is_reapable_done() -> None:
+    assert wr.is_reapable("done", clean=True) is True
 
 
-def test_no_reap_dirty() -> None:
-    assert wr.should_reap_worktree(is_infra=False, live=False, clean=False) is False
+def test_not_reapable_active() -> None:
+    assert wr.is_reapable("active", clean=True) is False
 
 
-def test_no_reap_infra() -> None:
-    assert wr.should_reap_worktree(is_infra=True, live=False, clean=True) is False
+def test_not_reapable_merging_open_pr_is_kept() -> None:
+    # THE critical regression: a clean, non-live, open-PR (merging) lane must NOT be reaped.
+    assert wr.is_reapable("merging", clean=True) is False
+
+
+def test_not_reapable_infra() -> None:
+    assert wr.is_reapable("infra", clean=True) is False
+
+
+def test_not_reapable_dirty_even_if_abandoned() -> None:
+    assert wr.is_reapable("abandoned", clean=False) is False
 
 
 # --- record CRUD round-trips (registry keyed by path) ------------------------------------------------
@@ -183,8 +204,6 @@ def test_is_infra_path_patterns() -> None:
 
 
 def test_mtime_age_seconds_uses_freshest_signal(tmp_path) -> None:
-    import os
-
     d = tmp_path / "wt"
     d.mkdir()
     os.utime(d, (1000.0, 1000.0))
@@ -193,3 +212,47 @@ def test_mtime_age_seconds_uses_freshest_signal(tmp_path) -> None:
 
 def test_mtime_age_seconds_missing_path_is_inf() -> None:
     assert wr.mtime_age_seconds("/no/such/worktree", now_epoch=5000.0) == float("inf")
+
+
+# --- probes against a real git repo + linked worktree -----------------------------------------------
+
+
+def test_is_clean_true_then_false(tmp_path) -> None:
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    assert wr.is_clean(str(repo)) is True
+    (repo / "f.txt").write_text("changed")
+    assert wr.is_clean(str(repo)) is False
+
+
+def test_is_merged_distinguishes_ancestor_from_unmerged(tmp_path) -> None:
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    base = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert wr.is_merged(str(repo), base, base_ref=base) is True
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "feature"], check=True)
+    (repo / "g.txt").write_text("x")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "feat"], check=True)
+    assert wr.is_merged(str(repo), "feature", base_ref=base) is False
+
+
+def test_mtime_age_resolves_linked_worktree_gitdir(tmp_path) -> None:
+    # In a LINKED worktree, .git is a FILE; _resolve_git_dir must find the real git dir so mtime
+    # reads index/HEAD rather than NotADirectoryError-ing and silently using only the bare dir mtime.
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt = tmp_path / "wt"
+    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", str(wt)], check=True)
+    assert (wt / ".git").is_file()
+    git_dir = wr._resolve_git_dir(str(wt))
+    assert git_dir is not None and os.path.isdir(git_dir)
+    assert wr.mtime_age_seconds(str(wt)) < 3600
