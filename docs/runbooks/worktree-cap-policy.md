@@ -198,11 +198,21 @@ garbage-collected.
 Two timers keep the count bounded without manual cleanup:
 
 - **`hapax-worktree-gc.timer`** (every 6h) → `scripts/hapax-worktree-gc.sh`.
-  Removes stale, clean, MERGED worktrees (ancestry + squash-merge detection),
-  reaps stale `source-activation/releases/<sha>` snapshots (keeping
-  active+candidate from `current.json`), and ALERTS (never auto-removes) on
-  stale *unmerged* worktrees. A live-PID guard refuses to remove any worktree a
-  running process maps via `/proc/<pid>/cwd|exe` (the F1 release-ghost incident).
+  Runs a **registry-governed pre-pass** (PR #4337): `hapax-worktree-register
+  backfill` then `reap --apply` — cleanup by EXPLICIT lifecycle STATUS, not
+  age+merge inference. The registry (`~/.cache/hapax/worktree-registry/<slug>.json`,
+  one record per worktree) gives each worktree a status — `infra`/`active`/`merging`/
+  `abandoned`/`done` — derived from liveness + heartbeat + open-PR + merge, with
+  explicit `set_status` pins authoritative. `reap` removes ONLY **registered**,
+  non-live, clean, `done`/`abandoned` checkouts (branches kept); a session that
+  stops working without follow-through becomes `abandoned` and is reaped next
+  cycle. The open-PR signal needs `gh`; when unavailable it fails CLOSED (only
+  `done`/merged reaped). Recheck: `hapax-worktree-register list`. The GC then runs
+  its legacy pass — stale MERGED worktrees (ancestry + squash-merge detection),
+  stale `source-activation/releases/<sha>` snapshots (keeping active+candidate from
+  `current.json`), merged-branch deletion, and ALERTS on stale *unmerged* trees.
+  A live-PID guard refuses to remove any worktree a running process maps via
+  `/proc/<pid>/cwd|exe` (the F1 release-ghost incident).
 - **`hapax-lane-reaper.timer`** (every 30m) → reaps *dead lanes that still have
   a live tmux session*.
 

@@ -96,6 +96,7 @@ def _open_pr_branches() -> set[str] | None:
             capture_output=True,
             text=True,
             check=False,
+            cwd=CANONICAL,  # scope the PR lookup to the canonical repo, not the caller's cwd
         )
     except FileNotFoundError:
         # gh not installed -> PR signal unavailable; degrade to None (classify fails closed).

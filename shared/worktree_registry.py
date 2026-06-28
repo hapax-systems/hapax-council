@@ -19,17 +19,17 @@ paused ``active`` or follow-through ``merging`` lane.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
-
-from pydantic import BaseModel
 
 Status = Literal["infra", "active", "merging", "abandoned", "done"]
 
@@ -40,10 +40,17 @@ Status = Literal["infra", "active", "merging", "abandoned", "done"]
 DEFAULT_ABANDONED_AFTER_S = 12 * 3600
 
 
-class WorktreeRecord(BaseModel):
-    """One registered worktree. ``path`` is the identity (registry is keyed by it)."""
+@dataclass
+class WorktreeRecord:
+    """One registered worktree. ``path`` is the identity (registry is keyed by it).
+
+    Plain stdlib dataclass (NOT pydantic) on purpose: the record + reap path must be callable from the
+    systemd GC reaper using the bare system ``python3``, which has no project venv. JSON (de)serialized
+    by hand below with ISO-8601 datetimes."""
 
     path: str
+    created_at: datetime
+    last_heartbeat: datetime
     branch: str | None = None
     role: str | None = None
     session_id: str | None = None
@@ -54,10 +61,33 @@ class WorktreeRecord(BaseModel):
     # the live-signal derive refreshes only NON-pinned records, so a pinned `infra`/`active`/`merging`
     # is never silently re-derived and reaped.
     pinned: bool = False
-    created_at: datetime
-    last_heartbeat: datetime
     host: str | None = None
     note: str | None = None
+
+
+def _record_from_json(raw: str) -> WorktreeRecord:
+    d = json.loads(raw)
+    return WorktreeRecord(
+        path=d["path"],
+        created_at=datetime.fromisoformat(d["created_at"]),
+        last_heartbeat=datetime.fromisoformat(d["last_heartbeat"]),
+        branch=d.get("branch"),
+        role=d.get("role"),
+        session_id=d.get("session_id"),
+        task_id=d.get("task_id"),
+        pr=d.get("pr"),
+        status=d.get("status", "active"),
+        pinned=bool(d.get("pinned", False)),
+        host=d.get("host"),
+        note=d.get("note"),
+    )
+
+
+def _record_to_json(rec: WorktreeRecord) -> str:
+    d = asdict(rec)
+    d["created_at"] = rec.created_at.isoformat()
+    d["last_heartbeat"] = rec.last_heartbeat.isoformat()
+    return json.dumps(d, indent=2, sort_keys=True)
 
 
 def _now(now: datetime | None) -> datetime:
@@ -88,7 +118,7 @@ def load(path: str) -> WorktreeRecord | None:
     except FileNotFoundError:
         return None
     try:
-        return WorktreeRecord.model_validate_json(raw)
+        return _record_from_json(raw)
     except Exception as exc:
         # A present-but-unparseable record is a real problem (schema drift / corruption), NOT the
         # same as absent — surface it so it isn't silently masked, then treat as missing.
@@ -102,7 +132,7 @@ def load(path: str) -> WorktreeRecord | None:
 
 def save(rec: WorktreeRecord) -> None:
     rp = record_path(rec.path)
-    data = rec.model_dump_json(indent=2)
+    data = _record_to_json(rec)
     fd, tmp = tempfile.mkstemp(dir=str(rp.parent), prefix=".wt-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -192,7 +222,7 @@ def list_records() -> list[WorktreeRecord]:
     out: list[WorktreeRecord] = []
     for fp in sorted(registry_dir().glob("*.json")):
         try:
-            out.append(WorktreeRecord.model_validate_json(fp.read_text(encoding="utf-8")))
+            out.append(_record_from_json(fp.read_text(encoding="utf-8")))
         except Exception:
             continue
     return out

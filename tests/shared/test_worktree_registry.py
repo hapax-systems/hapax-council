@@ -570,3 +570,55 @@ def test_probe_fresh_heartbeat_protects_idle_lane(tmp_path, monkeypatch) -> None
     assert p is not None
     assert p["status"] == "active"
     assert wr.is_reapable(p["status"], p["clean"], live=p["live"]) is False
+
+
+def test_cli_list_prints_status_format(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    wt, branch = _add_worktree(repo, "wt")
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
+    assert cli.cmd_list(argparse.Namespace()) == 0
+    out = capsys.readouterr().out
+    assert str(wt) in out and branch in out
+    assert "live=" in out and "clean=" in out and "merged=" in out
+
+
+def test_cli_register_persists_loadable_record(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    cli = _load_cli()
+    target = tmp_path / "wt"
+    target.mkdir()
+    cli.cmd_register(
+        argparse.Namespace(
+            path=str(target), role="dev2", branch="dev2/x", session="s1", task="cc-task-x", pr=42
+        )
+    )
+    rec = wr.load(os.path.realpath(str(target)))
+    assert rec is not None
+    assert rec.role == "dev2"
+    assert rec.branch == "dev2/x"
+    assert rec.task_id == "cc-task-x"
+    assert rec.pr == 42
+
+
+def test_cli_reap_done_merged_is_reaped(tmp_path, monkeypatch) -> None:
+    # A merged (done) worktree IS reaped through the CLI (is_merged stubbed True; the docstring's
+    # done-reap claim, evidenced end-to-end).
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "reg"))
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _init_repo(repo)
+    done_wt, _b = _add_worktree(repo, "done")
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    monkeypatch.setattr(cli.wr, "live_process_count", lambda _p: 0)
+    monkeypatch.setattr(cli.wr, "is_merged", lambda *a, **k: True)  # treat the branch as merged
+    cli.cmd_backfill(argparse.Namespace())
+    cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=0.0))
+    assert not os.path.isdir(str(done_wt))  # done/merged -> reaped

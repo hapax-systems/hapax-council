@@ -185,6 +185,26 @@ if [[ "${HAPAX_WORKTREE_GC_REAP_ORPHANS:-1}" == "1" && -x "$orphan_reaper" ]]; t
     fi
 fi
 
+# Registry-governed pre-pass: this is what makes the DURABLE GC cycle governed by EXPLICIT lifecycle
+# status, not age+clean+merged inference. It registers every worktree (backfill) then reaps the ones
+# the registry classifies done/abandoned — non-live, clean, stale, registered — keeping branches, so a
+# session that stopped working without follow-through is reaped next cycle and the pileup cannot recur.
+# Runs with the BARE system python3 (shared.worktree_registry is stdlib-only, no venv needed). Note: the
+# open-PR signal needs `gh`; when it is unavailable (this systemd unit carries no GH_TOKEN) classify
+# fails CLOSED — only `done`/merged lanes are reaped, abandoned lanes are kept until a gh-capable run.
+# Env-gated (on by default); never blocks the legacy merged-branch + release cleanup below.
+registry_cli="$(dirname "$(readlink -f "$0")")/hapax-worktree-register"
+if [[ "${HAPAX_WORKTREE_GC_REGISTRY:-1}" == "1" && -f "$registry_cli" ]]; then
+    idle_h="${HAPAX_WORKTREE_GC_REGISTRY_IDLE_HOURS:-48}"
+    HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" backfill >/dev/null 2>&1 || true
+    if ((dry_run)); then
+        HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" reap --min-idle-hours "$idle_h" || true
+    else
+        HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" reap --apply --min-idle-hours "$idle_h" \
+            || true
+    fi
+fi
+
 if ((dry_run)); then
     printf 'hapax-worktree-gc: dry-run skips git worktree prune\n'
 else
