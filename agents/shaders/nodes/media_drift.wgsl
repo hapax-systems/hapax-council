@@ -228,6 +228,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let src = sample_projected(in.uv);
     var rgb = src.rgb;
 
+    // Camera receivers pass through clean (operator 2026-06-20): the dampened
+    // (not disabled) camera drift path was injecting a warm/red cast on cam
+    // wards. Mirror the intensity<=0.02 early-return so cameras show the
+    // un-drifted true-color feed; atlas/ticker/oarb/reverie keep drifting.
+    if (is_camera) {
+        return vec4<f32>(rgb, 1.0);
+    }
+
     // ── intensity (cadence-gated) ────────────────────────────────────────────
     let fast_wave = 0.5 + 0.5 * sin(now * (1.70 + S(I_FAST_RATIO) * 1.20) + frame * 0.31);
     let slow_wave = 0.5 + 0.5 * sin(now * (0.17 + S(I_SLOW_RATIO) * 0.18) + frame * 0.043);

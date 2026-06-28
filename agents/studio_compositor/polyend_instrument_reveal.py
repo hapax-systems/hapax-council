@@ -575,10 +575,6 @@ class PolyendInstrumentReveal(HomageTransitionalSource, ActivityRevealMixin):
         pkg = active_package()
         width = max(1.0, float(canvas_w))
         height = max(1.0, float(canvas_h))
-        bg = _colour(pkg, "background", alpha=0.20, fallback=(0.0, 0.0, 0.0, 0.20))
-        cr.set_source_rgba(*bg)
-        cr.rectangle(0.0, 0.0, width, height)
-        cr.fill()
         self._render_waveform(cr, width, height * 0.5, t, pkg)
         self._render_midi_grid(cr, width, height * 0.5, height, pkg)
 
@@ -632,21 +628,8 @@ class PolyendInstrumentReveal(HomageTransitionalSource, ActivityRevealMixin):
         grid_h = max(1.0, height - y0)
         cell_w = width / 16.0
         cell_h = grid_h / 8.0
-        grid = _colour(pkg, "muted", alpha=0.18, fallback=(0.6, 0.6, 0.6, 0.18))
         lit = _colour(pkg, "accent_magenta", alpha=0.86, fallback=(1.0, 0.0, 0.75, 0.86))
         hot = _colour(pkg, "accent_yellow", alpha=0.76, fallback=(1.0, 0.95, 0.2, 0.76))
-
-        cr.set_source_rgba(*grid)
-        cr.set_line_width(1.0)
-        for col in range(17):
-            x = col * cell_w
-            cr.move_to(x, y0)
-            cr.line_to(x, height)
-        for row in range(9):
-            y = y0 + row * cell_h
-            cr.move_to(0.0, y)
-            cr.line_to(width, y)
-        cr.stroke()
 
         now = time.monotonic()
         for event in self._midi_subscriber.snapshot():

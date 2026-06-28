@@ -998,95 +998,16 @@ class CodingSessionReveal(HomageTransitionalSource, ActivityRevealMixin):
         alpha: float,
         t: float,
     ) -> None:
-        """Render a privacy-safe visual substrate when no session text is visible."""
-        import cairo
+        """Idle state renders nothing — no decorative substrate.
 
-        from agents.studio_compositor.homage.rendering import active_package
-
-        pkg = active_package()
-        bg = pkg.palette.background
-        muted = pkg.palette.muted
-        warm = pkg.palette.accent_yellow
-        accent = pkg.palette.accent_cyan
-        w = max(1, canvas_w)
-        h = max(1, canvas_h)
-        a = max(0.0, min(1.0, alpha))
-        metadata = snap.metadata
-        churn = min(1.0, (metadata.churn_lpm if metadata else 0.0) / 120.0)
-        branch_seed = 0
-        if metadata and metadata.branch_glyph:
-            branch_seed = sum(ord(ch) for ch in metadata.branch_glyph)
-
-        cr.save()
-        cr.rectangle(0, 0, w, h)
-        cr.clip()
-        grad = cairo.LinearGradient(0, 0, w, h)
-        grad.add_color_stop_rgba(0.0, bg[0] * 0.34, bg[1] * 0.34, bg[2] * 0.46, 0.82 * a)
-        grad.add_color_stop_rgba(
-            0.62,
-            accent[0] * 0.10 + warm[0] * 0.04,
-            accent[1] * 0.12 + warm[1] * 0.04,
-            accent[2] * 0.16,
-            0.64 * a,
-        )
-        grad.add_color_stop_rgba(
-            1.0,
-            muted[0] * 0.20 + warm[0] * 0.06,
-            muted[1] * 0.22 + warm[1] * 0.06,
-            muted[2] * 0.24,
-            0.58 * a,
-        )
-        cr.set_source(grad)
-        cr.paint()
-
-        step_x = max(42.0, w / 11.0)
-        step_y = max(32.0, h / 12.0)
-        cr.set_line_width(max(1.0, min(w, h) * 0.0035))
-        for idx in range(1, 12):
-            phase = _idle_phase(t, idx + branch_seed % 7)
-            x = idx * step_x + math.sin(t * 0.18 + idx) * step_x * 0.18
-            if x >= w:
-                break
-            cr.set_source_rgba(accent[0], accent[1], accent[2], (0.045 + phase * 0.06) * a)
-            cr.move_to(x, 0)
-            cr.line_to(x + math.sin(t * 0.11 + idx) * 20.0, h)
-            cr.stroke()
-        for idx in range(1, 13):
-            phase = _idle_phase(t, idx + 19)
-            y = idx * step_y
-            if y >= h:
-                break
-            cr.set_source_rgba(muted[0], muted[1], muted[2], (0.050 + phase * 0.055) * a)
-            cr.move_to(0, y)
-            cr.line_to(w, y + math.cos(t * 0.13 + idx) * 14.0)
-            cr.stroke()
-
-        cr.set_line_width(max(1.0, min(w, h) * 0.010))
-        for idx in range(4):
-            phase = _idle_phase(t, idx + branch_seed % 11)
-            cx = w * (0.22 + idx * 0.17) + math.sin(t * 0.21 + idx) * w * 0.035
-            cy = h * (0.35 + math.cos(t * 0.17 + idx) * 0.12)
-            rx = w * (0.07 + churn * 0.025 + phase * 0.018)
-            ry = h * (0.045 + phase * 0.015)
-            cr.set_source_rgba(warm[0], warm[1], warm[2], (0.065 + phase * 0.085) * a)
-            cr.save()
-            cr.translate(cx, cy)
-            cr.scale(max(1.0, rx), max(1.0, ry))
-            cr.arc(0, 0, 1.0, 0, math.tau)
-            cr.stroke()
-            cr.restore()
-
-        band_count = 6
-        band_h = max(3.0, h * 0.012)
-        for idx in range(band_count):
-            phase = _idle_phase(t, idx + 31)
-            width = w * (0.16 + churn * 0.10 + phase * 0.08)
-            x = (t * (12.0 + churn * 36.0) + idx * w / band_count) % (w + width) - width
-            y = h * (0.82 + idx * 0.018)
-            cr.set_source_rgba(accent[0], accent[1], accent[2], (0.12 + phase * 0.14) * a)
-            cr.rectangle(x, y, width, band_h)
-            cr.fill()
-        cr.restore()
+        Per operator directive 2026-06-21 ("no grid panels at all") the
+        idle scaffold (gradient wash, diagonal/horizontal grid lines,
+        ellipse framing, and scrolling bottom bands) is removed. When no
+        session text is visible the ward shows nothing and the atlas-clear
+        near-black floats on the void; content appears only via
+        :meth:`_render_session`.
+        """
+        del cr, canvas_w, canvas_h, snap, alpha, t
 
     def _render_session(
         self,
@@ -1101,25 +1022,11 @@ class CodingSessionReveal(HomageTransitionalSource, ActivityRevealMixin):
         from agents.studio_compositor.homage.rendering import active_package
 
         pkg = active_package()
-        bg = pkg.palette.background
         muted = pkg.palette.muted
-        warm = pkg.palette.accent_yellow
         accent = pkg.palette.accent_cyan
-        commits = metadata.commits_since_main if metadata else 0
-        warm_shift = min(1.0, commits / 5.0) * 0.18
-        bg_rgba = (
-            bg[0] * (1.0 - warm_shift) + warm[0] * warm_shift,
-            bg[1] * (1.0 - warm_shift) + warm[1] * warm_shift,
-            bg[2] * (1.0 - warm_shift) + warm[2] * warm_shift,
-            min(bg[3], 0.88) * alpha,
-        )
-
-        cr.save()
-        cr.set_source_rgba(*bg_rgba)
-        cr.rectangle(0, 0, canvas_w, canvas_h)
-        cr.fill()
-        cr.restore()
-
+        # Decorative backing fill removed (operator directive 2026-06-21:
+        # "no grid panels at all"). Terminal text renders directly on the
+        # atlas-cleared void; only glyph (muted) + PR-dot (accent) tints remain.
         glyph = (session.glyph or (metadata.branch_glyph if metadata else ""))[:4]
         if glyph:
             glyph_style = TextStyle(

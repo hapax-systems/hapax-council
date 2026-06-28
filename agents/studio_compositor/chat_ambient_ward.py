@@ -131,16 +131,6 @@ def _draw_pango(
     return float(w)
 
 
-def _paint_flat_bg(cr: cairo.Context, w: float, h: float, pkg: HomagePackage) -> None:
-    """Flat CP437-style background — sharp rectangle, no chrome."""
-    r, g, b, a = pkg.resolve_colour("background")
-    cr.save()
-    cr.set_source_rgba(r, g, b, a)
-    cr.rectangle(0, 0, w, h)
-    cr.fill()
-    cr.restore()
-
-
 def _blend(
     base: tuple[float, float, float, float],
     target: tuple[float, float, float, float],
@@ -300,7 +290,6 @@ class ChatAmbientWard(HomageTransitionalSource):
                 counters = self._coerce_counters(filtered)
 
         pkg = get_active_package() or _fallback_package()
-        _paint_flat_bg(cr, float(canvas_w), float(canvas_h), pkg)
 
         muted = pkg.resolve_colour("muted")
         bright = pkg.resolve_colour("bright")
