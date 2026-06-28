@@ -39,8 +39,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "pydantic>=2.0",
-    "pyyaml>=6.0",
+    "pydantic>=2.13.4",
+    "pyyaml>=6.0.3",
 ]
 
 [project.urls]
@@ -54,8 +54,8 @@ hapax-axioms = "hapax_axioms.cli:main"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=9.0.2",
-    "ruff>=0.14.0",
+    "pytest>=9.1.1",
+    "ruff>=0.15.20",
 ]
 
 [tool.hatch.build.targets.wheel]
