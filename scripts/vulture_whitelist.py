@@ -4581,3 +4581,29 @@ _ = (
     resolve_capability,
     utilization,
 )
+
+# worktree registry surface — shared.worktree_registry's lifecycle API is called by
+# scripts/hapax-worktree-register (an extensionless script vulture cannot scan) + the
+# test suite + the pending P2 reaper / P3 heartbeat / P4 creation-contract integration,
+# not a static .py caller. cc-task-worktree-registry-lifecycle-20260628.
+from shared.worktree_registry import (
+    deregister,  # noqa: E402
+    is_clean,  # noqa: E402
+    is_infra_path,  # noqa: E402
+    is_merged,  # noqa: E402
+    list_records,  # noqa: E402
+    live_process_count,  # noqa: E402
+    set_status,  # noqa: E402
+    should_reap_worktree,  # noqa: E402
+)
+
+_ = (
+    deregister,
+    is_clean,
+    is_infra_path,
+    is_merged,
+    list_records,
+    live_process_count,
+    set_status,
+    should_reap_worktree,
+)

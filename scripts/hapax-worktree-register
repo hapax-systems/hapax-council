@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""hapax-worktree-register — explicit lifecycle status for git worktrees.
+
+Subcommands:
+  list                 derive + print every worktree's status (no writes)
+  backfill             register every current worktree with its derived status
+  register <path>      register/refresh one worktree (--role --branch --task --pr --session)
+  heartbeat <path>     stamp last_heartbeat (the "still being worked" signal)
+  reap [--apply]       remove non-live + clean checkouts (branches PRESERVED unless merged)
+
+The registry makes "abandoned vs paused" KNOWABLE: a checkout with no live owner and no
+unsaved work is disposable (a green PR merges server-side without its worktree). Reap keeps
+the branch + commits in .git for everything except merged (done) branches, so it is
+non-destructive and reversible via `git worktree add`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+
+def _bootstrap() -> None:
+    here = Path(__file__).resolve().parents[1]
+    cands = [here]
+    env = os.environ.get("HAPAX_WORKTREE_GC_REPO")
+    if env:
+        cands.append(Path(env))
+    cands.append(Path.home() / "projects" / "hapax-council")
+    cands.append(Path.home() / ".cache" / "hapax" / "source-activation" / "worktree")
+    for c in cands:
+        if (c / "shared" / "worktree_registry.py").exists():
+            if str(c) not in sys.path:
+                sys.path.insert(0, str(c))
+            return
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+
+
+_bootstrap()
+
+from shared import worktree_registry as wr  # noqa: E402
+
+CANONICAL = os.environ.get(
+    "HAPAX_WORKTREE_GC_REPO", str(Path.home() / "projects" / "hapax-council")
+)
+SELF = os.environ.get("HAPAX_WORKTREE_SELF", "")
+
+
+def _worktrees(repo: str) -> list[dict]:
+    out = subprocess.run(
+        ["git", "-C", repo, "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    items: list[dict] = []
+    cur: dict = {}
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            if cur:
+                items.append(cur)
+            cur = {"path": line[9:], "branch": None, "head": None}
+        elif line.startswith("branch "):
+            cur["branch"] = line[7:].removeprefix("refs/heads/")
+        elif line.startswith("HEAD "):
+            cur["head"] = line[5:]
+    if cur:
+        items.append(cur)
+    return items
+
+
+def _open_pr_branches() -> set[str] | None:
+    res = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--limit",
+            "300",
+            "--json",
+            "headRefName",
+            "-q",
+            ".[].headRefName",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if res.returncode != 0:
+        return None
+    return set(res.stdout.split())
+
+
+def _probe(wt: dict, open_prs: set[str] | None) -> dict | None:
+    path = wt["path"]
+    branch = wt["branch"]
+    if not os.path.isdir(path):
+        return None
+    real = os.path.realpath(path)
+    infra = wr.is_infra_path(path, canonical=CANONICAL)
+    live = wr.live_process_count(real) > 0
+    clean = wr.is_clean(path)
+    merged = wr.is_merged(CANONICAL, branch) if branch else False
+    has_pr = bool(open_prs is not None and branch and branch in open_prs)
+    rec = wr.load(path)
+    hb_age = None
+    if rec is not None:
+        hb_age = (datetime.now(UTC) - rec.last_heartbeat).total_seconds()
+    status = wr.classify(
+        is_infra=infra,
+        live=live,
+        clean=clean,
+        merged=merged,
+        heartbeat_age_s=hb_age,
+        abandoned_after_s=wr.DEFAULT_ABANDONED_AFTER_S,
+        has_open_pr=has_pr,
+    )
+    return {
+        "path": path,
+        "branch": branch,
+        "infra": infra,
+        "live": live,
+        "clean": clean,
+        "merged": merged,
+        "has_pr": has_pr,
+        "status": status,
+    }
+
+
+def cmd_list(_args: argparse.Namespace) -> int:
+    open_prs = _open_pr_branches()
+    if open_prs is None:
+        print("(gh unavailable — PR signal degraded; status uses git/proc/heartbeat only)")
+    for wt in _worktrees(CANONICAL):
+        p = _probe(wt, open_prs)
+        if p is None:
+            print(f"  gone       {wt['path']}")
+            continue
+        print(
+            f"  {p['status']:<9} live={int(p['live'])} clean={int(p['clean'])} "
+            f"merged={int(p['merged'])} pr={int(p['has_pr'])}  {p['path']} [{p['branch'] or '-'}]"
+        )
+    return 0
+
+
+def cmd_backfill(_args: argparse.Namespace) -> int:
+    open_prs = _open_pr_branches()
+    n = 0
+    for wt in _worktrees(CANONICAL):
+        p = _probe(wt, open_prs)
+        if p is None:
+            continue
+        wr.register(p["path"], branch=p["branch"], status=p["status"])
+        n += 1
+    print(f"backfilled {n} worktree registrations -> {wr.registry_dir()}")
+    return 0
+
+
+def cmd_register(args: argparse.Namespace) -> int:
+    wr.register(
+        os.path.realpath(args.path),
+        role=args.role,
+        branch=args.branch,
+        session_id=args.session,
+        task_id=args.task,
+        pr=args.pr,
+    )
+    print(f"registered {args.path}")
+    return 0
+
+
+def cmd_heartbeat(args: argparse.Namespace) -> int:
+    rec = wr.heartbeat(os.path.realpath(args.path))
+    print("heartbeat ok" if rec else "no registration for that path")
+    return 0 if rec else 1
+
+
+def cmd_reap(args: argparse.Namespace) -> int:
+    open_prs = _open_pr_branches()
+    reaped = kept = 0
+    for wt in _worktrees(CANONICAL):
+        p = _probe(wt, open_prs)
+        if p is None:
+            continue
+        if SELF and os.path.realpath(p["path"]) == os.path.realpath(SELF):
+            kept += 1
+            print(f"KEEP self        {p['path']}")
+            continue
+        if not wr.should_reap_worktree(is_infra=p["infra"], live=p["live"], clean=p["clean"]):
+            kept += 1
+            continue
+        label = "done/merged" if p["merged"] else ("merging" if p["has_pr"] else "abandoned")
+        if not args.apply:
+            tail = " +branch-D" if p["merged"] else " (branch kept)"
+            print(f"REAP? {label:<11} {p['path']} [{p['branch'] or '-'}]{tail}")
+            reaped += 1
+            continue
+        r = subprocess.run(
+            ["git", "-C", CANONICAL, "worktree", "remove", p["path"]],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if r.returncode != 0:
+            print(f"FAIL remove      {p['path']}: {r.stderr.strip()[:90]}")
+            continue
+        wr.deregister(p["path"])
+        reaped += 1
+        if p["merged"] and p["branch"]:
+            subprocess.run(
+                ["git", "-C", CANONICAL, "branch", "-D", p["branch"]],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            print(f"REAP {label:<11} {p['path']} [{p['branch']}] +branch-D")
+        else:
+            print(f"REAP {label:<11} {p['path']} [{p['branch'] or '-'}] (branch kept)")
+    print(f"--- reap{'ed' if args.apply else '?'}={reaped} kept={kept}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="hapax-worktree-register")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list").set_defaults(fn=cmd_list)
+    sub.add_parser("backfill").set_defaults(fn=cmd_backfill)
+    rp = sub.add_parser("register")
+    rp.add_argument("path")
+    rp.add_argument("--role")
+    rp.add_argument("--branch")
+    rp.add_argument("--session")
+    rp.add_argument("--task")
+    rp.add_argument("--pr", type=int)
+    rp.set_defaults(fn=cmd_register)
+    hp = sub.add_parser("heartbeat")
+    hp.add_argument("path")
+    hp.set_defaults(fn=cmd_heartbeat)
+    rep = sub.add_parser("reap")
+    rep.add_argument("--apply", action="store_true")
+    rep.set_defaults(fn=cmd_reap)
+    args = ap.parse_args(argv)
+    return int(args.fn(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
