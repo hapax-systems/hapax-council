@@ -400,6 +400,17 @@ class _FakeRunner:
         self.calls.append(list(cmd))
         if cmd[:3] == ["gh", "pr", "list"]:
             return subprocess.CompletedProcess(cmd, 0, json.dumps(self.open_prs), "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            pr_number = int(cmd[3])
+            pr = next((item for item in self.open_prs if item.get("number") == pr_number), None)
+            if pr is None:
+                return subprocess.CompletedProcess(cmd, 1, "", "PR not found")
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps({"headRefOid": pr.get("headRefOid")}),
+                "",
+            )
         if cmd[:3] == ["gh", "api", "graphql"] and any(
             "dequeuePullRequest" in part for part in cmd
         ):
@@ -1655,6 +1666,23 @@ def _governance_mitigation_checks() -> list[dict[str, Any]]:
     ]
 
 
+def test_summarize_checks_keeps_admission_context_as_verified_mitigation() -> None:
+    summary = autoqueue.summarize_checks(
+        [
+            _check(autoqueue.AUTOQUEUE_ADMISSION_CONTEXT),
+            _check("governance-gate"),
+            _check("pr-admission"),
+            _check("review"),
+        ]
+    )
+
+    assert autoqueue.AUTOQUEUE_ADMISSION_CONTEXT in summary.verified_passed
+    assert "review" in summary.verified_passed
+    assert "governance-gate" not in summary.verified_passed
+    assert "pr-admission" not in summary.verified_passed
+    assert autoqueue.AUTOQUEUE_ADMISSION_CONTEXT not in summary.passed
+
+
 def test_auto_arms_release_unauthorized_pr_open_task(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     note = _write_task(
@@ -1681,16 +1709,31 @@ def test_auto_arms_release_unauthorized_pr_open_task(tmp_path: Path) -> None:
     assert "release_authorized: true" in armed
     assert "release_authorized: false" not in armed
     assert "stage: S7_RELEASE" in armed
+    assert "release_authorized_head_sha: sha-701" in armed
+    assert "release_authorized_head_ref: feat/701" in armed
     assert "release auto-arm (system)" in armed
-    assert ["gh", "pr", "merge", "701", "--repo", "owner/repo", "--auto", "--squash"] in (
-        runner.calls
-    )
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "701",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-701",
+    ] in runner.calls
     decision = next(d for d in report["decisions"] if d["pr"] == 701)
     assert decision["action"] == "queue"
     assert decision["auto_arm"] is True
     record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
     assert record["kind"] == "release_auto_arm"
     assert record["task_id"] == "stranded-eligible"
+    assert record["pr_head_sha"] == "sha-701"
+    assert record["pr_head_ref"] == "feat/701"
+    assert record["verified_checks_head_sha"] == "sha-701"
+    assert record["autoqueue_admission_head_sha"] == "sha-701"
 
 
 def test_holds_governance_sensitive_task_without_mitigation_evidence(tmp_path: Path) -> None:
@@ -1785,14 +1828,29 @@ def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
 
     armed = note.read_text(encoding="utf-8")
     assert "release_authorized: true" in armed
+    assert "release_authorized_head_sha: sha-708" in armed
+    assert "release_authorized_head_ref: feat/708" in armed
     assert "stage: S7_RELEASE" in armed
-    assert ["gh", "pr", "merge", "708", "--repo", "owner/repo", "--auto", "--squash"] in (
-        runner.calls
-    )
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "708",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-708",
+    ] in runner.calls
     decision = next(d for d in report["decisions"] if d["pr"] == 708)
     assert decision["action"] == "queue"
     assert decision["auto_arm"] is True
     record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+    assert record["pr_head_sha"] == "sha-708"
+    assert record["pr_head_ref"] == "feat/708"
+    assert record["verified_checks_head_sha"] == "sha-708"
+    assert record["autoqueue_admission_head_sha"] == "sha-708"
     assert set(record["verified_checks"]) >= {
         "authority-case-check",
         autoqueue.AUTOQUEUE_ADMISSION_CONTEXT,
@@ -2604,6 +2662,102 @@ def test_arm_release_for_task_revalidates_current_note_identity(tmp_path: Path) 
     assert not ledger.exists()
 
 
+def test_arm_release_for_task_allows_branch_match_when_pr_field_missing(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-branch-only",
+        status="pr_open",
+        pr=None,
+        branch="feature/branch-only",
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    ledger = tmp_path / "ledger.jsonl"
+
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=ledger,
+        pr_number=None,
+        head_ref="feature/branch-only",
+    )
+
+    assert ok is True
+    assert message == "release auto-armed stranded-branch-only"
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: true" in current
+    assert "release_authorized_head_ref: feature/branch-only" in current
+    assert ledger.exists()
+
+
+def test_arm_release_for_task_revalidates_current_pr_head_sha(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-repointed-head",
+        status="pr_open",
+        pr=726,
+        branch="feat/726",
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(726, branch="feat/726")]
+    ledger = tmp_path / "ledger.jsonl"
+
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=ledger,
+        pr_number=726,
+        head_ref="feat/726",
+        expected_head_sha="sha-before-force-push",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is False
+    assert message == "current_pr_head_mismatch:current=sha-726:expected=sha-before-force-push"
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    assert "stage: S7_RELEASE" not in current
+    assert not ledger.exists()
+
+
+def test_release_authorized_head_mismatch_blocks_later_admission(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="already-armed-stale-head",
+        status="pr_open",
+        pr=727,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-before-force-push",
+            "stage": "S7_RELEASE",
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(727)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decision = next(item for item in report["decisions"] if item["pr"] == 727)
+    assert decision["action"] == "blocked"
+    assert (
+        "release_authorized_head_mismatch:authorized=sha-before-force-push:current=sha-727"
+        in decision["reasons"]
+    )
+    assert not any(call[:4] == ["gh", "pr", "merge", "727"] for call in runner.calls)
+
+
 def test_arm_release_for_task_reports_note_read_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2701,9 +2855,18 @@ def test_auto_arms_pass_backed_runtime_secret_subscription_task(tmp_path: Path) 
     armed = note.read_text(encoding="utf-8")
     assert "release_authorized: true" in armed
     assert "stage: S7_RELEASE" in armed
-    assert ["gh", "pr", "merge", "706", "--repo", "owner/repo", "--auto", "--squash"] in (
-        runner.calls
-    )
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "706",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-706",
+    ] in runner.calls
     decision = next(d for d in report["decisions"] if d["pr"] == 706)
     assert decision["action"] == "queue"
     assert decision["auto_arm"] is True

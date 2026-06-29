@@ -744,6 +744,31 @@ def fetch_open_prs(
     return prs
 
 
+def fetch_pr_head_sha(
+    pr_number: int,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> tuple[bool, str]:
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    cmd = ["gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "headRefOid"]
+    proc = runner(cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60)
+    output = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode != 0:
+        return False, output or f"gh pr view failed rc={proc.returncode}"
+    try:
+        payload = json.loads(output or "{}")
+    except json.JSONDecodeError:
+        sha = output
+    else:
+        sha = _scalar(payload.get("headRefOid")) if isinstance(payload, dict) else None
+    if not sha:
+        return False, "missing_head_sha"
+    return True, sha
+
+
 def fetch_merge_queue_pr_numbers(
     *,
     repo: str = DEFAULT_REPO,
@@ -883,6 +908,27 @@ def _matching_tasks(pr: PullRequest, tasks: list[TaskNote]) -> list[TaskNote]:
     return [task for task in tasks if task.branch == pr.head_ref]
 
 
+def _release_authorized_head_blockers(
+    frontmatter: dict[str, Any],
+    *,
+    pr_head_sha: str | None,
+) -> tuple[str, ...]:
+    assessment = assess_release_auto_arm(frontmatter)
+    if not assessment.armed:
+        return ()
+    authorized_head_sha = _scalar(frontmatter.get("release_authorized_head_sha"))
+    if not authorized_head_sha:
+        return ()
+    if not pr_head_sha:
+        return ("release_authorized_head_unavailable",)
+    if authorized_head_sha != pr_head_sha:
+        return (
+            f"release_authorized_head_mismatch:"
+            f"authorized={authorized_head_sha}:current={pr_head_sha}",
+        )
+    return ()
+
+
 def _task_blockers(
     task: TaskNote,
     *,
@@ -950,6 +996,8 @@ def _task_blockers(
         release_arm = assess_release_auto_arm(task.frontmatter)
         if release_arm.needs_arming and not allow_release_auto_arm:
             blockers.append("release_authorized_false")
+
+    blockers.extend(_release_authorized_head_blockers(task.frontmatter, pr_head_sha=pr_head_sha))
 
     avsdlc_gate = evaluate_avsdlc_release_gate(task.frontmatter)
     blockers.extend(f"avsdlc_release_gate:{blocker}" for blocker in avsdlc_gate.blockers)
@@ -1294,6 +1342,8 @@ def merge_pr(
         # Re-arming an already-armed PR is a no-op; `--squash` matches the queue's
         # configured merge method.
         cmd.extend(["--auto", "--squash"])
+        if decision.auto_arm and decision.pr.head_sha:
+            cmd.extend(["--match-head-commit", decision.pr.head_sha])
     elif decision.action == "disable_auto_merge":
         cmd.append("--disable-auto")
     elif decision.action != "dequeue":
@@ -1364,6 +1414,8 @@ def _append_release_auto_arm_ledger(
     now_iso: str,
     role: str,
     frontmatter: dict[str, Any] | None = None,
+    pr_head_sha: str | None = None,
+    pr_head_ref: str | None = None,
     verified_checks: set[str] | None = None,
     pre_arm_assessment: ReleaseAutoArmAssessment | None = None,
     post_arm_assessment: ReleaseAutoArmAssessment | None = None,
@@ -1394,6 +1446,12 @@ def _append_release_auto_arm_ledger(
         "pr": task.pr,
         "note": str(task.path),
     }
+    if pr_head_sha:
+        record["pr_head_sha"] = pr_head_sha
+        record["verified_checks_head_sha"] = pr_head_sha
+        record["autoqueue_admission_head_sha"] = pr_head_sha
+    if pr_head_ref:
+        record["pr_head_ref"] = pr_head_ref
     if verified_checks is not None:
         record["verified_checks"] = sorted(verified_checks)
     if pre_arm_assessment is not None:
@@ -1424,6 +1482,10 @@ def arm_release_for_task(
     verified_checks: set[str] | None = None,
     pr_number: int | None = None,
     head_ref: str | None = None,
+    expected_head_sha: str | None = None,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
 ) -> tuple[bool, str]:
     """Authorize release for a stranded task on behalf of a dead lane (system).
 
@@ -1447,6 +1509,22 @@ def arm_release_for_task(
     )
     if admission_blockers:
         return False, "current_task_not_admissible:" + ",".join(admission_blockers)
+    if expected_head_sha and pr_number is None:
+        return False, "current_pr_head_unverifiable:missing_pr_number"
+    if expected_head_sha:
+        head_ok, current_head_sha = fetch_pr_head_sha(
+            pr_number,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+        )
+        if not head_ok:
+            return False, f"current_pr_head_unreadable:{current_head_sha}"
+        if current_head_sha != expected_head_sha:
+            return (
+                False,
+                f"current_pr_head_mismatch:current={current_head_sha}:expected={expected_head_sha}",
+            )
     pre_arm_assessment = assess_release_auto_arm(
         current_frontmatter, verified_checks=verified_checks
     )
@@ -1455,7 +1533,13 @@ def arm_release_for_task(
             return True, "note_unchanged"
         reasons = ",".join(pre_arm_assessment.blockers or ("not_eligible",))
         return False, f"release_auto_arm_ineligible:{reasons}"
-    armed = apply_release_auto_arm(text, now_iso=now_iso, role=role)
+    armed = apply_release_auto_arm(
+        text,
+        now_iso=now_iso,
+        role=role,
+        head_sha=expected_head_sha,
+        head_ref=head_ref,
+    )
     if armed == text:
         return False, "note_unchanged"
     try:
@@ -1471,6 +1555,8 @@ def arm_release_for_task(
         now_iso=now_iso,
         role=role,
         frontmatter=current_frontmatter,
+        pr_head_sha=expected_head_sha,
+        pr_head_ref=head_ref,
         verified_checks=verified_checks,
         pre_arm_assessment=pre_arm_assessment,
         post_arm_assessment=post_arm_assessment,
@@ -1685,17 +1771,27 @@ def _release_auto_arm_fail_closed_mutations(
         now=now,
     )
     if fail_status_result is not None:
-        assert fail_status is not None
-        ok, status_message = fail_status_result
-        results.append(
-            {
-                **fail_decision.as_dict(),
-                "action": "set_admission_status",
-                "status_state": fail_status[0],
-                "ok": ok,
-                "message": status_message,
-            }
-        )
+        if fail_status is None:
+            results.append(
+                {
+                    **fail_decision.as_dict(),
+                    "action": "set_admission_status",
+                    "status_state": "missing",
+                    "ok": False,
+                    "message": "missing_fail_closed_admission_status",
+                }
+            )
+        else:
+            ok, status_message = fail_status_result
+            results.append(
+                {
+                    **fail_decision.as_dict(),
+                    "action": "set_admission_status",
+                    "status_state": fail_status[0],
+                    "ok": ok,
+                    "message": status_message,
+                }
+            )
     if fail_decision.action in {"dequeue", "disable_auto_merge"}:
         ok, merge_message = _remove_admitted_pr_for_release_auto_arm_failure(
             fail_decision,
@@ -1960,6 +2056,10 @@ def run_reconciler(
                         verified_checks=set(decision.auto_arm_verified_checks),
                         pr_number=decision.pr.number,
                         head_ref=decision.pr.head_ref,
+                        expected_head_sha=decision.pr.head_sha,
+                        repo=repo,
+                        repo_root=repo_root,
+                        runner=runner,
                     )
                     auto_arm_ok = _release_auto_arm_write_ok(armed_ok, armed_message)
                     mutation_results.append(
@@ -2011,6 +2111,10 @@ def run_reconciler(
                     verified_checks=set(decision.auto_arm_verified_checks),
                     pr_number=decision.pr.number,
                     head_ref=decision.pr.head_ref,
+                    expected_head_sha=decision.pr.head_sha,
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
                 )
                 auto_arm_ok = _release_auto_arm_write_ok(armed_ok, armed_message)
                 if not auto_arm_ok:

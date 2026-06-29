@@ -467,7 +467,10 @@ SENSITIVE_RISK_FLAGS = (
 #: Emergency recovery for miswired evidence producers is the autoqueue killswitch
 #: (`HAPAX_CC_PR_AUTOQUEUE_OFF=1` or `HAPAX_CC_HYGIENE_OFF=1`) while the check
 #: wiring is repaired; the killswitch pauses admission and is not a manual release
-#: arm. Recheck the pause before retrying autoqueue with:
+#: arm. Recheck the pause before retrying autoqueue with that environment check
+#: and the executable reader in `scripts/cc-pr-autoqueue.py` (`KILLSWITCH_ENVS`;
+#: `run_reconciler` returns a killed report before any admission mutation).
+#: One-off shell check:
 #: `env | grep -E '^(HAPAX_CC_PR_AUTOQUEUE_OFF|HAPAX_CC_HYGIENE_OFF)=1$'`.
 RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # A governance-sensitive change auto-arms only after the local review dossier
@@ -800,13 +803,16 @@ def apply_release_auto_arm(
     *,
     now_iso: str,
     role: str = "autoqueue-system",
+    head_sha: str | None = None,
+    head_ref: str | None = None,
 ) -> str:
     """Return ``note_text`` with the system release-arming applied to frontmatter.
 
     Sets ``release_authorized: true``, advances ``stage`` to ``S7_RELEASE`` when
-    it is below S7 or absent, refreshes ``updated_at``, and appends a single
-    audit line to the body. Pure text transform — file IO and the authority-case
-    ledger append are the caller's responsibility.
+    it is below S7 or absent, records the authorized PR head when supplied,
+    refreshes ``updated_at``, and appends a single audit line to the body. Pure
+    text transform — file IO and the authority-case ledger append are the
+    caller's responsibility.
     """
 
     if not note_text.startswith("---"):
@@ -822,6 +828,18 @@ def apply_release_auto_arm(
         )
     else:
         front = front.rstrip("\n") + "\nrelease_authorized: true\n"
+
+    for key, value in (
+        ("release_authorized_head_sha", head_sha),
+        ("release_authorized_head_ref", head_ref),
+    ):
+        if not value:
+            continue
+        line = yaml.safe_dump({key: value}, sort_keys=False).strip()
+        if re.search(rf"(?m)^{re.escape(key)}:", front):
+            front = re.sub(rf"(?m)^{re.escape(key)}:\s*.*$", line, front, count=1)
+        else:
+            front = front.rstrip("\n") + f"\n{line}\n"
 
     stage_match = re.search(r"(?m)^stage:\s*(.*)$", front)
     if stage_match:
