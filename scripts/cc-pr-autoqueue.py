@@ -901,6 +901,28 @@ def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
     return notes
 
 
+def _task_note_with_frontmatter(task: TaskNote, frontmatter: dict[str, Any]) -> TaskNote:
+    return TaskNote(
+        task_id=_scalar(frontmatter.get("task_id")) or task.task_id,
+        path=task.path,
+        folder=task.folder,
+        status=(_scalar(frontmatter.get("status")) or "").lower(),
+        pr=_int_or_none(frontmatter.get("pr")),
+        branch=_scalar(frontmatter.get("branch")),
+        authority_case=_scalar(frontmatter.get("authority_case") or frontmatter.get("case_id")),
+        parent_spec=_scalar(frontmatter.get("parent_spec")),
+        route_metadata_schema=_int_or_none(frontmatter.get("route_metadata_schema")),
+        priority=(_scalar(frontmatter.get("priority")) or "").lower() or None,
+        kind=(_scalar(frontmatter.get("kind")) or "").lower() or None,
+        tags=tuple(tag.lower() for tag in _string_tuple(frontmatter.get("tags"))),
+        queue_admission=((_scalar(frontmatter.get("queue_admission")) or "").lower() or None),
+        assigned_to=_scalar(frontmatter.get("assigned_to")),
+        lane_affinity=_scalar(frontmatter.get("lane_affinity")),
+        epic_serialize=_scalar(frontmatter.get("epic_serialize")),
+        frontmatter=dict(frontmatter),
+    )
+
+
 def _matching_tasks(pr: PullRequest, tasks: list[TaskNote]) -> list[TaskNote]:
     by_pr = [task for task in tasks if task.pr == pr.number]
     if by_pr:
@@ -1556,6 +1578,9 @@ def arm_release_for_task(
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
+    require_route_metadata: bool = True,
+    changed_files: tuple[str, ...] | None = None,
+    changed_file_count: int | None = None,
 ) -> tuple[bool, str]:
     """Authorize release for a stranded task on behalf of a dead lane (system).
 
@@ -1579,6 +1604,18 @@ def arm_release_for_task(
     )
     if admission_blockers:
         return False, "current_task_not_admissible:" + ",".join(admission_blockers)
+    current_task = _task_note_with_frontmatter(task, current_frontmatter)
+    current_task_blockers = _task_blockers(
+        current_task,
+        require_route_metadata=require_route_metadata,
+        open_pr_number=pr_number,
+        allow_release_auto_arm=True,
+        pr_head_sha=expected_head_sha,
+        changed_files=changed_files,
+        changed_file_count=changed_file_count,
+    )
+    if current_task_blockers:
+        return False, "current_task_gate_blocked:" + ",".join(current_task_blockers)
     if expected_head_sha and pr_number is None:
         return False, "current_pr_head_unverifiable:missing_pr_number"
     if expected_head_sha:
@@ -2090,9 +2127,16 @@ def run_reconciler(
     if apply:
         for decision in decisions:
             admission_status = _admission_status_for(decision)
-            status_result = set_autoqueue_admission_status(
-                decision, repo=repo, repo_root=repo_root, runner=runner, now=now
+            delay_admission_status_until_after_auto_arm = (
+                decision.action
+                not in {"queue", "enable_auto_merge", "disable_auto_merge", "dequeue"}
+                and decision.auto_arm
             )
+            status_result: tuple[bool, str] | None = None
+            if not delay_admission_status_until_after_auto_arm:
+                status_result = set_autoqueue_admission_status(
+                    decision, repo=repo, repo_root=repo_root, runner=runner, now=now
+                )
             if decision.action not in {
                 "queue",
                 "enable_auto_merge",
@@ -2136,6 +2180,9 @@ def run_reconciler(
                         repo=repo,
                         repo_root=repo_root,
                         runner=runner,
+                        require_route_metadata=require_route_metadata,
+                        changed_files=decision.pr.files,
+                        changed_file_count=decision.pr.changed_files_count,
                     )
                     auto_arm_ok = _release_auto_arm_write_ok(armed_ok, armed_message)
                     mutation_results.append(
@@ -2179,6 +2226,35 @@ def run_reconciler(
                             now=now,
                         )
                     )
+                    continue
+                if delay_admission_status_until_after_auto_arm:
+                    status_result = set_autoqueue_admission_status(
+                        decision, repo=repo, repo_root=repo_root, runner=runner, now=now
+                    )
+                    if status_result is not None:
+                        assert admission_status is not None
+                        ok, message = status_result
+                        mutation_results.append(
+                            {
+                                **decision.as_dict(),
+                                "action": "set_admission_status",
+                                "status_state": admission_status[0],
+                                "ok": ok,
+                                "message": message,
+                            }
+                        )
+                        if not ok:
+                            mutation_results.extend(
+                                _release_auto_arm_fail_closed_mutations(
+                                    decision,
+                                    message,
+                                    reason_prefix="admission_status_write_failed",
+                                    repo=repo,
+                                    repo_root=repo_root,
+                                    runner=runner,
+                                    now=now,
+                                )
+                            )
                 continue
             if (
                 decision.action in {"queue", "enable_auto_merge"}
@@ -2213,6 +2289,9 @@ def run_reconciler(
                     repo=repo,
                     repo_root=repo_root,
                     runner=runner,
+                    require_route_metadata=require_route_metadata,
+                    changed_files=decision.pr.files,
+                    changed_file_count=decision.pr.changed_files_count,
                 )
                 auto_arm_ok = _release_auto_arm_write_ok(armed_ok, armed_message)
                 if not auto_arm_ok:
