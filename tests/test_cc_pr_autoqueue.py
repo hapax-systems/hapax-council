@@ -2829,6 +2829,39 @@ def test_arm_release_for_task_rereads_parent_spec_before_write(tmp_path: Path) -
     assert not ledger.exists()
 
 
+def test_arm_release_for_task_rejects_note_no_longer_cc_task(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-retyped-note",
+        status="pr_open",
+        pr=739,
+        branch="feat/739",
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("type: cc-task", "type: note"),
+        encoding="utf-8",
+    )
+    ledger = tmp_path / "ledger.jsonl"
+
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=ledger,
+        pr_number=739,
+        head_ref="feat/739",
+        expected_head_sha="sha-739",
+    )
+
+    assert ok is False
+    assert message == "current_task_gate_blocked:current_task_not_cc_task"
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    assert "stage: S7_RELEASE" not in current
+    assert not ledger.exists()
+
+
 def test_arm_release_for_task_revalidates_current_task_status(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     note = _write_task(
@@ -3206,6 +3239,99 @@ def test_release_head_boundary_revalidates_current_task_gate_before_queue(
         ]
         for item in report["mutations"]
     )
+
+
+def test_release_head_boundary_rejects_note_no_longer_cc_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="already-armed-retyped-before-boundary",
+        status="pr_open",
+        pr=742,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-742",
+            "stage": "S7_RELEASE",
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(742)]
+    original_boundary = autoqueue._release_head_boundary_blocker
+
+    def retype_before_boundary(decision: Any, **kwargs: Any) -> str | None:
+        if decision.pr.number == 742:
+            note.write_text(
+                note.read_text(encoding="utf-8").replace("type: cc-task", "type: note"),
+                encoding="utf-8",
+            )
+        return original_boundary(decision, **kwargs)
+
+    monkeypatch.setattr(autoqueue, "_release_head_boundary_blocker", retype_before_boundary)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert not any(call[:4] == ["gh", "pr", "merge", "742"] for call in runner.calls)
+    assert not any(
+        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-742"]
+        and "state=success" in call
+        for call in runner.calls
+    )
+    assert any(
+        item["pr"] == 742
+        and item["action"] == "release_head_revalidation"
+        and item["ok"] is False
+        and item["message"] == "current_task_gate_blocked:current_task_not_cc_task"
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 742
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        and item["reasons"]
+        == ["release_head_revalidation_failed:current_task_gate_blocked:current_task_not_cc_task"]
+        for item in report["mutations"]
+    )
+
+
+def test_release_head_boundary_rejects_current_note_missing_cc_task_type(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="already-armed-missing-type-before-boundary",
+        status="pr_open",
+        pr=743,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-743",
+            "stage": "S7_RELEASE",
+        },
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("type: cc-task\n", ""),
+        encoding="utf-8",
+    )
+    pr = autoqueue._parse_pr(_pr(743))
+    assert pr is not None
+
+    message = autoqueue._release_head_boundary_blocker(
+        autoqueue.Decision(pr=pr, task=task, tasks=(task,), action="queue")
+    )
+
+    assert message == "current_task_gate_blocked:current_task_not_cc_task"
 
 
 def test_release_head_boundary_revalidates_current_note_before_queue(

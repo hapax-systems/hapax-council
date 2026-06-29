@@ -1447,9 +1447,14 @@ def _release_auto_arm_current_task_gate_blockers(
     changed_files: tuple[str, ...] | None,
     changed_file_count: int | None,
 ) -> tuple[str, ...]:
-    current_task = _task_note_from_frontmatter(task.path, task.folder, frontmatter)
-    if current_task is None:
+    if frontmatter.get("type") != "cc-task":
+        return ("current_task_not_cc_task",)
+    current_task_id = _scalar(frontmatter.get("task_id"))
+    if not current_task_id:
         return ("current_task_missing_task_id",)
+    if current_task_id != task.task_id:
+        return (f"current_task_id_mismatch:current={current_task_id}:expected={task.task_id}",)
+    current_task = _task_note_with_frontmatter(task, frontmatter)
     return tuple(
         _task_blockers(
             current_task,
