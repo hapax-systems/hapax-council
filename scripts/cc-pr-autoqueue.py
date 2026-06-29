@@ -68,6 +68,7 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_blockers,
     apply_release_auto_arm,
     assess_release_auto_arm,
+    frontmatter_from_text,
     release_auto_arm_waivers,
     task_closure_validity,
 )
@@ -1326,10 +1327,21 @@ def _append_release_auto_arm_ledger(
     now_iso: str,
     role: str,
     verified_checks: set[str] | None = None,
-    assessment: ReleaseAutoArmAssessment | None = None,
+    pre_arm_assessment: ReleaseAutoArmAssessment | None = None,
+    post_arm_assessment: ReleaseAutoArmAssessment | None = None,
 ) -> None:
     """Append an audit record for a system release auto-arm. Best-effort."""
     auto_arm_waivers = release_auto_arm_waivers(task.frontmatter)
+
+    def assessment_record(assessment: ReleaseAutoArmAssessment) -> dict[str, Any]:
+        return {
+            "subject": assessment.subject,
+            "armed": assessment.armed,
+            "needs_arming": assessment.needs_arming,
+            "eligible": assessment.eligible,
+            "blockers": list(assessment.blockers),
+        }
+
     record = {
         "ts": now_iso,
         "kind": "release_auto_arm",
@@ -1342,13 +1354,14 @@ def _append_release_auto_arm_ledger(
     }
     if verified_checks is not None:
         record["verified_checks"] = sorted(verified_checks)
-    if assessment is not None:
-        record["release_auto_arm_assessment"] = {
-            "subject": assessment.subject,
-            "armed": assessment.armed,
-            "needs_arming": assessment.needs_arming,
-            "eligible": assessment.eligible,
-            "blockers": list(assessment.blockers),
+    if pre_arm_assessment is not None:
+        record["release_auto_arm_pre_arm_assessment"] = assessment_record(pre_arm_assessment)
+    if post_arm_assessment is not None:
+        record["release_auto_arm_assessment"] = assessment_record(post_arm_assessment)
+        record["release_auto_arm_result"] = {
+            "armed": post_arm_assessment.armed,
+            "armed_at": now_iso,
+            "note_mutated": True,
         }
     if auto_arm_waivers:
         record["auto_arm_waivers"] = list(auto_arm_waivers)
@@ -1377,9 +1390,9 @@ def arm_release_for_task(
     ledger_path = ledger_path or default_authority_case_ledger()
     now = now or datetime.now(UTC)
     now_iso = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    assessment = assess_release_auto_arm(task.frontmatter, verified_checks=verified_checks)
-    if not assessment.eligible:
-        reasons = ",".join(assessment.blockers or ("not_eligible",))
+    pre_arm_assessment = assess_release_auto_arm(task.frontmatter, verified_checks=verified_checks)
+    if not pre_arm_assessment.eligible:
+        reasons = ",".join(pre_arm_assessment.blockers or ("not_eligible",))
         return False, f"release_auto_arm_ineligible:{reasons}"
     try:
         text = task.path.read_text(encoding="utf-8")
@@ -1392,13 +1405,17 @@ def arm_release_for_task(
         task.path.write_text(armed, encoding="utf-8")
     except OSError as exc:
         return False, f"note_write_failed:{exc}"
+    post_arm_assessment = assess_release_auto_arm(
+        frontmatter_from_text(armed), verified_checks=verified_checks
+    )
     _append_release_auto_arm_ledger(
         task,
         ledger_path=ledger_path,
         now_iso=now_iso,
         role=role,
         verified_checks=verified_checks,
-        assessment=assessment,
+        pre_arm_assessment=pre_arm_assessment,
+        post_arm_assessment=post_arm_assessment,
     )
     return True, f"release auto-armed {task.task_id}"
 
@@ -1548,6 +1565,8 @@ def _release_auto_arm_fail_closed_decision(decision: Decision, message: str) -> 
         action = "dequeue"
     elif decision.action == "already_auto_merge_enabled":
         action = "disable_auto_merge"
+    elif decision.action in {"queue", "enable_auto_merge"}:
+        action = "blocked"
     else:
         return None
     return Decision(
@@ -1557,6 +1576,52 @@ def _release_auto_arm_fail_closed_decision(decision: Decision, message: str) -> 
         action=action,
         reasons=(f"release_auto_arm_failed:{message}",),
     )
+
+
+def _release_auto_arm_fail_closed_mutations(
+    decision: Decision,
+    message: str,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    fail_decision = _release_auto_arm_fail_closed_decision(decision, message)
+    if fail_decision is None:
+        return []
+
+    results: list[dict[str, Any]] = []
+    fail_status = _admission_status_for(fail_decision)
+    fail_status_result = set_autoqueue_admission_status(
+        fail_decision,
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+        now=now,
+    )
+    if fail_status_result is not None:
+        assert fail_status is not None
+        ok, status_message = fail_status_result
+        results.append(
+            {
+                **fail_decision.as_dict(),
+                "action": "set_admission_status",
+                "status_state": fail_status[0],
+                "ok": ok,
+                "message": status_message,
+            }
+        )
+    if fail_decision.action in {"dequeue", "disable_auto_merge"}:
+        ok, merge_message = merge_pr(fail_decision, repo=repo, repo_root=repo_root, runner=runner)
+        results.append(
+            {
+                **fail_decision.as_dict(),
+                "ok": ok,
+                "message": merge_message,
+            }
+        )
+    return results
 
 
 def _recent_failed_non_ready_merge_group_runs(
@@ -1803,40 +1868,16 @@ def run_reconciler(
                         }
                     )
                     if not armed_ok:
-                        fail_decision = _release_auto_arm_fail_closed_decision(
-                            decision, armed_message
-                        )
-                        if fail_decision is not None:
-                            fail_status = _admission_status_for(fail_decision)
-                            fail_status_result = set_autoqueue_admission_status(
-                                fail_decision,
+                        mutation_results.extend(
+                            _release_auto_arm_fail_closed_mutations(
+                                decision,
+                                armed_message,
                                 repo=repo,
                                 repo_root=repo_root,
                                 runner=runner,
                                 now=now,
                             )
-                            if fail_status_result is not None:
-                                assert fail_status is not None
-                                ok, message = fail_status_result
-                                mutation_results.append(
-                                    {
-                                        **fail_decision.as_dict(),
-                                        "action": "set_admission_status",
-                                        "status_state": fail_status[0],
-                                        "ok": ok,
-                                        "message": message,
-                                    }
-                                )
-                            ok, message = merge_pr(
-                                fail_decision, repo=repo, repo_root=repo_root, runner=runner
-                            )
-                            mutation_results.append(
-                                {
-                                    **fail_decision.as_dict(),
-                                    "ok": ok,
-                                    "message": message,
-                                }
-                            )
+                        )
                 continue
             if (
                 decision.action in {"queue", "enable_auto_merge"}
@@ -1868,9 +1909,20 @@ def run_reconciler(
                     mutation_results.append(
                         {
                             **decision.as_dict(),
+                            "action": "release_auto_arm",
                             "ok": False,
                             "message": f"release auto-arm failed: {armed_message}",
                         }
+                    )
+                    mutation_results.extend(
+                        _release_auto_arm_fail_closed_mutations(
+                            decision,
+                            armed_message,
+                            repo=repo,
+                            repo_root=repo_root,
+                            runner=runner,
+                            now=now,
+                        )
                     )
                     continue
             ok, message = merge_pr(decision, repo=repo, repo_root=repo_root, runner=runner)

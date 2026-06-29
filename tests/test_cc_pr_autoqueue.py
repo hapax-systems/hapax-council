@@ -1800,13 +1800,22 @@ def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
     }
     assert "governance-gate" not in record["verified_checks"]
     assert "pr-admission" not in record["verified_checks"]
-    assert record["release_auto_arm_assessment"] == {
+    assert record["release_auto_arm_pre_arm_assessment"] == {
         "subject": True,
         "armed": False,
         "needs_arming": True,
         "eligible": True,
         "blockers": [],
     }
+    assert record["release_auto_arm_assessment"] == {
+        "subject": True,
+        "armed": True,
+        "needs_arming": False,
+        "eligible": False,
+        "blockers": [],
+    }
+    assert record["release_auto_arm_result"]["armed"] is True
+    assert record["release_auto_arm_result"]["note_mutated"] is True
 
 
 def test_auto_arms_already_queued_governance_sensitive_task(
@@ -1944,6 +1953,13 @@ def test_already_queued_auto_arm_failure_dequeues_and_overwrites_admission_statu
         for call in runner.calls
     )
     assert any(
+        item["pr"] == 713
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        and item["ok"] is True
+        for item in report["mutations"]
+    )
+    assert any(
         call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
         for call in runner.calls
     )
@@ -1993,7 +2009,118 @@ def test_already_auto_merge_auto_arm_failure_disables_auto_merge_and_overwrites_
         and "state=failure" in call
         for call in runner.calls
     )
+    assert any(
+        item["pr"] == 714
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        and item["ok"] is True
+        for item in report["mutations"]
+    )
     assert ["gh", "pr", "merge", "714", "--repo", "owner/repo", "--disable-auto"] in runner.calls
+
+
+def test_new_queue_auto_arm_failure_overwrites_admission_status_without_queueing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-new-queue-arm-fails",
+        status="pr_open",
+        pr=715,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(715, checks=_governance_mitigation_checks())]
+
+    def fail_arm(*_: Any, **__: Any) -> tuple[bool, str]:
+        return False, "task note write failed"
+
+    monkeypatch.setattr(autoqueue, "arm_release_for_task", fail_arm)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    assert "release_authorized: false" in note.read_text(encoding="utf-8")
+    assert not any(call[:4] == ["gh", "pr", "merge", "715"] for call in runner.calls)
+    assert any(
+        item["pr"] == 715 and item["action"] == "release_auto_arm" and item["ok"] is False
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 715
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        and item["ok"] is True
+        for item in report["mutations"]
+    )
+
+
+def test_new_enable_auto_merge_auto_arm_failure_overwrites_admission_status_without_arming(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-new-auto-arm-fails",
+        status="pr_open",
+        pr=716,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    checks = [
+        {**check, "conclusion": "PENDING"} if check.get("name") == "vscode-build" else check
+        for check in _governance_mitigation_checks()
+    ]
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(716, checks=checks)]
+
+    def fail_arm(*_: Any, **__: Any) -> tuple[bool, str]:
+        return False, "task note write failed"
+
+    monkeypatch.setattr(autoqueue, "arm_release_for_task", fail_arm)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    assert "release_authorized: false" in note.read_text(encoding="utf-8")
+    assert not any(call[:4] == ["gh", "pr", "merge", "716"] for call in runner.calls)
+    decision = next(item for item in report["decisions"] if item["pr"] == 716)
+    assert decision["action"] == "enable_auto_merge"
+    assert any(
+        item["pr"] == 716 and item["action"] == "release_auto_arm" and item["ok"] is False
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 716
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        and item["ok"] is True
+        for item in report["mutations"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -2307,8 +2434,10 @@ def test_auto_armed_task_writes_auto_arm_ledger_record(
     record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
     assert record["kind"] == "release_auto_arm"
     assert record["task_id"] == "stranded-ledger"
-    assert record["release_auto_arm_assessment"]["eligible"] is True
-    assert record["release_auto_arm_assessment"]["blockers"] == []
+    assert record["release_auto_arm_pre_arm_assessment"]["eligible"] is True
+    assert record["release_auto_arm_pre_arm_assessment"]["blockers"] == []
+    assert record["release_auto_arm_assessment"]["armed"] is True
+    assert record["release_auto_arm_result"]["armed"] is True
     assert set(record["verified_checks"]) >= {"lint", "test", "typecheck"}
 
 
