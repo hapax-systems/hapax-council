@@ -3461,9 +3461,14 @@ def test_release_head_boundary_rejects_current_note_missing_cc_task_type(
     )
     pr = autoqueue._parse_pr(_pr(743))
     assert pr is not None
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(743)]
 
     message = autoqueue._release_head_boundary_blocker(
-        autoqueue.Decision(pr=pr, task=task, tasks=(task,), action="queue")
+        autoqueue.Decision(pr=pr, task=task, tasks=(task,), action="queue"),
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
     )
 
     assert message == "current_task_gate_blocked:current_task_not_cc_task"
@@ -3595,6 +3600,126 @@ def test_release_head_boundary_revalidates_current_note_before_already_queued(
         call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
         for call in runner.calls
     )
+
+
+def test_release_head_boundary_fetches_live_head_before_already_queued_retention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="already-queued-force-pushed-before-boundary",
+        status="pr_open",
+        pr=746,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-746",
+            "stage": "S7_RELEASE",
+        },
+    )
+    runner = _FakeRunner()
+    runner.queued_prs = {746}
+    runner.open_prs = [_pr(746)]
+    original_boundary = autoqueue._release_head_boundary_blocker
+    repointed = False
+
+    def force_push_before_boundary(decision: Any, **kwargs: Any) -> str | None:
+        nonlocal repointed
+        if decision.pr.number == 746 and not repointed:
+            runner.open_prs[0]["headRefOid"] = "sha-force-pushed"
+            repointed = True
+        return original_boundary(decision, **kwargs)
+
+    monkeypatch.setattr(autoqueue, "_release_head_boundary_blocker", force_push_before_boundary)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert not any(
+        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-746"]
+        and "state=success" in call
+        for call in runner.calls
+    )
+    assert any(
+        item["pr"] == 746
+        and item["action"] == "release_head_revalidation"
+        and item["ok"] is False
+        and item["message"] == "current_pr_head_mismatch:current=sha-force-pushed:expected=sha-746"
+        for item in report["mutations"]
+    )
+    assert any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+
+
+def test_release_head_boundary_fetches_live_head_before_auto_merge_retention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="already-auto-force-pushed-before-boundary",
+        status="pr_open",
+        pr=747,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-747",
+            "stage": "S7_RELEASE",
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(747, auto_merge=True)]
+    original_boundary = autoqueue._release_head_boundary_blocker
+    repointed = False
+
+    def force_push_before_boundary(decision: Any, **kwargs: Any) -> str | None:
+        nonlocal repointed
+        if decision.pr.number == 747 and not repointed:
+            runner.open_prs[0]["headRefOid"] = "sha-force-pushed"
+            repointed = True
+        return original_boundary(decision, **kwargs)
+
+    monkeypatch.setattr(autoqueue, "_release_head_boundary_blocker", force_push_before_boundary)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert not any(
+        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-747"]
+        and "state=success" in call
+        for call in runner.calls
+    )
+    assert any(
+        item["pr"] == 747
+        and item["action"] == "release_head_revalidation"
+        and item["ok"] is False
+        and item["message"] == "current_pr_head_mismatch:current=sha-force-pushed:expected=sha-747"
+        for item in report["mutations"]
+    )
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "747",
+        "--repo",
+        "owner/repo",
+        "--disable-auto",
+    ] in runner.calls
 
 
 def test_arm_release_for_task_reports_note_read_failure(
@@ -3963,6 +4088,7 @@ def test_merge_pr_revalidates_current_release_authorization_before_head_locked_m
     pr = autoqueue._parse_pr(_pr(735))
     assert pr is not None
     runner = _FakeRunner()
+    runner.open_prs = [_pr(735)]
 
     ok, message = autoqueue.merge_pr(
         autoqueue.Decision(pr=pr, task=task, tasks=(task,), action="queue"),
@@ -3973,7 +4099,7 @@ def test_merge_pr_revalidates_current_release_authorization_before_head_locked_m
 
     assert ok is False
     assert message == "release_authorized_not_current"
-    assert runner.calls == []
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
 def test_merge_pr_revalidates_current_release_authorized_head_before_merge(
@@ -4005,6 +4131,7 @@ def test_merge_pr_revalidates_current_release_authorized_head_before_merge(
     pr = autoqueue._parse_pr(_pr(736))
     assert pr is not None
     runner = _FakeRunner()
+    runner.open_prs = [_pr(736)]
 
     ok, message = autoqueue.merge_pr(
         autoqueue.Decision(pr=pr, task=task, tasks=(task,), action="queue"),
@@ -4018,7 +4145,7 @@ def test_merge_pr_revalidates_current_release_authorized_head_before_merge(
         message == "current_task_gate_blocked:release_authorized_head_mismatch:"
         "authorized=sha-old:current=sha-736"
     )
-    assert runner.calls == []
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
 def test_head_guard_required_merge_fails_when_head_sha_missing(tmp_path: Path) -> None:

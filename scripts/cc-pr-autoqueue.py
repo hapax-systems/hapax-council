@@ -1370,6 +1370,9 @@ def merge_pr(
             boundary_blocker = _release_head_boundary_blocker(
                 decision,
                 require_route_metadata=require_route_metadata,
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
             )
             if boundary_blocker:
                 return False, boundary_blocker
@@ -1507,6 +1510,9 @@ def _release_head_boundary_blocker(
     require_route_metadata: bool = True,
     changed_files: tuple[str, ...] | None = None,
     changed_file_count: int | None = None,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
 ) -> str | None:
     if decision.action not in {
         "queue",
@@ -1533,12 +1539,24 @@ def _release_head_boundary_blocker(
         return "current_task_not_admissible:" + ",".join(admission_blockers)
     if not decision.pr.head_sha:
         return "missing_head_sha_for_head_guard"
+    head_ok, current_head_sha = fetch_pr_head_sha(
+        decision.pr.number,
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if not head_ok:
+        return f"current_pr_head_unreadable:{current_head_sha}"
+    if current_head_sha != decision.pr.head_sha:
+        return (
+            f"current_pr_head_mismatch:current={current_head_sha}:expected={decision.pr.head_sha}"
+        )
     gate_blockers = _release_auto_arm_current_task_gate_blockers(
         decision.task,
         current_frontmatter,
         require_route_metadata=require_route_metadata,
         pr_number=decision.pr.number,
-        pr_head_sha=decision.pr.head_sha,
+        pr_head_sha=current_head_sha,
         changed_files=decision.pr.files if changed_files is None else changed_files,
         changed_file_count=(
             decision.pr.changed_files_count if changed_file_count is None else changed_file_count
@@ -1550,7 +1568,7 @@ def _release_head_boundary_blocker(
         return "release_authorized_not_current"
     return _release_authorized_head_stamp_blocker(
         current_frontmatter,
-        expected_head_sha=decision.pr.head_sha,
+        expected_head_sha=current_head_sha,
         expected_label="current",
     )
 
@@ -2243,6 +2261,9 @@ def run_reconciler(
                     require_route_metadata=require_route_metadata,
                     changed_files=decision.pr.files,
                     changed_file_count=decision.pr.changed_files_count,
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
                 )
                 if head_blocker is not None:
                     mutation_results.append(
