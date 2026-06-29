@@ -10,28 +10,9 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-STANDARD_INTAKE_MODEL_ALIASES = ("opus", "balanced", "gemini-3-pro")
-HIGH_LOAD_INTAKE_MODEL_ALIASES = ("opus",)
-INTAKE_HIGH_LOAD_PER_CORE = 1.0
 DEFAULT_REQUESTS_DIR = (
     Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-requests" / "active"
 )
-
-
-def _load_per_core() -> float:
-    try:
-        load_1 = os.getloadavg()[0]
-    except OSError:
-        return 0.0
-    return load_1 / max(os.cpu_count() or 1, 1)
-
-
-def _intake_default_model_aliases() -> tuple[str, ...]:
-    return (
-        HIGH_LOAD_INTAKE_MODEL_ALIASES
-        if _load_per_core() >= INTAKE_HIGH_LOAD_PER_CORE
-        else STANDARD_INTAKE_MODEL_ALIASES
-    )
 
 
 def _parse_models_csv(value: str) -> tuple[str, ...]:
@@ -57,15 +38,20 @@ def _captured_request_paths(requests_dir: Path) -> list[Path]:
     captured: list[Path] = []
     for path in sorted(requests_dir.rglob("*.md")):
         frontmatter, _body = parse_frontmatter(path)
-        if str(frontmatter.get("status") or "").strip() == "captured":
+        if (
+            str(frontmatter.get("type") or "").strip() == "hapax-request"
+            and str(frontmatter.get("status") or "").strip() == "captured"
+        ):
             captured.append(path)
     return captured
 
 
-def _intake_config(model_aliases: tuple[str, ...]):
+def _explicit_intake_config(model_aliases: tuple[str, ...]):
     from agents.deliberative_council.members import model_family
     from agents.deliberative_council.models import CouncilConfig
 
+    # Default intake keeps CouncilConfig's quorum floor. This reduced config is
+    # only for an explicit caller-selected --models profile.
     families = {model_family(alias) for alias in model_aliases}
     return CouncilConfig(
         model_aliases=model_aliases,
@@ -78,12 +64,15 @@ def _intake_config(model_aliases: tuple[str, ...]):
 async def _run_intake_paths(
     paths: Sequence[Path],
     *,
-    model_aliases: tuple[str, ...],
+    model_aliases: tuple[str, ...] | None,
     write_back: bool,
 ) -> None:
+    from agents.deliberative_council.models import CouncilConfig
     from agents.deliberative_council.modes.intake import intake_axis_score_map, run_intake
 
-    config = _intake_config(model_aliases)
+    config = (
+        _explicit_intake_config(model_aliases) if model_aliases is not None else CouncilConfig()
+    )
     failures = 0
     for path in paths:
         try:
@@ -170,7 +159,7 @@ def _cmd_audit(args: argparse.Namespace) -> None:
 
 
 async def _cmd_intake(args: argparse.Namespace) -> None:
-    model_aliases = args.models or _intake_default_model_aliases()
+    model_aliases = args.models
     if args.scan:
         requests_dir = _requests_dir()
         paths = _captured_request_paths(requests_dir)
@@ -231,8 +220,8 @@ def main() -> None:
         type=_parse_models_csv,
         default=None,
         help=(
-            "Intake mode: comma-separated model aliases. Default is opus under high "
-            "system load, otherwise opus,balanced,gemini-3-pro."
+            "Intake mode: comma-separated explicit model aliases. Default uses "
+            "CouncilConfig's quorum-preserving intake panel."
         ),
     )
     parser.add_argument(

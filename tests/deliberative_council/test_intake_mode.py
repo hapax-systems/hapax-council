@@ -76,6 +76,33 @@ async def test_run_intake_ready_writes_admission_frontmatter(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_run_intake_preserves_request_body_exactly_on_writeback(tmp_path: Path) -> None:
+    request = tmp_path / "REQ-INTAKE.md"
+    frontmatter = {
+        "type": "request",
+        "request_id": "REQ-INTAKE",
+        "title": "Intake target",
+        "status": "captured",
+    }
+    body = "# Request\n\nKeep this evidence block intact.\n\n  \n"
+    assert body.rstrip() != body
+    request.write_text(
+        f"---\n{yaml.safe_dump(frontmatter, sort_keys=False)}---\n\n{body}",
+        encoding="utf-8",
+    )
+    scores = {axis: 4 for axis in AXIS_WEIGHTS}
+
+    with patch(
+        "agents.deliberative_council.engine.deliberate",
+        new=AsyncMock(return_value=_verdict(scores)),
+    ):
+        await run_intake(request)
+
+    _frontmatter, updated_body = parse_frontmatter(request)
+    assert updated_body == body
+
+
+@pytest.mark.asyncio
 async def test_run_intake_non_ready_keeps_captured_and_records_failing_axes(
     tmp_path: Path,
 ) -> None:
@@ -126,6 +153,34 @@ async def test_run_intake_research_refs_route_to_research_needed(tmp_path: Path)
     assert updated["cctv_intake_verdict"] == "research_needed"
     assert updated["recommendation"] == "research_gate"
     assert updated["axes"]["decomposability"]["below_threshold"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_intake_nullish_research_ref_containers_do_not_route_to_research_needed(
+    tmp_path: Path,
+) -> None:
+    request = tmp_path / "REQ-INTAKE.md"
+    _write_request(request)
+    frontmatter, body = parse_frontmatter(request)
+    frontmatter["research_refs"] = [None, ""]
+    frontmatter["source_refs"] = {"primary": "none"}
+    request.write_text(
+        f"---\n{yaml.safe_dump(frontmatter, sort_keys=False)}---\n\n{body}",
+        encoding="utf-8",
+    )
+    scores = {axis: 4 for axis in AXIS_WEIGHTS}
+    scores["decomposability"] = 2
+
+    with patch(
+        "agents.deliberative_council.engine.deliberate",
+        new=AsyncMock(return_value=_verdict(scores)),
+    ):
+        receipt = await run_intake(request)
+
+    assert receipt.verdict == IntakeVerdict.NEEDS_HARDENING
+    updated, _body = parse_frontmatter(request)
+    assert updated["cctv_intake_verdict"] == "needs_hardening"
+    assert updated["recommendation"] == "harden"
 
 
 @pytest.mark.asyncio
