@@ -185,6 +185,56 @@ if [[ "${HAPAX_WORKTREE_GC_REAP_ORPHANS:-1}" == "1" && -x "$orphan_reaper" ]]; t
     fi
 fi
 
+# Registry-governed pre-pass: this is what makes the DURABLE GC cycle governed by EXPLICIT lifecycle
+# status, not age+clean+merged inference. It registers every worktree (backfill), captures the set of
+# registry-PROTECTED paths (pins + infra/active/merging) so the legacy sweep below cannot reap them by
+# inference, then reaps the ones the registry classifies done/abandoned — non-live, clean, stale,
+# registered — keeping branches, so a session that stopped working without follow-through is reaped next
+# cycle and the pileup cannot recur. Runs with the BARE system python3 (shared.worktree_registry is
+# stdlib-only, no venv needed). The open-PR signal needs `gh`; when unavailable (this systemd unit
+# carries no GH_TOKEN) classify fails CLOSED — only `done`/merged lanes are reaped.
+#   registry_mode=governed : pre-pass OK -> the legacy sweep SKIPS every protected path (status wins).
+#   registry_mode=failed   : pre-pass errored -> the legacy sweep reaps NOTHING by inference (fail-closed)
+#                            + alerts; a broken registry must not silently degrade to the inference
+#                            behavior the lifecycle predicate forbids.
+#   registry_mode=off      : HAPAX_WORKTREE_GC_REGISTRY=0 -> legacy pure-inference (explicit opt-out).
+registry_cli="$(dirname "$(readlink -f "$0")")/hapax-worktree-register"
+declare -A registry_protected_set=()
+registry_mode="off"
+registry_prepass_failed=0
+if [[ "${HAPAX_WORKTREE_GC_REGISTRY:-1}" == "1" && -f "$registry_cli" ]]; then
+    idle_h="${HAPAX_WORKTREE_GC_REGISTRY_IDLE_HOURS:-48}"
+    registry_mode="failed"  # assume failure until backfill AND protected-paths both succeed
+    if HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" backfill >/dev/null 2>&1; then
+        protected_raw=""
+        if protected_raw="$(HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" \
+            protected-paths 2>/dev/null)"; then
+            while IFS= read -r pp; do
+                if [[ -n "$pp" ]]; then
+                    registry_protected_set["$pp"]=1
+                fi
+            done <<<"$protected_raw"
+            # reap is NON-fatal to governance: protected-paths already succeeded, so the protected set +
+            # the legacy-sweep gate are intact even if reap errors mid-loop. But surface the error rather
+            # than swallow it — done/abandoned lanes simply go unreaped this cycle (next cycle retries).
+            if ((dry_run)); then
+                HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" reap \
+                    --min-idle-hours "$idle_h" \
+                    || printf 'hapax-worktree-gc: WARN registry reap (dry-run) errored — not fatal, protection intact. Next: run `HAPAX_WORKTREE_GC_REPO=%s python3 %s reap --min-idle-hours %s` directly to see the error.\n' "$repo" "$registry_cli" "$idle_h" >&2
+            else
+                HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" reap --apply \
+                    --min-idle-hours "$idle_h" \
+                    || printf 'hapax-worktree-gc: WARN registry reap errored — done/abandoned lanes unreaped this cycle (not fatal, protection intact). Next: run `HAPAX_WORKTREE_GC_REPO=%s python3 %s reap --min-idle-hours %s` to see the error, then `%s --apply ...` once fixed.\n' "$repo" "$registry_cli" "$idle_h" "$registry_cli" >&2
+            fi
+            registry_mode="governed"
+        fi
+    fi
+    if [[ "$registry_mode" == "failed" ]]; then
+        registry_prepass_failed=1
+        printf 'hapax-worktree-gc: registry pre-pass FAILED — fail-closed, inference reaping disabled this cycle\n' >&2
+    fi
+fi
+
 if ((dry_run)); then
     printf 'hapax-worktree-gc: dry-run skips git worktree prune\n'
 else
@@ -212,6 +262,12 @@ old_unmerged=0
 skipped=0
 live_refused=0
 alert_lines=()
+
+# Surface a fail-closed registry pre-pass (set above, before counters exist) through the normal alert
+# channel: the legacy sweep ran inference-disabled this cycle, so the operator must fix the registry.
+if ((registry_prepass_failed)); then
+    alert_lines+=("- registry pre-pass FAILED (HAPAX_WORKTREE_GC_REGISTRY=1): the lifecycle-status pre-pass errored, so the legacy age+clean+merged sweep ran FAIL-CLOSED (no inference reaping) this cycle. Next: run \`python3 $registry_cli list\` to see the Python/registry error (import path or corrupt record), fix it, then re-run hapax-worktree-gc.sh.")
+fi
 
 # Live-PID guard. The release-GC ghost (audit 2026-06-11, F1/F1R): a release
 # dir was deleted while logos-api still executed from it, leaving the process
@@ -431,7 +487,12 @@ process_worktree() {
     fi
 
     clean=0
-    if status="$(git -C "$path" status --porcelain=v1 --untracked-files=all)" && [[ -z "$status" ]]; then
+    # --no-optional-locks (GIT_OPTIONAL_LOCKS=0): like the registry probe's is_clean(), this legacy
+    # clean-check must NOT refresh the index stat cache on disk. mtime_age_seconds() reads the index
+    # mtime as the abandonment clock, and this sweep runs every 6h on every worktree; without the flag
+    # it would reset a sub-48h idle lane's clock each cycle so it never crosses the abandoned threshold.
+    if status="$(git -C "$path" --no-optional-locks status --porcelain=v1 --untracked-files=all)" \
+        && [[ -z "$status" ]]; then
         clean=1
     fi
 
@@ -457,6 +518,23 @@ process_worktree() {
     fi
 
     if ((age >= clean_age_seconds && clean && merged)); then
+        # Lifecycle-status authority (PR #4337): the REGISTRY, not age+clean+merged inference, decides
+        # removability for registered lanes. governed -> skip any registry-protected path (an explicit
+        # pin, or an in-use infra/active/merging lane) so inference never overrides status. failed ->
+        # skip ALL inference reaping (fail-closed: a registry meant to govern but broken must not
+        # degrade to the inference behavior the predicate forbids). off -> legacy inference (opt-out).
+        if [[ "$registry_mode" == "governed" && -n "${registry_protected_set[$real_path]:-}" ]]; then
+            printf 'hapax-worktree-gc: keep %s — registry-protected lifecycle status overrides inference\n' \
+                "$path"
+            skipped=$((skipped + 1))
+            return 0
+        fi
+        if [[ "$registry_mode" == "failed" ]]; then
+            printf 'hapax-worktree-gc: keep %s — registry unavailable, fail-closed (no inference reap)\n' \
+                "$path"
+            skipped=$((skipped + 1))
+            return 0
+        fi
         old_merged_clean=$((old_merged_clean + 1))
         printf 'hapax-worktree-gc: removable %s branch=%s age=%s base=%s\n' \
             "$path" "$branch_label" "$(format_age "$age")" "$base_ref"

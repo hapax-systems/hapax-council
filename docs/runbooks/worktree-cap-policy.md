@@ -197,12 +197,68 @@ garbage-collected.
 
 Two timers keep the count bounded without manual cleanup:
 
-- **`hapax-worktree-gc.timer`** (every 6h) → `scripts/hapax-worktree-gc.sh`.
-  Removes stale, clean, MERGED worktrees (ancestry + squash-merge detection),
-  reaps stale `source-activation/releases/<sha>` snapshots (keeping
-  active+candidate from `current.json`), and ALERTS (never auto-removes) on
-  stale *unmerged* worktrees. A live-PID guard refuses to remove any worktree a
-  running process maps via `/proc/<pid>/cwd|exe` (the F1 release-ghost incident).
+- **`hapax-worktree-gc.timer`** (every 6h) → `scripts/hapax-worktree-gc.sh`. The
+  cleanup is governed by EXPLICIT lifecycle STATUS, not age+merge inference (PR
+  #4337). Two cooperating passes:
+  - **Registry pre-pass.** `hapax-worktree-register backfill` (register every
+    worktree) → capture the **protected set** → `reap --apply --min-idle-hours 48`.
+    The registry (`~/.cache/hapax/worktree-registry/<slug>.json`, one record per
+    worktree) gives each worktree a status — `infra`/`active`/`merging`/`abandoned`/
+    `done` — derived from liveness + heartbeat + open-PR + merge, with explicit
+    `set_status` pins authoritative. `reap` removes ONLY **registered**, non-live,
+    clean, `done`/`abandoned` checkouts (branches always kept).
+  - **Legacy merged/age sweep, now SUBORDINATE to the registry.** The same
+    age+clean+merged remover still deletes stale merged worktrees + their merged
+    branches, but it now **skips every registry-protected lane** (pins +
+    `infra`/`active`/`merging`), so inference can never override an explicit status.
+    If the registry pre-pass *itself* fails — `backfill` or `protected-paths`
+    exits non-zero (Python import error, unwritable/unreadable registry dir) — the
+    legacy sweep **fails CLOSED** for the whole cycle: reaps nothing by inference and
+    ntfy-alerts, rather than silently reverting to pure inference. (An *individual*
+    corrupt record does NOT fail the pre-pass — it is handled within a successful
+    pre-pass: kept protected and emitted by `protected-paths`; see the
+    corrupt-records bullet below.) (`done`/`abandoned` are intentionally NOT
+    protected, so the sweep can still reap a merged checkout + delete its merged
+    branch.) The release-snapshot cleanup
+    (`source-activation/releases/<sha>`, keeping active+candidate from `current.json`)
+    and the stale-*unmerged* alerts are separate and not registry-gated.
+  - **Idle window.** The module default `abandoned` threshold is 12h, but the timer
+    passes `--min-idle-hours 48` — so the automatic cycle reaps `abandoned` lanes
+    only after ~48h idle, not 12h. **Abandonment is heartbeat-driven and gh-INDEPENDENT:**
+    a stopped, non-live, clean lane that is stale past the window flips to `abandoned`
+    and is reaped *even without `gh`* (the open-PR set only distinguishes a FRESH idle
+    lane as `merging` vs `active` — once stale, an open PR no longer keeps it, because
+    the checkout reap is non-destructive: the branch + PR survive `git worktree
+    remove`). So the production timer, which runs without a `GH_TOKEN`, still satisfies
+    the "stopped → abandoned → reaped" predicate. Merge detection is likewise git-only:
+    BOTH ancestry merges AND squash/rebase merges (remote-branch deleted+pruned AND
+    content-already-in-base, via `merge-tree`) are detected, so `done` lanes — including
+    the council's default squash merges — also reap without `gh`. This 48h
+    lives in the SCRIPT, not the unit — verify it with
+    `grep REGISTRY_IDLE_HOURS scripts/hapax-worktree-gc.sh` (the
+    `HAPAX_WORKTREE_GC_REGISTRY_IDLE_HOURS:-48` default) and the schedule with
+    `systemctl --user cat hapax-worktree-gc.timer`. If a future edit changes either,
+    re-sync this doc.
+  - **Corrupt records fail closed.** A present-but-unparseable
+    `worktree-registry/<slug>.json` is treated as registered + protected (it may hold
+    a pin we can't read): `backfill` leaves it untouched (never overwrites with a
+    derived status), `reap` keeps it (`KEEP corrupt …`), and it is emitted by
+    `protected-paths`. Repair: `rm` the named file, then `backfill`.
+  - **Unregistered worktrees (until P4).** `reap` KEEPS unregistered worktrees (flags,
+    never removes); `backfill` (which the timer runs first) registers every git-visible
+    worktree with a derived status, so after one GC cycle every worktree has an explicit
+    status. Registration *at creation time* is P4 (`hapax-worktree-create` + dispatch
+    wiring); until it lands, a freshly dispatch-created lane is unregistered only until
+    the next backfill.
+  - **Rechecks** (the CLI ships as a repo script, not on `PATH` — run from the repo
+    root with the `scripts/` prefix, or `python3 scripts/hapax-worktree-register`):
+    `scripts/hapax-worktree-register list` (per-worktree status; shows `corrupt`),
+    `scripts/hapax-worktree-register protected-paths` (what the legacy sweep will NOT
+    touch), and `scripts/hapax-worktree-gc.sh --dry-run` (the actual removal
+    decisions, including the registry-gate `keep … registry-protected` /
+    `fail-closed` lines).
+  - A live-PID guard refuses to remove any worktree a running process maps via
+    `/proc/<pid>/cwd|exe` (the F1 release-ghost incident).
 - **`hapax-lane-reaper.timer`** (every 30m) → reaps *dead lanes that still have
   a live tmux session*.
 
