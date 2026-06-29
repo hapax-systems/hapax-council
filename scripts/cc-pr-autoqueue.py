@@ -860,6 +860,31 @@ A PR whose task note is unparseable must NOT read as merely "unlinked".
 """
 
 
+def _task_note_from_frontmatter(path: Path, folder: str, fm: dict[str, Any]) -> TaskNote | None:
+    task_id = _scalar(fm.get("task_id"))
+    if not task_id:
+        return None
+    return TaskNote(
+        task_id=task_id,
+        path=path,
+        folder=folder,
+        status=(_scalar(fm.get("status")) or "").lower(),
+        pr=_int_or_none(fm.get("pr")),
+        branch=_scalar(fm.get("branch")),
+        authority_case=_scalar(fm.get("authority_case") or fm.get("case_id")),
+        parent_spec=_scalar(fm.get("parent_spec")),
+        route_metadata_schema=_int_or_none(fm.get("route_metadata_schema")),
+        priority=(_scalar(fm.get("priority")) or "").lower() or None,
+        kind=(_scalar(fm.get("kind")) or "").lower() or None,
+        tags=tuple(tag.lower() for tag in _string_tuple(fm.get("tags"))),
+        queue_admission=((_scalar(fm.get("queue_admission")) or "").lower() or None),
+        assigned_to=_scalar(fm.get("assigned_to")),
+        lane_affinity=_scalar(fm.get("lane_affinity")),
+        epic_serialize=_scalar(fm.get("epic_serialize")),
+        frontmatter=dict(fm),
+    )
+
+
 def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
     notes: list[TaskNote] = []
     for folder in ("active", "closed"):
@@ -874,30 +899,10 @@ def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
                 continue
             if not fm or fm.get("type") != "cc-task":
                 continue
-            task_id = _scalar(fm.get("task_id"))
-            if not task_id:
+            task = _task_note_from_frontmatter(path, folder, fm)
+            if task is None:
                 continue
-            notes.append(
-                TaskNote(
-                    task_id=task_id,
-                    path=path,
-                    folder=folder,
-                    status=(_scalar(fm.get("status")) or "").lower(),
-                    pr=_int_or_none(fm.get("pr")),
-                    branch=_scalar(fm.get("branch")),
-                    authority_case=_scalar(fm.get("authority_case") or fm.get("case_id")),
-                    parent_spec=_scalar(fm.get("parent_spec")),
-                    route_metadata_schema=_int_or_none(fm.get("route_metadata_schema")),
-                    priority=(_scalar(fm.get("priority")) or "").lower() or None,
-                    kind=(_scalar(fm.get("kind")) or "").lower() or None,
-                    tags=tuple(tag.lower() for tag in _string_tuple(fm.get("tags"))),
-                    queue_admission=((_scalar(fm.get("queue_admission")) or "").lower() or None),
-                    assigned_to=_scalar(fm.get("assigned_to")),
-                    lane_affinity=_scalar(fm.get("lane_affinity")),
-                    epic_serialize=_scalar(fm.get("epic_serialize")),
-                    frontmatter=dict(fm),
-                )
-            )
+            notes.append(task)
     return notes
 
 
@@ -1249,8 +1254,11 @@ def classify_pr(
     auto_arm_verified_checks: tuple[str, ...] = ()
     if task is not None and not reasons:
         verified_checks = set(pr.check_summary.verified_passed)
-        # ``run_reconciler`` writes this proof immediately before arming; if the
-        # status write fails, the note is not armed and the PR is not queued.
+        # ``run_reconciler`` writes or refreshes this proof on the same tick as
+        # arming, but only after the note is armed and the release-head boundary
+        # is revalidated. Classification includes it as planned same-tick
+        # evidence; the server-visible branch-protection proof is published last
+        # before queueing or retaining admission.
         verified_checks.add(AUTOQUEUE_ADMISSION_CONTEXT)
         arm = assess_release_auto_arm(task.frontmatter, verified_checks=verified_checks)
         if arm.needs_arming:
@@ -1431,6 +1439,32 @@ def _release_auto_arm_current_admission_blockers(
     return tuple(blockers)
 
 
+def _release_auto_arm_current_task_gate_blockers(
+    task: TaskNote,
+    frontmatter: dict[str, Any],
+    *,
+    require_route_metadata: bool,
+    pr_number: int | None,
+    pr_head_sha: str | None,
+    changed_files: tuple[str, ...] | None,
+    changed_file_count: int | None,
+) -> tuple[str, ...]:
+    current_task = _task_note_from_frontmatter(task.path, task.folder, frontmatter)
+    if current_task is None:
+        return ("current_task_missing_task_id",)
+    return tuple(
+        _task_blockers(
+            current_task,
+            require_route_metadata=require_route_metadata,
+            open_pr_number=pr_number,
+            allow_release_auto_arm=True,
+            pr_head_sha=pr_head_sha,
+            changed_files=changed_files,
+            changed_file_count=changed_file_count,
+        )
+    )
+
+
 def _release_authorized_head_stamp_blocker(
     frontmatter: dict[str, Any],
     *,
@@ -1575,12 +1609,12 @@ def arm_release_for_task(
     pr_number: int | None = None,
     head_ref: str | None = None,
     expected_head_sha: str | None = None,
-    repo: str = DEFAULT_REPO,
-    repo_root: Path | None = None,
-    runner: Any = None,
     require_route_metadata: bool = True,
     changed_files: tuple[str, ...] | None = None,
     changed_file_count: int | None = None,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
 ) -> tuple[bool, str]:
     """Authorize release for a stranded task on behalf of a dead lane (system).
 
@@ -1604,18 +1638,17 @@ def arm_release_for_task(
     )
     if admission_blockers:
         return False, "current_task_not_admissible:" + ",".join(admission_blockers)
-    current_task = _task_note_with_frontmatter(task, current_frontmatter)
-    current_task_blockers = _task_blockers(
-        current_task,
+    gate_blockers = _release_auto_arm_current_task_gate_blockers(
+        task,
+        current_frontmatter,
         require_route_metadata=require_route_metadata,
-        open_pr_number=pr_number,
-        allow_release_auto_arm=True,
+        pr_number=pr_number,
         pr_head_sha=expected_head_sha,
         changed_files=changed_files,
         changed_file_count=changed_file_count,
     )
-    if current_task_blockers:
-        return False, "current_task_gate_blocked:" + ",".join(current_task_blockers)
+    if gate_blockers:
+        return False, "current_task_gate_blocked:" + ",".join(gate_blockers)
     if expected_head_sha and pr_number is None:
         return False, "current_pr_head_unverifiable:missing_pr_number"
     if expected_head_sha:
@@ -2127,16 +2160,87 @@ def run_reconciler(
     if apply:
         for decision in decisions:
             admission_status = _admission_status_for(decision)
-            delay_admission_status_until_after_auto_arm = (
-                decision.action
-                not in {"queue", "enable_auto_merge", "disable_auto_merge", "dequeue"}
-                and decision.auto_arm
+            release_head_subject = decision.action in {
+                "queue",
+                "enable_auto_merge",
+                "already_queued",
+                "already_auto_merge_enabled",
+            }
+            if release_head_subject:
+                if decision.auto_arm and decision.task is not None:
+                    armed_ok, armed_message = arm_release_for_task(
+                        decision.task,
+                        ledger_path=auto_arm_ledger_path,
+                        now=now,
+                        verified_checks=set(decision.auto_arm_verified_checks),
+                        pr_number=decision.pr.number,
+                        head_ref=decision.pr.head_ref,
+                        expected_head_sha=decision.pr.head_sha,
+                        require_route_metadata=require_route_metadata,
+                        changed_files=decision.pr.files,
+                        changed_file_count=decision.pr.changed_files_count,
+                        repo=repo,
+                        repo_root=repo_root,
+                        runner=runner,
+                    )
+                    auto_arm_ok = _release_auto_arm_write_ok(armed_ok, armed_message)
+                    if not auto_arm_ok:
+                        mutation_results.append(
+                            {
+                                **decision.as_dict(),
+                                "action": "release_auto_arm",
+                                "ok": False,
+                                "message": f"release auto-arm failed: {armed_message}",
+                            }
+                        )
+                        mutation_results.extend(
+                            _release_auto_arm_fail_closed_mutations(
+                                decision,
+                                armed_message,
+                                repo=repo,
+                                repo_root=repo_root,
+                                runner=runner,
+                                now=now,
+                            )
+                        )
+                        continue
+                    mutation_results.append(
+                        {
+                            **decision.as_dict(),
+                            "action": "release_auto_arm",
+                            "ok": True,
+                            "message": armed_message,
+                        }
+                    )
+                head_blocker = _release_head_boundary_blocker(decision)
+                if head_blocker is not None:
+                    mutation_results.append(
+                        {
+                            **decision.as_dict(),
+                            "action": "release_head_revalidation",
+                            "ok": False,
+                            "message": head_blocker,
+                        }
+                    )
+                    mutation_results.extend(
+                        _release_auto_arm_fail_closed_mutations(
+                            decision,
+                            head_blocker,
+                            reason_prefix="release_head_revalidation_failed",
+                            repo=repo,
+                            repo_root=repo_root,
+                            runner=runner,
+                            now=now,
+                        )
+                    )
+                    continue
+            status_result = set_autoqueue_admission_status(
+                decision,
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+                now=now,
             )
-            status_result: tuple[bool, str] | None = None
-            if not delay_admission_status_until_after_auto_arm:
-                status_result = set_autoqueue_admission_status(
-                    decision, repo=repo, repo_root=repo_root, runner=runner, now=now
-                )
             if decision.action not in {
                 "queue",
                 "enable_auto_merge",
@@ -2167,94 +2271,6 @@ def run_reconciler(
                                 now=now,
                             )
                         )
-                        continue
-                if decision.auto_arm and decision.task is not None:
-                    armed_ok, armed_message = arm_release_for_task(
-                        decision.task,
-                        ledger_path=auto_arm_ledger_path,
-                        now=now,
-                        verified_checks=set(decision.auto_arm_verified_checks),
-                        pr_number=decision.pr.number,
-                        head_ref=decision.pr.head_ref,
-                        expected_head_sha=decision.pr.head_sha,
-                        repo=repo,
-                        repo_root=repo_root,
-                        runner=runner,
-                        require_route_metadata=require_route_metadata,
-                        changed_files=decision.pr.files,
-                        changed_file_count=decision.pr.changed_files_count,
-                    )
-                    auto_arm_ok = _release_auto_arm_write_ok(armed_ok, armed_message)
-                    mutation_results.append(
-                        {
-                            **decision.as_dict(),
-                            "action": "release_auto_arm",
-                            "ok": auto_arm_ok,
-                            "message": armed_message,
-                        }
-                    )
-                    if not auto_arm_ok:
-                        mutation_results.extend(
-                            _release_auto_arm_fail_closed_mutations(
-                                decision,
-                                armed_message,
-                                repo=repo,
-                                repo_root=repo_root,
-                                runner=runner,
-                                now=now,
-                            )
-                        )
-                        continue
-                head_blocker = _release_head_boundary_blocker(decision)
-                if head_blocker is not None:
-                    mutation_results.append(
-                        {
-                            **decision.as_dict(),
-                            "action": "release_head_revalidation",
-                            "ok": False,
-                            "message": head_blocker,
-                        }
-                    )
-                    mutation_results.extend(
-                        _release_auto_arm_fail_closed_mutations(
-                            decision,
-                            head_blocker,
-                            reason_prefix="release_head_revalidation_failed",
-                            repo=repo,
-                            repo_root=repo_root,
-                            runner=runner,
-                            now=now,
-                        )
-                    )
-                    continue
-                if delay_admission_status_until_after_auto_arm:
-                    status_result = set_autoqueue_admission_status(
-                        decision, repo=repo, repo_root=repo_root, runner=runner, now=now
-                    )
-                    if status_result is not None:
-                        assert admission_status is not None
-                        ok, message = status_result
-                        mutation_results.append(
-                            {
-                                **decision.as_dict(),
-                                "action": "set_admission_status",
-                                "status_state": admission_status[0],
-                                "ok": ok,
-                                "message": message,
-                            }
-                        )
-                        if not ok:
-                            mutation_results.extend(
-                                _release_auto_arm_fail_closed_mutations(
-                                    decision,
-                                    message,
-                                    reason_prefix="admission_status_write_failed",
-                                    repo=repo,
-                                    repo_root=repo_root,
-                                    runner=runner,
-                                    now=now,
-                                )
-                            )
                 continue
             if (
                 decision.action in {"queue", "enable_auto_merge"}
@@ -2275,73 +2291,6 @@ def run_reconciler(
                             "message": status_result[1],
                         },
                     }
-                )
-                continue
-            if decision.auto_arm and decision.task is not None:
-                armed_ok, armed_message = arm_release_for_task(
-                    decision.task,
-                    ledger_path=auto_arm_ledger_path,
-                    now=now,
-                    verified_checks=set(decision.auto_arm_verified_checks),
-                    pr_number=decision.pr.number,
-                    head_ref=decision.pr.head_ref,
-                    expected_head_sha=decision.pr.head_sha,
-                    repo=repo,
-                    repo_root=repo_root,
-                    runner=runner,
-                    require_route_metadata=require_route_metadata,
-                    changed_files=decision.pr.files,
-                    changed_file_count=decision.pr.changed_files_count,
-                )
-                auto_arm_ok = _release_auto_arm_write_ok(armed_ok, armed_message)
-                if not auto_arm_ok:
-                    mutation_results.append(
-                        {
-                            **decision.as_dict(),
-                            "action": "release_auto_arm",
-                            "ok": False,
-                            "message": f"release auto-arm failed: {armed_message}",
-                        }
-                    )
-                    mutation_results.extend(
-                        _release_auto_arm_fail_closed_mutations(
-                            decision,
-                            armed_message,
-                            repo=repo,
-                            repo_root=repo_root,
-                            runner=runner,
-                            now=now,
-                        )
-                    )
-                    continue
-                mutation_results.append(
-                    {
-                        **decision.as_dict(),
-                        "action": "release_auto_arm",
-                        "ok": True,
-                        "message": armed_message,
-                    }
-                )
-            head_blocker = _release_head_boundary_blocker(decision)
-            if head_blocker is not None:
-                mutation_results.append(
-                    {
-                        **decision.as_dict(),
-                        "action": "release_head_revalidation",
-                        "ok": False,
-                        "message": head_blocker,
-                    }
-                )
-                mutation_results.extend(
-                    _release_auto_arm_fail_closed_mutations(
-                        decision,
-                        head_blocker,
-                        reason_prefix="release_head_revalidation_failed",
-                        repo=repo,
-                        repo_root=repo_root,
-                        runner=runner,
-                        now=now,
-                    )
                 )
                 continue
             ok, message = merge_pr(decision, repo=repo, repo_root=repo_root, runner=runner)
