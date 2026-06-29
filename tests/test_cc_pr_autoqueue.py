@@ -1965,6 +1965,61 @@ def test_already_queued_auto_arm_failure_dequeues_and_overwrites_admission_statu
     )
 
 
+def test_already_queued_note_unchanged_auto_arm_is_idempotent_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-queued-arm-idempotent",
+        status="pr_open",
+        pr=732,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    runner = _FakeRunner()
+    runner.queued_prs = {732}
+    runner.open_prs = [_pr(732, checks=_governance_mitigation_checks())]
+
+    def unchanged_arm(*_: Any, **__: Any) -> tuple[bool, str]:
+        return False, "note_unchanged"
+
+    monkeypatch.setattr(autoqueue, "arm_release_for_task", unchanged_arm)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    assert "release_authorized: false" in note.read_text(encoding="utf-8")
+    assert any(
+        item["pr"] == 732
+        and item["action"] == "release_auto_arm"
+        and item["ok"] is True
+        and item["message"] == "note_unchanged"
+        for item in report["mutations"]
+    )
+    assert not any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+    assert not any(
+        item["pr"] == 732
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        for item in report["mutations"]
+    )
+
+
 def test_already_auto_merge_auto_arm_failure_disables_auto_merge_and_overwrites_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2386,7 +2441,7 @@ def test_arm_release_for_task_fails_closed_when_assessment_ineligible(tmp_path: 
         vault,
         task_id="stranded-governance-helper-ineligible",
         status="pr_open",
-        pr=713,
+        pr=731,
         extra_frontmatter={
             **_eligible_arm_extra(),
             "risk_flags": {
@@ -2439,6 +2494,110 @@ def test_arm_release_for_task_revalidates_current_note_frontmatter(tmp_path: Pat
 
     assert ok is False
     assert message == "release_auto_arm_ineligible:not_implementation_authorized"
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    assert "stage: S7_RELEASE" not in current
+    assert not ledger.exists()
+
+
+def test_arm_release_for_task_revalidates_current_task_status(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-stale-status",
+        status="pr_open",
+        pr=723,
+        branch="feat/723",
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("status: pr_open", "status: claimed"),
+        encoding="utf-8",
+    )
+    ledger = tmp_path / "ledger.jsonl"
+
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=ledger,
+        pr_number=723,
+        head_ref="feat/723",
+    )
+
+    assert ok is False
+    assert message == "current_task_not_admissible:current_task_status_not_ready:claimed"
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    assert "stage: S7_RELEASE" not in current
+    assert not ledger.exists()
+
+
+def test_arm_release_for_task_revalidates_current_task_identity(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-stale-identity",
+        status="pr_open",
+        pr=724,
+        branch="feat/724",
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    note.write_text(
+        note.read_text(encoding="utf-8")
+        .replace("pr: 724", "pr: 999")
+        .replace("branch: feat/724", "branch: feat/999"),
+        encoding="utf-8",
+    )
+    ledger = tmp_path / "ledger.jsonl"
+
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=ledger,
+        pr_number=724,
+        head_ref="feat/724",
+    )
+
+    assert ok is False
+    assert (
+        message == "current_task_not_admissible:"
+        "current_task_pr_mismatch:current=999:expected=724,"
+        "current_task_branch_mismatch:current=feat/999:expected=feat/724"
+    )
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    assert "stage: S7_RELEASE" not in current
+    assert not ledger.exists()
+
+
+def test_arm_release_for_task_revalidates_current_note_identity(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-repointed-snapshot",
+        status="pr_open",
+        pr=725,
+        branch="feature/current",
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("pr: 725", "pr: 999"),
+        encoding="utf-8",
+    )
+    ledger = tmp_path / "ledger.jsonl"
+
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=ledger,
+        pr_number=725,
+        head_ref="feature/current",
+    )
+
+    assert ok is False
+    assert (
+        message == "current_task_not_admissible:current_task_pr_mismatch:current=999:expected=725"
+    )
     current = note.read_text(encoding="utf-8")
     assert "release_authorized: false" in current
     assert "stage: S7_RELEASE" not in current

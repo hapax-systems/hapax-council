@@ -1321,6 +1321,42 @@ def default_authority_case_ledger() -> Path:
     return Path(raw).expanduser() if raw else DEFAULT_AUTHORITY_CASE_LEDGER
 
 
+def _release_auto_arm_current_admission_blockers(
+    frontmatter: dict[str, Any],
+    *,
+    pr_number: int | None,
+    head_ref: str | None,
+) -> tuple[str, ...]:
+    blockers: list[str] = []
+    current_status = (_scalar(frontmatter.get("status")) or "").lower()
+    if current_status not in TASK_MERGE_READY_STATUSES:
+        blockers.append(f"current_task_status_not_ready:{current_status or 'missing'}")
+
+    current_pr = _int_or_none(frontmatter.get("pr"))
+    current_branch = _scalar(frontmatter.get("branch"))
+    expected_branch = _scalar(head_ref)
+    if pr_number is not None:
+        if current_pr is None:
+            if not (expected_branch and current_branch == expected_branch):
+                blockers.append(
+                    "current_task_identity_missing_pr:"
+                    f"expected_pr={pr_number}:"
+                    f"branch={current_branch or 'missing'}:"
+                    f"expected_branch={expected_branch or 'missing'}"
+                )
+        elif current_pr != pr_number:
+            blockers.append(f"current_task_pr_mismatch:current={current_pr}:expected={pr_number}")
+    if (
+        expected_branch is not None
+        and current_branch is not None
+        and current_branch != expected_branch
+    ):
+        blockers.append(
+            f"current_task_branch_mismatch:current={current_branch}:expected={expected_branch}"
+        )
+    return tuple(blockers)
+
+
 def _append_release_auto_arm_ledger(
     task: TaskNote,
     *,
@@ -1386,12 +1422,15 @@ def arm_release_for_task(
     now: datetime | None = None,
     role: str = RELEASE_AUTO_ARM_ROLE,
     verified_checks: set[str] | None = None,
+    pr_number: int | None = None,
+    head_ref: str | None = None,
 ) -> tuple[bool, str]:
     """Authorize release for a stranded task on behalf of a dead lane (system).
 
     Writes ``release_authorized: true`` + ``stage: S7_RELEASE`` to the note and
-    appends an authority-case ledger record. Eligibility MUST already have been
-    confirmed by :func:`assess_release_auto_arm` (the caller gates on it).
+    appends an authority-case ledger record. The write boundary rereads the note
+    and revalidates both release-arm eligibility and the current PR/task identity
+    so a stale classifier decision cannot arm a repointed or no-longer-ready note.
     """
     ledger_path = ledger_path or default_authority_case_ledger()
     now = now or datetime.now(UTC)
@@ -1401,10 +1440,19 @@ def arm_release_for_task(
     except OSError as exc:
         return False, f"note_unreadable:{exc}"
     current_frontmatter = frontmatter_from_text(text)
+    admission_blockers = _release_auto_arm_current_admission_blockers(
+        current_frontmatter,
+        pr_number=pr_number,
+        head_ref=head_ref,
+    )
+    if admission_blockers:
+        return False, "current_task_not_admissible:" + ",".join(admission_blockers)
     pre_arm_assessment = assess_release_auto_arm(
         current_frontmatter, verified_checks=verified_checks
     )
     if not pre_arm_assessment.eligible:
+        if pre_arm_assessment.armed:
+            return True, "note_unchanged"
         reasons = ",".join(pre_arm_assessment.blockers or ("not_eligible",))
         return False, f"release_auto_arm_ineligible:{reasons}"
     armed = apply_release_auto_arm(text, now_iso=now_iso, role=role)
@@ -1593,6 +1641,22 @@ def _release_auto_arm_fail_closed_decision(
     )
 
 
+def _release_auto_arm_write_ok(ok: bool, message: str) -> bool:
+    return ok or message == "note_unchanged"
+
+
+def _remove_admitted_pr_for_release_auto_arm_failure(
+    decision: Decision,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> tuple[bool, str]:
+    if decision.action not in {"dequeue", "disable_auto_merge"}:
+        return False, f"unsupported_release_auto_arm_removal:{decision.action}"
+    return merge_pr(decision, repo=repo, repo_root=repo_root, runner=runner)
+
+
 def _release_auto_arm_fail_closed_mutations(
     decision: Decision,
     message: str,
@@ -1633,7 +1697,12 @@ def _release_auto_arm_fail_closed_mutations(
             }
         )
     if fail_decision.action in {"dequeue", "disable_auto_merge"}:
-        ok, merge_message = merge_pr(fail_decision, repo=repo, repo_root=repo_root, runner=runner)
+        ok, merge_message = _remove_admitted_pr_for_release_auto_arm_failure(
+            fail_decision,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+        )
         results.append(
             {
                 **fail_decision.as_dict(),
@@ -1889,16 +1958,19 @@ def run_reconciler(
                         ledger_path=auto_arm_ledger_path,
                         now=now,
                         verified_checks=set(decision.auto_arm_verified_checks),
+                        pr_number=decision.pr.number,
+                        head_ref=decision.pr.head_ref,
                     )
+                    auto_arm_ok = _release_auto_arm_write_ok(armed_ok, armed_message)
                     mutation_results.append(
                         {
                             **decision.as_dict(),
                             "action": "release_auto_arm",
-                            "ok": armed_ok,
+                            "ok": auto_arm_ok,
                             "message": armed_message,
                         }
                     )
-                    if not armed_ok:
+                    if not auto_arm_ok:
                         mutation_results.extend(
                             _release_auto_arm_fail_closed_mutations(
                                 decision,
@@ -1937,8 +2009,11 @@ def run_reconciler(
                     ledger_path=auto_arm_ledger_path,
                     now=now,
                     verified_checks=set(decision.auto_arm_verified_checks),
+                    pr_number=decision.pr.number,
+                    head_ref=decision.pr.head_ref,
                 )
-                if not armed_ok:
+                auto_arm_ok = _release_auto_arm_write_ok(armed_ok, armed_message)
+                if not auto_arm_ok:
                     mutation_results.append(
                         {
                             **decision.as_dict(),
@@ -1958,6 +2033,14 @@ def run_reconciler(
                         )
                     )
                     continue
+                mutation_results.append(
+                    {
+                        **decision.as_dict(),
+                        "action": "release_auto_arm",
+                        "ok": True,
+                        "message": armed_message,
+                    }
+                )
             ok, message = merge_pr(decision, repo=repo, repo_root=repo_root, runner=runner)
             result = {
                 **decision.as_dict(),
