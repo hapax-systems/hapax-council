@@ -175,7 +175,7 @@ exit 0
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -207,6 +207,117 @@ exit 0
     sid = proof["session_id"]
     assert (cache / f"session-role-{sid}").read_text(encoding="utf-8") == "cx-amber\n"
     assert (cache / f"cc-active-task-cx-amber-{sid}").read_text(encoding="utf-8") == "task-x\n"
+
+
+def test_codex_headless_treats_appendix_alias_as_local_on_appendix(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    ssh_called = tmp_path / "ssh-called"
+    codex_args = tmp_path / "codex-args.txt"
+    _write_executable(
+        bin_dir / "hostname",
+        """
+case "${1:-}" in
+  -s|-f) printf '%s\n' hapax-appendix ;;
+  *) printf '%s\n' hapax-appendix ;;
+esac
+""",
+    )
+    _write_executable(
+        bin_dir / "ssh",
+        f""": > "{ssh_called}"
+echo 'ssh should not be called for local appendix alias' >&2
+exit 99
+""",
+    )
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\n' "$*" > "{codex_args}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not ssh_called.exists()
+    assert codex_args.exists()
+
+
+def test_codex_headless_treats_appendix_local_ip_as_local(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    ssh_called = tmp_path / "ssh-called"
+    codex_args = tmp_path / "codex-args.txt"
+    _write_executable(
+        bin_dir / "hostname",
+        """
+case "${1:-}" in
+  -s|-f) printf '%s\n' hapax-appendix ;;
+  -I) printf '%s\n' '192.168.68.50 10.0.0.50' ;;
+  *) printf '%s\n' hapax-appendix ;;
+esac
+""",
+    )
+    _write_executable(
+        bin_dir / "ssh",
+        f""": > "{ssh_called}"
+echo 'ssh should not be called for local appendix IP' >&2
+exit 99
+""",
+    )
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\n' "$*" > "{codex_args}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "192.168.68.50"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not ssh_called.exists()
+    assert codex_args.exists()
 
 
 def test_codex_headless_creates_missing_remote_default_worktree(tmp_path: Path) -> None:
@@ -245,7 +356,7 @@ exit 0
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(primary)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -295,7 +406,7 @@ exit 99
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(primary)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
         [str(SCRIPT), "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -337,7 +448,7 @@ exit 99
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -376,7 +487,7 @@ def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -421,7 +532,7 @@ def test_codex_headless_remote_bootstrap_refuses_disabled_worktree_creation(
     env["HAPAX_COUNCIL_DIR"] = str(primary)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_CREATE_WORKTREE"] = "0"
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -463,7 +574,7 @@ def test_codex_headless_remote_bootstrap_reports_missing_remote_council(
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(primary)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -560,7 +671,7 @@ def test_codex_headless_remote_preflight_reports_missing_codex_binary(
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(primary)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -606,7 +717,7 @@ def test_codex_headless_remote_bootstrap_reports_missing_git(
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(primary)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -655,7 +766,7 @@ exit 0
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(primary)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -702,7 +813,7 @@ def test_codex_headless_remote_bootstrap_reports_council_not_git_worktree(
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(primary)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -757,7 +868,7 @@ exit 0
     env["HAPAX_COUNCIL_DIR"] = str(primary)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_WORKTREE_BASE"] = "refs/heads/does-not-exist"
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -805,7 +916,7 @@ def test_codex_headless_remote_bootstrap_reports_git_worktree_add_failure(
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(primary)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
