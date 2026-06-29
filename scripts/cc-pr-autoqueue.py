@@ -1167,17 +1167,20 @@ def classify_pr(
     # authorized (the lane died after `gh pr create`) strands forever. Running
     # as the system (FM-20), the autoqueue may auto-arm a task once its release
     # gate is satisfied. Sensitivity is no longer a manual-arm veto (operator
-    # directive 2026-06-22): the PR's VERIFIED (passing) checks are supplied as
-    # evidence, so a sensitive class auto-arms iff its mitigation checks
-    # (RELEASE_MITIGATION_CHECKS) passed. Use verified_passed, not queue-filtered
-    # passed: some governance evidence contexts are ignored for ordinary queue
-    # classification but still count as release mitigation evidence. An
-    # unmitigated class fails closed (held until its gate is defined), never
-    # released by a manual override.
+    # directive 2026-06-22): the PR's verified checks plus the fresh local
+    # autoqueue-admission proof are supplied as evidence, so a sensitive class
+    # auto-arms iff its mitigation checks (RELEASE_MITIGATION_CHECKS) passed.
+    # Broad admission mirror checks remain ignored for release mitigation because
+    # they can pass vacuously on ordinary PR events. An unmitigated class fails
+    # closed (held until its gate is defined), never released by a manual
+    # override.
     auto_arm = False
     auto_arm_verified_checks: tuple[str, ...] = ()
     if task is not None and not reasons:
         verified_checks = set(pr.check_summary.verified_passed)
+        # ``run_reconciler`` writes this proof immediately before arming; if the
+        # status write fails, the note is not armed and the PR is not queued.
+        verified_checks.add(AUTOQUEUE_ADMISSION_CONTEXT)
         arm = assess_release_auto_arm(task.frontmatter, verified_checks=verified_checks)
         if arm.needs_arming:
             if arm.eligible:
@@ -1201,6 +1204,8 @@ def classify_pr(
             tasks=matched_tasks,
             action="already_queued",
             reasons=tuple(reasons),
+            auto_arm=auto_arm,
+            auto_arm_verified_checks=auto_arm_verified_checks,
         )
     if reasons:
         if pr.auto_merge_enabled:
@@ -1224,6 +1229,8 @@ def classify_pr(
             task=task,
             tasks=matched_tasks,
             action="already_auto_merge_enabled",
+            auto_arm=auto_arm,
+            auto_arm_verified_checks=auto_arm_verified_checks,
         )
     if pr.check_summary.has_pending:
         if include_pending_auto:
@@ -1757,6 +1764,23 @@ def run_reconciler(
                             "status_state": admission_status[0],
                             "ok": ok,
                             "message": message,
+                        }
+                    )
+                    if not ok:
+                        continue
+                if decision.auto_arm and decision.task is not None:
+                    armed_ok, armed_message = arm_release_for_task(
+                        decision.task,
+                        ledger_path=auto_arm_ledger_path,
+                        now=now,
+                        verified_checks=set(decision.auto_arm_verified_checks),
+                    )
+                    mutation_results.append(
+                        {
+                            **decision.as_dict(),
+                            "action": "release_auto_arm",
+                            "ok": armed_ok,
+                            "message": armed_message,
                         }
                     )
                 continue

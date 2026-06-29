@@ -6,6 +6,12 @@ mergeable PR at ``pr_open`` forever. The autoqueue (running as the system,
 unclaimed — FM-20) must auto-arm such a task — but only when its release was
 already authorized-in-principle by its ISAP and every applicable sensitivity
 class has machine-verified mitigation evidence.
+
+Release auto-arm blocker reason codes are part of the reconciler/ledger
+contract: ``risk_flag:{name}`` means no PR check evidence was supplied,
+``needs_mitigation:{name}:{check}`` is emitted once per missing mitigation
+check, and ``unmitigable_risk_flag:{name}`` means no automated mitigation gate
+exists for that sensitive class.
 """
 
 from __future__ import annotations
@@ -396,12 +402,12 @@ def test_governance_sensitive_auto_arms_when_mitigation_evidence_present() -> No
 
 def test_governance_sensitive_held_when_mitigation_evidence_missing() -> None:
     fm = _eligible_frontmatter(risk_flags={"governance_sensitive": True})
-    assessment = assess_release_auto_arm(fm, verified_checks={"authority-case-check", "review"})
+    assessment = assess_release_auto_arm(fm, verified_checks={"authority-case-check"})
 
     assert not assessment.eligible
     assert assessment.blockers == (
-        "needs_mitigation:governance_sensitive:governance-gate",
-        "needs_mitigation:governance_sensitive:pr-admission",
+        "needs_mitigation:governance_sensitive:review",
+        "needs_mitigation:governance_sensitive:hapax/autoqueue-admission",
     )
 
 

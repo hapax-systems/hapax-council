@@ -381,6 +381,7 @@ class _FakeRunner:
         self.open_prs: list[dict[str, Any]] = []
         self.queued_prs: set[int] = set()
         self.calls: list[list[str]] = []
+        self.fail_status_posts = False
         # head_sha -> existing commit statuses (most-recent-first), for the G3
         # read-before-write idempotency check in set_autoqueue_admission_status.
         self.head_statuses: dict[str, list[dict[str, Any]]] = {}
@@ -404,6 +405,8 @@ class _FakeRunner:
         ):
             return subprocess.CompletedProcess(cmd, 0, '{"data":{"dequeuePullRequest":{}}}', "")
         if cmd[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in cmd[4]:
+            if self.fail_status_posts:
+                return subprocess.CompletedProcess(cmd, 1, "", "status post failed")
             return subprocess.CompletedProcess(cmd, 0, '{"state":"ok"}', "")
         if cmd[:3] == ["gh", "api", "graphql"]:
             nodes = [{"pullRequest": {"number": number}} for number in sorted(self.queued_prs)]
@@ -1644,6 +1647,8 @@ def _governance_mitigation_checks() -> list[dict[str, Any]]:
         _check("web-build"),
         _check("vscode-build"),
         _check("authority-case-check"),
+        # These admission mirror checks may be present and green, but governance
+        # release mitigation must not rely on them; they can pass vacuously.
         _check("governance-gate"),
         _check("pr-admission"),
         _check("review"),
@@ -1698,8 +1703,25 @@ def test_holds_governance_sensitive_task_without_mitigation_evidence(tmp_path: P
         tags=["governance"],
         extra_frontmatter=_eligible_arm_extra(),
     )
+    pr_payload = _pr(
+        702,
+        checks=[
+            _check("lint"),
+            _check("test"),
+            _check("typecheck"),
+            _check("web-build"),
+            _check("vscode-build"),
+            _check("governance-gate", "SKIPPED"),
+            _check("pr-admission", "NEUTRAL"),
+        ],
+    )
+    parsed = autoqueue._parse_pr(pr_payload)
+    assert parsed is not None
+    assert "governance-gate" not in parsed.check_summary.verified_passed
+    assert "pr-admission" not in parsed.check_summary.verified_passed
+
     runner = _FakeRunner()
-    runner.open_prs = [_pr(702)]
+    runner.open_prs = [pr_payload]
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
@@ -1717,7 +1739,11 @@ def test_holds_governance_sensitive_task_without_mitigation_evidence(tmp_path: P
     assert not any(call[:4] == ["gh", "pr", "merge", "702"] for call in runner.calls)
     decision = next(d for d in report["decisions"] if d["pr"] == 702)
     assert decision["action"] == "blocked"
-    assert any(reason.startswith("release_auto_arm_ineligible:") for reason in decision["reasons"])
+    assert decision["reasons"] == [
+        "release_auto_arm_ineligible:"
+        "needs_mitigation:governance_sensitive:authority-case-check,"
+        "needs_mitigation:governance_sensitive:review"
+    ]
 
 
 def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
@@ -1741,8 +1767,8 @@ def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
     assert parsed is not None
     assert "governance-gate" not in parsed.check_summary.passed
     assert "pr-admission" not in parsed.check_summary.passed
-    assert "governance-gate" in parsed.check_summary.verified_passed
-    assert "pr-admission" in parsed.check_summary.verified_passed
+    assert "governance-gate" not in parsed.check_summary.verified_passed
+    assert "pr-admission" not in parsed.check_summary.verified_passed
 
     runner = _FakeRunner()
     runner.open_prs = [pr_payload]
@@ -1769,10 +1795,11 @@ def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
     record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
     assert set(record["verified_checks"]) >= {
         "authority-case-check",
-        "governance-gate",
-        "pr-admission",
+        autoqueue.AUTOQUEUE_ADMISSION_CONTEXT,
         "review",
     }
+    assert "governance-gate" not in record["verified_checks"]
+    assert "pr-admission" not in record["verified_checks"]
     assert record["release_auto_arm_assessment"] == {
         "subject": True,
         "armed": False,
@@ -1782,15 +1809,112 @@ def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
     }
 
 
-@pytest.mark.parametrize("state", ["SKIPPED", "NEUTRAL"])
+def test_auto_arms_already_queued_governance_sensitive_task(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-already-queued",
+        status="pr_open",
+        pr=711,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    runner = _FakeRunner()
+    runner.queued_prs = {711}
+    runner.open_prs = [_pr(711, checks=_governance_mitigation_checks())]
+    ledger = tmp_path / "ledger.jsonl"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=ledger,
+    )
+
+    armed = note.read_text(encoding="utf-8")
+    assert "release_authorized: true" in armed
+    assert "stage: S7_RELEASE" in armed
+    assert not any(call[:4] == ["gh", "pr", "merge", "711"] for call in runner.calls)
+    decision = next(d for d in report["decisions"] if d["pr"] == 711)
+    assert decision["action"] == "already_queued"
+    assert decision["auto_arm"] is True
+    assert any(
+        item["pr"] == 711 and item["action"] == "release_auto_arm" and item["ok"] is True
+        for item in report["mutations"]
+    )
+    record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+    assert record["task_id"] == "stranded-governance-already-queued"
+
+
+def test_auto_arms_already_auto_merge_enabled_governance_sensitive_task(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-already-auto",
+        status="pr_open",
+        pr=712,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(712, auto_merge=True, checks=_governance_mitigation_checks())]
+    ledger = tmp_path / "ledger.jsonl"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=ledger,
+    )
+
+    armed = note.read_text(encoding="utf-8")
+    assert "release_authorized: true" in armed
+    assert "stage: S7_RELEASE" in armed
+    assert not any(call[:4] == ["gh", "pr", "merge", "712"] for call in runner.calls)
+    decision = next(d for d in report["decisions"] if d["pr"] == 712)
+    assert decision["action"] == "already_auto_merge_enabled"
+    assert decision["auto_arm"] is True
+    assert any(
+        item["pr"] == 712 and item["action"] == "release_auto_arm" and item["ok"] is True
+        for item in report["mutations"]
+    )
+    record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+    assert record["task_id"] == "stranded-governance-already-auto"
+
+
+@pytest.mark.parametrize(
+    ("context", "state"),
+    [
+        ("authority-case-check", "SKIPPED"),
+        ("review", "SKIPPED"),
+        ("review", "NEUTRAL"),
+    ],
+)
 def test_governance_mitigation_requires_successful_evidence(
     tmp_path: Path,
+    context: str,
     state: str,
 ) -> None:
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
-        task_id=f"stranded-governance-{state.lower()}",
+        task_id=f"stranded-governance-{context}-{state.lower()}",
         status="pr_open",
         pr=709,
         extra_frontmatter={
@@ -1802,13 +1926,13 @@ def test_governance_mitigation_requires_successful_evidence(
     )
     checks = _governance_mitigation_checks()
     checks = [
-        {**check, "conclusion": state} if check.get("name") == "governance-gate" else check
+        {**check, "conclusion": state} if check.get("name") == context else check
         for check in checks
     ]
     pr_payload = _pr(709, checks=checks)
     parsed = autoqueue._parse_pr(pr_payload)
     assert parsed is not None
-    assert "governance-gate" not in parsed.check_summary.verified_passed
+    assert context not in parsed.check_summary.verified_passed
 
     runner = _FakeRunner()
     runner.open_prs = [pr_payload]
@@ -1828,10 +1952,49 @@ def test_governance_mitigation_requires_successful_evidence(
     assert not any(call[:4] == ["gh", "pr", "merge", "709"] for call in runner.calls)
     decision = next(d for d in report["decisions"] if d["pr"] == 709)
     assert decision["action"] == "blocked"
-    assert (
-        "release_auto_arm_ineligible:needs_mitigation:governance_sensitive:governance-gate"
-        in decision["reasons"]
+    assert decision["reasons"] == [
+        f"release_auto_arm_ineligible:needs_mitigation:governance_sensitive:{context}"
+    ]
+
+
+def test_governance_auto_arm_requires_successful_autoqueue_admission_status(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-status-failed",
+        status="pr_open",
+        pr=710,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
     )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(710, checks=_governance_mitigation_checks())]
+    runner.fail_status_posts = True
+    ledger = tmp_path / "ledger.jsonl"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=ledger,
+    )
+
+    untouched = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in untouched
+    assert "stage: S7_RELEASE" not in untouched
+    assert not ledger.exists()
+    assert not any(call[:4] == ["gh", "pr", "merge", "710"] for call in runner.calls)
+    mutation = next(item for item in report["mutations"] if item["pr"] == 710)
+    assert mutation["ok"] is False
+    assert mutation["message"] == "admission status write failed; queue mutation skipped"
 
 
 def test_auto_arms_pass_backed_runtime_secret_subscription_task(tmp_path: Path) -> None:

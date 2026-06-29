@@ -467,18 +467,18 @@ SENSITIVE_RISK_FLAGS = (
 #: Emergency recovery for miswired evidence producers is the autoqueue killswitch
 #: (`HAPAX_CC_PR_AUTOQUEUE_OFF=1` or `HAPAX_CC_HYGIENE_OFF=1`) while the check
 #: wiring is repaired; the killswitch pauses admission and is not a manual release
-#: arm.
+#: arm. Recheck the pause before retrying autoqueue with:
+#: `env | grep -E '^(HAPAX_CC_PR_AUTOQUEUE_OFF|HAPAX_CC_HYGIENE_OFF)=1$'`.
 RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # A governance-sensitive change auto-arms only after the local review dossier
-    # gate has already accepted the PR and the GitHub-side governance checks pass.
-    # ``cc-pr-autoqueue`` validates the dossier before release assessment; these
-    # check contexts are the machine-verifiable CI side of that same governance
-    # evidence bundle.
+    # gate has already accepted the PR, the GitHub-side authority/review checks
+    # pass, and ``cc-pr-autoqueue`` writes its own fresh admission proof for the
+    # exact head being armed. Do not use broad admission mirror checks here: they
+    # can pass vacuously on ordinary PR events with no PR-specific queue proof.
     "governance_sensitive": (
         "authority-case-check",
-        "governance-gate",
-        "pr-admission",
         "review",
+        "hapax/autoqueue-admission",
     ),
     # A privacy/secret-sensitive change auto-arms when the dedicated secret
     # scanner passes on its diff (no committed credential). The redaction
@@ -710,6 +710,9 @@ def _release_auto_arm_blockers(
     # until the mitigation is produced; no gate defined for the class → fail
     # CLOSED. With no verified checks supplied (pure-frontmatter assessment) the
     # historical hard veto is preserved for backward compatibility.
+    # Blocker reason-code contract: `risk_flag:` is the no-evidence legacy veto,
+    # `needs_mitigation:` is emitted once per missing check (not grouped), and
+    # `unmitigable_risk_flag:` means no automated mitigation gate is defined.
     for name in _effective_sensitive_flags(frontmatter):
         if verified_checks is None:
             blockers.append(f"risk_flag:{name}")
