@@ -184,7 +184,9 @@ def test_cli_dry_run_prints_all_axes_and_does_not_mutate_request(
     assert request.read_text(encoding="utf-8") == original
 
 
-def test_cli_models_single_member_forwarded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_models_single_member_forwarded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     request = tmp_path / "REQ-INTAKE-CLI.md"
     _write_request(request)
     seen_configs: list[CouncilConfig] = []
@@ -324,11 +326,15 @@ def test_existing_labeling_ratify_and_audit_modes_still_invoke(
             str(output),
         ],
     )
-    with patch("agents.deliberative_council.modes.labeling.run_ratification", return_value=[]) as ratify:
+    with patch(
+        "agents.deliberative_council.modes.labeling.run_ratification", return_value=[]
+    ) as ratify:
         council_cli.main()
     ratify.assert_called_once()
     assert "Ratified: 0 records written" in capsys.readouterr().out
 
-    monkeypatch.setattr(sys, "argv", ["council", "--mode", "audit", "--scope", str(tmp_path), "--dry-run"])
+    monkeypatch.setattr(
+        sys, "argv", ["council", "--mode", "audit", "--scope", str(tmp_path), "--dry-run"]
+    )
     council_cli.main()
     assert "Audit dry-run:" in capsys.readouterr().out
