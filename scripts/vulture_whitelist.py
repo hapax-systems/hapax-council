@@ -4221,6 +4221,13 @@ from shared.gate_outcome_producer import (  # noqa: E402
 build_outcome_gate_event
 emit_outcome_gate_event
 
+# Additive CCEF/H STEP 2: the dispatch-frontier public API — callers land in the shadow-wire
+# (STEP 9); referenced here so the vulture gate does not flag the as-yet caller-less functions.
+from shared.dispatch_frontier import dominates, non_dominated_set  # noqa: E402
+
+dominates
+non_dominated_set
+
 # Capability-routing D8 governance floor (Phase 0.3) — Pydantic invokes this
 # model_validator dynamically during TaskSpec validation; vulture cannot follow
 # that dynamic path. REQ-20260616-capability-aware-routing / S5-CAPABILITY-ROUTING-TIER1.
