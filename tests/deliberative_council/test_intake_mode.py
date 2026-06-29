@@ -84,7 +84,8 @@ async def test_run_intake_preserves_request_body_exactly_on_writeback(tmp_path: 
         "title": "Intake target",
         "status": "captured",
     }
-    body = "# Request\n\nKeep this evidence block intact.\n\n\n"
+    body = "# Request\n\nKeep this evidence block intact.\n\n  \n"
+    assert body.rstrip() != body
     request.write_text(
         f"---\n{yaml.safe_dump(frontmatter, sort_keys=False)}---\n\n{body}",
         encoding="utf-8",
