@@ -1851,6 +1851,16 @@ def run_reconciler(
                         }
                     )
                     if not ok:
+                        mutation_results.extend(
+                            _release_auto_arm_fail_closed_mutations(
+                                decision,
+                                f"admission_status_write_failed:{message}",
+                                repo=repo,
+                                repo_root=repo_root,
+                                runner=runner,
+                                now=now,
+                            )
+                        )
                         continue
                 if decision.auto_arm and decision.task is not None:
                     armed_ok, armed_message = arm_release_for_task(

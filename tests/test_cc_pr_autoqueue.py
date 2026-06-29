@@ -2019,6 +2019,110 @@ def test_already_auto_merge_auto_arm_failure_disables_auto_merge_and_overwrites_
     assert ["gh", "pr", "merge", "714", "--repo", "owner/repo", "--disable-auto"] in runner.calls
 
 
+def test_already_queued_status_write_failure_still_dequeues(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-queued-status-fails",
+        status="pr_open",
+        pr=717,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    runner = _FakeRunner()
+    runner.queued_prs = {717}
+    runner.open_prs = [_pr(717, checks=_governance_mitigation_checks())]
+    runner.fail_status_posts = True
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    assert "release_authorized: false" in note.read_text(encoding="utf-8")
+    assert not any(
+        item["pr"] == 717 and item["action"] == "release_auto_arm" for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 717
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "success"
+        and item["ok"] is False
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 717
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        and item["ok"] is False
+        for item in report["mutations"]
+    )
+    assert any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+
+
+def test_already_auto_merge_status_write_failure_still_disables_auto_merge(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-auto-status-fails",
+        status="pr_open",
+        pr=718,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(718, auto_merge=True, checks=_governance_mitigation_checks())]
+    runner.fail_status_posts = True
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    assert "release_authorized: false" in note.read_text(encoding="utf-8")
+    assert not any(
+        item["pr"] == 718 and item["action"] == "release_auto_arm" for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 718
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "success"
+        and item["ok"] is False
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 718
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        and item["ok"] is False
+        for item in report["mutations"]
+    )
+    assert ["gh", "pr", "merge", "718", "--repo", "owner/repo", "--disable-auto"] in runner.calls
+
+
 def test_new_queue_auto_arm_failure_overwrites_admission_status_without_queueing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2254,6 +2358,70 @@ def test_arm_release_for_task_fails_closed_when_assessment_ineligible(tmp_path: 
     assert "release_authorized: false" in untouched
     assert "stage: S7_RELEASE" not in untouched
     assert not ledger.exists()
+
+
+def test_arm_release_for_task_reports_note_read_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-read-failure",
+        status="pr_open",
+        pr=719,
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    original_read_text = Path.read_text
+
+    def fail_note_read(path: Path, *args: Any, **kwargs: Any) -> str:
+        if path == note:
+            raise OSError("read failed")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_note_read)
+
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    assert ok is False
+    assert message == "note_unreadable:read failed"
+
+
+def test_arm_release_for_task_reports_note_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-write-failure",
+        status="pr_open",
+        pr=720,
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    original_write_text = Path.write_text
+
+    def fail_note_write(path: Path, *args: Any, **kwargs: Any) -> int:
+        if path == note:
+            raise OSError("write failed")
+        return original_write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_note_write)
+
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    assert ok is False
+    assert message == "note_write_failed:write failed"
+    assert "release_authorized: false" in note.read_text(encoding="utf-8")
+    assert not (tmp_path / "ledger.jsonl").exists()
 
 
 def test_auto_arms_pass_backed_runtime_secret_subscription_task(tmp_path: Path) -> None:
