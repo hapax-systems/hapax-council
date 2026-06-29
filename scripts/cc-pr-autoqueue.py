@@ -916,16 +916,15 @@ def _release_authorized_head_blockers(
     assessment = assess_release_auto_arm(frontmatter)
     if not assessment.armed:
         return ()
-    authorized_head_sha = _scalar(frontmatter.get("release_authorized_head_sha"))
-    if not authorized_head_sha:
-        return ()
     if not pr_head_sha:
         return ("release_authorized_head_unavailable",)
-    if authorized_head_sha != pr_head_sha:
-        return (
-            f"release_authorized_head_mismatch:"
-            f"authorized={authorized_head_sha}:current={pr_head_sha}",
-        )
+    blocker = _release_authorized_head_stamp_blocker(
+        frontmatter,
+        expected_head_sha=pr_head_sha,
+        expected_label="current",
+    )
+    if blocker:
+        return (blocker,)
     return ()
 
 
@@ -1342,12 +1341,9 @@ def merge_pr(
         # Re-arming an already-armed PR is a no-op; `--squash` matches the queue's
         # configured merge method.
         cmd.extend(["--auto", "--squash"])
-        authorized_head_sha = (
-            _scalar(decision.task.frontmatter.get("release_authorized_head_sha"))
-            if decision.task is not None
-            else None
-        )
-        if decision.pr.head_sha and (decision.auto_arm or authorized_head_sha):
+        if _decision_requires_head_guard(decision):
+            if not decision.pr.head_sha:
+                return False, "missing_head_sha_for_head_guard"
             cmd.extend(["--match-head-commit", decision.pr.head_sha])
     elif decision.action == "disable_auto_merge":
         cmd.append("--disable-auto")
@@ -1410,6 +1406,35 @@ def _release_auto_arm_current_admission_blockers(
             f"current_task_branch_mismatch:current={current_branch}:expected={expected_branch}"
         )
     return tuple(blockers)
+
+
+def _release_authorized_head_stamp_blocker(
+    frontmatter: dict[str, Any],
+    *,
+    expected_head_sha: str | None,
+    expected_label: str = "expected",
+) -> str | None:
+    if expected_head_sha is None:
+        return None
+    authorized_head_sha = _scalar(frontmatter.get("release_authorized_head_sha"))
+    if not authorized_head_sha:
+        return f"release_authorized_head_missing:{expected_label}={expected_head_sha}"
+    if authorized_head_sha != expected_head_sha:
+        return (
+            f"release_authorized_head_mismatch:"
+            f"authorized={authorized_head_sha}:{expected_label}={expected_head_sha}"
+        )
+    return None
+
+
+def _decision_requires_head_guard(decision: Decision) -> bool:
+    if decision.action not in {"queue", "enable_auto_merge"}:
+        return False
+    if decision.auto_arm:
+        return True
+    if decision.task is None:
+        return False
+    return assess_release_auto_arm(decision.task.frontmatter).armed
 
 
 def _append_release_auto_arm_ledger(
@@ -1535,6 +1560,12 @@ def arm_release_for_task(
     )
     if not pre_arm_assessment.eligible:
         if pre_arm_assessment.armed:
+            head_stamp_blocker = _release_authorized_head_stamp_blocker(
+                current_frontmatter,
+                expected_head_sha=expected_head_sha,
+            )
+            if head_stamp_blocker:
+                return False, head_stamp_blocker
             return True, "note_unchanged"
         reasons = ",".join(pre_arm_assessment.blockers or ("not_eligible",))
         return False, f"release_auto_arm_ineligible:{reasons}"

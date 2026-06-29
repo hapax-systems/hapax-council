@@ -2043,11 +2043,23 @@ def test_already_queued_note_unchanged_auto_arm_is_idempotent_success(
     runner = _FakeRunner()
     runner.queued_prs = {732}
     runner.open_prs = [_pr(732, checks=_governance_mitigation_checks())]
+    original_set_status = autoqueue.set_autoqueue_admission_status
 
-    def unchanged_arm(*_: Any, **__: Any) -> tuple[bool, str]:
-        return False, "note_unchanged"
+    def arm_note_before_release_write(*args: Any, **kwargs: Any) -> tuple[bool, str] | None:
+        current = note.read_text(encoding="utf-8")
+        if "release_authorized: false" in current:
+            note.write_text(
+                current.replace(
+                    "release_authorized: false",
+                    "release_authorized: true\n"
+                    "release_authorized_head_sha: sha-732\n"
+                    "release_authorized_head_ref: feat/732",
+                ).replace("stage: S6_IMPLEMENTATION", "stage: S7_RELEASE"),
+                encoding="utf-8",
+            )
+        return original_set_status(*args, **kwargs)
 
-    monkeypatch.setattr(autoqueue, "arm_release_for_task", unchanged_arm)
+    monkeypatch.setattr(autoqueue, "set_autoqueue_admission_status", arm_note_before_release_write)
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
@@ -2058,7 +2070,7 @@ def test_already_queued_note_unchanged_auto_arm_is_idempotent_success(
         auto_arm_ledger_path=tmp_path / "ledger.jsonl",
     )
 
-    assert "release_authorized: false" in note.read_text(encoding="utf-8")
+    assert "release_authorized: true" in note.read_text(encoding="utf-8")
     assert any(
         item["pr"] == 732
         and item["action"] == "release_auto_arm"
@@ -2724,6 +2736,77 @@ def test_arm_release_for_task_revalidates_current_pr_head_sha(tmp_path: Path) ->
     assert not ledger.exists()
 
 
+def test_arm_release_for_task_rejects_stale_already_armed_note_head(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-stale-armed-head",
+        status="pr_open",
+        pr=728,
+        branch="feat/728",
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-old",
+            "stage": "S7_RELEASE",
+        },
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(728, branch="feat/728")]
+    ledger = tmp_path / "ledger.jsonl"
+
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=ledger,
+        pr_number=728,
+        head_ref="feat/728",
+        expected_head_sha="sha-728",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is False
+    assert message == "release_authorized_head_mismatch:authorized=sha-old:expected=sha-728"
+    assert not ledger.exists()
+
+
+def test_arm_release_for_task_rejects_headless_already_armed_note(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-headless-armed",
+        status="pr_open",
+        pr=729,
+        branch="feat/729",
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "stage": "S7_RELEASE",
+        },
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(729, branch="feat/729")]
+    ledger = tmp_path / "ledger.jsonl"
+
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=ledger,
+        pr_number=729,
+        head_ref="feat/729",
+        expected_head_sha="sha-729",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is False
+    assert message == "release_authorized_head_missing:expected=sha-729"
+    assert not ledger.exists()
+
+
 def test_release_authorized_head_mismatch_blocks_later_admission(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     _write_task(
@@ -3016,7 +3099,7 @@ def test_auto_armed_task_writes_auto_arm_ledger_record(
     assert set(record["verified_checks"]) >= {"lint", "test", "typecheck"}
 
 
-def test_already_release_authorized_task_is_not_rearmed(tmp_path: Path) -> None:
+def test_already_release_authorized_task_without_head_stamp_is_blocked(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -3042,19 +3125,12 @@ def test_already_release_authorized_task_is_not_rearmed(tmp_path: Path) -> None:
         auto_arm_ledger_path=tmp_path / "ledger.jsonl",
     )
 
-    # Already armed → merges normally, no auto-arm audit line appended.
+    # Already armed without a stamped head cannot prove which commit was authorized.
     assert "release auto-arm (system)" not in note.read_text(encoding="utf-8")
-    assert [
-        "gh",
-        "pr",
-        "merge",
-        "705",
-        "--repo",
-        "owner/repo",
-        "--auto",
-        "--squash",
-    ] in runner.calls
+    assert not any(call[:4] == ["gh", "pr", "merge", "705"] for call in runner.calls)
     decision = next(d for d in report["decisions"] if d["pr"] == 705)
+    assert decision["action"] == "blocked"
+    assert "release_authorized_head_missing:current=sha-705" in decision["reasons"]
     assert decision.get("auto_arm", False) is False
 
 
@@ -3101,6 +3177,44 @@ def test_already_release_authorized_head_locked_task_matches_head_on_merge(
     decision = next(d for d in report["decisions"] if d["pr"] == 733)
     assert decision["action"] == "queue"
     assert decision.get("auto_arm", False) is False
+
+
+def test_head_guard_required_merge_fails_when_head_sha_missing(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="already-armed-missing-head",
+        status="pr_open",
+        pr=734,
+        extra_frontmatter={
+            "implementation_authorized": True,
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-734",
+            "risk_tier": "T2",
+            "stage": "S7_RELEASE",
+        },
+    )
+    task = next(
+        task
+        for task in autoqueue.load_task_notes(vault)
+        if task.task_id == "already-armed-missing-head"
+    )
+    payload = _pr(734)
+    payload["headRefOid"] = None
+    pr = autoqueue._parse_pr(payload)
+    assert pr is not None
+    runner = _FakeRunner()
+
+    ok, message = autoqueue.merge_pr(
+        autoqueue.Decision(pr=pr, task=task, tasks=(task,), action="queue"),
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is False
+    assert message == "missing_head_sha_for_head_guard"
+    assert runner.calls == []
 
 
 def test_flake_quarantine_write_side_persists_and_excludes_next_tick(
