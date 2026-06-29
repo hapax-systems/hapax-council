@@ -10,10 +10,20 @@ from __future__ import annotations
 
 import logging
 from enum import StrEnum
+from pathlib import Path
+from typing import Any
 
+import yaml
 from pydantic import BaseModel, ConfigDict
 
-from agents.deliberative_council.models import ConvergenceStatus
+from agents.deliberative_council.models import (
+    ConvergenceStatus,
+    CouncilConfig,
+    CouncilInput,
+    CouncilMode,
+)
+from agents.deliberative_council.rubrics import IntakeHardeningRubric
+from shared.frontmatter import parse_frontmatter
 
 _log = logging.getLogger(__name__)
 
@@ -77,6 +87,10 @@ class IntakeReceipt(BaseModel):
     impediments: tuple[str, ...] = ()
 
 
+class IntakeContractError(RuntimeError):
+    """Raised when the panel output is not valid intake evidence."""
+
+
 def derive_verdict(
     scores: dict[str, int | None],
     convergence: ConvergenceStatus,
@@ -136,6 +150,21 @@ def identify_failing_axes(scores: dict[str, int | None]) -> tuple[str, ...]:
     )
 
 
+def _complete_axis_scores(scores: dict[str, int | None]) -> dict[str, int] | None:
+    axis_scores: dict[str, int] = {}
+    for axis in AXIS_WEIGHTS:
+        score = scores.get(axis)
+        if isinstance(score, bool) or not isinstance(score, int):
+            return None
+        axis_scores[axis] = score
+    return axis_scores
+
+
+def _refusal_reason(receipt: dict[str, Any]) -> str:
+    value = receipt.get("refusal_reason") or receipt.get("error") or ""
+    return str(value).strip()
+
+
 def build_receipt(
     request_id: str,
     request_path: str,
@@ -165,3 +194,161 @@ def build_receipt(
         failing_axes=identify_failing_axes(scores),
         impediments=impediments,
     )
+
+
+def _intake_axes_frontmatter(receipt: IntakeReceipt) -> dict[str, dict[str, Any]]:
+    return {
+        axis.name: {
+            "score": axis.score,
+            "label": axis.label,
+            "below_threshold": axis.below_threshold,
+        }
+        for axis in receipt.axis_results
+    }
+
+
+def intake_axis_score_map(receipt: IntakeReceipt) -> dict[str, int]:
+    scores = {axis.name: axis.score for axis in receipt.axis_results}
+    complete = _complete_axis_scores(scores)
+    if complete is None:
+        raise IntakeContractError("COUNCIL_REFUSED invalid_axis_scores")
+    return complete
+
+
+def _render_frontmatter(frontmatter: dict[str, Any], body: str) -> str:
+    yaml_text = yaml.safe_dump(
+        frontmatter,
+        sort_keys=False,
+        allow_unicode=False,
+        default_flow_style=False,
+    ).strip()
+    return f"---\n{yaml_text}\n---\n\n{body.rstrip()}\n"
+
+
+def _timeout_failures(receipt: dict[str, Any]) -> list[str]:
+    failures = receipt.get("failed_members")
+    if not isinstance(failures, list):
+        return []
+
+    timed_out = []
+    for failure in failures:
+        if not isinstance(failure, dict):
+            continue
+        reason = str(failure.get("reason") or "")
+        if "TimeoutError" in reason:
+            alias = str(failure.get("model_alias") or "unknown")
+            timed_out.append(alias)
+    return timed_out
+
+
+def _has_research_refs(frontmatter: dict[str, Any], body: str) -> bool:
+    nullish = {"", "null", "none", "unassigned"}
+    for key in (
+        "research_refs",
+        "research_ref",
+        "research_documents",
+        "research_docs",
+        "source_refs",
+        "source_ref",
+        "sources",
+        "references",
+    ):
+        value = frontmatter.get(key)
+        if isinstance(value, str):
+            if value.strip().lower() not in nullish:
+                return True
+        elif isinstance(value, list | tuple | set | dict):
+            if value:
+                return True
+        elif value is not None:
+            return True
+
+    body_lower = body.lower()
+    return any(
+        marker in body_lower
+        for marker in (
+            "research refs:",
+            "research references:",
+            "source refs:",
+            "docs/superpowers/research/",
+            "arxiv",
+            "doi:",
+        )
+    )
+
+
+def _assert_intake_output_contract(
+    scores: dict[str, int | None],
+    convergence: ConvergenceStatus,
+    receipt: dict[str, Any],
+    request_id: str,
+) -> dict[str, int]:
+    reason = _refusal_reason(receipt)
+    if convergence == ConvergenceStatus.REFUSED:
+        raise IntakeContractError(f"COUNCIL_REFUSED {reason or 'refused'} request={request_id}")
+    if reason == "all_models_failed":
+        raise IntakeContractError(f"COUNCIL_REFUSED all_models_failed request={request_id}")
+
+    complete = _complete_axis_scores(scores)
+    if complete is None:
+        non_null = sum(1 for score in scores.values() if score is not None)
+        reason = "no_axis_scores" if non_null == 0 else "partial_axis_scores"
+        raise IntakeContractError(f"COUNCIL_REFUSED {reason} request={request_id}")
+    return complete
+
+
+async def run_intake(
+    request_path: str | Path,
+    config: CouncilConfig | None = None,
+    write_back: bool = True,
+) -> IntakeReceipt:
+    path = Path(request_path)
+    frontmatter, body = parse_frontmatter(path)
+    request_id = str(frontmatter.get("request_id") or path.stem)
+    cfg = config if config is not None else CouncilConfig()
+
+    inp = CouncilInput(
+        text=body,
+        source_ref=str(path),
+        metadata=dict(frontmatter),
+    )
+    from agents.deliberative_council.engine import deliberate
+
+    try:
+        council_verdict = await deliberate(inp, CouncilMode.INTAKE, IntakeHardeningRubric(), cfg)
+    except TimeoutError as exc:
+        raise RuntimeError(f"intake council member timeout for {request_id}") from exc
+    timed_out = _timeout_failures(council_verdict.receipt)
+    if timed_out:
+        aliases = ", ".join(timed_out)
+        raise RuntimeError(f"intake council member timeout for {request_id}: {aliases}")
+    scores = _assert_intake_output_contract(
+        council_verdict.scores,
+        council_verdict.convergence_status,
+        council_verdict.receipt,
+        request_id,
+    )
+
+    receipt = build_receipt(
+        request_id=request_id,
+        request_path=str(path),
+        scores=scores,
+        convergence=council_verdict.convergence_status,
+        has_research_refs=_has_research_refs(frontmatter, body),
+        impediments=tuple(council_verdict.disagreement_log),
+    )
+
+    if write_back:
+        frontmatter["status"] = (
+            "accepted_for_planning"
+            if receipt.verdict == IntakeVerdict.READY_TO_PLAN
+            else "captured"
+        )
+        frontmatter["cctv_intake_verdict"] = receipt.verdict.value
+        frontmatter["recommendation"] = receipt.recommendation.value
+        frontmatter["composite"] = receipt.composite_score
+        frontmatter["axes"] = _intake_axes_frontmatter(receipt)
+        frontmatter["failing_axes"] = list(receipt.failing_axes)
+        path.write_text(_render_frontmatter(frontmatter, body), encoding="utf-8")
+
+    return receipt
