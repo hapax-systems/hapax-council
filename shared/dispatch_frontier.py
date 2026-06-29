@@ -55,16 +55,19 @@ def dominates(a: Cell, b: Cell, *, axes: Mapping[str, Direction] = FRONTIER_AXES
     strictly_better = False
     for d in shared:
         av, bv = a[d], b[d]
-        if axes[d] == "max":
+        direction = axes[d]
+        if direction == "max":
             if av < bv:
                 return False
             if av > bv:
                 strictly_better = True
-        else:  # "min": lower is better
+        elif direction == "min":  # lower is better
             if av > bv:
                 return False
             if av < bv:
                 strictly_better = True
+        else:  # fail closed: an unknown direction must not silently default to min
+            raise ValueError(f"unknown axis direction {direction!r} for axis {d!r}")
     return strictly_better
 
 

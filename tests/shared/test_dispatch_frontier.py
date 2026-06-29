@@ -8,6 +8,10 @@ imputed 0 — so it can neither create nor block domination.
 
 from __future__ import annotations
 
+from typing import Any
+
+import pytest
+
 from shared.dispatch_frontier import dominates, non_dominated_set
 
 
@@ -75,3 +79,10 @@ def test_non_dominated_set_empty_and_singleton() -> None:
     assert non_dominated_set([]) == []
     one = {"v_hat": 0.5}
     assert non_dominated_set([one]) == [one]
+
+
+def test_unknown_axis_direction_fails_closed() -> None:
+    """A typo'd axis direction must raise, not silently default to a min comparison."""
+    bad_axes: Any = {"x": "maximize"}  # not "max"/"min"
+    with pytest.raises(ValueError, match="unknown axis direction"):
+        dominates({"x": 2}, {"x": 1}, axes=bad_axes)
