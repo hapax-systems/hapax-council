@@ -35,6 +35,11 @@ DEFAULT_GATE_LOG = Path(
 
 GateResult = Literal["accept", "reject", "abstain", "escalate", "error"]
 GateType = Literal["deterministic", "gold_verifier", "llm_acceptor", "frontier_review", "none"]
+# Provenance of the event. ONLY "witnessed" (a real cc-task-gate/CI/typecheck/review verdict)
+# may move a learning posterior; "admission" (the dispatch gate), "fixture" (synthetic/test),
+# and "unknown" (legacy/default) must NOT — fixtures poison the Beta. Default is the SAFE,
+# non-witnessed value (dangerous-default-False), so a posterior moves only on an explicit claim.
+Provenance = Literal["witnessed", "admission", "fixture", "unknown"]
 
 
 class GateEvent(BaseModel):
@@ -52,6 +57,7 @@ class GateEvent(BaseModel):
     latency_ms: float | None = None
     cost_usd: float | None = None
     learning_eligibility: LearningEligibility | None = None
+    provenance: Provenance = "unknown"  # only "witnessed" may move a posterior (see Provenance)
 
 
 def append_gate_event(event: GateEvent, *, path: Path | str | None = None) -> Path:

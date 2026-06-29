@@ -430,6 +430,7 @@ class SdlcRouter:
         if (
             event.gate_type not in LEARNING_GATE_TYPES
             or event.gate_result not in LEARNING_GATE_RESULTS
+            or event.provenance != "witnessed"  # only a WITNESSED verdict moves the Beta
             or not gate_event_thompson_update_allowed(event)
         ):
             return False
