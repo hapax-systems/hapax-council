@@ -257,8 +257,20 @@ def test_cli_default_uses_quorum_preserving_council_config(
         council_cli.main()
 
     assert len(seen_configs) == 1
+    assert seen_configs[0].model_aliases == CouncilConfig().model_aliases
     assert seen_configs[0].min_valid_members >= 4
     assert seen_configs[0].min_valid_families >= 4
+
+
+def test_captured_request_paths_filters_directly_on_type_and_status(tmp_path: Path) -> None:
+    request = tmp_path / "REQ-INTAKE-CLI.md"
+    _write_request(request)
+    unrelated = tmp_path / "note.md"
+    unrelated.write_text("---\ntype: note\nstatus: captured\n---\n\n# Note\n", encoding="utf-8")
+    draft_request = tmp_path / "REQ-DRAFT.md"
+    _write_request(draft_request, status="accepted_for_planning")
+
+    assert council_cli._captured_request_paths(tmp_path) == [request]
 
 
 def test_cli_scan_only_collects_hapax_request_documents(

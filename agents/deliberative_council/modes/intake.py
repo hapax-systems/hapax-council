@@ -243,6 +243,10 @@ def _timeout_failures(receipt: dict[str, Any]) -> list[str]:
 
 def _has_research_refs(frontmatter: dict[str, Any], body: str) -> bool:
     nullish = {"", "null", "none", "unassigned"}
+
+    def is_real_ref(item: Any) -> bool:
+        return item is not None and not (isinstance(item, str) and item.strip().lower() in nullish)
+
     for key in (
         "research_refs",
         "research_ref",
@@ -258,16 +262,10 @@ def _has_research_refs(frontmatter: dict[str, Any], body: str) -> bool:
             if value.strip().lower() not in nullish:
                 return True
         elif isinstance(value, list | tuple | set):
-            if any(
-                item is not None and not (isinstance(item, str) and item.strip().lower() in nullish)
-                for item in value
-            ):
+            if any(is_real_ref(item) for item in value):
                 return True
         elif isinstance(value, dict):
-            if any(
-                item is not None and not (isinstance(item, str) and item.strip().lower() in nullish)
-                for item in value.values()
-            ):
+            if any(is_real_ref(item) for item in value.values()):
                 return True
         elif value is not None:
             return True
