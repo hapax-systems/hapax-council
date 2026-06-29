@@ -2410,6 +2410,37 @@ def test_arm_release_for_task_fails_closed_when_assessment_ineligible(tmp_path: 
     assert not ledger.exists()
 
 
+def test_arm_release_for_task_revalidates_current_note_frontmatter(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-stale-snapshot",
+        status="pr_open",
+        pr=722,
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    note.write_text(
+        note.read_text(encoding="utf-8").replace(
+            "implementation_authorized: true", "implementation_authorized: false"
+        ),
+        encoding="utf-8",
+    )
+    ledger = tmp_path / "ledger.jsonl"
+
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=ledger,
+    )
+
+    assert ok is False
+    assert message == "release_auto_arm_ineligible:not_implementation_authorized"
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    assert "stage: S7_RELEASE" not in current
+    assert not ledger.exists()
+
+
 def test_arm_release_for_task_reports_note_read_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -1327,12 +1327,14 @@ def _append_release_auto_arm_ledger(
     ledger_path: Path,
     now_iso: str,
     role: str,
+    frontmatter: dict[str, Any] | None = None,
     verified_checks: set[str] | None = None,
     pre_arm_assessment: ReleaseAutoArmAssessment | None = None,
     post_arm_assessment: ReleaseAutoArmAssessment | None = None,
 ) -> None:
     """Append an audit record for a system release auto-arm. Best-effort."""
-    auto_arm_waivers = release_auto_arm_waivers(task.frontmatter)
+    ledger_frontmatter = frontmatter or task.frontmatter
+    auto_arm_waivers = release_auto_arm_waivers(ledger_frontmatter)
 
     def assessment_record(assessment: ReleaseAutoArmAssessment) -> dict[str, Any]:
         return {
@@ -1349,7 +1351,10 @@ def _append_release_auto_arm_ledger(
         "tool": "cc-pr-autoqueue",
         "role": role,
         "task_id": task.task_id,
-        "authority_case": task.authority_case,
+        "authority_case": (
+            _scalar(ledger_frontmatter.get("authority_case") or ledger_frontmatter.get("case_id"))
+            or task.authority_case
+        ),
         "pr": task.pr,
         "note": str(task.path),
     }
@@ -1391,14 +1396,17 @@ def arm_release_for_task(
     ledger_path = ledger_path or default_authority_case_ledger()
     now = now or datetime.now(UTC)
     now_iso = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    pre_arm_assessment = assess_release_auto_arm(task.frontmatter, verified_checks=verified_checks)
-    if not pre_arm_assessment.eligible:
-        reasons = ",".join(pre_arm_assessment.blockers or ("not_eligible",))
-        return False, f"release_auto_arm_ineligible:{reasons}"
     try:
         text = task.path.read_text(encoding="utf-8")
     except OSError as exc:
         return False, f"note_unreadable:{exc}"
+    current_frontmatter = frontmatter_from_text(text)
+    pre_arm_assessment = assess_release_auto_arm(
+        current_frontmatter, verified_checks=verified_checks
+    )
+    if not pre_arm_assessment.eligible:
+        reasons = ",".join(pre_arm_assessment.blockers or ("not_eligible",))
+        return False, f"release_auto_arm_ineligible:{reasons}"
     armed = apply_release_auto_arm(text, now_iso=now_iso, role=role)
     if armed == text:
         return False, "note_unchanged"
@@ -1414,6 +1422,7 @@ def arm_release_for_task(
         ledger_path=ledger_path,
         now_iso=now_iso,
         role=role,
+        frontmatter=current_frontmatter,
         verified_checks=verified_checks,
         pre_arm_assessment=pre_arm_assessment,
         post_arm_assessment=post_arm_assessment,
