@@ -761,7 +761,7 @@ def fetch_pr_head_sha(
     try:
         payload = json.loads(output or "{}")
     except json.JSONDecodeError:
-        sha = output
+        return False, "invalid_pr_head_json"
     else:
         sha = _scalar(payload.get("headRefOid")) if isinstance(payload, dict) else None
     if not sha:
@@ -1342,14 +1342,9 @@ def merge_pr(
         # configured merge method.
         cmd.extend(["--auto", "--squash"])
         if _decision_requires_head_guard(decision):
-            if not decision.pr.head_sha:
-                return False, "missing_head_sha_for_head_guard"
-            head_guard_blocker = _current_head_guard_blocker(
-                decision,
-                expected_head_sha=decision.pr.head_sha,
-            )
-            if head_guard_blocker:
-                return False, head_guard_blocker
+            boundary_blocker = _release_head_boundary_blocker(decision)
+            if boundary_blocker:
+                return False, boundary_blocker
             cmd.extend(["--match-head-commit", decision.pr.head_sha])
     elif decision.action == "disable_auto_merge":
         cmd.append("--disable-auto")
@@ -1436,6 +1431,10 @@ def _release_authorized_head_stamp_blocker(
 def _decision_requires_head_guard(decision: Decision) -> bool:
     if decision.action not in {"queue", "enable_auto_merge"}:
         return False
+    return _decision_is_release_head_guard_subject(decision)
+
+
+def _decision_is_release_head_guard_subject(decision: Decision) -> bool:
     if decision.auto_arm:
         return True
     if decision.task is None:
@@ -1443,13 +1442,22 @@ def _decision_requires_head_guard(decision: Decision) -> bool:
     return assess_release_auto_arm(decision.task.frontmatter).armed
 
 
-def _current_head_guard_blocker(decision: Decision, *, expected_head_sha: str) -> str | None:
+def _release_head_boundary_blocker(decision: Decision) -> str | None:
+    if decision.action not in {
+        "queue",
+        "enable_auto_merge",
+        "already_queued",
+        "already_auto_merge_enabled",
+    }:
+        return None
+    if not _decision_is_release_head_guard_subject(decision):
+        return None
     if decision.task is None:
-        return "current_task_missing_for_head_guard"
+        return "release_authorized_task_missing"
     try:
         text = decision.task.path.read_text(encoding="utf-8")
     except OSError as exc:
-        return f"current_task_unreadable:{exc}"
+        return f"release_authorized_note_unreadable:{exc}"
     current_frontmatter = frontmatter_from_text(text)
     admission_blockers = _release_auto_arm_current_admission_blockers(
         current_frontmatter,
@@ -1459,10 +1467,12 @@ def _current_head_guard_blocker(decision: Decision, *, expected_head_sha: str) -
     if admission_blockers:
         return "current_task_not_admissible:" + ",".join(admission_blockers)
     if not assess_release_auto_arm(current_frontmatter).armed:
-        return "current_task_release_not_authorized"
+        return "release_authorized_not_current"
+    if not decision.pr.head_sha:
+        return "missing_head_sha_for_head_guard"
     return _release_authorized_head_stamp_blocker(
         current_frontmatter,
-        expected_head_sha=expected_head_sha,
+        expected_head_sha=decision.pr.head_sha,
         expected_label="current",
     )
 
@@ -2147,6 +2157,28 @@ def run_reconciler(
                                 now=now,
                             )
                         )
+                        continue
+                head_blocker = _release_head_boundary_blocker(decision)
+                if head_blocker is not None:
+                    mutation_results.append(
+                        {
+                            **decision.as_dict(),
+                            "action": "release_head_revalidation",
+                            "ok": False,
+                            "message": head_blocker,
+                        }
+                    )
+                    mutation_results.extend(
+                        _release_auto_arm_fail_closed_mutations(
+                            decision,
+                            head_blocker,
+                            reason_prefix="release_head_revalidation_failed",
+                            repo=repo,
+                            repo_root=repo_root,
+                            runner=runner,
+                            now=now,
+                        )
+                    )
                 continue
             if (
                 decision.action in {"queue", "enable_auto_merge"}
@@ -2211,6 +2243,28 @@ def run_reconciler(
                         "message": armed_message,
                     }
                 )
+            head_blocker = _release_head_boundary_blocker(decision)
+            if head_blocker is not None:
+                mutation_results.append(
+                    {
+                        **decision.as_dict(),
+                        "action": "release_head_revalidation",
+                        "ok": False,
+                        "message": head_blocker,
+                    }
+                )
+                mutation_results.extend(
+                    _release_auto_arm_fail_closed_mutations(
+                        decision,
+                        head_blocker,
+                        reason_prefix="release_head_revalidation_failed",
+                        repo=repo,
+                        repo_root=repo_root,
+                        runner=runner,
+                        now=now,
+                    )
+                )
+                continue
             ok, message = merge_pr(decision, repo=repo, repo_root=repo_root, runner=runner)
             result = {
                 **decision.as_dict(),

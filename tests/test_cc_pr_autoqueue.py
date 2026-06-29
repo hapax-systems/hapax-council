@@ -448,6 +448,21 @@ class _FakeRunner:
         return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
 
 
+def test_fetch_pr_head_sha_rejects_non_json_success(tmp_path: Path) -> None:
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(cmd, 0, "not json", "")
+
+    ok, message = autoqueue.fetch_pr_head_sha(
+        42,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is False
+    assert message == "invalid_pr_head_json"
+
+
 def test_queue_green_governed_pr(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="task-a", pr=42)
@@ -2841,6 +2856,124 @@ def test_release_authorized_head_mismatch_blocks_later_admission(tmp_path: Path)
     assert not any(call[:4] == ["gh", "pr", "merge", "727"] for call in runner.calls)
 
 
+def test_release_head_boundary_revalidates_current_note_before_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="already-armed-revoked-before-queue",
+        status="pr_open",
+        pr=735,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-735",
+            "stage": "S7_RELEASE",
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(735)]
+    original_set_status = autoqueue.set_autoqueue_admission_status
+
+    def revoke_after_status(*args: Any, **kwargs: Any) -> tuple[bool, str] | None:
+        result = original_set_status(*args, **kwargs)
+        current = note.read_text(encoding="utf-8")
+        if "release_authorized: true" in current:
+            note.write_text(
+                current.replace("release_authorized: true", "release_authorized: false"),
+                encoding="utf-8",
+            )
+        return result
+
+    monkeypatch.setattr(autoqueue, "set_autoqueue_admission_status", revoke_after_status)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert not any(call[:4] == ["gh", "pr", "merge", "735"] for call in runner.calls)
+    assert any(
+        item["pr"] == 735
+        and item["action"] == "release_head_revalidation"
+        and item["ok"] is False
+        and item["message"] == "release_authorized_not_current"
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 735
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        and item["reasons"] == ["release_head_revalidation_failed:release_authorized_not_current"]
+        for item in report["mutations"]
+    )
+
+
+def test_release_head_boundary_revalidates_current_note_before_already_queued(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="already-queued-repointed-before-boundary",
+        status="pr_open",
+        pr=736,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-736",
+            "stage": "S7_RELEASE",
+        },
+    )
+    runner = _FakeRunner()
+    runner.queued_prs = {736}
+    runner.open_prs = [_pr(736)]
+    original_set_status = autoqueue.set_autoqueue_admission_status
+    repointed = False
+
+    def repoint_after_first_status(*args: Any, **kwargs: Any) -> tuple[bool, str] | None:
+        nonlocal repointed
+        result = original_set_status(*args, **kwargs)
+        if not repointed:
+            note.write_text(
+                note.read_text(encoding="utf-8").replace(
+                    "release_authorized_head_sha: sha-736",
+                    "release_authorized_head_sha: sha-old",
+                ),
+                encoding="utf-8",
+            )
+            repointed = True
+        return result
+
+    monkeypatch.setattr(autoqueue, "set_autoqueue_admission_status", repoint_after_first_status)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert any(
+        item["pr"] == 736
+        and item["action"] == "release_head_revalidation"
+        and item["ok"] is False
+        and item["message"] == "release_authorized_head_mismatch:authorized=sha-old:current=sha-736"
+        for item in report["mutations"]
+    )
+    assert any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+
+
 def test_arm_release_for_task_reports_note_read_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3216,7 +3349,7 @@ def test_merge_pr_revalidates_current_release_authorization_before_head_locked_m
     )
 
     assert ok is False
-    assert message == "current_task_release_not_authorized"
+    assert message == "release_authorized_not_current"
     assert runner.calls == []
 
 
