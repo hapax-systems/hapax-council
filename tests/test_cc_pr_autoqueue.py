@@ -451,11 +451,11 @@ class _FakeRunner:
         return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
 
 
-def test_fetch_pr_head_sha_rejects_non_json_success(tmp_path: Path) -> None:
+def test_fetch_pr_release_evidence_rejects_non_json_success(tmp_path: Path) -> None:
     def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(cmd, 0, "not json", "")
 
-    ok, message = autoqueue.fetch_pr_head_sha(
+    ok, message, checks = autoqueue.fetch_pr_release_evidence(
         42,
         repo="owner/repo",
         repo_root=tmp_path,
@@ -463,14 +463,20 @@ def test_fetch_pr_head_sha_rejects_non_json_success(tmp_path: Path) -> None:
     )
 
     assert ok is False
-    assert message == "invalid_pr_head_json"
+    assert message == "invalid_pr_release_evidence_json"
+    assert checks == set()
 
 
-def test_fetch_pr_head_sha_rejects_missing_head_oid(tmp_path: Path) -> None:
+def test_fetch_pr_release_evidence_rejects_missing_head_oid(tmp_path: Path) -> None:
     def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess(cmd, 0, json.dumps({"headRefOid": None}), "")
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            json.dumps({"headRefOid": None, "statusCheckRollup": []}),
+            "",
+        )
 
-    ok, message = autoqueue.fetch_pr_head_sha(
+    ok, message, checks = autoqueue.fetch_pr_release_evidence(
         42,
         repo="owner/repo",
         repo_root=tmp_path,
@@ -479,6 +485,7 @@ def test_fetch_pr_head_sha_rejects_missing_head_oid(tmp_path: Path) -> None:
 
     assert ok is False
     assert message == "missing_head_sha"
+    assert checks == set()
 
 
 def test_queue_green_governed_pr(tmp_path: Path) -> None:
@@ -2078,6 +2085,85 @@ def test_auto_arms_already_queued_governance_sensitive_task(
     assert release_index < status_index
     record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
     assert record["task_id"] == "stranded-governance-already-queued"
+
+
+def test_already_queued_refetches_mitigation_checks_before_success_proof(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="already-armed-governance-stale-checks",
+        status="pr_open",
+        pr=750,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-750",
+            "release_authorized_head_ref": "feat/750",
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+
+    class _StaleMitigationRunner(_FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            result = super().__call__(cmd, **kwargs)
+            if cmd[:3] == ["gh", "pr", "list"]:
+                self.open_prs[0]["statusCheckRollup"] = [
+                    _check("lint"),
+                    _check("test"),
+                    _check("typecheck"),
+                    _check("web-build"),
+                    _check("vscode-build"),
+                    _check("authority-case-check"),
+                    _check("review", "FAILURE"),
+                ]
+            return result
+
+    runner = _StaleMitigationRunner()
+    runner.queued_prs = {750}
+    runner.open_prs = [_pr(750, checks=_governance_mitigation_checks())]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    assert not any(
+        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-750"]
+        and "state=success" in call
+        for call in runner.calls
+    )
+    assert any(
+        item["pr"] == 750
+        and item["action"] == "release_head_revalidation"
+        and item["ok"] is False
+        and item["message"]
+        == "current_release_mitigation_blocked:needs_mitigation:governance_sensitive:review"
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 750
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        and item["reasons"]
+        == [
+            "release_head_revalidation_failed:"
+            "current_release_mitigation_blocked:"
+            "needs_mitigation:governance_sensitive:review"
+        ]
+        for item in report["mutations"]
+    )
+    assert any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
 
 
 def test_auto_arms_already_auto_merge_enabled_governance_sensitive_task(

@@ -744,31 +744,6 @@ def fetch_open_prs(
     return prs
 
 
-def fetch_pr_head_sha(
-    pr_number: int,
-    *,
-    repo: str = DEFAULT_REPO,
-    repo_root: Path | None = None,
-    runner: Any = None,
-) -> tuple[bool, str]:
-    runner = runner or subprocess.run
-    repo_root = repo_root or default_repo_root()
-    cmd = ["gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "headRefOid"]
-    proc = runner(cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60)
-    output = (proc.stdout or proc.stderr or "").strip()
-    if proc.returncode != 0:
-        return False, output or f"gh pr view failed rc={proc.returncode}"
-    try:
-        payload = json.loads(output or "{}")
-    except json.JSONDecodeError:
-        return False, "invalid_pr_head_json"
-    else:
-        sha = _scalar(payload.get("headRefOid")) if isinstance(payload, dict) else None
-    if not sha:
-        return False, "missing_head_sha"
-    return True, sha
-
-
 def fetch_pr_release_evidence(
     pr_number: int,
     *,
@@ -1528,6 +1503,23 @@ def _release_authorized_head_stamp_blocker(
     return None
 
 
+def _release_mitigation_evidence_blockers(
+    frontmatter: dict[str, Any],
+    *,
+    verified_checks: set[str],
+) -> tuple[str, ...]:
+    if "release_authorized" not in frontmatter:
+        return ()
+    probe = dict(frontmatter)
+    probe["release_authorized"] = False
+    assessment = assess_release_auto_arm(probe, verified_checks=verified_checks)
+    return tuple(
+        blocker
+        for blocker in assessment.blockers
+        if blocker.startswith(("needs_mitigation:", "unmitigable_risk_flag:"))
+    )
+
+
 def _decision_requires_head_guard(decision: Decision) -> bool:
     if decision.action not in {"queue", "enable_auto_merge"}:
         return False
@@ -1599,18 +1591,29 @@ def _release_head_boundary_blocker(
     )
     if stamp_blocker:
         return stamp_blocker
-    head_ok, current_head_sha = fetch_pr_head_sha(
+    evidence_ok, current_head_sha, current_verified_checks = fetch_pr_release_evidence(
         decision.pr.number,
         repo=repo,
         repo_root=repo_root,
         runner=runner,
     )
-    if not head_ok:
+    if not evidence_ok:
+        if current_head_sha in {
+            "invalid_pr_release_evidence_payload",
+            "invalid_status_check_rollup",
+        }:
+            return f"current_pr_checks_unreadable:{current_head_sha}"
         return f"current_pr_head_unreadable:{current_head_sha}"
     if current_head_sha != decision.pr.head_sha:
         return (
             f"current_pr_head_mismatch:current={current_head_sha}:expected={decision.pr.head_sha}"
         )
+    mitigation_blockers = _release_mitigation_evidence_blockers(
+        current_frontmatter,
+        verified_checks=current_verified_checks,
+    )
+    if mitigation_blockers:
+        return "current_release_mitigation_blocked:" + ",".join(mitigation_blockers)
     return None
 
 
