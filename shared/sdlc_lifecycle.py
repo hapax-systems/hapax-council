@@ -439,8 +439,8 @@ def task_closure_validity(
 # FM-20: "auto-queue is the merge path (runs as system, unclaimed)"), so it can
 # authorize release on behalf of a dead lane — but ONLY for tasks whose release
 # was already authorized-in-principle by their ISAP (`implementation_authorized`)
-# and whose risk profile carries no governance/public/audio-egress veto.
-# Sensitive tasks stay manual.
+# and whose risk profile carries verified mitigation evidence for each applicable
+# sensitivity class.
 
 #: Risk flags whose presence (explicit or keyword-derived) requires mitigation
 #: evidence before auto-arming (see RELEASE_MITIGATION_CHECKS). Historically a
@@ -464,7 +464,22 @@ SENSITIVE_RISK_FLAGS = (
 #: gate yet → it fails CLOSED (held) until its gate is defined; it is NEVER
 #: released by a manual override. Extend this map (never add a manual-arm path) to
 #: bring a new sensitivity class under automated, evidence-gated release.
+#: Emergency recovery for miswired evidence producers is the autoqueue killswitch
+#: (`HAPAX_CC_PR_AUTOQUEUE_OFF=1` or `HAPAX_CC_HYGIENE_OFF=1`) while the check
+#: wiring is repaired; the killswitch pauses admission and is not a manual release
+#: arm.
 RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
+    # A governance-sensitive change auto-arms only after the local review dossier
+    # gate has already accepted the PR and the GitHub-side governance checks pass.
+    # ``cc-pr-autoqueue`` validates the dossier before release assessment; these
+    # check contexts are the machine-verifiable CI side of that same governance
+    # evidence bundle.
+    "governance_sensitive": (
+        "authority-case-check",
+        "governance-gate",
+        "pr-admission",
+        "review",
+    ),
     # A privacy/secret-sensitive change auto-arms when the dedicated secret
     # scanner passes on its diff (no committed credential). The redaction
     # CORRECTNESS of such a change is separately gated by the general test/review
@@ -703,9 +718,9 @@ def _release_auto_arm_blockers(
         if not required:
             blockers.append(f"unmitigable_risk_flag:{name}")
             continue
-        missing = [check for check in required if check not in verified_checks]
-        if missing:
-            blockers.append(f"needs_mitigation:{name}:{'|'.join(missing)}")
+        for check in required:
+            if check not in verified_checks:
+                blockers.append(f"needs_mitigation:{name}:{check}")
     # High-stakes mutation surfaces.
     surface = str(frontmatter.get("mutation_surface") or "").strip().lower()
     if surface in AUTO_ARM_INELIGIBLE_MUTATION_SURFACES:

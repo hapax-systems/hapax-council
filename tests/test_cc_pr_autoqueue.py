@@ -1636,6 +1636,20 @@ def _eligible_arm_extra() -> dict[str, object]:
     }
 
 
+def _governance_mitigation_checks() -> list[dict[str, Any]]:
+    return [
+        _check("lint"),
+        _check("test"),
+        _check("typecheck"),
+        _check("web-build"),
+        _check("vscode-build"),
+        _check("authority-case-check"),
+        _check("governance-gate"),
+        _check("pr-admission"),
+        _check("review"),
+    ]
+
+
 def test_auto_arms_release_unauthorized_pr_open_task(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     note = _write_task(
@@ -1674,7 +1688,7 @@ def test_auto_arms_release_unauthorized_pr_open_task(tmp_path: Path) -> None:
     assert record["task_id"] == "stranded-eligible"
 
 
-def test_does_not_auto_arm_governance_sensitive_task(tmp_path: Path) -> None:
+def test_holds_governance_sensitive_task_without_mitigation_evidence(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -1696,7 +1710,7 @@ def test_does_not_auto_arm_governance_sensitive_task(tmp_path: Path) -> None:
         auto_arm_ledger_path=tmp_path / "ledger.jsonl",
     )
 
-    # Sensitive task stays manual: never armed, never merged.
+    # Missing evidence holds the task; the release path stays evidence-gated.
     untouched = note.read_text(encoding="utf-8")
     assert "release_authorized: false" in untouched
     assert "stage: S7_RELEASE" not in untouched
@@ -1704,6 +1718,120 @@ def test_does_not_auto_arm_governance_sensitive_task(tmp_path: Path) -> None:
     decision = next(d for d in report["decisions"] if d["pr"] == 702)
     assert decision["action"] == "blocked"
     assert any(reason.startswith("release_auto_arm_ineligible:") for reason in decision["reasons"])
+
+
+def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-evidenced",
+        status="pr_open",
+        pr=708,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    pr_payload = _pr(708, checks=_governance_mitigation_checks())
+    parsed = autoqueue._parse_pr(pr_payload)
+    assert parsed is not None
+    assert "governance-gate" not in parsed.check_summary.passed
+    assert "pr-admission" not in parsed.check_summary.passed
+    assert "governance-gate" in parsed.check_summary.verified_passed
+    assert "pr-admission" in parsed.check_summary.verified_passed
+
+    runner = _FakeRunner()
+    runner.open_prs = [pr_payload]
+    ledger = tmp_path / "ledger.jsonl"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=ledger,
+    )
+
+    armed = note.read_text(encoding="utf-8")
+    assert "release_authorized: true" in armed
+    assert "stage: S7_RELEASE" in armed
+    assert ["gh", "pr", "merge", "708", "--repo", "owner/repo", "--auto", "--squash"] in (
+        runner.calls
+    )
+    decision = next(d for d in report["decisions"] if d["pr"] == 708)
+    assert decision["action"] == "queue"
+    assert decision["auto_arm"] is True
+    record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+    assert set(record["verified_checks"]) >= {
+        "authority-case-check",
+        "governance-gate",
+        "pr-admission",
+        "review",
+    }
+    assert record["release_auto_arm_assessment"] == {
+        "subject": True,
+        "armed": False,
+        "needs_arming": True,
+        "eligible": True,
+        "blockers": [],
+    }
+
+
+@pytest.mark.parametrize("state", ["SKIPPED", "NEUTRAL"])
+def test_governance_mitigation_requires_successful_evidence(
+    tmp_path: Path,
+    state: str,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id=f"stranded-governance-{state.lower()}",
+        status="pr_open",
+        pr=709,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    checks = _governance_mitigation_checks()
+    checks = [
+        {**check, "conclusion": state} if check.get("name") == "governance-gate" else check
+        for check in checks
+    ]
+    pr_payload = _pr(709, checks=checks)
+    parsed = autoqueue._parse_pr(pr_payload)
+    assert parsed is not None
+    assert "governance-gate" not in parsed.check_summary.verified_passed
+
+    runner = _FakeRunner()
+    runner.open_prs = [pr_payload]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    untouched = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in untouched
+    assert "stage: S7_RELEASE" not in untouched
+    assert not any(call[:4] == ["gh", "pr", "merge", "709"] for call in runner.calls)
+    decision = next(d for d in report["decisions"] if d["pr"] == 709)
+    assert decision["action"] == "blocked"
+    assert (
+        "release_auto_arm_ineligible:needs_mitigation:governance_sensitive:governance-gate"
+        in decision["reasons"]
+    )
 
 
 def test_auto_arms_pass_backed_runtime_secret_subscription_task(tmp_path: Path) -> None:
@@ -1884,6 +2012,9 @@ def test_auto_armed_task_writes_auto_arm_ledger_record(
     record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
     assert record["kind"] == "release_auto_arm"
     assert record["task_id"] == "stranded-ledger"
+    assert record["release_auto_arm_assessment"]["eligible"] is True
+    assert record["release_auto_arm_assessment"]["blockers"] == []
+    assert set(record["verified_checks"]) >= {"lint", "test", "typecheck"}
 
 
 def test_already_release_authorized_task_is_not_rearmed(tmp_path: Path) -> None:

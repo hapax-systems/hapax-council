@@ -62,7 +62,9 @@ from shared.merge_queue_lineage import (  # noqa: E402
 )
 from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
+    RELEASE_MITIGATION_CHECKS,
     TASK_MERGE_READY_STATUSES,
+    ReleaseAutoArmAssessment,
     acceptance_receipt_blockers,
     apply_release_auto_arm,
     assess_release_auto_arm,
@@ -81,6 +83,10 @@ DEFAULT_ADMISSION_GOVERNOR_PATH = Path.home() / ".cache" / "hapax" / "pr-admissi
 KILLSWITCH_ENVS = ("HAPAX_CC_PR_AUTOQUEUE_OFF", "HAPAX_CC_HYGIENE_OFF")
 
 PASS_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
+# Ordinary queue admission treats skipped/neutral as non-failing, but mitigation
+# evidence must be affirmative: a sensitive release gate is satisfied by SUCCESS
+# only.
+MITIGATION_EVIDENCE_PASS_STATES = {"SUCCESS"}
 FAIL_STATES = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
 DIRTY_MERGE_STATES = {"DIRTY"}
 UNCHECKED_PR_CHECKBOX_RE = re.compile(r"^\s*[-*]\s+\[\s\]\s+(?P<text>.+?)\s*$")
@@ -105,6 +111,9 @@ AUTOQUEUE_IGNORED_CHECK_CONTEXTS = {
     "governance-gate",
     "pr-admission",
 }
+RELEASE_MITIGATION_CHECK_CONTEXTS = frozenset(
+    check for checks in RELEASE_MITIGATION_CHECKS.values() for check in checks
+)
 # Mirrors queue-admission-proof-check.py DEFAULT_TTL_SECONDS. The reconciler
 # re-posts the admission proof once it is older than half this window so the
 # server-side proof never goes stale (G3 idempotent writes).
@@ -172,6 +181,7 @@ class CheckSummary:
     passed: list[str] = field(default_factory=list)
     pending: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    verified_passed: list[str] = field(default_factory=list)
 
     @property
     def has_pending(self) -> bool:
@@ -229,6 +239,7 @@ class Decision:
     tasks: tuple[TaskNote, ...] = ()
     reasons: tuple[str, ...] = ()
     auto_arm: bool = False
+    auto_arm_verified_checks: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -248,6 +259,7 @@ class Decision:
             out["reasons"] = list(self.reasons)
         if self.auto_arm:
             out["auto_arm"] = True
+            out["auto_arm_verified_checks"] = list(self.auto_arm_verified_checks)
         return out
 
 
@@ -576,8 +588,6 @@ def summarize_checks(items: list[dict[str, Any]]) -> CheckSummary:
             latest_by_name["malformed-check"] = (None, index, "PENDING")
             continue
         name = _check_name(item)
-        if name in AUTOQUEUE_IGNORED_CHECK_CONTEXTS:
-            continue
         raw_state = item.get("conclusion") or item.get("state") or item.get("status")
         candidate = (_check_observed_at(item), index, str(raw_state or "").upper())
         previous = latest_by_name.get(name)
@@ -589,14 +599,27 @@ def summarize_checks(items: list[dict[str, Any]]) -> CheckSummary:
     passed: list[str] = []
     pending: list[str] = []
     failed: list[str] = []
+    verified_passed: list[str] = []
     for name, (_observed_at, _index, state) in latest_by_name.items():
+        if state in MITIGATION_EVIDENCE_PASS_STATES and (
+            name not in AUTOQUEUE_IGNORED_CHECK_CONTEXTS
+            or name in RELEASE_MITIGATION_CHECK_CONTEXTS
+        ):
+            verified_passed.append(name)
+        if name in AUTOQUEUE_IGNORED_CHECK_CONTEXTS:
+            continue
         if state in PASS_STATES:
             passed.append(name)
         elif state in FAIL_STATES:
             failed.append(name)
         else:
             pending.append(name)
-    return CheckSummary(passed=passed, pending=pending, failed=failed)
+    return CheckSummary(
+        passed=passed,
+        pending=pending,
+        failed=failed,
+        verified_passed=verified_passed,
+    )
 
 
 def _labels_from_payload(item: dict[str, Any]) -> tuple[str, ...]:
@@ -1146,16 +1169,20 @@ def classify_pr(
     # gate is satisfied. Sensitivity is no longer a manual-arm veto (operator
     # directive 2026-06-22): the PR's VERIFIED (passing) checks are supplied as
     # evidence, so a sensitive class auto-arms iff its mitigation checks
-    # (RELEASE_MITIGATION_CHECKS) passed; an unmitigated class fails closed (held
-    # until its gate is defined), never released by a manual override.
+    # (RELEASE_MITIGATION_CHECKS) passed. Use verified_passed, not queue-filtered
+    # passed: some governance evidence contexts are ignored for ordinary queue
+    # classification but still count as release mitigation evidence. An
+    # unmitigated class fails closed (held until its gate is defined), never
+    # released by a manual override.
     auto_arm = False
+    auto_arm_verified_checks: tuple[str, ...] = ()
     if task is not None and not reasons:
-        arm = assess_release_auto_arm(
-            task.frontmatter, verified_checks=set(pr.check_summary.passed)
-        )
+        verified_checks = set(pr.check_summary.verified_passed)
+        arm = assess_release_auto_arm(task.frontmatter, verified_checks=verified_checks)
         if arm.needs_arming:
             if arm.eligible:
                 auto_arm = True
+                auto_arm_verified_checks = tuple(sorted(verified_checks))
             else:
                 reasons.append("release_auto_arm_ineligible:" + ",".join(arm.blockers))
 
@@ -1206,6 +1233,7 @@ def classify_pr(
                 tasks=matched_tasks,
                 action="enable_auto_merge",
                 auto_arm=auto_arm,
+                auto_arm_verified_checks=auto_arm_verified_checks,
             )
         return Decision(
             pr=pr,
@@ -1214,7 +1242,14 @@ def classify_pr(
             action="blocked",
             reasons=("pending_checks:" + ",".join(pr.check_summary.pending),),
         )
-    return Decision(pr=pr, task=task, tasks=matched_tasks, action="queue", auto_arm=auto_arm)
+    return Decision(
+        pr=pr,
+        task=task,
+        tasks=matched_tasks,
+        action="queue",
+        auto_arm=auto_arm,
+        auto_arm_verified_checks=auto_arm_verified_checks,
+    )
 
 
 def merge_pr(
@@ -1278,7 +1313,13 @@ def default_authority_case_ledger() -> Path:
 
 
 def _append_release_auto_arm_ledger(
-    task: TaskNote, *, ledger_path: Path, now_iso: str, role: str
+    task: TaskNote,
+    *,
+    ledger_path: Path,
+    now_iso: str,
+    role: str,
+    verified_checks: set[str] | None = None,
+    assessment: ReleaseAutoArmAssessment | None = None,
 ) -> None:
     """Append an audit record for a system release auto-arm. Best-effort."""
     auto_arm_waivers = release_auto_arm_waivers(task.frontmatter)
@@ -1292,6 +1333,16 @@ def _append_release_auto_arm_ledger(
         "pr": task.pr,
         "note": str(task.path),
     }
+    if verified_checks is not None:
+        record["verified_checks"] = sorted(verified_checks)
+    if assessment is not None:
+        record["release_auto_arm_assessment"] = {
+            "subject": assessment.subject,
+            "armed": assessment.armed,
+            "needs_arming": assessment.needs_arming,
+            "eligible": assessment.eligible,
+            "blockers": list(assessment.blockers),
+        }
     if auto_arm_waivers:
         record["auto_arm_waivers"] = list(auto_arm_waivers)
     try:
@@ -1308,6 +1359,7 @@ def arm_release_for_task(
     ledger_path: Path | None = None,
     now: datetime | None = None,
     role: str = RELEASE_AUTO_ARM_ROLE,
+    verified_checks: set[str] | None = None,
 ) -> tuple[bool, str]:
     """Authorize release for a stranded task on behalf of a dead lane (system).
 
@@ -1318,6 +1370,7 @@ def arm_release_for_task(
     ledger_path = ledger_path or default_authority_case_ledger()
     now = now or datetime.now(UTC)
     now_iso = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assessment = assess_release_auto_arm(task.frontmatter, verified_checks=verified_checks)
     try:
         text = task.path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -1329,7 +1382,14 @@ def arm_release_for_task(
         task.path.write_text(armed, encoding="utf-8")
     except OSError as exc:
         return False, f"note_write_failed:{exc}"
-    _append_release_auto_arm_ledger(task, ledger_path=ledger_path, now_iso=now_iso, role=role)
+    _append_release_auto_arm_ledger(
+        task,
+        ledger_path=ledger_path,
+        now_iso=now_iso,
+        role=role,
+        verified_checks=verified_checks,
+        assessment=assessment,
+    )
     return True, f"release auto-armed {task.task_id}"
 
 
@@ -1721,7 +1781,10 @@ def run_reconciler(
                 continue
             if decision.auto_arm and decision.task is not None:
                 armed_ok, armed_message = arm_release_for_task(
-                    decision.task, ledger_path=auto_arm_ledger_path, now=now
+                    decision.task,
+                    ledger_path=auto_arm_ledger_path,
+                    now=now,
+                    verified_checks=set(decision.auto_arm_verified_checks),
                 )
                 if not armed_ok:
                     mutation_results.append(
