@@ -4209,6 +4209,18 @@ from shared.gate_event_producer import build_gate_event  # noqa: E402
 
 build_gate_event
 
+# Additive measurement-loop keystone (CCEF/H STEP 7): the witnessed-outcome producer's public
+# API — callers (witnessed cc-task-gate / CI / review verdict sites) wire in a follow-on, like
+# build_gate_event above. Referenced here so the vulture gate does not flag the as-yet caller-less
+# public functions.
+from shared.gate_outcome_producer import (  # noqa: E402
+    build_outcome_gate_event,
+    emit_outcome_gate_event,
+)
+
+build_outcome_gate_event
+emit_outcome_gate_event
+
 # Capability-routing D8 governance floor (Phase 0.3) — Pydantic invokes this
 # model_validator dynamically during TaskSpec validation; vulture cannot follow
 # that dynamic path. REQ-20260616-capability-aware-routing / S5-CAPABILITY-ROUTING-TIER1.

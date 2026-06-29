@@ -398,6 +398,7 @@ def test_gate_pass_reward_updates_posteriors_and_selection_does_not() -> None:
         task_hash="sha256:task-router-test",
         gate_result="accept",
         gate_type="deterministic",
+        provenance="witnessed",
         ts="2026-06-25T00:00:00+00:00",
         learning_eligibility=_learning_eligibility(),
     )
@@ -408,6 +409,7 @@ def test_gate_pass_reward_updates_posteriors_and_selection_does_not() -> None:
         task_hash="sha256:task-router-test",
         gate_result="reject",
         gate_type="deterministic",
+        provenance="witnessed",
         ts="2026-06-25T00:01:00+00:00",
         learning_eligibility=_learning_eligibility(),
     )
@@ -434,6 +436,7 @@ def test_ingest_gate_events_accepts_explicit_event_iterable() -> None:
         task_hash="sha256:task-router-test",
         gate_result="accept",
         gate_type="deterministic",
+        provenance="witnessed",
         ts="2026-06-25T00:00:00+00:00",
         learning_eligibility=_learning_eligibility(),
     )
@@ -453,6 +456,7 @@ def test_ingest_gate_events_reads_gate_log_path(tmp_path: Path) -> None:
         task_hash="sha256:task-router-test",
         gate_result="accept",
         gate_type="deterministic",
+        provenance="witnessed",
         ts="2026-06-25T00:00:00+00:00",
         learning_eligibility=_learning_eligibility(),
     )
@@ -476,6 +480,7 @@ def test_thompson_gate_update_does_not_require_local_posterior_update() -> None:
         task_hash="sha256:task-router-test",
         gate_result="accept",
         gate_type="deterministic",
+        provenance="witnessed",
         ts="2026-06-25T00:00:00+00:00",
         learning_eligibility=_learning_eligibility(
             thompson_update_allowed=True,
@@ -500,6 +505,7 @@ def test_local_only_learning_gate_does_not_update_thompson_posterior() -> None:
         task_hash="sha256:task-router-test",
         gate_result="accept",
         gate_type="deterministic",
+        provenance="witnessed",
         ts="2026-06-25T00:00:00+00:00",
         learning_eligibility=_learning_eligibility(
             thompson_update_allowed=False,
@@ -521,6 +527,7 @@ def test_gate_event_learning_allowed_requires_complete_learning_receipt() -> Non
         task_hash="sha256:task-router-test",
         gate_result="accept",
         gate_type="deterministic",
+        provenance="witnessed",
         ts="2026-06-25T00:00:00+00:00",
         learning_eligibility=_learning_eligibility(),
     )
@@ -549,6 +556,7 @@ def test_bare_gate_events_do_not_train_posteriors() -> None:
         routing_class="source_python",
         gate_result="accept",
         gate_type="deterministic",
+        provenance="witnessed",
         ts="2026-06-25T00:00:00+00:00",
     )
 
@@ -564,6 +572,7 @@ def test_gate_events_need_complete_learning_receipt_to_train_posteriors() -> Non
         requirement_vector=_requirement_vector(),
         gate_result="accept",
         gate_type="deterministic",
+        provenance="witnessed",
         ts="2026-06-25T00:00:00+00:00",
         learning_eligibility=_learning_eligibility(),
     )
@@ -574,6 +583,7 @@ def test_gate_events_need_complete_learning_receipt_to_train_posteriors() -> Non
         task_hash="sha256:task-router-test",
         gate_result="accept",
         gate_type="deterministic",
+        provenance="witnessed",
         ts="2026-06-25T00:01:00+00:00",
         learning_eligibility=_learning_eligibility(),
     )
@@ -584,6 +594,7 @@ def test_gate_events_need_complete_learning_receipt_to_train_posteriors() -> Non
         task_hash="sha256:task-router-test",
         gate_result="accept",
         gate_type="deterministic",
+        provenance="witnessed",
         ts="2026-06-25T00:01:30+00:00",
         learning_eligibility=_learning_eligibility(),
     )
@@ -594,6 +605,7 @@ def test_gate_events_need_complete_learning_receipt_to_train_posteriors() -> Non
         task_hash="sha256:task-router-test",
         gate_result="accept",
         gate_type="deterministic",
+        provenance="witnessed",
         ts="2026-06-25T00:01:45+00:00",
         learning_eligibility=_learning_eligibility(),
     )
@@ -604,6 +616,7 @@ def test_gate_events_need_complete_learning_receipt_to_train_posteriors() -> Non
         task_hash="sha256:task-router-test",
         gate_result="accept",
         gate_type="deterministic",
+        provenance="witnessed",
         ts="2026-06-25T00:02:00+00:00",
         learning_eligibility=_learning_eligibility(
             thompson_update_allowed=False,
@@ -661,6 +674,7 @@ def test_router_state_round_trips_to_own_state_file(tmp_path: Path) -> None:
             task_hash="sha256:task-router-test",
             gate_result="accept",
             gate_type="frontier_review",
+            provenance="witnessed",
             ts="2026-06-25T00:00:00+00:00",
             learning_eligibility=_learning_eligibility(),
         )
