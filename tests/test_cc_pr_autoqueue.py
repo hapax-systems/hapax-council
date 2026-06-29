@@ -3682,6 +3682,78 @@ def test_release_head_boundary_fetches_live_head_before_queue(
     )
 
 
+def test_queue_failure_after_success_admission_rewrites_failure_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="already-armed-revoked-after-success-status",
+        status="pr_open",
+        pr=750,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-750",
+            "stage": "S7_RELEASE",
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(750)]
+    original_set_status = autoqueue.set_autoqueue_admission_status
+    revoked = False
+
+    def revoke_after_success_status(*args: Any, **kwargs: Any) -> tuple[bool, str] | None:
+        nonlocal revoked
+        result = original_set_status(*args, **kwargs)
+        decision = args[0] if args else kwargs["decision"]
+        if decision.pr.number == 750 and result is not None and result[0] and not revoked:
+            note.write_text(
+                note.read_text(encoding="utf-8").replace(
+                    "release_authorized: true", "release_authorized: false"
+                ),
+                encoding="utf-8",
+            )
+            revoked = True
+        return result
+
+    monkeypatch.setattr(autoqueue, "set_autoqueue_admission_status", revoke_after_success_status)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    posts = [
+        call
+        for call in runner.calls
+        if call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-750"]
+    ]
+    assert any("state=success" in call for call in posts)
+    assert any("state=failure" in call for call in posts)
+    success_index = next(index for index, call in enumerate(posts) if "state=success" in call)
+    failure_index = next(index for index, call in enumerate(posts) if "state=failure" in call)
+    assert success_index < failure_index
+    assert any(
+        item["pr"] == 750
+        and item["action"] == "queue"
+        and item["ok"] is False
+        and item["message"] == "release_authorized_not_current"
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 750
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        and item["reasons"] == ["queue_mutation_failed:release_authorized_not_current"]
+        for item in report["mutations"]
+    )
+
+
 def test_release_head_boundary_revalidates_current_note_before_already_queued(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

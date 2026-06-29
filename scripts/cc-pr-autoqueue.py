@@ -2414,6 +2414,23 @@ def run_reconciler(
                     "message": status_message,
                 }
             mutation_results.append(result)
+            if (
+                not ok
+                and admission_status is not None
+                and admission_status[0] == "success"
+                and status_result is not None
+            ):
+                mutation_results.extend(
+                    _release_auto_arm_fail_closed_mutations(
+                        decision,
+                        message,
+                        reason_prefix="queue_mutation_failed",
+                        repo=repo,
+                        repo_root=repo_root,
+                        runner=runner,
+                        now=now,
+                    )
+                )
 
     report = {
         "repo": repo,
