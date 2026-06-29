@@ -769,6 +769,44 @@ def fetch_pr_head_sha(
     return True, sha
 
 
+def fetch_pr_release_evidence(
+    pr_number: int,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> tuple[bool, str, set[str]]:
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    cmd = [
+        "gh",
+        "pr",
+        "view",
+        str(pr_number),
+        "--repo",
+        repo,
+        "--json",
+        "headRefOid,statusCheckRollup",
+    ]
+    proc = runner(cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60)
+    output = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode != 0:
+        return False, output or f"gh pr view failed rc={proc.returncode}", set()
+    try:
+        payload = json.loads(output or "{}")
+    except json.JSONDecodeError:
+        return False, "invalid_pr_release_evidence_json", set()
+    if not isinstance(payload, dict):
+        return False, "invalid_pr_release_evidence_payload", set()
+    sha = _scalar(payload.get("headRefOid"))
+    if not sha:
+        return False, "missing_head_sha", set()
+    rollup = payload.get("statusCheckRollup")
+    if not isinstance(rollup, list):
+        return False, "invalid_status_check_rollup", set()
+    return True, sha, set(summarize_checks(rollup).verified_passed)
+
+
 def fetch_merge_queue_pr_numbers(
     *,
     repo: str = DEFAULT_REPO,
@@ -1698,19 +1736,25 @@ def arm_release_for_task(
     if expected_head_sha and pr_number is None:
         return False, "current_pr_head_unverifiable:missing_pr_number"
     if expected_head_sha:
-        head_ok, current_head_sha = fetch_pr_head_sha(
+        evidence_ok, current_head_sha, current_verified_checks = fetch_pr_release_evidence(
             pr_number,
             repo=repo,
             repo_root=repo_root,
             runner=runner,
         )
-        if not head_ok:
+        if not evidence_ok:
+            if current_head_sha in {
+                "invalid_pr_release_evidence_payload",
+                "invalid_status_check_rollup",
+            }:
+                return False, f"current_pr_checks_unreadable:{current_head_sha}"
             return False, f"current_pr_head_unreadable:{current_head_sha}"
         if current_head_sha != expected_head_sha:
             return (
                 False,
                 f"current_pr_head_mismatch:current={current_head_sha}:expected={expected_head_sha}",
             )
+        verified_checks = current_verified_checks
     pre_arm_assessment = assess_release_auto_arm(
         current_frontmatter, verified_checks=verified_checks
     )

@@ -405,12 +405,15 @@ class _FakeRunner:
             pr = next((item for item in self.open_prs if item.get("number") == pr_number), None)
             if pr is None:
                 return subprocess.CompletedProcess(cmd, 1, "", "PR not found")
-            return subprocess.CompletedProcess(
-                cmd,
-                0,
-                json.dumps({"headRefOid": pr.get("headRefOid")}),
-                "",
-            )
+            fields = []
+            if "--json" in cmd:
+                fields = cmd[cmd.index("--json") + 1].split(",")
+            payload: dict[str, Any] = {}
+            if not fields or "headRefOid" in fields:
+                payload["headRefOid"] = pr.get("headRefOid")
+            if "statusCheckRollup" in fields:
+                payload["statusCheckRollup"] = pr.get("statusCheckRollup", [])
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         if cmd[:3] == ["gh", "api", "graphql"] and any(
             "dequeuePullRequest" in part for part in cmd
         ):
@@ -1923,6 +1926,84 @@ def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
     }
     assert record["release_auto_arm_result"]["armed"] is True
     assert record["release_auto_arm_result"]["note_mutated"] is True
+
+
+def test_governance_auto_arm_refetches_live_mitigation_evidence_before_write(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-stale-checks",
+        status="pr_open",
+        pr=749,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+
+    class _StaleMitigationRunner(_FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            result = super().__call__(cmd, **kwargs)
+            if cmd[:3] == ["gh", "pr", "list"]:
+                self.open_prs[0]["statusCheckRollup"] = [
+                    _check("lint"),
+                    _check("test"),
+                    _check("typecheck"),
+                    _check("web-build"),
+                    _check("vscode-build"),
+                    _check("authority-case-check"),
+                    _check("review", "FAILURE"),
+                ]
+            return result
+
+    runner = _StaleMitigationRunner()
+    runner.open_prs = [_pr(749, checks=_governance_mitigation_checks())]
+    ledger = tmp_path / "ledger.jsonl"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=ledger,
+    )
+
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    assert "release_authorized_head_sha:" not in current
+    assert "stage: S7_RELEASE" not in current
+    assert not ledger.exists()
+    assert not any(call[:4] == ["gh", "pr", "merge", "749"] for call in runner.calls)
+    assert not any(
+        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-749"]
+        and "state=success" in call
+        for call in runner.calls
+    )
+    assert any(
+        item["pr"] == 749
+        and item["action"] == "release_auto_arm"
+        and item["ok"] is False
+        and item["message"]
+        == "release auto-arm failed: "
+        "release_auto_arm_ineligible:needs_mitigation:governance_sensitive:review"
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 749
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        and item["reasons"]
+        == [
+            "release_auto_arm_failed:"
+            "release_auto_arm_ineligible:needs_mitigation:governance_sensitive:review"
+        ]
+        for item in report["mutations"]
+    )
 
 
 def test_auto_arms_already_queued_governance_sensitive_task(
