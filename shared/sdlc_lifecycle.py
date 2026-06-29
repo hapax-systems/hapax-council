@@ -474,14 +474,12 @@ SENSITIVE_RISK_FLAGS = (
 #: `env | grep -E '^(HAPAX_CC_PR_AUTOQUEUE_OFF|HAPAX_CC_HYGIENE_OFF)=1$'`.
 RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # A governance-sensitive change auto-arms only after the local review dossier
-    # gate has already accepted the PR, the GitHub-side authority/review checks
-    # pass, and ``cc-pr-autoqueue`` writes its own fresh admission proof for the
-    # exact head being armed. Do not use broad admission mirror checks here: they
-    # can pass vacuously on ordinary PR events with no PR-specific queue proof.
+    # gate has already accepted the PR and the GitHub-side authority/review checks
+    # pass. ``cc-pr-autoqueue`` writes its own fresh admission proof only after
+    # the task note is armed, so that proof is not release-arm evidence.
     "governance_sensitive": (
         "authority-case-check",
         "review",
-        "hapax/autoqueue-admission",
     ),
     # A privacy/secret-sensitive change auto-arms when the dedicated secret
     # scanner passes on its diff (no committed credential). The redaction

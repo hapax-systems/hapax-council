@@ -1681,7 +1681,7 @@ def _governance_mitigation_checks() -> list[dict[str, Any]]:
     ]
 
 
-def test_summarize_checks_keeps_admission_context_as_verified_mitigation() -> None:
+def test_summarize_checks_keeps_admission_context_ignored_until_written_by_autoqueue() -> None:
     summary = autoqueue.summarize_checks(
         [
             _check(autoqueue.AUTOQUEUE_ADMISSION_CONTEXT),
@@ -1691,7 +1691,7 @@ def test_summarize_checks_keeps_admission_context_as_verified_mitigation() -> No
         ]
     )
 
-    assert autoqueue.AUTOQUEUE_ADMISSION_CONTEXT in summary.verified_passed
+    assert autoqueue.AUTOQUEUE_ADMISSION_CONTEXT not in summary.verified_passed
     assert "review" in summary.verified_passed
     assert "governance-gate" not in summary.verified_passed
     assert "pr-admission" not in summary.verified_passed
@@ -1884,7 +1884,6 @@ def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
     assert record["autoqueue_admission_head_sha"] == "sha-708"
     assert set(record["verified_checks"]) >= {
         "authority-case-check",
-        autoqueue.AUTOQUEUE_ADMISSION_CONTEXT,
         "review",
     }
     assert "governance-gate" not in record["verified_checks"]
@@ -2690,14 +2689,11 @@ def test_arm_release_for_task_fails_closed_when_assessment_ineligible(tmp_path: 
     ok, message = autoqueue.arm_release_for_task(
         task,
         ledger_path=ledger,
-        verified_checks={"authority-case-check", "review"},
+        verified_checks={"authority-case-check"},
     )
 
     assert ok is False
-    assert (
-        message
-        == f"release_auto_arm_ineligible:needs_mitigation:governance_sensitive:{autoqueue.AUTOQUEUE_ADMISSION_CONTEXT}"
-    )
+    assert message == "release_auto_arm_ineligible:needs_mitigation:governance_sensitive:review"
     untouched = note.read_text(encoding="utf-8")
     assert "release_authorized: false" in untouched
     assert "stage: S7_RELEASE" not in untouched

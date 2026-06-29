@@ -1243,9 +1243,9 @@ def classify_pr(
     # authorized (the lane died after `gh pr create`) strands forever. Running
     # as the system (FM-20), the autoqueue may auto-arm a task once its release
     # gate is satisfied. Sensitivity is no longer a manual-arm veto (operator
-    # directive 2026-06-22): the PR's verified checks plus the fresh local
-    # autoqueue-admission proof are supplied as evidence, so a sensitive class
-    # auto-arms iff its mitigation checks (RELEASE_MITIGATION_CHECKS) passed.
+    # directive 2026-06-22): the PR's verified checks are supplied as evidence,
+    # so a sensitive class auto-arms iff its mitigation checks
+    # (RELEASE_MITIGATION_CHECKS) passed.
     # Broad admission mirror checks remain ignored for release mitigation because
     # they can pass vacuously on ordinary PR events. An unmitigated class fails
     # closed (held until its gate is defined), never released by a manual
@@ -1254,12 +1254,6 @@ def classify_pr(
     auto_arm_verified_checks: tuple[str, ...] = ()
     if task is not None and not reasons:
         verified_checks = set(pr.check_summary.verified_passed)
-        # ``run_reconciler`` writes or refreshes this proof on the same tick as
-        # arming, but only after the note is armed and the release-head boundary
-        # is revalidated. Classification includes it as planned same-tick
-        # evidence; the server-visible branch-protection proof is published last
-        # before queueing or retaining admission.
-        verified_checks.add(AUTOQUEUE_ADMISSION_CONTEXT)
         arm = assess_release_auto_arm(task.frontmatter, verified_checks=verified_checks)
         if arm.needs_arming:
             if arm.eligible:

@@ -405,10 +405,7 @@ def test_governance_sensitive_held_when_mitigation_evidence_missing() -> None:
     assessment = assess_release_auto_arm(fm, verified_checks={"authority-case-check"})
 
     assert not assessment.eligible
-    assert assessment.blockers == (
-        "needs_mitigation:governance_sensitive:review",
-        "needs_mitigation:governance_sensitive:hapax/autoqueue-admission",
-    )
+    assert assessment.blockers == ("needs_mitigation:governance_sensitive:review",)
 
 
 def test_governance_sensitive_still_fails_closed_without_verified_checks() -> None:
