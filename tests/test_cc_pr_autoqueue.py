@@ -2322,6 +2322,56 @@ def test_governance_auto_arm_requires_successful_autoqueue_admission_status(
     assert not ledger.exists()
     assert not any(call[:4] == ["gh", "pr", "merge", "710"] for call in runner.calls)
     mutation = next(item for item in report["mutations"] if item["pr"] == 710)
+    assert mutation["action"] == "set_admission_status"
+    assert mutation["status_state"] == "success"
+    assert mutation["ok"] is False
+    assert mutation["message"] == "admission status write failed; queue mutation skipped"
+
+
+def test_enable_auto_merge_requires_successful_autoqueue_admission_status(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-enable-status-failed",
+        status="pr_open",
+        pr=721,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    checks = [
+        {**check, "conclusion": "PENDING"} if check.get("name") == "vscode-build" else check
+        for check in _governance_mitigation_checks()
+    ]
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(721, checks=checks)]
+    runner.fail_status_posts = True
+    ledger = tmp_path / "ledger.jsonl"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=ledger,
+    )
+
+    untouched = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in untouched
+    assert "stage: S7_RELEASE" not in untouched
+    assert not ledger.exists()
+    assert not any(call[:4] == ["gh", "pr", "merge", "721"] for call in runner.calls)
+    decision = next(item for item in report["decisions"] if item["pr"] == 721)
+    assert decision["action"] == "enable_auto_merge"
+    mutation = next(item for item in report["mutations"] if item["pr"] == 721)
+    assert mutation["action"] == "set_admission_status"
+    assert mutation["status_state"] == "success"
     assert mutation["ok"] is False
     assert mutation["message"] == "admission status write failed; queue mutation skipped"
 

@@ -607,6 +607,7 @@ def summarize_checks(items: list[dict[str, Any]]) -> CheckSummary:
             or name in RELEASE_MITIGATION_CHECK_CONTEXTS
         ):
             verified_passed.append(name)
+    for name, (_observed_at, _index, state) in latest_by_name.items():
         if name in AUTOQUEUE_IGNORED_CHECK_CONTEXTS:
             continue
         if state in PASS_STATES:
@@ -1898,6 +1899,8 @@ def run_reconciler(
                 mutation_results.append(
                     {
                         **decision.as_dict(),
+                        "action": "set_admission_status",
+                        "status_state": admission_status[0],
                         "ok": False,
                         "message": "admission status write failed; queue mutation skipped",
                         "admission_status": {
