@@ -1342,7 +1342,12 @@ def merge_pr(
         # Re-arming an already-armed PR is a no-op; `--squash` matches the queue's
         # configured merge method.
         cmd.extend(["--auto", "--squash"])
-        if decision.auto_arm and decision.pr.head_sha:
+        authorized_head_sha = (
+            _scalar(decision.task.frontmatter.get("release_authorized_head_sha"))
+            if decision.task is not None
+            else None
+        )
+        if decision.pr.head_sha and (decision.auto_arm or authorized_head_sha):
             cmd.extend(["--match-head-commit", decision.pr.head_sha])
     elif decision.action == "disable_auto_merge":
         cmd.append("--disable-auto")

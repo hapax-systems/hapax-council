@@ -3058,6 +3058,51 @@ def test_already_release_authorized_task_is_not_rearmed(tmp_path: Path) -> None:
     assert decision.get("auto_arm", False) is False
 
 
+def test_already_release_authorized_head_locked_task_matches_head_on_merge(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="already-armed-head-locked",
+        status="pr_open",
+        pr=733,
+        extra_frontmatter={
+            "implementation_authorized": True,
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-733",
+            "risk_tier": "T2",
+            "stage": "S7_RELEASE",
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(733)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "733",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-733",
+    ] in runner.calls
+    decision = next(d for d in report["decisions"] if d["pr"] == 733)
+    assert decision["action"] == "queue"
+    assert decision.get("auto_arm", False) is False
+
+
 def test_flake_quarantine_write_side_persists_and_excludes_next_tick(
     tmp_path: Path,
 ) -> None:
