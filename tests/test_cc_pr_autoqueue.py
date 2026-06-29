@@ -2631,6 +2631,112 @@ def test_governance_auto_arm_status_write_failure_blocks_queue_after_arm(
     assert mutation["message"] == "admission status write failed; queue mutation skipped"
 
 
+def test_governance_auto_arm_reposts_existing_success_before_queue(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-existing-success",
+        status="pr_open",
+        pr=744,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(744, checks=_governance_mitigation_checks())]
+    runner.head_statuses["sha-744"] = [
+        _existing_status(
+            "success",
+            "cc-pr-autoqueue admitted: queue",
+            "2999-06-02T00:00:00Z",
+        )
+    ]
+    ledger = tmp_path / "ledger.jsonl"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=ledger,
+    )
+
+    armed = note.read_text(encoding="utf-8")
+    assert "release_authorized: true" in armed
+    assert "release_authorized_head_sha: sha-744" in armed
+    posts = [
+        call
+        for call in runner.calls
+        if call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-744"]
+    ]
+    assert len(posts) == 1
+    assert "state=success" in posts[0]
+    post_index = runner.calls.index(posts[0])
+    merge_index = next(
+        index for index, call in enumerate(runner.calls) if call[:4] == ["gh", "pr", "merge", "744"]
+    )
+    assert post_index < merge_index
+    result = next(
+        item for item in report["mutations"] if item.get("pr") == 744 and "admission_status" in item
+    )
+    assert result["ok"] is True
+    assert result["admission_status"]["ok"] is True
+    assert result["admission_status"]["message"] == '{"state":"ok"}'
+
+
+def test_governance_auto_arm_missing_head_sha_blocks_before_note_write(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-missing-head",
+        status="pr_open",
+        pr=745,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    runner = _FakeRunner()
+    pr = _pr(745, checks=_governance_mitigation_checks())
+    pr["headRefOid"] = None
+    runner.open_prs = [pr]
+    ledger = tmp_path / "ledger.jsonl"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=ledger,
+    )
+
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    assert "release_authorized_head_sha:" not in current
+    assert "stage: S7_RELEASE" not in current
+    assert not ledger.exists()
+    assert not any(call[:4] == ["gh", "pr", "merge", "745"] for call in runner.calls)
+    assert any(
+        item["pr"] == 745
+        and item["action"] == "release_auto_arm"
+        and item["ok"] is False
+        and item["message"]
+        == "release auto-arm failed: current_pr_head_unverifiable:missing_expected_head_sha"
+        for item in report["mutations"]
+    )
+
+
 def test_enable_auto_merge_status_write_failure_blocks_queue_after_arm(
     tmp_path: Path,
 ) -> None:
@@ -3024,6 +3130,35 @@ def test_arm_release_for_task_revalidates_current_pr_head_sha(tmp_path: Path) ->
     assert message == "current_pr_head_mismatch:current=sha-726:expected=sha-before-force-push"
     current = note.read_text(encoding="utf-8")
     assert "release_authorized: false" in current
+    assert "stage: S7_RELEASE" not in current
+    assert not ledger.exists()
+
+
+def test_arm_release_for_task_requires_head_sha_for_pr_linked_write(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-missing-expected-head",
+        status="pr_open",
+        pr=727,
+        branch="feat/727",
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    ledger = tmp_path / "ledger.jsonl"
+
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=ledger,
+        pr_number=727,
+        head_ref="feat/727",
+    )
+
+    assert ok is False
+    assert message == "current_pr_head_unverifiable:missing_expected_head_sha"
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    assert "release_authorized_head_sha:" not in current
     assert "stage: S7_RELEASE" not in current
     assert not ledger.exists()
 
@@ -4322,6 +4457,30 @@ def test_admission_status_idempotent_when_unchanged_and_fresh(tmp_path: Path) ->
     )
     assert result == (True, "unchanged")
     assert _admission_posts(runner) == []
+
+
+def test_admission_status_force_fresh_success_posts_when_unchanged(
+    tmp_path: Path,
+) -> None:
+    decision = _admission_decision()
+    state, description = autoqueue._admission_status_for(decision)
+    runner = _FakeRunner()
+    runner.head_statuses["sha-50"] = [_existing_status(state, description, "2026-06-02T00:00:00Z")]
+    now = datetime(2026, 6, 2, 0, 5, tzinfo=UTC)
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        now=now,
+        force_fresh_success=True,
+    )
+
+    assert result is not None and result[0]
+    posts = _admission_posts(runner)
+    assert len(posts) == 1
+    assert "state=success" in posts[0]
 
 
 def test_admission_status_reposts_when_stale(tmp_path: Path) -> None:

@@ -1672,6 +1672,8 @@ def arm_release_for_task(
     )
     if gate_blockers:
         return False, "current_task_gate_blocked:" + ",".join(gate_blockers)
+    if pr_number is not None and not expected_head_sha:
+        return False, "current_pr_head_unverifiable:missing_expected_head_sha"
     if expected_head_sha and pr_number is None:
         return False, "current_pr_head_unverifiable:missing_pr_number"
     if expected_head_sha:
@@ -1804,6 +1806,7 @@ def set_autoqueue_admission_status(
     repo_root: Path | None = None,
     runner: Any = None,
     now: datetime | None = None,
+    force_fresh_success: bool = False,
 ) -> tuple[bool, str] | None:
     """Write the server-visible autoqueue admission proof for a PR head SHA.
 
@@ -1838,7 +1841,7 @@ def set_autoqueue_admission_status(
         fresh = cur_created is not None and (now - cur_created) < timedelta(
             seconds=AUTOQUEUE_ADMISSION_TTL_SECONDS / 2
         )
-        if unchanged and fresh:
+        if unchanged and fresh and not (force_fresh_success and state == "success"):
             return True, "unchanged"
     cmd = [
         "gh",
@@ -2268,6 +2271,7 @@ def run_reconciler(
                 repo_root=repo_root,
                 runner=runner,
                 now=now,
+                force_fresh_success=_decision_is_release_head_guard_subject(decision),
             )
             if decision.action not in {
                 "queue",
