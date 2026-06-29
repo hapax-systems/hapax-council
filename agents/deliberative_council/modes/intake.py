@@ -222,7 +222,7 @@ def _render_frontmatter(frontmatter: dict[str, Any], body: str) -> str:
         allow_unicode=False,
         default_flow_style=False,
     ).strip()
-    return f"---\n{yaml_text}\n---\n\n{body.rstrip()}\n"
+    return f"---\n{yaml_text}\n---\n\n{body}"
 
 
 def _timeout_failures(receipt: dict[str, Any]) -> list[str]:
@@ -257,8 +257,17 @@ def _has_research_refs(frontmatter: dict[str, Any], body: str) -> bool:
         if isinstance(value, str):
             if value.strip().lower() not in nullish:
                 return True
-        elif isinstance(value, list | tuple | set | dict):
-            if value:
+        elif isinstance(value, list | tuple | set):
+            if any(
+                item is not None and not (isinstance(item, str) and item.strip().lower() in nullish)
+                for item in value
+            ):
+                return True
+        elif isinstance(value, dict):
+            if any(
+                item is not None and not (isinstance(item, str) and item.strip().lower() in nullish)
+                for item in value.values()
+            ):
                 return True
         elif value is not None:
             return True

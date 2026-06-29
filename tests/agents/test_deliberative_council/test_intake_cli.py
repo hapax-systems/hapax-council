@@ -226,6 +226,76 @@ def test_cli_models_single_member_forwarded(
     assert seen_configs[0].min_axis_values == 1
 
 
+def test_cli_default_uses_quorum_preserving_council_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = tmp_path / "REQ-INTAKE-CLI.md"
+    _write_request(request)
+    seen_configs: list[CouncilConfig] = []
+
+    async def fake_run_intake(
+        request_path: str | Path,
+        *,
+        config: CouncilConfig | None = None,
+        write_back: bool = True,
+    ) -> IntakeReceipt:
+        assert request_path == request
+        assert config is not None
+        seen_configs.append(config)
+        return IntakeReceipt(
+            request_id="REQ-INTAKE-CLI",
+            request_path=str(request_path),
+            verdict=IntakeVerdict.READY_TO_PLAN,
+            recommendation=IntakeRecommendation.ADVANCE,
+            axis_results=_axis_results(4),
+            composite_score=4.0,
+            convergence_status=ConvergenceStatus.CONVERGED,
+        )
+
+    monkeypatch.setattr(sys, "argv", ["council", "--mode", "intake", "--input", str(request)])
+    with patch("agents.deliberative_council.modes.intake.run_intake", side_effect=fake_run_intake):
+        council_cli.main()
+
+    assert len(seen_configs) == 1
+    assert seen_configs[0].min_valid_members >= 4
+    assert seen_configs[0].min_valid_families >= 4
+
+
+def test_cli_scan_only_collects_hapax_request_documents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = tmp_path / "REQ-INTAKE-CLI.md"
+    _write_request(request)
+    unrelated = tmp_path / "note.md"
+    unrelated.write_text("---\ntype: note\nstatus: captured\n---\n\n# Note\n", encoding="utf-8")
+    seen_paths: list[Path] = []
+
+    async def fake_run_intake(
+        request_path: str | Path,
+        *,
+        config: CouncilConfig | None = None,
+        write_back: bool = True,
+    ) -> IntakeReceipt:
+        seen_paths.append(Path(request_path))
+        return IntakeReceipt(
+            request_id="REQ-INTAKE-CLI",
+            request_path=str(request_path),
+            verdict=IntakeVerdict.READY_TO_PLAN,
+            recommendation=IntakeRecommendation.ADVANCE,
+            axis_results=_axis_results(4),
+            composite_score=4.0,
+            convergence_status=ConvergenceStatus.CONVERGED,
+        )
+
+    monkeypatch.setenv("HAPAX_REQUESTS_DIR", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["council", "--mode", "intake", "--scan"])
+    with patch("agents.deliberative_council.modes.intake.run_intake", side_effect=fake_run_intake):
+        council_cli.main()
+
+    assert seen_paths == [request]
+
+
 def test_cli_member_timeout_surfaces_stderr_and_nonzero(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
