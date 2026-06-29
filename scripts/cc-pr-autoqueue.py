@@ -1344,6 +1344,12 @@ def merge_pr(
         if _decision_requires_head_guard(decision):
             if not decision.pr.head_sha:
                 return False, "missing_head_sha_for_head_guard"
+            head_guard_blocker = _current_head_guard_blocker(
+                decision,
+                expected_head_sha=decision.pr.head_sha,
+            )
+            if head_guard_blocker:
+                return False, head_guard_blocker
             cmd.extend(["--match-head-commit", decision.pr.head_sha])
     elif decision.action == "disable_auto_merge":
         cmd.append("--disable-auto")
@@ -1435,6 +1441,30 @@ def _decision_requires_head_guard(decision: Decision) -> bool:
     if decision.task is None:
         return False
     return assess_release_auto_arm(decision.task.frontmatter).armed
+
+
+def _current_head_guard_blocker(decision: Decision, *, expected_head_sha: str) -> str | None:
+    if decision.task is None:
+        return "current_task_missing_for_head_guard"
+    try:
+        text = decision.task.path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return f"current_task_unreadable:{exc}"
+    current_frontmatter = frontmatter_from_text(text)
+    admission_blockers = _release_auto_arm_current_admission_blockers(
+        current_frontmatter,
+        pr_number=decision.pr.number,
+        head_ref=decision.pr.head_ref,
+    )
+    if admission_blockers:
+        return "current_task_not_admissible:" + ",".join(admission_blockers)
+    if not assess_release_auto_arm(current_frontmatter).armed:
+        return "current_task_release_not_authorized"
+    return _release_authorized_head_stamp_blocker(
+        current_frontmatter,
+        expected_head_sha=expected_head_sha,
+        expected_label="current",
+    )
 
 
 def _append_release_auto_arm_ledger(

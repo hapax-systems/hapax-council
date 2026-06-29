@@ -3179,6 +3179,89 @@ def test_already_release_authorized_head_locked_task_matches_head_on_merge(
     assert decision.get("auto_arm", False) is False
 
 
+def test_merge_pr_revalidates_current_release_authorization_before_head_locked_merge(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="already-armed-revoked",
+        status="pr_open",
+        pr=735,
+        branch="feat/735",
+        extra_frontmatter={
+            "implementation_authorized": True,
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-735",
+            "risk_tier": "T2",
+            "stage": "S7_RELEASE",
+        },
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    note.write_text(
+        note.read_text(encoding="utf-8").replace(
+            "release_authorized: true", "release_authorized: false"
+        ),
+        encoding="utf-8",
+    )
+    pr = autoqueue._parse_pr(_pr(735))
+    assert pr is not None
+    runner = _FakeRunner()
+
+    ok, message = autoqueue.merge_pr(
+        autoqueue.Decision(pr=pr, task=task, tasks=(task,), action="queue"),
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is False
+    assert message == "current_task_release_not_authorized"
+    assert runner.calls == []
+
+
+def test_merge_pr_revalidates_current_release_authorized_head_before_merge(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="already-armed-repointed",
+        status="pr_open",
+        pr=736,
+        branch="feat/736",
+        extra_frontmatter={
+            "implementation_authorized": True,
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-736",
+            "risk_tier": "T2",
+            "stage": "S7_RELEASE",
+        },
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    note.write_text(
+        note.read_text(encoding="utf-8").replace(
+            "release_authorized_head_sha: sha-736",
+            "release_authorized_head_sha: sha-old",
+        ),
+        encoding="utf-8",
+    )
+    pr = autoqueue._parse_pr(_pr(736))
+    assert pr is not None
+    runner = _FakeRunner()
+
+    ok, message = autoqueue.merge_pr(
+        autoqueue.Decision(pr=pr, task=task, tasks=(task,), action="queue"),
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is False
+    assert message == "release_authorized_head_mismatch:authorized=sha-old:current=sha-736"
+    assert runner.calls == []
+
+
 def test_head_guard_required_merge_fails_when_head_sha_missing(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     _write_task(
