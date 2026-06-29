@@ -2060,13 +2060,15 @@ def test_already_queued_status_write_failure_still_dequeues(
         and item["ok"] is False
         for item in report["mutations"]
     )
-    assert any(
-        item["pr"] == 717
+    failure_status = next(
+        item
+        for item in report["mutations"]
+        if item["pr"] == 717
         and item["action"] == "set_admission_status"
         and item["status_state"] == "failure"
-        and item["ok"] is False
-        for item in report["mutations"]
     )
+    assert failure_status["ok"] is False
+    assert failure_status["reasons"] == ["admission_status_write_failed:status post failed"]
     assert any(
         call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
         for call in runner.calls
@@ -2113,13 +2115,15 @@ def test_already_auto_merge_status_write_failure_still_disables_auto_merge(
         and item["ok"] is False
         for item in report["mutations"]
     )
-    assert any(
-        item["pr"] == 718
+    failure_status = next(
+        item
+        for item in report["mutations"]
+        if item["pr"] == 718
         and item["action"] == "set_admission_status"
         and item["status_state"] == "failure"
-        and item["ok"] is False
-        for item in report["mutations"]
     )
+    assert failure_status["ok"] is False
+    assert failure_status["reasons"] == ["admission_status_write_failed:status post failed"]
     assert ["gh", "pr", "merge", "718", "--repo", "owner/repo", "--disable-auto"] in runner.calls
 
 

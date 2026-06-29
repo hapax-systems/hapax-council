@@ -1570,7 +1570,12 @@ def _decision_is_non_ready(decision: Decision) -> bool:
     )
 
 
-def _release_auto_arm_fail_closed_decision(decision: Decision, message: str) -> Decision | None:
+def _release_auto_arm_fail_closed_decision(
+    decision: Decision,
+    message: str,
+    *,
+    reason_prefix: str = "release_auto_arm_failed",
+) -> Decision | None:
     if decision.action == "already_queued":
         action = "dequeue"
     elif decision.action == "already_auto_merge_enabled":
@@ -1584,7 +1589,7 @@ def _release_auto_arm_fail_closed_decision(decision: Decision, message: str) -> 
         task=decision.task,
         tasks=decision.tasks,
         action=action,
-        reasons=(f"release_auto_arm_failed:{message}",),
+        reasons=(f"{reason_prefix}:{message}",),
     )
 
 
@@ -1592,12 +1597,17 @@ def _release_auto_arm_fail_closed_mutations(
     decision: Decision,
     message: str,
     *,
+    reason_prefix: str = "release_auto_arm_failed",
     repo: str,
     repo_root: Path,
     runner: Any,
     now: datetime,
 ) -> list[dict[str, Any]]:
-    fail_decision = _release_auto_arm_fail_closed_decision(decision, message)
+    fail_decision = _release_auto_arm_fail_closed_decision(
+        decision,
+        message,
+        reason_prefix=reason_prefix,
+    )
     if fail_decision is None:
         return []
 
@@ -1864,7 +1874,8 @@ def run_reconciler(
                         mutation_results.extend(
                             _release_auto_arm_fail_closed_mutations(
                                 decision,
-                                f"admission_status_write_failed:{message}",
+                                message,
+                                reason_prefix="admission_status_write_failed",
                                 repo=repo,
                                 repo_root=repo_root,
                                 runner=runner,
