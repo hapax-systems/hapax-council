@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from shared.gate_outcome_producer import build_outcome_gate_event, emit_outcome_gate_event
 from shared.sdlc_router import REQUIREMENT_VECTOR_DIMENSIONS, SdlcRouter
 
@@ -70,8 +72,33 @@ def test_non_witnessed_event_does_not_move_the_posterior() -> None:
         provenance="fixture",
     )
     assert event.provenance == "fixture"
+    # eligibility is kept CONSISTENT with provenance — a fixture receipt does not claim witnessed
+    assert event.learning_eligibility is not None
+    assert event.learning_eligibility.thompson_update_allowed is False
     assert router.record_gate_event(event) is False
     assert router.state.route_posteriors == {}
+
+
+def test_rejects_non_verdict_gate_result() -> None:
+    """A non-verdict result (abstain/escalate/error) would be silently dropped — fail closed."""
+    with pytest.raises(ValueError, match="verdict"):
+        build_outcome_gate_event(
+            _task_fields(),
+            route="local_tool.local.worker",
+            gate_result="abstain",
+            gate_type="deterministic",
+        )
+
+
+def test_rejects_non_learning_gate_type() -> None:
+    """A non-learning gate_type ("none", the admission gate) would never learn — fail closed."""
+    with pytest.raises(ValueError, match="learning verdict"):
+        build_outcome_gate_event(
+            _task_fields(),
+            route="local_tool.local.worker",
+            gate_result="accept",
+            gate_type="none",
+        )
 
 
 def test_emit_then_ingest_closes_the_loop(tmp_path: Path) -> None:
