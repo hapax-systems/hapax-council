@@ -3536,6 +3536,71 @@ def test_release_head_boundary_revalidates_current_note_before_queue(
     )
 
 
+def test_release_head_boundary_fetches_live_head_before_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="already-armed-force-pushed-before-queue",
+        status="pr_open",
+        pr=748,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-748",
+            "stage": "S7_RELEASE",
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(748)]
+    original_boundary = autoqueue._release_head_boundary_blocker
+    repointed = False
+
+    def force_push_before_boundary(decision: Any, **kwargs: Any) -> str | None:
+        nonlocal repointed
+        if decision.pr.number == 748 and not repointed:
+            runner.open_prs[0]["headRefOid"] = "sha-force-pushed"
+            repointed = True
+        return original_boundary(decision, **kwargs)
+
+    monkeypatch.setattr(autoqueue, "_release_head_boundary_blocker", force_push_before_boundary)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert not any(call[:4] == ["gh", "pr", "merge", "748"] for call in runner.calls)
+    assert not any(
+        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-748"]
+        and "state=success" in call
+        for call in runner.calls
+    )
+    assert any(
+        item["pr"] == 748
+        and item["action"] == "release_head_revalidation"
+        and item["ok"] is False
+        and item["message"] == "current_pr_head_mismatch:current=sha-force-pushed:expected=sha-748"
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 748
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        and item["reasons"]
+        == [
+            "release_head_revalidation_failed:"
+            "current_pr_head_mismatch:current=sha-force-pushed:expected=sha-748"
+        ]
+        for item in report["mutations"]
+    )
+
+
 def test_release_head_boundary_revalidates_current_note_before_already_queued(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

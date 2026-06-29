@@ -1539,6 +1539,28 @@ def _release_head_boundary_blocker(
         return "current_task_not_admissible:" + ",".join(admission_blockers)
     if not decision.pr.head_sha:
         return "missing_head_sha_for_head_guard"
+    gate_blockers = _release_auto_arm_current_task_gate_blockers(
+        decision.task,
+        current_frontmatter,
+        require_route_metadata=require_route_metadata,
+        pr_number=decision.pr.number,
+        pr_head_sha=decision.pr.head_sha,
+        changed_files=decision.pr.files if changed_files is None else changed_files,
+        changed_file_count=(
+            decision.pr.changed_files_count if changed_file_count is None else changed_file_count
+        ),
+    )
+    if gate_blockers:
+        return "current_task_gate_blocked:" + ",".join(gate_blockers)
+    if not assess_release_auto_arm(current_frontmatter).armed:
+        return "release_authorized_not_current"
+    stamp_blocker = _release_authorized_head_stamp_blocker(
+        current_frontmatter,
+        expected_head_sha=decision.pr.head_sha,
+        expected_label="current",
+    )
+    if stamp_blocker:
+        return stamp_blocker
     head_ok, current_head_sha = fetch_pr_head_sha(
         decision.pr.number,
         repo=repo,
@@ -1551,26 +1573,7 @@ def _release_head_boundary_blocker(
         return (
             f"current_pr_head_mismatch:current={current_head_sha}:expected={decision.pr.head_sha}"
         )
-    gate_blockers = _release_auto_arm_current_task_gate_blockers(
-        decision.task,
-        current_frontmatter,
-        require_route_metadata=require_route_metadata,
-        pr_number=decision.pr.number,
-        pr_head_sha=current_head_sha,
-        changed_files=decision.pr.files if changed_files is None else changed_files,
-        changed_file_count=(
-            decision.pr.changed_files_count if changed_file_count is None else changed_file_count
-        ),
-    )
-    if gate_blockers:
-        return "current_task_gate_blocked:" + ",".join(gate_blockers)
-    if not assess_release_auto_arm(current_frontmatter).armed:
-        return "release_authorized_not_current"
-    return _release_authorized_head_stamp_blocker(
-        current_frontmatter,
-        expected_head_sha=current_head_sha,
-        expected_label="current",
-    )
+    return None
 
 
 def _append_release_auto_arm_ledger(
