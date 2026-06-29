@@ -1898,6 +1898,104 @@ def test_auto_arms_already_auto_merge_enabled_governance_sensitive_task(
     assert record["task_id"] == "stranded-governance-already-auto"
 
 
+def test_already_queued_auto_arm_failure_dequeues_and_overwrites_admission_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-queued-arm-fails",
+        status="pr_open",
+        pr=713,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    runner = _FakeRunner()
+    runner.queued_prs = {713}
+    runner.open_prs = [_pr(713, checks=_governance_mitigation_checks())]
+
+    def fail_arm(*_: Any, **__: Any) -> tuple[bool, str]:
+        return False, "task note write failed"
+
+    monkeypatch.setattr(autoqueue, "arm_release_for_task", fail_arm)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    assert "release_authorized: false" in note.read_text(encoding="utf-8")
+    assert any(
+        item["pr"] == 713 and item["action"] == "release_auto_arm" and item["ok"] is False
+        for item in report["mutations"]
+    )
+    assert any(
+        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-713"]
+        and "state=failure" in call
+        for call in runner.calls
+    )
+    assert any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+
+
+def test_already_auto_merge_auto_arm_failure_disables_auto_merge_and_overwrites_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-auto-arm-fails",
+        status="pr_open",
+        pr=714,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(714, auto_merge=True, checks=_governance_mitigation_checks())]
+
+    def fail_arm(*_: Any, **__: Any) -> tuple[bool, str]:
+        return False, "task note write failed"
+
+    monkeypatch.setattr(autoqueue, "arm_release_for_task", fail_arm)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    assert "release_authorized: false" in note.read_text(encoding="utf-8")
+    assert any(
+        item["pr"] == 714 and item["action"] == "release_auto_arm" and item["ok"] is False
+        for item in report["mutations"]
+    )
+    assert any(
+        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-714"]
+        and "state=failure" in call
+        for call in runner.calls
+    )
+    assert ["gh", "pr", "merge", "714", "--repo", "owner/repo", "--disable-auto"] in runner.calls
+
+
 @pytest.mark.parametrize(
     ("context", "state"),
     [
@@ -1995,6 +2093,40 @@ def test_governance_auto_arm_requires_successful_autoqueue_admission_status(
     mutation = next(item for item in report["mutations"] if item["pr"] == 710)
     assert mutation["ok"] is False
     assert mutation["message"] == "admission status write failed; queue mutation skipped"
+
+
+def test_arm_release_for_task_fails_closed_when_assessment_ineligible(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-helper-ineligible",
+        status="pr_open",
+        pr=713,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    ledger = tmp_path / "ledger.jsonl"
+
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=ledger,
+        verified_checks={"authority-case-check", "review"},
+    )
+
+    assert ok is False
+    assert (
+        message
+        == f"release_auto_arm_ineligible:needs_mitigation:governance_sensitive:{autoqueue.AUTOQUEUE_ADMISSION_CONTEXT}"
+    )
+    untouched = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in untouched
+    assert "stage: S7_RELEASE" not in untouched
+    assert not ledger.exists()
 
 
 def test_auto_arms_pass_backed_runtime_secret_subscription_task(tmp_path: Path) -> None:

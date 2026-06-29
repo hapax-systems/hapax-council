@@ -1378,6 +1378,9 @@ def arm_release_for_task(
     now = now or datetime.now(UTC)
     now_iso = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     assessment = assess_release_auto_arm(task.frontmatter, verified_checks=verified_checks)
+    if not assessment.eligible:
+        reasons = ",".join(assessment.blockers or ("not_eligible",))
+        return False, f"release_auto_arm_ineligible:{reasons}"
     try:
         text = task.path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -1537,6 +1540,22 @@ def set_autoqueue_admission_status(
 def _decision_is_non_ready(decision: Decision) -> bool:
     return decision.action in {"blocked", "dequeue", "disable_auto_merge"} and bool(
         decision.reasons
+    )
+
+
+def _release_auto_arm_fail_closed_decision(decision: Decision, message: str) -> Decision | None:
+    if decision.action == "already_queued":
+        action = "dequeue"
+    elif decision.action == "already_auto_merge_enabled":
+        action = "disable_auto_merge"
+    else:
+        return None
+    return Decision(
+        pr=decision.pr,
+        task=decision.task,
+        tasks=decision.tasks,
+        action=action,
+        reasons=(f"release_auto_arm_failed:{message}",),
     )
 
 
@@ -1783,6 +1802,41 @@ def run_reconciler(
                             "message": armed_message,
                         }
                     )
+                    if not armed_ok:
+                        fail_decision = _release_auto_arm_fail_closed_decision(
+                            decision, armed_message
+                        )
+                        if fail_decision is not None:
+                            fail_status = _admission_status_for(fail_decision)
+                            fail_status_result = set_autoqueue_admission_status(
+                                fail_decision,
+                                repo=repo,
+                                repo_root=repo_root,
+                                runner=runner,
+                                now=now,
+                            )
+                            if fail_status_result is not None:
+                                assert fail_status is not None
+                                ok, message = fail_status_result
+                                mutation_results.append(
+                                    {
+                                        **fail_decision.as_dict(),
+                                        "action": "set_admission_status",
+                                        "status_state": fail_status[0],
+                                        "ok": ok,
+                                        "message": message,
+                                    }
+                                )
+                            ok, message = merge_pr(
+                                fail_decision, repo=repo, repo_root=repo_root, runner=runner
+                            )
+                            mutation_results.append(
+                                {
+                                    **fail_decision.as_dict(),
+                                    "ok": ok,
+                                    "message": message,
+                                }
+                            )
                 continue
             if (
                 decision.action in {"queue", "enable_auto_merge"}
