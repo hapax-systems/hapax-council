@@ -476,7 +476,8 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # A governance-sensitive change auto-arms only after the local review dossier
     # gate has already accepted the PR and the GitHub-side authority/review checks
     # pass. ``cc-pr-autoqueue`` writes its own fresh admission proof only after
-    # the task note is armed, so that proof is not release-arm evidence.
+    # the task note is armed and the release-head boundary is revalidated, so
+    # that proof is not release-arm evidence.
     "governance_sensitive": (
         "authority-case-check",
         "review",

@@ -1338,6 +1338,7 @@ def merge_pr(
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
+    require_route_metadata: bool = True,
 ) -> tuple[bool, str]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
@@ -1366,7 +1367,10 @@ def merge_pr(
         # configured merge method.
         cmd.extend(["--auto", "--squash"])
         if _decision_requires_head_guard(decision):
-            boundary_blocker = _release_head_boundary_blocker(decision)
+            boundary_blocker = _release_head_boundary_blocker(
+                decision,
+                require_route_metadata=require_route_metadata,
+            )
             if boundary_blocker:
                 return False, boundary_blocker
             cmd.extend(["--match-head-commit", decision.pr.head_sha])
@@ -1492,7 +1496,13 @@ def _decision_is_release_head_guard_subject(decision: Decision) -> bool:
     return assess_release_auto_arm(decision.task.frontmatter).armed
 
 
-def _release_head_boundary_blocker(decision: Decision) -> str | None:
+def _release_head_boundary_blocker(
+    decision: Decision,
+    *,
+    require_route_metadata: bool = True,
+    changed_files: tuple[str, ...] | None = None,
+    changed_file_count: int | None = None,
+) -> str | None:
     if decision.action not in {
         "queue",
         "enable_auto_merge",
@@ -1516,10 +1526,23 @@ def _release_head_boundary_blocker(decision: Decision) -> str | None:
     )
     if admission_blockers:
         return "current_task_not_admissible:" + ",".join(admission_blockers)
-    if not assess_release_auto_arm(current_frontmatter).armed:
-        return "release_authorized_not_current"
     if not decision.pr.head_sha:
         return "missing_head_sha_for_head_guard"
+    gate_blockers = _release_auto_arm_current_task_gate_blockers(
+        decision.task,
+        current_frontmatter,
+        require_route_metadata=require_route_metadata,
+        pr_number=decision.pr.number,
+        pr_head_sha=decision.pr.head_sha,
+        changed_files=decision.pr.files if changed_files is None else changed_files,
+        changed_file_count=(
+            decision.pr.changed_files_count if changed_file_count is None else changed_file_count
+        ),
+    )
+    if gate_blockers:
+        return "current_task_gate_blocked:" + ",".join(gate_blockers)
+    if not assess_release_auto_arm(current_frontmatter).armed:
+        return "release_authorized_not_current"
     return _release_authorized_head_stamp_blocker(
         current_frontmatter,
         expected_head_sha=decision.pr.head_sha,
@@ -1569,7 +1592,8 @@ def _append_release_auto_arm_ledger(
     if pr_head_sha:
         record["pr_head_sha"] = pr_head_sha
         record["verified_checks_head_sha"] = pr_head_sha
-        record["autoqueue_admission_head_sha"] = pr_head_sha
+        record["planned_autoqueue_admission_head_sha"] = pr_head_sha
+        record["autoqueue_admission_proof_state"] = "pending_status_write"
     if pr_head_ref:
         record["pr_head_ref"] = pr_head_ref
     if verified_checks is not None:
@@ -2206,7 +2230,12 @@ def run_reconciler(
                             "message": armed_message,
                         }
                     )
-                head_blocker = _release_head_boundary_blocker(decision)
+                head_blocker = _release_head_boundary_blocker(
+                    decision,
+                    require_route_metadata=require_route_metadata,
+                    changed_files=decision.pr.files,
+                    changed_file_count=decision.pr.changed_files_count,
+                )
                 if head_blocker is not None:
                     mutation_results.append(
                         {
@@ -2287,7 +2316,13 @@ def run_reconciler(
                     }
                 )
                 continue
-            ok, message = merge_pr(decision, repo=repo, repo_root=repo_root, runner=runner)
+            ok, message = merge_pr(
+                decision,
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+                require_route_metadata=require_route_metadata,
+            )
             result = {
                 **decision.as_dict(),
                 "ok": ok,

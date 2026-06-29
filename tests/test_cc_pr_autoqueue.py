@@ -463,6 +463,21 @@ def test_fetch_pr_head_sha_rejects_non_json_success(tmp_path: Path) -> None:
     assert message == "invalid_pr_head_json"
 
 
+def test_fetch_pr_head_sha_rejects_missing_head_oid(tmp_path: Path) -> None:
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"headRefOid": None}), "")
+
+    ok, message = autoqueue.fetch_pr_head_sha(
+        42,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is False
+    assert message == "missing_head_sha"
+
+
 def test_queue_green_governed_pr(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="task-a", pr=42)
@@ -1748,7 +1763,9 @@ def test_auto_arms_release_unauthorized_pr_open_task(tmp_path: Path) -> None:
     assert record["pr_head_sha"] == "sha-701"
     assert record["pr_head_ref"] == "feat/701"
     assert record["verified_checks_head_sha"] == "sha-701"
-    assert record["autoqueue_admission_head_sha"] == "sha-701"
+    assert record["planned_autoqueue_admission_head_sha"] == "sha-701"
+    assert record["autoqueue_admission_proof_state"] == "pending_status_write"
+    assert "autoqueue_admission_head_sha" not in record
 
 
 def test_holds_governance_sensitive_task_without_mitigation_evidence(tmp_path: Path) -> None:
@@ -1881,7 +1898,9 @@ def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
     assert record["pr_head_sha"] == "sha-708"
     assert record["pr_head_ref"] == "feat/708"
     assert record["verified_checks_head_sha"] == "sha-708"
-    assert record["autoqueue_admission_head_sha"] == "sha-708"
+    assert record["planned_autoqueue_admission_head_sha"] == "sha-708"
+    assert record["autoqueue_admission_proof_state"] == "pending_status_write"
+    assert "autoqueue_admission_head_sha" not in record
     assert set(record["verified_checks"]) >= {
         "authority-case-check",
         "review",
@@ -2772,6 +2791,44 @@ def test_arm_release_for_task_revalidates_current_full_task_gate(tmp_path: Path)
     assert not ledger.exists()
 
 
+def test_arm_release_for_task_rereads_parent_spec_before_write(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-stale-parent-spec",
+        status="pr_open",
+        pr=741,
+        branch="feat/741",
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("parent_spec: docs/spec.md", "parent_spec: null"),
+        encoding="utf-8",
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(741, branch="feat/741")]
+    ledger = tmp_path / "ledger.jsonl"
+
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=ledger,
+        pr_number=741,
+        head_ref="feat/741",
+        expected_head_sha="sha-741",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is False
+    assert message == "current_task_gate_blocked:task_missing_parent_spec"
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    assert "stage: S7_RELEASE" not in current
+    assert not ledger.exists()
+
+
 def test_arm_release_for_task_revalidates_current_task_status(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     note = _write_task(
@@ -3083,6 +3140,74 @@ def test_release_head_boundary_reports_unreadable_current_note(
     assert message == "release_authorized_note_unreadable:read failed"
 
 
+def test_release_head_boundary_revalidates_current_task_gate_before_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="already-armed-governance-revoked-before-boundary",
+        status="pr_open",
+        pr=740,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-740",
+            "stage": "S7_RELEASE",
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(740)]
+    original_boundary = autoqueue._release_head_boundary_blocker
+
+    def remove_authority_before_boundary(decision: Any, **kwargs: Any) -> str | None:
+        if decision.pr.number == 740:
+            note.write_text(
+                note.read_text(encoding="utf-8").replace(
+                    "authority_case: CASE-TEST", "authority_case: null"
+                ),
+                encoding="utf-8",
+            )
+        return original_boundary(decision, **kwargs)
+
+    monkeypatch.setattr(
+        autoqueue, "_release_head_boundary_blocker", remove_authority_before_boundary
+    )
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert not any(call[:4] == ["gh", "pr", "merge", "740"] for call in runner.calls)
+    assert not any(
+        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-740"]
+        and "state=success" in call
+        for call in runner.calls
+    )
+    assert any(
+        item["pr"] == 740
+        and item["action"] == "release_head_revalidation"
+        and item["ok"] is False
+        and item["message"] == "current_task_gate_blocked:task_missing_authority_case"
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 740
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        and item["reasons"]
+        == [
+            "release_head_revalidation_failed:current_task_gate_blocked:task_missing_authority_case"
+        ]
+        for item in report["mutations"]
+    )
+
+
 def test_release_head_boundary_revalidates_current_note_before_queue(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3104,14 +3229,14 @@ def test_release_head_boundary_revalidates_current_note_before_queue(
     runner.open_prs = [_pr(735)]
     original_boundary = autoqueue._release_head_boundary_blocker
 
-    def revoke_before_boundary(decision: Any) -> str | None:
+    def revoke_before_boundary(decision: Any, **kwargs: Any) -> str | None:
         if decision.pr.number == 735:
             current = note.read_text(encoding="utf-8")
             note.write_text(
                 current.replace("release_authorized: true", "release_authorized: false"),
                 encoding="utf-8",
             )
-        return original_boundary(decision)
+        return original_boundary(decision, **kwargs)
 
     monkeypatch.setattr(autoqueue, "_release_head_boundary_blocker", revoke_before_boundary)
 
@@ -3168,7 +3293,7 @@ def test_release_head_boundary_revalidates_current_note_before_already_queued(
     original_boundary = autoqueue._release_head_boundary_blocker
     repointed = False
 
-    def repoint_before_boundary(decision: Any) -> str | None:
+    def repoint_before_boundary(decision: Any, **kwargs: Any) -> str | None:
         nonlocal repointed
         if decision.pr.number == 736 and not repointed:
             note.write_text(
@@ -3179,7 +3304,7 @@ def test_release_head_boundary_revalidates_current_note_before_already_queued(
                 encoding="utf-8",
             )
             repointed = True
-        return original_boundary(decision)
+        return original_boundary(decision, **kwargs)
 
     monkeypatch.setattr(autoqueue, "_release_head_boundary_blocker", repoint_before_boundary)
 
@@ -3200,7 +3325,9 @@ def test_release_head_boundary_revalidates_current_note_before_already_queued(
         item["pr"] == 736
         and item["action"] == "release_head_revalidation"
         and item["ok"] is False
-        and item["message"] == "release_authorized_head_mismatch:authorized=sha-old:current=sha-736"
+        and item["message"]
+        == "current_task_gate_blocked:release_authorized_head_mismatch:"
+        "authorized=sha-old:current=sha-736"
         for item in report["mutations"]
     )
     assert any(
@@ -3626,7 +3753,10 @@ def test_merge_pr_revalidates_current_release_authorized_head_before_merge(
     )
 
     assert ok is False
-    assert message == "release_authorized_head_mismatch:authorized=sha-old:current=sha-736"
+    assert (
+        message == "current_task_gate_blocked:release_authorized_head_mismatch:"
+        "authorized=sha-old:current=sha-736"
+    )
     assert runner.calls == []
 
 
