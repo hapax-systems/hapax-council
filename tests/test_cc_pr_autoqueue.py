@@ -73,6 +73,7 @@ def _write_review_dossier(
     task_id: str,
     *,
     head_sha: str,
+    pr: int = 42,
     verdict: str = "quorum-accept",
     reviewers: list[dict[str, Any]] | None = None,
     folder: str = "active",
@@ -92,7 +93,7 @@ def _write_review_dossier(
     dossier = {
         "dossier_schema": 1,
         "task_id": task_id,
-        "pr": 42,
+        "pr": pr,
         "head_sha": head_sha,
         "team_class": "t2_standard",
         "quorum_required": 2,
@@ -107,6 +108,10 @@ def _write_review_dossier(
     path = vault / folder / f"{task_id}.review-dossier.yaml"
     path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
     return path
+
+
+def _write_governance_review_dossier(vault: Path, task_id: str, pr: int) -> Path:
+    return _write_review_dossier(vault, task_id, head_sha=f"sha-{pr}", pr=pr)
 
 
 class TestReviewTeamGate:
@@ -1827,8 +1832,45 @@ def test_holds_governance_sensitive_task_without_mitigation_evidence(tmp_path: P
     assert decision["reasons"] == [
         "release_auto_arm_ineligible:"
         "needs_mitigation:governance_sensitive:authority-case-check,"
-        "needs_mitigation:governance_sensitive:review"
+        "needs_mitigation:governance_sensitive:review-team-quorum"
     ]
+
+
+def test_governance_mitigation_ignores_bare_review_check_without_dossier(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-bare-review",
+        status="pr_open",
+        pr=751,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(751, checks=_governance_mitigation_checks())]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    assert "stage: S7_RELEASE" not in current
+    decision = next(d for d in report["decisions"] if d["pr"] == 751)
+    assert decision["action"] == "blocked"
+    assert decision["reasons"] == [
+        "release_auto_arm_ineligible:needs_mitigation:governance_sensitive:review-team-quorum"
+    ]
+    assert not any(call[:4] == ["gh", "pr", "merge", "751"] for call in runner.calls)
 
 
 def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
@@ -1848,6 +1890,7 @@ def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
             },
         },
     )
+    _write_governance_review_dossier(vault, "stranded-governance-evidenced", 708)
     pr_payload = _pr(708, checks=_governance_mitigation_checks())
     parsed = autoqueue._parse_pr(pr_payload)
     assert parsed is not None
@@ -1913,7 +1956,7 @@ def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
     assert "autoqueue_admission_head_sha" not in record
     assert set(record["verified_checks"]) >= {
         "authority-case-check",
-        "review",
+        autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE,
     }
     assert "governance-gate" not in record["verified_checks"]
     assert "pr-admission" not in record["verified_checks"]
@@ -1951,6 +1994,7 @@ def test_governance_auto_arm_refetches_live_mitigation_evidence_before_write(
             },
         },
     )
+    _write_governance_review_dossier(vault, "stranded-governance-stale-checks", 749)
 
     class _StaleMitigationRunner(_FakeRunner):
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
@@ -1962,8 +2006,8 @@ def test_governance_auto_arm_refetches_live_mitigation_evidence_before_write(
                     _check("typecheck"),
                     _check("web-build"),
                     _check("vscode-build"),
-                    _check("authority-case-check"),
-                    _check("review", "FAILURE"),
+                    _check("authority-case-check", "FAILURE"),
+                    _check("review"),
                 ]
             return result
 
@@ -1997,7 +2041,7 @@ def test_governance_auto_arm_refetches_live_mitigation_evidence_before_write(
         and item["ok"] is False
         and item["message"]
         == "release auto-arm failed: "
-        "release_auto_arm_ineligible:needs_mitigation:governance_sensitive:review"
+        "release_auto_arm_ineligible:needs_mitigation:governance_sensitive:authority-case-check"
         for item in report["mutations"]
     )
     assert any(
@@ -2007,7 +2051,8 @@ def test_governance_auto_arm_refetches_live_mitigation_evidence_before_write(
         and item["reasons"]
         == [
             "release_auto_arm_failed:"
-            "release_auto_arm_ineligible:needs_mitigation:governance_sensitive:review"
+            "release_auto_arm_ineligible:"
+            "needs_mitigation:governance_sensitive:authority-case-check"
         ]
         for item in report["mutations"]
     )
@@ -2030,6 +2075,7 @@ def test_auto_arms_already_queued_governance_sensitive_task(
             },
         },
     )
+    _write_governance_review_dossier(vault, "stranded-governance-already-queued", 711)
     runner = _FakeRunner()
     runner.queued_prs = {711}
     runner.open_prs = [_pr(711, checks=_governance_mitigation_checks())]
@@ -2106,6 +2152,7 @@ def test_already_queued_refetches_mitigation_checks_before_success_proof(
             },
         },
     )
+    _write_governance_review_dossier(vault, "already-armed-governance-stale-checks", 750)
 
     class _StaleMitigationRunner(_FakeRunner):
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
@@ -2117,8 +2164,8 @@ def test_already_queued_refetches_mitigation_checks_before_success_proof(
                     _check("typecheck"),
                     _check("web-build"),
                     _check("vscode-build"),
-                    _check("authority-case-check"),
-                    _check("review", "FAILURE"),
+                    _check("authority-case-check", "FAILURE"),
+                    _check("review"),
                 ]
             return result
 
@@ -2145,7 +2192,8 @@ def test_already_queued_refetches_mitigation_checks_before_success_proof(
         and item["action"] == "release_head_revalidation"
         and item["ok"] is False
         and item["message"]
-        == "current_release_mitigation_blocked:needs_mitigation:governance_sensitive:review"
+        == "current_release_mitigation_blocked:"
+        "needs_mitigation:governance_sensitive:authority-case-check"
         for item in report["mutations"]
     )
     assert any(
@@ -2156,7 +2204,7 @@ def test_already_queued_refetches_mitigation_checks_before_success_proof(
         == [
             "release_head_revalidation_failed:"
             "current_release_mitigation_blocked:"
-            "needs_mitigation:governance_sensitive:review"
+            "needs_mitigation:governance_sensitive:authority-case-check"
         ]
         for item in report["mutations"]
     )
@@ -2183,6 +2231,7 @@ def test_auto_arms_already_auto_merge_enabled_governance_sensitive_task(
             },
         },
     )
+    _write_governance_review_dossier(vault, "stranded-governance-already-auto", 712)
     runner = _FakeRunner()
     runner.open_prs = [_pr(712, auto_merge=True, checks=_governance_mitigation_checks())]
     ledger = tmp_path / "ledger.jsonl"
@@ -2243,6 +2292,7 @@ def test_auto_arms_enable_auto_merge_governance_sensitive_task_after_arming_befo
             },
         },
     )
+    _write_governance_review_dossier(vault, "stranded-governance-new-auto", 739)
     checks = [
         {**check, "conclusion": "PENDING"} if check.get("name") == "vscode-build" else check
         for check in _governance_mitigation_checks()
@@ -2319,6 +2369,7 @@ def test_already_queued_auto_arm_failure_dequeues_and_overwrites_admission_statu
             },
         },
     )
+    _write_governance_review_dossier(vault, "stranded-governance-queued-arm-fails", 713)
     runner = _FakeRunner()
     runner.queued_prs = {713}
     runner.open_prs = [_pr(713, checks=_governance_mitigation_checks())]
@@ -2432,6 +2483,7 @@ def test_already_auto_merge_auto_arm_failure_disables_auto_merge_and_overwrites_
             },
         },
     )
+    _write_governance_review_dossier(vault, "stranded-governance-auto-arm-fails", 714)
     runner = _FakeRunner()
     runner.open_prs = [_pr(714, auto_merge=True, checks=_governance_mitigation_checks())]
 
@@ -2490,6 +2542,7 @@ def test_already_queued_status_write_failure_still_dequeues(
             },
         },
     )
+    _write_governance_review_dossier(vault, "stranded-governance-queued-status-fails", 717)
     runner = _FakeRunner()
     runner.queued_prs = {717}
     runner.open_prs = [_pr(717, checks=_governance_mitigation_checks())]
@@ -2547,6 +2600,7 @@ def test_already_auto_merge_status_write_failure_still_disables_auto_merge(
             },
         },
     )
+    _write_governance_review_dossier(vault, "stranded-governance-auto-status-fails", 718)
     runner = _FakeRunner()
     runner.open_prs = [_pr(718, auto_merge=True, checks=_governance_mitigation_checks())]
     runner.fail_status_posts = True
@@ -2601,6 +2655,7 @@ def test_new_queue_auto_arm_failure_overwrites_admission_status_without_queueing
             },
         },
     )
+    _write_governance_review_dossier(vault, "stranded-governance-new-queue-arm-fails", 715)
     runner = _FakeRunner()
     runner.open_prs = [_pr(715, checks=_governance_mitigation_checks())]
 
@@ -2650,6 +2705,7 @@ def test_new_enable_auto_merge_auto_arm_failure_overwrites_admission_status_with
             },
         },
     )
+    _write_governance_review_dossier(vault, "stranded-governance-new-auto-arm-fails", 716)
     checks = [
         {**check, "conclusion": "PENDING"} if check.get("name") == "vscode-build" else check
         for check in _governance_mitigation_checks()
@@ -2692,8 +2748,7 @@ def test_new_enable_auto_merge_auto_arm_failure_overwrites_admission_status_with
     ("context", "state"),
     [
         ("authority-case-check", "SKIPPED"),
-        ("review", "SKIPPED"),
-        ("review", "NEUTRAL"),
+        ("authority-case-check", "NEUTRAL"),
     ],
 )
 def test_governance_mitigation_requires_successful_evidence(
@@ -2713,6 +2768,11 @@ def test_governance_mitigation_requires_successful_evidence(
                 "governance_sensitive": True,
             },
         },
+    )
+    _write_governance_review_dossier(
+        vault,
+        f"stranded-governance-{context}-{state.lower()}",
+        709,
     )
     checks = _governance_mitigation_checks()
     checks = [
@@ -2763,6 +2823,7 @@ def test_governance_auto_arm_status_write_failure_blocks_queue_after_arm(
             },
         },
     )
+    _write_governance_review_dossier(vault, "stranded-governance-status-failed", 710)
     runner = _FakeRunner()
     runner.open_prs = [_pr(710, checks=_governance_mitigation_checks())]
     runner.fail_status_posts = True
@@ -2814,6 +2875,7 @@ def test_governance_auto_arm_reposts_existing_success_before_queue(
             },
         },
     )
+    _write_governance_review_dossier(vault, "stranded-governance-existing-success", 744)
     runner = _FakeRunner()
     runner.open_prs = [_pr(744, checks=_governance_mitigation_checks())]
     runner.head_statuses["sha-744"] = [
@@ -2863,15 +2925,10 @@ def test_governance_auto_arm_missing_head_sha_blocks_before_note_write(
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
-        task_id="stranded-governance-missing-head",
+        task_id="stranded-missing-head",
         status="pr_open",
         pr=745,
-        extra_frontmatter={
-            **_eligible_arm_extra(),
-            "risk_flags": {
-                "governance_sensitive": True,
-            },
-        },
+        extra_frontmatter=_eligible_arm_extra(),
     )
     runner = _FakeRunner()
     pr = _pr(745, checks=_governance_mitigation_checks())
@@ -2920,6 +2977,7 @@ def test_enable_auto_merge_status_write_failure_blocks_queue_after_arm(
             },
         },
     )
+    _write_governance_review_dossier(vault, "stranded-governance-enable-status-failed", 721)
     checks = [
         {**check, "conclusion": "PENDING"} if check.get("name") == "vscode-build" else check
         for check in _governance_mitigation_checks()
@@ -2985,7 +3043,10 @@ def test_arm_release_for_task_fails_closed_when_assessment_ineligible(tmp_path: 
     )
 
     assert ok is False
-    assert message == "release_auto_arm_ineligible:needs_mitigation:governance_sensitive:review"
+    assert (
+        message == "release_auto_arm_ineligible:"
+        "needs_mitigation:governance_sensitive:review-team-quorum"
+    )
     untouched = note.read_text(encoding="utf-8")
     assert "release_authorized: false" in untouched
     assert "stage: S7_RELEASE" not in untouched

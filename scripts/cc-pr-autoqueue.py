@@ -63,6 +63,7 @@ from shared.merge_queue_lineage import (  # noqa: E402
 from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     RELEASE_MITIGATION_CHECKS,
+    REVIEW_TEAM_QUORUM_EVIDENCE,
     TASK_MERGE_READY_STATUSES,
     ReleaseAutoArmAssessment,
     acceptance_receipt_blockers,
@@ -112,8 +113,12 @@ AUTOQUEUE_IGNORED_CHECK_CONTEXTS = {
     "governance-gate",
     "pr-admission",
 }
+VIRTUAL_RELEASE_MITIGATION_CONTEXTS = frozenset({REVIEW_TEAM_QUORUM_EVIDENCE})
 RELEASE_MITIGATION_CHECK_CONTEXTS = frozenset(
-    check for checks in RELEASE_MITIGATION_CHECKS.values() for check in checks
+    check
+    for checks in RELEASE_MITIGATION_CHECKS.values()
+    for check in checks
+    if check not in VIRTUAL_RELEASE_MITIGATION_CONTEXTS
 )
 # Mirrors queue-admission-proof-check.py DEFAULT_TTL_SECONDS. The reconciler
 # re-posts the admission proof once it is older than half this window so the
@@ -1043,6 +1048,51 @@ def _task_blockers(
     return blockers
 
 
+def _review_team_quorum_evidence_blockers(
+    task: TaskNote,
+    frontmatter: dict[str, Any],
+    *,
+    pr_number: int | None,
+    pr_head_sha: str | None,
+    changed_files: tuple[str, ...] | None,
+    changed_file_count: int | None,
+) -> tuple[str, ...]:
+    return review_team.review_dossier_validity_blockers(
+        frontmatter,
+        task.path,
+        pr_head_sha=pr_head_sha,
+        pr_number=pr_number,
+        changed_files=changed_files or (),
+        changed_file_count=changed_file_count,
+    )
+
+
+def _release_mitigation_verified_checks(
+    checks: set[str],
+    task: TaskNote | None,
+    frontmatter: dict[str, Any],
+    *,
+    pr_number: int | None,
+    pr_head_sha: str | None,
+    changed_files: tuple[str, ...] | None,
+    changed_file_count: int | None,
+) -> set[str]:
+    verified = set(checks)
+    if task is None:
+        return verified
+    blockers = _review_team_quorum_evidence_blockers(
+        task,
+        frontmatter,
+        pr_number=pr_number,
+        pr_head_sha=pr_head_sha,
+        changed_files=changed_files,
+        changed_file_count=changed_file_count,
+    )
+    if not blockers:
+        verified.add(REVIEW_TEAM_QUORUM_EVIDENCE)
+    return verified
+
+
 def _is_ci_repair_task(task: TaskNote) -> bool:
     if task.folder != "active":
         return False
@@ -1266,7 +1316,15 @@ def classify_pr(
     auto_arm = False
     auto_arm_verified_checks: tuple[str, ...] = ()
     if task is not None and not reasons:
-        verified_checks = set(pr.check_summary.verified_passed)
+        verified_checks = _release_mitigation_verified_checks(
+            set(pr.check_summary.verified_passed),
+            task,
+            task.frontmatter,
+            pr_number=pr.number,
+            pr_head_sha=pr.head_sha,
+            changed_files=pr.files,
+            changed_file_count=pr.changed_files_count,
+        )
         arm = assess_release_auto_arm(task.frontmatter, verified_checks=verified_checks)
         if arm.needs_arming:
             if arm.eligible:
@@ -1608,6 +1666,17 @@ def _release_head_boundary_blocker(
         return (
             f"current_pr_head_mismatch:current={current_head_sha}:expected={decision.pr.head_sha}"
         )
+    current_verified_checks = _release_mitigation_verified_checks(
+        current_verified_checks,
+        decision.task,
+        current_frontmatter,
+        pr_number=decision.pr.number,
+        pr_head_sha=current_head_sha,
+        changed_files=decision.pr.files if changed_files is None else changed_files,
+        changed_file_count=(
+            decision.pr.changed_files_count if changed_file_count is None else changed_file_count
+        ),
+    )
     mitigation_blockers = _release_mitigation_evidence_blockers(
         current_frontmatter,
         verified_checks=current_verified_checks,
@@ -1757,7 +1826,15 @@ def arm_release_for_task(
                 False,
                 f"current_pr_head_mismatch:current={current_head_sha}:expected={expected_head_sha}",
             )
-        verified_checks = current_verified_checks
+        verified_checks = _release_mitigation_verified_checks(
+            current_verified_checks,
+            task,
+            current_frontmatter,
+            pr_number=pr_number,
+            pr_head_sha=current_head_sha,
+            changed_files=changed_files,
+            changed_file_count=changed_file_count,
+        )
     pre_arm_assessment = assess_release_auto_arm(
         current_frontmatter, verified_checks=verified_checks
     )

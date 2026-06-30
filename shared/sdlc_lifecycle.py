@@ -472,15 +472,20 @@ SENSITIVE_RISK_FLAGS = (
 #: `run_reconciler` returns a killed report before any admission mutation).
 #: One-off shell check:
 #: `env | grep -E '^(HAPAX_CC_PR_AUTOQUEUE_OFF|HAPAX_CC_HYGIENE_OFF)=1$'`.
+REVIEW_TEAM_QUORUM_EVIDENCE = "review-team-quorum"
+
 RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # A governance-sensitive change auto-arms only after the local review dossier
-    # gate has already accepted the PR and the GitHub-side authority/review checks
-    # pass. ``cc-pr-autoqueue`` writes its own fresh admission proof only after
-    # the task note is armed and the release-head boundary is revalidated, so
-    # that proof is not release-arm evidence.
+    # gate has already accepted the PR and the GitHub-side authority check passes.
+    # The review-team quorum marker is virtual evidence produced only by
+    # ``cc-pr-autoqueue`` after it validates the source-pinned dossier for the
+    # current PR head and scope; it is not satisfied by a bare GitHub check named
+    # ``review``. ``cc-pr-autoqueue`` writes its own fresh admission proof only
+    # after the task note is armed and the release-head boundary is revalidated,
+    # so that proof is not release-arm evidence.
     "governance_sensitive": (
         "authority-case-check",
-        "review",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
     ),
     # A privacy/secret-sensitive change auto-arms when the dedicated secret
     # scanner passes on its diff (no committed credential). The redaction
