@@ -142,12 +142,16 @@ tool_kind() {
         connector_rc=$?
         set -e
       fi
-      if [ "$connector_rc" -eq 10 ] || mcp_known_read_only_tool "$TOOL_NAME"; then
+      if [ "$connector_rc" -eq 10 ]; then
         printf 'other\n'
         return 0
       fi
       if [ "$connector_rc" -eq 0 ]; then
         printf 'mutation\n'
+        return 0
+      fi
+      if mcp_known_read_only_tool "$TOOL_NAME"; then
+        printf 'other\n'
         return 0
       fi
       printf 'mutation\n'

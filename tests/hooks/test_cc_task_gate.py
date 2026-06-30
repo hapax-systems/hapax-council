@@ -211,6 +211,25 @@ def _path_without_python(tmp_path: Path) -> str:
     return str(bin_dir)
 
 
+def _path_with_python_exit(tmp_path: Path, exit_code: int) -> str:
+    bin_dir = tmp_path / f"bin-python-exits-{exit_code}"
+    bin_dir.mkdir()
+    for name in ("bash", "cat", "dirname", "grep", "jq", "tr"):
+        target = shutil.which(name)
+        assert target is not None
+        (bin_dir / name).symlink_to(target)
+    python = bin_dir / "python3"
+    python.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "-m" ] && [ "${2:-}" = "shared.mcp_connector_policy" ]; then\n'
+        f"  exit {exit_code}\n"
+        "fi\n"
+        "exit 10\n"
+    )
+    python.chmod(0o755)
+    return str(bin_dir)
+
+
 def _git_repo_on_branch(tmp_path: Path, branch: str) -> Path:
     """Create a throwaway git repo whose current branch is `branch` (no commits)."""
     repo = tmp_path / "scratch-repo"
@@ -318,6 +337,18 @@ class TestNoClaimFile:
             home=tmp_path,
         )
         assert result.returncode == 2
+
+    def test_mcp_classifier_mutation_overrides_context7_fallback(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {
+                "tool_name": "mcp__context7__query-docs",
+                "tool_input": {"libraryId": "/reactjs/react.dev"},
+            },
+            home=tmp_path,
+            extra_env={"PATH": _path_with_python_exit(tmp_path, 0)},
+        )
+        assert result.returncode == 2
+        assert "no claimed task" in result.stderr.lower()
 
 
 class TestCognitionCarveOut:

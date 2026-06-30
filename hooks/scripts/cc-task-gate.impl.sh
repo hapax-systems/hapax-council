@@ -323,11 +323,6 @@ connector_tool_is_mutating() {
   local name="$1"
   local repo_root rc
   repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
-  case "$name" in
-    mcp__context7__resolve-library-id|mcp__context7__query-docs)
-      return 1
-      ;;
-  esac
   if command -v python3 >/dev/null 2>&1; then
     set +e
     PYTHONPATH="$repo_root:${PYTHONPATH:-}" \
@@ -343,6 +338,11 @@ connector_tool_is_mutating() {
         ;;
     esac
   fi
+  case "$name" in
+    mcp__context7__resolve-library-id|mcp__context7__query-docs)
+      return 1
+      ;;
+  esac
   echo "cc-task-gate: BLOCKED — python3 missing; cannot classify MCP connector '$name'." >&2
   echo "  Next action: restore python3 on PATH or repair the lane environment, then retry." >&2
   return 2
