@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
     BackgroundCapabilityAdmission,
     admit_background_capability,
 )
@@ -423,9 +424,7 @@ class SceneClassifier:
         self._cache_ttl_s = cache_ttl_s
         # Injection point for tests — defaults to the real LiteLLM call.
         self._call_llm = call_llm or _call_gemini_flash
-        self._admission_gate = admission_gate
-        if self._admission_gate is None and call_llm is None:
-            self._admission_gate = _admit_scene_classifier
+        self._admission_gate = admission_gate or _admit_scene_classifier
         self._last: Classification | None = None
         self._lock = threading.Lock()
 
@@ -467,9 +466,11 @@ class SceneClassifier:
             admission = self._admission_gate()
             if not admission.admitted:
                 log.warning(
-                    "scene_classifier: capability admission denied for route=%s reason=%s",
+                    "scene_classifier: capability admission denied for route=%s reason=%s; "
+                    "next_action=set %s and refresh route/resource/quota receipts",
                     admission.route_id,
                     admission.denial_summary(),
+                    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
                 )
                 classification = _classification_with_admission(
                     Classification(

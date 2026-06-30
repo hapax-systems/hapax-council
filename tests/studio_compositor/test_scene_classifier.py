@@ -100,6 +100,7 @@ class TestClassifyOnce:
             override_path=hero_override,
             classification_path=tmp_shm / "scene-classification.json",
             call_llm=fake_llm,
+            admission_gate=lambda: _admission(),
         )
         result = clf.classify_once()
         assert result is not None
@@ -118,6 +119,7 @@ class TestClassifyOnce:
             call_llm=lambda _b64: json.dumps(
                 {"scene": "turntables-playing", "confidence": 0.9, "evidence": "vinyl"}
             ),
+            admission_gate=lambda: _admission(),
         )
         clf.classify_once()
         assert out.exists()
@@ -141,6 +143,7 @@ class TestClassifyOnce:
             classification_path=tmp_shm / "scene-classification.json",
             cache_ttl_s=5.0,
             call_llm=counting_llm,
+            admission_gate=lambda: _admission(),
         )
         first = clf.classify_once(now=100.0)
         second = clf.classify_once(now=102.0)  # within 5s TTL
@@ -162,6 +165,7 @@ class TestClassifyOnce:
             classification_path=tmp_shm / "scene-classification.json",
             cache_ttl_s=5.0,
             call_llm=counting_llm,
+            admission_gate=lambda: _admission(),
         )
         clf.classify_once(now=100.0)
         clf.classify_once(now=110.0)  # past 5s TTL
@@ -175,6 +179,7 @@ class TestClassifyOnce:
             override_path=hero_override,
             classification_path=tmp_shm / "scene-classification.json",
             call_llm=lambda _b64: "this is not JSON at all{",
+            admission_gate=lambda: _admission(),
         )
         with caplog.at_level("ERROR"):
             result = clf.classify_once()
@@ -194,6 +199,7 @@ class TestClassifyOnce:
             call_llm=lambda _b64: json.dumps(
                 {"scene": "bespoke-category-not-in-labels", "confidence": 0.5}
             ),
+            admission_gate=lambda: _admission(),
         )
         result = clf.classify_once()
         assert result is not None
@@ -210,6 +216,7 @@ class TestClassifyOnce:
             override_path=hero_override,
             classification_path=tmp_shm / "scene-classification.json",
             call_llm=raiser,
+            admission_gate=lambda: _admission(),
         )
         result = clf.classify_once()
         assert result is not None
@@ -243,6 +250,28 @@ class TestClassifyOnce:
         assert payload["task_id"] == "task-x"
         assert payload["authority_case"] == "CASE-CAPACITY-ROUTING-001"
 
+    def test_injected_llm_without_explicit_gate_still_requires_admission(
+        self, tmp_shm: Path, hero_override: Path, hero_snapshot: Path
+    ) -> None:
+        calls = {"n": 0}
+
+        def fake_llm(_b64: str) -> str:
+            calls["n"] += 1
+            return "{}"
+
+        with patch.object(sc, "_admit_scene_classifier", return_value=_admission(admitted=False)):
+            clf = sc.SceneClassifier(
+                shm_dir=tmp_shm,
+                override_path=hero_override,
+                classification_path=tmp_shm / "scene-classification.json",
+                call_llm=fake_llm,
+            )
+            result = clf.classify_once(now=100.0)
+
+        assert result is not None
+        assert result.scene == sc.FALLBACK_SCENE
+        assert calls["n"] == 0
+
     def test_admission_success_calls_llm_and_publishes_quota_evidence(
         self, tmp_shm: Path, hero_override: Path, hero_snapshot: Path
     ) -> None:
@@ -271,6 +300,7 @@ class TestClassifyOnce:
             override_path=tmp_shm / "does-not-exist.json",
             classification_path=tmp_shm / "scene-classification.json",
             call_llm=lambda _b64: "",
+            admission_gate=lambda: _admission(),
         )
         assert clf.classify_once() is None
 
@@ -281,6 +311,7 @@ class TestClassifyOnce:
             override_path=hero_override,
             classification_path=tmp_shm / "scene-classification.json",
             call_llm=lambda _b64: "",
+            admission_gate=lambda: _admission(),
         )
         assert clf.classify_once() is None
 
@@ -299,6 +330,7 @@ class TestClassifyOnce:
             override_path=hero_override,
             classification_path=tmp_shm / "scene-classification.json",
             call_llm=lambda _b64: fenced,
+            admission_gate=lambda: _admission(),
         )
         result = clf.classify_once()
         assert result is not None
@@ -312,6 +344,7 @@ class TestClassifyOnce:
             override_path=hero_override,
             classification_path=tmp_shm / "scene-classification.json",
             call_llm=lambda _b64: "```json\n{\n  ",
+            admission_gate=lambda: _admission(),
         )
         with caplog.at_level("WARNING"):
             result = clf.classify_once()

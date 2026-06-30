@@ -27,10 +27,11 @@ from agents.studio_compositor.programme_context import ProgrammeProvider
 from agents.studio_compositor.tts_client import DaimonionTtsClient
 from shared.claim import Claim
 from shared.claim_prompt import SURFACE_FLOORS, render_envelope
-from shared.config import LITELLM_KEY
+from shared.config import LITELLM_KEY, MODELS
 from shared.director_intent import CompositionalImpingement, DirectorIntent
 from shared.fix_capabilities.background_admission import (
     BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+    BackgroundCapabilityAdmission,
     admit_background_capability,
 )
 from shared.persona_prompt_composer import compose_persona_prompt, role_scope_line
@@ -820,7 +821,10 @@ LITELLM_URL = "http://localhost:4000/v1/chat/completions"
 # (e.g. "fast"/gemini or "balanced"/claude), images are forwarded; otherwise
 # the director strips images before the call.
 DIRECTOR_MODEL = os.environ.get("HAPAX_DIRECTOR_MODEL", "local-fast")
-DIRECTOR_LLM_ROUTE_ID = os.environ.get("HAPAX_DIRECTOR_LLM_ROUTE_ID", "local_tool.local.worker")
+DIRECTOR_LLM_ROUTE_ID_ENV = "HAPAX_DIRECTOR_LLM_ROUTE_ID"
+DIRECTOR_LOCAL_MODEL_IDS: frozenset[str] = frozenset(
+    {"local-fast", "appendix-fast", "local-research-instruct", "command-r-08-2024"}
+)
 
 # Director watchdog Phase 2 (§8.2): process-wide single-flight lock keyed on
 # the LLM route. Prevents director + structural-director (also `local-fast`
@@ -864,13 +868,41 @@ MULTIMODAL_ROUTES: frozenset[str] = frozenset(
 
 
 def _admit_director_llm():
+    expected_route, mutation_surface, quality_floor = _director_admission_spec(DIRECTOR_MODEL)
+    configured_route = os.environ.get(DIRECTOR_LLM_ROUTE_ID_ENV, expected_route)
+    if configured_route != expected_route:
+        return BackgroundCapabilityAdmission(
+            capability_name="studio.director.llm",
+            route_id=configured_route,
+            model_alias=_resolved_director_model(DIRECTOR_MODEL),
+            admitted=False,
+            denied_reason=(
+                "director_route_model_mismatch:"
+                f"model={_resolved_director_model(DIRECTOR_MODEL)} "
+                f"expected_route={expected_route} configured_route={configured_route}"
+            ),
+            reason_codes=("director_route_model_mismatch",),
+            mutation_surface=mutation_surface,
+            quality_floor=quality_floor,
+        )
     return admit_background_capability(
         capability_name="studio.director.llm",
-        route_id=DIRECTOR_LLM_ROUTE_ID,
-        model_alias=DIRECTOR_MODEL,
-        mutation_surface="none",
-        quality_floor="deterministic_ok",
+        route_id=configured_route,
+        model_alias=_resolved_director_model(DIRECTOR_MODEL),
+        mutation_surface=mutation_surface,
+        quality_floor=quality_floor,
     )
+
+
+def _resolved_director_model(model_alias: str) -> str:
+    return MODELS.get(model_alias, model_alias)
+
+
+def _director_admission_spec(model_alias: str) -> tuple[str, str, str]:
+    resolved = _resolved_director_model(model_alias)
+    if resolved in DIRECTOR_LOCAL_MODEL_IDS:
+        return "local_tool.local.worker", "none", "deterministic_ok"
+    return "api.headless.provider_gateway", "provider_spend", "frontier_required"
 
 
 # Narrative cadence. Epic 2 Phase E (2026-04-17) tightened 20.0 → 12.0 so
