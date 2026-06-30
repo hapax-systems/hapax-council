@@ -609,6 +609,8 @@ def _run(
     env["HAPAX_COORD_LEDGER_DB"] = str(tmp_path / "coord" / "ledger.db")
     env["HAPAX_COORD_JSONL_MIRROR"] = str(tmp_path / "coord" / "ledger.jsonl")
     env["HAPAX_COORD_SPOOL_DIR"] = str(tmp_path / "coord" / "spool")
+    env.pop("HAPAX_DISPATCH_HOST", None)
+    env.pop("HAPAX_DEFAULT_DISPATCH_HOST", None)
     if durable_mq:
         mq_db, message_id = _maybe_write_durable_mq_binding(tmp_path, args)
         env["HAPAX_RELAY_MQ_DB"] = str(mq_db)
@@ -1516,7 +1518,7 @@ def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:
     fake_launcher.parent.mkdir(parents=True, exist_ok=True)
     fake_launcher.write_text(
         f"""#!/usr/bin/env bash
-printf 'host=%s\\nfallback=%s\\n' "$HAPAX_DISPATCH_HOST" "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" > {launcher_env}
+printf 'host=%s\\nfallback=%s\\nparent_route_envelope=%s\\n' "$HAPAX_DISPATCH_HOST" "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" "${{HAPAX_PARENT_ROUTE_ENVELOPE:-}}" > {launcher_env}
 printf '%s\\n' "$@" > {launcher_args}
 """,
         encoding="utf-8",
@@ -1567,9 +1569,20 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["coord_dispatch_replayed"] is False
     assert receipt["coord_dispatch_cleanup_state"] == "processed"
     assert receipt["dispatch_host"] == "appendix"
-    assert launcher_env.read_text(encoding="utf-8").splitlines() == [
-        "host=appendix",
-        "fallback=",
+    env_lines = launcher_env.read_text(encoding="utf-8").splitlines()
+    assert env_lines[:2] == ["host=appendix", "fallback="]
+    parent_route_envelope = Path(env_lines[2].split("=", 1)[1])
+    assert parent_route_envelope == Path(receipt["parent_route_envelope_path"])
+    envelope = json.loads(parent_route_envelope.read_text(encoding="utf-8"))
+    assert envelope["task_id"] == "governed-build"
+    assert envelope["authority_case"] == "CASE-TEST-001"
+    assert envelope["route_decision_receipt_ref"].startswith("route-decision-receipt:")
+    assert envelope["resource_budget"]["resource_receipt_refs"]
+    assert envelope["stop_conditions"] == [
+        "parent_task_closed",
+        "authority_case_changes",
+        "budget_or_resource_receipt_stale",
+        "child_receipt_missing",
     ]
 
 

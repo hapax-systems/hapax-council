@@ -73,6 +73,12 @@ from shared.sdlc_pressure_gate import (
     sdlc_slice_wrap,
     wait_until_admitted,
 )
+from shared.subagent_route_receipts import (
+    PARENT_ROUTE_ENVELOPE_ENV,
+    SubagentRouteReceiptError,
+    build_parent_route_resource_envelope,
+    write_parent_route_resource_envelope,
+)
 from shared.worker_failure_witness import (
     append_failure_receipt_record,
     update_worker_family_availability,
@@ -1233,6 +1239,7 @@ def write_receipt(
     launch_returncode: int | None = None,
     route_decision: RouteDecision | None = None,
     route_decision_receipt_path: Path | None = None,
+    parent_route_envelope_path: Path | None = None,
     durable_binding: DurableDispatchBinding | None = None,
     dispatch_launch: DispatchLaunchResult | None = None,
 ) -> Path:
@@ -1278,6 +1285,8 @@ def write_receipt(
         record["route_decision_receipt_path"] = (
             str(route_decision_receipt_path) if route_decision_receipt_path else None
         )
+    if parent_route_envelope_path is not None:
+        record["parent_route_envelope_path"] = str(parent_route_envelope_path)
     record["dispatch_host"] = effective_dispatch_host(platform, mode)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
@@ -1323,6 +1332,14 @@ def effective_dispatch_host(platform: str, mode: str) -> str:
     if platform in {"claude", "codex"} and mode == "headless":
         return "appendix"
     return "local"
+
+
+def attach_parent_route_envelope_env(
+    env: dict[str, str],
+    parent_route_envelope_path: Path | None,
+) -> None:
+    if parent_route_envelope_path is not None:
+        env[PARENT_ROUTE_ENVELOPE_ENV] = str(parent_route_envelope_path)
 
 
 def _write_delayed_receipt(args: argparse.Namespace, decision: AdmissionDecision) -> None:
@@ -1469,7 +1486,13 @@ def classify_and_witness_launch(
     return rc
 
 
-def launch_claude_headless(task_id: str, lane: str, prompt: str, route: PlatformPath) -> int:
+def launch_claude_headless(
+    task_id: str,
+    lane: str,
+    prompt: str,
+    route: PlatformPath,
+    parent_route_envelope_path: Path | None = None,
+) -> int:
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_CLAUDE_HEADLESS",
@@ -1486,10 +1509,16 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(lane_worktree(lane, "claude"))
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("claude", "headless")
+    attach_parent_route_envelope_env(env, parent_route_envelope_path)
     return _sliced_call([str(launcher), "--task", task_id, lane, prompt], env)
 
 
-def launch_claude_interactive(task_id: str, lane: str, validation: Validation) -> int:
+def launch_claude_interactive(
+    task_id: str,
+    lane: str,
+    validation: Validation,
+    parent_route_envelope_path: Path | None = None,
+) -> int:
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_CLAUDE_LAUNCHER",
@@ -1511,6 +1540,7 @@ def launch_claude_interactive(task_id: str, lane: str, validation: Validation) -
     env.pop("HAPAX_SESSION_ID", None)
     if status in {"claimed", "in_progress"}:
         env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
+    attach_parent_route_envelope_env(env, parent_route_envelope_path)
     return subprocess.call(args, env=env)
 
 
@@ -1670,6 +1700,7 @@ def launch_codex_headless(
     validation: Validation,
     route: PlatformPath,
     *,
+    parent_route_envelope_path: Path | None = None,
     reactivate_retired_relay: bool = False,
 ) -> int:
     # Genuine headless path (reform §6 P0): `codex exec` via hapax-codex-headless,
@@ -1708,6 +1739,7 @@ def launch_codex_headless(
     env = os.environ.copy()
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
+    attach_parent_route_envelope_env(env, parent_route_envelope_path)
     if local_fallback_allowed:
         # Preserve a caller/operator-provided fallback value; the P0 drain rule
         # only supplies the default local fallback when the env is otherwise unset.
@@ -1715,7 +1747,13 @@ def launch_codex_headless(
     return _sliced_call(args, env)
 
 
-def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Validation) -> int:
+def launch_vibe_headless(
+    task_id: str,
+    lane: str,
+    prompt: str,
+    validation: Validation,
+    parent_route_envelope_path: Path | None = None,
+) -> int:
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_VIBE_LAUNCHER",
@@ -1745,7 +1783,9 @@ def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Valid
     ]
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
-    return _sliced_call(args)
+    env = os.environ.copy()
+    attach_parent_route_envelope_env(env, parent_route_envelope_path)
+    return _sliced_call(args, env)
 
 
 def write_antigrav_inflection(task_id: str, lane: str, prompt: str) -> Path:
@@ -1790,6 +1830,7 @@ def launch_antigrav_interactive(
     lane: str,
     validation: Validation,
     prompt: str,
+    parent_route_envelope_path: Path | None = None,
 ) -> int:
     launcher = Path(
         os.environ.get(
@@ -1818,7 +1859,9 @@ def launch_antigrav_interactive(
     ]
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
-    return subprocess.call(args)
+    env = os.environ.copy()
+    attach_parent_route_envelope_env(env, parent_route_envelope_path)
+    return subprocess.call(args, env=env)
 
 
 def advance_task_stage(task_id: str, stage: str) -> int:
@@ -2198,6 +2241,7 @@ def main(argv: list[str] | None = None) -> int:
         route_decision,
         ledger_dir=orchestration_ledger_dir(),
     )
+    parent_route_envelope_path: Path | None = None
 
     if route_decision.action is not DispatchAction.LAUNCH:
         _emit_gate_event(route_decision, policy_request, task_fields, gate_result="reject")
@@ -2272,6 +2316,47 @@ def main(argv: list[str] | None = None) -> int:
         print(f"BLOCKED: {reason}", file=sys.stderr)
         return 10
 
+    if args.launch and route.mutable and not validation.exempt_read_only:
+        try:
+            parent_route_envelope = build_parent_route_resource_envelope(
+                request=policy_request,
+                decision=route_decision,
+                route_decision_receipt_path=route_decision_receipt_path,
+                parent_spec=str(validation.parent_spec_path)
+                if validation.parent_spec_path
+                else None,
+            )
+            parent_route_envelope_path = write_parent_route_resource_envelope(
+                parent_route_envelope,
+                ledger_dir=orchestration_ledger_dir(),
+            )
+        except SubagentRouteReceiptError as exc:
+            reason = f"parent route/resource envelope required: {exc}"
+            blocked = Validation(
+                False,
+                reason,
+                validation.task,
+                validation.parent_spec_path,
+                validation.exempt_read_only,
+            )
+            if not args.no_receipt:
+                write_receipt(
+                    task_id=args.task,
+                    lane=args.lane,
+                    platform=args.platform,
+                    mode=args.mode,
+                    profile=args.profile,
+                    route=route,
+                    validation=blocked,
+                    prompt=None,
+                    launched=False,
+                    route_decision=route_decision,
+                    route_decision_receipt_path=route_decision_receipt_path,
+                    durable_binding=durable_binding,
+                )
+            print(f"BLOCKED: {reason}", file=sys.stderr)
+            return 10
+
     prompt = build_prompt(
         args.task,
         args.lane,
@@ -2304,10 +2389,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         launchers: dict[tuple[str, str], Any] = {
             ("claude", "headless"): lambda: launch_claude_headless(
-                args.task, args.lane, prompt or "", route
+                args.task, args.lane, prompt or "", route, parent_route_envelope_path
             ),
             ("claude", "interactive"): lambda: launch_claude_interactive(
-                args.task, args.lane, validation
+                args.task, args.lane, validation, parent_route_envelope_path
             ),
             ("codex", "headless"): lambda: launch_codex_headless(
                 args.task,
@@ -2315,13 +2400,14 @@ def main(argv: list[str] | None = None) -> int:
                 prompt or "",
                 validation,
                 route,
+                parent_route_envelope_path=parent_route_envelope_path,
                 reactivate_retired_relay=reactivate_retired_codex_relay,
             ),
             ("vibe", "headless"): lambda: launch_vibe_headless(
-                args.task, args.lane, prompt or "", validation
+                args.task, args.lane, prompt or "", validation, parent_route_envelope_path
             ),
             ("antigrav", "interactive"): lambda: launch_antigrav_interactive(
-                args.task, args.lane, validation, prompt or ""
+                args.task, args.lane, validation, prompt or "", parent_route_envelope_path
             ),
         }
 
@@ -2400,6 +2486,7 @@ def main(argv: list[str] | None = None) -> int:
                         launched=False,
                         route_decision=route_decision,
                         route_decision_receipt_path=route_decision_receipt_path,
+                        parent_route_envelope_path=parent_route_envelope_path,
                         durable_binding=durable_binding,
                     )
                 print(f"BLOCKED: {reason}", file=sys.stderr)
@@ -2421,6 +2508,7 @@ def main(argv: list[str] | None = None) -> int:
                 launch_returncode=rc,
                 route_decision=route_decision,
                 route_decision_receipt_path=route_decision_receipt_path,
+                parent_route_envelope_path=parent_route_envelope_path,
                 durable_binding=durable_binding,
                 dispatch_launch=dispatch_launch,
             )

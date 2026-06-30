@@ -1,0 +1,158 @@
+"""Tests for parent route/resource receipts used by subagent fanout."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from pydantic import ValidationError
+
+from shared.subagent_route_receipts import (
+    ChildCapabilityRequest,
+    ParentRouteResourceEnvelope,
+    ResourceBudgetReceipt,
+    SpawnCapabilityShape,
+    SubagentRouteReceiptError,
+    admit_child_spawn,
+    record_child_receipt,
+    spawn_surface_inventory,
+)
+
+NOW = datetime(2026, 6, 30, 5, 0, tzinfo=UTC)
+
+
+def _parent(*, issued_at: datetime = NOW) -> ParentRouteResourceEnvelope:
+    return ParentRouteResourceEnvelope(
+        envelope_id="parent-route-test",
+        issued_at=issued_at,
+        stale_after="2h",
+        task_id="cc-task-test",
+        lane="cx-cap-subagent",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        route_id="codex.headless.full",
+        authority_case="CASE-CAPACITY-ROUTING-001",
+        parent_spec="/vault/spec.md",
+        route_decision_id="decision-test",
+        route_decision_receipt_ref="route-decision-receipt:test",
+        capability_profile="codex.headless.full",
+        resource_budget=ResourceBudgetReceipt(
+            quota_state="ok",
+            quota_receipt_refs=("quota-receipt:test",),
+            resource_receipt_refs=("resource-receipt:test",),
+            quota_freshness_green=True,
+            resource_freshness_green=True,
+            stale_after="2h",
+        ),
+        stop_conditions=("parent_task_closed", "budget_or_resource_receipt_stale"),
+        receipt_chain=(
+            "route-decision-receipt:test",
+            "route-decision:decision-test",
+            "resource-receipt:test",
+            "quota-receipt:test",
+        ),
+    )
+
+
+def _child(shape: SpawnCapabilityShape = SpawnCapabilityShape.SUBAGENT) -> ChildCapabilityRequest:
+    return ChildCapabilityRequest(
+        child_id="child-1",
+        task_id="cc-task-test",
+        authority_case="CASE-CAPACITY-ROUTING-001",
+        shape=shape,
+        route_id="codex.headless.full",
+        capability_role="implementer",
+    )
+
+
+def test_child_spawn_requires_parent_route_resource_receipt() -> None:
+    with pytest.raises(SubagentRouteReceiptError, match="missing_parent_route_resource_receipt"):
+        admit_child_spawn(None, _child(), now=NOW)
+
+
+def test_stale_parent_budget_blocks_child_spawn() -> None:
+    parent = _parent(issued_at=NOW - timedelta(hours=3))
+
+    with pytest.raises(SubagentRouteReceiptError, match="stale_parent_budget"):
+        admit_child_spawn(parent, _child(), now=NOW)
+
+
+def test_parent_envelope_requires_resource_refs_in_receipt_chain() -> None:
+    with pytest.raises(ValidationError, match="receipt_chain must include"):
+        ParentRouteResourceEnvelope(
+            envelope_id="bad-parent",
+            issued_at=NOW,
+            stale_after="2h",
+            task_id="cc-task-test",
+            lane="cx-cap-subagent",
+            platform="codex",
+            mode="headless",
+            profile="full",
+            route_id="codex.headless.full",
+            authority_case="CASE-CAPACITY-ROUTING-001",
+            route_decision_id="decision-test",
+            route_decision_receipt_ref="route-decision-receipt:test",
+            capability_profile="codex.headless.full",
+            resource_budget=ResourceBudgetReceipt(
+                resource_receipt_refs=("resource-receipt:test",),
+            ),
+            stop_conditions=("parent_task_closed",),
+            receipt_chain=("route-decision-receipt:test",),
+        )
+
+
+def test_unsupported_child_shape_is_refused_by_schema() -> None:
+    with pytest.raises(ValidationError, match="Input should be"):
+        ChildCapabilityRequest(
+            child_id="child-1",
+            task_id="cc-task-test",
+            authority_case="CASE-CAPACITY-ROUTING-001",
+            shape="unmetered_side_worker",
+            route_id="codex.headless.full",
+        )
+
+
+def test_nested_orchestrator_is_capability_aggregator_and_records_child_receipts() -> None:
+    parent = _parent()
+    with pytest.raises(ValidationError, match="proposed_child_capabilities"):
+        _child(SpawnCapabilityShape.ORCHESTRATOR)
+
+    child = ChildCapabilityRequest(
+        child_id="orchestrator-1",
+        task_id="cc-task-test",
+        authority_case="CASE-CAPACITY-ROUTING-001",
+        shape=SpawnCapabilityShape.ORCHESTRATOR,
+        route_id="fugu.orchestrator.direct",
+        capability_role="orchestrator",
+        proposed_child_capabilities=("codex.headless.full", "glmcp.review.direct"),
+    )
+    spawn = admit_child_spawn(parent, child, now=NOW)
+
+    assert spawn.capability_role == "capability_aggregator"
+    with pytest.raises(SubagentRouteReceiptError, match="child_receipt_refs_required"):
+        record_child_receipt(parent, spawn, receipt_refs=())
+
+    updated = record_child_receipt(
+        parent,
+        spawn,
+        receipt_refs=("child-route-receipt:1", "child-resource-receipt:1"),
+        emitted_at=NOW,
+    )
+
+    receipt = updated.child_receipts[0]
+    assert receipt.parent_envelope_id == parent.envelope_id
+    assert receipt.capability_role == "capability_aggregator"
+    assert receipt.receipt_refs == ("child-route-receipt:1", "child-resource-receipt:1")
+    assert "child-resource-receipt:1" in receipt.receipt_chain
+
+
+def test_spawn_surface_inventory_covers_auto_fire_and_fugu_style_orchestration() -> None:
+    by_id = {surface.surface_id: surface for surface in spawn_surface_inventory()}
+
+    assert by_id["claude_code_probabilistic_subagents"].shape is SpawnCapabilityShape.SUBAGENT
+    assert "auto-fire" in by_id["claude_code_probabilistic_subagents"].receipt_requirement
+    assert by_id["fugu_style_orchestration"].shape is SpawnCapabilityShape.ORCHESTRATOR
+    assert (
+        by_id["governed_worker_lane_dispatch"].shape is SpawnCapabilityShape.EXISTING_AGENT_HARNESS
+    )

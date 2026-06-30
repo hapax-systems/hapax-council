@@ -118,6 +118,8 @@ After editing `agents/reverie/_uniforms.py`, the main Claude should spontaneousl
 
 Subagent invocation is probabilistic — Claude may not always spawn the agent if the context is ambiguous. The `description:` field's `<example>` blocks shape Claude's reasoning, but they're hints, not guarantees. You can always force-invoke via the Task tool or the `/agent <name>` command.
 
+These subagents are spawned capabilities, not free side workers. A governed parent session must carry `HAPAX_PARENT_ROUTE_ENVELOPE` from `hapax-methodology-dispatch`, and any forced subagent invocation must preserve that parent route/resource envelope and return child receipt refs to the parent work log.
+
 ## 5. Disable individually
 
 To disable a single hook, remove its entry from `~/.claude/settings.json` and restart sessions.
