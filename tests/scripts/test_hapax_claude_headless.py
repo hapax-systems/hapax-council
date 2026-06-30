@@ -33,6 +33,9 @@ def _headless_env(home: Path, bin_dir: Path, pipe_dir: Path) -> dict[str, str]:
         "CLAUDE_ROLE",
         "HAPAX_WORKTREE_ROLE",
         "HAPAX_METHODOLOGY_DISPATCH_TASK",
+        "HAPAX_CLAUDE_BIN",
+        "HAPAX_CLAUDE_BIN_PATH",
+        "NPM_CONFIG_PREFIX",
     ):
         env.pop(var, None)
     env["HOME"] = str(home)
@@ -96,6 +99,109 @@ def test_headless_source_supports_governed_model_profile_env() -> None:
     assert 'CLAUDE_ARGS+=(--model "$MODEL")' in text
 
 
+def test_headless_uses_npm_global_claude_fallback(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "hapax-council--beta"
+    workdir.mkdir(parents=True)
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-beta"
+    claim_file.write_text("task-x\n")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_args = tmp_path / "claude-args.txt"
+    npm_bin = home / ".npm-global" / "bin"
+    npm_bin.mkdir(parents=True)
+    _stub_bin(
+        npm_bin,
+        "claude",
+        f'printf "%s\\n" "$@" > {claude_args}\n: > {claim_file}\nexit 0\n',
+    )
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert claude_args.exists()
+
+
+def test_headless_honors_explicit_claude_bin_override(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "hapax-council--beta"
+    workdir.mkdir(parents=True)
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-beta"
+    claim_file.write_text("task-x\n")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_args = tmp_path / "claude-args.txt"
+    explicit_bin = tmp_path / "explicit" / "claude"
+    explicit_bin.parent.mkdir()
+    _stub_bin(
+        explicit_bin.parent,
+        "claude",
+        f'printf "%s\\n" "$@" > {claude_args}\n: > {claim_file}\nexit 0\n',
+    )
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_CLAUDE_BIN"] = str(explicit_bin)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert claude_args.exists()
+
+
+def test_headless_rejects_invalid_explicit_claude_bin_override(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "hapax-council--beta"
+    workdir.mkdir(parents=True)
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-beta"
+    claim_file.write_text("task-x\n")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fallback_marker = tmp_path / "fallback-used"
+    _stub_bin(bin_dir, "claude", f"touch {fallback_marker}\nexit 0\n")
+    explicit_bin = tmp_path / "explicit" / "claude"
+    explicit_bin.parent.mkdir()
+    explicit_bin.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    explicit_bin.chmod(0o644)
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_CLAUDE_BIN"] = str(explicit_bin)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 4
+    assert "configured Claude binary is not executable" in result.stderr
+    assert not fallback_marker.exists()
+
+
 def test_appendix_hop_passes_remote_args_without_shell_interpolation(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workdir = home / "projects" / "hapax-council--beta"
@@ -137,7 +243,7 @@ exec bash -c "$remote_cmd"
         f'printf "%s\\n" "$@" > {claude_args}\n: > {claim_file}\nexit 0\n',
     )
     env = _headless_env(home, bin_dir, tmp_path / "pipe")
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
     env["HAPAX_DISPATCH_LOGOS_URL"] = f"http://podium.invalid/api; touch {exploit}"
 
     result = subprocess.run(
@@ -159,6 +265,107 @@ exec bash -c "$remote_cmd"
         "--output-format",
         "stream-json",
     ]
+
+
+def test_appendix_short_alias_is_local_on_appendix(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "hapax-council--beta"
+    workdir.mkdir(parents=True)
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-beta"
+    claim_file.write_text("task-x\n")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    ssh_called = tmp_path / "ssh-called"
+    claude_args = tmp_path / "claude-args.txt"
+    _stub_bin(
+        bin_dir,
+        "hostname",
+        """
+case "${1:-}" in
+  -s|-f) printf '%s\n' hapax-appendix ;;
+  *) printf '%s\n' hapax-appendix ;;
+esac
+""",
+    )
+    _stub_bin(
+        bin_dir,
+        "ssh",
+        f": > {ssh_called}\necho 'ssh should not be called for local appendix alias' >&2\nexit 99\n",
+    )
+    _stub_bin(
+        bin_dir,
+        "claude",
+        f'printf "%s\\n" "$@" > {claude_args}\n: > {claim_file}\nexit 0\n',
+    )
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not ssh_called.exists()
+    assert claude_args.exists()
+
+
+def test_appendix_local_ip_skips_ssh_on_appendix(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "hapax-council--beta"
+    workdir.mkdir(parents=True)
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-beta"
+    claim_file.write_text("task-x\n")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    ssh_called = tmp_path / "ssh-called"
+    claude_args = tmp_path / "claude-args.txt"
+    _stub_bin(
+        bin_dir,
+        "hostname",
+        """
+case "${1:-}" in
+  -s|-f) printf '%s\n' hapax-appendix ;;
+  -I) printf '%s\n' '192.168.68.50 10.0.0.50' ;;
+  *) printf '%s\n' hapax-appendix ;;
+esac
+""",
+    )
+    _stub_bin(
+        bin_dir,
+        "ssh",
+        f": > {ssh_called}\necho 'ssh should not be called for local appendix IP' >&2\nexit 99\n",
+    )
+    _stub_bin(
+        bin_dir,
+        "claude",
+        f'printf "%s\\n" "$@" > {claude_args}\n: > {claim_file}\nexit 0\n',
+    )
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_DISPATCH_HOST"] = "192.168.68.50"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not ssh_called.exists()
+    assert claude_args.exists()
 
 
 def test_visible_claude_launcher_requires_task_or_readonly() -> None:
@@ -619,7 +826,7 @@ def test_appendix_hop_threads_session_identity_end_to_end(tmp_path: Path) -> Non
     # respawn loop tears down after one pass.
     _stub_bin(bin_dir, "claude", f"env > {claude_env}\n: > {claim_file}\nexit 0\n")
     env = _headless_env(home, bin_dir, tmp_path / "pipe")
-    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
