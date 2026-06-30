@@ -143,7 +143,9 @@ g2_commit_gate(surface, venue, instrument) → { PASS, FAIL }
 4. If R.operator_signed == false AND R.g2_verdict != DARK → FAIL (unsigned non-DARK is invalid).
 5. If R is stale AND R.g2_verdict != DARK → FAIL (stale non-DARK degrades to DARK).
 6. If R.g2_verdict == PARTIAL → FAIL for commit (advisory only).
-7. If R.g2_verdict == LIT and `open_questions` is empty → PASS.
+7. If R.g2_verdict == LIT but `authority_basis` is `no_research` or `operator_judgment` → FAIL.
+8. If R.g2_verdict == LIT but `open_questions` is non-empty → FAIL.
+9. If R.g2_verdict == LIT, `authority_basis` is committable, and `open_questions` is empty → PASS.
 ```
 
 ### 5.2 Fail-Closed Invariant

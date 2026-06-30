@@ -16,6 +16,7 @@ from shared.legal_posture_registry import (
     LegalPostureRefusal,
     LegalPostureRegistry,
     evaluate_g2_commit_gate,
+    load_legal_posture_registry,
     require_g2_commit_admitted,
 )
 
@@ -236,6 +237,13 @@ def test_legal_registry_rejects_unknown_authority_basis() -> None:
 
 def test_default_legal_posture_registry_path_exists() -> None:
     assert DEFAULT_LEGAL_POSTURE_REGISTRY.is_file()
+
+
+def test_default_legal_posture_registry_loads() -> None:
+    registry = load_legal_posture_registry()
+
+    assert registry.schema_version == "1.0.0"
+    assert len(registry.rows) > 0
 
 
 def test_legal_registry_g2_missing_registry_file_fails_closed(tmp_path: Path) -> None:
