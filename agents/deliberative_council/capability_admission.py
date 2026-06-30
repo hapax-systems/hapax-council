@@ -94,6 +94,7 @@ class CapabilityDescriptor:
     task_class: str = "research"
     quality_floor: str = "frontier_required"
     estimated_cost_usd: Decimal = Decimal("0.01")
+    platform_route_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,7 @@ MODEL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
         provider="anthropic",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="frontier-full",
+        platform_route_id="api.headless.provider_gateway",
     ),
     "balanced": CapabilityDescriptor(
         capability_id="cctv.model.balanced",
@@ -122,6 +124,7 @@ MODEL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
         provider="anthropic",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="frontier-fast",
+        platform_route_id="api.headless.provider_gateway",
     ),
     "gemini-3-pro": CapabilityDescriptor(
         capability_id="cctv.model.gemini-3-pro",
@@ -129,6 +132,7 @@ MODEL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
         provider="google",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="frontier-fast",
+        platform_route_id="api.headless.provider_gateway",
     ),
     "web-research": CapabilityDescriptor(
         capability_id="cctv.model.web-research",
@@ -136,6 +140,7 @@ MODEL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
         provider="perplexity",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="web-research",
+        platform_route_id="api.headless.provider_gateway",
     ),
     "mistral-large": CapabilityDescriptor(
         capability_id="cctv.model.mistral-large",
@@ -143,6 +148,7 @@ MODEL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
         provider="mistral",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="frontier-fast",
+        platform_route_id="api.headless.provider_gateway",
     ),
     "deepseek": CapabilityDescriptor(
         capability_id="cctv.model.deepseek",
@@ -150,6 +156,7 @@ MODEL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
         provider="deepseek",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="coding",
+        platform_route_id="api.headless.provider_gateway",
     ),
     "glm": CapabilityDescriptor(
         capability_id="cctv.model.glm",
@@ -157,6 +164,7 @@ MODEL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
         provider="z_ai",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="coding",
+        platform_route_id="api.headless.provider_gateway",
     ),
     "local-fast": CapabilityDescriptor(
         capability_id="cctv.model.local-fast",
@@ -184,6 +192,7 @@ TOOL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="web-research",
         estimated_cost_usd=Decimal("0.01"),
+        platform_route_id="api.headless.provider_gateway",
     ),
     "qdrant_lookup": CapabilityDescriptor(
         capability_id="cctv.tool.qdrant_lookup",
@@ -226,6 +235,7 @@ def admit_model_alias(
             task_class=descriptor.task_class,
             quality_floor=descriptor.quality_floor,
             estimated_cost_usd=descriptor.estimated_cost_usd,
+            platform_route_id=descriptor.platform_route_id,
         )
     return admit_capability(descriptor, now=now)
 
@@ -375,21 +385,32 @@ def _admit_paid_route(
         capacity_pool=descriptor.capacity_pool,
     )
     eligibility = evaluate_paid_route_eligibility(ledger, request, now=now)
-    if eligibility.eligible:
+    platform_route_id = descriptor.platform_route_id or descriptor.route_id
+    platform_reasons, platform_refs = _platform_route_block_reasons(
+        platform_route_id,
+        now=now,
+        required=True,
+    )
+    if eligibility.eligible and not platform_reasons:
         return _build_receipt(
             descriptor,
             action="admitted",
             reason_codes=(eligibility.state,),
             spend_evidence_refs=eligibility.evidence_refs,
+            resource_evidence_refs=platform_refs,
             ledger=ledger,
             evaluated_at=now,
         )
     return _build_receipt(
         descriptor,
         action="refused",
-        reason_codes=tuple(_reason_code(reason) for reason in eligibility.blocking_reasons)
-        or (eligibility.state,),
+        reason_codes=(
+            tuple(_reason_code(reason) for reason in eligibility.blocking_reasons)
+            or (eligibility.state,)
+        )
+        + platform_reasons,
         spend_evidence_refs=eligibility.evidence_refs,
+        resource_evidence_refs=platform_refs,
         ledger=ledger,
         evaluated_at=now,
     )
@@ -465,6 +486,7 @@ def _platform_route_block_reasons(
     route_id: str,
     *,
     now: datetime,
+    required: bool = False,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     registry_path = Path(
         os.environ.get(PLATFORM_CAPABILITY_REGISTRY_ENV, str(PLATFORM_CAPABILITY_REGISTRY))
@@ -479,6 +501,8 @@ def _platform_route_block_reasons(
 
     route = registry.route_map().get(normalize_route_id(route_id))
     if route is None:
+        if required:
+            return ((f"platform_route_missing:{route_id}",), ())
         return (), ()
 
     refs = (

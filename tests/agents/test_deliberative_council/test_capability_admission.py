@@ -43,6 +43,7 @@ def _write_platform_registry(
     tmp_path: Path,
     *,
     local_worker_blocked: bool,
+    provider_gateway_blocked: bool | None = None,
 ) -> Path:
     payload = json.loads(PLATFORM_CAPABILITY_REGISTRY.read_text(encoding="utf-8"))
     local_worker = next(
@@ -78,6 +79,51 @@ def _write_platform_registry(
             "evidence_refs": ["test:local-worker-quota"],
             "blocked_reasons": [],
         }
+    if provider_gateway_blocked is not None:
+        gateway = next(
+            route
+            for route in payload["routes"]
+            if route["route_id"] == "api.headless.provider_gateway"
+        )
+        if provider_gateway_blocked:
+            gateway["route_state"] = "blocked"
+            gateway["blocked_reasons"] = [
+                "provider_gateway_evidence_absent",
+                "provider_budget_receipt_absent",
+            ]
+            gateway["freshness"]["capability_checked_at"] = None
+            gateway["freshness"]["quota_checked_at"] = None
+            gateway["freshness"]["resource_checked_at"] = None
+            gateway["freshness"]["evidence"]["capability"] = {
+                "evidence_refs": [],
+                "blocked_reasons": ["provider_gateway_evidence_absent"],
+            }
+            gateway["freshness"]["evidence"]["quota"] = {
+                "evidence_refs": [],
+                "blocked_reasons": ["provider_budget_receipt_absent"],
+            }
+            gateway["freshness"]["evidence"]["resource"] = {
+                "evidence_refs": [],
+                "blocked_reasons": ["gateway_resource_receipt_absent"],
+            }
+        else:
+            gateway["route_state"] = "active"
+            gateway["blocked_reasons"] = []
+            gateway["freshness"]["capability_checked_at"] = "2026-06-01T00:00:00Z"
+            gateway["freshness"]["quota_checked_at"] = "2026-06-01T00:00:00Z"
+            gateway["freshness"]["resource_checked_at"] = "2026-06-01T00:00:00Z"
+            gateway["freshness"]["evidence"]["capability"] = {
+                "evidence_refs": ["test:provider-gateway-capability"],
+                "blocked_reasons": [],
+            }
+            gateway["freshness"]["evidence"]["quota"] = {
+                "evidence_refs": ["test:provider-gateway-quota"],
+                "blocked_reasons": [],
+            }
+            gateway["freshness"]["evidence"]["resource"] = {
+                "evidence_refs": ["test:provider-gateway-resource"],
+                "blocked_reasons": [],
+            }
     target = tmp_path / "platform-capability-registry.json"
     target.write_text(json.dumps(payload), encoding="utf-8")
     return target
@@ -85,7 +131,11 @@ def _write_platform_registry(
 
 def test_paid_model_alias_gets_admitted_receipt(tmp_path: Path, monkeypatch) -> None:
     ledger = _write_test_ledger(tmp_path)
+    registry = _write_platform_registry(
+        tmp_path, local_worker_blocked=False, provider_gateway_blocked=False
+    )
     monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
     monkeypatch.setenv("HAPAX_CCTV_CAPABILITY_ADMISSION_NOW", "2026-06-01T00:10:00Z")
 
     admission = admit_model_alias("opus")
@@ -95,11 +145,62 @@ def test_paid_model_alias_gets_admitted_receipt(tmp_path: Path, monkeypatch) -> 
     assert admission.admission_action == "admitted"
     assert admission.receipt_ref.startswith("cctv-capability-admission:")
     assert "tb-20260510-anthropic-api-steady-state" in admission.receipt_refs
+    assert "platform-capability-registry:api.headless.provider_gateway" in admission.receipt_refs
+
+
+def test_paid_model_alias_refuses_blocked_platform_route(tmp_path: Path, monkeypatch) -> None:
+    ledger = _write_test_ledger(tmp_path)
+    registry = _write_platform_registry(
+        tmp_path, local_worker_blocked=False, provider_gateway_blocked=True
+    )
+    monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
+    monkeypatch.setenv("HAPAX_CCTV_CAPABILITY_ADMISSION_NOW", "2026-06-01T00:10:00Z")
+
+    admission = admit_model_alias("opus")
+
+    assert admission.admitted is False
+    assert admission.capability_id == "cctv.model.opus"
+    assert "provider_gateway_evidence_absent" in admission.reason_codes
+    assert "provider_budget_receipt_absent" in admission.reason_codes
+    assert "gateway_resource_receipt_absent" in admission.reason_codes
+    assert "platform-capability-registry:api.headless.provider_gateway" in admission.receipt_refs
+
+
+def test_paid_model_alias_refuses_missing_platform_route(tmp_path: Path, monkeypatch) -> None:
+    ledger = _write_test_ledger(tmp_path)
+    registry = _write_platform_registry(
+        tmp_path, local_worker_blocked=False, provider_gateway_blocked=False
+    )
+    monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
+    monkeypatch.setenv("HAPAX_CCTV_CAPABILITY_ADMISSION_NOW", "2026-06-01T00:10:00Z")
+    descriptor = CapabilityDescriptor(
+        capability_id="cctv.model.synthetic",
+        route_id="synthetic-paid-route",
+        provider="anthropic",
+        capacity_pool=CapacityPool.API_PAID_SPEND,
+        profile="frontier-full",
+        task_class="research",
+        quality_floor="frontier_required",
+        estimated_cost_usd=Decimal("0.01"),
+        platform_route_id="api.headless.missing-provider-gateway",
+    )
+
+    admission = admit_capability(descriptor)
+
+    assert admission.admitted is False
+    assert admission.capability_id == "cctv.model.synthetic"
+    assert "platform_route_missing:api.headless.missing-provider-gateway" in admission.reason_codes
 
 
 def test_receipt_identity_binds_decision_inputs(tmp_path: Path, monkeypatch) -> None:
     ledger = _write_test_ledger(tmp_path)
+    registry = _write_platform_registry(
+        tmp_path, local_worker_blocked=False, provider_gateway_blocked=False
+    )
     monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
     monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_TASK", raising=False)
     checked_at = datetime(2026, 6, 1, 0, 10, tzinfo=UTC)
     base = CapabilityDescriptor(
@@ -111,6 +212,7 @@ def test_receipt_identity_binds_decision_inputs(tmp_path: Path, monkeypatch) -> 
         task_class="research",
         quality_floor="frontier_required",
         estimated_cost_usd=Decimal("0.01"),
+        platform_route_id="api.headless.provider_gateway",
     )
     faster_profile = CapabilityDescriptor(
         capability_id=base.capability_id,
@@ -121,6 +223,7 @@ def test_receipt_identity_binds_decision_inputs(tmp_path: Path, monkeypatch) -> 
         task_class=base.task_class,
         quality_floor=base.quality_floor,
         estimated_cost_usd=base.estimated_cost_usd,
+        platform_route_id=base.platform_route_id,
     )
 
     first = admit_capability(base, now=checked_at)
@@ -139,6 +242,9 @@ def test_receipt_identity_binds_decision_inputs(tmp_path: Path, monkeypatch) -> 
 
 def test_receipt_captures_dispatch_authority_context(tmp_path: Path, monkeypatch) -> None:
     ledger = _write_test_ledger(tmp_path)
+    registry = _write_platform_registry(
+        tmp_path, local_worker_blocked=False, provider_gateway_blocked=False
+    )
     task_root = tmp_path / "tasks"
     active = task_root / "active"
     active.mkdir(parents=True)
@@ -154,6 +260,7 @@ def test_receipt_captures_dispatch_authority_context(tmp_path: Path, monkeypatch
         encoding="utf-8",
     )
     monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
     monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(task_root))
     monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_TASK", "cc-task-cctv-test")
     monkeypatch.setenv("HAPAX_CCTV_CAPABILITY_ADMISSION_NOW", "2026-06-01T00:10:00Z")
@@ -169,7 +276,11 @@ def test_receipt_captures_dispatch_authority_context(tmp_path: Path, monkeypatch
 
 def test_unbudgeted_provider_refuses_before_invocation(tmp_path: Path, monkeypatch) -> None:
     ledger = _write_test_ledger(tmp_path)
+    registry = _write_platform_registry(
+        tmp_path, local_worker_blocked=False, provider_gateway_blocked=False
+    )
     monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
     monkeypatch.setenv("HAPAX_CCTV_CAPABILITY_ADMISSION_NOW", "2026-06-01T00:10:00Z")
 
     admission = admit_tool("web_verify")
