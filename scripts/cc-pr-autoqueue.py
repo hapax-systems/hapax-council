@@ -1561,7 +1561,7 @@ def _release_authorized_head_stamp_blocker(
     return None
 
 
-def _release_mitigation_evidence_blockers(
+def _release_auto_arm_current_evidence_blockers(
     frontmatter: dict[str, Any],
     *,
     verified_checks: set[str],
@@ -1571,11 +1571,7 @@ def _release_mitigation_evidence_blockers(
     probe = dict(frontmatter)
     probe["release_authorized"] = False
     assessment = assess_release_auto_arm(probe, verified_checks=verified_checks)
-    return tuple(
-        blocker
-        for blocker in assessment.blockers
-        if blocker.startswith(("needs_mitigation:", "unmitigable_risk_flag:"))
-    )
+    return assessment.blockers
 
 
 def _decision_requires_head_guard(decision: Decision) -> bool:
@@ -1677,12 +1673,12 @@ def _release_head_boundary_blocker(
             decision.pr.changed_files_count if changed_file_count is None else changed_file_count
         ),
     )
-    mitigation_blockers = _release_mitigation_evidence_blockers(
+    evidence_blockers = _release_auto_arm_current_evidence_blockers(
         current_frontmatter,
         verified_checks=current_verified_checks,
     )
-    if mitigation_blockers:
-        return "current_release_mitigation_blocked:" + ",".join(mitigation_blockers)
+    if evidence_blockers:
+        return "current_release_auto_arm_blocked:" + ",".join(evidence_blockers)
     return None
 
 

@@ -2192,7 +2192,7 @@ def test_already_queued_refetches_mitigation_checks_before_success_proof(
         and item["action"] == "release_head_revalidation"
         and item["ok"] is False
         and item["message"]
-        == "current_release_mitigation_blocked:"
+        == "current_release_auto_arm_blocked:"
         "needs_mitigation:governance_sensitive:authority-case-check"
         for item in report["mutations"]
     )
@@ -2203,8 +2203,83 @@ def test_already_queued_refetches_mitigation_checks_before_success_proof(
         and item["reasons"]
         == [
             "release_head_revalidation_failed:"
-            "current_release_mitigation_blocked:"
+            "current_release_auto_arm_blocked:"
             "needs_mitigation:governance_sensitive:authority-case-check"
+        ]
+        for item in report["mutations"]
+    )
+    assert any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+
+
+def test_already_queued_replays_full_current_auto_arm_blockers_before_success_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="already-armed-current-auto-arm-drift",
+        status="pr_open",
+        pr=754,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-754",
+            "release_authorized_head_ref": "feat/754",
+            "stage": "S7_RELEASE",
+        },
+    )
+    runner = _FakeRunner()
+    runner.queued_prs = {754}
+    runner.open_prs = [_pr(754)]
+    original_boundary = autoqueue._release_head_boundary_blocker
+
+    def revoke_implementation_before_boundary(decision: Any, **kwargs: Any) -> str | None:
+        if decision.pr.number == 754:
+            note.write_text(
+                note.read_text(encoding="utf-8").replace(
+                    "implementation_authorized: true",
+                    "implementation_authorized: false",
+                ),
+                encoding="utf-8",
+            )
+        return original_boundary(decision, **kwargs)
+
+    monkeypatch.setattr(
+        autoqueue, "_release_head_boundary_blocker", revoke_implementation_before_boundary
+    )
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert not any(
+        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-754"]
+        and "state=success" in call
+        for call in runner.calls
+    )
+    assert any(
+        item["pr"] == 754
+        and item["action"] == "release_head_revalidation"
+        and item["ok"] is False
+        and item["message"] == "current_release_auto_arm_blocked:not_implementation_authorized"
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 754
+        and item["action"] == "set_admission_status"
+        and item["status_state"] == "failure"
+        and item["reasons"]
+        == [
+            "release_head_revalidation_failed:"
+            "current_release_auto_arm_blocked:not_implementation_authorized"
         ]
         for item in report["mutations"]
     )
