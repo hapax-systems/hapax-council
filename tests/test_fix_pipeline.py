@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from agents.health_monitor import CheckResult, GroupResult, HealthReport, Status, worst_status
+from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
 from shared.fix_capabilities.base import (
     Action,
     Capability,
@@ -117,6 +118,24 @@ _DESTRUCTIVE_PROPOSAL = FixProposal(
 _PATCH_BASE = "shared.fix_capabilities.pipeline"
 
 
+def _admission(*, admitted: bool = True) -> BackgroundCapabilityAdmission:
+    return BackgroundCapabilityAdmission(
+        capability_name="health_monitor.fix.mock.restart",
+        route_id="local_tool.local.worker",
+        admitted=admitted,
+        denied_reason=None if admitted else "route_policy_denied",
+        reason_codes=("policy_launch",) if admitted else ("runtime_actuation_receipt_absent",),
+        task_id="task-x",
+        authority_case="CASE-CAPACITY-ROUTING-001",
+        mutation_surface="runtime",
+        quality_floor="deterministic_ok",
+        route_decision_id="rd-test",
+        model_descriptor={
+            "execution_descriptor": {"model_id": "command-r-08-2024"},
+        },
+    )
+
+
 # ── Tests ────────────────────────────────────────────────────────────────────
 
 
@@ -153,6 +172,7 @@ async def test_safe_proposal_executes():
     with (
         patch(f"{_PATCH_BASE}.get_capability_for_group", return_value=cap),
         patch(f"{_PATCH_BASE}.evaluate_check", new_callable=AsyncMock, return_value=_SAFE_PROPOSAL),
+        patch(f"{_PATCH_BASE}._admit_runtime_fix_execution", return_value=_admission()),
         patch(f"{_PATCH_BASE}.send_notification"),
     ):
         result = await run_fix_pipeline(report)
@@ -164,6 +184,30 @@ async def test_safe_proposal_executes():
     assert outcome.execution_result is not None
     assert outcome.execution_result.success is True
     assert outcome.notified is False
+    assert outcome.admission is not None
+    assert outcome.admission["route_id"] == "local_tool.local.worker"
+
+
+@pytest.mark.asyncio
+async def test_safe_proposal_refuses_without_runtime_admission():
+    """Safe proposals do not execute unless the spine admits runtime actuation."""
+    cap = _MockCap()
+    report = _make_report(_FAILING_CHECK)
+    with (
+        patch(f"{_PATCH_BASE}.get_capability_for_group", return_value=cap),
+        patch(f"{_PATCH_BASE}.evaluate_check", new_callable=AsyncMock, return_value=_SAFE_PROPOSAL),
+        patch(
+            f"{_PATCH_BASE}._admit_runtime_fix_execution", return_value=_admission(admitted=False)
+        ),
+        patch(f"{_PATCH_BASE}.send_notification"),
+    ):
+        result = await run_fix_pipeline(report)
+
+    assert result.total == 1
+    outcome = result.outcomes[0]
+    assert outcome.executed is False
+    assert outcome.rejected_reason is not None
+    assert "runtime_actuation_receipt_absent" in outcome.rejected_reason
 
 
 @pytest.mark.asyncio
@@ -267,6 +311,7 @@ async def test_deterministic_docker_compose_up_suppressed_by_maintenance_lock(
     report = _make_report(check)
     with (
         patch(f"{_PATCH_BASE}.get_capability_for_group", return_value=None),
+        patch(f"{_PATCH_BASE}._admit_runtime_fix_execution", return_value=_admission()),
         patch(f"{_PATCH_BASE}.run_cmd", new_callable=AsyncMock) as mock_cmd,
     ):
         result = await run_fix_pipeline(report)
@@ -305,6 +350,7 @@ async def test_deterministic_targetless_compose_up_suppressed_when_any_docker_lo
     report = _make_report(check)
     with (
         patch(f"{_PATCH_BASE}.get_capability_for_group", return_value=None),
+        patch(f"{_PATCH_BASE}._admit_runtime_fix_execution", return_value=_admission()),
         patch(f"{_PATCH_BASE}.run_cmd", new_callable=AsyncMock) as mock_cmd,
     ):
         result = await run_fix_pipeline(report)
@@ -338,6 +384,7 @@ async def test_deterministic_docker_compose_up_runs_when_lock_expired(tmp_path, 
     report = _make_report(check)
     with (
         patch(f"{_PATCH_BASE}.get_capability_for_group", return_value=None),
+        patch(f"{_PATCH_BASE}._admit_runtime_fix_execution", return_value=_admission()),
         patch(
             f"{_PATCH_BASE}.run_cmd",
             new_callable=AsyncMock,

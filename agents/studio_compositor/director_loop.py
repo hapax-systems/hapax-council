@@ -29,6 +29,7 @@ from shared.claim import Claim
 from shared.claim_prompt import SURFACE_FLOORS, render_envelope
 from shared.config import LITELLM_KEY
 from shared.director_intent import CompositionalImpingement, DirectorIntent
+from shared.fix_capabilities.background_admission import admit_background_capability
 from shared.persona_prompt_composer import compose_persona_prompt, role_scope_line
 from shared.stimmung import Stance
 
@@ -816,6 +817,7 @@ LITELLM_URL = "http://localhost:4000/v1/chat/completions"
 # (e.g. "fast"/gemini or "balanced"/claude), images are forwarded; otherwise
 # the director strips images before the call.
 DIRECTOR_MODEL = os.environ.get("HAPAX_DIRECTOR_MODEL", "local-fast")
+DIRECTOR_LLM_ROUTE_ID = os.environ.get("HAPAX_DIRECTOR_LLM_ROUTE_ID", "local_tool.local.worker")
 
 # Director watchdog Phase 2 (§8.2): process-wide single-flight lock keyed on
 # the LLM route. Prevents director + structural-director (also `local-fast`
@@ -856,6 +858,17 @@ MULTIMODAL_ROUTES: frozenset[str] = frozenset(
         "long-context",
     }
 )
+
+
+def _admit_director_llm():
+    return admit_background_capability(
+        capability_name="studio.director.llm",
+        route_id=DIRECTOR_LLM_ROUTE_ID,
+        model_alias=DIRECTOR_MODEL,
+        mutation_surface="none",
+        quality_floor="deterministic_ok",
+    )
+
 
 # Narrative cadence. Epic 2 Phase E (2026-04-17) tightened 20.0 → 12.0 so
 # the stream feels like an engaged hot-house of pressure rather than a
@@ -4354,6 +4367,15 @@ class DirectorLoop:
         """Body of _call_activity_llm split out so the lock acquire/release
         wrap is unambiguous. All return paths from this method are still
         covered by the parent's try/finally release."""
+        admission = _admit_director_llm()
+        if not admission.admitted:
+            log.warning(
+                "director LLM admission denied route=%s reason=%s",
+                admission.route_id,
+                admission.denial_summary(),
+            )
+            return ""
+
         content: list[dict] = []
         # Only forward images when the configured route is known multimodal.
         # Text-only routes (e.g. local Qwen3.5-9B) timeout or error when fed
@@ -4429,6 +4451,12 @@ class DirectorLoop:
                     "activity": self._activity,
                     "slot": str(self._active_slot),
                     "condition_id": _condition_id,
+                    "route_id": admission.route_id,
+                    "route_decision_id": admission.route_decision_id,
+                    "task_id": admission.task_id,
+                    "authority_case": admission.authority_case,
+                    "model_descriptor": admission.model_descriptor,
+                    "quota_evidence_refs": list(admission.quota_evidence_refs),
                 },
             )
             if hapax_span is not None
@@ -4446,7 +4474,7 @@ class DirectorLoop:
             llm_call_span = None  # type: ignore[assignment]
 
         metrics_ctx = (
-            llm_call_span(model=DIRECTOR_MODEL, route="director")
+            llm_call_span(model=DIRECTOR_MODEL, route=admission.route_id)
             if llm_call_span is not None
             else nullcontext(None)
         )

@@ -8,6 +8,7 @@ import pytest
 
 from agents.health_monitor import CheckResult, GroupResult, HealthReport, Status
 from shared.fix_capabilities import _REGISTRY, get_capability_for_group, load_builtin_capabilities
+from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
 from shared.fix_capabilities.base import (
     ExecutionResult,
     FixProposal,
@@ -54,12 +55,27 @@ class TestEndToEnd:
         )
 
         cap = get_capability_for_group("gpu")
+        admission = BackgroundCapabilityAdmission(
+            capability_name="health_monitor.fix.ollama.stop_model",
+            route_id="local_tool.local.worker",
+            admitted=True,
+            reason_codes=("policy_launch",),
+            task_id="task-x",
+            authority_case="CASE-CAPACITY-ROUTING-001",
+            mutation_surface="runtime",
+            quality_floor="deterministic_ok",
+            route_decision_id="rd-test",
+        )
         with (
             patch.object(cap, "gather_context", new_callable=AsyncMock, return_value=probe),
             patch(
                 "shared.fix_capabilities.pipeline.evaluate_check",
                 new_callable=AsyncMock,
                 return_value=proposal,
+            ),
+            patch(
+                "shared.fix_capabilities.pipeline._admit_runtime_fix_execution",
+                return_value=admission,
             ),
             patch.object(
                 cap,
