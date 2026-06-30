@@ -423,7 +423,7 @@ if stage_num < 7 and release != "false":
     print(f"shadow_denial_violation:release_authorized={release}")
     sys.exit(0)
 
-if release_kind in {"merge", "release", "ref_update", "github_file_write"} and release != "true":
+if release_kind in {"merge", "release", "ref_update", "github_file_write", "push_files"} and release != "true":
     print(f"release_not_authorized:{release_kind}:{release}")
     sys.exit(0)
 

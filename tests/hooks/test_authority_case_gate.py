@@ -633,6 +633,7 @@ class TestAuthorizationPacketValidator:
         )
         _write_claim(home, "alpha", "test-case-001")
         for tool_name in (
+            "mcp__github__push_files",
             "mcp__codex_apps__github___create_file",
             "mcp__codex_apps__github___update_file",
             "mcp__codex_apps__github___delete_file",
