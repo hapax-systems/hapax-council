@@ -201,7 +201,30 @@ def test_default_mode_mints_runtime_actuation_receipt(capsys, tmp_path: Path) ->
     assert receipt.mutation_surfaces == ("runtime",)
 
 
-def test_default_mode_mints_connector_mutation_receipt(capsys, tmp_path: Path) -> None:
+def test_connector_mutation_requires_explicit_surfaces(capsys, tmp_path: Path) -> None:
+    rc = MINT.main(
+        [
+            "--receipt-type",
+            "connector_mutation",
+            "--route-id",
+            "codex.headless.full",
+            "--task-id",
+            "cc-task-mcp-mutator-route-resource-receipts-20260630",
+            "--receipt-dir",
+            str(tmp_path),
+            "--now",
+            "2026-06-30T04:30:00Z",
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert captured.out == ""
+    assert "--mutation-surface is required for connector_mutation" in captured.err
+
+
+def test_explicit_mode_mints_connector_mutation_receipt(capsys, tmp_path: Path) -> None:
     rc, payload = _run_json(
         capsys,
         [
@@ -211,6 +234,12 @@ def test_default_mode_mints_connector_mutation_receipt(capsys, tmp_path: Path) -
             "codex.headless.full",
             "--task-id",
             "cc-task-mcp-mutator-route-resource-receipts-20260630",
+            "--mutation-surface",
+            "connector",
+            "--mutation-surface",
+            "external",
+            "--mutation-surface",
+            "public",
             "--receipt-dir",
             str(tmp_path),
             "--now",
@@ -226,7 +255,7 @@ def test_default_mode_mints_connector_mutation_receipt(capsys, tmp_path: Path) -
     assert receipt.receipt_type == "connector_mutation"
     assert receipt.route_id == "codex.headless.full"
     assert receipt.task_ids == ("cc-task-mcp-mutator-route-resource-receipts-20260630",)
-    assert receipt.mutation_surfaces == ("connector",)
+    assert receipt.mutation_surfaces == ("connector", "external", "public")
 
 
 def test_ensure_fresh_runtime_actuation_keeps_scope_specific_files(capsys, tmp_path: Path) -> None:

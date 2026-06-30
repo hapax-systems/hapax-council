@@ -355,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         metavar="SURFACE",
         help="Mutation surface authorized by a runtime_actuation or connector_mutation receipt "
-        "(repeatable; defaults to runtime for runtime_actuation and connector for "
+        "(repeatable; defaults to runtime for runtime_actuation; required for "
         "connector_mutation).",
     )
     parser.add_argument(
@@ -417,7 +417,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.receipt_type == "runtime_actuation" and not mutation_surfaces:
         mutation_surfaces = ["runtime"]
     if args.receipt_type == "connector_mutation" and not mutation_surfaces:
-        mutation_surfaces = ["connector"]
+        print(
+            "refused to mint route-authority receipt: --mutation-surface is required "
+            "for connector_mutation",
+            file=sys.stderr,
+        )
+        return 2
 
     receipt_id = args.receipt_id
     now_dt = _coerce_utc(_parse_now(args.now) or now_utc())
