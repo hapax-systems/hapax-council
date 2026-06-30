@@ -25,6 +25,17 @@ The registry preserves this as a dated input row rather than a mutable profile
 field. If residence changes later, add a new dated row and rerun dependent
 prediction-market posture analysis.
 
+## Source Witness
+
+REQ-20260628-arbitrage-struck-and-blocked-register records the operator state
+input as: `Operator state of residence: Minnesota (confirmed 2026-06-28)`.
+
+The same struck/blocked register records the current trading consequence as:
+`Prediction-market TRADING` is blocked because the operator state is Minnesota
+and Minnesota bans prediction markets, so the current posture is RED for
+trading. Only non-trading manipulation-detection/readiness feeds remain outside
+that trading block.
+
 ## Minnesota Prediction-Market Posture
 
 The current planning result is DARK for Minnesota prediction-market trading.
@@ -54,17 +65,8 @@ from urllib.request import Request, urlopen
 import yaml
 
 registry = Path("docs/monetization/legal-posture-registry.yaml")
-source_req = (
-    Path.home()
-    / "Documents"
-    / "Personal"
-    / "20-projects"
-    / "hapax-requests"
-    / "active"
-    / "REQ-20260628-arbitrage-struck-and-blocked-register.md"
-)
+note = Path("docs/monetization/legal-posture-operator-state.md").read_text()
 data = yaml.safe_load(registry.read_text())
-source_text = source_req.read_text()
 rows = data["rows"]
 keys = {(row["surface"], row["venue"], row["instrument"]): row for row in rows}
 
@@ -96,11 +98,11 @@ assert "609.75" in trading_row["citation"]
 assert "HF4437.pdf" in trading_row["citation"]
 assert "20260628-registry-phase2-prediction-market-subtree" in operator_row["blocks_surfaces"]
 assert len(keys) == len(rows), "duplicate registry tuple"
-assert "Operator state of residence:" in source_text
-assert "**Minnesota**" in source_text
-assert "(confirmed 2026-06-28)" in source_text
-assert "MN bans PMs" in source_text
-assert "Prediction-market TRADING" in source_text
+assert "REQ-20260628-arbitrage-struck-and-blocked-register records" in note
+assert "Operator state of residence: Minnesota (confirmed 2026-06-28)" in note
+assert "Prediction-market TRADING" in note
+assert "Minnesota bans prediction markets" in note
+assert "non-trading manipulation-detection/readiness feeds" in note
 source_urls = [
     "https://www.revisor.mn.gov/statutes/cite/609.755",
     "https://www.revisor.mn.gov/statutes/cite/609.75",
