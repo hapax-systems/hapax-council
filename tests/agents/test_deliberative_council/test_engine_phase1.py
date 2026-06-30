@@ -38,7 +38,7 @@ def _admission(*, admitted: bool) -> CapabilityAdmissionReceipt:
         receipt_id="cctv-test-member",
         receipt_ref="cctv-capability-admission:cctv-test-member",
         capability_id="cctv.model.opus",
-        route_id="litellm.anthropic.claude-opus-4",
+        route_id="claude-opus",
         provider="anthropic",
         capacity_pool="api_paid_spend",
         admission_action="admitted" if admitted else "refused",
@@ -86,6 +86,18 @@ class TestRunPhase1:
 
         member.run.assert_not_called()
         assert "next_action=refresh the quota/spend ledger" in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_call_member_refuses_when_admission_receipt_missing(self) -> None:
+        member = MagicMock()
+        member.run = AsyncMock()
+
+        with pytest.raises(CapabilityAdmissionError) as excinfo:
+            await _call_member(member, "prompt")
+
+        member.run.assert_not_called()
+        assert "capability_admission_missing" in str(excinfo.value)
+        assert "next_action=build the member with build_member()" in str(excinfo.value)
 
     @pytest.mark.asyncio
     async def test_returns_results_per_model(self) -> None:

@@ -195,9 +195,13 @@ def cache_policy_for_aliases(model_aliases: tuple[str, ...]) -> dict[str, dict[s
     return {alias: cache_policy_for_alias(alias) for alias in model_aliases}
 
 
-def get_cctv_model(model_alias: str) -> CCTVLiteLLMChatModel:
+def model_route_for_alias(model_alias: str) -> str:
     alias = normalize_model_alias(model_alias)
-    model_id = MODELS.get(alias, alias)
+    return MODELS.get(alias, alias)
+
+
+def get_cctv_model(model_alias: str) -> CCTVLiteLLMChatModel:
+    model_id = model_route_for_alias(model_alias)
     return CCTVLiteLLMChatModel(
         model_id,
         provider=LiteLLMProvider(api_base=LITELLM_BASE, api_key=LITELLM_KEY),
@@ -211,7 +215,8 @@ def build_member(
     system_prompt: str | None = None,
 ) -> Agent[None, str]:
     model_alias = normalize_model_alias(model_alias)
-    capability_admission = admit_model_alias(model_alias)
+    model_route = model_route_for_alias(model_alias)
+    capability_admission = admit_model_alias(model_alias, invoked_route_id=model_route)
     if tool_level is None:
         tool_level = MODEL_TOOL_LEVELS.get(model_alias, ToolLevel.FULL)
 
@@ -234,5 +239,6 @@ def build_member(
         retries=0,
     )
     agent._cctv_model_alias = model_alias
+    agent._cctv_route_id = model_route
     agent._cctv_capability_admission = capability_admission
     return agent

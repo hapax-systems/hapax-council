@@ -79,56 +79,56 @@ class CapabilityDescriptor:
 MODEL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
     "opus": CapabilityDescriptor(
         capability_id="cctv.model.opus",
-        route_id="litellm.anthropic.claude-opus-4",
+        route_id="claude-opus",
         provider="anthropic",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="frontier-full",
     ),
     "balanced": CapabilityDescriptor(
         capability_id="cctv.model.balanced",
-        route_id="litellm.anthropic.claude-sonnet-4",
+        route_id="claude-sonnet",
         provider="anthropic",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="frontier-fast",
     ),
     "gemini-3-pro": CapabilityDescriptor(
         capability_id="cctv.model.gemini-3-pro",
-        route_id="litellm.google.gemini-3-pro",
+        route_id="gemini-pro",
         provider="google",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="frontier-fast",
     ),
     "web-research": CapabilityDescriptor(
         capability_id="cctv.model.web-research",
-        route_id="litellm.perplexity.web-research",
+        route_id="web-research",
         provider="perplexity",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="web-research",
     ),
     "mistral-large": CapabilityDescriptor(
         capability_id="cctv.model.mistral-large",
-        route_id="litellm.mistral.mistral-large",
+        route_id="mistral-large",
         provider="mistral",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="frontier-fast",
     ),
     "deepseek": CapabilityDescriptor(
         capability_id="cctv.model.deepseek",
-        route_id="litellm.deepseek.deepseek",
+        route_id="deepseek",
         provider="deepseek",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="coding",
     ),
     "glm": CapabilityDescriptor(
         capability_id="cctv.model.glm",
-        route_id="litellm.z_ai.glm",
+        route_id="glm",
         provider="z_ai",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="coding",
     ),
     "local-fast": CapabilityDescriptor(
         capability_id="cctv.model.local-fast",
-        route_id="litellm.local.command-r-35b",
+        route_id="local-fast",
         provider="tabbyapi",
         capacity_pool=CapacityPool.LOCAL_COMPUTE,
         profile="local",
@@ -136,7 +136,7 @@ MODEL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
     ),
     "appendix-fast": CapabilityDescriptor(
         capability_id="cctv.model.appendix-fast",
-        route_id="litellm.local.command-r-35b",
+        route_id="appendix-fast",
         provider="tabbyapi",
         capacity_pool=CapacityPool.LOCAL_COMPUTE,
         profile="local",
@@ -147,7 +147,7 @@ MODEL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
 TOOL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
     "web_verify": CapabilityDescriptor(
         capability_id="cctv.tool.web_verify",
-        route_id="litellm.perplexity.web-research",
+        route_id="web-research",
         provider="perplexity",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="web-research",
@@ -166,7 +166,10 @@ TOOL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
 
 
 def admit_model_alias(
-    model_alias: str, *, now: datetime | None = None
+    model_alias: str,
+    *,
+    invoked_route_id: str | None = None,
+    now: datetime | None = None,
 ) -> CapabilityAdmissionReceipt:
     from agents.deliberative_council.members import normalize_model_alias
 
@@ -174,6 +177,17 @@ def admit_model_alias(
     descriptor = MODEL_CAPABILITIES.get(alias)
     if descriptor is None:
         return _receipt_for_missing_descriptor(f"cctv.model.{alias}", alias)
+    if invoked_route_id and invoked_route_id != descriptor.route_id:
+        descriptor = CapabilityDescriptor(
+            capability_id=descriptor.capability_id,
+            route_id=invoked_route_id,
+            provider=descriptor.provider,
+            capacity_pool=descriptor.capacity_pool,
+            profile=descriptor.profile,
+            task_class=descriptor.task_class,
+            quality_floor=descriptor.quality_floor,
+            estimated_cost_usd=descriptor.estimated_cost_usd,
+        )
     return admit_capability(descriptor, now=now)
 
 
@@ -374,6 +388,7 @@ def _admit_local_route(
         and (
             snapshot.route_id == descriptor.route_id
             or descriptor.route_id == "local_tool.local.worker"
+            or (descriptor.provider == "tabbyapi" and snapshot.provider == "tabbyapi")
         )
     )
     quota_refs = tuple(ref for snapshot in snapshots for ref in snapshot.evidence_refs)
@@ -487,12 +502,18 @@ def _load_ledger() -> QuotaSpendLedger:
         os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV, str(DEFAULT_QUOTA_SPEND_LEDGER_LIVE))
     ).expanduser()
     if not live_path.exists():
-        raise QuotaSpendLedgerError(f"live quota/spend ledger missing: {live_path}")
+        raise QuotaSpendLedgerError(
+            f"live quota/spend ledger missing: {live_path}; "
+            "next_action=run quota telemetry refresh or set HAPAX_CCTV_QUOTA_SPEND_LEDGER "
+            "to a fresh governed ledger"
+        )
     resolved = load_quota_spend_ledger_resolved(live_path=live_path)
     if resolved.source != "live":
         detail = f"; live_error={resolved.live_error}" if resolved.live_error else ""
         raise QuotaSpendLedgerError(
-            f"live quota/spend ledger unavailable; refusing fixture fallback at {resolved.path}{detail}"
+            f"live quota/spend ledger unavailable; refusing fixture fallback at "
+            f"{resolved.path}{detail}; next_action=repair live quota telemetry before "
+            "retrying governed capability admission"
         )
     return resolved.ledger
 

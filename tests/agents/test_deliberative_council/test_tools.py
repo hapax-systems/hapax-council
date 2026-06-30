@@ -15,6 +15,7 @@ from agents.deliberative_council.members import (
     build_member,
     cache_control_ttl_for_alias,
     cache_policy_for_alias,
+    model_route_for_alias,
     model_settings_for_alias,
     normalize_model_alias,
 )
@@ -239,6 +240,14 @@ class TestBuildMember:
         assert agent is not None
         assert agent._cctv_capability_admission.capability_id == "cctv.model.opus"
         assert agent._cctv_capability_admission.receipt_ref.startswith("cctv-capability-admission:")
+        assert agent._cctv_route_id == model_route_for_alias("opus")
+        assert agent._cctv_capability_admission.route_id == agent._cctv_route_id
+
+    @pytest.mark.parametrize("model_alias", sorted(MODEL_TOOL_LEVELS))
+    def test_admission_route_matches_invoked_litellm_route(self, model_alias: str) -> None:
+        agent = build_member(model_alias, ToolLevel.NONE)
+        assert agent._cctv_route_id == model_route_for_alias(model_alias)
+        assert agent._cctv_capability_admission.route_id == agent._cctv_route_id
 
     def test_restricted_tool_level(self) -> None:
         agent = build_member("local-fast", ToolLevel.RESTRICTED)

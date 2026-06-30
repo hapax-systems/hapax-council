@@ -70,7 +70,7 @@ ADMITTED_COUNCIL_RECEIPT = {
     "capability_admissions": [
         {
             "capability_id": "cctv.model.opus",
-            "route_id": "litellm.anthropic.claude-opus-4",
+            "route_id": "claude-opus",
             "admitted": True,
             "admission_action": "admitted",
             "receipt_refs": ["cctv-capability-admission:test-member"],

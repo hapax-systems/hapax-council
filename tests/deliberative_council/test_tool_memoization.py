@@ -123,7 +123,7 @@ def _admitted_web_verify() -> CapabilityAdmissionReceipt:
         receipt_id="cctv-test-web-verify",
         receipt_ref="cctv-capability-admission:cctv-test-web-verify",
         capability_id="cctv.tool.web_verify",
-        route_id="litellm.perplexity.web-research",
+        route_id="web-research",
         provider="perplexity",
         capacity_pool="api_paid_spend",
         admission_action="admitted",
