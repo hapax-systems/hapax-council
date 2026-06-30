@@ -28,6 +28,7 @@ def test_legacy_mdlc_resolves_only_as_provenance_alias() -> None:
     assert resolve_capdlc_lifecycle("  CapDLC  ") is CAPDLC_DARK_STUB
     assert resolve_capdlc_lifecycle("capdlc") is CAPDLC_DARK_STUB
     assert resolve_capdlc_lifecycle("MDLC") is CAPDLC_DARK_STUB
+    assert resolve_capdlc_lifecycle("  mdlc  ") is CAPDLC_DARK_STUB
     assert resolve_capdlc_lifecycle("MonDLC") is None
     assert resolve_capdlc_lifecycle("") is None
 
