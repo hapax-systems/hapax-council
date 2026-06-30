@@ -39,6 +39,7 @@ def _row(
     operator_signed: bool = False,
     open_questions: list[str] | None = None,
     authority_basis: str | None = None,
+    notes: str = "fixture",
 ) -> dict[str, Any]:
     return {
         "surface": surface,
@@ -52,7 +53,7 @@ def _row(
         "freshness_ttl_days": ttl,
         "operator_signed": operator_signed,
         "operator_sign_date": "2026-06-30" if operator_signed else None,
-        "notes": "fixture",
+        "notes": notes,
         "open_questions": open_questions or [],
         "blocks_surfaces": [surface],
         "source_task": "20260628-registry-phase7-mdlc-g2-gate-wire",
@@ -172,8 +173,14 @@ def test_legal_registry_g2_invalid_target_blocks_committed_disposition() -> None
     assert "before commit" in decision.message
 
 
-def test_legal_registry_g2_fresh_lit_row_admits_only_named_tuple() -> None:
-    registry = _registry(_row(verdict="LIT", operator_signed=True))
+@pytest.mark.parametrize(
+    "authority_basis",
+    ["statute", "regulation", "case_law", "tos_clause", "legal_opinion", "agency_guidance"],
+)
+def test_legal_registry_g2_fresh_lit_row_admits_only_named_tuple(
+    authority_basis: str,
+) -> None:
+    registry = _registry(_row(verdict="LIT", operator_signed=True, authority_basis=authority_basis))
 
     exact = evaluate_g2_commit_gate(TARGET, registry=registry, today=TODAY)
     other_surface = evaluate_g2_commit_gate(
@@ -200,6 +207,35 @@ def test_legal_registry_g2_fresh_lit_row_admits_only_named_tuple() -> None:
     assert {other_surface.reason, other_venue.reason, other_instrument.reason} == {
         G2Reason.NO_EXACT_ROW
     }
+
+
+def test_legal_registry_most_specific_row_orders_wildcards() -> None:
+    registry = _registry(
+        _row(venue="*", instrument="*", notes="surface wildcard"),
+        _row(venue="*", instrument=TARGET.instrument, notes="instrument wildcard"),
+        _row(venue=TARGET.venue, instrument="*", notes="venue wildcard"),
+        _row(notes="exact row"),
+    )
+
+    assert registry.most_specific_row(TARGET).notes == "exact row"
+    assert (
+        registry.most_specific_row(
+            G2GateInput(TARGET.surface, TARGET.venue, "other_instrument")
+        ).notes
+        == "venue wildcard"
+    )
+    assert (
+        registry.most_specific_row(
+            G2GateInput(TARGET.surface, "other_venue", TARGET.instrument)
+        ).notes
+        == "instrument wildcard"
+    )
+    assert (
+        registry.most_specific_row(
+            G2GateInput(TARGET.surface, "other_venue", "other_instrument")
+        ).notes
+        == "surface wildcard"
+    )
 
 
 def test_legal_registry_g2_wildcard_lit_is_not_commit_authority() -> None:

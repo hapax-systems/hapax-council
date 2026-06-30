@@ -159,7 +159,13 @@ There is no `HAPAX_G2_OFF` env var. There is no bypass. The gate reads the regis
 
 ### 5.3 Gate Placement
 
-The g2 gate fires at:
+This phase defines the reusable g2 commit predicate and refusal API. Production
+commit-path integration is governed by follow-on task
+`20260628-mdlccore-phase2-g2-legal-venue-gate-reads-registry`, which MUST call
+`require_g2_commit_admitted()` before persisting any monetization or arbitrage
+disposition.
+
+Once wired by that follow-on task, the g2 gate fires at:
 - **Disposition commit time** — before any monetization or arbitrage disposition is persisted.
 - **Disposition planning time** (advisory) — `coord.why-blocked` can dry-run g2 and report missing/stale/DARK rows before work begins.
 
@@ -212,7 +218,9 @@ assert "(surface, *, instrument)" in schema
 assert "agency-scoped federal rows" in schema
 assert "US-SEC" in schema and "US-CFTC" in schema and "US-DOJ" in schema
 assert "If R is stale AND R.g2_verdict != DARK" in schema
-assert "If no row exists → FAIL" in schema
+assert "If no exact row exists → FAIL" in schema
+assert "authority_basis is committable" in schema
+assert "20260628-mdlccore-phase2-g2-legal-venue-gate-reads-registry" in schema
 print(f"legal-posture registry recheck OK: {len(rows)} rows")
 PY
 ```
