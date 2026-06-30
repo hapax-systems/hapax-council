@@ -42,6 +42,9 @@ from agents.payment_processors.event_log import (
 from agents.payment_processors.liberapay_receiver import LiberapayReceiver
 from agents.payment_processors.lightning_receiver import LightningReceiver
 from agents.payment_processors.nostr_zap_listener import NostrZapListener
+from agents.payment_processors.resource_receipts import (
+    record_awareness_write_resource_receipt,
+)
 
 log = logging.getLogger(__name__)
 
@@ -153,6 +156,15 @@ class MonetizationAggregator:
         Returns True iff the write succeeded. Called periodically by
         ``run_aggregate_loop``; can also be invoked from tests.
         """
+        receipt_count = len(tail_events(log_path=self._log_path))
+        receipt_ref = record_awareness_write_resource_receipt(
+            state_path=self._state_path,
+            source_log_path=self._log_path,
+            receipt_count=receipt_count,
+        )
+        if receipt_ref is None:
+            log.warning("monetization awareness write blocked: resource receipt missing")
+            return False
         block = build_monetization_block(log_path=self._log_path)
         from datetime import UTC, datetime
 

@@ -96,6 +96,21 @@ def gh_sponsors_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 
 @pytest.fixture
+def resource_receipt_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Isolate governed money-rail resource receipts from /dev/shm."""
+
+    import agents.payment_processors.resource_receipts as resource_receipts
+
+    log_path = tmp_path / "resource-receipts.jsonl"
+    monkeypatch.setattr(
+        resource_receipts,
+        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+        log_path,
+    )
+    return log_path
+
+
+@pytest.fixture
 def refusal_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Override the refusal-brief log path so cancellation rows go to the test dir.
 
@@ -122,6 +137,7 @@ async def test_signed_created_event_returns_200_and_writes_manifest(
     output_dir: Path,
     secret_env: str,
     gh_sponsors_idempotency_isolated: Path,
+    resource_receipt_log: Path,
 ) -> None:
     payload = _sponsorship_payload(action="created", sponsor_login="alice")
     raw = json.dumps(payload).encode("utf-8")
@@ -143,6 +159,7 @@ async def test_signed_created_event_returns_200_and_writes_manifest(
     assert body["status"] == "received"
     assert body["event_kind"] == "created"
     assert "raw_payload_sha256" in body
+    assert body["resource_receipt_ref"].startswith("money-rail-resource-receipt:github-sponsors:")
 
     files = list(output_dir.glob("event-created-*.md"))
     assert len(files) == 1, f"expected 1 manifest file, got {files}"
@@ -150,6 +167,12 @@ async def test_signed_created_event_returns_200_and_writes_manifest(
     assert "GitHub Sponsors event — created" in contents
     assert "alice" in contents
     assert "2500" in contents  # amount_usd_cents (was "25.00" pre-cents-normalization)
+    from agents.payment_processors.resource_receipts import tail_resource_receipts
+
+    receipts = tail_resource_receipts(log_path=resource_receipt_log)
+    assert len(receipts) == 1
+    assert receipts[0].rail == "github-sponsors"
+    assert receipts[0].spend_authority_granted is False
 
 
 @pytest.mark.asyncio
@@ -440,6 +463,7 @@ async def test_github_sponsors_route_replays_same_delivery_id_returns_duplicate(
     output_dir: Path,
     secret_env: str,
     gh_sponsors_idempotency_isolated: Path,
+    resource_receipt_log: Path,
 ) -> None:
     payload = _sponsorship_payload(action="created", sponsor_login="alice")
     raw = json.dumps(payload).encode("utf-8")
@@ -459,8 +483,51 @@ async def test_github_sponsors_route_replays_same_delivery_id_returns_duplicate(
     body = second.json()
     assert body["status"] == "duplicate"
     assert body["delivery_id"] == "gh-replay-001"
+    assert body["resource_receipt_ref"] == first.json()["resource_receipt_ref"]
     files = list(output_dir.glob("event-created-*.md"))
     assert len(files) == 1
+    from agents.payment_processors.resource_receipts import tail_resource_receipts
+
+    assert len(tail_resource_receipts(log_path=resource_receipt_log)) == 1
+
+
+@pytest.mark.asyncio
+async def test_github_sponsors_resource_receipt_missing_blocks_publish(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agents.payment_processors.resource_receipts as resource_receipts
+
+    def _missing_receipt(*_args, **_kwargs) -> bool:
+        return False
+
+    def _publish_should_not_run(*_args, **_kwargs):  # pragma: no cover - assertion guard
+        raise AssertionError("publisher ran without a resource receipt")
+
+    monkeypatch.setattr(resource_receipts, "append_resource_receipt", _missing_receipt)
+    monkeypatch.setattr(
+        "agents.publication_bus.github_sponsors_publisher.GitHubSponsorsPublisher.publish_event",
+        _publish_should_not_run,
+    )
+
+    payload = _sponsorship_payload(action="created", sponsor_login="alice")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _sign(raw)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/github-sponsors",
+            content=raw,
+            headers={
+                "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": "gh-delivery-missing-receipt",
+            },
+        )
+
+    assert response.status_code == 500
+    assert "resource receipt" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

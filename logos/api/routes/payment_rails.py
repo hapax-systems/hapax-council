@@ -32,6 +32,7 @@ Receive-only invariants (carried through from the rail receivers):
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -62,6 +63,7 @@ from logos.api.routes._payment_rails_helpers import (
     dispatch_publish_result,
     parse_webhook_request_body,
     render_null_event_response,
+    require_ingress_resource_receipt,
     wrap_rail_error_to_400,
 )
 from shared._rail_idempotency import (
@@ -163,6 +165,52 @@ def _resolve_liberapay_delivery_id(headers) -> str | None:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def _event_kind_value(event: Any) -> str:
+    event_kind = getattr(event, "event_kind", None)
+    value = getattr(event_kind, "value", None)
+    return str(value if value is not None else event_kind)
+
+
+def _raw_payload_sha256(event: Any) -> str | None:
+    value = getattr(event, "raw_payload_sha256", None)
+    return value if isinstance(value, str) and value else None
+
+
+def _resource_receipt_for_event(
+    request: Request,
+    *,
+    rail: str,
+    event: Any,
+    external_id: str | None,
+) -> str:
+    return require_ingress_resource_receipt(
+        rail=rail,
+        route_path=request.url.path,
+        external_id=external_id or _raw_payload_sha256(event),
+        event_kind=_event_kind_value(event),
+        raw_payload_sha256=_raw_payload_sha256(event),
+        downstream_action="publication_bus.publish_event",
+    )
+
+
+def _resource_receipt_for_duplicate(
+    request: Request,
+    *,
+    rail: str,
+    external_id: str | None,
+) -> str | None:
+    if not external_id:
+        return None
+    return require_ingress_resource_receipt(
+        rail=rail,
+        route_path=request.url.path,
+        external_id=external_id,
+        event_kind="duplicate_delivery",
+        raw_payload_sha256=None,
+        downstream_action="publication_bus.skip_duplicate",
+    )
 
 
 # Stripe Payment Link migrated to the shared idempotency registry —
@@ -267,15 +315,32 @@ async def receive_github_sponsors_webhook(request: Request) -> JSONResponse:
         )
 
     if event is None:
+        resource_receipt_ref = _resource_receipt_for_duplicate(
+            request,
+            rail="github-sponsors",
+            external_id=delivery_id,
+        )
         return render_null_event_response(
             payload,
             duplicate_id_key="delivery_id",
             duplicate_id_value=delivery_id,
             log_label="github_sponsors",
+            resource_receipt_ref=resource_receipt_ref,
         )
 
+    resource_receipt_ref = _resource_receipt_for_event(
+        request,
+        rail="github-sponsors",
+        event=event,
+        external_id=delivery_id,
+    )
     publish_result = GitHubSponsorsPublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="github_sponsors")
+    return dispatch_publish_result(
+        publish_result,
+        event,
+        log_label="github_sponsors",
+        resource_receipt_ref=resource_receipt_ref,
+    )
 
 
 @router.post("/liberapay")
@@ -317,15 +382,32 @@ async def receive_liberapay_webhook(request: Request) -> JSONResponse:
         )
 
     if event is None:
+        resource_receipt_ref = _resource_receipt_for_duplicate(
+            request,
+            rail="liberapay",
+            external_id=delivery_id,
+        )
         return render_null_event_response(
             payload,
             duplicate_id_key="delivery_id",
             duplicate_id_value=delivery_id,
             log_label="liberapay",
+            resource_receipt_ref=resource_receipt_ref,
         )
 
+    resource_receipt_ref = _resource_receipt_for_event(
+        request,
+        rail="liberapay",
+        event=event,
+        external_id=delivery_id,
+    )
     publish_result = LiberapayPublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="liberapay")
+    return dispatch_publish_result(
+        publish_result,
+        event,
+        log_label="liberapay",
+        resource_receipt_ref=resource_receipt_ref,
+    )
 
 
 @router.post("/open-collective")
@@ -356,15 +438,32 @@ async def receive_open_collective_webhook(request: Request) -> JSONResponse:
         )
 
     if event is None:
+        resource_receipt_ref = _resource_receipt_for_duplicate(
+            request,
+            rail="open-collective",
+            external_id=delivery_id,
+        )
         return render_null_event_response(
             payload,
             duplicate_id_key="delivery_id",
             duplicate_id_value=delivery_id,
             log_label="open_collective",
+            resource_receipt_ref=resource_receipt_ref,
         )
 
+    resource_receipt_ref = _resource_receipt_for_event(
+        request,
+        rail="open-collective",
+        event=event,
+        external_id=delivery_id,
+    )
     publish_result = OpenCollectivePublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="open_collective")
+    return dispatch_publish_result(
+        publish_result,
+        event,
+        log_label="open_collective",
+        resource_receipt_ref=resource_receipt_ref,
+    )
 
 
 @router.post("/stripe-payment-link")
@@ -392,15 +491,34 @@ async def receive_stripe_payment_link_webhook(request: Request) -> JSONResponse:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
 
     if event is None:
+        event_id = payload.get("id")
+        resource_receipt_ref = _resource_receipt_for_duplicate(
+            request,
+            rail="stripe-payment-link",
+            external_id=event_id if isinstance(event_id, str) else None,
+        )
         return render_null_event_response(
             payload,
             duplicate_id_key="event_id",
-            duplicate_id_value=payload.get("id"),
+            duplicate_id_value=event_id if isinstance(event_id, str) else None,
             log_label="stripe_payment_link",
+            resource_receipt_ref=resource_receipt_ref,
         )
 
+    event_id = payload.get("id")
+    resource_receipt_ref = _resource_receipt_for_event(
+        request,
+        rail="stripe-payment-link",
+        event=event,
+        external_id=event_id if isinstance(event_id, str) else None,
+    )
     publish_result = StripePaymentLinkPublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="stripe_payment_link")
+    return dispatch_publish_result(
+        publish_result,
+        event,
+        log_label="stripe_payment_link",
+        resource_receipt_ref=resource_receipt_ref,
+    )
 
 
 @stripe_webhook_router.post("/stripe-webhook")
@@ -434,15 +552,34 @@ async def receive_ko_fi_webhook(request: Request) -> JSONResponse:
         event = receiver.ingest_webhook(payload, verify_token=True)
 
     if event is None:
+        transaction_id = payload.get("kofi_transaction_id")
+        resource_receipt_ref = _resource_receipt_for_duplicate(
+            request,
+            rail="ko-fi",
+            external_id=transaction_id if isinstance(transaction_id, str) else None,
+        )
         return render_null_event_response(
             payload,
             duplicate_id_key="kofi_transaction_id",
-            duplicate_id_value=payload.get("kofi_transaction_id"),
+            duplicate_id_value=transaction_id if isinstance(transaction_id, str) else None,
             log_label="ko_fi",
+            resource_receipt_ref=resource_receipt_ref,
         )
 
+    transaction_id = payload.get("kofi_transaction_id")
+    resource_receipt_ref = _resource_receipt_for_event(
+        request,
+        rail="ko-fi",
+        event=event,
+        external_id=transaction_id if isinstance(transaction_id, str) else None,
+    )
     publish_result = KoFiPublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="ko_fi")
+    return dispatch_publish_result(
+        publish_result,
+        event,
+        log_label="ko_fi",
+        resource_receipt_ref=resource_receipt_ref,
+    )
 
 
 @router.post("/patreon")
@@ -474,15 +611,32 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
         )
 
     if event is None:
+        resource_receipt_ref = _resource_receipt_for_duplicate(
+            request,
+            rail="patreon",
+            external_id=webhook_id,
+        )
         return render_null_event_response(
             payload,
             duplicate_id_key="webhook_id",
             duplicate_id_value=webhook_id,
             log_label="patreon",
+            resource_receipt_ref=resource_receipt_ref,
         )
 
+    resource_receipt_ref = _resource_receipt_for_event(
+        request,
+        rail="patreon",
+        event=event,
+        external_id=webhook_id,
+    )
     publish_result = PatreonPublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="patreon")
+    return dispatch_publish_result(
+        publish_result,
+        event,
+        log_label="patreon",
+        resource_receipt_ref=resource_receipt_ref,
+    )
 
 
 @router.post("/buy-me-a-coffee")
@@ -507,15 +661,34 @@ async def receive_buy_me_a_coffee_webhook(request: Request) -> JSONResponse:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
 
     if event is None:
+        event_id = payload.get("event_id")
+        resource_receipt_ref = _resource_receipt_for_duplicate(
+            request,
+            rail="buy-me-a-coffee",
+            external_id=event_id if isinstance(event_id, str) else None,
+        )
         return render_null_event_response(
             payload,
             duplicate_id_key="event_id",
-            duplicate_id_value=payload.get("event_id"),
+            duplicate_id_value=event_id if isinstance(event_id, str) else None,
             log_label="buy_me_a_coffee",
+            resource_receipt_ref=resource_receipt_ref,
         )
 
+    event_id = payload.get("event_id")
+    resource_receipt_ref = _resource_receipt_for_event(
+        request,
+        rail="buy-me-a-coffee",
+        event=event,
+        external_id=event_id if isinstance(event_id, str) else None,
+    )
     publish_result = BuyMeACoffeePublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="buy_me_a_coffee")
+    return dispatch_publish_result(
+        publish_result,
+        event,
+        log_label="buy_me_a_coffee",
+        resource_receipt_ref=resource_receipt_ref,
+    )
 
 
 @router.post("/mercury")
@@ -545,19 +718,33 @@ async def receive_mercury_webhook(request: Request) -> JSONResponse:
 
     if event is None:
         txn_id = (payload.get("data") or {}).get("id")
+        resource_receipt_ref = _resource_receipt_for_duplicate(
+            request,
+            rail="mercury",
+            external_id=txn_id if isinstance(txn_id, str) else None,
+        )
         return render_null_event_response(
             payload,
             duplicate_id_key="transaction_id",
             duplicate_id_value=txn_id if isinstance(txn_id, str) else None,
             log_label="mercury",
+            resource_receipt_ref=resource_receipt_ref,
         )
 
+    txn_id = (payload.get("data") or {}).get("id")
+    resource_receipt_ref = _resource_receipt_for_event(
+        request,
+        rail="mercury",
+        event=event,
+        external_id=txn_id if isinstance(txn_id, str) else None,
+    )
     publish_result = MercuryPublisher().publish_event(event)
     return dispatch_publish_result(
         publish_result,
         event,
         log_label="mercury",
         extra_received_fields={"direction": event.direction.value},
+        resource_receipt_ref=resource_receipt_ref,
     )
 
 
@@ -586,19 +773,33 @@ async def receive_modern_treasury_webhook(request: Request) -> JSONResponse:
 
     if event is None:
         payment_id = (payload.get("data") or {}).get("id")
+        resource_receipt_ref = _resource_receipt_for_duplicate(
+            request,
+            rail="modern-treasury",
+            external_id=payment_id if isinstance(payment_id, str) else None,
+        )
         return render_null_event_response(
             payload,
             duplicate_id_key="payment_id",
             duplicate_id_value=payment_id if isinstance(payment_id, str) else None,
             log_label="modern_treasury",
+            resource_receipt_ref=resource_receipt_ref,
         )
 
+    payment_id = (payload.get("data") or {}).get("id")
+    resource_receipt_ref = _resource_receipt_for_event(
+        request,
+        rail="modern-treasury",
+        event=event,
+        external_id=payment_id if isinstance(payment_id, str) else None,
+    )
     publish_result = ModernTreasuryPublisher().publish_event(event)
     return dispatch_publish_result(
         publish_result,
         event,
         log_label="modern_treasury",
         extra_received_fields={"payment_method": event.payment_method.value},
+        resource_receipt_ref=resource_receipt_ref,
     )
 
 
@@ -627,15 +828,33 @@ async def receive_treasury_prime_webhook(request: Request) -> JSONResponse:
 
     if event is None:
         ach_id = (payload.get("data") or {}).get("id")
+        resource_receipt_ref = _resource_receipt_for_duplicate(
+            request,
+            rail="treasury-prime",
+            external_id=ach_id if isinstance(ach_id, str) else None,
+        )
         return render_null_event_response(
             payload,
             duplicate_id_key="ach_id",
             duplicate_id_value=ach_id if isinstance(ach_id, str) else None,
             log_label="treasury_prime",
+            resource_receipt_ref=resource_receipt_ref,
         )
 
+    ach_id = (payload.get("data") or {}).get("id")
+    resource_receipt_ref = _resource_receipt_for_event(
+        request,
+        rail="treasury-prime",
+        event=event,
+        external_id=ach_id if isinstance(ach_id, str) else None,
+    )
     publish_result = TreasuryPrimePublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="treasury_prime")
+    return dispatch_publish_result(
+        publish_result,
+        event,
+        log_label="treasury_prime",
+        resource_receipt_ref=resource_receipt_ref,
+    )
 
 
 __all__ = [

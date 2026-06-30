@@ -22,6 +22,8 @@ from typing import Any, Protocol
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+import agents.payment_processors.resource_receipts as resource_receipts
+
 log = logging.getLogger(__name__)
 
 
@@ -84,6 +86,7 @@ def render_null_event_response(
     duplicate_id_key: str,
     duplicate_id_value: str | None,
     log_label: str,
+    resource_receipt_ref: str | None = None,
 ) -> JSONResponse:
     """Render the receiver's ``None`` return as a 200 OK JSONResponse.
 
@@ -96,7 +99,10 @@ def render_null_event_response(
     """
     if payload and isinstance(duplicate_id_value, str) and duplicate_id_value:
         log.info("%s webhook duplicate: %s", log_label, duplicate_id_value)
-        return JSONResponse({"status": "duplicate", duplicate_id_key: duplicate_id_value})
+        body: dict[str, Any] = {"status": "duplicate", duplicate_id_key: duplicate_id_value}
+        if resource_receipt_ref:
+            body["resource_receipt_ref"] = resource_receipt_ref
+        return JSONResponse(body)
     return JSONResponse({"status": "ping_ok"})
 
 
@@ -106,6 +112,7 @@ def dispatch_publish_result(
     *,
     log_label: str,
     extra_received_fields: dict[str, Any] | None = None,
+    resource_receipt_ref: str | None = None,
 ) -> JSONResponse:
     """Translate a PublisherResult into the rail's HTTP response.
 
@@ -136,9 +143,44 @@ def dispatch_publish_result(
         "publish_detail": publish_result.detail,
         "raw_payload_sha256": event.raw_payload_sha256,
     }
+    if resource_receipt_ref:
+        body["resource_receipt_ref"] = resource_receipt_ref
     if extra_received_fields:
         body.update(extra_received_fields)
     return JSONResponse(body)
+
+
+def require_ingress_resource_receipt(
+    *,
+    rail: str,
+    route_path: str,
+    external_id: str | None,
+    event_kind: str | None,
+    raw_payload_sha256: str | None,
+    downstream_action: str,
+) -> str:
+    """Record the governed money-rail resource receipt before downstream work.
+
+    Missing receipt evidence fails closed with 500 so publishers and
+    awareness/action consumers cannot proceed without route/resource
+    provenance. The receipt itself carries ``spend_authority_granted=false``.
+    """
+
+    receipt_ref = resource_receipts.record_ingress_resource_receipt(
+        rail=rail,
+        route_path=route_path,
+        external_id=external_id,
+        event_kind=event_kind,
+        raw_payload_sha256=raw_payload_sha256,
+        downstream_action=downstream_action,
+    )
+    if receipt_ref is None:
+        log.error("%s webhook missing money-rail resource receipt", rail)
+        raise HTTPException(
+            status_code=500,
+            detail="money-rail resource receipt missing; downstream action refused",
+        )
+    return receipt_ref
 
 
 @contextlib.contextmanager
@@ -166,5 +208,6 @@ __all__ = [
     "dispatch_publish_result",
     "parse_webhook_request_body",
     "render_null_event_response",
+    "require_ingress_resource_receipt",
     "wrap_rail_error_to_400",
 ]

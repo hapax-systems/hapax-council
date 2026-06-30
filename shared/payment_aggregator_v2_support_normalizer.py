@@ -27,6 +27,8 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+MONEY_RAIL_RESOURCE_RECEIPT_REF_PREFIX = "money-rail-resource-receipt:"
+
 
 class Rail(StrEnum):
     """Approved receive-only support rails."""
@@ -91,6 +93,13 @@ class NormalizedSupportReceipt(_NormalizerModel):
     timestamp: datetime
     event_type: EventType
     visibility: Visibility
+    resource_receipt_ref: str | None = Field(
+        default=None,
+        pattern=(
+            rf"^{MONEY_RAIL_RESOURCE_RECEIPT_REF_PREFIX}"
+            r"[a-z0-9][a-z0-9_-]*:[a-z0-9][a-z0-9_-]*$"
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_rail_currency_match(self) -> Self:
@@ -152,6 +161,7 @@ class NormalizerVerdict(StrEnum):
     EMITTED = "emitted"
     REFUSED_NOT_APPROVED = "refused_not_approved"
     REFUSED_NOT_SAFE_TO_MONETIZE = "refused_not_safe_to_monetize"
+    REFUSED_MISSING_RESOURCE_RECEIPT = "refused_missing_resource_receipt"
     REFUSED_PRIVATE_ONLY = "refused_private_only"
     REFUSED_NO_RECEIPTS = "refused_no_receipts"
 
@@ -160,12 +170,15 @@ class PublicEmitDecision(_NormalizerModel):
     rail: Rail
     verdict: NormalizerVerdict
     emission: PublicAggregateEmission | None = None
+    resource_receipt_refs: tuple[str, ...] = Field(default=())
     reason: str = Field(min_length=1)
 
     @model_validator(mode="after")
     def _exactly_emit_or_refuse(self) -> Self:
         if self.verdict is NormalizerVerdict.EMITTED and self.emission is None:
             raise ValueError("EMITTED verdict requires an emission")
+        if self.verdict is NormalizerVerdict.EMITTED and not self.resource_receipt_refs:
+            raise ValueError("EMITTED verdict requires resource_receipt_refs")
         if self.verdict is not NormalizerVerdict.EMITTED and self.emission is not None:
             raise ValueError(f"verdict {self.verdict.value!r} cannot carry an emission")
         return self
@@ -229,6 +242,19 @@ def evaluate_public_emit(
             ),
         )
 
+    missing_resource_receipts = tuple(
+        r.receipt_id for r in public_receipts if not r.resource_receipt_ref
+    )
+    if missing_resource_receipts:
+        return PublicEmitDecision(
+            rail=rail,
+            verdict=NormalizerVerdict.REFUSED_MISSING_RESOURCE_RECEIPT,
+            reason=(
+                f"rail {rail.value!r} has receipts without governed resource receipt refs: "
+                f"{', '.join(missing_resource_receipts)}"
+            ),
+        )
+
     expected_currency = _RAIL_DEFAULT_CURRENCY[rail]
     total = sum(r.amount for r in public_receipts)
     emission = PublicAggregateEmission(
@@ -244,6 +270,9 @@ def evaluate_public_emit(
         rail=rail,
         verdict=NormalizerVerdict.EMITTED,
         emission=emission,
+        resource_receipt_refs=tuple(
+            dict.fromkeys(r.resource_receipt_ref for r in public_receipts if r.resource_receipt_ref)
+        ),
         reason=(
             f"emitted aggregate for rail {rail.value!r}: "
             f"{len(public_receipts)} receipts totaling {total} {expected_currency.value}"

@@ -33,6 +33,7 @@ def _receipt(
     receipt_id_suffix: str = "001",
     amount: float = 5.0,
     currency: CurrencyUnit | None = None,
+    resource_receipt_ref: str | None = "money-rail-resource-receipt:liberapay:mrr-test",
 ) -> NormalizedSupportReceipt:
     if currency is None:
         currency = {
@@ -50,6 +51,7 @@ def _receipt(
         timestamp=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
         event_type=EventType.SUPPORT_RECEIVED,
         visibility=visibility,
+        resource_receipt_ref=resource_receipt_ref,
     )
 
 
@@ -80,6 +82,7 @@ def test_normalized_receipt_required_fields_match_acceptance():
         "timestamp",
         "event_type",
         "visibility",
+        "resource_receipt_ref",
     }
     assert expected.issubset(NormalizedSupportReceipt.model_fields.keys())
 
@@ -94,6 +97,7 @@ def test_normalized_receipt_refuses_payer_identity_fields():
         "timestamp": datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
         "event_type": EventType.SUPPORT_RECEIVED,
         "visibility": Visibility.AGGREGATE_PUBLIC,
+        "resource_receipt_ref": "money-rail-resource-receipt:liberapay:mrr-test",
     }
     for forbidden in (
         "name",
@@ -158,6 +162,7 @@ def test_public_emit_succeeds_for_approved_safe_window():
     assert decision.emission is not None
     assert decision.emission.receipt_count == 2
     assert decision.emission.total_amount == 10.0
+    assert decision.resource_receipt_refs
 
 
 def test_public_emit_refused_when_surface_not_approved():
@@ -201,6 +206,22 @@ def test_public_emit_refused_when_all_receipts_private_only():
         captured_at=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
     )
     assert decision.verdict is NormalizerVerdict.REFUSED_PRIVATE_ONLY
+
+
+def test_public_emit_refused_when_resource_receipt_missing():
+    rail = Rail.LIBERAPAY
+    decision = evaluate_public_emit(
+        rail,
+        (_receipt(rail=rail, resource_receipt_ref=None),),
+        surface_approval=_approval(rail),
+        readiness=_readiness(safe=True),
+        window_start=datetime(2026, 5, 2, 11, 0, tzinfo=UTC),
+        window_end=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+        captured_at=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+    )
+
+    assert decision.verdict is NormalizerVerdict.REFUSED_MISSING_RESOURCE_RECEIPT
+    assert decision.emission is None
 
 
 def test_public_emit_refused_when_no_receipts():

@@ -26,7 +26,11 @@ NOW = datetime(2026, 5, 2, 11, 50, tzinfo=UTC)
 ALL_DIMS: frozenset[GateDimension] = frozenset(REQUIRED_GATE_DIMENSIONS)
 
 
-def _snapshot(satisfied: frozenset[GateDimension]) -> MonetizationReadinessSnapshot:
+def _snapshot(
+    satisfied: frozenset[GateDimension],
+    *,
+    resource_receipt: bool = True,
+) -> MonetizationReadinessSnapshot:
     return MonetizationReadinessSnapshot(
         captured_at=NOW,
         snapshot_source="test",
@@ -34,7 +38,7 @@ def _snapshot(satisfied: frozenset[GateDimension]) -> MonetizationReadinessSnaps
             dim: GateDimensionEvidence(
                 dimension=dim,
                 satisfied=dim in satisfied,
-                evidence_refs=(f"evidence:{dim}",) if dim in satisfied else (),
+                evidence_refs=_evidence_refs(dim, satisfied, resource_receipt=resource_receipt),
                 operator_visible_reason=(
                     f"{dim} satisfied" if dim in satisfied else f"{dim} missing"
                 ),
@@ -44,8 +48,28 @@ def _snapshot(satisfied: frozenset[GateDimension]) -> MonetizationReadinessSnaps
     )
 
 
-def _ledger(satisfied: frozenset[GateDimension]) -> MonetizationReadinessLedger:
-    return evaluate_default_monetization_readiness(_snapshot(satisfied))
+def _evidence_refs(
+    dim: GateDimension,
+    satisfied: frozenset[GateDimension],
+    *,
+    resource_receipt: bool,
+) -> tuple[str, ...]:
+    if dim not in satisfied:
+        return ()
+    refs = [f"evidence:{dim}"]
+    if dim == "monetization" and resource_receipt:
+        refs.append("money-rail-resource-receipt:liberapay:mrr-test")
+    return tuple(refs)
+
+
+def _ledger(
+    satisfied: frozenset[GateDimension],
+    *,
+    resource_receipt: bool = True,
+) -> MonetizationReadinessLedger:
+    return evaluate_default_monetization_readiness(
+        _snapshot(satisfied, resource_receipt=resource_receipt)
+    )
 
 
 def _registry() -> SupportSurfaceRegistry:
@@ -130,6 +154,7 @@ def test_full_evidence_and_refs_returns_public_safe_machine_state() -> None:
     assert decision.allowed_public_copy
     assert "No access" in " ".join(decision.allowed_public_copy)
     assert set(PROHIBITED_SUPPORT_COPY_SHAPES) <= set(decision.prohibited_copy_shapes)
+    assert decision.resource_receipt_refs == ("money-rail-resource-receipt:liberapay:mrr-test",)
 
     for consumer in (
         "public_offer_page",
@@ -145,6 +170,18 @@ def test_full_evidence_and_refs_returns_public_safe_machine_state() -> None:
         assert state.issue_invitation_allowed is False
         assert state.licensing_negotiation_allowed is False
         assert state.customer_service_expectation_allowed is False
+
+
+def test_missing_resource_receipt_holds_even_with_public_truth_and_monetization() -> None:
+    decision = evaluate_support_copy_readiness(
+        _registry(),
+        _ledger(ALL_DIMS, resource_receipt=False),
+        readiness_refs=_refs(),
+    )
+
+    assert decision.state == "monetization-held"
+    assert decision.public_copy_allowed is False
+    assert "money_rail_resource_receipt_missing" in decision.blockers
 
 
 def test_readme_and_package_cannot_invite_support_before_public_safe() -> None:

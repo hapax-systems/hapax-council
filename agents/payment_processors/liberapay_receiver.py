@@ -40,6 +40,10 @@ from prometheus_client import Counter, Gauge
 from agents.operator_awareness.state import PaymentEvent
 from agents.payment_processors.event_log import append_event
 from agents.payment_processors.refusal_annex import emit_rail_refusal
+from agents.payment_processors.resource_receipts import (
+    record_external_api_poll_receipt,
+    record_payment_event_resource_receipt,
+)
 from agents.payment_processors.secrets import load_liberapay_credentials
 from shared.chronicle import ChronicleEvent, current_otel_ids, record
 
@@ -128,6 +132,16 @@ class LiberapayReceiver:
             return 0
         username, password = self._credentials
         url = f"/{username}/public.json"
+        if (
+            record_external_api_poll_receipt(
+                rail="liberapay",
+                endpoint=f"GET {url}",
+                downstream_action="httpx.Client.get",
+            )
+            is None
+        ):
+            liberapay_poll_errors_total.labels(kind="resource_receipt").inc()
+            return 0
         client = self._client()
         try:
             response = client.get(url, auth=(username, password), timeout=15.0)
@@ -176,6 +190,16 @@ class LiberapayReceiver:
             event = _liberapay_payin_to_event(raw, payin_id)
             if event is None:
                 continue
+            receipt_ref = record_payment_event_resource_receipt(
+                rail="liberapay",
+                external_id=payin_id,
+                event_kind="completed_payin",
+                downstream_action="payment_event_log.append_event",
+            )
+            if receipt_ref is None:
+                liberapay_poll_errors_total.labels(kind="resource_receipt").inc()
+                continue
+            event = event.model_copy(update={"resource_receipt_ref": receipt_ref})
             append_event(event)
             _record_chronicle(event)
             liberapay_receipts_total.inc()
