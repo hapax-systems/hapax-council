@@ -594,6 +594,19 @@ def test_operator_coupled_glob_matching_segment_semantics() -> None:
     )
 
 
+def test_attach_parent_route_envelope_env_clears_stale_receipt_env() -> None:
+    module = _dispatcher_module()
+    env = {
+        module.PARENT_ROUTE_ENVELOPE_ENV: "/tmp/stale-parent.json",
+        module.REQUIRE_PARENT_ROUTE_ENVELOPE_ENV: "1",
+    }
+
+    module.attach_parent_route_envelope_env(env, None)
+
+    assert module.PARENT_ROUTE_ENVELOPE_ENV not in env
+    assert module.REQUIRE_PARENT_ROUTE_ENVELOPE_ENV not in env
+
+
 def _run(
     tmp_path: Path,
     *args: str,
@@ -610,6 +623,7 @@ def _run(
     env["HAPAX_COORD_JSONL_MIRROR"] = str(tmp_path / "coord" / "ledger.jsonl")
     env["HAPAX_COORD_SPOOL_DIR"] = str(tmp_path / "coord" / "spool")
     env.pop("HAPAX_DISPATCH_HOST", None)
+    env.pop("HAPAX_DISPATCH_HOST_FALLBACK", None)
     env.pop("HAPAX_DEFAULT_DISPATCH_HOST", None)
     if durable_mq:
         mq_db, message_id = _maybe_write_durable_mq_binding(tmp_path, args)
@@ -1585,6 +1599,61 @@ printf '%s\\n' "$@" > {launcher_args}
         "budget_or_resource_receipt_stale",
         "child_receipt_missing",
     ]
+
+
+def test_launch_blocks_when_parent_route_envelope_cannot_be_written(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    (ledger / "parent-route-envelopes").write_text("not a directory\n", encoding="utf-8")
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 10
+    assert "parent route/resource envelope required" in result.stderr
+    assert "next action:" in result.stderr
+    assert not launcher_args.exists()
+    line = (ledger / "methodology-dispatch.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    receipt = json.loads(line)
+    assert receipt["ok"] is False
+    assert receipt["launched"] is False
+    assert "parent route/resource envelope required" in receipt["reason"]
+    assert "parent_route_envelope_path" not in receipt
 
 
 def test_codex_p0_incident_drain_lane_allows_local_fallback(tmp_path: Path) -> None:

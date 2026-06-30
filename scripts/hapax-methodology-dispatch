@@ -1342,6 +1342,9 @@ def attach_parent_route_envelope_env(
     if parent_route_envelope_path is not None:
         env[PARENT_ROUTE_ENVELOPE_ENV] = str(parent_route_envelope_path)
         env[REQUIRE_PARENT_ROUTE_ENVELOPE_ENV] = "1"
+    else:
+        env.pop(PARENT_ROUTE_ENVELOPE_ENV, None)
+        env.pop(REQUIRE_PARENT_ROUTE_ENVELOPE_ENV, None)
 
 
 def _write_delayed_receipt(args: argparse.Namespace, decision: AdmissionDecision) -> None:
@@ -2332,8 +2335,12 @@ def main(argv: list[str] | None = None) -> int:
                 parent_route_envelope,
                 ledger_dir=orchestration_ledger_dir(),
             )
-        except SubagentRouteReceiptError as exc:
-            reason = f"parent route/resource envelope required: {exc}"
+        except (SubagentRouteReceiptError, OSError) as exc:
+            reason = (
+                "parent route/resource envelope required: "
+                f"{type(exc).__name__}: {exc}; next action: verify AuthorityCase, "
+                "route/resource receipts, and orchestration ledger write access before relaunch"
+            )
             blocked = Validation(
                 False,
                 reason,

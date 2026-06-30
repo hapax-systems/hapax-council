@@ -10,6 +10,18 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
+RECEIPT_ENV_VARS = (
+    "HAPAX_PARENT_ROUTE_ENVELOPE",
+    "HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE",
+    "HAPAX_CHILD_SPAWN_ENVELOPE",
+    "HAPAX_CHILD_RECEIPT_REF",
+    "HAPAX_CHILD_RECEIPT_ID",
+)
+
+
+def _scrub_receipt_env(env: dict[str, str]) -> None:
+    for var in RECEIPT_ENV_VARS:
+        env.pop(var, None)
 
 
 def _write_parent_envelope(path: Path, task_id: str = "task-x") -> Path:
@@ -182,6 +194,7 @@ def test_codex_headless_refuses_required_parent_route_without_envelope(tmp_path:
     _write_executable(bin_dir / "codex", f": > {codex_marker}\nexit 0\n")
 
     env = os.environ.copy()
+    _scrub_receipt_env(env)
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
@@ -223,6 +236,7 @@ exit 0
     )
 
     env = os.environ.copy()
+    _scrub_receipt_env(env)
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
@@ -269,6 +283,7 @@ exit 0
     )
 
     env = os.environ.copy()
+    _scrub_receipt_env(env)
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)

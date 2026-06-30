@@ -214,6 +214,48 @@ exit 0
     assert 'export HAPAX_CHILD_RECEIPT_ID="child-receipt-' in run_text
 
 
+def test_launcher_refuses_required_parent_route_without_envelope(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    env["HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE"] = "1"
+    bin_dir = Path(env["PATH"].split(":", 1)[0])
+    agy_marker = tmp_path / "agy-called"
+    tmux_log = tmp_path / "tmux.log"
+    _write_executable(bin_dir / "agy", f"#!/usr/bin/env bash\n: > {agy_marker}\n")
+    _write_executable(
+        bin_dir / "tmux",
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {tmux_log}
+exit 0
+""",
+    )
+    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    workdir.mkdir(parents=True)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "antigrav",
+            "--task",
+            "test-task",
+            "--cd",
+            str(workdir),
+            "--no-claim",
+            "--terminal",
+            "tmux",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 18
+    assert "missing_parent_route_resource_receipt" in result.stderr
+    assert not agy_marker.exists()
+    assert not tmux_log.exists()
+
+
 def test_launcher_wires_agy_pretooluse_gate(tmp_path: Path) -> None:
     # agy loads Claude-compatible hooks from $HOME/.gemini/antigravity-cli/hooks.json
     # (verified via strace). The launcher must deploy that file so an agy

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from shared.dispatcher_policy import DispatchAction, DispatchRequest, RouteDecision
 from shared.subagent_route_receipts import (
     PARENT_ROUTE_ENVELOPE_ENV,
     REQUIRE_PARENT_ROUTE_ENVELOPE_ENV,
@@ -19,6 +22,7 @@ from shared.subagent_route_receipts import (
     SubagentRouteReceiptError,
     admit_and_record_child_spawn,
     admit_child_spawn,
+    build_parent_route_resource_envelope,
     child_request_for_parent,
     load_parent_route_resource_envelope,
     record_child_receipt,
@@ -73,6 +77,44 @@ def _child(shape: SpawnCapabilityShape = SpawnCapabilityShape.SUBAGENT) -> Child
         shape=shape,
         route_id="codex.headless.full",
         capability_role="implementer",
+    )
+
+
+def _dispatch_request(*, authority_case: str | None) -> DispatchRequest:
+    return DispatchRequest(
+        task_id="cc-task-test",
+        lane="cx-cap-subagent",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        route_id="codex.headless.full",
+        authority_case=authority_case,
+        route_metadata_status="complete",
+        resource_state_refs=("capability-resource:test",),
+    )
+
+
+def _route_decision() -> RouteDecision:
+    return RouteDecision(
+        decision_id="decision-test",
+        created_at=NOW,
+        task_id="cc-task-test",
+        lane="cx-cap-subagent",
+        route_id="codex.headless.full",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        action=DispatchAction.LAUNCH,
+        policy_outcome="launch",
+        launch_allowed=True,
+        prompt_allowed=True,
+        route_policy_green=True,
+        quality_floor_satisfied=True,
+        authority_allowed=True,
+        resource_freshness_green=True,
+        reason_codes=("policy_launch",),
+        message="policy_launch",
+        resource_state_refs=("capability-resource:test",),
     )
 
 
@@ -197,6 +239,44 @@ def test_required_parent_route_envelope_env_fails_closed() -> None:
     ) == Path("/tmp/parent.json")
     with pytest.raises(SubagentRouteReceiptError, match="missing_parent_route_resource_receipt"):
         require_parent_envelope_path_from_env({REQUIRE_PARENT_ROUTE_ENVELOPE_ENV: "1"})
+
+
+def test_child_spawn_receipt_cli_requires_parent_envelope_by_default() -> None:
+    env = os.environ.copy()
+    for var in (
+        PARENT_ROUTE_ENVELOPE_ENV,
+        REQUIRE_PARENT_ROUTE_ENVELOPE_ENV,
+        "HAPAX_CHILD_SPAWN_ENVELOPE",
+        "HAPAX_CHILD_RECEIPT_REF",
+        "HAPAX_CHILD_RECEIPT_ID",
+    ):
+        env.pop(var, None)
+
+    result = subprocess.run(
+        [
+            str(REPO_ROOT / "scripts" / "hapax-child-spawn-receipt"),
+            "--task",
+            "cc-task-test",
+            "--child-id",
+            "codex-headless:cx-cap-subagent:test-session",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 18
+    assert "missing_parent_route_resource_receipt" in result.stderr
+
+
+def test_parent_route_envelope_requires_authority_case() -> None:
+    with pytest.raises(SubagentRouteReceiptError, match="missing_parent_authority_case"):
+        build_parent_route_resource_envelope(
+            request=_dispatch_request(authority_case=None),
+            decision=_route_decision(),
+            route_decision_receipt_path=Path("/tmp/route-decision.jsonl"),
+        )
 
 
 def test_spawn_surface_inventory_covers_auto_fire_and_fugu_style_orchestration() -> None:

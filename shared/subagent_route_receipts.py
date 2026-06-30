@@ -229,6 +229,9 @@ def build_parent_route_resource_envelope(
     """Project a launch-admitted dispatch decision into a child-spawn parent envelope."""
 
     issued = _ensure_utc(issued_at or decision.created_at)
+    authority_case = (request.authority_case or "").strip()
+    if not authority_case:
+        raise SubagentRouteReceiptError("missing_parent_authority_case")
     route_receipt_ref = f"route-decision-receipt:{route_decision_receipt_path}"
     quota_refs = tuple(decision.quota_evidence_refs)
     resource_refs = tuple(_dedupe((*decision.resource_state_refs, *quota_refs)))
@@ -273,7 +276,7 @@ def build_parent_route_resource_envelope(
         mode=request.mode,
         profile=request.profile,
         route_id=decision.route_id,
-        authority_case=request.authority_case or "unknown",
+        authority_case=authority_case,
         parent_spec=parent_spec,
         route_decision_id=decision.decision_id,
         route_decision_receipt_ref=route_receipt_ref,

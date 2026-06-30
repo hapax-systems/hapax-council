@@ -41,7 +41,9 @@ def _shape(value: str) -> SpawnCapabilityShape:
         return SpawnCapabilityShape(value)
     except ValueError as exc:
         choices = ", ".join(item.value for item in SpawnCapabilityShape)
-        raise argparse.ArgumentTypeError(f"unsupported shape '{value}' (choices: {choices})") from exc
+        raise argparse.ArgumentTypeError(
+            f"unsupported shape '{value}' (choices: {choices})"
+        ) from exc
 
 
 def _export(name: str, value: str) -> str:
@@ -50,7 +52,9 @@ def _export(name: str, value: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--parent", help=f"Parent envelope path; defaults to ${PARENT_ROUTE_ENVELOPE_ENV}")
+    parser.add_argument(
+        "--parent", help=f"Parent envelope path; defaults to ${PARENT_ROUTE_ENVELOPE_ENV}"
+    )
     parser.add_argument("--ledger-dir", help="Orchestration ledger dir")
     parser.add_argument("--child-id", required=True)
     parser.add_argument("--task", help="Child task id; defaults to parent task")
@@ -67,9 +71,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        parent_path = Path(args.parent).expanduser() if args.parent else require_parent_envelope_path_from_env()
+        parent_path = (
+            Path(args.parent).expanduser()
+            if args.parent
+            else require_parent_envelope_path_from_env()
+        )
         if parent_path is None:
-            return 0
+            raise SubagentRouteReceiptError("missing_parent_route_resource_receipt")
         parent = load_parent_route_resource_envelope(parent_path)
         child = child_request_for_parent(
             parent,
