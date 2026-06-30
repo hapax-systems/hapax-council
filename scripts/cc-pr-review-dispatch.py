@@ -668,9 +668,7 @@ def _review_seat_task_fields(
         _route_metadata_value(frontmatter, "verification_surface") or {}
     )
     fields["route_constraints"] = _route_metadata_value(frontmatter, "route_constraints") or {}
-    fields["review_requirement"] = (
-        _route_metadata_value(frontmatter, "review_requirement") or REVIEW_SEAT_REVIEW_REQUIREMENT
-    )
+    fields["review_requirement"] = REVIEW_SEAT_REVIEW_REQUIREMENT
     return fields
 
 

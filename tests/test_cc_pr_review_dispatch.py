@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from shared.dispatcher_policy import DispatchPolicySources
+from shared.frontmatter import parse_frontmatter
 from shared.platform_capability_registry import PlatformCapabilityRegistry
 from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES, QuotaSpendLedger
 
@@ -411,6 +412,117 @@ def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingRe
             dispatch.FAMILY_OUTAGE_STATE = old_dispatch_outage_state
             dispatch.review_team.FAMILY_OUTAGE_STATE = old_review_team_outage_state
     return result, gh, reviewers, note
+
+
+def _task_frontmatter(note: Path) -> dict[str, Any]:
+    frontmatter, _ = parse_frontmatter(note)
+    assert frontmatter
+    return frontmatter
+
+
+def _review_seat_family_cfg(
+    *, route_id: str | None = "glmcp.review.direct", route_waiver: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    cfg: dict[str, Any] = {
+        "family": "glm",
+        "reviewer_command": ["scripts/hapax-glmcp-reviewer"],
+        "timeout_seconds": 30,
+    }
+    if route_id is not None:
+        cfg["route_id"] = route_id
+    if route_waiver is not None:
+        cfg["route_waiver"] = route_waiver
+    return cfg
+
+
+def _admit_glm_review_seat(
+    tmp_path: Path,
+    frontmatter: dict[str, Any],
+    *,
+    family_cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return dispatch._admit_review_seat_for_task(
+        seat=dispatch.review_team.Seat(id="glm-1", family="glm"),
+        family_cfg=family_cfg or _review_seat_family_cfg(),
+        task_id=str(frontmatter["task_id"]),
+        note_path=tmp_path / "task-a.md",
+        frontmatter=frontmatter,
+        policy_sources=_admitted_policy_sources(),
+        route_decision_ledger_dir=tmp_path / "route-ledger",
+        now=datetime.fromisoformat("2026-06-11T21:00:00+00:00"),
+    )
+
+
+class TestReviewSeatAdmissionContract:
+    def test_review_seat_uses_fixed_support_review_requirement(self, tmp_path: Path) -> None:
+        note = _write_task(_make_vault(tmp_path))
+        frontmatter = _task_frontmatter(note)
+        frontmatter["review_requirement"] = {"independent_review_required": False}
+
+        fields = dispatch._review_seat_task_fields(
+            frontmatter,
+            note_path=note,
+            task_id=str(frontmatter["task_id"]),
+        )
+
+        assert fields["review_requirement"] == dispatch.REVIEW_SEAT_REVIEW_REQUIREMENT
+        assert fields["mutation_surface"] == "none"
+        assert fields["quality_floor"] == "frontier_review_required"
+
+    def test_missing_review_family_route_id_blocks_admission(self, tmp_path: Path) -> None:
+        note = _write_task(_make_vault(tmp_path))
+        admission = _admit_glm_review_seat(
+            tmp_path,
+            _task_frontmatter(note),
+            family_cfg=_review_seat_family_cfg(route_id=None),
+        )
+
+        assert admission["admitted"] is False
+        assert admission["route_id"] is None
+        assert admission["blocked_reasons"] == ["review_family_route_id_missing"]
+
+    def test_waiver_only_review_family_blocks_admission(self, tmp_path: Path) -> None:
+        note = _write_task(_make_vault(tmp_path))
+        admission = _admit_glm_review_seat(
+            tmp_path,
+            _task_frontmatter(note),
+            family_cfg=_review_seat_family_cfg(
+                route_id=None,
+                route_waiver={"waiver_id": "legacy-review-family", "expires": "2026-06-30"},
+            ),
+        )
+
+        assert admission["admitted"] is False
+        assert admission["route_id"] is None
+        assert admission["blocked_reasons"] == [
+            "review_family_route_waiver_not_sufficient_for_provider_use"
+        ]
+
+    def test_malformed_review_family_route_id_blocks_admission(self, tmp_path: Path) -> None:
+        note = _write_task(_make_vault(tmp_path))
+        admission = _admit_glm_review_seat(
+            tmp_path,
+            _task_frontmatter(note),
+            family_cfg=_review_seat_family_cfg(route_id="glmcp.review"),
+        )
+
+        assert admission["admitted"] is False
+        assert admission["route_id"] == "glmcp.review"
+        assert admission["blocked_reasons"] == ["review_family_route_id_malformed"]
+
+    def test_missing_task_authority_metadata_blocks_admission(self, tmp_path: Path) -> None:
+        note = _write_task(_make_vault(tmp_path))
+        frontmatter = _task_frontmatter(note)
+        del frontmatter["authority_case"]
+        del frontmatter["verification_surface"]
+
+        admission = _admit_glm_review_seat(tmp_path, frontmatter)
+
+        assert admission["admitted"] is False
+        assert admission["route_id"] == "glmcp.review.direct"
+        assert admission["blocked_reasons"] == [
+            "review_seat_task_metadata_missing:authority_case,verification_surface"
+        ]
 
 
 class TestDryRun:
