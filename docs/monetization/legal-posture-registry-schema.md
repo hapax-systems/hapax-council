@@ -178,10 +178,26 @@ registry = Path("docs/monetization/legal-posture-registry.yaml")
 schema = Path("docs/monetization/legal-posture-registry-schema.md").read_text()
 data = yaml.safe_load(registry.read_text())
 assert data["schema_version"] == "1.0.0"
-assert all(row["g2_verdict"] == "DARK" for row in data["rows"])
+rows = data["rows"]
+keys = [(row["surface"], row["venue"], row["instrument"]) for row in rows]
+assert len(keys) == len(set(keys)), "duplicate registry tuple"
+assert all(row["g2_verdict"] == "DARK" for row in rows)
+assert all(
+    row["operator_signed"] is True or row["g2_verdict"] == "DARK"
+    for row in rows
+), "unsigned non-DARK row"
+assert len([
+    row for row in rows
+    if row.get("source_task") == "20260628-registry-phase5-white-label-subtree"
+]) == 6
+assert len([
+    row for row in rows
+    if row.get("source_task") == "20260628-registry-phase6-data-exhaust-subtree"
+]) == 9
 assert "(surface, *, instrument)" in schema
 assert "If R is stale AND R.g2_verdict != DARK" in schema
 assert "If no row exists → FAIL" in schema
+print(f"legal-posture registry recheck OK: {len(rows)} rows")
 PY
 ```
 

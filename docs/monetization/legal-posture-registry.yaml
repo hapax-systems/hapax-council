@@ -360,6 +360,191 @@ rows:
       - white_label
     source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
 
+  # ── White Label B2B — Phase 5 subtree rows ──────────────────────────
+  - surface: white_label
+    venue: anthropic
+    instrument: anthropic_competing_product_or_resale
+    g2_verdict: DARK
+    citation: >
+      Anthropic Commercial Terms of Service, effective June 17, 2025,
+      Section D.4 Use Restrictions:
+      https://www.anthropic.com/legal/commercial-terms. Customer may
+      not access the Services to build a competing product or service,
+      train competing AI models, or resell the Services except as
+      expressly approved by Anthropic.
+    authority_basis: tos_clause
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      This is a legal/contract DARK row, not a commercial unattractiveness
+      row. A white-label cognitive-labor plant that competes with Claude
+      Code, Claude Cowork, Claude agent products, or Anthropic model access
+      cannot use Anthropic services unless Anthropic expressly approves the
+      use case in writing.
+    open_questions:
+      - "Has Anthropic expressly approved this exact white-label service and resale/competing-product posture?"
+      - "Does the proposed service compete with Anthropic first-party agent, coding, cowork, or model-access products?"
+      - "Does any customer-facing bundle make Anthropic Services available as a pass-through or resold service?"
+    blocks_surfaces:
+      - white_label
+    source_task: 20260628-registry-phase5-white-label-subtree
+
+  - surface: white_label
+    venue: anthropic
+    instrument: anthropic_third_party_harness_subscription_credentials
+    g2_verdict: DARK
+    citation: >
+      Anthropic Claude Code Legal and Compliance:
+      https://code.claude.com/docs/en/legal-and-compliance. Third-party
+      developers may not offer Claude.ai login or route requests through
+      Free, Pro, or Max plan credentials on behalf of users; Anthropic may
+      enforce those restrictions without prior notice.
+    authority_basis: tos_clause
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Represents the OpenClaw/third-party-harness constraint as a gate row.
+      Reported OpenClaw/Harness events are enforcement evidence, but the g2
+      authority is Anthropic's current documentation. API-key or supported
+      cloud-provider access must be evaluated separately and still inherits
+      the competing-product/resale row above.
+    open_questions:
+      - "Is the proposed harness using API-key or supported cloud-provider authentication rather than Claude.ai subscription credentials?"
+      - "Is the customer the direct API customer, or is Hapax routing customer work through Hapax-owned subscription credentials?"
+      - "Has Anthropic approved any embedded third-party harness behavior in writing?"
+    blocks_surfaces:
+      - white_label
+    source_task: 20260628-registry-phase5-white-label-subtree
+
+  - surface: white_label
+    venue: US-FTC
+    instrument: undisclosed_ai_b2b_service
+    g2_verdict: DARK
+    citation: >
+      FTC Act Section 5:
+      https://www.ftc.gov/legal-library/browse/statutes/federal-trade-commission-act;
+      Air AI settlement release, March 24, 2026:
+      https://www.ftc.gov/news-events/news/press-releases/2026/03/air-ai-its-owners-will-be-banned-marketing-business-opportunities-settle-ftc-charges-company-misled;
+      Cox Media Group active-listening settlement release, May 21, 2026:
+      https://www.ftc.gov/news-events/news/press-releases/2026/05/ftc-require-cox-media-group-two-other-firms-pay-nearly-1-million-settle-charges-they-deceived.
+    authority_basis: agency_guidance
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK when the customer would reasonably understand the offering as
+      human labor, bespoke human review, or a non-AI service, or when
+      AI-powered performance, earnings, accuracy, privacy, or consent claims
+      are unsubstantiated. This is a legal deception risk, not a margin or
+      sales-quality objection.
+    open_questions:
+      - "What exact customer-facing copy describes the work and the degree of AI use?"
+      - "Are performance, earnings, accuracy, speed, or refund claims substantiated?"
+      - "Does the service touch regulated professional domains such as legal, medical, financial, employment, credit, or housing decisions?"
+    blocks_surfaces:
+      - white_label
+    source_task: 20260628-registry-phase5-white-label-subtree
+
+  - surface: white_label
+    venue: US-FTC
+    instrument: disclosed_ai_b2b_service
+    g2_verdict: DARK
+    citation: >
+      FTC Act Section 5:
+      https://www.ftc.gov/legal-library/browse/statutes/federal-trade-commission-act;
+      FTC, AI Companies: Uphold Your Privacy and Confidentiality
+      Commitments, Jan. 9, 2024:
+      https://www.ftc.gov/policy/advocacy-research/tech-at-ftc/2024/01/ai-companies-uphold-your-privacy-confidentiality-commitments;
+      Air AI settlement release, March 24, 2026:
+      https://www.ftc.gov/news-events/news/press-releases/2026/03/air-ai-its-owners-will-be-banned-marketing-business-opportunities-settle-ftc-charges-company-misled.
+    authority_basis: agency_guidance
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK candidate row. A later PARTIAL proposal requires clear disclosure
+      of material AI use, no fake-human positioning, substantiated claims, no
+      deceptive earnings/performance/refund promises, contracts that match
+      actual privacy, confidentiality, retention, and model-training behavior,
+      and operator signature on this exact tuple.
+    open_questions:
+      - "Operator signature required before this PARTIAL row can clear g2."
+      - "What disclosure text appears in proposals, SOWs, terms, invoices, and deliverables?"
+      - "What human-review commitments are promised, and are they actually performed?"
+      - "What customer-data retention, training-use, subprocessors, and deletion commitments are contractually stated?"
+    blocks_surfaces:
+      - white_label
+    source_task: 20260628-registry-phase5-white-label-subtree
+
+  - surface: white_label
+    venue: US-FTC
+    instrument: multi_tenant_without_contractual_isolation
+    g2_verdict: DARK
+    citation: >
+      FTC, AI Companies: Uphold Your Privacy and Confidentiality
+      Commitments, Jan. 9, 2024:
+      https://www.ftc.gov/policy/advocacy-research/tech-at-ftc/2024/01/ai-companies-uphold-your-privacy-confidentiality-commitments.
+      Model-as-a-service companies can face FTC liability when they fail
+      to honor privacy and confidentiality commitments to users and
+      customers.
+    authority_basis: agency_guidance
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Tenant isolation is a legal prerequisite for white-label B2B service.
+      No customer prompts, files, outputs, embeddings, logs, eval data,
+      fine-tuning corpus, support tickets, or derived artifacts may cross
+      tenants unless the customer contract and notice explicitly authorize
+      that use. Lack of isolation is DARK even if the business opportunity
+      looks attractive.
+    open_questions:
+      - "What storage, logging, embedding, eval, support, and backup boundaries enforce tenant separation?"
+      - "Do contracts prohibit cross-customer training, retrieval, or reuse unless expressly authorized?"
+      - "Are deletion, export, incident notice, and subprocessor terms documented?"
+    blocks_surfaces:
+      - white_label
+    source_task: 20260628-registry-phase5-white-label-subtree
+
+  - surface: white_label
+    venue: "*"
+    instrument: open_weight_model_stack_license_manifest
+    g2_verdict: DARK
+    citation: >
+      Meta Llama license:
+      https://ai.meta.com/llama/license/; Mistral open-model license
+      guidance:
+      https://help.mistral.ai/en/articles/347393-under-which-license-are-mistral-s-open-models-available;
+      Apache License 2.0:
+      https://www.apache.org/licenses/LICENSE-2.0.
+    authority_basis: tos_clause
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK candidate row. A later PARTIAL proposal requires a concrete
+      model-stack license manifest and operator signature on this exact tuple.
+      Open-weight is not a single legal posture: Apache-2.0, Llama community
+      licenses, Mistral modified licenses, and model-specific acceptable-use
+      policies carry different commercial, redistribution, output-use, and
+      scale-threshold obligations.
+    open_questions:
+      - "Operator signature required before this PARTIAL row can clear g2."
+      - "Which exact model IDs, versions, model cards, licenses, and acceptable-use policies are in the white-label stack?"
+      - "Do any licenses restrict commercial use, revenue scale, monthly active users, redistribution, or use of outputs to improve another model?"
+      - "Are attribution, notice, source-offer, subprocessor, and downstream customer flow-down obligations satisfied?"
+    blocks_surfaces:
+      - white_label
+    source_task: 20260628-registry-phase5-white-label-subtree
+
   # ── Data Exhaust ─────────────────────────────────────────────────────
   - surface: data_exhaust
     venue: "*"
@@ -388,6 +573,284 @@ rows:
     blocks_surfaces:
       - data_exhaust
     source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
+
+  # ── Data Exhaust Phase 6 Rows ───────────────────────────────────────
+  # These rows intentionally remain DARK. They distinguish candidate
+  # non-biometric/deidentified paths from held biometric, reidentifiable,
+  # data-broker, and struck tiers, but they do not create legal clearance.
+  - surface: data_exhaust
+    venue: "*"
+    instrument: non_biometric_operational_telemetry
+    g2_verdict: DARK
+    citation: >
+      No affirmative legal clearance or operator signature for B2B
+      licensing. Candidate scope is limited to first-party, non-biometric
+      operational telemetry only; the path still requires data inventory,
+      minimization, buyer-screening, permitted-use contract terms, and a
+      later operator-signed legal/ethical ruling. See
+      docs/monetization/data-exhaust-legal-posture-research.md.
+    authority_basis: operator_judgment
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      This is the only plausible first tranche. It excludes biometrics,
+      consumer health data, precise location, private communications,
+      secret values, non-operator person data, raw samples, and anything
+      reasonably linkable to the operator or another person.
+    open_questions:
+      - "Exact telemetry inventory and field-level sensitive-data classification"
+      - "Buyer acceptance terms: permitted use, no surveillance, no reidentification, no resale"
+      - "State privacy and data-broker registration analysis for any intended buyer venue"
+      - "Operator signature on a bounded package definition"
+    blocks_surfaces:
+      - data_exhaust
+      - REQ-20260630-mondlc-data-exhaust-b2b-licensing-path
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: "*"
+    instrument: deidentified_aggregate_operational_telemetry
+    g2_verdict: DARK
+    citation: >
+      45 CFR §164.514(a)-(b) and HHS OCR de-identification guidance define
+      Expert Determination and Safe Harbor methods for HIPAA PHI, including
+      the "no reasonable basis" identifiability standard, but those are not
+      themselves commercial B2B licensing clearance for Hapax telemetry.
+      See https://www.ecfr.gov/current/title-45/subtitle-A/subchapter-C/part-164/subpart-E/section-164.514
+      and https://www.hhs.gov/hipaa/for-professionals/special-topics/de-identification/index.html.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Deidentification is a prerequisite standard, not a g2 pass. Any later
+      PARTIAL row needs an expert-determination-style artifact, retained
+      methodology, k-anonymity/reidentification risk review, and contract
+      terms forbidding reidentification and onward sale.
+    open_questions:
+      - "Which fields survive minimization after removing direct, device, location, communication, health, biometric, and secret-value identifiers?"
+      - "What quantitative reidentification threshold is acceptable for this single-operator corpus?"
+      - "Who signs the expert-determination-style analysis and how is it renewed?"
+      - "Whether buyer-side joins can reidentify the operator despite aggregate packaging"
+    blocks_surfaces:
+      - data_exhaust
+      - REQ-20260630-mondlc-data-exhaust-b2b-licensing-path
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: "*"
+    instrument: biometric_or_biometric_derived_data
+    g2_verdict: DARK
+    citation: >
+      Held pending separate legal and ethical authority. Illinois BIPA,
+      Texas CUBI, and Washington MHMD impose notice, consent, sale,
+      disclosure, retention, and/or authorization constraints on biometric
+      or health-adjacent data; see specific US-IL, US-TX, and US-WA rows.
+    authority_basis: operator_judgment
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Includes face geometry, voiceprints, wearable biometric streams,
+      rPPG/vital-sign inferences, biometric embeddings, biometric-derived
+      model features, and any telemetry packaged because of physiological
+      signal value.
+    open_questions:
+      - "Whether operator-generated biometric data can ever be sold ethically even if a statutory path exists"
+      - "Whether any biometric-derived feature remains biometric information after transformation"
+      - "Whether consent/release can cure sale or profit prohibitions in each venue"
+    blocks_surfaces:
+      - data_exhaust
+      - REQ-20260630-mondlc-data-exhaust-b2b-licensing-path
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: US-IL
+    instrument: biometric_identifier_or_information
+    g2_verdict: DARK
+    citation: >
+      Illinois BIPA, 740 ILCS 14/10 and 14/15. Section 15 requires written
+      notice, purpose/retention disclosure, and written release before
+      collection/obtaining; Section 15(c) bars selling, leasing, trading, or
+      otherwise profiting from a person's or customer's biometric identifier
+      or biometric information. See
+      https://www.ilga.gov/documents/legislation/ilcs/documents/074000140k10.htm
+      and https://www.ilga.gov/documents/legislation/ilcs/documents/074000140K15.htm.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      BIPA is a hard DARK row for biometric sale/profit until separate
+      counsel-level authority proves a narrow route. The row covers both
+      biometric identifiers and information based on identifiers used to
+      identify an individual.
+    open_questions:
+      - "Whether any proposed feature is outside BIPA's biometric identifier/information definitions"
+      - "Whether transformed biometric-derived features remain based on identifiers used to identify"
+      - "Whether any non-sale disclosure exception applies to a specific package"
+    blocks_surfaces:
+      - data_exhaust
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: US-TX
+    instrument: biometric_identifier
+    g2_verdict: DARK
+    citation: >
+      Texas Capture or Use of Biometric Identifier Act, Tex. Bus. & Com.
+      Code §503.001. The Texas Attorney General summarizes CUBI as requiring
+      notice and consent before commercial capture, restricting sale, lease,
+      or disclosure, requiring reasonable care, and requiring destruction
+      within the statutory timeframe. See
+      https://www.texasattorneygeneral.gov/consumer-protection/file-consumer-complaint/consumer-privacy-rights/biometric-identifier-act.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      CUBI makes Texas biometric identifiers unsuitable for data-exhaust
+      licensing absent a separate, venue-specific legal opinion and
+      operator ethical approval.
+    open_questions:
+      - "Whether a proposed biometric-derived telemetry feature is a biometric identifier under §503.001"
+      - "Whether the commercial-purpose capture/disclosure posture applies to first-party operator telemetry"
+      - "Whether any exception could support a non-sale disclosure to a screened buyer"
+    blocks_surfaces:
+      - data_exhaust
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: US-WA
+    instrument: consumer_health_or_biometric_data
+    g2_verdict: DARK
+    citation: >
+      Washington My Health My Data Act, Chapter 19.373 RCW. RCW
+      19.373.030 restricts collection and sharing of consumer health data
+      without specified-purpose consent; RCW 19.373.070 makes sale or offer
+      to sell consumer health data unlawful without separate valid
+      authorization; the definition of consumer health data includes vital
+      signs, biometric data, genetic data, and precise location indicating
+      health services. See
+      https://app.leg.wa.gov/RCW/default.aspx?cite=19.373&full=true.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      WA-MHMD is broader than classical biometric statutes and can catch
+      health-adjacent telemetry, vital signs, location, inferred health
+      status, and related model features. Treat WA health/biometric data as
+      held.
+    open_questions:
+      - "Whether any operator telemetry is consumer health data under RCW 19.373.010"
+      - "Whether a buyer-facing package can avoid collection/share/sale of consumer health data"
+      - "Whether authorization and six-year retention requirements could ever be operationalized for this surface"
+    blocks_surfaces:
+      - data_exhaust
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: US
+    instrument: data_broker_sensitive_personal_data_transfer
+    g2_verdict: DARK
+    citation: >
+      Protecting Americans' Data from Foreign Adversaries Act of 2024,
+      15 USC Chapter 123. Section 9901 prohibits data brokers from making
+      personally identifiable sensitive data of a United States individual
+      available to a foreign adversary country or controlled entity, and
+      defines data broker by valuable-consideration transfer of data not
+      collected directly from individuals. See
+      https://uscode.house.gov/view.xhtml?edition=prelim&path=%2Fprelim%40title15%2Fchapter123
+      and the FTC PADFAA page at
+      https://www.ftc.gov/legal-library/browse/statutes/protecting-americans-data-foreign-adversaries-act-2024-padfaa.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      First-party operator-only data may not fit PADFAA's data-broker
+      definition if directly collected from the individual, but any
+      third-party, non-operator, purchased, aggregated, or onward-resold
+      dataset creates data-broker analysis. Buyer screening must exclude
+      foreign-adversary countries and controlled entities before any future
+      non-DARK posture.
+    open_questions:
+      - "Whether the seller is a data broker for each package and buyer path"
+      - "Whether any field is personally identifiable sensitive data under 15 USC §9901(c)(7)"
+      - "Whether buyer ownership, control, headquarters, domicile, or direction creates foreign-adversary control"
+      - "Whether DOJ data-security-program or state data-broker laws add stricter buyer restrictions"
+    blocks_surfaces:
+      - data_exhaust
+      - REQ-20260630-mondlc-data-exhaust-b2b-licensing-path
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: "*"
+    instrument: reidentifiable_or_sensitive_personal_data
+    g2_verdict: DARK
+    citation: >
+      Held pending separate legal and ethical authority. PADFAA sensitive
+      data categories include precise geolocation, biometric and genetic
+      information, private communications, login credentials, private
+      photos/audio/video, online activity over time, protected-class data,
+      minor data, and military-status data; FTC data-broker enforcement
+      also treats sale of sensitive location data as a high-risk privacy
+      practice. See 15 USC §9901(c)(7) and
+      https://www.ftc.gov/news-events/news/press-releases/2024/01/ftc-order-prohibits-data-broker-x-mode-social-outlogic-selling-sensitive-location-data.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      This row keeps raw private data, device identifiers, precise
+      location, private communications, secret values, account/security
+      material, and any reasonably linkable data out of the licensing path.
+    open_questions:
+      - "Whether any retained field is reasonably linkable alone or with buyer-held data"
+      - "Whether generated features leak private communications, location, health, biometric, or credential-derived information"
+      - "Whether contractual no-reidentification terms are sufficient for any future PARTIAL posture"
+    blocks_surfaces:
+      - data_exhaust
+      - REQ-20260630-mondlc-data-exhaust-b2b-licensing-path
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: "*"
+    instrument: struck_or_non_operator_person_data
+    g2_verdict: DARK
+    citation: >
+      No clearance. The parent data-exhaust B2B request red-lines raw
+      private data, reidentifiable personal data, and marginalized
+      extraction; PADFAA and FTC data-broker authority show heightened risk
+      for onward transfer of sensitive, linkable, or third-party data. See
+      REQ-20260630-mondlc-data-exhaust-b2b-licensing-path and
+      15 USC §9901.
+    authority_basis: operator_judgment
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Struck data, third-party person data, guest/person-adjacent data,
+      marginalized-party extraction data, and refusal-held data are not
+      candidates for licensing. They require separate legal/ethical
+      authority, not a package refinement.
+    open_questions:
+      - "None for current tranche; this tier is held by policy until a new authority case exists"
+    blocks_surfaces:
+      - data_exhaust
+      - REQ-20260630-mondlc-data-exhaust-b2b-licensing-path
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
 
   # ── Receive-Only Rails ───────────────────────────────────────────────
   # The 10 wired receive-only rails (docs/monetization/rails-capability-matrix.md)
