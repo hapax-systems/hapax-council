@@ -54,7 +54,17 @@ from urllib.request import Request, urlopen
 import yaml
 
 registry = Path("docs/monetization/legal-posture-registry.yaml")
+source_req = (
+    Path.home()
+    / "Documents"
+    / "Personal"
+    / "20-projects"
+    / "hapax-requests"
+    / "active"
+    / "REQ-20260628-arbitrage-struck-and-blocked-register.md"
+)
 data = yaml.safe_load(registry.read_text())
+source_text = source_req.read_text()
 rows = data["rows"]
 keys = {(row["surface"], row["venue"], row["instrument"]): row for row in rows}
 
@@ -76,12 +86,21 @@ assert operator_row["g2_verdict"] == "DARK"
 assert trading_row["g2_verdict"] == "DARK"
 assert operator_row["authority_basis"] == "operator_judgment"
 assert trading_row["authority_basis"] == "statute"
+assert "REQ-20260628-arbitrage-struck-and-blocked-register" in operator_row["citation"]
 assert "Minnesota" in operator_row["citation"]
+assert "2026-06-28" in operator_row["citation"]
+assert "Confidence: high" in operator_row["notes"]
+assert "Future residence changes require a new dated row" in operator_row["notes"]
 assert "609.755" in trading_row["citation"]
 assert "609.75" in trading_row["citation"]
 assert "HF4437.pdf" in trading_row["citation"]
 assert "20260628-registry-phase2-prediction-market-subtree" in operator_row["blocks_surfaces"]
 assert len(keys) == len(rows), "duplicate registry tuple"
+assert "Operator state of residence:" in source_text
+assert "**Minnesota**" in source_text
+assert "(confirmed 2026-06-28)" in source_text
+assert "MN bans PMs" in source_text
+assert "Prediction-market TRADING" in source_text
 source_urls = [
     "https://www.revisor.mn.gov/statutes/cite/609.755",
     "https://www.revisor.mn.gov/statutes/cite/609.75",
