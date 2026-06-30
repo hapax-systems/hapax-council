@@ -392,12 +392,20 @@ def parse_frontmatter(path: Path) -> dict[str, object]:
     return data
 
 
+NULLISH_SCALARS = {"", "null", "none", "None", "NULL", "~", "unassigned", "[]"}
+
+
+def is_nullish_scalar(value: object) -> bool:
+    text = str(value).strip().strip('"').strip("'")
+    return text in NULLISH_SCALARS or text.lower() in NULLISH_SCALARS
+
+
 def scalar(data: dict[str, object], key: str) -> str:
     value = data.get(key, "")
     if isinstance(value, list):
         return ""
     text = str(value).strip()
-    return "" if text in {"", "null", "None", "unassigned"} else text
+    return "" if is_nullish_scalar(text) else text
 
 
 def first_scalar(data: dict[str, object], keys: tuple[str, ...]) -> str:
@@ -415,7 +423,7 @@ def first_values(data: dict[str, object], keys: tuple[str, ...]) -> list[str]:
             refs = [
                 str(item).strip()
                 for item in value
-                if str(item).strip() and str(item).strip() not in {"null", "None", "unassigned"}
+                if str(item).strip() and not is_nullish_scalar(item)
             ]
             if refs:
                 return refs
