@@ -50,6 +50,7 @@ positions, accept wagers, advertise markets, or receive trading value.
 ```bash
 uv run python - <<'PY'
 from pathlib import Path
+from urllib.request import Request, urlopen
 import yaml
 
 registry = Path("docs/monetization/legal-posture-registry.yaml")
@@ -78,8 +79,24 @@ assert trading_row["authority_basis"] == "statute"
 assert "Minnesota" in operator_row["citation"]
 assert "609.755" in trading_row["citation"]
 assert "609.75" in trading_row["citation"]
+assert "HF4437.pdf" in trading_row["citation"]
 assert "20260628-registry-phase2-prediction-market-subtree" in operator_row["blocks_surfaces"]
 assert len(keys) == len(rows), "duplicate registry tuple"
+source_urls = [
+    "https://www.revisor.mn.gov/statutes/cite/609.755",
+    "https://www.revisor.mn.gov/statutes/cite/609.75",
+    "https://www.house.mn.gov/hrd/bs/94/HF4437.pdf",
+]
+for url in source_urls:
+    request = Request(url, method="HEAD", headers={"User-Agent": "hapax-validation/1.0"})
+    try:
+        with urlopen(request, timeout=20) as response:
+            status = response.status
+    except Exception:
+        request = Request(url, headers={"User-Agent": "hapax-validation/1.0"})
+        with urlopen(request, timeout=20) as response:
+            status = response.status
+    assert status < 500, (url, status)
 print("operator-state registry recheck OK: US-MN DARK prediction-market rows present")
 PY
 ```
