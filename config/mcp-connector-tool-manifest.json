@@ -49,10 +49,11 @@
       "canonical_name": "github.merge_pull_request",
       "aliases": [
         "mcp__github__merge_pull_request",
-        "mcp__codex_apps__github___merge_pull_request"
+        "mcp__codex_apps__github___merge_pull_request",
+        "mcp__codex_apps__github___enable_auto_merge"
       ],
       "effect_classes": ["external_mutation", "public_egress", "governance_mutation"],
-      "description": "Merge a GitHub pull request."
+      "description": "Merge or enable auto-merge for a GitHub pull request."
     },
     {
       "canonical_name": "github.create_or_update_file",
@@ -61,6 +62,7 @@
         "mcp__codex_apps__github___create_file",
         "mcp__codex_apps__github___update_file",
         "mcp__codex_apps__github___delete_file",
+        "mcp__codex_apps__github___update_ref",
         "mcp__github__push_files"
       ],
       "effect_classes": ["external_mutation", "public_egress", "governance_mutation"],
@@ -74,7 +76,9 @@
         "mcp__github__update_issue_comment",
         "mcp__codex_apps__github___update_issue_comment",
         "mcp__codex_apps__github___reply_to_review_comment",
-        "mcp__codex_apps__github___update_review_comment"
+        "mcp__codex_apps__github___update_review_comment",
+        "mcp__codex_apps__github___add_reaction_to_issue_comment",
+        "mcp__codex_apps__github___remove_reaction_from_issue_comment"
       ],
       "effect_classes": ["external_mutation", "public_egress", "governance_mutation"],
       "description": "Create or edit a public GitHub issue, pull request, or review comment."

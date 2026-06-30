@@ -97,6 +97,9 @@ def test_manifest_classifies_mutators_and_read_only_evidence() -> None:
         "mcp__codex_apps__google_drive___bulk_update_file_comments",
         "mcp__codex_apps__google_drive___batch_update_document",
         "mcp__codex_apps__github___reply_to_review_comment",
+        "mcp__codex_apps__github___enable_auto_merge",
+        "mcp__codex_apps__github___update_ref",
+        "mcp__codex_apps__github___remove_reaction_from_issue_comment",
         "mcp__codex_apps__gmail___forward_emails",
         "mcp__codex_apps__gmail___apply_labels_to_emails",
     ):
@@ -110,13 +113,19 @@ def test_heuristic_catches_new_mutating_connector_names() -> None:
         "mcp__codex_apps__google_drive___delete_file",
         "mcp__codex_apps__google_drive___import_unregistered_file",
         "mcp__codex_apps__github___reply_to_unregistered_review_comment",
+        "mcp__codex_apps__github___enable_unregistered_auto_merge",
+        "mcp__codex_apps__github___remove_unregistered_reaction",
+        "mcp__codex_apps__slack___send_message",
         "mcp__codex_apps__gmail___forward_unregistered_email",
         "mcp__codex_apps__gmail___apply_unregistered_label",
     ):
         classification = classify_connector_tool(tool_name)
         assert classification is not None
         assert classification.side_effecting
-        assert classification.matched_by == "heuristic_mutating_verb"
+        assert classification.matched_by in {
+            "heuristic_mutating_verb",
+            "heuristic_unknown_mutating_verb",
+        }
 
 
 def test_read_only_connector_does_not_require_receipts(tmp_path: Path) -> None:

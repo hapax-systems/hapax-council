@@ -76,10 +76,10 @@ _KNOWN_CONNECTOR_SERVICES = frozenset(
 )
 _MUTATING_FUNCTION_RE = re.compile(
     r"^(?:"
-    r"act|add|apply|archive|batch_modify|batch_update|bulk_label|bulk_update|confirm"
+    r"act|add|apply|archive|batch_modify|batch_update|bulk_label|bulk_update|close|confirm"
     r"|copy|correct|create|decide|delete|disable|dismiss|flush|forward|import|merge"
-    r"|modify|move|nudge_act|push|rename|replace|reply|respond|restore|send|set"
-    r"|share|trash|update|upload|write"
+    r"|modify|move|nudge_act|enable|push|rename|remove|replace|reply|reopen|respond"
+    r"|restore|send|set|share|trash|update|upload|write"
     r")(?:_|$)"
 )
 _READ_ONLY_FUNCTION_RE = re.compile(
@@ -193,8 +193,6 @@ def _heuristic_classification(canonical_name: str) -> ConnectorToolClassificatio
     if "." not in canonical_name:
         return None
     service, function = canonical_name.split(".", 1)
-    if service not in _KNOWN_CONNECTOR_SERVICES:
-        return None
     function = function.lstrip("_")
     if _READ_ONLY_FUNCTION_RE.match(function):
         return ConnectorToolClassification(
@@ -206,6 +204,18 @@ def _heuristic_classification(canonical_name: str) -> ConnectorToolClassificatio
         )
     if not _MUTATING_FUNCTION_RE.match(function):
         return None
+    if service not in _KNOWN_CONNECTOR_SERVICES:
+        effects = [EFFECT_EXTERNAL]
+        if function.startswith(("send", "share", "reply", "forward", "publish", "post")):
+            effects.append(EFFECT_PUBLIC)
+        effect_tuple = tuple(dict.fromkeys(effects))
+        return ConnectorToolClassification(
+            canonical_name=canonical_name,
+            effect_classes=effect_tuple,
+            required_mutation_surfaces=_surfaces_for_effects(effect_tuple),
+            description="Heuristically classified side-effecting unknown connector tool.",
+            matched_by="heuristic_unknown_mutating_verb",
+        )
     effects: list[str]
     if service == "github":
         effects = [EFFECT_EXTERNAL, EFFECT_PUBLIC, EFFECT_GOVERNANCE]
@@ -476,7 +486,10 @@ def evaluate_connector_receipt_gate(
         return ConnectorReceiptGateResult(
             allowed=False,
             reason_code="route_authority_receipt_invalid",
-            message=str(exc),
+            message=(
+                f"{exc}. Next action: repair or remove malformed route-authority "
+                "receipts, then mint a fresh connector_mutation receipt."
+            ),
             classification=classification,
             route_id=route_id,
         )

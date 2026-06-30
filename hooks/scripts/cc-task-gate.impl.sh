@@ -332,7 +332,10 @@ connector_tool_is_mutating() {
     case "$rc" in
       0) return 0 ;;
       10) return 1 ;;
-      *) return 0 ;;
+      *)
+        echo "cc-task-gate: WARNING — connector classifier failed for '$name'; treating as mutating." >&2
+        return 0
+        ;;
     esac
   fi
   printf '%s' "$name" | grep -Eiq \

@@ -557,6 +557,8 @@ class TestAuthorizationPacketValidator:
         for tool_name in (
             "mcp__github__merge_pull_request",
             "mcp__codex_apps__github___merge_pull_request",
+            "mcp__codex_apps__github___enable_auto_merge",
+            "mcp__codex_apps__github___update_ref",
         ):
             result = _run(
                 VALIDATOR,

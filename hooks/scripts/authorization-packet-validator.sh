@@ -42,6 +42,7 @@ case "$TOOL" in
     release_kind="push_files"
     ;;
   mcp__*)
+    canonical_tool=""
     if command -v python3 >/dev/null 2>&1; then
       set +e
       canonical_tool="$(
@@ -59,26 +60,37 @@ case "$TOOL" in
           *) canonical_tool="" ;;
         esac
       fi
-      case "$canonical_tool" in
-        github.create_pull_request)
-          release_tool=true
-          release_kind="pr_create"
-          ;;
-        github.merge_pull_request)
-          release_tool=true
-          release_kind="merge"
-          ;;
-        github.create_or_update_file)
-          release_tool=true
-          release_kind="push_files"
-          ;;
-        *)
-          exit 0
-          ;;
-      esac
     else
-      exit 0
+      echo "authorization-packet-validator: WARNING — python3 unavailable for MCP canonicalization; using conservative GitHub release fallback." >&2
+      case "$TOOL" in
+        *merge_pull_request*|*enable_auto_merge*) canonical_tool="github.merge_pull_request" ;;
+        *create_pull_request*) canonical_tool="github.create_pull_request" ;;
+        *update_ref*) canonical_tool="github.update_ref" ;;
+        *push_files*|*create_or_update_file*|*update_file*|*delete_file*) canonical_tool="github.create_or_update_file" ;;
+        *) canonical_tool="" ;;
+      esac
     fi
+    case "$canonical_tool" in
+      github.create_pull_request)
+        release_tool=true
+        release_kind="pr_create"
+        ;;
+      github.merge_pull_request|github.enable_auto_merge)
+        release_tool=true
+        release_kind="merge"
+        ;;
+      github.create_or_update_file)
+        release_tool=true
+        release_kind="push_files"
+        ;;
+      github.update_ref)
+        release_tool=true
+        release_kind="ref_update"
+        ;;
+      *)
+        exit 0
+        ;;
+    esac
     ;;
   *) exit 0 ;;
 esac
@@ -375,7 +387,7 @@ if stage_num < 7 and release != "false":
     print(f"shadow_denial_violation:release_authorized={release}")
     sys.exit(0)
 
-if release_kind in {"merge", "release"} and release != "true":
+if release_kind in {"merge", "release", "ref_update"} and release != "true":
     print(f"release_not_authorized:{release_kind}:{release}")
     sys.exit(0)
 
