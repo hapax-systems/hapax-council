@@ -247,6 +247,6 @@ def test_worker_launchers_explain_missing_receipt_helper_next_action() -> None:
 def test_claude_install_docs_wire_agent_conductor_gate() -> None:
     text = (REPO_ROOT / "tooling" / "claude-agents" / "INSTALL.md").read_text(encoding="utf-8")
 
-    assert '"matcher": "Agent"' in text
+    assert '"matcher": "Agent|Task"' in text
     assert "conductor-pre.sh" in text
     assert "Task-tool invocations are blocked" in text

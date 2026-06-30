@@ -54,7 +54,7 @@ Append these entries to the existing `hooks.PreToolUse` and `hooks.PostToolUse` 
         ]
       },
       {
-        "matcher": "Agent",
+        "matcher": "Agent|Task",
         "hooks": [
           {
             "type": "command",

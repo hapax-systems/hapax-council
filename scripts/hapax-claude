@@ -93,15 +93,15 @@ except Exception:
     raise SystemExit(1)
 
 
-def matcher_covers_agent(value: object) -> bool:
+def matcher_covers_subagent_tools(value: object) -> bool:
     matcher = str(value or "")
     if matcher.strip() == "":
         return True
-    return "Agent" in re.split(r"[|,\s]+", matcher)
+    return {"Agent", "Task"} <= set(re.split(r"[|,\s]+", matcher))
 
 
 for entry in ((data.get("hooks") or {}).get("PreToolUse") or []):
-    if not isinstance(entry, dict) or not matcher_covers_agent(entry.get("matcher")):
+    if not isinstance(entry, dict) or not matcher_covers_subagent_tools(entry.get("matcher")):
         continue
     for hook in entry.get("hooks") or []:
         if isinstance(hook, dict) and "conductor-pre.sh" in str(hook.get("command") or ""):
@@ -115,7 +115,7 @@ require_claude_agent_subagent_gate() {
     return 0
   fi
   if ! claude_agent_subagent_gate_wired; then
-    echo "hapax-claude: parent route envelope requires Agent PreToolUse conductor-pre.sh gate for Task-tool subagents; next action: add conductor-pre.sh to a Claude hooks.PreToolUse matcher covering Agent, restart Claude, then relaunch through hapax-methodology-dispatch" >&2
+    echo "hapax-claude: parent route envelope requires Agent|Task PreToolUse conductor-pre.sh gate for Task-tool subagents; next action: add conductor-pre.sh to a Claude hooks.PreToolUse matcher covering Agent|Task, restart Claude, then relaunch through hapax-methodology-dispatch" >&2
     exit 18
   fi
 }

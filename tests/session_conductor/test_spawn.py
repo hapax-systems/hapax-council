@@ -56,10 +56,14 @@ def _make_edit_event(file_path: str, session_id: str = "sess-beta") -> HookEvent
     )
 
 
-def _make_agent_pre_event(agent_name: str = "shader-bridge-auditor") -> HookEvent:
+def _make_agent_pre_event(
+    agent_name: str = "shader-bridge-auditor",
+    *,
+    tool_name: str = "Agent",
+) -> HookEvent:
     return HookEvent(
         event_type="pre_tool_use",
-        tool_name="Agent",
+        tool_name=tool_name,
         tool_input={"subagent_type": agent_name, "prompt": "audit the bridge"},
         session_id="sess-alpha",
     )
@@ -200,6 +204,11 @@ def test_agent_tool_spawn_blocks_without_parent_route_receipt(tmp_path: Path):
     assert response.action == "block"
     assert "missing_parent_route_resource_receipt" in (response.message or "")
     assert "before invoking Agent/Task" in (response.message or "")
+
+    task_response = rule.on_pre_tool_use(_make_agent_pre_event(tool_name="Task"))
+    assert task_response is not None
+    assert task_response.action == "block"
+    assert "missing_parent_route_resource_receipt" in (task_response.message or "")
 
 
 def test_agent_tool_spawn_records_child_receipt_before_subagent_runs(

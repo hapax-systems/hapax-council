@@ -69,7 +69,7 @@ def _write_claude_settings_with_agent_gate(home: Path) -> Path:
                 "hooks": {
                     "PreToolUse": [
                         {
-                            "matcher": "Agent",
+                            "matcher": "Agent|Task",
                             "hooks": [
                                 {
                                     "type": "command",
@@ -394,7 +394,7 @@ def test_headless_refuses_parent_route_without_agent_conductor_gate(tmp_path: Pa
     )
 
     assert result.returncode == 18
-    assert "Agent PreToolUse conductor-pre.sh gate" in result.stderr
+    assert "Agent|Task PreToolUse conductor-pre.sh gate" in result.stderr
     assert "next action:" in result.stderr
     assert not claude_marker.exists()
     parent_payload = json.loads(parent_path.read_text(encoding="utf-8"))
@@ -575,7 +575,7 @@ def test_visible_claude_launcher_requires_task_or_readonly() -> None:
     assert "hapax-methodology-dispatch" in text
     assert "HAPAX_METHODOLOGY_DISPATCH_TASK" in text
     assert 'CLAUDE_TASK="$CLAIMED_TASK"' in text
-    assert "Agent PreToolUse conductor-pre.sh gate" in text
+    assert "Agent|Task PreToolUse conductor-pre.sh gate" in text
 
 
 def test_headless_refuses_without_task_or_existing_claim(tmp_path: Path) -> None:
