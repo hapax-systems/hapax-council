@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import shared.capdlc_lifecycle as capdlc_lifecycle
 from shared.capdlc_lifecycle import (
     CAPDLC_CANONICAL_LABEL,
@@ -13,6 +15,9 @@ from shared.capdlc_lifecycle import (
     measured_capdlc_entries,
     resolve_capdlc_lifecycle,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def test_registry_uses_capdlc_as_future_facing_label() -> None:
@@ -43,7 +48,7 @@ def test_dark_stub_is_not_counted_as_measured_value() -> None:
     assert measured_capdlc_entries() == ()
 
 
-def test_measured_entry_is_truthy_and_counted() -> None:
+def test_measured_entry_is_truthy() -> None:
     entry = CapDLCLifecycleEntry(
         slug="capdlc-measured-fixture",
         canonical_label="CapDLC",
@@ -55,8 +60,21 @@ def test_measured_entry_is_truthy_and_counted() -> None:
     assert bool(entry) is True
 
 
+def test_measured_registry_entries_are_returned(monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = CapDLCLifecycleEntry(
+        slug="capdlc-measured-fixture",
+        canonical_label="CapDLC",
+        lifecycle_state=CapDLCLifecycleState.MEASURED,
+        measured_value=1.0,
+    )
+
+    monkeypatch.setitem(CAPDLC_LIFECYCLE_REGISTRY, entry.slug, entry)
+
+    assert measured_capdlc_entries() == (entry,)
+
+
 def test_public_exports_are_stable() -> None:
-    assert set(capdlc_lifecycle.__all__) == {
+    expected_exports = {
         "CAPDLC_CANONICAL_LABEL",
         "CAPDLC_DARK_STUB",
         "CAPDLC_LEGACY_LABELS",
@@ -67,3 +85,7 @@ def test_public_exports_are_stable() -> None:
         "measured_capdlc_entries",
         "resolve_capdlc_lifecycle",
     }
+
+    assert set(capdlc_lifecycle.__all__) == expected_exports
+    for name in expected_exports:
+        assert getattr(capdlc_lifecycle, name) is capdlc_lifecycle.__dict__[name]
