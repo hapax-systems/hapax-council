@@ -613,6 +613,35 @@ class TestAuthorizationPacketValidator:
             assert result.returncode == 2
             assert "implementation_authorized" in result.stderr
 
+    def test_mcp_github_file_mutators_require_release_authorization(self, tmp_path: Path) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            stage="S6_implementation",
+            impl_authorized="true",
+            src_authorized="true",
+            docs_authorized="false",
+            runtime_authorized="false",
+            release_authorized="false",
+            public_current="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+        for tool_name in (
+            "mcp__codex_apps__github___create_file",
+            "mcp__codex_apps__github___update_file",
+            "mcp__codex_apps__github___delete_file",
+        ):
+            result = _run(
+                VALIDATOR,
+                {
+                    "tool_name": tool_name,
+                    "tool_input": {"owner": "ryanklee", "repo": "hapax-council"},
+                },
+                home=home,
+            )
+            assert result.returncode == 2
+            assert "release_authorized" in result.stderr
+
     def test_mcp_authorization_blocks_when_python3_is_unavailable(self, tmp_path: Path) -> None:
         home = _make_case_vault(
             tmp_path,

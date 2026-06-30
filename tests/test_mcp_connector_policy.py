@@ -128,6 +128,19 @@ def test_heuristic_catches_new_mutating_connector_names() -> None:
         }
 
 
+def test_resource_prefixed_known_service_mutators_fail_closed() -> None:
+    for tool_name in (
+        "mcp__codex_apps__gmail___messages_modify",
+        "mcp__codex_apps__google_drive___files_update",
+        "mcp__codex_apps__github___pulls_merge",
+        "mcp__codex_apps__google_calendar___events_delete",
+    ):
+        classification = classify_connector_tool(tool_name)
+        assert classification is not None
+        assert classification.side_effecting
+        assert classification.matched_by == "heuristic_unclassified_connector_tool"
+
+
 def test_unknown_connector_service_fails_closed_when_not_explicitly_read_only() -> None:
     classification = classify_connector_tool("mcp__codex_apps__linear___transition_issue")
 
@@ -155,6 +168,10 @@ def test_side_effecting_connector_blocks_without_route_decision(tmp_path: Path) 
         "mcp__codex_apps__google_drive___import_document",
         "mcp__codex_apps__google_drive___bulk_update_file_comments",
         "mcp__codex_apps__github___reply_to_review_comment",
+        "mcp__codex_apps__gmail___messages_modify",
+        "mcp__codex_apps__google_drive___files_update",
+        "mcp__codex_apps__github___pulls_merge",
+        "mcp__codex_apps__google_calendar___events_delete",
         "mcp__codex_apps__gmail___forward_emails",
         "mcp__codex_apps__gmail___apply_labels_to_emails",
     ):

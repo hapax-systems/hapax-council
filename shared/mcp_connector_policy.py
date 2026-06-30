@@ -204,21 +204,6 @@ def _heuristic_classification(canonical_name: str) -> ConnectorToolClassificatio
             matched_by="heuristic_read_only",
         )
     mutating_name = bool(_MUTATING_FUNCTION_RE.match(function))
-    if not mutating_name and service not in _KNOWN_CONNECTOR_SERVICES:
-        effects = [EFFECT_EXTERNAL]
-        effect_tuple = tuple(dict.fromkeys(effects))
-        return ConnectorToolClassification(
-            canonical_name=canonical_name,
-            effect_classes=effect_tuple,
-            required_mutation_surfaces=_surfaces_for_effects(effect_tuple),
-            description=(
-                "Unknown connector service is not explicitly read-only; fail closed as "
-                "side-effecting."
-            ),
-            matched_by="heuristic_unknown_connector_service",
-        )
-    if not mutating_name:
-        return None
     if service not in _KNOWN_CONNECTOR_SERVICES:
         effects = [EFFECT_EXTERNAL]
         if function.startswith(("send", "share", "reply", "forward", "publish", "post")):
@@ -228,8 +213,15 @@ def _heuristic_classification(canonical_name: str) -> ConnectorToolClassificatio
             canonical_name=canonical_name,
             effect_classes=effect_tuple,
             required_mutation_surfaces=_surfaces_for_effects(effect_tuple),
-            description="Heuristically classified side-effecting unknown connector tool.",
-            matched_by="heuristic_unknown_mutating_verb",
+            description=(
+                "Unknown connector service is not explicitly read-only; fail closed as "
+                "side-effecting."
+            ),
+            matched_by=(
+                "heuristic_unknown_mutating_verb"
+                if mutating_name
+                else "heuristic_unknown_connector_service"
+            ),
         )
     effects: list[str]
     if service == "github":
@@ -249,8 +241,14 @@ def _heuristic_classification(canonical_name: str) -> ConnectorToolClassificatio
         canonical_name=canonical_name,
         effect_classes=effect_tuple,
         required_mutation_surfaces=_surfaces_for_effects(effect_tuple),
-        description="Heuristically classified side-effecting connector tool.",
-        matched_by="heuristic_mutating_verb",
+        description=(
+            "Heuristically classified side-effecting connector tool."
+            if mutating_name
+            else "Connector function is not explicitly read-only; fail closed as side-effecting."
+        ),
+        matched_by=(
+            "heuristic_mutating_verb" if mutating_name else "heuristic_unclassified_connector_tool"
+        ),
     )
 
 
