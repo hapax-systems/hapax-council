@@ -125,8 +125,7 @@ tool_kind() {
         printf 'mutation\n'
         return 0
       fi
-      if [ "$connector_rc" -ne 1 ] && printf '%s' "$TOOL_NAME" | grep -Eiq \
-        '(create|update|delete|merge|push|commit|branch|tag|release|pull_request|issue_comment|send|archive|label|modify|share|upload|respond|dismiss|confirm|disable|flush|decide|nudge_act|set)'; then
+      if [ "$connector_rc" -ne 1 ]; then
         printf 'mutation\n'
         return 0
       fi

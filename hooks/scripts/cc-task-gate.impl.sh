@@ -332,6 +332,7 @@ connector_tool_is_mutating() {
     case "$rc" in
       0) return 0 ;;
       1) return 1 ;;
+      *) return 0 ;;
     esac
   fi
   printf '%s' "$name" | grep -Eiq \

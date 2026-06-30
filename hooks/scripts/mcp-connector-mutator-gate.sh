@@ -29,10 +29,9 @@ if [[ "$classifier_rc" == 1 ]]; then
   exit 0
 fi
 if [[ "$classifier_rc" != 0 ]]; then
-  if ! printf '%s' "$tool_name" | grep -Eiq \
-    '(create|update|delete|merge|push|commit|branch|tag|release|pull_request|issue_comment|send|archive|label|modify|share|upload|respond|dismiss|confirm|disable|flush|decide|nudge_act|set)'; then
-    exit 0
-  fi
+  echo "mcp-connector-mutator-gate: BLOCKED — connector classifier failed for '$tool_name'." >&2
+  echo "  Next action: repair shared.mcp_connector_policy or config/mcp-connector-tool-manifest.json, then retry." >&2
+  exit 2
 fi
 
 session_id=""
@@ -46,6 +45,7 @@ else
 fi
 if [[ -z "${role:-}" ]]; then
   echo "mcp-connector-mutator-gate: BLOCKED — cannot determine session role." >&2
+  echo "  Next action: relaunch through scripts/hapax-methodology-dispatch or assert the lane identity." >&2
   exit 2
 fi
 
@@ -57,12 +57,14 @@ elif [[ -f "$HOME/.cache/hapax/cc-active-task-$role" ]]; then
 fi
 if [[ -z "$claim_file" ]]; then
   echo "mcp-connector-mutator-gate: BLOCKED — no claimed task for role '$role'." >&2
+  echo "  Next action: claim the dispatched task with scripts/cc-claim before connector mutation." >&2
   exit 2
 fi
 
 task_id="$(head -n1 "$claim_file" | tr -d '[:space:]')"
 if [[ -z "$task_id" ]]; then
   echo "mcp-connector-mutator-gate: BLOCKED — claim file is empty for role '$role'." >&2
+  echo "  Next action: repair or remove the empty claim file, then run scripts/cc-claim for the dispatched task." >&2
   exit 2
 fi
 
@@ -80,4 +82,10 @@ if [[ -n "${HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR:-}" ]]; then
   args+=(--receipt-dir "$HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR")
 fi
 
+set +e
 PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}" python3 "${args[@]}"
+gate_rc=$?
+set -e
+if [[ "$gate_rc" -ne 0 ]]; then
+  exit 2
+fi

@@ -43,10 +43,22 @@ case "$TOOL" in
     ;;
   mcp__*)
     if command -v python3 >/dev/null 2>&1; then
+      set +e
       canonical_tool="$(
         PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}" \
-          python3 -m shared.mcp_connector_policy canonicalize "$TOOL" 2>/dev/null || true
+          python3 -m shared.mcp_connector_policy canonicalize "$TOOL" 2>/dev/null
       )"
+      canonical_rc=$?
+      set -e
+      if [[ "$canonical_rc" -ne 0 ]]; then
+        echo "authorization-packet-validator: WARNING — MCP canonicalization failed for '$TOOL'; using conservative GitHub release fallback." >&2
+        case "$TOOL" in
+          *merge_pull_request*) canonical_tool="github.merge_pull_request" ;;
+          *create_pull_request*) canonical_tool="github.create_pull_request" ;;
+          *push_files*|*create_or_update_file*|*update_file*|*delete_file*) canonical_tool="github.create_or_update_file" ;;
+          *) canonical_tool="" ;;
+        esac
+      fi
       case "$canonical_tool" in
         github.create_pull_request)
           release_tool=true

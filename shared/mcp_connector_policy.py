@@ -51,6 +51,7 @@ DEFAULT_ROUTE_DECISION_LEDGER = (
 DEFAULT_RECEIPT_DIR = Path.home() / ".cache" / "hapax" / "platform-capability-receipts"
 RECEIPT_DIR_ENV = "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR"
 ROUTE_DECISION_LEDGER_ENV = "HAPAX_ROUTE_DECISION_LEDGER"
+ROUTE_DECISION_MAX_AGE_SECONDS = 24 * 60 * 60
 
 _SERVICE_ALIASES = {
     "codex_apps": "codex_apps",
@@ -75,9 +76,10 @@ _KNOWN_CONNECTOR_SERVICES = frozenset(
 )
 _MUTATING_FUNCTION_RE = re.compile(
     r"^(?:"
-    r"act|add|archive|batch_modify|bulk_label|confirm|correct|create|decide|delete"
-    r"|disable|dismiss|flush|merge|modify|nudge_act|push|respond|send|set|share"
-    r"|update|upload|write"
+    r"act|add|archive|batch_modify|batch_update|bulk_label|bulk_update|confirm"
+    r"|copy|correct|create|decide|delete|disable|dismiss|flush|import|merge"
+    r"|modify|move|nudge_act|push|rename|replace|reply|respond|restore|send|set"
+    r"|share|trash|update|upload|write"
     r")(?:_|$)"
 )
 _READ_ONLY_FUNCTION_RE = re.compile(
@@ -312,9 +314,15 @@ def _sequence(value: Any) -> tuple[str, ...]:
     return ()
 
 
-def _route_decision_refusal(row: dict[str, Any] | None) -> str | None:
+def _route_decision_refusal(row: dict[str, Any] | None, *, now: datetime) -> str | None:
     if row is None:
         return "route_decision_absent"
+    created_at = _parse_dt(row.get("created_at") or row.get("ts"))
+    age_s = (now - created_at).total_seconds()
+    if age_s < 0:
+        return "route_decision_from_future"
+    if age_s > ROUTE_DECISION_MAX_AGE_SECONDS:
+        return "route_decision_stale"
     if row.get("route_id") in {None, ""}:
         return "route_id_absent"
     if row.get("action") != "launch" or row.get("launch_allowed") is not True:
@@ -427,7 +435,7 @@ def evaluate_connector_receipt_gate(
     checked_at = (now or datetime.now(UTC)).astimezone(UTC)
     ledger = _ledger_path(ledger_path)
     route_decision = _latest_route_decision(task_id=task_id, role=role, ledger_path=ledger)
-    route_refusal = _route_decision_refusal(route_decision)
+    route_refusal = _route_decision_refusal(route_decision, now=checked_at)
     if route_refusal is not None:
         return ConnectorReceiptGateResult(
             allowed=False,
@@ -543,22 +551,26 @@ def main(argv: list[str] | None = None) -> int:
     p_gate.add_argument("--json", action="store_true")
 
     args = parser.parse_args(argv)
-    if args.command == "canonicalize":
-        print(canonicalize_tool_name(args.tool_name))
-        return 0
-    if args.command == "classify":
-        print(json.dumps(_classification_json(classify_connector_tool(args.tool_name))))
-        return 0
-    if args.command == "is-side-effecting":
-        return 0 if is_side_effecting_connector_tool(args.tool_name) else 1
+    try:
+        if args.command == "canonicalize":
+            print(canonicalize_tool_name(args.tool_name))
+            return 0
+        if args.command == "classify":
+            print(json.dumps(_classification_json(classify_connector_tool(args.tool_name))))
+            return 0
+        if args.command == "is-side-effecting":
+            return 0 if is_side_effecting_connector_tool(args.tool_name) else 1
 
-    result = evaluate_connector_receipt_gate(
-        args.tool_name,
-        task_id=args.task_id or None,
-        role=args.role or None,
-        ledger_path=args.ledger,
-        receipt_root=args.receipt_dir,
-    )
+        result = evaluate_connector_receipt_gate(
+            args.tool_name,
+            task_id=args.task_id or None,
+            role=args.role or None,
+            ledger_path=args.ledger,
+            receipt_root=args.receipt_dir,
+        )
+    except Exception as exc:
+        print(f"mcp_connector_policy: classifier error: {exc}", file=sys.stderr)
+        return 3
     if args.json:
         print(json.dumps(_gate_json(result), sort_keys=True))
     elif result.allowed:

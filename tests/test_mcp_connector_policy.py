@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from shared.dispatcher_policy import build_route_authority_receipt, write_route_authority_receipt
@@ -19,6 +19,7 @@ def _write_route_decision(
     task_id: str = "task-1",
     lane: str = "cx-red",
     route_id: str = "codex.headless.full",
+    created_at: datetime | None = None,
     quota_refs: list[str] | None = None,
     resource_refs: list[str] | None = None,
 ) -> None:
@@ -26,7 +27,7 @@ def _write_route_decision(
     row = {
         "decision_schema": 1,
         "decision_id": "decision-1",
-        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "created_at": (created_at or datetime.now(UTC)).isoformat().replace("+00:00", "Z"),
         "task_id": task_id,
         "lane": lane,
         "route_id": route_id,
@@ -52,14 +53,18 @@ def _write_connector_receipt(
     task_id: str = "task-1",
     route_id: str = "codex.headless.full",
     surfaces: list[str] | None = None,
+    stale_after: str = "24h",
+    issued_at: datetime | None = None,
 ) -> None:
     receipt = build_route_authority_receipt(
         receipt_type="connector_mutation",
         route_id=route_id,
         receipt_id="connector-test",
         evidence_refs=["operator-signed:connector-test"],
+        stale_after=stale_after,
         task_ids=[task_id],
         mutation_surfaces=surfaces or ["connector", "external", "public", "governance"],
+        issued_at=issued_at,
     )
     write_route_authority_receipt(receipt, receipt_dir=root)
 
@@ -87,13 +92,27 @@ def test_manifest_classifies_mutators_and_read_only_evidence() -> None:
     assert hapax.side_effecting
     assert set(hapax.effect_classes) == {"local_mutation", "governance_mutation"}
 
+    for tool_name in (
+        "mcp__codex_apps__google_drive___import_document",
+        "mcp__codex_apps__google_drive___bulk_update_file_comments",
+        "mcp__codex_apps__google_drive___batch_update_document",
+        "mcp__codex_apps__github___reply_to_review_comment",
+    ):
+        classification = classify_connector_tool(tool_name)
+        assert classification is not None
+        assert classification.side_effecting
+
 
 def test_heuristic_catches_new_mutating_connector_names() -> None:
-    classification = classify_connector_tool("mcp__codex_apps__google_drive___delete_file")
-
-    assert classification is not None
-    assert classification.side_effecting
-    assert classification.matched_by == "heuristic_mutating_verb"
+    for tool_name in (
+        "mcp__codex_apps__google_drive___delete_file",
+        "mcp__codex_apps__google_drive___import_unregistered_file",
+        "mcp__codex_apps__github___reply_to_unregistered_review_comment",
+    ):
+        classification = classify_connector_tool(tool_name)
+        assert classification is not None
+        assert classification.side_effecting
+        assert classification.matched_by == "heuristic_mutating_verb"
 
 
 def test_read_only_connector_does_not_require_receipts(tmp_path: Path) -> None:
@@ -110,16 +129,22 @@ def test_read_only_connector_does_not_require_receipts(tmp_path: Path) -> None:
 
 
 def test_side_effecting_connector_blocks_without_route_decision(tmp_path: Path) -> None:
-    result = evaluate_connector_receipt_gate(
+    for tool_name in (
         "mcp__codex_apps__gmail___send_draft",
-        task_id="task-1",
-        role="cx-red",
-        ledger_path=tmp_path / "missing-route-decisions.jsonl",
-        receipt_root=tmp_path / "receipts",
-    )
+        "mcp__codex_apps__google_drive___import_document",
+        "mcp__codex_apps__google_drive___bulk_update_file_comments",
+        "mcp__codex_apps__github___reply_to_review_comment",
+    ):
+        result = evaluate_connector_receipt_gate(
+            tool_name,
+            task_id="task-1",
+            role="cx-red",
+            ledger_path=tmp_path / "missing-route-decisions.jsonl",
+            receipt_root=tmp_path / "receipts",
+        )
 
-    assert not result.allowed
-    assert result.reason_code == "route_decision_absent"
+        assert not result.allowed
+        assert result.reason_code == "route_decision_absent"
 
 
 def test_side_effecting_connector_requires_quota_and_resource_refs(tmp_path: Path) -> None:
@@ -189,3 +214,65 @@ def test_connector_receipt_must_cover_required_surfaces(tmp_path: Path) -> None:
 
     assert not result.allowed
     assert result.reason_code == "connector_mutation_surface_mismatch"
+
+
+def test_connector_receipt_route_and_task_must_match(tmp_path: Path) -> None:
+    ledger = tmp_path / "route-decisions.jsonl"
+    receipts = tmp_path / "receipts"
+    _write_route_decision(ledger)
+    _write_connector_receipt(receipts, route_id="codex.other.full")
+
+    result = evaluate_connector_receipt_gate(
+        "mcp__codex_apps__gmail___send_draft",
+        task_id="task-1",
+        role="cx-red",
+        ledger_path=ledger,
+        receipt_root=receipts,
+    )
+
+    assert not result.allowed
+    assert result.reason_code == "connector_mutation_route_mismatch"
+
+    _write_connector_receipt(receipts, task_id="other-task")
+    result = evaluate_connector_receipt_gate(
+        "mcp__codex_apps__gmail___send_draft",
+        task_id="task-1",
+        role="cx-red",
+        ledger_path=ledger,
+        receipt_root=receipts,
+    )
+
+    assert not result.allowed
+    assert result.reason_code == "connector_mutation_task_mismatch"
+
+
+def test_connector_receipt_and_route_decision_must_be_fresh(tmp_path: Path) -> None:
+    ledger = tmp_path / "route-decisions.jsonl"
+    receipts = tmp_path / "receipts"
+    old = datetime.now(UTC) - timedelta(days=2)
+    _write_route_decision(ledger, created_at=old)
+    _write_connector_receipt(receipts)
+
+    result = evaluate_connector_receipt_gate(
+        "mcp__codex_apps__gmail___send_draft",
+        task_id="task-1",
+        role="cx-red",
+        ledger_path=ledger,
+        receipt_root=receipts,
+    )
+
+    assert not result.allowed
+    assert result.reason_code == "route_decision_stale"
+
+    _write_route_decision(ledger)
+    _write_connector_receipt(receipts, stale_after="1s", issued_at=old)
+    result = evaluate_connector_receipt_gate(
+        "mcp__codex_apps__gmail___send_draft",
+        task_id="task-1",
+        role="cx-red",
+        ledger_path=ledger,
+        receipt_root=receipts,
+    )
+
+    assert not result.allowed
+    assert result.reason_code == "connector_mutation_receipt_stale"

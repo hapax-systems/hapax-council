@@ -72,10 +72,12 @@
         "mcp__github__add_issue_comment",
         "mcp__github__create_issue_comment",
         "mcp__github__update_issue_comment",
-        "mcp__codex_apps__github___update_issue_comment"
+        "mcp__codex_apps__github___update_issue_comment",
+        "mcp__codex_apps__github___reply_to_review_comment",
+        "mcp__codex_apps__github___update_review_comment"
       ],
       "effect_classes": ["external_mutation", "public_egress", "governance_mutation"],
-      "description": "Create or edit a public GitHub issue or pull request comment."
+      "description": "Create or edit a public GitHub issue, pull request, or review comment."
     },
     {
       "canonical_name": "gmail.get_profile",
@@ -176,13 +178,41 @@
     {
       "canonical_name": "drive.write_file",
       "aliases": [
+        "mcp__codex_apps__google_drive___create_file",
+        "mcp__codex_apps__google_drive___import_document",
+        "mcp__codex_apps__google_drive___import_spreadsheet",
+        "mcp__codex_apps__google_drive___import_presentation",
         "mcp__codex_apps__google_drive___update_file",
         "mcp__codex_apps__google_drive___upload_file",
+        "mcp__codex_apps__google_drive___create_presentation_0cb5796bb4da",
+        "mcp__codex_apps__drive___create_file",
+        "mcp__codex_apps__drive___import_document",
+        "mcp__codex_apps__drive___import_spreadsheet",
+        "mcp__codex_apps__drive___import_presentation",
         "mcp__codex_apps__drive___update_file",
-        "mcp__codex_apps__drive___upload_file"
+        "mcp__codex_apps__drive___upload_file",
+        "mcp__codex_apps__drive___create_presentation_0cb5796bb4da"
       ],
       "effect_classes": ["external_mutation"],
-      "description": "Upload or update a Google Drive file."
+      "description": "Create, import, upload, copy, or update a Google Drive file."
+    },
+    {
+      "canonical_name": "drive.batch_update_document",
+      "aliases": [
+        "mcp__codex_apps__google_drive___batch_update_document",
+        "mcp__codex_apps__drive___batch_update_document"
+      ],
+      "effect_classes": ["external_mutation"],
+      "description": "Apply Google Docs batchUpdate mutations to document content."
+    },
+    {
+      "canonical_name": "drive.file_comments",
+      "aliases": [
+        "mcp__codex_apps__google_drive___bulk_update_file_comments",
+        "mcp__codex_apps__drive___bulk_update_file_comments"
+      ],
+      "effect_classes": ["external_mutation", "public_egress"],
+      "description": "Create, reply to, or resolve Google Drive file comments."
     },
     {
       "canonical_name": "hapax.query",
