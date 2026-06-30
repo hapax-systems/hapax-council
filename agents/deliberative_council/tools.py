@@ -216,9 +216,10 @@ async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -
             ),
         )
     except Exception as e:
+        log.warning("qdrant_lookup failed: %s", e)
         return _memo_put(
             key,
-            prefix + f"Qdrant error: {e}; "
+            prefix + "Qdrant error: local RAG lookup unavailable; "
             "next_action=check qdrant service, collection name, and local embedding route",
         )
 

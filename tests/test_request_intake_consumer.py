@@ -829,6 +829,32 @@ def test_planning_feed_cctv_refused_route_admission_is_loud(tmp_path: Path) -> N
     assert request["cctv_intake_blocker"] == "cctv_route_resource_not_admitted:refused"
 
 
+def test_planning_feed_cctv_partial_route_admission_is_loud(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-CCTV-PARTIAL.md",
+        "REQ-CCTV-PARTIAL",
+        status="accepted_for_planning",
+        planning_case="CASE-TEST-001",
+        extra_frontmatter={
+            "cctv_intake_receipt": "receipt://REQ-CCTV-PARTIAL",
+            "cctv_intake_verdict": "ready_to_plan",
+            "cctv_route_resource_admission": "partial_admitted",
+        },
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    request = data["requests"][0]
+    assert request["coverage"] == "needs_cctv_hardening"
+    assert request["cctv_intake_blocker"] == "cctv_route_resource_not_admitted:partial_admitted"
+
+
 def test_planning_feed_cctv_admitted_route_without_receipts_is_loud(tmp_path: Path) -> None:
     active = tmp_path / "requests" / "active"
     active.mkdir(parents=True)

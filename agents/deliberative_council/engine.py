@@ -156,6 +156,7 @@ async def run_phase1(
     """
 
     async def _run_one(alias: str, seed: int) -> PhaseOneResult | None:
+        score_admission: CapabilityAdmissionReceipt | None = None
         try:
             if not rubric.requires_research:
                 # JUDGMENT rubric (coherence, narrative_quality): the object of

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -7,6 +8,8 @@ from agents.deliberative_council.capability_admission import (
     CapabilityAdmissionReceipt,
     admit_model_alias,
     admit_tool,
+    capability_admission_event_scope,
+    record_capability_admission,
     route_resource_admission_state,
 )
 from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
@@ -131,3 +134,41 @@ def test_route_resource_admission_state_distinguishes_partial() -> None:
     assert route_resource_admission_state(()) == "missing"
     assert route_resource_admission_state((admitted, refused)) == "partial_admitted"
     assert route_resource_admission_state((refused,)) == "refused"
+
+
+async def test_capability_admission_event_scope_is_task_local() -> None:
+    first = CapabilityAdmissionReceipt(
+        receipt_id="first",
+        receipt_ref="cctv-capability-admission:first",
+        capability_id="cctv.model.opus",
+        route_id="claude-opus",
+        provider="anthropic",
+        capacity_pool="api_paid_spend",
+        admission_action="admitted",
+        admitted=True,
+        receipt_refs=("cctv-capability-admission:first",),
+    )
+    second = CapabilityAdmissionReceipt(
+        receipt_id="second",
+        receipt_ref="cctv-capability-admission:second",
+        capability_id="cctv.model.gemini-3-pro",
+        route_id="gemini-pro",
+        provider="google",
+        capacity_pool="api_paid_spend",
+        admission_action="admitted",
+        admitted=True,
+        receipt_refs=("cctv-capability-admission:second",),
+    )
+
+    async def _record(admission: CapabilityAdmissionReceipt) -> list[CapabilityAdmissionReceipt]:
+        events: list[CapabilityAdmissionReceipt] = []
+        with capability_admission_event_scope(events):
+            await asyncio.sleep(0)
+            record_capability_admission(admission)
+            await asyncio.sleep(0)
+        return events
+
+    first_events, second_events = await asyncio.gather(_record(first), _record(second))
+
+    assert first_events == [first]
+    assert second_events == [second]
