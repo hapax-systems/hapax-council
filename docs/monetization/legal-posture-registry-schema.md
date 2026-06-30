@@ -58,6 +58,7 @@ A row is uniquely identified by the tuple `(surface, venue, instrument)`. There 
 - Specificity: `(surface, venue, instrument)` > `(surface, venue, *)` > `(surface, *, instrument)` > `(surface, *, *)`.
 - Venue-specific rows outrank global instrument defaults because g2 is a legal-in-venue gate; the wildcard-venue instrument row exists for deterministic fallback only.
 - The most specific matching row wins. If the most specific match is DARK, the disposition is blocked regardless of less-specific LIT rows.
+- For committed dispositions, wildcard rows are advisory context only. Commit authority requires an exact fresh LIT row for the named `(surface, venue, instrument)` tuple.
 
 ## 3. G2 Verdict Semantics — LIT / PARTIAL / DARK
 
@@ -84,7 +85,7 @@ A row is uniquely identified by the tuple `(surface, venue, instrument)`. There 
 - `operator_signed` must be `true`.
 - Row must not be stale.
 
-**Effect:** The g2 gate passes with advisory warning. The disposition may proceed but the open questions are surfaced as a governance advisory. A PARTIAL verdict with stale review degrades to DARK.
+**Effect:** The planning-time g2 read may surface PARTIAL as advisory context, but a committed disposition does not proceed on PARTIAL. Commit authority requires LIT. A PARTIAL verdict with stale review degrades to DARK.
 
 ### 3.3 DARK (No Clearance)
 
@@ -131,30 +132,26 @@ The operator should review all non-DARK rows at least once per `freshness_ttl_da
 
 ### 5.1 Gate Predicate
 
-The g2 gate is a presence-check against this registry. Formally:
+The disposition-commit g2 gate is a presence-check against this registry. Formally:
 
 ```text
-g2_gate(surface, venue, instrument) → { PASS, PASS_WITH_ADVISORY, FAIL }
+g2_commit_gate(surface, venue, instrument) → { PASS, FAIL }
 
-1. Find the most specific matching row R for (surface, venue, instrument), using this deterministic order:
-   a. (surface, venue, instrument)
-   b. (surface, venue, *)
-   c. (surface, *, instrument)
-   d. (surface, *, *)
-2. If no row exists → FAIL (absence = DARK).
-3. If R.operator_signed == false AND R.g2_verdict != DARK → FAIL (unsigned non-DARK is invalid).
-4. Compute effective_verdict:
-   a. If R is stale AND R.g2_verdict != DARK → effective_verdict = DARK.
-   b. Otherwise → effective_verdict = R.g2_verdict.
-5. If effective_verdict == LIT → PASS.
-6. If effective_verdict == PARTIAL → PASS_WITH_ADVISORY (surface open_questions + staleness warning).
-7. If effective_verdict == DARK → FAIL.
+1. Find the exact row R for `(surface, venue, instrument)`.
+2. If no exact row exists → FAIL (absence = DARK). Wildcard rows may be displayed as advisory context, but they are not commit authority.
+3. If R.g2_verdict == DARK → FAIL.
+4. If R.operator_signed == false AND R.g2_verdict != DARK → FAIL (unsigned non-DARK is invalid).
+5. If R is stale AND R.g2_verdict != DARK → FAIL (stale non-DARK degrades to DARK).
+6. If R.g2_verdict == PARTIAL → FAIL for commit (advisory only).
+7. If R.g2_verdict == LIT but `authority_basis` is `no_research` or `operator_judgment` → FAIL.
+8. If R.g2_verdict == LIT but `open_questions` is non-empty → FAIL.
+9. If R.g2_verdict == LIT, `authority_basis` is committable, and `open_questions` is empty → PASS.
 ```
 
 ### 5.2 Fail-Closed Invariant
 
-**A disposition touching a surface+venue+instrument tuple MUST NOT commit if `g2_gate()` returns FAIL.** This is a hard gate, not an advisory. The only escape is:
-- Add or update a registry row with LIT or PARTIAL verdict.
+**A disposition touching a surface+venue+instrument tuple MUST NOT commit if `g2_commit_gate()` returns FAIL.** This is a hard gate, not an advisory. The only escape is:
+- Add or update an exact registry row with LIT verdict.
 - Obtain operator signature.
 - Ensure freshness.
 
@@ -162,13 +159,29 @@ There is no `HAPAX_G2_OFF` env var. There is no bypass. The gate reads the regis
 
 ### 5.3 Gate Placement
 
-The g2 gate fires at:
+This phase defines the reusable g2 commit predicate and refusal API. Production
+commit-path integration is governed by follow-on task
+`20260628-mdlccore-phase2-g2-legal-venue-gate-reads-registry`, which MUST call
+`require_g2_commit_admitted()` before persisting any monetization or arbitrage
+disposition.
+
+Once wired by that follow-on task, the g2 gate fires at:
 - **Disposition commit time** — before any monetization or arbitrage disposition is persisted.
 - **Disposition planning time** (advisory) — `coord.why-blocked` can dry-run g2 and report missing/stale/DARK rows before work begins.
 
 ### 5.4 Recheck Commands
 
-Until the source gate exists, reviewers can recheck the registry contract with deterministic text/YAML checks:
+Reviewers can recheck the source gate and the registry contract with deterministic commands:
+
+```bash
+uv run pytest tests/shared/test_legal_posture_registry.py -q
+uv run --extra ci pytest tests -q -k 'g2 or legal_registry or mondlc'
+uv run ruff check shared tests
+uv run ruff format --check shared/legal_posture_registry.py tests/shared/test_legal_posture_registry.py
+git diff --check
+```
+
+The registry-only contract can also be rechecked with deterministic text/YAML checks:
 
 ```bash
 python3 - <<'PY'
@@ -205,7 +218,9 @@ assert "(surface, *, instrument)" in schema
 assert "agency-scoped federal rows" in schema
 assert "US-SEC" in schema and "US-CFTC" in schema and "US-DOJ" in schema
 assert "If R is stale AND R.g2_verdict != DARK" in schema
-assert "If no row exists → FAIL" in schema
+assert "If no exact row exists → FAIL" in schema
+assert "authority_basis is committable" in schema
+assert "20260628-mdlccore-phase2-g2-legal-venue-gate-reads-registry" in schema
 print(f"legal-posture registry recheck OK: {len(rows)} rows")
 PY
 ```
