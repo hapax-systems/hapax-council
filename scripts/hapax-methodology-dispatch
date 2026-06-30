@@ -364,6 +364,32 @@ def allow_codex_p0_local_dispatch_fallback(
     return lane in p0_codex_drain_lanes() and task_is_p0_incident(task_id, validation)
 
 
+def allow_codex_governed_relay_reactivation(
+    *,
+    route: PlatformPath,
+    route_decision: RouteDecision,
+    durable_binding: DurableDispatchBinding,
+    validation: Validation,
+) -> bool:
+    """Permit retired-relay reactivation only for a fully bound mutable launch.
+
+    The fail-safe default is false: read-only exemptions, advisory MQ checks,
+    missing message IDs, non-launch route decisions, non-Codex routes, or
+    immutable routes must leave the launcher without ``--force`` so the relay
+    lifecycle guard remains the next authority boundary.
+    """
+    return (
+        route.platform == "codex"
+        and route.mode == "headless"
+        and route.mutable
+        and not validation.exempt_read_only
+        and route_decision.action is DispatchAction.LAUNCH
+        and durable_binding.ok
+        and not durable_binding.advisory_only
+        and durable_binding.message_id is not None
+    )
+
+
 def parse_frontmatter(text: str) -> dict[str, Any]:
     fields, _body = parse_document_frontmatter(text)
     return dict(fields)
@@ -1643,6 +1669,8 @@ def launch_codex_headless(
     prompt: str,
     validation: Validation,
     route: PlatformPath,
+    *,
+    reactivate_retired_relay: bool = False,
 ) -> int:
     # Genuine headless path (reform §6 P0): `codex exec` via hapax-codex-headless,
     # NOT a tmux pane. The tmux launcher (hapax-codex) remains the interactive
@@ -1661,7 +1689,8 @@ def launch_codex_headless(
     if validation.task is not None:
         status = strip_scalar(str(validation.task.fields.get("status", "")))
     args = [str(launcher), "--task", task_id]
-    if allow_codex_p0_local_dispatch_fallback(task_id, lane, validation):
+    local_fallback_allowed = allow_codex_p0_local_dispatch_fallback(task_id, lane, validation)
+    if reactivate_retired_relay or local_fallback_allowed:
         args.append("--force")
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
@@ -1679,7 +1708,7 @@ def launch_codex_headless(
     env = os.environ.copy()
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
-    if allow_codex_p0_local_dispatch_fallback(task_id, lane, validation):
+    if local_fallback_allowed:
         # Preserve a caller/operator-provided fallback value; the P0 drain rule
         # only supplies the default local fallback when the env is otherwise unset.
         env.setdefault("HAPAX_DISPATCH_HOST_FALLBACK", "local")
@@ -2267,6 +2296,12 @@ def main(argv: list[str] | None = None) -> int:
         # Launchable (platform, mode) -> adapter call. Eligibility is decided by
         # the Executor capability registry (supports_route), NOT a hard if-ladder
         # (reform §6 P1) — adding a runtime/mode is a one-line table + registry edit.
+        reactivate_retired_codex_relay = allow_codex_governed_relay_reactivation(
+            route=route,
+            route_decision=route_decision,
+            durable_binding=durable_binding,
+            validation=validation,
+        )
         launchers: dict[tuple[str, str], Any] = {
             ("claude", "headless"): lambda: launch_claude_headless(
                 args.task, args.lane, prompt or "", route
@@ -2275,7 +2310,12 @@ def main(argv: list[str] | None = None) -> int:
                 args.task, args.lane, validation
             ),
             ("codex", "headless"): lambda: launch_codex_headless(
-                args.task, args.lane, prompt or "", validation, route
+                args.task,
+                args.lane,
+                prompt or "",
+                validation,
+                route,
+                reactivate_retired_relay=reactivate_retired_codex_relay,
             ),
             ("vibe", "headless"): lambda: launch_vibe_headless(
                 args.task, args.lane, prompt or "", validation
