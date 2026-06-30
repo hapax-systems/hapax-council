@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import shared.capdlc_lifecycle as capdlc_lifecycle
 from shared.capdlc_lifecycle import (
     CAPDLC_CANONICAL_LABEL,
     CAPDLC_DARK_STUB,
     CAPDLC_LIFECYCLE_REGISTRY,
     CAPDLC_SLUG,
+    CapDLCLifecycleEntry,
     CapDLCLifecycleState,
     measured_capdlc_entries,
     resolve_capdlc_lifecycle,
@@ -23,9 +25,11 @@ def test_registry_uses_capdlc_as_future_facing_label() -> None:
 
 def test_legacy_mdlc_resolves_only_as_provenance_alias() -> None:
     assert resolve_capdlc_lifecycle("CapDLC") is CAPDLC_DARK_STUB
+    assert resolve_capdlc_lifecycle("  CapDLC  ") is CAPDLC_DARK_STUB
     assert resolve_capdlc_lifecycle("capdlc") is CAPDLC_DARK_STUB
     assert resolve_capdlc_lifecycle("MDLC") is CAPDLC_DARK_STUB
     assert resolve_capdlc_lifecycle("MonDLC") is None
+    assert resolve_capdlc_lifecycle("") is None
 
 
 def test_dark_specified_stub_is_falsy_and_unmeasured() -> None:
@@ -37,3 +41,29 @@ def test_dark_specified_stub_is_falsy_and_unmeasured() -> None:
 
 def test_dark_stub_is_not_counted_as_measured_value() -> None:
     assert measured_capdlc_entries() == ()
+
+
+def test_measured_entry_is_truthy_and_counted() -> None:
+    entry = CapDLCLifecycleEntry(
+        slug="capdlc-measured-fixture",
+        canonical_label="CapDLC",
+        lifecycle_state=CapDLCLifecycleState.MEASURED,
+        measured_value=1.0,
+    )
+
+    assert entry.is_measured is True
+    assert bool(entry) is True
+
+
+def test_public_exports_are_stable() -> None:
+    assert set(capdlc_lifecycle.__all__) == {
+        "CAPDLC_CANONICAL_LABEL",
+        "CAPDLC_DARK_STUB",
+        "CAPDLC_LEGACY_LABELS",
+        "CAPDLC_LIFECYCLE_REGISTRY",
+        "CAPDLC_SLUG",
+        "CapDLCLifecycleEntry",
+        "CapDLCLifecycleState",
+        "measured_capdlc_entries",
+        "resolve_capdlc_lifecycle",
+    }
