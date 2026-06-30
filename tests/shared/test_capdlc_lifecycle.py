@@ -60,6 +60,18 @@ def test_measured_entry_is_truthy() -> None:
     assert bool(entry) is True
 
 
+def test_measured_state_without_value_is_falsy() -> None:
+    entry = CapDLCLifecycleEntry(
+        slug="capdlc-empty-measured-fixture",
+        canonical_label="CapDLC",
+        lifecycle_state=CapDLCLifecycleState.MEASURED,
+        measured_value=None,
+    )
+
+    assert entry.is_measured is False
+    assert bool(entry) is False
+
+
 def test_measured_registry_entries_are_returned(monkeypatch: pytest.MonkeyPatch) -> None:
     entry = CapDLCLifecycleEntry(
         slug="capdlc-measured-fixture",
@@ -70,7 +82,11 @@ def test_measured_registry_entries_are_returned(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setitem(CAPDLC_LIFECYCLE_REGISTRY, entry.slug, entry)
 
-    assert measured_capdlc_entries() == (entry,)
+    result = measured_capdlc_entries()
+
+    assert result == (entry,)
+    assert entry in result
+    assert CAPDLC_DARK_STUB not in result
 
 
 def test_public_exports_are_stable() -> None:
