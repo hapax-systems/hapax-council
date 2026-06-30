@@ -11,6 +11,7 @@ from pydantic_ai.providers.litellm import LiteLLMProvider
 
 from shared.config import LITELLM_BASE, LITELLM_KEY, MODELS
 
+from .capability_admission import admit_model_alias
 from .tools import FULL_TOOLS, RESTRICTED_TOOLS
 
 
@@ -210,6 +211,7 @@ def build_member(
     system_prompt: str | None = None,
 ) -> Agent[None, str]:
     model_alias = normalize_model_alias(model_alias)
+    capability_admission = admit_model_alias(model_alias)
     if tool_level is None:
         tool_level = MODEL_TOOL_LEVELS.get(model_alias, ToolLevel.FULL)
 
@@ -224,10 +226,13 @@ def build_member(
     # LOUD rather than silently retrying. Combined with the per-run UsageLimits in
     # engine._call_member, a member can no longer runaway-loop or degrade quietly.
     # cc-task cctv-council-perfect-health-faillloud-convergence.
-    return Agent(
+    agent = Agent(
         get_cctv_model(model_alias),
         system_prompt=system_prompt or "",
         model_settings=model_settings_for_alias(model_alias),
         tools=tools,  # type: ignore[arg-type]
         retries=0,
     )
+    agent._cctv_model_alias = model_alias
+    agent._cctv_capability_admission = capability_admission
+    return agent

@@ -171,11 +171,25 @@ cctv_intake_admission_for_note() {
   return 0
 }
 
+cctv_route_resource_admission_for_note() {
+  local note="$1"
+  local field value
+  for field in cctv_route_resource_admission route_resource_admission cctv_capability_admission capability_admission; do
+    value="$(frontmatter_value "$field" "$note" | compact_value)"
+    if [[ -n "$value" && "$value" != "null" && "$value" != "None" && "$value" != "unassigned" ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done
+  return 0
+}
+
 cctv_intake_blocker_for_note() {
   local note="$1"
-  local receipt admission
+  local receipt admission route_admission
   receipt="$(cctv_intake_receipt_for_note "$note")"
   admission="$(cctv_intake_admission_for_note "$note")"
+  route_admission="$(cctv_route_resource_admission_for_note "$note")"
   if [[ -z "$receipt" ]]; then
     printf '%s\n' "missing_cctv_intake_receipt"
     return 0
@@ -185,11 +199,22 @@ cctv_intake_blocker_for_note() {
     return 0
   fi
   case "$admission" in
-    ready_to_plan|advance|admitted)
+    ready_to_plan|advance|admitted) ;;
+    *)
+      printf 'cctv_intake_not_ready:%s\n' "$admission"
+      return 0
+      ;;
+  esac
+  if [[ -z "$route_admission" ]]; then
+    printf '%s\n' "missing_cctv_route_resource_admission"
+    return 0
+  fi
+  case "$route_admission" in
+    admitted)
       return 0
       ;;
     *)
-      printf 'cctv_intake_not_ready:%s\n' "$admission"
+      printf 'cctv_route_resource_not_admitted:%s\n' "$route_admission"
       return 0
       ;;
   esac
@@ -348,6 +373,12 @@ CCTV_INTAKE_ADMISSION_FIELDS = (
     "cctv_intake_recommendation",
     "intake_recommendation",
 )
+CCTV_ROUTE_RESOURCE_ADMISSION_FIELDS = (
+    "cctv_route_resource_admission",
+    "route_resource_admission",
+    "cctv_capability_admission",
+    "capability_admission",
+)
 
 
 def cctv_intake_blocker(data: dict[str, object]) -> str | None:
@@ -359,6 +390,11 @@ def cctv_intake_blocker(data: dict[str, object]) -> str | None:
         return "missing_cctv_intake_verdict"
     if admission not in CCTV_READY_ADMISSION_VALUES:
         return f"cctv_intake_not_ready:{admission}"
+    route_admission = first_scalar(data, CCTV_ROUTE_RESOURCE_ADMISSION_FIELDS)
+    if not route_admission:
+        return "missing_cctv_route_resource_admission"
+    if route_admission != "admitted":
+        return f"cctv_route_resource_not_admitted:{route_admission}"
     return None
 
 

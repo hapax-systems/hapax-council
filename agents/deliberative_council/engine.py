@@ -15,6 +15,14 @@ from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import UserContent
 
 from .aggregation import AxisAggregate, aggregate_scores, should_shortcircuit
+from .capability_admission import (
+    admissions_for_model_aliases,
+    capability_receipt_refs,
+    member_capability_admission,
+    require_member_admission,
+    route_resource_admission_state,
+    tool_call_log_label,
+)
 from .members import (
     ToolLevel,
     build_member,
@@ -86,7 +94,7 @@ async def _call_member(
     *,
     output_type: Any | None = None,
     usage_limits: UsageLimits | None = None,
-) -> tuple[Any, list[str]]:
+) -> tuple[Any, list[str], str]:
     """Run a member, bounded and (optionally) under a structured output contract.
 
     ``usage_limits`` caps tool iterations + requests (the runaway fix);
@@ -99,6 +107,7 @@ async def _call_member(
         run_kwargs["output_type"] = output_type
     if usage_limits is not None:
         run_kwargs["usage_limits"] = usage_limits
+    require_member_admission(member)
     result = await asyncio.wait_for(member.run(prompt, **run_kwargs), timeout=_MEMBER_TIMEOUT_S)
     tool_calls: list[str] = []
     served_model = ""
@@ -116,11 +125,11 @@ async def _call_member(
                 if kind == "tool-call":
                     name = getattr(part, "tool_name", "?")
                     args = str(getattr(part, "args", ""))[:200]
-                    tool_calls.append(f"{name}({args})")
+                    tool_calls.append(f"{tool_call_log_label(str(name))}({args})")
                 elif kind == "tool-return":
                     name = getattr(part, "tool_name", "?")
                     content = str(getattr(part, "content", ""))[:200]
-                    tool_calls.append(f"{name} → {content}")
+                    tool_calls.append(f"{tool_call_log_label(str(name))} → {content}")
     except Exception:
         pass
     return result.output, tool_calls, served_model
@@ -224,6 +233,7 @@ async def run_phase1(
                 output_type=NativeOutput(build_phase1_model(rubric)),
                 usage_limits=_SCORE_LIMITS,
             )
+            score_admission = member_capability_admission(score_member)
         except Exception as e:
             # Full detail (which may include a request URL or auth header from
             # an upstream LiteLLM error) goes only to the server log, where
@@ -266,6 +276,12 @@ async def run_phase1(
             research_findings=phase1_output.research_findings,
             tool_calls_log=tool_calls + score_tools,
             served_model=served_model,
+            capability_id=score_admission.capability_id if score_admission else "",
+            route_id=score_admission.route_id if score_admission else "",
+            capability_admission_action=(
+                score_admission.admission_action if score_admission else ""
+            ),
+            capability_receipt_refs=score_admission.receipt_refs if score_admission else (),
         )
 
     results_or_none = await asyncio.gather(
@@ -374,6 +390,12 @@ async def _deliberate(
         json.dumps({"text": inp.text, "source_ref": inp.source_ref}, sort_keys=True).encode()
     ).hexdigest()
     cache_policy = cache_policy_for_aliases(config.model_aliases)
+    capability_admissions = admissions_for_model_aliases(config.model_aliases)
+    capability_admission_payload = [
+        admission.model_dump(mode="json") for admission in capability_admissions
+    ]
+    route_resource_admission = route_resource_admission_state(capability_admissions)
+    capability_refs = capability_receipt_refs(capability_admissions)
 
     failed_members: list[MemberFailure] = []
     phase1_results = await run_phase1(inp, rubric, config, failures_out=failed_members)
@@ -412,6 +434,9 @@ async def _deliberate(
                 "council_health": health_payload,
                 "failed_members": failed_members_payload,
                 "cache_policy": cache_policy,
+                "capability_admissions": capability_admission_payload,
+                "route_resource_admission": route_resource_admission,
+                "capability_receipt_refs": list(capability_refs),
             },
         )
 
@@ -435,6 +460,9 @@ async def _deliberate(
                 "ruler_substituted": (health_payload.get("served_substitutions") or 0) > 0,
                 "failed_members": failed_members_payload,
                 "cache_policy": cache_policy,
+                "capability_admissions": capability_admission_payload,
+                "route_resource_admission": route_resource_admission,
+                "capability_receipt_refs": list(capability_refs),
                 "phases_completed": [1],
                 "phase1_transcript": [
                     {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results
@@ -481,6 +509,9 @@ async def _deliberate(
             "ruler_substituted": (health_payload.get("served_substitutions") or 0) > 0,
             "failed_members": failed_members_payload,
             "cache_policy": cache_policy,
+            "capability_admissions": capability_admission_payload,
+            "route_resource_admission": route_resource_admission,
+            "capability_receipt_refs": list(capability_refs),
             "phases_completed": [1, 2, 3, 4, 5],
             "phase1_transcript": [
                 {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results

@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from .capability_admission import admit_tool, tool_result_prefix
+
 log = logging.getLogger(__name__)
 
 HAPAX_COUNCIL_DIR = Path(__file__).resolve().parent.parent.parent
@@ -149,6 +151,14 @@ async def web_verify(ctx: Any, query: str) -> str:
     if cached is not None:
         return cached
     log.info("council_tool call: web_verify(%s)", query[:100])
+    admission = admit_tool("web_verify")
+    prefix = tool_result_prefix(admission)
+    if not admission.admitted:
+        log.warning("web_verify refused by capability admission: %s", admission.short_reason())
+        return _memo_put(
+            key,
+            prefix + "refused before external research provider invocation",
+        )
     from pydantic_ai import Agent
 
     from shared.config import get_model
@@ -163,14 +173,20 @@ async def web_verify(ctx: Any, query: str) -> str:
         log.warning("web_verify timed out after %.0fs: %s", _WEB_VERIFY_TIMEOUT_S, query[:80])
         return _memo_put(
             key,
-            f"(web_verify timed out after {_WEB_VERIFY_TIMEOUT_S:.0f}s — no external evidence gathered)",
+            prefix
+            + f"(web_verify timed out after {_WEB_VERIFY_TIMEOUT_S:.0f}s — no external evidence gathered)",
         )
-    return _memo_put(key, str(result.output)[:MAX_READ_CHARS])
+    return _memo_put(key, prefix + str(result.output)[:MAX_READ_CHARS])
 
 
 async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -> str:
     """RAG search across ingested documents."""
     log.info("council_tool call: qdrant_lookup(%s, %s)", query[:100], collection)
+    admission = admit_tool("qdrant_lookup")
+    prefix = tool_result_prefix(admission)
+    if not admission.admitted:
+        log.warning("qdrant_lookup refused by capability admission: %s", admission.short_reason())
+        return prefix + "refused before local embedding/resource invocation"
     try:
         from shared.config import embed
 
@@ -180,12 +196,12 @@ async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -
         client = QdrantClient(host="localhost", port=6333)
         results = client.search(collection_name=collection, query_vector=vector, limit=3)
         if not results:
-            return f"No results in {collection} for: {query}"
+            return prefix + f"No results in {collection} for: {query}"
         return "\n---\n".join(
-            f"score={r.score:.3f}: {r.payload.get('text', '')[:500]}" for r in results
+            prefix + f"score={r.score:.3f}: {r.payload.get('text', '')[:500]}" for r in results
         )
     except Exception as e:
-        return f"Qdrant error: {e}"
+        return prefix + f"Qdrant error: {e}"
 
 
 async def vault_read(ctx: Any, note_path: str) -> str:

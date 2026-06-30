@@ -14,6 +14,7 @@ import asyncio
 from unittest.mock import patch
 
 from agents.deliberative_council import tools
+from agents.deliberative_council.capability_admission import CapabilityAdmissionReceipt
 from agents.deliberative_council.tools import (
     grep_evidence,
     read_source,
@@ -116,6 +117,21 @@ class _FakeWebOut:
     output = "external evidence summary"
 
 
+def _admitted_web_verify() -> CapabilityAdmissionReceipt:
+    return CapabilityAdmissionReceipt(
+        receipt_id="cctv-test-web-verify",
+        receipt_ref="cctv-capability-admission:cctv-test-web-verify",
+        capability_id="cctv.tool.web_verify",
+        route_id="litellm.perplexity.web-research",
+        provider="perplexity",
+        capacity_pool="api_paid_spend",
+        admission_action="admitted",
+        admitted=True,
+        reason_codes=("test_admitted",),
+        receipt_refs=("cctv-capability-admission:cctv-test-web-verify",),
+    )
+
+
 def _counting_web_agent():
     calls = {"n": 0}
 
@@ -136,13 +152,15 @@ async def test_web_verify_memoized_within_scope() -> None:
     # same evidence is not re-fetched (and a slow/dead query is not re-paid).
     calls, fake_agent = _counting_web_agent()
     with (
+        patch("agents.deliberative_council.tools.admit_tool", return_value=_admitted_web_verify()),
         patch("pydantic_ai.Agent", fake_agent),
         patch("shared.config.get_model", return_value="dummy-model"),
     ):
         with tool_memoization_scope():
             r1 = await web_verify(None, "is the launch-team paradox real?")
             r2 = await web_verify(None, "is the launch-team paradox real?")
-        assert r1 == r2 == "external evidence summary"
+        assert r1 == r2
+        assert r1.endswith("external evidence summary")
         assert calls["n"] == 1  # the second identical query short-circuited
         # A distinct query is a cache miss; a fresh scope (new segment) re-pays.
         with tool_memoization_scope():
@@ -153,6 +171,7 @@ async def test_web_verify_memoized_within_scope() -> None:
 async def test_web_verify_uncached_without_scope() -> None:
     calls, fake_agent = _counting_web_agent()
     with (
+        patch("agents.deliberative_council.tools.admit_tool", return_value=_admitted_web_verify()),
         patch("pydantic_ai.Agent", fake_agent),
         patch("shared.config.get_model", return_value="dummy-model"),
     ):
@@ -177,6 +196,7 @@ async def test_web_verify_timeout_memoized_within_scope() -> None:
             return _FakeWebOut()
 
     with (
+        patch("agents.deliberative_council.tools.admit_tool", return_value=_admitted_web_verify()),
         patch("pydantic_ai.Agent", _SlowAgent),
         patch("shared.config.get_model", return_value="dummy-model"),
         patch.object(tools, "_WEB_VERIFY_TIMEOUT_S", 0.01),

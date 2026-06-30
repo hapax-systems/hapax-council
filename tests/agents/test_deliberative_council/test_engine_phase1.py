@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic_ai.messages import CachePoint
 
-from agents.deliberative_council.engine import deliberate, run_phase1
+from agents.deliberative_council.capability_admission import (
+    CapabilityAdmissionError,
+    CapabilityAdmissionReceipt,
+)
+from agents.deliberative_council.engine import _call_member, deliberate, run_phase1
 from agents.deliberative_council.models import (
     ConvergenceStatus,
     CouncilConfig,
@@ -29,6 +33,21 @@ from agents.deliberative_council.rubrics import EpistemicQualityRubric
 _QUORUM_OFF = {"min_valid_members": 1, "min_valid_families": 1}
 
 
+def _admission(*, admitted: bool) -> CapabilityAdmissionReceipt:
+    return CapabilityAdmissionReceipt(
+        receipt_id="cctv-test-member",
+        receipt_ref="cctv-capability-admission:cctv-test-member",
+        capability_id="cctv.model.opus",
+        route_id="litellm.anthropic.claude-opus-4",
+        provider="anthropic",
+        capacity_pool="api_paid_spend",
+        admission_action="admitted" if admitted else "refused",
+        admitted=admitted,
+        reason_codes=("test_admitted" if admitted else "no_matching_transitionbudget",),
+        receipt_refs=("cctv-capability-admission:cctv-test-member",),
+    )
+
+
 def _phase1_mock(score: Phase1Output | Exception):
     async def _mock(member, prompt, *, output_type=None, usage_limits=None):
         if output_type is None:  # investigate (research) call
@@ -41,6 +60,17 @@ def _phase1_mock(score: Phase1Output | Exception):
 
 
 class TestRunPhase1:
+    @pytest.mark.asyncio
+    async def test_call_member_refuses_before_provider_run_without_admission(self) -> None:
+        member = MagicMock()
+        member.run = AsyncMock()
+        member._cctv_capability_admission = _admission(admitted=False)
+
+        with pytest.raises(CapabilityAdmissionError):
+            await _call_member(member, "prompt")
+
+        member.run.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_returns_results_per_model(self) -> None:
         mock = _phase1_mock(

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic_ai.messages import CachePoint, UserPromptPart
 
+from agents.deliberative_council.capability_admission import CapabilityAdmissionReceipt
 from agents.deliberative_council.members import (
     MODEL_TOOL_LEVELS,
     CCTVLiteLLMChatModel,
@@ -27,6 +28,26 @@ from agents.deliberative_council.tools import (
     vault_read,
     web_verify,
 )
+
+
+def _tool_admission(
+    tool_name: str,
+    *,
+    admitted: bool = True,
+    reason_codes: tuple[str, ...] = ("test_admitted",),
+) -> CapabilityAdmissionReceipt:
+    return CapabilityAdmissionReceipt(
+        receipt_id=f"cctv-test-{tool_name}",
+        receipt_ref=f"cctv-capability-admission:cctv-test-{tool_name}",
+        capability_id=f"cctv.tool.{tool_name}",
+        route_id=f"test.route.{tool_name}",
+        provider="test-provider",
+        capacity_pool="api_paid_spend",
+        admission_action="admitted" if admitted else "refused",
+        admitted=admitted,
+        reason_codes=reason_codes,
+        receipt_refs=(f"cctv-capability-admission:cctv-test-{tool_name}",),
+    )
 
 
 class TestReadSource:
@@ -83,12 +104,17 @@ class TestWebVerify:
         mock_agent = MagicMock()
         mock_agent.run = AsyncMock(return_value=mock_result)
         with (
+            patch(
+                "agents.deliberative_council.tools.admit_tool",
+                return_value=_tool_admission("web_verify"),
+            ),
             patch("pydantic_ai.Agent", return_value=mock_agent),
             patch("shared.config.get_model") as mock_get_model,
         ):
             result = await web_verify(None, "test claim")
             mock_get_model.assert_called_once_with("web-research")
             assert "Verified" in result
+            assert "capability_id=cctv.tool.web_verify" in result
 
     @pytest.mark.asyncio
     async def test_times_out_gracefully(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -108,6 +134,10 @@ class TestWebVerify:
         mock_agent = MagicMock()
         mock_agent.run = _hang
         with (
+            patch(
+                "agents.deliberative_council.tools.admit_tool",
+                return_value=_tool_admission("web_verify"),
+            ),
             patch("pydantic_ai.Agent", return_value=mock_agent),
             patch("shared.config.get_model"),
         ):
@@ -124,18 +154,46 @@ class TestQdrantLookup:
         mock_client = MagicMock()
         mock_client.search.return_value = [mock_result]
         with (
+            patch(
+                "agents.deliberative_council.tools.admit_tool",
+                return_value=_tool_admission("qdrant_lookup"),
+            ),
             patch("shared.config.embed", return_value=[0.1] * 768),
             patch("qdrant_client.QdrantClient", return_value=mock_client),
         ):
             result = await qdrant_lookup(None, "test query")
             assert "0.85" in result
             assert "relevant content" in result
+            assert "capability_id=cctv.tool.qdrant_lookup" in result
 
     @pytest.mark.asyncio
     async def test_error_graceful(self) -> None:
-        with patch("shared.config.embed", side_effect=ConnectionError("down")):
+        with (
+            patch(
+                "agents.deliberative_council.tools.admit_tool",
+                return_value=_tool_admission("qdrant_lookup"),
+            ),
+            patch("shared.config.embed", side_effect=ConnectionError("down")),
+        ):
             result = await qdrant_lookup(None, "test")
             assert "error" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_web_verify_refuses_without_admission(self) -> None:
+        refused = _tool_admission(
+            "web_verify",
+            admitted=False,
+            reason_codes=("no_matching_transitionbudget",),
+        )
+        with (
+            patch("agents.deliberative_council.tools.admit_tool", return_value=refused),
+            patch("pydantic_ai.Agent") as agent_cls,
+        ):
+            result = await web_verify(None, "test claim")
+
+        agent_cls.assert_not_called()
+        assert "action=refused" in result
+        assert "refused before external research provider invocation" in result
 
 
 class TestVaultRead:
@@ -158,6 +216,8 @@ class TestBuildMember:
     def test_full_tool_level(self) -> None:
         agent = build_member("opus", ToolLevel.FULL)
         assert agent is not None
+        assert agent._cctv_capability_admission.capability_id == "cctv.model.opus"
+        assert agent._cctv_capability_admission.receipt_ref.startswith("cctv-capability-admission:")
 
     def test_restricted_tool_level(self) -> None:
         agent = build_member("local-fast", ToolLevel.RESTRICTED)

@@ -47,6 +47,21 @@ def _verdict(
     )
 
 
+ADMITTED_COUNCIL_RECEIPT = {
+    "route_resource_admission": "admitted",
+    "capability_receipt_refs": ["cctv-capability-admission:test-member"],
+    "capability_admissions": [
+        {
+            "capability_id": "cctv.model.opus",
+            "route_id": "litellm.anthropic.claude-opus-4",
+            "admitted": True,
+            "admission_action": "admitted",
+            "receipt_refs": ["cctv-capability-admission:test-member"],
+        }
+    ],
+}
+
+
 @pytest.mark.asyncio
 async def test_run_intake_ready_writes_admission_frontmatter(tmp_path: Path) -> None:
     request = tmp_path / "REQ-INTAKE.md"
@@ -55,11 +70,13 @@ async def test_run_intake_ready_writes_admission_frontmatter(tmp_path: Path) -> 
 
     with patch(
         "agents.deliberative_council.engine.deliberate",
-        new=AsyncMock(return_value=_verdict(scores)),
+        new=AsyncMock(return_value=_verdict(scores, receipt=ADMITTED_COUNCIL_RECEIPT)),
     ) as deliberate_mock:
         receipt = await run_intake(request)
 
     assert receipt.verdict == IntakeVerdict.READY_TO_PLAN
+    assert receipt.route_resource_admission == "admitted"
+    assert receipt.capability_receipt_refs == ("cctv-capability-admission:test-member",)
     inp, mode, rubric, _config = deliberate_mock.await_args.args
     assert inp.text == "# Request\n\nBuild the named thing with a concrete test.\n"
     assert inp.source_ref == str(request)
@@ -68,11 +85,34 @@ async def test_run_intake_ready_writes_admission_frontmatter(tmp_path: Path) -> 
 
     frontmatter, body = parse_frontmatter(request)
     assert frontmatter["status"] == "accepted_for_planning"
+    assert frontmatter["cctv_intake_receipt"].startswith("cctv-intake-receipt:REQ-INTAKE:")
     assert frontmatter["cctv_intake_verdict"] == "ready_to_plan"
+    assert frontmatter["cctv_route_resource_admission"] == "admitted"
+    assert frontmatter["cctv_capability_receipts"] == ["cctv-capability-admission:test-member"]
     assert frontmatter["recommendation"] == "advance"
     assert frontmatter["composite"] == pytest.approx(4.0)
     assert frontmatter["axes"]["outcome_concreteness"]["score"] == 4
     assert body == "# Request\n\nBuild the named thing with a concrete test.\n"
+
+
+@pytest.mark.asyncio
+async def test_run_intake_marks_missing_route_resource_admission(
+    tmp_path: Path,
+) -> None:
+    request = tmp_path / "REQ-INTAKE.md"
+    _write_request(request)
+    scores = {axis: 4 for axis in AXIS_WEIGHTS}
+
+    with patch(
+        "agents.deliberative_council.engine.deliberate",
+        new=AsyncMock(return_value=_verdict(scores)),
+    ):
+        receipt = await run_intake(request)
+
+    assert receipt.route_resource_admission == "missing"
+    frontmatter, _body = parse_frontmatter(request)
+    assert frontmatter["cctv_route_resource_admission"] == "missing"
+    assert frontmatter["cctv_capability_receipts"] == []
 
 
 @pytest.mark.asyncio

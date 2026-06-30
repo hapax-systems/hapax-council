@@ -107,6 +107,10 @@ class PhaseOneResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     model_alias: str
+    capability_id: str = ""
+    route_id: str = ""
+    capability_admission_action: str = ""
+    capability_receipt_refs: tuple[str, ...] = ()
     scores: dict[str, int]
     rationale: dict[str, str]
     research_findings: list[str] = Field(default_factory=list)
