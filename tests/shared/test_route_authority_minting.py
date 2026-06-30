@@ -122,6 +122,21 @@ def test_build_runtime_actuation_receipt_round_trips_with_task_scope() -> None:
     assert receipt.signed_payload_sha256 == route_authority_receipt_payload_hash(receipt)
 
 
+def test_build_connector_mutation_receipt_round_trips_with_task_scope() -> None:
+    receipt = build_route_authority_receipt(
+        receipt_type="connector_mutation",
+        route_id="codex.headless.full",
+        evidence_refs=["operator-signed:gmail-send"],
+        task_ids=["cc-task-mcp-mutator-route-resource-receipts-20260630"],
+        mutation_surfaces=["connector", "external", "public"],
+    )
+
+    assert receipt.receipt_type == "connector_mutation"
+    assert receipt.task_ids == ("cc-task-mcp-mutator-route-resource-receipts-20260630",)
+    assert receipt.mutation_surfaces == ("connector", "external", "public")
+    assert receipt.signed_payload_sha256 == route_authority_receipt_payload_hash(receipt)
+
+
 def test_build_quality_equivalence_requires_quality_floors() -> None:
     with pytest.raises((ValidationError, ValueError)):
         build_route_authority_receipt(
@@ -154,6 +169,23 @@ def test_build_runtime_actuation_requires_task_and_surface() -> None:
             route_id="codex.headless.full",
             evidence_refs=["operator-signed:minio-cleanup"],
             task_ids=["appendix-podium-minio-old-root-cleanup-20260605"],
+        )
+
+
+def test_build_connector_mutation_requires_task_and_surface() -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        build_route_authority_receipt(
+            receipt_type="connector_mutation",
+            route_id="codex.headless.full",
+            evidence_refs=["operator-signed:gmail-send"],
+            mutation_surfaces=["connector", "external"],
+        )
+    with pytest.raises((ValidationError, ValueError)):
+        build_route_authority_receipt(
+            receipt_type="connector_mutation",
+            route_id="codex.headless.full",
+            evidence_refs=["operator-signed:gmail-send"],
+            task_ids=["cc-task-mcp-mutator-route-resource-receipts-20260630"],
         )
 
 

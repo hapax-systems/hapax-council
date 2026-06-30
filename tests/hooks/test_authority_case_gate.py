@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -21,6 +22,24 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 # Gate logic lives in the impl behind the shim (reform FM-6); exec it directly.
 HOOK = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
 VALIDATOR = REPO_ROOT / "hooks" / "scripts" / "authorization-packet-validator.sh"
+_CLEARED_ENV = (
+    "HAPAX_AGENT_NAME",
+    "HAPAX_AGENT_ROLE",
+    "HAPAX_WORKTREE_ROLE",
+    "HAPAX_AGENT_SLOT",
+    "HAPAX_AGENT_INTERFACE",
+    "HAPAX_SESSION_ID",
+    "CLAUDE_ROLE",
+    "CLAUDE_CODE_SESSION_ID",
+    "CODEX_ROLE",
+    "CODEX_SESSION",
+    "CODEX_SESSION_NAME",
+    "CODEX_THREAD_ID",
+    "CODEX_THREAD_NAME",
+    "CODEX_HOME",
+    "HAPAX_CC_TASK_GATE_OFF",
+    "HAPAX_METHODOLOGY_EMERGENCY",
+)
 
 
 def _make_case_vault(
@@ -91,6 +110,26 @@ def _write_claim(home: Path, role: str, task_id: str) -> None:
     (cache / f"cc-active-task-{role}").write_text(task_id + "\n")
 
 
+def _path_without_python(tmp_path: Path) -> str:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("bash", "cat", "dirname", "head", "jq", "tr"):
+        target = shutil.which(name)
+        assert target is not None
+        (bin_dir / name).symlink_to(target)
+    return str(bin_dir)
+
+
+def _path_without_jq(tmp_path: Path) -> str:
+    bin_dir = tmp_path / "bin-no-jq"
+    bin_dir.mkdir()
+    for name in ("bash", "cat", "dirname"):
+        target = shutil.which(name)
+        assert target is not None
+        (bin_dir / name).symlink_to(target)
+    return str(bin_dir)
+
+
 def _run(
     hook: Path,
     tool_input: dict,
@@ -101,19 +140,39 @@ def _run(
 ) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["HOME"] = str(home)
-    env.pop("HAPAX_AGENT_NAME", None)
-    env.pop("HAPAX_AGENT_ROLE", None)
-    env.pop("HAPAX_WORKTREE_ROLE", None)
-    env.pop("CODEX_ROLE", None)
-    env.pop("CLAUDE_ROLE", None)
-    env.pop("HAPAX_CC_TASK_GATE_OFF", None)
-    env.pop("HAPAX_METHODOLOGY_EMERGENCY", None)
+    for key in _CLEARED_ENV:
+        env.pop(key, None)
     env["CLAUDE_ROLE"] = role
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
         [str(hook)],
         input=json.dumps(tool_input),
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+
+def _run_text(
+    hook: Path,
+    payload: str,
+    *,
+    home: Path,
+    role: str = "alpha",
+    extra_env: dict | None = None,
+) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    for key in _CLEARED_ENV:
+        env.pop(key, None)
+    env["CLAUDE_ROLE"] = role
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [str(hook)],
+        input=payload,
         capture_output=True,
         text=True,
         env=env,
@@ -541,13 +600,155 @@ class TestAuthorizationPacketValidator:
             public_current="false",
         )
         _write_claim(home, "alpha", "test-case-001")
+        for tool_name in (
+            "mcp__github__merge_pull_request",
+            "mcp__codex_apps__github___merge_pull_request",
+            "mcp__codex_apps__github___enable_auto_merge",
+            "mcp__codex_apps__github___update_ref",
+        ):
+            result = _run(
+                VALIDATOR,
+                {
+                    "tool_name": tool_name,
+                    "tool_input": {"owner": "ryanklee", "repo": "hapax-council"},
+                },
+                home=home,
+            )
+            assert result.returncode == 2
+            assert "release_authorized" in result.stderr
+
+    def test_mcp_github_file_mutators_require_implementation_authorization(
+        self, tmp_path: Path
+    ) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            stage="S6_implementation",
+            impl_authorized="false",
+            src_authorized="false",
+            docs_authorized="false",
+            runtime_authorized="false",
+            release_authorized="false",
+            public_current="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+        for tool_name in (
+            "mcp__github__push_files",
+            "mcp__codex_apps__github___create_file",
+            "mcp__codex_apps__github___update_file",
+            "mcp__codex_apps__github___delete_file",
+        ):
+            result = _run(
+                VALIDATOR,
+                {
+                    "tool_name": tool_name,
+                    "tool_input": {"owner": "ryanklee", "repo": "hapax-council"},
+                },
+                home=home,
+            )
+            assert result.returncode == 2
+            assert "implementation_authorized" in result.stderr
+
+    def test_mcp_github_file_mutators_require_release_authorization(self, tmp_path: Path) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            stage="S6_implementation",
+            impl_authorized="true",
+            src_authorized="true",
+            docs_authorized="false",
+            runtime_authorized="false",
+            release_authorized="false",
+            public_current="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+        for tool_name in (
+            "mcp__codex_apps__github___create_file",
+            "mcp__codex_apps__github___update_file",
+            "mcp__codex_apps__github___delete_file",
+        ):
+            result = _run(
+                VALIDATOR,
+                {
+                    "tool_name": tool_name,
+                    "tool_input": {"owner": "ryanklee", "repo": "hapax-council"},
+                },
+                home=home,
+            )
+            assert result.returncode == 2
+            assert "release_authorized" in result.stderr
+
+    def test_mcp_non_github_mutators_require_implementation_authorization(
+        self, tmp_path: Path
+    ) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            stage="S6_implementation",
+            impl_authorized="false",
+            src_authorized="false",
+            docs_authorized="false",
+            runtime_authorized="false",
+            release_authorized="false",
+            public_current="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+
         result = _run(
             VALIDATOR,
             {
-                "tool_name": "mcp__github__merge_pull_request",
-                "tool_input": {"owner": "ryanklee", "repo": "hapax-council"},
+                "tool_name": "mcp__codex_apps__gmail___send_draft",
+                "tool_input": {"message_ids": ["m1"]},
             },
             home=home,
         )
+
         assert result.returncode == 2
-        assert "release_authorized" in result.stderr
+        assert "implementation_authorized" in result.stderr
+
+    def test_mcp_authorization_blocks_when_python3_is_unavailable(self, tmp_path: Path) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            stage="S6_implementation",
+            impl_authorized="true",
+            src_authorized="true",
+            docs_authorized="false",
+            runtime_authorized="false",
+            release_authorized="false",
+            public_current="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+
+        result = _run(
+            VALIDATOR,
+            {
+                "tool_name": "mcp__codex_apps__gmail___forward_emails",
+                "tool_input": {"message_ids": ["m1"]},
+            },
+            home=home,
+            extra_env={"PATH": _path_without_python(tmp_path)},
+        )
+
+        assert result.returncode == 2
+        assert "python3 missing" in result.stderr
+
+    def test_authorization_validator_blocks_when_jq_is_unavailable(self, tmp_path: Path) -> None:
+        result = _run(
+            VALIDATOR,
+            {
+                "tool_name": "mcp__codex_apps__github___merge_pull_request",
+                "tool_input": {"owner": "ryanklee", "repo": "hapax-council"},
+            },
+            home=tmp_path,
+            extra_env={"PATH": _path_without_jq(tmp_path)},
+        )
+
+        assert result.returncode == 2
+        assert "cannot parse hook payload tool_name" in result.stderr
+
+    def test_authorization_validator_blocks_malformed_hook_payload(self, tmp_path: Path) -> None:
+        result = _run_text(VALIDATOR, "{", home=tmp_path)
+
+        assert result.returncode == 2
+        assert "cannot parse hook payload tool_name" in result.stderr

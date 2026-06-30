@@ -5,6 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 if [ -f "$SCRIPT_DIR/agent-role.sh" ]; then
   # shellcheck source=hooks/scripts/agent-role.sh
   . "$SCRIPT_DIR/agent-role.sh"
@@ -13,9 +14,19 @@ fi
 INPUT="$(cat || true)"
 EVENT="${1:-}"
 if [ -z "$EVENT" ]; then
-  EVENT="$(printf '%s' "$INPUT" | jq -r '.hook_event_name // .event // empty' 2>/dev/null || true)"
+  if ! EVENT="$(printf '%s' "$INPUT" | jq -er '.hook_event_name // .event // empty' 2>/dev/null)"; then
+    printf '{"decision":"block","reason":"codex-hook-adapter: cannot parse hook payload event"}\n'
+    exit 0
+  fi
 fi
-TOOL_NAME="$(printf '%s' "$INPUT" | jq -r '.tool_name // .tool // empty' 2>/dev/null || true)"
+if [ "$EVENT" = "PreToolUse" ] || [ "$EVENT" = "PostToolUse" ]; then
+  if ! TOOL_NAME="$(printf '%s' "$INPUT" | jq -er '.tool_name // .tool // empty' 2>/dev/null)"; then
+    printf '{"decision":"block","reason":"codex-hook-adapter: cannot parse hook payload tool_name"}\n'
+    exit 0
+  fi
+else
+  TOOL_NAME="$(printf '%s' "$INPUT" | jq -r '.tool_name // .tool // empty' 2>/dev/null || true)"
+fi
 SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
 CWD_VALUE="$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)"
 
@@ -99,7 +110,19 @@ run_hook() {
   return 0
 }
 
+mcp_known_read_only_tool() {
+  case "$1" in
+    mcp__context7__resolve-library-id|mcp__context7__query-docs)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 tool_kind() {
+  local connector_rc
   case "$TOOL_NAME" in
     Bash|bash|exec|exec_command|exec_command_pty|shell|shell_command|unified_exec)
       printf 'shell\n'
@@ -109,12 +132,30 @@ tool_kind() {
       printf 'mutation\n'
       return 0
       ;;
-    mcp__github__*)
-      if printf '%s' "$TOOL_NAME" | grep -Eiq \
-        '(create|update|delete|merge|push|commit|file|branch|tag|release|pull_request|issue_comment)'; then
+    mcp__*)
+      connector_rc=2
+      if command -v python3 >/dev/null 2>&1; then
+        set +e
+        PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}" \
+          python3 -m shared.mcp_connector_policy is-side-effecting "$TOOL_NAME" \
+            >/dev/null 2>&1
+        connector_rc=$?
+        set -e
+      fi
+      if [ "$connector_rc" -eq 10 ]; then
+        printf 'other\n'
+        return 0
+      fi
+      if [ "$connector_rc" -eq 0 ]; then
         printf 'mutation\n'
         return 0
       fi
+      if mcp_known_read_only_tool "$TOOL_NAME"; then
+        printf 'other\n'
+        return 0
+      fi
+      printf 'mutation\n'
+      return 0
       ;;
   esac
   if printf '%s' "$INPUT" | jq -e '
@@ -195,6 +236,7 @@ run_pre_mutation_event() {
   local event_json="$1"
   local hooks=(
     cc-task-gate.sh
+    mcp-connector-mutator-gate.sh
     authorization-packet-validator.sh
     axiom-scan.sh
     pipewire-graph-edit-gate.sh
