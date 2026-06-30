@@ -22,6 +22,52 @@ class CapDLCLifecycleState(StrEnum):
     MEASURED = "measured"
 
 
+class GateStatus(StrEnum):
+    """Explicit identity states for CapDLC gate measurement readiness."""
+
+    LIT = "lit"
+    PARTIAL = "partial"
+    DARK = "dark"
+
+    def __bool__(self) -> bool:
+        raise TypeError(
+            "GateStatus truthiness is undefined; compare by identity with "
+            "GateStatus.LIT, GateStatus.PARTIAL, or GateStatus.DARK."
+        )
+
+
+@dataclass(frozen=True)
+class GateResult:
+    """Standalone honest-dark gate result.
+
+    Only LIT results may carry a verdict. PARTIAL and DARK states represent
+    absent measurement, not failed verdicts.
+    """
+
+    status: GateStatus
+    verdict: bool | None = None
+    reason: str = ""
+    evidence_refs: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, GateStatus):
+            raise TypeError("GateResult.status must be a GateStatus identity")
+        if self.verdict is not None and not isinstance(self.verdict, bool):
+            raise TypeError("GateResult.verdict must be bool or None")
+
+        if self.status is GateStatus.LIT and self.verdict is None:
+            raise ValueError("LIT GateResult requires a verdict")
+        if self.status is not GateStatus.LIT and self.verdict is not None:
+            raise ValueError("Only LIT GateResult may carry a verdict")
+
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
+
+    def __bool__(self) -> bool:
+        raise TypeError(
+            "GateResult truthiness is undefined; inspect status identity and verdict explicitly."
+        )
+
+
 @dataclass(frozen=True)
 class CapDLCLifecycleEntry:
     """Registered CapDLC lifecycle row.
@@ -88,6 +134,8 @@ __all__ = [
     "CAPDLC_SLUG",
     "CapDLCLifecycleEntry",
     "CapDLCLifecycleState",
+    "GateResult",
+    "GateStatus",
     "measured_capdlc_entries",
     "resolve_capdlc_lifecycle",
 ]
