@@ -270,14 +270,6 @@ def member_capability_admission(member: Any) -> CapabilityAdmissionReceipt | Non
     return admission if isinstance(admission, CapabilityAdmissionReceipt) else None
 
 
-def admissions_for_model_aliases(
-    aliases: tuple[str, ...],
-    *,
-    now: datetime | None = None,
-) -> tuple[CapabilityAdmissionReceipt, ...]:
-    return tuple(admit_model_alias(alias, now=now) for alias in aliases)
-
-
 def route_resource_admission_state(admissions: tuple[CapabilityAdmissionReceipt, ...]) -> str:
     if not admissions:
         return "missing"
