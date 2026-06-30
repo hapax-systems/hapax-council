@@ -52,6 +52,15 @@ Append these entries to the existing `hooks.PreToolUse` and `hooks.PostToolUse` 
             "command": "<workspace>/hooks/scripts/relay-coordination-check.sh"
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<workspace>/hooks/scripts/conductor-pre.sh"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -118,7 +127,7 @@ After editing `agents/reverie/_uniforms.py`, the main Claude should spontaneousl
 
 Subagent invocation is probabilistic — Claude may not always spawn the agent if the context is ambiguous. The `description:` field's `<example>` blocks shape Claude's reasoning, but they're hints, not guarantees. You can always force-invoke via the Task tool or the `/agent <name>` command.
 
-These subagents are spawned capabilities, not free side workers. A governed parent session launched through `hapax-methodology-dispatch` carries `HAPAX_PARENT_ROUTE_ENVELOPE` and `HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE=1`. Worker launchers that spawn a child runtime run `scripts/hapax-child-spawn-receipt`, emit `HAPAX_CHILD_SPAWN_ENVELOPE` / `HAPAX_CHILD_RECEIPT_REF` / `HAPAX_CHILD_RECEIPT_ID`, and append the child receipt back to the parent route/resource envelope. Forced Task-tool subagent invocations must preserve the parent envelope path in their handoff context; do not treat the child as governed unless a child receipt exists in the parent envelope.
+These subagents are spawned capabilities, not free side workers. A governed parent session launched through `hapax-methodology-dispatch` carries `HAPAX_PARENT_ROUTE_ENVELOPE` and `HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE=1`. Worker launchers that spawn a child runtime run `scripts/hapax-child-spawn-receipt`, emit `HAPAX_CHILD_SPAWN_ENVELOPE` / `HAPAX_CHILD_RECEIPT_REF` / `HAPAX_CHILD_RECEIPT_ID`, and append the child receipt back to the parent route/resource envelope. Claude `Agent` / Task-tool invocations are blocked by the session conductor PreToolUse path unless a parent route envelope is present and a child receipt is recorded before the subagent starts. Do not treat the child as governed unless a child receipt exists in the parent envelope.
 
 Recheck after install or launcher changes:
 

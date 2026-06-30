@@ -60,6 +60,35 @@ def _wire_child_receipt_helper(workdir: Path) -> None:
     )
 
 
+def _write_claude_settings_with_agent_gate(home: Path) -> Path:
+    settings_path = home / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Agent",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": str(
+                                        REPO_ROOT / "hooks" / "scripts" / "conductor-pre.sh"
+                                    ),
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return settings_path
+
+
 def _stub_bin(bin_dir: Path, name: str, body: str) -> None:
     path = bin_dir / name
     path.write_text("#!/usr/bin/env bash\n" + textwrap.dedent(body))
@@ -88,6 +117,7 @@ def _headless_env(home: Path, bin_dir: Path, pipe_dir: Path) -> dict[str, str]:
         "HAPAX_CHILD_RECEIPT_ID",
         "HAPAX_CLAUDE_BIN",
         "HAPAX_CLAUDE_BIN_PATH",
+        "HAPAX_CLAUDE_SETTINGS_JSON",
         "NPM_CONFIG_PREFIX",
     ):
         env.pop(var, None)
@@ -292,6 +322,7 @@ def test_headless_records_child_spawn_receipt_env(tmp_path: Path) -> None:
     workdir = home / "projects" / "hapax-council--beta"
     workdir.mkdir(parents=True)
     _wire_child_receipt_helper(workdir)
+    _write_claude_settings_with_agent_gate(home)
     parent_path = _write_parent_envelope(tmp_path / "parent.json")
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
@@ -333,6 +364,41 @@ def test_headless_records_child_spawn_receipt_env(tmp_path: Path) -> None:
     assert "receipt_id=child-receipt-" in launched_env
     parent_payload = json.loads(parent_path.read_text(encoding="utf-8"))
     assert parent_payload["child_receipts"][0]["child_id"].startswith("claude-headless:beta:")
+
+
+def test_headless_refuses_parent_route_without_agent_conductor_gate(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "hapax-council--beta"
+    workdir.mkdir(parents=True)
+    _wire_child_receipt_helper(workdir)
+    parent_path = _write_parent_envelope(tmp_path / "parent.json")
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-beta"
+    claim_file.write_text("task-x\n", encoding="utf-8")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_marker = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_marker}\nexit 0\n")
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_PARENT_ROUTE_ENVELOPE"] = str(parent_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 18
+    assert "Agent PreToolUse conductor-pre.sh gate" in result.stderr
+    assert "next action:" in result.stderr
+    assert not claude_marker.exists()
+    parent_payload = json.loads(parent_path.read_text(encoding="utf-8"))
+    assert parent_payload["child_receipts"] == []
 
 
 def test_appendix_hop_passes_remote_args_without_shell_interpolation(tmp_path: Path) -> None:
@@ -509,6 +575,7 @@ def test_visible_claude_launcher_requires_task_or_readonly() -> None:
     assert "hapax-methodology-dispatch" in text
     assert "HAPAX_METHODOLOGY_DISPATCH_TASK" in text
     assert 'CLAUDE_TASK="$CLAIMED_TASK"' in text
+    assert "Agent PreToolUse conductor-pre.sh gate" in text
 
 
 def test_headless_refuses_without_task_or_existing_claim(tmp_path: Path) -> None:

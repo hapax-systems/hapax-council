@@ -242,3 +242,11 @@ def test_worker_launchers_explain_missing_receipt_helper_next_action() -> None:
         text = (REPO_ROOT / "scripts" / name).read_text(encoding="utf-8")
         assert "parent route envelope required but helper is missing" in text, name
         assert "next action: sync this worktree/branch" in text, name
+
+
+def test_claude_install_docs_wire_agent_conductor_gate() -> None:
+    text = (REPO_ROOT / "tooling" / "claude-agents" / "INSTALL.md").read_text(encoding="utf-8")
+
+    assert '"matcher": "Agent"' in text
+    assert "conductor-pre.sh" in text
+    assert "Task-tool invocations are blocked" in text

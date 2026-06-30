@@ -43,6 +43,49 @@ record_child_spawn_receipt() {
   fi
 }
 
+claude_agent_subagent_gate_wired() {
+  local settings="${HAPAX_CLAUDE_SETTINGS_JSON:-$HOME/.claude/settings.json}"
+  [[ -f "$settings" ]] || return 1
+  python3 - "$settings" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1])
+try:
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+
+
+def matcher_covers_agent(value: object) -> bool:
+    matcher = str(value or "")
+    if matcher.strip() == "":
+        return True
+    return "Agent" in re.split(r"[|,\s]+", matcher)
+
+
+for entry in ((data.get("hooks") or {}).get("PreToolUse") or []):
+    if not isinstance(entry, dict) or not matcher_covers_agent(entry.get("matcher")):
+        continue
+    for hook in entry.get("hooks") or []:
+        if isinstance(hook, dict) and "conductor-pre.sh" in str(hook.get("command") or ""):
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+require_claude_agent_subagent_gate() {
+  if [[ -z "${HAPAX_PARENT_ROUTE_ENVELOPE:-}" && "${HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-0}" != "1" ]]; then
+    return 0
+  fi
+  if ! claude_agent_subagent_gate_wired; then
+    echo "hapax-claude-headless: parent route envelope requires Agent PreToolUse conductor-pre.sh gate for Task-tool subagents; next action: add conductor-pre.sh to a Claude hooks.PreToolUse matcher covering Agent, restart Claude, then relaunch through hapax-methodology-dispatch" >&2
+    exit 18
+  fi
+}
+
 ROLE=""
 CLAUDE_TASK="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
 while [[ $# -gt 0 ]]; do
@@ -269,6 +312,9 @@ if [[ -z "$CLAIMED_TASK" ]]; then
   (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")
 fi
 export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
+if [[ -n "${HAPAX_PARENT_ROUTE_ENVELOPE:-}" ]]; then
+  require_claude_agent_subagent_gate
+fi
 record_child_spawn_receipt "$CLAUDE_TASK" "claude-headless:$ROLE:$SESSION_UUID"
 
 SDLC_PREAMBLE="SDLC DISCIPLINE (MANDATORY):

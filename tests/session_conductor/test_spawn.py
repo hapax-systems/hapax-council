@@ -56,6 +56,15 @@ def _make_edit_event(file_path: str, session_id: str = "sess-beta") -> HookEvent
     )
 
 
+def _make_agent_pre_event(agent_name: str = "shader-bridge-auditor") -> HookEvent:
+    return HookEvent(
+        event_type="pre_tool_use",
+        tool_name="Agent",
+        tool_input={"subagent_type": agent_name, "prompt": "audit the bridge"},
+        session_id="sess-alpha",
+    )
+
+
 def _write_parent_envelope(path: Path) -> Path:
     payload = {
         "parent_route_resource_envelope_schema": 1,
@@ -179,6 +188,42 @@ def test_spawn_intent_blocks_when_required_parent_route_receipt_missing(
     assert "missing_parent_route_resource_receipt" in (response.message or "")
     assert "next action:" in (response.message or "")
     assert list(tmp_path.glob("*.yaml")) == []
+
+
+def test_agent_tool_spawn_blocks_without_parent_route_receipt(tmp_path: Path):
+    state = _make_state()
+    rule = SpawnRule(TopologyConfig(), state, spawns_dir=tmp_path)
+
+    response = rule.on_pre_tool_use(_make_agent_pre_event())
+
+    assert response is not None
+    assert response.action == "block"
+    assert "missing_parent_route_resource_receipt" in (response.message or "")
+    assert "before invoking Agent/Task" in (response.message or "")
+
+
+def test_agent_tool_spawn_records_child_receipt_before_subagent_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    parent_path = _write_parent_envelope(tmp_path / "parent.json")
+    monkeypatch.setenv("HAPAX_PARENT_ROUTE_ENVELOPE", str(parent_path))
+    monkeypatch.setattr(
+        "agents.session_conductor.rules.spawn.DEFAULT_ORCHESTRATION_LEDGER_DIR",
+        tmp_path / "ledger",
+    )
+    state = _make_state()
+    rule = SpawnRule(TopologyConfig(), state, spawns_dir=tmp_path / "spawns")
+
+    response = rule.on_pre_tool_use(_make_agent_pre_event())
+
+    assert response is None
+    parent_payload = json.loads(parent_path.read_text(encoding="utf-8"))
+    receipt = parent_payload["child_receipts"][0]
+    assert receipt["shape"] == "subagent"
+    assert receipt["child_id"].startswith("claude-subagent:shader-bridge-auditor:sess-alpha:")
+    assert receipt["capability_id"] == "claude-subagent:shader-bridge-auditor"
+    assert receipt["receipt_refs"][0].startswith("child-spawn-envelope:")
 
 
 def test_child_claims_manifest(tmp_path: Path):
