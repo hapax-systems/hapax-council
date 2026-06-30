@@ -13,7 +13,7 @@
 schema_version: "1.0.0"
 schema_doc: docs/monetization/legal-posture-registry-schema.md
 last_updated: "2026-06-30"
-update_author: 20260628-registry-phase4-whistleblower-subtree
+update_author: 20260628-registry-phase1-operator-state-of-residence-confirmation
 
 surfaces:
   - prediction_market
@@ -36,10 +36,11 @@ rows:
     instrument: "*"
     g2_verdict: DARK
     citation: >
-      No research completed. Operator state of residence unconfirmed —
-      gates all state-specific analysis. See phase 1
-      (registry-phase1-operator-state-of-residence-confirmation) and
-      phase 2 (registry-phase2-prediction-market-subtree).
+      Operator state is now confirmed as Minnesota in
+      REQ-20260628-arbitrage-struck-and-blocked-register, but the wider
+      prediction-market legal matrix remains unresearched. See phase 1
+      (registry-phase1-operator-state-of-residence-confirmation) and phase 2
+      (registry-phase2-prediction-market-subtree).
     authority_basis: no_research
     review_date: "2026-06-30"
     freshness_ttl_days: 90
@@ -47,11 +48,11 @@ rows:
     operator_sign_date: null
     notes: >
       Prediction markets have the highest legal volatility of any surface.
-      WA actively suing Kalshi (Mar 2026). MN/NV/MD may ban public workers.
-      §1256 vs gambling classification unresolved. OBBBA 90% loss cap
-      potentially applicable.
+      Operator residence is a dated input, not a permanent profile rewrite.
+      The current state input is Minnesota, confirmed 2026-06-28. WA actively
+      suing Kalshi (Mar 2026), §1256 vs gambling classification, OBBBA 90%
+      loss cap, and platform ToS constraints remain phase-2 questions.
     open_questions:
-      - "Operator state of residence (binary GREEN/RED — MN/NV/MD-public-worker bans)"
       - "§1256 mark-to-market vs state gambling classification"
       - "OBBBA 90% loss cap applicability to event contracts"
       - "50-state matrix of event-contract legality"
@@ -59,6 +60,76 @@ rows:
     blocks_surfaces:
       - prediction_market
     source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
+
+  # -- Operator State Phase 1 Rows -------------------------------------
+  # These rows preserve the dated Minnesota state input and the immediate
+  # Minnesota prediction-market fail-closed consequence. A future residence
+  # change must add a new dated row rather than rewriting this evidence.
+  - surface: prediction_market
+    venue: US-MN
+    instrument: operator_state_residence_confirmed_20260628
+    g2_verdict: DARK
+    citation: >
+      Internal operator source:
+      REQ-20260628-arbitrage-struck-and-blocked-register records
+      "Operator state of residence: Minnesota (confirmed 2026-06-28)" and
+      treats Minnesota prediction-market trading as RED. This is an operator
+      context fact, not legal clearance.
+    authority_basis: operator_judgment
+    review_date: "2026-06-30"
+    freshness_ttl_days: 365
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Confidence: high for current planning because the operator-authored
+      struck/blocked register records Minnesota and a confirmation date. This
+      row deliberately remains DARK because residence confirmation alone does
+      not clear any monetized prediction-market activity. Future residence
+      changes require a new dated row and dependent registry review; do not
+      rewrite this historical input.
+    open_questions:
+      - "Whether the operator's legal residence changes after 2026-06-28."
+      - "Whether any non-trading prediction-market feed can remain outside this g2 trading block."
+    blocks_surfaces:
+      - prediction_market
+      - 20260628-registry-phase2-prediction-market-subtree
+    source_task: 20260628-registry-phase1-operator-state-of-residence-confirmation
+
+  - surface: prediction_market
+    venue: US-MN
+    instrument: event_contract_or_prediction_market_wager
+    g2_verdict: DARK
+    citation: >
+      Minn. Stat. 609.755 makes making a bet a misdemeanor; Minn. Stat.
+      609.75 subd. 2 defines a bet as a bargain for gain or loss of money,
+      property, or benefit dependent on chance even when chance is accompanied
+      by skill. Minnesota House Research H.F. 4437 summary, Mar. 30, 2026,
+      describes prediction-market shares and states the bill specifies those
+      shares are not the securities/commodities exclusion from "bet" and would
+      be treated as illegal gambling.
+      https://www.revisor.mn.gov/statutes/cite/609.755;
+      https://www.revisor.mn.gov/statutes/cite/609.75;
+      https://www.house.mn.gov/hrd/bs/94/HF4437.pdf.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Minnesota is the operator state input for current planning. This row is
+      a conservative fail-closed trading block for prediction-market wagers or
+      event-contract participation by a Minnesota operator. It does not block
+      non-trading, read-only readiness or manipulation-detection feeds that do
+      not place positions, accept wagers, advertise prediction markets, or
+      receive value from a prediction-market trade.
+    open_questions:
+      - "Whether CFTC-regulated event contracts preempt any state restriction for a specific platform/instrument."
+      - "Whether a non-trading prediction-market intelligence feed has separate legal posture outside wagering."
+      - "Whether phase 2 identifies any Minnesota-safe, counsel-approved prediction-market-adjacent instrument."
+    blocks_surfaces:
+      - prediction_market
+      - prediction_market_trading
+    source_task: 20260628-registry-phase1-operator-state-of-residence-confirmation
 
   # ── Bug Bounty ───────────────────────────────────────────────────────
   - surface: bug_bounty
