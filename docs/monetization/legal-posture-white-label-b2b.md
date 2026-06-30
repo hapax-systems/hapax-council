@@ -48,8 +48,8 @@ phase5 = [
 
 assert len(keys) == len(set(keys)), "duplicate registry tuple"
 assert len(phase5) == 6
-assert all(row["g2_verdict"] == "DARK" for row in white_label)
-assert all(row["operator_signed"] is False for row in white_label)
+assert all(row["g2_verdict"] == "DARK" for row in phase5)
+assert all(row["operator_signed"] is False for row in phase5)
 assert ("white_label", "US-FTC", "disclosed_ai_b2b_service") in keys
 assert ("white_label", "*", "open_weight_model_stack_license_manifest") in keys
 print("white-label registry recheck OK")

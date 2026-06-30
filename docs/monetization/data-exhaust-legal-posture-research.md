@@ -46,8 +46,8 @@ phase6 = [
 
 assert len(keys) == len(set(keys)), "duplicate registry tuple"
 assert len(phase6) == 9
-assert all(row["g2_verdict"] == "DARK" for row in data_exhaust)
-assert all(row["operator_signed"] is False for row in data_exhaust)
+assert all(row["g2_verdict"] == "DARK" for row in phase6)
+assert all(row["operator_signed"] is False for row in phase6)
 assert ("data_exhaust", "US-IL", "biometric_identifier_or_information") in keys
 assert ("data_exhaust", "*", "deidentified_aggregate_operational_telemetry") in keys
 assert ("data_exhaust", "*", "struck_or_non_operator_person_data") in keys
@@ -117,6 +117,12 @@ entity did not collect directly from those individuals to a non-service-provider
 Sensitive data categories include precise geolocation, biometric and genetic
 information, private communications, credentials, private media, online activity
 over time, protected-class data, minor data, and military-status data.
+
+Registry venue taxonomy: the PADFAA row uses `venue: US` because the registry
+tuple cites a federal statute and buyer/sensitive-data screen, not an FTC-only
+platform or agency forum. The FTC PADFAA page is used as an official source
+index and enforcement-context pointer; a later FTC-specific implementation row
+can use `US-FTC` if the gate needs agency-forum granularity.
 
 Registry effect: first-party operator-only telemetry may need a different
 analysis from brokered or third-party data, but any buyer path needs
