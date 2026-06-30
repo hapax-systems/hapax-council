@@ -59,3 +59,32 @@ def test_require_resource_receipt_fails_closed_when_missing(tmp_path) -> None:
     assert resource_receipt_exists(ref, log_path=tmp_path / "missing.jsonl") is False
     with pytest.raises(Exception, match="missing money-rail resource receipt"):
         require_resource_receipt(ref, log_path=tmp_path / "missing.jsonl")
+
+
+def test_resource_receipt_exists_scans_beyond_tail_window(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    first = build_resource_receipt(
+        rail="github-sponsors",
+        operation=MoneyRailReceiptOperation.INGRESS,
+        route_path="/api/payment-rails/github-sponsors",
+        external_id="delivery-0",
+        event_kind="created",
+        raw_payload_sha256="0" * 64,
+        downstream_action="publication_bus.publish_event",
+        created_at=datetime(2026, 6, 30, 4, 0, tzinfo=UTC),
+    )
+
+    for idx in range(250):
+        receipt = build_resource_receipt(
+            rail="github-sponsors",
+            operation=MoneyRailReceiptOperation.INGRESS,
+            route_path="/api/payment-rails/github-sponsors",
+            external_id=f"delivery-{idx}",
+            event_kind="created",
+            raw_payload_sha256=f"{idx:064x}"[-64:],
+            downstream_action="publication_bus.publish_event",
+            created_at=datetime(2026, 6, 30, 4, 0, tzinfo=UTC),
+        )
+        assert append_resource_receipt(receipt, log_path=log_path)
+
+    assert resource_receipt_exists(receipt_reference(first), log_path=log_path)

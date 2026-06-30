@@ -159,7 +159,7 @@ async def test_signed_created_event_returns_200_and_writes_manifest(
     assert body["status"] == "received"
     assert body["event_kind"] == "created"
     assert "raw_payload_sha256" in body
-    assert body["resource_receipt_ref"].startswith("money-rail-resource-receipt:github-sponsors:")
+    assert "resource_receipt_ref" not in body
 
     files = list(output_dir.glob("event-created-*.md"))
     assert len(files) == 1, f"expected 1 manifest file, got {files}"
@@ -483,7 +483,8 @@ async def test_github_sponsors_route_replays_same_delivery_id_returns_duplicate(
     body = second.json()
     assert body["status"] == "duplicate"
     assert body["delivery_id"] == "gh-replay-001"
-    assert body["resource_receipt_ref"] == first.json()["resource_receipt_ref"]
+    assert "resource_receipt_ref" not in first.json()
+    assert "resource_receipt_ref" not in body
     files = list(output_dir.glob("event-created-*.md"))
     assert len(files) == 1
     from agents.payment_processors.resource_receipts import tail_resource_receipts
@@ -652,6 +653,7 @@ async def test_liberapay_signed_payin_succeeded_writes_manifest(
     liberapay_output_dir: Path,
     liberapay_secret_env: str,
     liberapay_idempotency_isolated: Path,
+    resource_receipt_log: Path,
 ) -> None:
     payload = _liberapay_payload(event="payin_succeeded")
     raw = json.dumps(payload).encode("utf-8")
@@ -671,11 +673,18 @@ async def test_liberapay_signed_payin_succeeded_writes_manifest(
     body = response.json()
     assert body["status"] == "received"
     assert body["event_kind"] == "payin_succeeded"
+    assert "resource_receipt_ref" not in body
     files = list(liberapay_output_dir.glob("event-payin_succeeded-*.md"))
     assert len(files) == 1, f"expected 1 manifest, got {files}"
     contents = files[0].read_text()
     assert "alice-donor" in contents
     assert "Liberapay donation event" in contents
+    from agents.payment_processors.resource_receipts import tail_resource_receipts
+
+    receipts = tail_resource_receipts(log_path=resource_receipt_log)
+    assert len(receipts) == 1
+    assert receipts[0].rail == "liberapay"
+    assert receipts[0].spend_authority_granted is False
 
 
 @pytest.mark.asyncio
@@ -831,6 +840,7 @@ async def test_liberapay_route_replays_same_delivery_id_returns_duplicate(
     liberapay_output_dir: Path,
     liberapay_secret_env: str,
     liberapay_idempotency_isolated: Path,
+    resource_receipt_log: Path,
 ) -> None:
     """Two POSTs with same X-Liberapay-Delivery-Id → 2nd is duplicate."""
     payload = _liberapay_payload(event="payin_succeeded")
@@ -850,8 +860,54 @@ async def test_liberapay_route_replays_same_delivery_id_returns_duplicate(
     body = second.json()
     assert body["status"] == "duplicate"
     assert body["delivery_id"] == "lp-replay-001"
+    assert "resource_receipt_ref" not in first.json()
+    assert "resource_receipt_ref" not in body
     files = list(liberapay_output_dir.glob("event-payin_succeeded-*.md"))
     assert len(files) == 1
+    from agents.payment_processors.resource_receipts import tail_resource_receipts
+
+    assert len(tail_resource_receipts(log_path=resource_receipt_log)) == 1
+
+
+@pytest.mark.asyncio
+async def test_liberapay_resource_receipt_missing_blocks_publish(
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    liberapay_idempotency_isolated: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agents.payment_processors.resource_receipts as resource_receipts
+
+    def _missing_receipt(*_args, **_kwargs) -> bool:
+        return False
+
+    def _publish_should_not_run(*_args, **_kwargs):  # pragma: no cover - assertion guard
+        raise AssertionError("publisher ran without a resource receipt")
+
+    monkeypatch.setattr(resource_receipts, "append_resource_receipt", _missing_receipt)
+    monkeypatch.setattr(
+        "agents.publication_bus.liberapay_publisher.LiberapayPublisher.publish_event",
+        _publish_should_not_run,
+    )
+
+    payload = _liberapay_payload(event="payin_succeeded")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(liberapay_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw,
+            headers={
+                "X-Liberapay-Signature": sig,
+                "X-Liberapay-Delivery-Id": "lp-delivery-missing-receipt",
+            },
+        )
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert "resource receipt" in detail
+    assert "HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH" in detail
 
 
 @pytest.mark.asyncio

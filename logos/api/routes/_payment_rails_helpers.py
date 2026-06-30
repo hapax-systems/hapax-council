@@ -96,13 +96,14 @@ def render_null_event_response(
 
     This helper distinguishes via ``duplicate_id_value``: when present
     and non-empty, it's a duplicate; otherwise it's a heartbeat.
+    ``resource_receipt_ref`` is private route evidence and is never
+    projected to external webhook callers.
     """
     if payload and isinstance(duplicate_id_value, str) and duplicate_id_value:
         log.info("%s webhook duplicate: %s", log_label, duplicate_id_value)
-        body: dict[str, Any] = {"status": "duplicate", duplicate_id_key: duplicate_id_value}
         if resource_receipt_ref:
-            body["resource_receipt_ref"] = resource_receipt_ref
-        return JSONResponse(body)
+            log.debug("%s private money-rail resource receipt recorded", log_label)
+        return JSONResponse({"status": "duplicate", duplicate_id_key: duplicate_id_value})
     return JSONResponse({"status": "ping_ok"})
 
 
@@ -123,7 +124,8 @@ def dispatch_publish_result(
 
     ``extra_received_fields`` allows a rail to add its own fields to
     the received-response payload (e.g. ``payment_method`` for Modern
-    Treasury).
+    Treasury). ``resource_receipt_ref`` is private route evidence and
+    is never projected to external webhook callers.
     """
     if publish_result.refused:
         log.info("%s publish refused: %s", log_label, publish_result.detail)
@@ -144,7 +146,7 @@ def dispatch_publish_result(
         "raw_payload_sha256": event.raw_payload_sha256,
     }
     if resource_receipt_ref:
-        body["resource_receipt_ref"] = resource_receipt_ref
+        log.debug("%s private money-rail resource receipt recorded", log_label)
     if extra_received_fields:
         body.update(extra_received_fields)
     return JSONResponse(body)
@@ -178,7 +180,11 @@ def require_ingress_resource_receipt(
         log.error("%s webhook missing money-rail resource receipt", rail)
         raise HTTPException(
             status_code=500,
-            detail="money-rail resource receipt missing; downstream action refused",
+            detail=(
+                "money-rail resource receipt missing; downstream action refused; "
+                "check HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH, /dev/shm availability, "
+                "and receipt log permissions"
+            ),
         )
     return receipt_ref
 

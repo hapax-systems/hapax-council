@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+import pytest
+
 from agents.payment_processors.nostr_zap_listener import (
     NostrZapListener,
     _amount_sats_from_bolt11,
@@ -116,6 +118,82 @@ class TestNostrZapListener:
         assert len(events) == 1
         assert events[0].rail == "nostr_zap"
         assert events[0].external_id == "abcdef"
+
+    def test_handle_relay_message_records_event_resource_receipt(self, tmp_path, monkeypatch):
+        import agents.payment_processors.event_log as ev_log
+        import agents.payment_processors.resource_receipts as resource_receipts
+
+        log_path = tmp_path / "events.jsonl"
+        receipt_log = tmp_path / "resource-receipts.jsonl"
+        monkeypatch.setattr(ev_log, "DEFAULT_PAYMENT_LOG_PATH", log_path)
+        monkeypatch.setattr(
+            resource_receipts,
+            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+            receipt_log,
+        )
+        listener = NostrZapListener(npub_hex="abcd" * 16)
+        zap_event = {
+            "id": "abcdef",
+            "pubkey": "feed" * 8,
+            "kind": 9735,
+            "created_at": int(datetime.now(UTC).timestamp()),
+            "tags": [["bolt11", "lnbc1u1abc"]],
+        }
+        listener._handle_relay_message(json.dumps(["EVENT", "sub-1", zap_event]), "sub-1")  # noqa: SLF001
+
+        from agents.payment_processors.event_log import tail_events
+        from agents.payment_processors.resource_receipts import tail_resource_receipts
+
+        receipts = tail_resource_receipts(log_path=receipt_log)
+        assert [receipt.operation.value for receipt in receipts] == ["payment_event_append"]
+        events = tail_events(log_path=log_path)
+        assert events[0].resource_receipt_ref == (
+            f"money-rail-resource-receipt:nostr_zap:{receipts[0].receipt_id}"
+        )
+
+    def test_missing_event_resource_receipt_blocks_event_append(self, tmp_path, monkeypatch):
+        import agents.payment_processors.event_log as ev_log
+        import agents.payment_processors.nostr_zap_listener as nostr_mod
+
+        log_path = tmp_path / "events.jsonl"
+        monkeypatch.setattr(ev_log, "DEFAULT_PAYMENT_LOG_PATH", log_path)
+        monkeypatch.setattr(
+            nostr_mod,
+            "record_payment_event_resource_receipt",
+            lambda **_kwargs: None,
+        )
+        listener = NostrZapListener(npub_hex="abcd" * 16)
+        zap_event = {
+            "id": "abcdef",
+            "pubkey": "feed" * 8,
+            "kind": 9735,
+            "created_at": int(datetime.now(UTC).timestamp()),
+            "tags": [["bolt11", "lnbc1u1abc"]],
+        }
+        listener._handle_relay_message(json.dumps(["EVENT", "sub-1", zap_event]), "sub-1")  # noqa: SLF001
+
+        from agents.payment_processors.event_log import tail_events
+
+        assert tail_events(log_path=log_path) == []
+
+    @pytest.mark.asyncio
+    async def test_missing_poll_resource_receipt_blocks_relay_connect(self, monkeypatch):
+        import agents.payment_processors.nostr_zap_listener as nostr_mod
+
+        async def _websocket_should_not_open(_relay_url: str):
+            raise AssertionError("websocket opened without a resource receipt")
+
+        monkeypatch.setattr(
+            nostr_mod,
+            "record_external_api_poll_receipt",
+            lambda **_kwargs: None,
+        )
+        listener = NostrZapListener(
+            npub_hex="abcd" * 16,
+            websocket_factory=_websocket_should_not_open,
+        )
+
+        await listener._consume_relay("wss://relay.example")  # noqa: SLF001
 
     def test_handle_relay_message_dedupes(self, tmp_path, monkeypatch):
         import agents.payment_processors.event_log as ev_log
