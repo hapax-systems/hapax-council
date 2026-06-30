@@ -96,6 +96,7 @@ async def test_run_intake_returns_receipt_and_ready_advances_status(tmp_path: Pa
     assert receipt.route_resource_admission == "admitted"
     assert receipt.capability_receipt_refs == ("cctv-capability-admission:test-member",)
     assert receipt.composite_score == pytest.approx(4.0)
+    assert receipt.receipt_ref.startswith("cctv-intake-receipt:REQ-INTAKE-CLI:")
 
     inp, mode, rubric, config = deliberate_mock.await_args.args
     assert inp.text == "# Request\n\nBuild a concrete intake artifact with a pytest check.\n"
@@ -106,7 +107,7 @@ async def test_run_intake_returns_receipt_and_ready_advances_status(tmp_path: Pa
 
     frontmatter, body = parse_frontmatter(request)
     assert frontmatter["status"] == "accepted_for_planning"
-    assert frontmatter["cctv_intake_receipt"].startswith("cctv-intake-receipt:REQ-INTAKE-CLI:")
+    assert frontmatter["cctv_intake_receipt"] == receipt.receipt_ref
     assert frontmatter["cctv_intake_verdict"] == "ready_to_plan"
     assert frontmatter["cctv_route_resource_admission"] == "admitted"
     assert frontmatter["cctv_capability_receipts"] == ["cctv-capability-admission:test-member"]

@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.frontmatter import parse_frontmatter
 from shared.platform_capability_registry import (
     PLATFORM_CAPABILITY_REGISTRY,
     PlatformCapabilityRegistryError,
@@ -59,6 +60,16 @@ class CapabilityAdmissionReceipt(_AdmissionModel):
     route_id: str
     provider: str
     capacity_pool: str
+    profile: str = "unknown"
+    task_class: str = "unknown"
+    quality_floor: str = "unknown"
+    estimated_cost_usd: str = "0"
+    evaluated_at: datetime | None = None
+    authority_task_id: str | None = None
+    authority_case: str | None = None
+    authority_item: str | None = None
+    authority_parent_spec: str | None = None
+    authority_source_ref: str | None = None
     admission_action: Literal["admitted", "refused"]
     admitted: bool
     reason_codes: tuple[str, ...] = Field(default=())
@@ -83,6 +94,15 @@ class CapabilityDescriptor:
     task_class: str = "research"
     quality_floor: str = "frontier_required"
     estimated_cost_usd: Decimal = Decimal("0.01")
+
+
+@dataclass(frozen=True)
+class CapabilityAuthorityContext:
+    task_id: str | None = None
+    authority_case: str | None = None
+    authority_item: str | None = None
+    parent_spec: str | None = None
+    source_ref: str | None = None
 
 
 # Keep these descriptors aligned with the routes invoked by members.model_route_for_alias().
@@ -230,6 +250,7 @@ def admit_capability(
             descriptor,
             action="refused",
             reason_codes=(f"quota_spend_ledger_unavailable:{type(exc).__name__}",),
+            evaluated_at=checked_at,
         )
 
     if descriptor.capacity_pool is CapacityPool.API_PAID_SPEND:
@@ -243,6 +264,7 @@ def admit_capability(
         action="refused",
         reason_codes=(f"unsupported_capacity_pool:{descriptor.capacity_pool.value}",),
         ledger=ledger,
+        evaluated_at=checked_at,
     )
 
 
@@ -360,6 +382,7 @@ def _admit_paid_route(
             reason_codes=(eligibility.state,),
             spend_evidence_refs=eligibility.evidence_refs,
             ledger=ledger,
+            evaluated_at=now,
         )
     return _build_receipt(
         descriptor,
@@ -368,6 +391,7 @@ def _admit_paid_route(
         or (eligibility.state,),
         spend_evidence_refs=eligibility.evidence_refs,
         ledger=ledger,
+        evaluated_at=now,
     )
 
 
@@ -384,6 +408,7 @@ def _admit_subscription_route(
         reason_codes=(f"subscription_quota_state:{state.value}",),
         quota_evidence_refs=evidence_refs,
         ledger=ledger,
+        evaluated_at=now,
     )
 
 
@@ -432,6 +457,7 @@ def _admit_local_route(
             )
         ),
         ledger=ledger,
+        evaluated_at=now,
     )
 
 
@@ -478,7 +504,59 @@ def _receipt_for_missing_descriptor(capability_id: str, name: str) -> Capability
         descriptor,
         action="refused",
         reason_codes=("capability_descriptor_missing",),
+        evaluated_at=_admission_now(None),
     )
+
+
+def _clean_authority_value(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().strip("'\"")
+    if text.lower() in {"", "null", "none", "~", "[]", "unassigned"}:
+        return None
+    return text
+
+
+def _active_task_note(task_id: str) -> Path | None:
+    root = Path(
+        os.environ.get(
+            "HAPAX_CC_TASK_ROOT",
+            str(Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"),
+        )
+    ).expanduser()
+    active = root / "active"
+    exact = active / f"{task_id}.md"
+    if exact.exists():
+        return exact
+    try:
+        matches = sorted(active.glob(f"{task_id}-*.md"))
+    except OSError:
+        return None
+    return matches[0] if matches else None
+
+
+def _caller_authority_context() -> CapabilityAuthorityContext:
+    task_id = _clean_authority_value(os.environ.get("HAPAX_METHODOLOGY_DISPATCH_TASK"))
+    if task_id is None:
+        return CapabilityAuthorityContext()
+    note = _active_task_note(task_id)
+    if note is None:
+        return CapabilityAuthorityContext(
+            task_id=task_id, source_ref="env:HAPAX_METHODOLOGY_DISPATCH_TASK"
+        )
+    frontmatter, _body = parse_frontmatter(note)
+    return CapabilityAuthorityContext(
+        task_id=task_id,
+        authority_case=_clean_authority_value(frontmatter.get("authority_case")),
+        authority_item=_clean_authority_value(frontmatter.get("authority_item"))
+        or _clean_authority_value(frontmatter.get("slice_id")),
+        parent_spec=_clean_authority_value(frontmatter.get("parent_spec")),
+        source_ref=str(note),
+    )
+
+
+def _estimated_cost_ref(value: Decimal) -> str:
+    return format(value, "f")
 
 
 def _build_receipt(
@@ -490,12 +568,26 @@ def _build_receipt(
     spend_evidence_refs: tuple[str, ...] = (),
     resource_evidence_refs: tuple[str, ...] = (),
     ledger: QuotaSpendLedger | None = None,
+    evaluated_at: datetime,
 ) -> CapabilityAdmissionReceipt:
+    authority = _caller_authority_context()
+    estimated_cost_usd = _estimated_cost_ref(descriptor.estimated_cost_usd)
+    evaluated_at_ref = evaluated_at.isoformat().replace("+00:00", "Z")
     payload = {
         "capability_id": descriptor.capability_id,
         "route_id": descriptor.route_id,
         "provider": descriptor.provider,
         "capacity_pool": descriptor.capacity_pool.value,
+        "profile": descriptor.profile,
+        "task_class": descriptor.task_class,
+        "quality_floor": descriptor.quality_floor,
+        "estimated_cost_usd": estimated_cost_usd,
+        "evaluated_at": evaluated_at_ref,
+        "authority_task_id": authority.task_id,
+        "authority_case": authority.authority_case,
+        "authority_item": authority.authority_item,
+        "authority_parent_spec": authority.parent_spec,
+        "authority_source_ref": authority.source_ref,
         "admission_action": action,
         "reason_codes": list(reason_codes),
         "quota_evidence_refs": list(quota_evidence_refs),
@@ -530,6 +622,16 @@ def _build_receipt(
         route_id=descriptor.route_id,
         provider=descriptor.provider,
         capacity_pool=descriptor.capacity_pool.value,
+        profile=descriptor.profile,
+        task_class=descriptor.task_class,
+        quality_floor=descriptor.quality_floor,
+        estimated_cost_usd=estimated_cost_usd,
+        evaluated_at=evaluated_at,
+        authority_task_id=authority.task_id,
+        authority_case=authority.authority_case,
+        authority_item=authority.authority_item,
+        authority_parent_spec=authority.parent_spec,
+        authority_source_ref=authority.source_ref,
         admission_action=action,
         admitted=action == "admitted",
         reason_codes=reason_codes,

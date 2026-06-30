@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 from agents.deliberative_council.capability_admission import (
     CapabilityAdmissionReceipt,
+    CapabilityDescriptor,
+    admit_capability,
     admit_model_alias,
     admit_tool,
     capability_admission_event_scope,
     record_capability_admission,
     route_resource_admission_state,
 )
-from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
+from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES, CapacityPool
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PLATFORM_CAPABILITY_REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
@@ -91,6 +95,76 @@ def test_paid_model_alias_gets_admitted_receipt(tmp_path: Path, monkeypatch) -> 
     assert admission.admission_action == "admitted"
     assert admission.receipt_ref.startswith("cctv-capability-admission:")
     assert "tb-20260510-anthropic-api-steady-state" in admission.receipt_refs
+
+
+def test_receipt_identity_binds_decision_inputs(tmp_path: Path, monkeypatch) -> None:
+    ledger = _write_test_ledger(tmp_path)
+    monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+    monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_TASK", raising=False)
+    checked_at = datetime(2026, 6, 1, 0, 10, tzinfo=UTC)
+    base = CapabilityDescriptor(
+        capability_id="cctv.model.opus",
+        route_id="claude-opus",
+        provider="anthropic",
+        capacity_pool=CapacityPool.API_PAID_SPEND,
+        profile="frontier-full",
+        task_class="research",
+        quality_floor="frontier_required",
+        estimated_cost_usd=Decimal("0.01"),
+    )
+    faster_profile = CapabilityDescriptor(
+        capability_id=base.capability_id,
+        route_id=base.route_id,
+        provider=base.provider,
+        capacity_pool=base.capacity_pool,
+        profile="frontier-fast",
+        task_class=base.task_class,
+        quality_floor=base.quality_floor,
+        estimated_cost_usd=base.estimated_cost_usd,
+    )
+
+    first = admit_capability(base, now=checked_at)
+    changed_profile = admit_capability(faster_profile, now=checked_at)
+    changed_time = admit_capability(base, now=datetime(2026, 6, 1, 0, 11, tzinfo=UTC))
+
+    assert first.admitted is True
+    assert first.profile == "frontier-full"
+    assert first.task_class == "research"
+    assert first.quality_floor == "frontier_required"
+    assert first.estimated_cost_usd == "0.01"
+    assert first.evaluated_at == checked_at
+    assert first.receipt_id != changed_profile.receipt_id
+    assert first.receipt_id != changed_time.receipt_id
+
+
+def test_receipt_captures_dispatch_authority_context(tmp_path: Path, monkeypatch) -> None:
+    ledger = _write_test_ledger(tmp_path)
+    task_root = tmp_path / "tasks"
+    active = task_root / "active"
+    active.mkdir(parents=True)
+    task = active / "cc-task-cctv-test.md"
+    task.write_text(
+        "---\n"
+        "type: cc-task\n"
+        "task_id: cc-task-cctv-test\n"
+        "authority_case: CASE-CAPACITY-ROUTING-001\n"
+        "authority_item: cctv-admission-slice\n"
+        "parent_spec: /tmp/parent-spec.md\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(task_root))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_TASK", "cc-task-cctv-test")
+    monkeypatch.setenv("HAPAX_CCTV_CAPABILITY_ADMISSION_NOW", "2026-06-01T00:10:00Z")
+
+    admission = admit_model_alias("opus")
+
+    assert admission.authority_task_id == "cc-task-cctv-test"
+    assert admission.authority_case == "CASE-CAPACITY-ROUTING-001"
+    assert admission.authority_item == "cctv-admission-slice"
+    assert admission.authority_parent_spec == "/tmp/parent-spec.md"
+    assert admission.authority_source_ref == str(task)
 
 
 def test_unbudgeted_provider_refuses_before_invocation(tmp_path: Path, monkeypatch) -> None:

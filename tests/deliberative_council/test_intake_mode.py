@@ -77,6 +77,7 @@ async def test_run_intake_ready_writes_admission_frontmatter(tmp_path: Path) -> 
     assert receipt.verdict == IntakeVerdict.READY_TO_PLAN
     assert receipt.route_resource_admission == "admitted"
     assert receipt.capability_receipt_refs == ("cctv-capability-admission:test-member",)
+    assert receipt.receipt_ref.startswith("cctv-intake-receipt:REQ-INTAKE:")
     inp, mode, rubric, _config = deliberate_mock.await_args.args
     assert inp.text == "# Request\n\nBuild the named thing with a concrete test.\n"
     assert inp.source_ref == str(request)
@@ -85,7 +86,7 @@ async def test_run_intake_ready_writes_admission_frontmatter(tmp_path: Path) -> 
 
     frontmatter, body = parse_frontmatter(request)
     assert frontmatter["status"] == "accepted_for_planning"
-    assert frontmatter["cctv_intake_receipt"].startswith("cctv-intake-receipt:REQ-INTAKE:")
+    assert frontmatter["cctv_intake_receipt"] == receipt.receipt_ref
     assert frontmatter["cctv_intake_verdict"] == "ready_to_plan"
     assert frontmatter["cctv_route_resource_admission"] == "admitted"
     assert frontmatter["cctv_capability_receipts"] == ["cctv-capability-admission:test-member"]

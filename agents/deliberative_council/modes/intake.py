@@ -220,23 +220,7 @@ def _route_resource_admission_from_council(receipt: dict[str, Any]) -> str:
     value = receipt.get("route_resource_admission")
     if isinstance(value, str) and value.strip():
         return value.strip()
-    admissions = receipt.get("capability_admissions")
-    if not isinstance(admissions, list) or not admissions:
-        return "missing"
-    admitted = 0
-    refused = 0
-    for item in admissions:
-        if not isinstance(item, dict):
-            continue
-        if item.get("admitted") is True or item.get("admission_action") == "admitted":
-            admitted += 1
-        else:
-            refused += 1
-    if admitted and not refused:
-        return "admitted"
-    if admitted:
-        return "partial_admitted"
-    return "refused"
+    return "missing"
 
 
 def _capability_receipt_refs_from_council(receipt: dict[str, Any]) -> tuple[str, ...]:
