@@ -212,20 +212,28 @@ def scalar(value):
     text = str(value).strip().strip('"').strip("'")
     return "" if text in nullish or text.lower() in nullish else text
 
+def scalar_values(value):
+    text = scalar(value)
+    if not text:
+        return []
+    if text.startswith("[") and text.endswith("]"):
+        return [item for part in text[1:-1].split(",") if (item := scalar(part))]
+    return [text]
+
 for idx, line in enumerate(lines):
     for field in fields:
         if not line.startswith(f"{field}:"):
             continue
-        value = scalar(line.split(":", 1)[1])
-        if value:
-            print(value)
+        values = scalar_values(line.split(":", 1)[1])
+        if values:
+            print(values[0])
             raise SystemExit(0)
         for item_line in lines[idx + 1 :]:
             item = item_line.strip()
             if item.startswith("- "):
-                ref = scalar(item[2:])
-                if ref:
-                    print(ref)
+                refs = scalar_values(item[2:])
+                if refs:
+                    print(refs[0])
                     raise SystemExit(0)
             if item_line and not item_line[0].isspace():
                 break
@@ -400,17 +408,32 @@ def parse_frontmatter(path: Path) -> dict[str, object]:
 NULLISH_SCALARS = {"", "null", "none", "None", "NULL", "~", "unassigned", "[]"}
 
 
-def is_nullish_scalar(value: object) -> bool:
+def normalized_scalar(value: object) -> str:
     text = str(value).strip().strip('"').strip("'")
-    return text in NULLISH_SCALARS or text.lower() in NULLISH_SCALARS
+    return "" if text in NULLISH_SCALARS or text.lower() in NULLISH_SCALARS else text
+
+
+def is_nullish_scalar(value: object) -> bool:
+    return not normalized_scalar(value)
+
+
+def scalar_values(value: object) -> list[str]:
+    text = normalized_scalar(value)
+    if not text:
+        return []
+    if text.startswith("[") and text.endswith("]"):
+        return [
+            item for part in text[1:-1].split(",") if (item := normalized_scalar(part))
+        ]
+    return [text]
 
 
 def scalar(data: dict[str, object], key: str) -> str:
     value = data.get(key, "")
     if isinstance(value, list):
         return ""
-    text = str(value).strip()
-    return "" if is_nullish_scalar(text) else text
+    values = scalar_values(value)
+    return values[0] if len(values) == 1 else ""
 
 
 def first_scalar(data: dict[str, object], keys: tuple[str, ...]) -> str:
@@ -426,15 +449,15 @@ def first_values(data: dict[str, object], keys: tuple[str, ...]) -> list[str]:
         value = data.get(key)
         if isinstance(value, list):
             refs = [
-                str(item).strip()
+                normalized_scalar(item)
                 for item in value
-                if str(item).strip() and not is_nullish_scalar(item)
+                if normalized_scalar(item)
             ]
             if refs:
                 return refs
-        text = scalar(data, key)
-        if text:
-            return [text]
+        refs = scalar_values(data.get(key, ""))
+        if refs:
+            return refs
     return []
 
 
