@@ -10,6 +10,7 @@ import pytest
 
 from shared.capdlc_lifecycle import CAPDLC_DARK_STUB, CapDLCLifecycleState
 from shared.legal_posture_registry import (
+    DEFAULT_LEGAL_POSTURE_REGISTRY,
     G2GateInput,
     G2Reason,
     LegalPostureRefusal,
@@ -36,6 +37,7 @@ def _row(
     ttl: int = 180,
     operator_signed: bool = False,
     open_questions: list[str] | None = None,
+    authority_basis: str | None = None,
 ) -> dict[str, Any]:
     return {
         "surface": surface,
@@ -43,7 +45,8 @@ def _row(
         "instrument": instrument,
         "g2_verdict": verdict,
         "citation": "test fixture citation",
-        "authority_basis": "legal_opinion" if verdict != "DARK" else "no_research",
+        "authority_basis": authority_basis
+        or ("legal_opinion" if verdict != "DARK" else "no_research"),
         "review_date": review_date,
         "freshness_ttl_days": ttl,
         "operator_signed": operator_signed,
@@ -135,6 +138,27 @@ def test_legal_registry_g2_lit_with_open_questions_blocks_committed_disposition(
     assert decision.reason is G2Reason.LIT_HAS_OPEN_QUESTIONS
 
 
+@pytest.mark.parametrize("authority_basis", ["no_research", "operator_judgment"])
+def test_legal_registry_g2_lit_with_weak_authority_blocks_committed_disposition(
+    authority_basis: str,
+) -> None:
+    decision = evaluate_g2_commit_gate(
+        TARGET,
+        registry=_registry(
+            _row(
+                verdict="LIT",
+                operator_signed=True,
+                authority_basis=authority_basis,
+            )
+        ),
+        today=TODAY,
+    )
+
+    assert decision.blocked is True
+    assert decision.reason is G2Reason.LIT_AUTHORITY_NOT_COMMITTABLE
+    assert "before commit" in decision.message
+
+
 def test_legal_registry_g2_invalid_target_blocks_committed_disposition() -> None:
     decision = evaluate_g2_commit_gate(
         G2GateInput(" ", TARGET.venue, TARGET.instrument),
@@ -144,6 +168,7 @@ def test_legal_registry_g2_invalid_target_blocks_committed_disposition() -> None
 
     assert decision.blocked is True
     assert decision.reason is G2Reason.INVALID_TARGET
+    assert "before commit" in decision.message
 
 
 def test_legal_registry_g2_fresh_lit_row_admits_only_named_tuple() -> None:
@@ -202,6 +227,17 @@ def test_legal_registry_rejects_lit_row_without_required_evidence() -> None:
         _registry(row)
 
 
+def test_legal_registry_rejects_unknown_authority_basis() -> None:
+    row = _row(verdict="LIT", operator_signed=True, authority_basis="vibes")
+
+    with pytest.raises(ValueError, match="invalid authority_basis: vibes"):
+        _registry(row)
+
+
+def test_default_legal_posture_registry_path_exists() -> None:
+    assert DEFAULT_LEGAL_POSTURE_REGISTRY.is_file()
+
+
 def test_legal_registry_g2_missing_registry_file_fails_closed(tmp_path: Path) -> None:
     decision = evaluate_g2_commit_gate(
         TARGET,
@@ -211,6 +247,7 @@ def test_legal_registry_g2_missing_registry_file_fails_closed(tmp_path: Path) ->
 
     assert decision.blocked is True
     assert decision.reason is G2Reason.REGISTRY_UNREADABLE
+    assert "before commit" in decision.message
 
 
 def test_legal_registry_g2_refusal_carries_decision() -> None:

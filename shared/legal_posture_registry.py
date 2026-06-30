@@ -20,6 +20,28 @@ DEFAULT_LEGAL_POSTURE_REGISTRY: Final = (
     REPO_ROOT / "docs" / "monetization" / "legal-posture-registry.yaml"
 )
 WILDCARD: Final = "*"
+KNOWN_AUTHORITY_BASES: Final[frozenset[str]] = frozenset(
+    {
+        "statute",
+        "regulation",
+        "case_law",
+        "tos_clause",
+        "legal_opinion",
+        "agency_guidance",
+        "no_research",
+        "operator_judgment",
+    }
+)
+COMMITTABLE_LIT_AUTHORITY_BASES: Final[frozenset[str]] = frozenset(
+    {
+        "statute",
+        "regulation",
+        "case_law",
+        "tos_clause",
+        "legal_opinion",
+        "agency_guidance",
+    }
+)
 
 
 class LegalPostureVerdict(StrEnum):
@@ -48,6 +70,7 @@ class G2Reason(StrEnum):
     UNSIGNED_NON_DARK = "unsigned_non_dark"
     STALE_NON_DARK = "stale_non_dark"
     PARTIAL_NOT_COMMITTABLE = "partial_not_committable"
+    LIT_AUTHORITY_NOT_COMMITTABLE = "lit_authority_not_committable"
     LIT_HAS_OPEN_QUESTIONS = "lit_has_open_questions"
 
 
@@ -113,7 +136,7 @@ class LegalPostureRow:
             instrument=_required_string(raw, "instrument"),
             verdict=verdict,
             citation=_required_string(raw, "citation"),
-            authority_basis=_required_string(raw, "authority_basis"),
+            authority_basis=_authority_basis(raw),
             review_date=_parse_date(raw.get("review_date"), "review_date"),
             freshness_ttl_days=ttl,
             operator_signed=operator_signed,
@@ -247,7 +270,7 @@ def evaluate_g2_commit_gate(
         return _block(
             target=target,
             reason=G2Reason.INVALID_TARGET,
-            message=str(exc),
+            message=(f"{exc}; provide non-empty surface, venue, and instrument before commit"),
         )
 
     if registry is None:
@@ -257,7 +280,11 @@ def evaluate_g2_commit_gate(
             return _block(
                 target=normalized_target,
                 reason=G2Reason.REGISTRY_UNREADABLE,
-                message=f"legal-posture registry unreadable: {exc}",
+                message=(
+                    f"legal-posture registry unreadable: {exc}; restore "
+                    "docs/monetization/legal-posture-registry.yaml or pass a valid "
+                    "registry path before commit"
+                ),
             )
 
     advisory_row = registry.most_specific_row(normalized_target)
@@ -270,7 +297,8 @@ def evaluate_g2_commit_gate(
             message=(
                 "no exact legal-posture row for "
                 f"{normalized_target.surface}/{normalized_target.venue}/"
-                f"{normalized_target.instrument}"
+                f"{normalized_target.instrument}; add an exact fresh operator-signed "
+                "LIT row before commit"
             ),
         )
 
@@ -280,7 +308,10 @@ def evaluate_g2_commit_gate(
             reason=G2Reason.DARK_ROW,
             row=row,
             advisory_row=advisory_row,
-            message="exact legal-posture row is DARK",
+            message=(
+                "exact legal-posture row is DARK; upgrade to an exact fresh "
+                "operator-signed LIT row before commit"
+            ),
         )
 
     if not row.operator_signed:
@@ -289,7 +320,10 @@ def evaluate_g2_commit_gate(
             reason=G2Reason.UNSIGNED_NON_DARK,
             row=row,
             advisory_row=advisory_row,
-            message="exact non-DARK legal-posture row lacks operator signature",
+            message=(
+                "exact non-DARK legal-posture row lacks operator signature; obtain "
+                "operator signature before commit"
+            ),
         )
 
     stale = row.is_stale(today=evaluation_date)
@@ -300,7 +334,10 @@ def evaluate_g2_commit_gate(
             row=row,
             advisory_row=advisory_row,
             stale=True,
-            message="exact non-DARK legal-posture row is stale",
+            message=(
+                "exact non-DARK legal-posture row is stale; refresh review_date and "
+                "operator signature before commit"
+            ),
         )
 
     if row.verdict is LegalPostureVerdict.PARTIAL:
@@ -309,7 +346,23 @@ def evaluate_g2_commit_gate(
             reason=G2Reason.PARTIAL_NOT_COMMITTABLE,
             row=row,
             advisory_row=advisory_row,
-            message="PARTIAL legal posture is advisory only for commit",
+            message=(
+                "PARTIAL legal posture is advisory only for commit; resolve open "
+                "questions and upgrade to LIT before commit"
+            ),
+        )
+
+    if row.authority_basis not in COMMITTABLE_LIT_AUTHORITY_BASES:
+        return _block(
+            target=normalized_target,
+            reason=G2Reason.LIT_AUTHORITY_NOT_COMMITTABLE,
+            row=row,
+            advisory_row=advisory_row,
+            message=(
+                f"LIT legal-posture row uses non-committable authority_basis "
+                f"{row.authority_basis!r}; cite statute, regulation, case law, "
+                "ToS clause, legal opinion, or agency guidance before commit"
+            ),
         )
 
     if row.open_questions:
@@ -318,7 +371,7 @@ def evaluate_g2_commit_gate(
             reason=G2Reason.LIT_HAS_OPEN_QUESTIONS,
             row=row,
             advisory_row=advisory_row,
-            message="LIT legal-posture row has open questions",
+            message=("LIT legal-posture row has open questions; resolve questions before commit"),
         )
 
     return G2GateDecision(
@@ -386,6 +439,13 @@ def _required_string(raw: Mapping[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{key} must be a non-empty string")
     return value.strip()
+
+
+def _authority_basis(raw: Mapping[str, Any]) -> str:
+    value = _required_string(raw, "authority_basis")
+    if value not in KNOWN_AUTHORITY_BASES:
+        raise ValueError(f"invalid authority_basis: {value}")
+    return value
 
 
 def _optional_string(value: Any) -> str:

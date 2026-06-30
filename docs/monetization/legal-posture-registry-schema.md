@@ -168,6 +168,9 @@ Reviewers can recheck the source gate and the registry contract with determinist
 ```bash
 uv run pytest tests/shared/test_legal_posture_registry.py -q
 uv run --extra ci pytest tests -q -k 'g2 or legal_registry or mondlc'
+uv run ruff check shared tests
+uv run ruff format --check shared/legal_posture_registry.py tests/shared/test_legal_posture_registry.py
+git diff --check
 ```
 
 The registry-only contract can also be rechecked with deterministic text/YAML checks:
