@@ -106,6 +106,39 @@ government/court route.
   https://www.law.cornell.edu/uscode/text/18/875, and
   https://www.law.cornell.edu/uscode/text/18/1951
 
+## Recheck Commands
+
+Registry contract:
+
+```bash
+uv run python - <<'PY'
+from pathlib import Path
+import yaml
+
+registry = Path("docs/monetization/legal-posture-registry.yaml")
+data = yaml.safe_load(registry.read_text())
+rows = data["rows"]
+keys = [(row["surface"], row["venue"], row["instrument"]) for row in rows]
+phase4 = [
+    row for row in rows
+    if row.get("source_task") == "20260628-registry-phase4-whistleblower-subtree"
+]
+
+assert len(keys) == len(set(keys)), "duplicate registry tuple"
+assert len(phase4) == 7, f"expected 7 phase-four rows, got {len(phase4)}"
+assert {row["surface"] for row in phase4} == {"whistleblower"}
+assert all(row["g2_verdict"] == "DARK" for row in phase4)
+assert all(row["operator_signed"] is False for row in phase4)
+assert any(row["instrument"] == "file_to_government_first" for row in phase4)
+assert any(row["instrument"] == "extortion_boundary" for row in phase4)
+for row in phase4:
+    citation = row.get("citation", "")
+    if row["instrument"] != "sec_anti_retaliation":
+        assert "Digital Realty" not in citation, row["instrument"]
+print(f"whistleblower registry recheck OK: {len(phase4)} rows")
+PY
+```
+
 ## Registry Implications
 
 Every concrete whistleblower workflow must resolve these blockers before any
