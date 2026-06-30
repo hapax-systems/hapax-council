@@ -22,6 +22,7 @@ from agents.digest import (
     format_digest_md,
     send_notification,
 )
+from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
 
 # ── Schema tests ─────────────────────────────────────────────────────────────
 
@@ -351,6 +352,17 @@ class _FakeDigestResult:
     )
 
 
+def _admitted_digest_admission() -> BackgroundCapabilityAdmission:
+    return BackgroundCapabilityAdmission(
+        capability_name="agents.digest.synthesis",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        admitted=True,
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )
+
+
 @pytest.mark.asyncio
 @patch("agents.digest.collect_recent_documents")
 @patch("agents.digest.collect_collection_stats")
@@ -375,7 +387,8 @@ async def test_generate_digest_pipeline(
     mock_stats.return_value = {"documents": 1500, "profile-facts": 80}
     mock_agent.run = AsyncMock(return_value=_FakeDigestResult())
 
-    digest = await generate_digest(hours=24)
+    with patch("agents.digest._admit_digest_synthesis", return_value=_admitted_digest_admission()):
+        digest = await generate_digest(hours=24)
     assert digest.hours == 24
     assert digest.stats.new_documents == 1
     assert digest.stats.collection_sizes["documents"] == 1500
@@ -398,7 +411,8 @@ async def test_generate_digest_empty_results(
     mock_stats.return_value = {"documents": 100}
     mock_agent.run = AsyncMock(return_value=_FakeDigestResult())
 
-    digest = await generate_digest(hours=24)
+    with patch("agents.digest._admit_digest_synthesis", return_value=_admitted_digest_admission()):
+        digest = await generate_digest(hours=24)
     assert digest.stats.new_documents == 0
 
     # Prompt should mention "No new documents"
@@ -422,9 +436,44 @@ async def test_generate_digest_llm_failure_graceful(
     mock_stats.return_value = {}
     mock_agent.run = AsyncMock(side_effect=Exception("LLM timeout"))
 
-    digest = await generate_digest(hours=24)
+    with patch("agents.digest._admit_digest_synthesis", return_value=_admitted_digest_admission()):
+        digest = await generate_digest(hours=24)
     assert "unavailable" in digest.headline.lower() or "error" in digest.headline.lower()
     assert digest.stats.new_documents == 0
+
+
+@pytest.mark.asyncio
+@patch("agents.digest.collect_recent_documents")
+@patch("agents.digest.collect_collection_stats")
+@patch("agents.digest.digest_agent")
+async def test_generate_digest_admission_denial_skips_llm(
+    mock_agent,
+    mock_stats,
+    mock_docs,
+):
+    """Capability denial should degrade without invoking the digest agent."""
+    from agents.digest import generate_digest
+
+    mock_docs.return_value = []
+    mock_stats.return_value = {}
+    mock_agent.run = AsyncMock()
+    denied = BackgroundCapabilityAdmission(
+        capability_name="agents.digest.synthesis",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        admitted=False,
+        denied_reason="task_note_absent",
+        reason_codes=("task_note_absent",),
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )
+
+    with patch("agents.digest._admit_digest_synthesis", return_value=denied):
+        digest = await generate_digest(hours=24)
+
+    mock_agent.run.assert_not_called()
+    assert "unavailable" in digest.headline.lower()
+    assert "task_note_absent" in digest.summary
 
 
 @pytest.mark.asyncio
@@ -443,7 +492,8 @@ async def test_generate_digest_prompt_includes_collection_stats(
     mock_stats.return_value = {"documents": 1500, "samples": 80, "claude-memory": 200}
     mock_agent.run = AsyncMock(return_value=_FakeDigestResult())
 
-    await generate_digest(hours=24)
+    with patch("agents.digest._admit_digest_synthesis", return_value=_admitted_digest_admission()):
+        await generate_digest(hours=24)
     prompt = mock_agent.run.call_args[0][0]
     assert "1500 points" in prompt
     assert "80 points" in prompt

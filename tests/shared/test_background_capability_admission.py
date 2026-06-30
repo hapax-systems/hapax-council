@@ -9,6 +9,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from shared.dispatcher_policy import build_route_authority_receipt, write_route_authority_receipt
 from shared.fix_capabilities.background_admission import admit_background_capability
@@ -31,6 +32,7 @@ def _provider_task_fields() -> dict[str, object]:
         "quality_floor": "frontier_required",
         "authority_level": "authoritative",
         "mutation_surface": "provider_spend",
+        "provider_spend_authorized": True,
         "mutation_scope_refs": ["background:model"],
         "risk_flags": {},
         "kind": "hardening",
@@ -51,7 +53,27 @@ def _runtime_task_fields(
         "quality_floor": quality_floor,
         "authority_level": "authoritative",
         "mutation_surface": "runtime",
+        "runtime_mutation_authorized": True,
         "mutation_scope_refs": ["background:runtime"],
+        "risk_flags": {},
+        "kind": "hardening",
+    }
+
+
+def _source_only_task_fields() -> dict[str, object]:
+    return {
+        "task_id": "task-background-source",
+        "status": "claimed",
+        "assigned_to": "background",
+        "authority_case": "CASE-CAPACITY-ROUTING-001",
+        "parent_spec": "spec.md",
+        "quality_floor": "frontier_review_required",
+        "authority_level": "support_non_authoritative",
+        "mutation_surface": "source",
+        "source_mutation_authorized": True,
+        "provider_spend_authorized": False,
+        "runtime_mutation_authorized": False,
+        "mutation_scope_refs": ["background:source"],
         "risk_flags": {},
         "kind": "hardening",
     }
@@ -179,6 +201,73 @@ def test_background_model_call_refuses_without_platform_receipt(tmp_path: Path) 
     assert "provider_gateway_evidence_absent" in admission.denial_summary()
 
 
+def test_background_model_call_refuses_when_task_surface_does_not_authorize_provider_spend(
+    tmp_path: Path,
+) -> None:
+    admission = admit_background_capability(
+        capability_name="studio.scene_classifier.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        task_fields=_source_only_task_fields(),
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is False
+    assert admission.policy_outcome is None
+    assert admission.reason_codes == ("task_mutation_surface_not_authorized",)
+    assert admission.denial_summary() == "task_mutation_surface_not_authorized"
+
+
+def test_background_model_call_cannot_elevate_task_authority(tmp_path: Path) -> None:
+    fields = _provider_task_fields()
+    fields["authority_level"] = "support_non_authoritative"
+
+    admission = admit_background_capability(
+        capability_name="studio.scene_classifier.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        task_fields=fields,
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        authority_level="authoritative",
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is False
+    assert admission.reason_codes == ("task_authority_level_not_authorized",)
+    assert "requested=authoritative" in (admission.denied_reason or "")
+
+
+def test_background_model_call_cannot_raise_task_quality_floor(tmp_path: Path) -> None:
+    fields = _provider_task_fields()
+    fields["quality_floor"] = "deterministic_ok"
+
+    admission = admit_background_capability(
+        capability_name="studio.scene_classifier.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        task_fields=fields,
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is False
+    assert admission.reason_codes == ("task_quality_floor_not_authorized",)
+    assert "declared=deterministic_ok" in (admission.denied_reason or "")
+
+
 def test_background_model_call_admits_with_platform_and_budget_receipts(tmp_path: Path) -> None:
     _write_provider_gateway_receipt(tmp_path)
 
@@ -229,6 +318,28 @@ def test_fix_evaluator_model_call_admits_provider_gateway_route(tmp_path: Path) 
     assert admission.model_alias == "claude-sonnet"
 
 
+def test_director_provider_model_call_admits_provider_gateway_route(tmp_path: Path) -> None:
+    _write_provider_gateway_receipt(tmp_path)
+
+    admission = admit_background_capability(
+        capability_name="studio.director.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias="claude-sonnet",
+        task_fields=_provider_task_fields(),
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is True
+    assert admission.policy_outcome == "launch"
+    assert admission.route_id == "api.headless.provider_gateway"
+    assert admission.model_alias == "claude-sonnet"
+
+
 def test_local_worker_runtime_fix_refuses_through_real_policy(tmp_path: Path) -> None:
     task_id = "task-background-runtime"
 
@@ -248,6 +359,111 @@ def test_local_worker_runtime_fix_refuses_through_real_policy(tmp_path: Path) ->
     assert admission.policy_outcome == "refuse"
     assert admission.reason_codes == ("runtime_actuation_receipt_absent",)
     assert admission.model_descriptor["execution_descriptor"]["model_id"] == "command-r-08-2024"
+
+
+def test_background_admission_refuses_invalid_route_id(tmp_path: Path) -> None:
+    admission = admit_background_capability(
+        capability_name="studio.scene_classifier.llm",
+        route_id="not-a-route",
+        model_alias="gemini-flash",
+        task_fields=_provider_task_fields(),
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is False
+    assert admission.denied_reason == "invalid_route_id:not-a-route"
+
+
+def test_background_admission_refuses_absent_task_note(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("HAPAX_BACKGROUND_CAPABILITY_TASK_NOTE", raising=False)
+
+    admission = admit_background_capability(
+        capability_name="studio.scene_classifier.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is False
+    assert admission.denied_reason is not None
+    assert admission.denied_reason.startswith("task_note_absent:")
+
+
+def test_background_admission_refuses_task_note_without_task_id(tmp_path: Path) -> None:
+    fields = _provider_task_fields()
+    fields.pop("task_id")
+
+    admission = admit_background_capability(
+        capability_name="studio.scene_classifier.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        task_fields=fields,
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is False
+    assert admission.denied_reason == "task_id_absent"
+
+
+def test_background_admission_refuses_unreadable_task_note(tmp_path: Path) -> None:
+    admission = admit_background_capability(
+        capability_name="studio.scene_classifier.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        task_note_path=tmp_path / "missing-task.md",
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is False
+    assert admission.denied_reason is not None
+    assert admission.denied_reason.startswith("task_note_unreadable:")
+
+
+def test_background_admission_denies_when_route_decision_receipt_write_fails(
+    tmp_path: Path,
+) -> None:
+    _write_provider_gateway_receipt(tmp_path)
+
+    with patch(
+        "shared.fix_capabilities.background_admission.write_route_decision_receipt",
+        side_effect=OSError("readonly"),
+    ):
+        admission = admit_background_capability(
+            capability_name="studio.scene_classifier.llm",
+            route_id="api.headless.provider_gateway",
+            model_alias="gemini-flash",
+            task_fields=_provider_task_fields(),
+            mutation_surface="provider_spend",
+            quality_floor="frontier_required",
+            receipt_dir=tmp_path,
+            quota_ledger_path=QUOTA_FIXTURE,
+            now=NOW,
+            write_receipt=True,
+        )
+
+    assert admission.admitted is False
+    assert admission.reason_codes == ("route_decision_receipt_write_failed",)
+    assert "readonly" in (admission.denied_reason or "")
 
 
 def test_runtime_fix_route_admits_with_platform_and_runtime_receipts(tmp_path: Path) -> None:

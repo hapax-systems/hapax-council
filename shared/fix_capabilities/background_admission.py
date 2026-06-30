@@ -31,6 +31,29 @@ BACKGROUND_CAPABILITY_TASK_NOTE_ENV = "HAPAX_BACKGROUND_CAPABILITY_TASK_NOTE"
 BACKGROUND_CAPABILITY_LANE_ENV = "HAPAX_BACKGROUND_CAPABILITY_LANE"
 BACKGROUND_CAPABILITY_RECEIPTS_ENV = "HAPAX_BACKGROUND_CAPABILITY_RECEIPTS"
 
+_SURFACE_AUTH_FLAGS: dict[str, str] = {
+    "provider_spend": "provider_spend_authorized",
+    "runtime": "runtime_mutation_authorized",
+    "source": "source_mutation_authorized",
+    "vault_docs": "docs_mutation_authorized",
+    "docs": "docs_mutation_authorized",
+    "public": "release_authorized",
+}
+
+_QUALITY_FLOOR_ORDER: dict[str, int] = {
+    "deterministic_ok": 0,
+    "capable_sufficient": 1,
+    "frontier_preferred": 2,
+    "frontier_required": 3,
+    "frontier_review_required": 4,
+}
+
+_AUTHORITY_LEVEL_ORDER: dict[str, int] = {
+    "support_only": 0,
+    "support_non_authoritative": 1,
+    "authoritative": 2,
+}
+
 
 @dataclass(frozen=True)
 class BackgroundCapabilityAdmission:
@@ -194,6 +217,28 @@ def admit_background_capability(
             authority_level=authority_level,
         )
 
+    authority_blocker = _invocation_authority_blocker(
+        fields,
+        mutation_surface=mutation_surface,
+        quality_floor=quality_floor,
+        authority_level=authority_level,
+    )
+    if authority_blocker is not None:
+        reason, code = authority_blocker
+        return _denied(
+            capability_name=capability_name,
+            route_id=normalized_route_id,
+            model_alias=model_alias,
+            denied_reason=reason,
+            reason_codes=(code,),
+            task_id=task_id,
+            authority_case=authority_case,
+            parent_spec=_string_field(fields, "parent_spec"),
+            mutation_surface=mutation_surface,
+            quality_floor=quality_floor or _string_field(fields, "quality_floor"),
+            authority_level=authority_level or _string_field(fields, "authority_level"),
+        )
+
     invocation_fields = dict(fields)
     invocation_fields["mutation_surface"] = mutation_surface
     if quality_floor is not None:
@@ -237,7 +282,22 @@ def admit_background_capability(
             authority_level=authority_level or _string_field(invocation_fields, "authority_level"),
         )
 
-    receipt_path = _write_decision_receipt(decision, enabled=write_receipt)
+    try:
+        receipt_path = _write_decision_receipt(decision, enabled=write_receipt)
+    except Exception as exc:
+        return _denied(
+            capability_name=capability_name,
+            route_id=normalized_route_id,
+            model_alias=model_alias,
+            denied_reason=f"route_decision_receipt_write_failed:{exc}",
+            reason_codes=("route_decision_receipt_write_failed",),
+            task_id=task_id,
+            authority_case=authority_case,
+            parent_spec=_string_field(invocation_fields, "parent_spec"),
+            mutation_surface=mutation_surface,
+            quality_floor=quality_floor or _string_field(invocation_fields, "quality_floor"),
+            authority_level=authority_level or _string_field(invocation_fields, "authority_level"),
+        )
     descriptor = _model_descriptor(sources.registry, normalized_route_id)
     return BackgroundCapabilityAdmission(
         capability_name=capability_name,
@@ -275,6 +335,7 @@ def _denied(
     mutation_surface: str | None = None,
     quality_floor: str | None = None,
     authority_level: str | None = None,
+    reason_codes: tuple[str, ...] = (),
 ) -> BackgroundCapabilityAdmission:
     return BackgroundCapabilityAdmission(
         capability_name=capability_name,
@@ -282,6 +343,7 @@ def _denied(
         model_alias=model_alias,
         admitted=False,
         denied_reason=denied_reason,
+        reason_codes=reason_codes,
         task_id=task_id,
         authority_case=authority_case,
         parent_spec=parent_spec,
@@ -313,6 +375,124 @@ def _string_field(fields: Mapping[str, Any], key: str) -> str | None:
     if not text or text in {"null", "None"}:
         return None
     return text
+
+
+def _invocation_authority_blocker(
+    fields: Mapping[str, Any],
+    *,
+    mutation_surface: str,
+    quality_floor: str | None,
+    authority_level: str | None,
+) -> tuple[str, str] | None:
+    surface_blocker = _mutation_surface_blocker(fields, mutation_surface)
+    if surface_blocker is not None:
+        return surface_blocker
+    if quality_floor is not None:
+        quality_blocker = _ordered_field_blocker(
+            fields,
+            key="quality_floor",
+            requested=quality_floor,
+            order=_QUALITY_FLOOR_ORDER,
+            code="task_quality_floor_not_authorized",
+        )
+        if quality_blocker is not None:
+            return quality_blocker
+    if authority_level is not None:
+        return _ordered_field_blocker(
+            fields,
+            key="authority_level",
+            requested=authority_level,
+            order=_AUTHORITY_LEVEL_ORDER,
+            code="task_authority_level_not_authorized",
+        )
+    return None
+
+
+def _mutation_surface_blocker(
+    fields: Mapping[str, Any],
+    requested_surface: str,
+) -> tuple[str, str] | None:
+    requested = requested_surface.strip() or "none"
+    if requested == "none":
+        return None
+
+    declared = _declared_mutation_surfaces(fields)
+    flag_key = _SURFACE_AUTH_FLAGS.get(requested)
+    if flag_key is not None and flag_key in fields and not _truthy_field(fields, flag_key):
+        return (
+            f"task_mutation_surface_not_authorized:requested={requested} "
+            f"declared={_surface_summary(declared)} flag={flag_key}:false",
+            "task_mutation_surface_not_authorized",
+        )
+    if requested in declared:
+        return None
+    if flag_key is not None and _truthy_field(fields, flag_key):
+        return None
+    return (
+        f"task_mutation_surface_not_authorized:requested={requested} "
+        f"declared={_surface_summary(declared)} flag={flag_key or 'none'}",
+        "task_mutation_surface_not_authorized",
+    )
+
+
+def _declared_mutation_surfaces(fields: Mapping[str, Any]) -> frozenset[str]:
+    surfaces: set[str] = set()
+    for key in ("mutation_surface", "mutation_surfaces"):
+        raw = fields.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, str):
+            values = raw.split(",")
+        elif isinstance(raw, (list, tuple, set, frozenset)):
+            values = raw
+        else:
+            values = (raw,)
+        for value in values:
+            text = str(value).strip()
+            if text and text not in {"null", "None"}:
+                surfaces.add(text)
+    return frozenset(surfaces)
+
+
+def _surface_summary(surfaces: frozenset[str]) -> str:
+    return ",".join(sorted(surfaces)) if surfaces else "none"
+
+
+def _truthy_field(fields: Mapping[str, Any], key: str) -> bool:
+    value = fields.get(key)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ordered_field_blocker(
+    fields: Mapping[str, Any],
+    *,
+    key: str,
+    requested: str,
+    order: Mapping[str, int],
+    code: str,
+) -> tuple[str, str] | None:
+    declared = _string_field(fields, key)
+    normalized_requested = requested.strip()
+    if not declared:
+        return (
+            f"{code}:requested={normalized_requested} declared=absent",
+            code,
+        )
+    declared_rank = order.get(declared)
+    requested_rank = order.get(normalized_requested)
+    if declared_rank is None or requested_rank is None:
+        if declared == normalized_requested:
+            return None
+    elif requested_rank <= declared_rank:
+        return None
+    return (
+        f"{code}:requested={normalized_requested} declared={declared}",
+        code,
+    )
 
 
 def _write_decision_receipt(

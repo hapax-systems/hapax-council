@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 import time
 from datetime import UTC, datetime
@@ -29,8 +30,13 @@ log = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from agents._config import PROFILES_DIR, get_model_adaptive, get_qdrant
+from agents._config import MODELS, PROFILES_DIR, get_model_adaptive, get_qdrant
 from agents._operator import get_system_prompt_fragment
+from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+    BackgroundCapabilityAdmission,
+    admit_background_capability,
+)
 
 # Import Langfuse OTel config (side-effect: configures exporter)
 try:
@@ -182,6 +188,11 @@ digest_agent = Agent(
     output_type=Digest,
 )
 
+DIGEST_LLM_ROUTE_ID_ENV = "HAPAX_DIGEST_LLM_ROUTE_ID"
+DIGEST_LOCAL_MODEL_IDS: frozenset[str] = frozenset(
+    {"local-fast", "appendix-fast", "local-research-instruct", "command-r-08-2024"}
+)
+
 # Register on-demand operator context tools
 from agents._context_tools import get_context_tools
 
@@ -256,6 +267,18 @@ Generate a content digest. The timestamp is {datetime.now(UTC).isoformat()[:19]}
 The lookback window is {hours} hours."""
 
     try:
+        admission = _admit_digest_synthesis()
+        if not admission.admitted:
+            log.warning(
+                "Digest synthesis admission denied route=%s reason=%s; "
+                "next_action=set %s and refresh route/resource/quota receipts before "
+                "enabling autonomous model use",
+                admission.route_id,
+                admission.denial_summary(),
+                BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+                extra={"background_capability": admission.metadata()},
+            )
+            raise RuntimeError(f"digest_synthesis_admission_denied:{admission.denial_summary()}")
         result = await digest_agent.run(prompt)
         digest = result.output
     except Exception as e:
@@ -273,6 +296,49 @@ The lookback window is {hours} hours."""
     digest.stats = stats
 
     return digest
+
+
+def _admit_digest_synthesis() -> BackgroundCapabilityAdmission:
+    model_id = _selected_digest_model_id()
+    expected_route, mutation_surface, quality_floor = _digest_admission_spec(model_id)
+    configured_route = os.environ.get(DIGEST_LLM_ROUTE_ID_ENV, expected_route)
+    if configured_route != expected_route:
+        return BackgroundCapabilityAdmission(
+            capability_name="agents.digest.synthesis",
+            route_id=configured_route,
+            model_alias=model_id,
+            admitted=False,
+            denied_reason=(
+                "digest_route_model_mismatch:"
+                f"model={model_id} expected_route={expected_route} "
+                f"configured_route={configured_route}"
+            ),
+            reason_codes=("digest_route_model_mismatch",),
+            mutation_surface=mutation_surface,
+            quality_floor=quality_floor,
+        )
+    return admit_background_capability(
+        capability_name="agents.digest.synthesis",
+        route_id=configured_route,
+        model_alias=model_id,
+        mutation_surface=mutation_surface,
+        quality_floor=quality_floor,
+    )
+
+
+def _selected_digest_model_id() -> str:
+    model = getattr(digest_agent, "model", None) or getattr(digest_agent, "_model", None)
+    model_name = getattr(model, "model_name", None)
+    if isinstance(model_name, str) and model_name.strip():
+        return model_name.strip()
+    return MODELS.get("fast", "fast")
+
+
+def _digest_admission_spec(model_id: str) -> tuple[str, str, str]:
+    resolved = MODELS.get(model_id, model_id)
+    if resolved in DIGEST_LOCAL_MODEL_IDS:
+        return "local_tool.local.worker", "none", "deterministic_ok"
+    return "api.headless.provider_gateway", "provider_spend", "frontier_required"
 
 
 # ── Formatters ───────────────────────────────────────────────────────────────

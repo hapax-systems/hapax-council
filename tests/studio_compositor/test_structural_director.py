@@ -9,6 +9,7 @@ import pytest
 
 from agents.studio_compositor import structural_director as sd
 from shared.action_receipt import ActionReceipt, ActionReceiptStatus
+from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
 
 
 @pytest.fixture(autouse=True)
@@ -121,9 +122,61 @@ class TestDefaultLlmBackpressure:
         mock_pass.assert_not_called()
         mock_urlopen.assert_not_called()
 
-    def test_default_llm_timeout_releases_local_route_lock(self):
+    def test_default_llm_refuses_when_background_admission_denies(self, monkeypatch):
         import agents.studio_compositor.director_loop as dl_mod
 
+        monkeypatch.setattr(
+            sd,
+            "_admit_structural_llm",
+            lambda _model: BackgroundCapabilityAdmission(
+                capability_name="studio.structural_director.llm",
+                route_id="local_tool.local.worker",
+                model_alias="local-fast",
+                admitted=False,
+                denied_reason="test_denied",
+                reason_codes=("test_denied",),
+                mutation_surface="none",
+                quality_floor="deterministic_ok",
+            ),
+        )
+
+        with patch("subprocess.run") as mock_pass:
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                assert sd._default_llm_fn("prompt") == ""
+
+        mock_pass.assert_not_called()
+        mock_urlopen.assert_not_called()
+        assert dl_mod._DIRECTOR_LLM_LOCK.acquire(blocking=False)
+        dl_mod._DIRECTOR_LLM_LOCK.release()
+
+    def test_structural_route_model_mismatch_denies_without_policy_call(self, monkeypatch):
+        monkeypatch.setenv("HAPAX_STRUCTURAL_LLM_ROUTE_ID", "local_tool.local.worker")
+
+        with patch(
+            "agents.studio_compositor.structural_director.admit_background_capability"
+        ) as gate:
+            admission = sd._admit_structural_llm("balanced")
+
+        gate.assert_not_called()
+        assert admission.admitted is False
+        assert admission.reason_codes == ("structural_route_model_mismatch",)
+        assert "expected_route=api.headless.provider_gateway" in (admission.denied_reason or "")
+
+    def test_default_llm_timeout_releases_local_route_lock(self, monkeypatch):
+        import agents.studio_compositor.director_loop as dl_mod
+
+        monkeypatch.setattr(
+            sd,
+            "_admit_structural_llm",
+            lambda _model: BackgroundCapabilityAdmission(
+                capability_name="studio.structural_director.llm",
+                route_id="local_tool.local.worker",
+                model_alias="local-fast",
+                admitted=True,
+                mutation_surface="none",
+                quality_floor="deterministic_ok",
+            ),
+        )
         with patch("subprocess.run") as mock_pass:
             mock_pass.return_value.stdout = "test-key\n"
             with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):

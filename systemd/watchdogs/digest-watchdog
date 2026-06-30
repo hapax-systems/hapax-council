@@ -8,8 +8,12 @@ cd /home/hapax/projects/hapax-council
 export LITELLM_API_KEY=$(pass show litellm/master-key 2>/dev/null || echo "changeme")
 export LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key 2>/dev/null || true)
 export LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key 2>/dev/null || true)
+export HAPAX_BACKGROUND_CAPABILITY_LANE=${HAPAX_BACKGROUND_CAPABILITY_LANE:-digest-watchdog}
+export HAPAX_BACKGROUND_CAPABILITY_RECEIPTS=${HAPAX_BACKGROUND_CAPABILITY_RECEIPTS:-1}
 
 UV=/home/hapax/.local/bin/uv
+# agents.digest gates synthesis with admit_background_capability; without a
+# task note and current route/resource/quota receipts, it degrades without LLM use.
 REPORT=$($UV run python -m agents.digest --hours 24 --save --json 2>/dev/null)
 
 # Notify via shared.notify (pass JSON via stdin)

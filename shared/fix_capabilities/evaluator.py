@@ -15,6 +15,7 @@ from pydantic_ai import Agent
 from agents.health_monitor import CheckResult, Status
 from shared.config import MODELS, get_model
 from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
     BackgroundCapabilityAdmission,
     admit_background_capability,
 )
@@ -137,11 +138,12 @@ async def evaluate_check(
     if not admission.admitted:
         log.warning(
             "Evaluator admission denied for check %s route=%s reason=%s; "
-            "next_action=set HAPAX_BACKGROUND_CAPABILITY_TASK_NOTE and refresh "
+            "next_action=set %s and refresh "
             "route/resource/quota receipts before enabling autonomous model use",
             check.name,
             admission.route_id,
             admission.denial_summary(),
+            BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
         )
         return None
 
