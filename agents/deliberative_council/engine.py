@@ -118,9 +118,9 @@ async def _call_member(
     served_model = ""
     try:
         for msg in result.all_messages():
-            # ModelResponse messages carry the model that ACTUALLY answered; capture the last so a
-            # gateway fail-over (e.g. balanced->gemini-pro on a credit cap) is visible to the
-            # family-diversity quorum instead of being miscounted as the requested alias's family.
+            # ModelResponse messages carry the model that ACTUALLY answered. CCTV requests disable
+            # LiteLLM fallbacks before invocation, so a served-model mismatch is an anomaly witness
+            # rather than an accepted routing path.
             model_name = getattr(msg, "model_name", None)
             if model_name:
                 served_model = str(model_name)

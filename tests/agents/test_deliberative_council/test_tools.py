@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -220,6 +221,32 @@ class TestQdrantLookup:
         assert "action=refused" in result
         assert "refused before external research provider invocation" in result
 
+    @pytest.mark.asyncio
+    async def test_web_verify_disables_litellm_fallbacks(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _FakeAgent:
+            def __init__(self, model: str, **kwargs: object) -> None:
+                captured["model"] = model
+                captured.update(kwargs)
+
+            async def run(self, _prompt: str):
+                return SimpleNamespace(output="external evidence")
+
+        with (
+            patch(
+                "agents.deliberative_council.tools.admit_tool",
+                return_value=_tool_admission("web_verify"),
+            ),
+            patch("pydantic_ai.Agent", _FakeAgent),
+            patch("shared.config.get_model", return_value="litellm_proxy/web-research"),
+        ):
+            result = await web_verify(None, "test claim")
+
+        assert "external evidence" in result
+        assert captured["model"] == "litellm_proxy/web-research"
+        assert captured["model_settings"] == {"extra_body": {"disable_fallbacks": True}}
+
 
 class TestVaultRead:
     @pytest.mark.asyncio
@@ -241,6 +268,7 @@ class TestBuildMember:
     def test_full_tool_level(self) -> None:
         agent = build_member("opus", ToolLevel.FULL)
         assert agent is not None
+        assert agent.model_settings["extra_body"] == {"disable_fallbacks": True}
         assert agent._cctv_capability_admission.capability_id == "cctv.model.opus"
         assert agent._cctv_capability_admission.receipt_ref.startswith("cctv-capability-admission:")
         assert agent._cctv_route_id == model_route_for_alias("opus")
@@ -298,6 +326,10 @@ class TestBuildMember:
         assert cache_control_ttl_for_alias("opus") is None
         assert cache_policy_for_alias("opus")["cache_control"] is False
         assert cache_policy_for_alias("opus")["cache_control_ttl_setting"] is None
+        assert model_settings_for_alias("opus") == {"extra_body": {"disable_fallbacks": True}}
+
+    def test_member_model_settings_disable_litellm_fallbacks(self) -> None:
+        assert model_settings_for_alias("opus")["extra_body"] == {"disable_fallbacks": True}
 
     def test_openai_cache_settings_only_for_openai_family(
         self, monkeypatch: pytest.MonkeyPatch
@@ -310,10 +342,11 @@ class TestBuildMember:
         settings = model_settings_for_alias("openai-reviewer")
 
         assert settings == {
+            "extra_body": {"disable_fallbacks": True},
             "openai_prompt_cache_key": "cctv-deliberative-council:openai-reviewer",
             "openai_prompt_cache_retention": "24h",
         }
-        assert model_settings_for_alias("opus") == {}
+        assert model_settings_for_alias("opus") == {"extra_body": {"disable_fallbacks": True}}
 
     @pytest.mark.asyncio
     async def test_litellm_model_maps_cache_point_to_previous_text_block(self) -> None:

@@ -16,6 +16,7 @@ from .capability_admission import (
     record_capability_admission,
     tool_result_prefix,
 )
+from .litellm_request_policy import litellm_no_fallback_model_settings
 
 log = logging.getLogger(__name__)
 
@@ -202,7 +203,7 @@ async def web_verify(ctx: Any, query: str) -> str:
 
     from shared.config import get_model
 
-    agent = Agent(get_model("web-research"))
+    agent = Agent(get_model("web-research"), model_settings=litellm_no_fallback_model_settings())
     try:
         result = await asyncio.wait_for(
             agent.run(f"Search and summarize evidence for or against: {query}"),
