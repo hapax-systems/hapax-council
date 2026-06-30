@@ -1,0 +1,209 @@
+---
+# Legal-Posture Registry
+# Schema version: 1.0.0
+# Authority: CASE-SDLC-REFORM-001
+# Parent request: REQ-20260628-mdlc-tax-legal-posture-registry
+# Gate contract: docs/monetization/legal-posture-registry-schema.md §5
+#
+# This file is the SSOT for g2 ("legal in venue") gate decisions.
+# Absence of a row = DARK (fail-closed).
+# Do not add rows without cited legal authority.
+# Do not upgrade DARK→LIT/PARTIAL without operator signature.
+
+schema_version: "1.0.0"
+schema_doc: docs/monetization/legal-posture-registry-schema.md
+last_updated: "2026-06-30"
+update_author: 20260628-registry-phase0-schema-and-honest-dark-gate
+
+surfaces:
+  - prediction_market
+  - bug_bounty
+  - whistleblower
+  - white_label
+  - data_exhaust
+  - receive_only_rail
+
+rows:
+  # ─────────────────────────────────────────────────────────────────────
+  # SEED ROWS — Phase 0 honest-dark initialization.
+  # Every surface starts DARK. Subtree tasks (phases 1–6) will research
+  # and upgrade rows with cited authority + operator signature.
+  # ─────────────────────────────────────────────────────────────────────
+
+  # ── Prediction Market ────────────────────────────────────────────────
+  - surface: prediction_market
+    venue: "*"
+    instrument: "*"
+    g2_verdict: DARK
+    citation: >
+      No research completed. Operator state of residence unconfirmed —
+      gates all state-specific analysis. See phase 1
+      (registry-phase1-operator-state-of-residence-confirmation) and
+      phase 2 (registry-phase2-prediction-market-subtree).
+    authority_basis: no_research
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Prediction markets have the highest legal volatility of any surface.
+      WA actively suing Kalshi (Mar 2026). MN/NV/MD may ban public workers.
+      §1256 vs gambling classification unresolved. OBBBA 90% loss cap
+      potentially applicable.
+    open_questions:
+      - "Operator state of residence (binary GREEN/RED — MN/NV/MD-public-worker bans)"
+      - "§1256 mark-to-market vs state gambling classification"
+      - "OBBBA 90% loss cap applicability to event contracts"
+      - "50-state matrix of event-contract legality"
+      - "Kalshi/Polymarket ToS constraints on automated participation"
+    blocks_surfaces:
+      - prediction_market
+    source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
+
+  # ── Bug Bounty ───────────────────────────────────────────────────────
+  - surface: bug_bounty
+    venue: "*"
+    instrument: "*"
+    g2_verdict: DARK
+    citation: >
+      No research completed. Export control (License Exception ACE,
+      deemed export), ECCN 4D004 tooling classification, DMCA §1201
+      safe harbor, and hobby-loss (IRC §183) implications unresearched.
+      See phase 3 (registry-phase3-bug-bounty-subtree).
+    authority_basis: no_research
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Bug bounty has dual exposure: (1) export control on security tooling
+      and vulnerability disclosure, (2) tax treatment of bounty income
+      (hobby-loss §183 may reclassify deductions).
+    open_questions:
+      - "License Exception ACE deemed-export applicability"
+      - "ECCN 4D004 tooling classification for AI security tools"
+      - "DMCA §1201 safe harbor for good-faith security research"
+      - "Hobby-loss (IRC §183) treatment of bounty income"
+    blocks_surfaces:
+      - bug_bounty
+    source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
+
+  # ── Whistleblower ────────────────────────────────────────────────────
+  - surface: whistleblower
+    venue: "*"
+    instrument: "*"
+    g2_verdict: DARK
+    citation: >
+      No research completed. SEC original-information doctrine
+      (public-source disqualification), 18 USC §873 extortion tripwire,
+      and file-to-government-first obligation unresearched. Note: Digital
+      Realty Trust v. Somers (2018) is anti-retaliation, NOT eligibility —
+      prior mis-citation to fix. See phase 4
+      (registry-phase4-whistleblower-subtree).
+    authority_basis: no_research
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Frozen rule: file-to-government-first. The prior citation of Digital
+      Realty Trust v. Somers (2018) as eligibility precedent is wrong — it
+      addresses anti-retaliation under Dodd-Frank §922, not
+      original-information eligibility under SEC Rule 21F-4(b)(3).
+    open_questions:
+      - "SEC original-information doctrine — public-source disqualification scope"
+      - "18 USC §873 extortion tripwire — boundary between tip and threat"
+      - "Dodd-Frank §922 eligibility vs anti-retaliation (fix Digital Realty mis-citation)"
+      - "File-to-government-first obligation — procedural requirements"
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
+
+  # ── White Label ──────────────────────────────────────────────────────
+  - surface: white_label
+    venue: "*"
+    instrument: "*"
+    g2_verdict: DARK
+    citation: >
+      No research completed. Anthropic "competing product" clause
+      (actively enforced — OpenClaw/Harness ban Apr 2026), FTC §5
+      B2B-undisclosed AI resale, and open-weight license audit
+      (Llama/Mistral/etc. commercial terms) unresearched. See phase 5
+      (registry-phase5-white-label-subtree).
+    authority_basis: no_research
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      High volatility. Anthropic actively enforcing "competing product"
+      clause as of Apr 2026 (OpenClaw, Harness bans). ToS terms shift
+      faster than statute.
+    open_questions:
+      - "Anthropic 'competing product' clause — scope and active enforcement"
+      - "FTC §5 B2B-undisclosed AI resale applicability"
+      - "Open-weight model license audit (Llama 3, Mistral, etc. commercial use terms)"
+      - "State-specific B2B disclosure requirements"
+    blocks_surfaces:
+      - white_label
+    source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
+
+  # ── Data Exhaust ─────────────────────────────────────────────────────
+  - surface: data_exhaust
+    venue: "*"
+    instrument: "*"
+    g2_verdict: DARK
+    citation: >
+      No research completed. BIPA/CUBI/WA-MHMD self-sale gray zone,
+      PADFAA data-broker registration, and deidentification standard
+      (HIPAA Safe Harbor vs Expert Determination analog) unresearched.
+      See phase 6 (registry-phase6-data-exhaust-subtree).
+    authority_basis: no_research
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Data-exhaust monetization is the most jurisdictionally fragmented
+      surface. IL BIPA, TX CUBI, WA MHMD all have private rights of
+      action. "Self-sale" (selling data you generated about yourself) is
+      a gray zone under these statutes.
+    open_questions:
+      - "BIPA/CUBI/WA-MHMD self-sale gray zone — does operator-generated data trigger?"
+      - "PADFAA data-broker registration threshold"
+      - "Deidentification standard for AI-generated behavioral data"
+      - "State-by-state data sale notification requirements"
+    blocks_surfaces:
+      - data_exhaust
+    source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
+
+  # ── Receive-Only Rails ───────────────────────────────────────────────
+  # The 10 wired receive-only rails (docs/monetization/rails-capability-matrix.md)
+  # have a simpler legal posture: they receive payments, not engage in
+  # regulated activity. Per-venue rows will be added by subtree research.
+  - surface: receive_only_rail
+    venue: "*"
+    instrument: "*"
+    g2_verdict: DARK
+    citation: >
+      Receive-only rails are wired (10/10 per rails-capability-matrix.md)
+      but legal entity bootstrap (Wyoming SMLLC + DBA + EIN) is incomplete.
+      Rails cannot legally accept revenue without the entity. Individual
+      per-platform ToS compliance and per-venue tax obligations
+      unresearched.
+    authority_basis: no_research
+    review_date: "2026-06-30"
+    freshness_ttl_days: 365
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Lower volatility than aggressive surfaces. Primary blocker is legal
+      entity bootstrap, not venue-specific bans. Per-platform ToS review
+      needed but platforms generally permit individual recipients.
+    open_questions:
+      - "Wyoming SMLLC + DBA + EIN bootstrap status"
+      - "Per-platform ToS compliance for receive-only"
+      - "Per-venue tax reporting obligations (1099-K thresholds, state nexus)"
+    blocks_surfaces:
+      - receive_only_rail
+    source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
