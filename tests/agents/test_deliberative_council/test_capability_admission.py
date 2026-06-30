@@ -93,16 +93,8 @@ def _write_platform_registry(
     else:
         local_worker["route_state"] = "active"
         local_worker["blocked_reasons"] = []
-        local_worker["freshness"]["capability_checked_at"] = "2026-06-01T00:00:00Z"
-        local_worker["freshness"]["quota_checked_at"] = "2026-06-01T00:00:00Z"
-        local_worker["freshness"]["evidence"]["capability"] = {
-            "evidence_refs": ["test:local-worker-capability"],
-            "blocked_reasons": [],
-        }
-        local_worker["freshness"]["evidence"]["quota"] = {
-            "evidence_refs": ["test:local-worker-quota"],
-            "blocked_reasons": [],
-        }
+        local_worker["telemetry"]["quota_source"] = "ledger"
+        _mark_route_fresh_for_registry_check(local_worker, "2026-06-01T00:00:00Z")
     if provider_gateway_blocked is not None:
         gateway = next(
             route
@@ -361,6 +353,36 @@ def test_local_tool_admission_refuses_registry_blocked_route(tmp_path: Path, mon
     assert "fresh_capability_evidence_absent" in admission.reason_codes
     assert "quota_telemetry_unknown" in admission.reason_codes
     assert "platform-capability-registry:local_tool.local.worker" in admission.receipt_refs
+
+
+def test_local_tool_admission_refuses_stale_platform_route_evidence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ledger = _write_test_ledger(tmp_path)
+    registry = _write_platform_registry(tmp_path, local_worker_blocked=False)
+    payload = json.loads(registry.read_text(encoding="utf-8"))
+    local_worker = next(
+        route for route in payload["routes"] if route["route_id"] == "local_tool.local.worker"
+    )
+    local_worker["freshness"]["capability_checked_at"] = "2026-05-01T00:00:00Z"
+    local_worker["freshness"]["quota_checked_at"] = "2026-05-01T00:00:00Z"
+    local_worker["freshness"]["resource_checked_at"] = "2026-05-01T00:00:00Z"
+    registry.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
+    monkeypatch.delenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", raising=False)
+    monkeypatch.setenv("HAPAX_CCTV_CAPABILITY_ADMISSION_NOW", "2026-06-01T00:10:00Z")
+
+    admission = admit_tool("qdrant_lookup")
+
+    assert admission.admitted is False
+    assert admission.capability_id == "cctv.tool.qdrant_lookup"
+    assert "platform_route_capability_stale" in admission.reason_codes
+    assert "platform_route_quota_stale" in admission.reason_codes
+    assert "platform_route_resource_stale" in admission.reason_codes
+    assert "test:local_tool.local.worker:capability" in admission.receipt_refs
+    assert "test:local_tool.local.worker:quota" in admission.receipt_refs
+    assert any(ref.startswith("local:tabbyapi:") for ref in admission.receipt_refs)
 
 
 def test_local_model_admission_is_bound_to_route_snapshot(tmp_path: Path, monkeypatch) -> None:

@@ -514,14 +514,11 @@ def _platform_route_block_reasons(
     if route.route_state is RouteState.BLOCKED:
         reasons.extend(route.blocked_reasons or ["platform_route_state_blocked"])
     reasons.extend(route.freshness.evidence.all_blocked_reasons())
-    if required:
-        freshness = check_registry_freshness(registry, route_ids=(route.route_id,), now=now)
-        if freshness.routes:
-            route_freshness = freshness.routes[0]
-            refs = (*refs, *route_freshness.evidence_refs)
-            reasons.extend(
-                _platform_route_freshness_reason(error) for error in route_freshness.errors
-            )
+    freshness = check_registry_freshness(registry, route_ids=(route.route_id,), now=now)
+    if freshness.routes:
+        route_freshness = freshness.routes[0]
+        refs = (*refs, *route_freshness.evidence_refs)
+        reasons.extend(_platform_route_freshness_reason(error) for error in route_freshness.errors)
     return tuple(dict.fromkeys(reasons)), tuple(dict.fromkeys(refs))
 
 
