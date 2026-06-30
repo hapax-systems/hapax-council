@@ -25,6 +25,7 @@ def test_legacy_mdlc_resolves_only_as_provenance_alias() -> None:
     assert resolve_capdlc_lifecycle("CapDLC") is CAPDLC_DARK_STUB
     assert resolve_capdlc_lifecycle("capdlc") is CAPDLC_DARK_STUB
     assert resolve_capdlc_lifecycle("MDLC") is CAPDLC_DARK_STUB
+    assert resolve_capdlc_lifecycle("MonDLC") is None
 
 
 def test_dark_specified_stub_is_falsy_and_unmeasured() -> None:
