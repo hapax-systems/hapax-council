@@ -135,7 +135,7 @@ for row in phase4:
     citation = row.get("citation", "")
     if row["instrument"] != "sec_anti_retaliation":
         assert "Digital Realty" not in citation, row["instrument"]
-print(f"whistleblower registry recheck OK: {len(phase4)} rows")
+print(f"whistleblower registry recheck OK: total={len(rows)} phase4={len(phase4)}")
 PY
 ```
 
