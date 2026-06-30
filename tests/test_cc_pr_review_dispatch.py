@@ -1721,6 +1721,74 @@ class TestFamilyOutageDegradation:
         recorded = json.loads(state.read_text(encoding="utf-8"))
         assert recorded == {}
 
+    def test_absent_route_admission_does_not_record_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+
+        dispatch.update_family_outage(
+            [
+                {
+                    "id": "glm-1",
+                    "family": "glm",
+                    "route_id": "glmcp.review.direct",
+                    "verdict": "reviewer-route-unavailable",
+                }
+            ],
+            "2026-06-12T21:00:00+00:00",
+        )
+
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded == {}
+
+    def test_malformed_route_admission_does_not_record_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+
+        dispatch.update_family_outage(
+            [
+                {
+                    "id": "glm-1",
+                    "family": "glm",
+                    "route_id": "glmcp.review.direct",
+                    "verdict": "reviewer-route-unavailable",
+                    "route_admissions": "not-a-route-admission-list",
+                }
+            ],
+            "2026-06-12T21:00:00+00:00",
+        )
+
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded == {}
+
+    def test_mismatched_route_admission_does_not_record_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+
+        dispatch.update_family_outage(
+            [
+                {
+                    "id": "glm-1",
+                    "family": "glm",
+                    "route_id": "glmcp.review.direct",
+                    "verdict": "reviewer-route-unavailable",
+                    "route_admissions": [
+                        _admitted_route_admission(
+                            seat_id="gemini-1",
+                            family="gemini",
+                            route_id="antigrav.interactive.full",
+                        )
+                    ],
+                }
+            ],
+            "2026-06-12T21:00:00+00:00",
+        )
+
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded == {}
+
     def test_stdout_unsupported_client_cannot_forge_route_unavailable(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:

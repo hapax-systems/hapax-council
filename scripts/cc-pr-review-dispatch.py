@@ -191,17 +191,23 @@ def _review_is_family_outage_signal(review: Mapping[str, Any]) -> bool:
     admissions = review.get("route_admissions")
     # A route-policy admission hold happens before provider/client invocation.
     # It is task/receipt evidence, not proof that the model family is unavailable.
-    if isinstance(admissions, list):
-        if not admissions:
-            return False
-        return all(
-            isinstance(admission, Mapping)
-            and admission.get("admitted") is True
-            and bool(str(admission.get("route_decision_id") or "").strip())
-            and _route_admission_is_current(admission)
-            for admission in admissions
-        )
-    return True
+    if "route_admissions" not in review or not isinstance(admissions, list) or not admissions:
+        return False
+    review_seat_id = str(review.get("id") or "").strip()
+    review_family = str(review.get("family") or "").strip()
+    review_route_id = str(review.get("route_id") or "").strip()
+    if not (review_seat_id and review_family and review_route_id):
+        return False
+    return all(
+        isinstance(admission, Mapping)
+        and str(admission.get("seat_id") or "").strip() == review_seat_id
+        and str(admission.get("family") or "").strip() == review_family
+        and str(admission.get("route_id") or "").strip() == review_route_id
+        and admission.get("admitted") is True
+        and bool(str(admission.get("route_decision_id") or "").strip())
+        and _route_admission_is_current(admission)
+        for admission in admissions
+    )
 
 
 def update_family_outage(
@@ -695,6 +701,7 @@ def _route_admission_is_current(payload: Mapping[str, Any]) -> bool:
     resource_refs = payload.get("route_policy_resource_state_refs")
     return bool(
         payload.get("route_policy_action") == DispatchAction.LAUNCH.value
+        and payload.get("route_policy_launch_allowed") is True
         and payload.get("route_policy_green") is True
         and payload.get("route_policy_registry_freshness_green") is True
         and payload.get("route_policy_quota_freshness_green") is True
@@ -897,6 +904,7 @@ def dispatch_reviews(
             return {
                 "id": seat.id,
                 "family": seat.family,
+                "route_id": str(family_cfgs[seat.family].get("route_id") or ""),
                 "verdict": "reviewer-route-unavailable",
                 "findings": [],
                 "checklist": {},
@@ -927,6 +935,7 @@ def dispatch_reviews(
             return {
                 "id": seat.id,
                 "family": seat.family,
+                "route_id": str(family_cfgs[seat.family].get("route_id") or ""),
                 "verdict": "reviewer-route-unavailable",
                 "findings": [],
                 "checklist": {},
@@ -1017,13 +1026,19 @@ def dispatch_reviews(
             return {
                 "id": seat.id,
                 "family": seat.family,
+                "route_id": str(family_cfgs[seat.family].get("route_id") or ""),
                 "verdict": verdict,
                 "findings": [],
                 "checklist": {},
                 "route_admissions": admissions,
                 "raw_reply_excerpt": reply_excerpt,
             }
-        review = {"id": seat.id, "family": seat.family, **parsed}
+        review = {
+            "id": seat.id,
+            "family": seat.family,
+            "route_id": str(family_cfgs[seat.family].get("route_id") or ""),
+            **parsed,
+        }
         review["route_admissions"] = admissions
         if parsed.get("parse_path") != "fence":
             review["raw_reply_excerpt"] = truncate_context(
