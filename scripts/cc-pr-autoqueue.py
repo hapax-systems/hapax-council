@@ -110,6 +110,7 @@ DEFAULT_REQUIRED_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-bui
 AUTOQUEUE_ADMISSION_CONTEXT = "hapax/autoqueue-admission"
 AUTOQUEUE_IGNORED_CHECK_CONTEXTS = {
     AUTOQUEUE_ADMISSION_CONTEXT,
+    REVIEW_TEAM_QUORUM_EVIDENCE,
     "governance-gate",
     "pr-admission",
 }
@@ -1807,6 +1808,7 @@ def arm_release_for_task(
         return False, "current_pr_head_unverifiable:missing_expected_head_sha"
     if expected_head_sha and pr_number is None:
         return False, "current_pr_head_unverifiable:missing_pr_number"
+    verified_checks = set(verified_checks or set()) - VIRTUAL_RELEASE_MITIGATION_CONTEXTS
     if expected_head_sha:
         evidence_ok, current_head_sha, current_verified_checks = fetch_pr_release_evidence(
             pr_number,

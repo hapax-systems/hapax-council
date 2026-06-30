@@ -1728,6 +1728,7 @@ def test_summarize_checks_keeps_admission_context_ignored_until_written_by_autoq
     assert "governance-gate" not in summary.verified_passed
     assert "pr-admission" not in summary.verified_passed
     assert autoqueue.AUTOQUEUE_ADMISSION_CONTEXT not in summary.passed
+    assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE not in summary.passed
 
 
 def test_auto_arms_release_unauthorized_pr_open_task(tmp_path: Path) -> None:
@@ -3159,7 +3160,7 @@ def test_arm_release_for_task_fails_closed_when_assessment_ineligible(tmp_path: 
     ok, message = autoqueue.arm_release_for_task(
         task,
         ledger_path=ledger,
-        verified_checks={"authority-case-check"},
+        verified_checks={"authority-case-check", autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE},
     )
 
     assert ok is False
