@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 HOOK = REPO_ROOT / "hooks" / "scripts" / "mcp-connector-mutator-gate.sh"
+BASH = Path("/usr/bin/bash") if Path("/usr/bin/bash").exists() else Path("/bin/bash")
 
 _CLEARED_ENV = (
     "HAPAX_AGENT_NAME",
@@ -29,7 +31,11 @@ _CLEARED_ENV = (
 
 
 def _run_gate(
-    payload: dict, *, home: Path, role: str | None = "cx-red"
+    payload: dict,
+    *,
+    home: Path,
+    role: str | None = "cx-red",
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["HOME"] = str(home)
@@ -37,8 +43,10 @@ def _run_gate(
         env.pop(key, None)
     if role is not None:
         env["CODEX_THREAD_NAME"] = role
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
-        ["bash", str(HOOK)],
+        [str(BASH), str(HOOK)],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
@@ -46,6 +54,16 @@ def _run_gate(
         cwd=REPO_ROOT,
         timeout=10,
     )
+
+
+def _path_without_python(tmp_path: Path) -> str:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("cat", "dirname", "jq"):
+        target = shutil.which(name)
+        assert target is not None
+        (bin_dir / name).symlink_to(target)
+    return str(bin_dir)
 
 
 def test_read_only_mcp_tool_passes_without_claim(tmp_path: Path) -> None:
@@ -90,3 +108,17 @@ def test_side_effecting_connector_with_claim_requires_route_decision(tmp_path: P
     assert result.returncode == 2
     assert "route_decision_absent" in result.stderr
     assert "Next action:" in result.stderr
+
+
+def test_python3_absent_classifier_path_fails_closed(tmp_path: Path) -> None:
+    result = _run_gate(
+        {
+            "tool_name": "mcp__codex_apps__gmail___forward_emails",
+            "tool_input": {"message_ids": ["m1"], "to": "person@example.com"},
+        },
+        home=tmp_path,
+        extra_env={"PATH": _path_without_python(tmp_path)},
+    )
+
+    assert result.returncode == 2
+    assert "connector classifier failed" in result.stderr

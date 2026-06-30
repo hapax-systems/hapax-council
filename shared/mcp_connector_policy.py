@@ -78,8 +78,9 @@ _MUTATING_FUNCTION_RE = re.compile(
     r"^(?:"
     r"act|add|apply|archive|batch_modify|batch_update|bulk_label|bulk_update|close|confirm"
     r"|copy|correct|create|decide|delete|disable|dismiss|flush|forward|import|merge"
-    r"|modify|move|nudge_act|enable|push|rename|remove|replace|reply|reopen|respond"
-    r"|restore|send|set|share|trash|update|upload|write"
+    r"|modify|move|nudge_act|enable|invite|label|post|publish|push|rename|remove"
+    r"|replace|reply|reopen|respond|restore|send|set|share|star|trash|unstar"
+    r"|update|upload|write"
     r")(?:_|$)"
 )
 _READ_ONLY_FUNCTION_RE = re.compile(
@@ -202,7 +203,21 @@ def _heuristic_classification(canonical_name: str) -> ConnectorToolClassificatio
             description="Heuristically classified read-only connector evidence tool.",
             matched_by="heuristic_read_only",
         )
-    if not _MUTATING_FUNCTION_RE.match(function):
+    mutating_name = bool(_MUTATING_FUNCTION_RE.match(function))
+    if not mutating_name and service not in _KNOWN_CONNECTOR_SERVICES:
+        effects = [EFFECT_EXTERNAL]
+        effect_tuple = tuple(dict.fromkeys(effects))
+        return ConnectorToolClassification(
+            canonical_name=canonical_name,
+            effect_classes=effect_tuple,
+            required_mutation_surfaces=_surfaces_for_effects(effect_tuple),
+            description=(
+                "Unknown connector service is not explicitly read-only; fail closed as "
+                "side-effecting."
+            ),
+            matched_by="heuristic_unknown_connector_service",
+        )
+    if not mutating_name:
         return None
     if service not in _KNOWN_CONNECTOR_SERVICES:
         effects = [EFFECT_EXTERNAL]

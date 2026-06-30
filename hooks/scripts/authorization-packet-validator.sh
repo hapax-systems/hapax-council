@@ -56,8 +56,8 @@ case "$TOOL" in
         case "$TOOL" in
           *merge_pull_request*) canonical_tool="github.merge_pull_request" ;;
           *create_pull_request*) canonical_tool="github.create_pull_request" ;;
-          *push_files*|*create_or_update_file*|*update_file*|*delete_file*) canonical_tool="github.create_or_update_file" ;;
-          *) canonical_tool="" ;;
+          *push_files*|*create_or_update_file*|*create_file*|*update_file*|*delete_file*) canonical_tool="github.create_or_update_file" ;;
+          *) canonical_tool="__mcp_unclassified__" ;;
         esac
       fi
     else
@@ -66,8 +66,8 @@ case "$TOOL" in
         *merge_pull_request*|*enable_auto_merge*) canonical_tool="github.merge_pull_request" ;;
         *create_pull_request*) canonical_tool="github.create_pull_request" ;;
         *update_ref*) canonical_tool="github.update_ref" ;;
-        *push_files*|*create_or_update_file*|*update_file*|*delete_file*) canonical_tool="github.create_or_update_file" ;;
-        *) canonical_tool="" ;;
+        *push_files*|*create_or_update_file*|*create_file*|*update_file*|*delete_file*) canonical_tool="github.create_or_update_file" ;;
+        *) canonical_tool="__mcp_unclassified__" ;;
       esac
     fi
     case "$canonical_tool" in
@@ -79,13 +79,17 @@ case "$TOOL" in
         release_tool=true
         release_kind="merge"
         ;;
-      github.create_or_update_file)
+      github.create_or_update_file|github.create_file|github.update_file|github.delete_file)
         release_tool=true
         release_kind="push_files"
         ;;
       github.update_ref)
         release_tool=true
         release_kind="ref_update"
+        ;;
+      __mcp_unclassified__)
+        release_tool=true
+        release_kind="mcp_unclassified"
         ;;
       *)
         exit 0
@@ -387,6 +391,10 @@ if stage_num < 7 and release != "false":
     print(f"shadow_denial_violation:release_authorized={release}")
     sys.exit(0)
 
+if release_kind == "mcp_unclassified":
+    print("mcp_canonicalization_unavailable")
+    sys.exit(0)
+
 if release_kind in {"merge", "release", "ref_update"} and release != "true":
     print(f"release_not_authorized:{release_kind}:{release}")
     sys.exit(0)
@@ -459,6 +467,18 @@ authorization-packet-validator: BLOCKED — release/merge command requires relea
   PR creation and branch push require implementation authority; merge/release
   require explicit release authorization.
   To bypass for emergencies: HAPAX_METHODOLOGY_EMERGENCY=1
+EOF
+    exit 2
+    ;;
+  mcp_canonicalization_unavailable)
+    cat >&2 <<EOF
+authorization-packet-validator: BLOCKED — MCP tool classification is unavailable.
+
+  Task: $task_id
+  Note: $note_path
+
+  Repair MCP canonicalization before retrying, or use HAPAX_METHODOLOGY_EMERGENCY=1
+  for an operator-approved emergency bypass.
 EOF
     exit 2
     ;;

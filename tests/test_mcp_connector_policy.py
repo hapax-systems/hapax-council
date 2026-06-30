@@ -128,6 +128,14 @@ def test_heuristic_catches_new_mutating_connector_names() -> None:
         }
 
 
+def test_unknown_connector_service_fails_closed_when_not_explicitly_read_only() -> None:
+    classification = classify_connector_tool("mcp__codex_apps__linear___transition_issue")
+
+    assert classification is not None
+    assert classification.side_effecting
+    assert classification.matched_by == "heuristic_unknown_connector_service"
+
+
 def test_read_only_connector_does_not_require_receipts(tmp_path: Path) -> None:
     result = evaluate_connector_receipt_gate(
         "mcp__context7__query-docs",

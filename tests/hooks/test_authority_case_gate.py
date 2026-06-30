@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -107,6 +108,16 @@ def _write_claim(home: Path, role: str, task_id: str) -> None:
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True, exist_ok=True)
     (cache / f"cc-active-task-{role}").write_text(task_id + "\n")
+
+
+def _path_without_python(tmp_path: Path) -> str:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("bash", "cat", "dirname", "head", "jq", "tr"):
+        target = shutil.which(name)
+        assert target is not None
+        (bin_dir / name).symlink_to(target)
+    return str(bin_dir)
 
 
 def _run(
@@ -570,3 +581,61 @@ class TestAuthorizationPacketValidator:
             )
             assert result.returncode == 2
             assert "release_authorized" in result.stderr
+
+    def test_mcp_github_file_mutators_require_implementation_authorization(
+        self, tmp_path: Path
+    ) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            stage="S6_implementation",
+            impl_authorized="false",
+            src_authorized="false",
+            docs_authorized="false",
+            runtime_authorized="false",
+            release_authorized="false",
+            public_current="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+        for tool_name in (
+            "mcp__codex_apps__github___create_file",
+            "mcp__codex_apps__github___update_file",
+            "mcp__codex_apps__github___delete_file",
+        ):
+            result = _run(
+                VALIDATOR,
+                {
+                    "tool_name": tool_name,
+                    "tool_input": {"owner": "ryanklee", "repo": "hapax-council"},
+                },
+                home=home,
+            )
+            assert result.returncode == 2
+            assert "implementation_authorized" in result.stderr
+
+    def test_mcp_authorization_blocks_when_python3_is_unavailable(self, tmp_path: Path) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            stage="S6_implementation",
+            impl_authorized="true",
+            src_authorized="true",
+            docs_authorized="false",
+            runtime_authorized="false",
+            release_authorized="false",
+            public_current="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+
+        result = _run(
+            VALIDATOR,
+            {
+                "tool_name": "mcp__codex_apps__gmail___forward_emails",
+                "tool_input": {"message_ids": ["m1"]},
+            },
+            home=home,
+            extra_env={"PATH": _path_without_python(tmp_path)},
+        )
+
+        assert result.returncode == 2
+        assert "python3 missing" in result.stderr
