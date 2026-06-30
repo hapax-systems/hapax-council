@@ -71,6 +71,9 @@ runtimes:
         - matcher: "Edit|Write|MultiEdit|NotebookEdit|Bash"
           hooks:
             - cc-task-gate.sh
+        - matcher: "mcp__.*"
+          hooks:
+            - mcp-connector-mutator-gate.sh
         - matcher: "Bash"
           hooks:
             - authorization-packet-validator.sh
@@ -160,6 +163,7 @@ runtimes:
           - docs-only-pr-warn.sh
         mutation:
           - cc-task-gate.sh
+          - mcp-connector-mutator-gate.sh
           - authorization-packet-validator.sh
           - axiom-scan.sh
           - pipewire-graph-edit-gate.sh

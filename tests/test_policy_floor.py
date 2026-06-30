@@ -64,6 +64,11 @@ class TestIrreversibleHarmFailsClosed:
         d = evaluate_floor("Bash", command="hapax-publish --surface mastodon")
         assert d.blocked and d.gate == "floor:egress"
 
+    def test_side_effecting_app_connector_blocks(self):
+        d = evaluate_floor("mcp__codex_apps__gmail___send_draft")
+        assert d.blocked and d.fail_mode is FailMode.FAIL_CLOSED
+        assert d.gate == "floor:connector"
+
 
 class TestReversibleFailsOpenWithLedger:
     @pytest.mark.parametrize(
@@ -74,6 +79,7 @@ class TestReversibleFailsOpenWithLedger:
             ("Bash", "pytest tests/ -q", ""),
             ("Bash", "git commit -m wip", ""),
             ("Write", "", "agents/foo.py"),
+            ("mcp__context7__query-docs", "", ""),
         ],
     )
     def test_reversible_allows_with_ledger(self, tool_name, command, file_path):

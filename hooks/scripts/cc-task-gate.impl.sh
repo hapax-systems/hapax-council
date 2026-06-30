@@ -319,10 +319,23 @@ bash_source_mutation_requires_scope() {
   return 1
 }
 
-github_tool_is_mutating() {
+connector_tool_is_mutating() {
   local name="$1"
+  local repo_root rc
+  repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+  if command -v python3 >/dev/null 2>&1; then
+    set +e
+    PYTHONPATH="$repo_root:${PYTHONPATH:-}" \
+      python3 -m shared.mcp_connector_policy is-side-effecting "$name" >/dev/null 2>&1
+    rc=$?
+    set -e
+    case "$rc" in
+      0) return 0 ;;
+      1) return 1 ;;
+    esac
+  fi
   printf '%s' "$name" | grep -Eiq \
-    '(create|update|delete|merge|push|commit|file|branch|tag|release|pull_request|issue_comment)'
+    '(create|update|delete|merge|push|commit|branch|tag|release|pull_request|issue_comment|send|archive|label|modify|share|upload|respond|dismiss|confirm|disable|flush|decide|nudge_act|set)'
 }
 
 # Cognition / diagnostic surfaces are never release-risk: operator auto-memory,
@@ -373,8 +386,8 @@ case "$tool_name" in
       mutation_surface_hint="runtime"
     fi
     ;;
-  mcp__github__*)
-    if ! github_tool_is_mutating "$tool_name"; then
+  mcp__*)
+    if ! connector_tool_is_mutating "$tool_name"; then
       exit 0
     fi
     ;;

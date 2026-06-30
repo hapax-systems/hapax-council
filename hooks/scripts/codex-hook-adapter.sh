@@ -5,6 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 if [ -f "$SCRIPT_DIR/agent-role.sh" ]; then
   # shellcheck source=hooks/scripts/agent-role.sh
   . "$SCRIPT_DIR/agent-role.sh"
@@ -100,6 +101,7 @@ run_hook() {
 }
 
 tool_kind() {
+  local connector_rc
   case "$TOOL_NAME" in
     Bash|bash|exec|exec_command|exec_command_pty|shell|shell_command|unified_exec)
       printf 'shell\n'
@@ -109,9 +111,22 @@ tool_kind() {
       printf 'mutation\n'
       return 0
       ;;
-    mcp__github__*)
-      if printf '%s' "$TOOL_NAME" | grep -Eiq \
-        '(create|update|delete|merge|push|commit|file|branch|tag|release|pull_request|issue_comment)'; then
+    mcp__*)
+      connector_rc=2
+      if command -v python3 >/dev/null 2>&1; then
+        set +e
+        PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}" \
+          python3 -m shared.mcp_connector_policy is-side-effecting "$TOOL_NAME" \
+            >/dev/null 2>&1
+        connector_rc=$?
+        set -e
+      fi
+      if [ "$connector_rc" -eq 0 ]; then
+        printf 'mutation\n'
+        return 0
+      fi
+      if [ "$connector_rc" -ne 1 ] && printf '%s' "$TOOL_NAME" | grep -Eiq \
+        '(create|update|delete|merge|push|commit|branch|tag|release|pull_request|issue_comment|send|archive|label|modify|share|upload|respond|dismiss|confirm|disable|flush|decide|nudge_act|set)'; then
         printf 'mutation\n'
         return 0
       fi
@@ -195,6 +210,7 @@ run_pre_mutation_event() {
   local event_json="$1"
   local hooks=(
     cc-task-gate.sh
+    mcp-connector-mutator-gate.sh
     authorization-packet-validator.sh
     axiom-scan.sh
     pipewire-graph-edit-gate.sh

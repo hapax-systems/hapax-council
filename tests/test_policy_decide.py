@@ -90,6 +90,11 @@ class TestAllowPath:
         assert d.allowed
         assert d.gate == "non-mutating"
 
+    def test_read_only_mcp_evidence_allows_without_claim(self):
+        d = policy_decide(ToolCall(tool_name="mcp__context7__query-docs"), None, "theta")
+        assert d.allowed
+        assert d.gate == "non-mutating"
+
     def test_cognition_path_write_always_allows(self):
         # A blocked lane can always write its memory — even with no task/role.
         path = os.path.expanduser("~/.claude/projects/x/memory/note.md")
@@ -109,6 +114,11 @@ class TestClaimAndIdentity:
 
     def test_no_claimed_task_blocks(self):
         d = policy_decide(_edit("shared/policy_decide.py"), None, "theta")
+        assert d.blocked
+        assert d.gate == "claim"
+
+    def test_side_effecting_mcp_connector_without_claim_blocks(self):
+        d = policy_decide(ToolCall(tool_name="mcp__codex_apps__gmail___send_draft"), None, "theta")
         assert d.blocked
         assert d.gate == "claim"
 

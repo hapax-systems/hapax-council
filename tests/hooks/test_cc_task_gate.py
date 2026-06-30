@@ -69,6 +69,10 @@ _IDENTITY_ENV = (
     "CODEX_THREAD_ID",
     "CODEX_THREAD_NAME",
 )
+_GATE_BYPASS_ENV = (
+    "HAPAX_CC_TASK_GATE_OFF",
+    "HAPAX_METHODOLOGY_EMERGENCY",
+)
 
 
 def _role_helper(
@@ -85,6 +89,8 @@ def _role_helper(
     """
     merged = os.environ.copy()
     for key in _IDENTITY_ENV:
+        merged.pop(key, None)
+    for key in _GATE_BYPASS_ENV:
         merged.pop(key, None)
     merged["HOME"] = str(home) if home is not None else "/nonexistent-test-home"
     if env:
@@ -177,6 +183,8 @@ def _run_hook(
         env["HOME"] = str(home)
     for key in _IDENTITY_ENV:
         env.pop(key, None)
+    for key in _GATE_BYPASS_ENV:
+        env.pop(key, None)
     if role is not None:
         env[role_env] = role
     if extra_env:
@@ -240,6 +248,16 @@ class TestNonMutatingToolsPassThrough:
             {
                 "tool_name": "Bash",
                 "tool_input": {"command": "git status --short 2>/dev/null"},
+            },
+            home=tmp_path,
+        )
+        assert result.returncode == 0
+
+    def test_readonly_mcp_evidence_passes(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {
+                "tool_name": "mcp__context7__query-docs",
+                "tool_input": {"libraryId": "/reactjs/react.dev"},
             },
             home=tmp_path,
         )
@@ -501,6 +519,17 @@ class TestStatusGating:
             home=tmp_path,
         )
         assert result.returncode == 2
+
+    def test_mcp_app_connector_mutation_requires_claim(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {
+                "tool_name": "mcp__codex_apps__gmail___send_draft",
+                "tool_input": {"draft_id": "draft-1"},
+            },
+            home=tmp_path,
+        )
+        assert result.returncode == 2
+        assert "no claimed task" in result.stderr.lower()
 
     def test_root_markdown_docs_edit_uses_docs_authorization(self, tmp_path: Path) -> None:
         _, note = _make_vault(

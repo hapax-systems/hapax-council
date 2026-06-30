@@ -201,6 +201,34 @@ def test_default_mode_mints_runtime_actuation_receipt(capsys, tmp_path: Path) ->
     assert receipt.mutation_surfaces == ("runtime",)
 
 
+def test_default_mode_mints_connector_mutation_receipt(capsys, tmp_path: Path) -> None:
+    rc, payload = _run_json(
+        capsys,
+        [
+            "--receipt-type",
+            "connector_mutation",
+            "--route-id",
+            "codex.headless.full",
+            "--task-id",
+            "cc-task-mcp-mutator-route-resource-receipts-20260630",
+            "--receipt-dir",
+            str(tmp_path),
+            "--now",
+            "2026-06-30T04:30:00Z",
+            "--json",
+        ],
+    )
+
+    assert rc == 0
+    target = Path(payload["receipt_path"])
+    assert target.is_file()
+    receipt = RouteAuthorityReceipt.model_validate(json.loads(target.read_text(encoding="utf-8")))
+    assert receipt.receipt_type == "connector_mutation"
+    assert receipt.route_id == "codex.headless.full"
+    assert receipt.task_ids == ("cc-task-mcp-mutator-route-resource-receipts-20260630",)
+    assert receipt.mutation_surfaces == ("connector",)
+
+
 def test_ensure_fresh_runtime_actuation_keeps_scope_specific_files(capsys, tmp_path: Path) -> None:
     base = [
         "--receipt-type",

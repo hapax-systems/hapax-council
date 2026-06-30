@@ -21,6 +21,24 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 # Gate logic lives in the impl behind the shim (reform FM-6); exec it directly.
 HOOK = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
 VALIDATOR = REPO_ROOT / "hooks" / "scripts" / "authorization-packet-validator.sh"
+_CLEARED_ENV = (
+    "HAPAX_AGENT_NAME",
+    "HAPAX_AGENT_ROLE",
+    "HAPAX_WORKTREE_ROLE",
+    "HAPAX_AGENT_SLOT",
+    "HAPAX_AGENT_INTERFACE",
+    "HAPAX_SESSION_ID",
+    "CLAUDE_ROLE",
+    "CLAUDE_CODE_SESSION_ID",
+    "CODEX_ROLE",
+    "CODEX_SESSION",
+    "CODEX_SESSION_NAME",
+    "CODEX_THREAD_ID",
+    "CODEX_THREAD_NAME",
+    "CODEX_HOME",
+    "HAPAX_CC_TASK_GATE_OFF",
+    "HAPAX_METHODOLOGY_EMERGENCY",
+)
 
 
 def _make_case_vault(
@@ -101,13 +119,8 @@ def _run(
 ) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["HOME"] = str(home)
-    env.pop("HAPAX_AGENT_NAME", None)
-    env.pop("HAPAX_AGENT_ROLE", None)
-    env.pop("HAPAX_WORKTREE_ROLE", None)
-    env.pop("CODEX_ROLE", None)
-    env.pop("CLAUDE_ROLE", None)
-    env.pop("HAPAX_CC_TASK_GATE_OFF", None)
-    env.pop("HAPAX_METHODOLOGY_EMERGENCY", None)
+    for key in _CLEARED_ENV:
+        env.pop(key, None)
     env["CLAUDE_ROLE"] = role
     if extra_env:
         env.update(extra_env)
@@ -541,13 +554,17 @@ class TestAuthorizationPacketValidator:
             public_current="false",
         )
         _write_claim(home, "alpha", "test-case-001")
-        result = _run(
-            VALIDATOR,
-            {
-                "tool_name": "mcp__github__merge_pull_request",
-                "tool_input": {"owner": "ryanklee", "repo": "hapax-council"},
-            },
-            home=home,
-        )
-        assert result.returncode == 2
-        assert "release_authorized" in result.stderr
+        for tool_name in (
+            "mcp__github__merge_pull_request",
+            "mcp__codex_apps__github___merge_pull_request",
+        ):
+            result = _run(
+                VALIDATOR,
+                {
+                    "tool_name": tool_name,
+                    "tool_input": {"owner": "ryanklee", "repo": "hapax-council"},
+                },
+                home=home,
+            )
+            assert result.returncode == 2
+            assert "release_authorized" in result.stderr

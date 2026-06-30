@@ -18,6 +18,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 if [[ -f "$SCRIPT_DIR/agent-role.sh" ]]; then
   . "$SCRIPT_DIR/agent-role.sh"
 fi
@@ -39,6 +40,33 @@ case "$TOOL" in
   mcp__github__push_files)
     release_tool=true
     release_kind="push_files"
+    ;;
+  mcp__*)
+    if command -v python3 >/dev/null 2>&1; then
+      canonical_tool="$(
+        PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}" \
+          python3 -m shared.mcp_connector_policy canonicalize "$TOOL" 2>/dev/null || true
+      )"
+      case "$canonical_tool" in
+        github.create_pull_request)
+          release_tool=true
+          release_kind="pr_create"
+          ;;
+        github.merge_pull_request)
+          release_tool=true
+          release_kind="merge"
+          ;;
+        github.create_or_update_file)
+          release_tool=true
+          release_kind="push_files"
+          ;;
+        *)
+          exit 0
+          ;;
+      esac
+    else
+      exit 0
+    fi
     ;;
   *) exit 0 ;;
 esac

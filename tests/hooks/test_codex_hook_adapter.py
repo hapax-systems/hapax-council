@@ -10,6 +10,23 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent.parent
 ADAPTER = REPO_ROOT / "hooks" / "scripts" / "codex-hook-adapter.sh"
 PATCH_EVENTS = REPO_ROOT / "hooks" / "scripts" / "codex_patch_events.py"
+_CLEARED_ENV = (
+    "HAPAX_AGENT_NAME",
+    "HAPAX_AGENT_ROLE",
+    "HAPAX_WORKTREE_ROLE",
+    "HAPAX_AGENT_SLOT",
+    "HAPAX_AGENT_INTERFACE",
+    "HAPAX_SESSION_ID",
+    "CLAUDE_ROLE",
+    "CLAUDE_CODE_SESSION_ID",
+    "CODEX_ROLE",
+    "CODEX_SESSION",
+    "CODEX_SESSION_NAME",
+    "CODEX_THREAD_ID",
+    "CODEX_HOME",
+    "HAPAX_CC_TASK_GATE_OFF",
+    "HAPAX_METHODOLOGY_EMERGENCY",
+)
 
 
 def _make_repo_on_main(path: Path) -> Path:
@@ -41,18 +58,8 @@ def _run_adapter(
 ) -> dict:
     env = os.environ.copy()
     env["HOME"] = str(home)
-    env.pop("HAPAX_AGENT_NAME", None)
-    env.pop("HAPAX_AGENT_ROLE", None)
-    env.pop("HAPAX_AGENT_SLOT", None)
-    env.pop("HAPAX_AGENT_INTERFACE", None)
-    env.pop("HAPAX_SESSION_ID", None)
-    env.pop("CLAUDE_ROLE", None)
-    env.pop("CLAUDE_CODE_SESSION_ID", None)
-    env.pop("CODEX_ROLE", None)
-    env.pop("CODEX_SESSION", None)
-    env.pop("CODEX_SESSION_NAME", None)
-    env.pop("CODEX_THREAD_ID", None)
-    env.pop("CODEX_HOME", None)
+    for key in _CLEARED_ENV:
+        env.pop(key, None)
     env["CODEX_THREAD_NAME"] = "cx-red"
     env["HAPAX_WORKTREE_ROLE"] = "alpha"
     if extra_env:
@@ -252,6 +259,83 @@ def test_mcp_github_issue_comment_runs_task_gate(tmp_path: Path) -> None:
     assert result["decision"] == "block"
     assert "cc-task-gate.sh" in result["reason"]
     assert "no claimed task" in result["reason"].lower()
+
+
+def test_mcp_gmail_mutation_runs_task_gate(tmp_path: Path) -> None:
+    result = _run_adapter(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "mcp__codex_apps__gmail___send_draft",
+            "tool_input": {"draft_id": "draft-1"},
+        },
+        home=tmp_path,
+    )
+
+    assert result["decision"] == "block"
+    assert "cc-task-gate.sh" in result["reason"]
+    assert "no claimed task" in result["reason"].lower()
+
+
+def test_mcp_read_only_evidence_does_not_run_mutation_gates(tmp_path: Path) -> None:
+    result = _run_adapter(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "mcp__context7__query-docs",
+            "tool_input": {"libraryId": "/reactjs/react.dev", "question": "useEffect docs"},
+        },
+        home=tmp_path,
+    )
+
+    assert result.get("continue") is True
+    assert "decision" not in result
+
+
+def test_mcp_connector_mutation_requires_route_receipt_after_task_gate(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+    active.mkdir(parents=True)
+    (active / "gmail-task.md").write_text(
+        f"""---
+type: cc-task
+task_id: gmail-task
+status: in_progress
+assigned_to: cx-red
+authority_case: CASE-TEST-001
+parent_spec: {tmp_path / "parent-spec.md"}
+stage: S6_IMPLEMENTATION
+implementation_authorized: true
+source_mutation_authorized: true
+docs_mutation_authorized: true
+runtime_mutation_authorized: false
+route_metadata_schema: 1
+mutation_scope_refs:
+  - hooks/scripts/
+---
+
+# Gmail task
+""",
+        encoding="utf-8",
+    )
+    cache = tmp_path / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-cx-red").write_text("gmail-task\n", encoding="utf-8")
+
+    result = _run_adapter(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "mcp__codex_apps__gmail___send_draft",
+            "tool_input": {"draft_id": "draft-1"},
+        },
+        home=tmp_path,
+    )
+
+    assert result["decision"] == "block"
+    assert "mcp-connector-mutator-gate.sh" in result["reason"]
+    assert "route_decision_absent" in result["reason"]
 
 
 def test_task_gate_allows_readonly_shell_without_claim(tmp_path: Path) -> None:

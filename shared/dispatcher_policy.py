@@ -225,7 +225,12 @@ class ReviewRequirementReceipt(_PolicyModel):
 class RouteAuthorityReceipt(_PolicyModel):
     route_authority_receipt_schema: Literal[1] = ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION
     receipt_id: str
-    receipt_type: Literal["opus_model_entitlement", "quality_equivalence", "runtime_actuation"]
+    receipt_type: Literal[
+        "opus_model_entitlement",
+        "quality_equivalence",
+        "runtime_actuation",
+        "connector_mutation",
+    ]
     route_id: str
     issued_at: datetime
     stale_after: str
@@ -248,11 +253,11 @@ class RouteAuthorityReceipt(_PolicyModel):
             raise ValueError("quality_equivalence receipts require quality_floors")
         if self.receipt_type == "opus_model_entitlement" and not self.route_id.endswith(".opus"):
             raise ValueError("opus_model_entitlement receipts must target an opus route")
-        if self.receipt_type == "runtime_actuation":
+        if self.receipt_type in {"runtime_actuation", "connector_mutation"}:
             if not self.task_ids:
-                raise ValueError("runtime_actuation receipts require task_ids")
+                raise ValueError(f"{self.receipt_type} receipts require task_ids")
             if not self.mutation_surfaces:
-                raise ValueError("runtime_actuation receipts require mutation_surfaces")
+                raise ValueError(f"{self.receipt_type} receipts require mutation_surfaces")
         return self
 
 
@@ -901,7 +906,12 @@ def _default_route_authority_receipt_id(
 
 def build_route_authority_receipt(
     *,
-    receipt_type: Literal["opus_model_entitlement", "quality_equivalence", "runtime_actuation"],
+    receipt_type: Literal[
+        "opus_model_entitlement",
+        "quality_equivalence",
+        "runtime_actuation",
+        "connector_mutation",
+    ],
     route_id: str,
     evidence_refs: Sequence[str],
     receipt_id: str | None = None,
@@ -977,7 +987,7 @@ def apply_route_authority_receipts(
     payload = registry.model_dump(mode="json")
     routes_by_id = {route["route_id"]: route for route in payload["routes"]}
     for receipt in authority_receipts:
-        if receipt.receipt_type == "runtime_actuation":
+        if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
             continue
         route_id = normalize_route_id(receipt.route_id)
         route_payload = routes_by_id.get(route_id)
@@ -1007,7 +1017,7 @@ def _load_fresh_route_authority_receipts(
             raise ValueError(f"invalid route authority receipt at {path}: {exc}") from exc
         if not _route_authority_receipt_is_fresh(receipt, now=checked_now):
             continue
-        if receipt.receipt_type == "runtime_actuation":
+        if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
             key = (
                 normalize_route_id(receipt.route_id),
                 receipt.receipt_type,
@@ -1097,7 +1107,7 @@ def _apply_route_authority_receipt_to_route_payload(
 def _route_authority_removable_reasons(receipt: RouteAuthorityReceipt) -> set[str]:
     if receipt.receipt_type == "opus_model_entitlement":
         return {"opus_model_entitlement_receipt_absent", "fresh_capability_evidence_absent"}
-    if receipt.receipt_type == "runtime_actuation":
+    if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
         return set()
     return {"quality_equivalence_record_absent", "fresh_capability_evidence_absent"}
 
