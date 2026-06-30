@@ -33,7 +33,7 @@ Each row in the registry represents one `(surface, venue, instrument)` tuple and
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `surface` | string (enum) | **yes** | The arbitrage or monetization surface. One of: `prediction_market`, `bug_bounty`, `whistleblower`, `white_label`, `data_exhaust`, `receive_only_rail`, or future surfaces added by operator. |
-| `venue` | string | **yes** | Jurisdiction or platform. For geographic: ISO 3166-1 alpha-2 country code or US state postal abbreviation (e.g., `US-MN`, `US-NV`, `GB`). For platform-specific: platform identifier (e.g., `kalshi`, `polymarket`, `anthropic`, `hackerone`). |
+| `venue` | string | **yes** | Jurisdiction, platform, or agency-scoped authority domain. For geographic: ISO 3166-1 alpha-2 country code or US state postal abbreviation (e.g., `US-MN`, `US-NV`, `GB`). For platform-specific: platform identifier (e.g., `kalshi`, `polymarket`, `anthropic`, `hackerone`). For agency-scoped federal rows, use stable `US-<AGENCY>` identifiers (e.g., `US-BIS`, `US-IRS`, `US-SEC`, `US-CFTC`, `US-DOJ`, `US-FTC`, `US-DMCA`) only when the row's legal posture is scoped to that agency/regime rather than a general U.S. jurisdiction. |
 | `instrument` | string | **yes** | The specific instrument, product, or mechanism within the surface (e.g., `event_contract`, `binary_option`, `ach_receive`, `sec_tip`, `b2b_resale`). Use `*` for surface-wide venue assessment. |
 | `g2_verdict` | string (enum) | **yes** | Legal-posture verdict. One of: `LIT`, `PARTIAL`, `DARK`. See §3 for semantics. |
 | `citation` | string | **yes** | Statute, regulation, ToS clause, case law, or legal opinion backing the verdict. DARK rows cite the reason for darkness (e.g., "state gambling ban", "no research completed"). |
@@ -202,6 +202,8 @@ assert len([
     if row.get("source_task") == "20260628-registry-phase6-data-exhaust-subtree"
 ]) == 9
 assert "(surface, *, instrument)" in schema
+assert "agency-scoped federal rows" in schema
+assert "US-SEC" in schema and "US-CFTC" in schema and "US-DOJ" in schema
 assert "If R is stale AND R.g2_verdict != DARK" in schema
 assert "If no row exists → FAIL" in schema
 print(f"legal-posture registry recheck OK: {len(rows)} rows")
@@ -215,7 +217,7 @@ Each of the 6 follow-on subtree tasks (phases 1–6) seeds rows into this regist
 ```yaml
 # Template: one registry row
 - surface: <surface_enum>           # prediction_market | bug_bounty | whistleblower | white_label | data_exhaust | receive_only_rail
-  venue: <venue_id>                 # ISO 3166-1 alpha-2 or US state postal (e.g., US-MN) or platform ID (e.g., kalshi)
+  venue: <venue_id>                 # ISO 3166-1 alpha-2, US state postal, agency-scoped federal ID (e.g., US-SEC), or platform ID
   instrument: <instrument_id>       # Specific instrument or "*" for surface-wide
   g2_verdict: <LIT|PARTIAL|DARK>
   citation: >

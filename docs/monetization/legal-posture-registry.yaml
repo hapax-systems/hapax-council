@@ -13,7 +13,7 @@
 schema_version: "1.0.0"
 schema_doc: docs/monetization/legal-posture-registry-schema.md
 last_updated: "2026-06-30"
-update_author: 20260630-registry-phase3-durable-docs-restoration
+update_author: 20260628-registry-phase4-whistleblower-subtree
 
 surfaces:
   - prediction_market
@@ -339,6 +339,218 @@ rows:
     blocks_surfaces:
       - whistleblower
     source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
+
+  # Phase 4 whistleblower subtree rows. These rows encode researched
+  # constraints but remain DARK until counsel/operator prerequisites are met.
+  - surface: whistleblower
+    venue: US-SEC
+    instrument: sec_tip_award
+    g2_verdict: DARK
+    citation: >
+      15 U.S.C. 78u-6(b); 17 CFR 240.21F-2(b), 240.21F-3(a),
+      240.21F-4(b), 240.21F-8, and 240.21F-9. SEC award eligibility
+      requires voluntary original information submitted to the Commission
+      in the required form and manner. Public-source-only allegations
+      are not original information unless the claimant is a source or
+      contributes qualifying independent analysis.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK until counsel reviews source acquisition, privilege/confidentiality
+      risk, employment or compliance-role exclusions, Form TCR procedure,
+      and any related-action/comparable-program conflict. Governance rule:
+      no employer/counterparty outreach, threat, publication, or settlement
+      demand before counsel-approved SEC filing or equivalent government-first
+      route.
+    open_questions:
+      - "Counsel review of source acquisition, privilege, confidentiality, and eligibility exclusions."
+      - "Whether any candidate tip is original information rather than public-source synthesis."
+      - "Whether a related action or comparable award program requires waiver or separate filing."
+      - "Whether timing preserves the SEC 120-day relation-back path after internal or other-authority reporting."
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase4-whistleblower-subtree
+
+  - surface: whistleblower
+    venue: US-SEC
+    instrument: sec_anti_retaliation
+    g2_verdict: DARK
+    citation: >
+      Digital Realty Trust, Inc. v. Somers, 583 U.S. 149 (2018);
+      15 U.S.C. 78u-6(h); 17 CFR 240.21F-2(d). Digital Realty is an
+      anti-retaliation holding about Dodd-Frank whistleblower status after
+      SEC reporting; it is not a citation for award eligibility or original
+      information.
+    authority_basis: case_law
+    review_date: "2026-06-30"
+    freshness_ttl_days: 365
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Citation cleanup row. Do not use Digital Realty to justify a LIT/PARTIAL
+      eligibility verdict. It may be cited only for anti-retaliation posture,
+      and only after counsel confirms the reporting sequence and employment
+      facts. It does not clear public-source, original-information, or bounty
+      eligibility requirements.
+    open_questions:
+      - "Whether any real fact pattern involves employment retaliation rather than award eligibility."
+      - "Whether the claimant reported to the SEC before the alleged retaliation."
+      - "Whether Sarbanes-Oxley or other non-Dodd-Frank retaliation regimes are implicated."
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase4-whistleblower-subtree
+
+  - surface: whistleblower
+    venue: US-CFTC
+    instrument: cftc_tip_award
+    g2_verdict: DARK
+    citation: >
+      7 U.S.C. 26; 17 CFR 165.1, 165.2(g), 165.2(k), 165.3, 165.5,
+      165.6, and 165.7. CFTC award eligibility requires original
+      information submitted to the Commission on Form TCR; information
+      from public sources such as corporate filings, media, or the Internet
+      is not independent knowledge, and public-source-only allegations are
+      not original information unless the claimant is a source.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK until counsel reviews commodity/CEA jurisdiction, source
+      acquisition, privilege/confidentiality risk, Form TCR procedure,
+      and eligibility exclusions. Governance rule: file-to-government-first
+      through CFTC Form TCR or counsel; no target contact, publication,
+      or value demand before the government-first route is complete.
+    open_questions:
+      - "Whether the alleged conduct falls under the Commodity Exchange Act or CFTC rules."
+      - "Whether the tip materially adds to information already known to the CFTC."
+      - "Whether any internal reporting triggers the CFTC 180-day relation-back path."
+      - "Whether counsel is required for anonymity or related award application strategy."
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase4-whistleblower-subtree
+
+  - surface: whistleblower
+    venue: US-IRS
+    instrument: irs_whistleblower_claim
+    g2_verdict: DARK
+    citation: >
+      26 U.S.C. 7623; 26 CFR 301.7623-1; IRS Form 211, Application for
+      Award for Original Information; IRS IRM 25.2.2. A claim for an
+      IRS whistleblower award is made by filing Form 211 with specific,
+      timely, credible information, signed under penalty of perjury.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK until counsel reviews taxpayer-information handling, privilege,
+      taint, representative-status limits, Treasury/federal-employee
+      exclusions, and whether the IRS has already proceeded with an action.
+      Governance rule: no target contact, payment request, or publication;
+      use Form 211 or counsel-approved government-first submission only.
+    open_questions:
+      - "Whether the information is specific, timely, credible, and within laws the IRS administers."
+      - "Whether the operator has any representative, Treasury, federal-employee, contract, or legal-duty exclusion."
+      - "Whether privilege, taint, Fourth Amendment, or taxpayer-information issues require counsel filtering."
+      - "Whether the claim would be timely before the IRS proceeds with an action based on the information."
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase4-whistleblower-subtree
+
+  - surface: whistleblower
+    venue: US-DOJ
+    instrument: false_claims_act_qui_tam
+    g2_verdict: DARK
+    citation: >
+      31 U.S.C. 3730(b)(2), 3730(d), and 3730(e)(4); DOJ Justice Manual
+      4-4.110. FCA qui tam complaints are filed in camera, remain under
+      seal, are served on the Government, and are not served on the
+      defendant until the court orders. Publicly disclosed allegations or
+      transactions are barred unless the Government opposes dismissal or
+      the relator is an original source.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK until licensed qui tam counsel approves venue, seal procedure,
+      government service, original-source posture, and privilege/Rule 11
+      readiness. Governance rule: no defendant contact, no publication,
+      and no demand for payment or settlement before a counsel-controlled
+      sealed filing and government disclosure path.
+    open_questions:
+      - "Whether allegations are substantially the same as public disclosures."
+      - "Whether the operator is an original source under 31 U.S.C. 3730(e)(4)(B)."
+      - "Whether facts support Rule 9(b)/Rule 11 pleading through counsel."
+      - "Whether state FCA or federal program-specific paths create additional requirements."
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase4-whistleblower-subtree
+
+  - surface: whistleblower
+    venue: US
+    instrument: file_to_government_first
+    g2_verdict: DARK
+    citation: >
+      17 CFR 240.21F-9; 17 CFR 165.3; 26 CFR 301.7623-1; 31 U.S.C.
+      3730(b)(2). Bounty-preserving routes are direct agency/court
+      procedures or counsel-controlled submissions, not target negotiation
+      or public leverage.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Frozen governance rule. The first external action for any monetized
+      whistleblower workflow must be either counsel intake or the applicable
+      government-first procedure: SEC/CFTC Form TCR, IRS Form 211, or an
+      FCA complaint filed under seal and served on the Government. Any
+      counterparty warning, threat, publication, request for consideration,
+      or settlement demand before that route keeps the row DARK and triggers
+      the extortion-boundary review.
+    open_questions:
+      - "Which agency/court route applies to a concrete fact pattern."
+      - "Whether counsel should be mandatory before preserving anonymity, seal, privilege, or relation-back rights."
+      - "How to record filing receipts without storing secret, privileged, or target-sensitive facts in this registry."
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase4-whistleblower-subtree
+
+  - surface: whistleblower
+    venue: US
+    instrument: extortion_boundary
+    g2_verdict: DARK
+    citation: >
+      18 U.S.C. 873; 18 U.S.C. 875(d); 18 U.S.C. 1951. Demanding or
+      receiving money or another thing of value under a threat of informing,
+      or as consideration for not informing, creates a blackmail/extortion
+      tripwire outside lawful government bounty procedures.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 365
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK kill-switch for any workflow that converts a tip into leverage
+      against the target. Permitted monetization, if any, must come only
+      from a statutory award program after government/court procedures.
+      No target demand, no private bounty request, no reputation/property
+      threat, no "pay or I report/publish" communication.
+    open_questions:
+      - "Whether any proposed communication could be read as a threat or consideration for silence."
+      - "Whether counsel has approved all target, employer, press, or public communications."
+      - "Whether interstate communications, commerce, or property/reputation threats introduce additional criminal exposure."
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase4-whistleblower-subtree
 
   # ── White Label ──────────────────────────────────────────────────────
   - surface: white_label
