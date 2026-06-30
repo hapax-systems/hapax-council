@@ -14,7 +14,10 @@ import asyncio
 from unittest.mock import patch
 
 from agents.deliberative_council import tools
-from agents.deliberative_council.capability_admission import CapabilityAdmissionReceipt
+from agents.deliberative_council.capability_admission import (
+    CapabilityAdmissionReceipt,
+    capability_admission_event_scope,
+)
 from agents.deliberative_council.tools import (
     grep_evidence,
     qdrant_lookup,
@@ -167,17 +170,21 @@ async def test_web_verify_memoized_within_scope() -> None:
     # identical query asked twice within a deliberation/segment must short-circuit so the
     # same evidence is not re-fetched (and a slow/dead query is not re-paid).
     calls, fake_agent = _counting_web_agent()
+    admission = _admitted_web_verify()
+    events: list[CapabilityAdmissionReceipt] = []
     with (
-        patch("agents.deliberative_council.tools.admit_tool", return_value=_admitted_web_verify()),
+        patch("agents.deliberative_council.tools.admit_tool", return_value=admission),
         patch("pydantic_ai.Agent", fake_agent),
         patch("shared.config.get_model", return_value="dummy-model"),
     ):
-        with tool_memoization_scope():
-            r1 = await web_verify(None, "is the launch-team paradox real?")
-            r2 = await web_verify(None, "is the launch-team paradox real?")
+        with capability_admission_event_scope(events):
+            with tool_memoization_scope():
+                r1 = await web_verify(None, "is the launch-team paradox real?")
+                r2 = await web_verify(None, "is the launch-team paradox real?")
         assert r1 == r2
         assert r1.endswith("external evidence summary")
         assert calls["n"] == 1  # the second identical query short-circuited
+        assert events == [admission, admission]
         # A distinct query is a cache miss; a fresh scope (new segment) re-pays.
         with tool_memoization_scope():
             await web_verify(None, "is the launch-team paradox real?")
@@ -198,14 +205,17 @@ async def test_web_verify_uncached_without_scope() -> None:
 
 async def test_qdrant_refused_admission_memoized_within_scope() -> None:
     refused = _refused_qdrant_lookup()
+    events: list[CapabilityAdmissionReceipt] = []
     with patch("agents.deliberative_council.tools.admit_tool", return_value=refused) as admit:
-        with tool_memoization_scope():
-            r1 = await qdrant_lookup(None, "same query")
-            r2 = await qdrant_lookup(None, "same query")
+        with capability_admission_event_scope(events):
+            with tool_memoization_scope():
+                r1 = await qdrant_lookup(None, "same query")
+                r2 = await qdrant_lookup(None, "same query")
 
     assert r1 == r2
     assert "refused before local embedding/resource invocation" in r1
     assert admit.call_count == 1
+    assert events == [refused, refused]
 
 
 async def test_web_verify_timeout_memoized_within_scope() -> None:

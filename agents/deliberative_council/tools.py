@@ -10,7 +10,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from .capability_admission import admit_tool, record_capability_admission, tool_result_prefix
+from .capability_admission import (
+    CapabilityAdmissionReceipt,
+    admit_tool,
+    record_capability_admission,
+    tool_result_prefix,
+)
 
 log = logging.getLogger(__name__)
 
@@ -34,8 +39,9 @@ _WEB_VERIFY_TIMEOUT_S = float(os.environ.get("HAPAX_COUNCIL_WEB_VERIFY_TIMEOUT_S
 # deliberation share one cache while distinct deliberations stay isolated. When
 # no scope is active (default None) the tools run uncached — unchanged behaviour
 # for any caller outside ``deliberate()``.
-_tool_cache: contextvars.ContextVar[dict[tuple[str, ...], str] | None] = contextvars.ContextVar(
-    "cctv_tool_cache", default=None
+_ToolCacheValue = str | tuple[str, CapabilityAdmissionReceipt | None]
+_tool_cache: contextvars.ContextVar[dict[tuple[str, ...], _ToolCacheValue] | None] = (
+    contextvars.ContextVar("cctv_tool_cache", default=None)
 )
 
 
@@ -63,13 +69,43 @@ def tool_memoization_scope() -> Iterator[None]:
 
 def _memo_get(key: tuple[str, ...]) -> str | None:
     cache = _tool_cache.get()
-    return None if cache is None else cache.get(key)
+    if cache is None:
+        return None
+    cached = cache.get(key)
+    if isinstance(cached, tuple):
+        return cached[0]
+    return cached
 
 
 def _memo_put(key: tuple[str, ...], value: str) -> str:
     cache = _tool_cache.get()
     if cache is not None:
         cache[key] = value
+    return value
+
+
+def _memo_get_governed(key: tuple[str, ...]) -> str | None:
+    cache = _tool_cache.get()
+    if cache is None:
+        return None
+    cached = cache.get(key)
+    if cached is None:
+        return None
+    if isinstance(cached, tuple):
+        value, admission = cached
+        record_capability_admission(admission)
+        return value
+    return cached
+
+
+def _memo_put_governed(
+    key: tuple[str, ...],
+    value: str,
+    admission: CapabilityAdmissionReceipt | None,
+) -> str:
+    cache = _tool_cache.get()
+    if cache is not None:
+        cache[key] = (value, admission)
     return value
 
 
@@ -147,7 +183,7 @@ async def web_verify(ctx: Any, query: str) -> str:
     short-lived, so a transient slow query is at most re-checked on the next segment.
     """
     key = ("web_verify", query)
-    cached = _memo_get(key)
+    cached = _memo_get_governed(key)
     if cached is not None:
         return cached
     log.info("council_tool call: web_verify(%s)", query[:100])
@@ -156,10 +192,11 @@ async def web_verify(ctx: Any, query: str) -> str:
     prefix = tool_result_prefix(admission)
     if not admission.admitted:
         log.warning("web_verify refused by capability admission: %s", admission.short_reason())
-        return _memo_put(
+        return _memo_put_governed(
             key,
             prefix + "refused before external research provider invocation; "
             "next_action=refresh quota/spend ledger or choose an admitted web research route",
+            admission,
         )
     from pydantic_ai import Agent
 
@@ -173,19 +210,20 @@ async def web_verify(ctx: Any, query: str) -> str:
         )
     except TimeoutError:
         log.warning("web_verify timed out after %.0fs: %s", _WEB_VERIFY_TIMEOUT_S, query[:80])
-        return _memo_put(
+        return _memo_put_governed(
             key,
             prefix
             + f"(web_verify timed out after {_WEB_VERIFY_TIMEOUT_S:.0f}s — no external evidence gathered; "
             "next_action=retry later or proceed without external web evidence)",
+            admission,
         )
-    return _memo_put(key, prefix + str(result.output)[:MAX_READ_CHARS])
+    return _memo_put_governed(key, prefix + str(result.output)[:MAX_READ_CHARS], admission)
 
 
 async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -> str:
     """RAG search across ingested documents."""
     key = ("qdrant_lookup", query, collection)
-    cached = _memo_get(key)
+    cached = _memo_get_governed(key)
     if cached is not None:
         return cached
     log.info("council_tool call: qdrant_lookup(%s, %s)", query[:100], collection)
@@ -194,10 +232,11 @@ async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -
     prefix = tool_result_prefix(admission)
     if not admission.admitted:
         log.warning("qdrant_lookup refused by capability admission: %s", admission.short_reason())
-        return _memo_put(
+        return _memo_put_governed(
             key,
             prefix + "refused before local embedding/resource invocation; "
             "next_action=refresh local resource snapshot or defer local RAG lookup",
+            admission,
         )
     try:
         from shared.config import embed
@@ -208,19 +247,25 @@ async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -
         client = QdrantClient(host="localhost", port=6333)
         results = client.search(collection_name=collection, query_vector=vector, limit=3)
         if not results:
-            return _memo_put(key, prefix + f"No results in {collection} for: {query}")
-        return _memo_put(
+            return _memo_put_governed(
+                key,
+                prefix + f"No results in {collection} for: {query}",
+                admission,
+            )
+        return _memo_put_governed(
             key,
             "\n---\n".join(
                 prefix + f"score={r.score:.3f}: {r.payload.get('text', '')[:500]}" for r in results
             ),
+            admission,
         )
     except Exception as e:
         log.warning("qdrant_lookup failed: %s", e)
-        return _memo_put(
+        return _memo_put_governed(
             key,
             prefix + "Qdrant error: local RAG lookup unavailable; "
             "next_action=check qdrant service, collection name, and local embedding route",
+            admission,
         )
 
 
