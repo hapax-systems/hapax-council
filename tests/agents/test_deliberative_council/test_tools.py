@@ -7,7 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic_ai.messages import CachePoint, UserPromptPart
 
-from agents.deliberative_council.capability_admission import CapabilityAdmissionReceipt
+from agents.deliberative_council.capability_admission import (
+    MODEL_CAPABILITIES,
+    CapabilityAdmissionReceipt,
+)
 from agents.deliberative_council.members import (
     MODEL_TOOL_LEVELS,
     CCTVLiteLLMChatModel,
@@ -248,6 +251,10 @@ class TestBuildMember:
         agent = build_member(model_alias, ToolLevel.NONE)
         assert agent._cctv_route_id == model_route_for_alias(model_alias)
         assert agent._cctv_capability_admission.route_id == agent._cctv_route_id
+
+    @pytest.mark.parametrize("model_alias", sorted(MODEL_CAPABILITIES))
+    def test_descriptor_route_matches_invoked_litellm_route(self, model_alias: str) -> None:
+        assert MODEL_CAPABILITIES[model_alias].route_id == model_route_for_alias(model_alias)
 
     def test_restricted_tool_level(self) -> None:
         agent = build_member("local-fast", ToolLevel.RESTRICTED)
