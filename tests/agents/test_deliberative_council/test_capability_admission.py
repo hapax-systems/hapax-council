@@ -77,6 +77,21 @@ def test_missing_ledger_refuses_fail_closed(tmp_path: Path, monkeypatch) -> None
     assert admission.reason_codes[0].startswith("quota_spend_ledger_unavailable:")
 
 
+def test_missing_live_ledger_does_not_admit_from_fixture_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", raising=False)
+    monkeypatch.delenv("HAPAX_QUOTA_SPEND_LEDGER", raising=False)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(tmp_path / "missing-live.json"))
+    monkeypatch.setenv("HAPAX_CCTV_CAPABILITY_ADMISSION_NOW", "2026-06-30T00:00:00Z")
+
+    admission = admit_tool("qdrant_lookup")
+
+    assert admission.admitted is False
+    assert admission.capability_id == "cctv.tool.qdrant_lookup"
+    assert admission.reason_codes[0].startswith("quota_spend_ledger_unavailable:")
+
+
 def test_missing_descriptor_refuses_with_receipt(monkeypatch) -> None:
     monkeypatch.delenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", raising=False)
 

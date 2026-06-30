@@ -21,6 +21,7 @@ from shared.quota_spend_ledger import (
     LocalResourceState,
     PaidRouteRequest,
     QuotaSpendLedger,
+    QuotaSpendLedgerError,
     SubscriptionQuotaState,
     evaluate_paid_route_eligibility,
     load_quota_spend_ledger,
@@ -485,7 +486,15 @@ def _load_ledger() -> QuotaSpendLedger:
     live_path = Path(
         os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV, str(DEFAULT_QUOTA_SPEND_LEDGER_LIVE))
     ).expanduser()
-    return load_quota_spend_ledger_resolved(live_path=live_path).ledger
+    if not live_path.exists():
+        raise QuotaSpendLedgerError(f"live quota/spend ledger missing: {live_path}")
+    resolved = load_quota_spend_ledger_resolved(live_path=live_path)
+    if resolved.source != "live":
+        detail = f"; live_error={resolved.live_error}" if resolved.live_error else ""
+        raise QuotaSpendLedgerError(
+            f"live quota/spend ledger unavailable; refusing fixture fallback at {resolved.path}{detail}"
+        )
+    return resolved.ledger
 
 
 def _admission_now(now: datetime | None) -> datetime:
