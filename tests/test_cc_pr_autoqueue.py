@@ -1718,11 +1718,13 @@ def test_summarize_checks_keeps_admission_context_ignored_until_written_by_autoq
             _check("governance-gate"),
             _check("pr-admission"),
             _check("review"),
+            _check(autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE),
         ]
     )
 
     assert autoqueue.AUTOQUEUE_ADMISSION_CONTEXT not in summary.verified_passed
     assert "review" in summary.verified_passed
+    assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE not in summary.verified_passed
     assert "governance-gate" not in summary.verified_passed
     assert "pr-admission" not in summary.verified_passed
     assert autoqueue.AUTOQUEUE_ADMISSION_CONTEXT not in summary.passed
@@ -1871,6 +1873,49 @@ def test_governance_mitigation_ignores_bare_review_check_without_dossier(tmp_pat
         "release_auto_arm_ineligible:needs_mitigation:governance_sensitive:review-team-quorum"
     ]
     assert not any(call[:4] == ["gh", "pr", "merge", "751"] for call in runner.calls)
+
+
+def test_governance_mitigation_ignores_forged_quorum_check_without_dossier(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-governance-forged-quorum",
+        status="pr_open",
+        pr=755,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "governance_sensitive": True,
+            },
+        },
+    )
+    checks = [*_governance_mitigation_checks(), _check(autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE)]
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(755, checks=checks)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    assert "stage: S7_RELEASE" not in current
+    parsed = autoqueue._parse_pr(_pr(755, checks=checks))
+    assert parsed is not None
+    assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE not in parsed.check_summary.verified_passed
+    decision = next(d for d in report["decisions"] if d["pr"] == 755)
+    assert decision["action"] == "blocked"
+    assert decision["reasons"] == [
+        "release_auto_arm_ineligible:needs_mitigation:governance_sensitive:review-team-quorum"
+    ]
+    assert not any(call[:4] == ["gh", "pr", "merge", "755"] for call in runner.calls)
 
 
 def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(

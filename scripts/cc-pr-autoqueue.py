@@ -607,9 +607,13 @@ def summarize_checks(items: list[dict[str, Any]]) -> CheckSummary:
     failed: list[str] = []
     verified_passed: list[str] = []
     for name, (_observed_at, _index, state) in latest_by_name.items():
-        if state in MITIGATION_EVIDENCE_PASS_STATES and (
-            name not in AUTOQUEUE_IGNORED_CHECK_CONTEXTS
-            or name in RELEASE_MITIGATION_CHECK_CONTEXTS
+        if (
+            name not in VIRTUAL_RELEASE_MITIGATION_CONTEXTS
+            and state in MITIGATION_EVIDENCE_PASS_STATES
+            and (
+                name not in AUTOQUEUE_IGNORED_CHECK_CONTEXTS
+                or name in RELEASE_MITIGATION_CHECK_CONTEXTS
+            )
         ):
             verified_passed.append(name)
     for name, (_observed_at, _index, state) in latest_by_name.items():
@@ -1077,7 +1081,7 @@ def _release_mitigation_verified_checks(
     changed_files: tuple[str, ...] | None,
     changed_file_count: int | None,
 ) -> set[str]:
-    verified = set(checks)
+    verified = set(checks) - VIRTUAL_RELEASE_MITIGATION_CONTEXTS
     if task is None:
         return verified
     blockers = _review_team_quorum_evidence_blockers(
