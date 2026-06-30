@@ -20,7 +20,7 @@ runtimes:
           hooks:
             - hooks-doctor.sh
       PreToolUse:
-        - matcher: "Bash|mcp__github__create_pull_request|mcp__github__merge_pull_request"
+        - matcher: "Bash|mcp__github__create_pull_request|mcp__github__merge_pull_request|mcp__codex_apps__github___create_pull_request|mcp__codex_apps__github___merge_pull_request|mcp__codex_apps__github___enable_auto_merge"
           hooks:
             - pr-release-gate.sh
         - matcher: "Bash"

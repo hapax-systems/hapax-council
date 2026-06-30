@@ -332,13 +332,17 @@ def _latest_route_decision(
         lines = ledger_path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return None
-    for line in lines:
+    for line_number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
         try:
             row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        except json.JSONDecodeError as exc:
+            return {
+                "_malformed_route_decision_ledger": True,
+                "line_number": line_number,
+                "error": exc.msg,
+            }
         if row.get("task_id") != task_id:
             continue
         if role and row.get("lane") not in {role, None, ""}:
@@ -363,6 +367,8 @@ def _sequence(value: Any) -> tuple[str, ...]:
 def _route_decision_refusal(row: dict[str, Any] | None, *, now: datetime) -> str | None:
     if row is None:
         return "route_decision_absent"
+    if row.get("_malformed_route_decision_ledger") is True:
+        return "route_decision_ledger_malformed"
     created_at = _parse_dt(row.get("created_at") or row.get("ts"))
     age_s = (now - created_at).total_seconds()
     if age_s < 0:

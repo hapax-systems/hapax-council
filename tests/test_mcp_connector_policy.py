@@ -248,6 +248,25 @@ def test_side_effecting_connector_requires_connector_mutation_receipt(tmp_path: 
     assert result.reason_code == "connector_mutation_receipt_absent"
 
 
+def test_malformed_route_decision_ledger_fails_closed(tmp_path: Path) -> None:
+    ledger = tmp_path / "route-decisions.jsonl"
+    receipts = tmp_path / "receipts"
+    _write_route_decision(ledger)
+    ledger.write_text(ledger.read_text(encoding="utf-8") + "{not-json\n", encoding="utf-8")
+    _write_connector_receipt(receipts)
+
+    result = evaluate_connector_receipt_gate(
+        "mcp__codex_apps__gmail___send_draft",
+        task_id="task-1",
+        role="cx-red",
+        ledger_path=ledger,
+        receipt_root=receipts,
+    )
+
+    assert not result.allowed
+    assert result.reason_code == "route_decision_ledger_malformed"
+
+
 def test_side_effecting_connector_allows_with_route_and_receipt(tmp_path: Path) -> None:
     ledger = tmp_path / "route-decisions.jsonl"
     receipts = tmp_path / "receipts"

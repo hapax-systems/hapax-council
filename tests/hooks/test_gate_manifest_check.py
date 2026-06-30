@@ -87,6 +87,18 @@ def test_claude_mcp_mutators_run_full_task_connector_and_release_gates() -> None
     ]
 
 
+def test_claude_codex_app_github_release_aliases_run_pr_release_gate() -> None:
+    entries = _manifest()["runtimes"]["claude"]["phases"]["PreToolUse"]
+    release_entry = next(entry for entry in entries if entry["hooks"] == ["pr-release-gate.sh"])
+
+    for alias in (
+        "mcp__codex_apps__github___create_pull_request",
+        "mcp__codex_apps__github___merge_pull_request",
+        "mcp__codex_apps__github___enable_auto_merge",
+    ):
+        assert alias in release_entry["matcher"]
+
+
 def test_claude_settings_hook_command_with_args_uses_command_basename(tmp_path: Path) -> None:
     settings = _write_claude_settings(
         tmp_path,
