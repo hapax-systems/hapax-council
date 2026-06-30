@@ -1087,7 +1087,10 @@ parent_request: {request}
             script._decomposition_admission_blockers(request_data)
         )
 
-    @pytest.mark.parametrize("empty_receipts", [[], "[]", '"[]"'])
+    @pytest.mark.parametrize(
+        "empty_receipts",
+        [[], "[]", '"[]"', "[null]", "[unassigned]", "['null']", '["unassigned"]'],
+    )
     def test_decomposition_admission_blocks_admitted_route_without_receipts(
         self, tmp_path, empty_receipts: object
     ):

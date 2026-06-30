@@ -206,19 +206,24 @@ end = text.find("\n---", 3)
 if end < 0:
     raise SystemExit(0)
 lines = text[3:end].splitlines()
-nullish = {"", "null", "None", "unassigned", "[]"}
+nullish = {"", "null", "none", "None", "NULL", "~", "unassigned", "[]"}
+
+def scalar(value):
+    text = str(value).strip().strip('"').strip("'")
+    return "" if text in nullish or text.lower() in nullish else text
+
 for idx, line in enumerate(lines):
     for field in fields:
         if not line.startswith(f"{field}:"):
             continue
-        value = line.split(":", 1)[1].strip().strip('"').strip("'")
-        if value not in nullish:
+        value = scalar(line.split(":", 1)[1])
+        if value:
             print(value)
             raise SystemExit(0)
         for item_line in lines[idx + 1 :]:
             item = item_line.strip()
             if item.startswith("- "):
-                ref = item[2:].strip().strip('"').strip("'")
+                ref = scalar(item[2:])
                 if ref:
                     print(ref)
                     raise SystemExit(0)
