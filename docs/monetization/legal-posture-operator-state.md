@@ -117,7 +117,7 @@ for url in source_urls:
         request = Request(url, headers={"User-Agent": "hapax-validation/1.0"})
         with urlopen(request, timeout=20) as response:
             status = response.status
-    assert status < 500, (url, status)
+    assert status == 200, (url, status)
 print("operator-state registry recheck OK: US-MN DARK prediction-market rows present")
 PY
 ```
