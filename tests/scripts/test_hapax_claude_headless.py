@@ -168,6 +168,40 @@ def test_headless_honors_explicit_claude_bin_override(tmp_path: Path) -> None:
     assert claude_args.exists()
 
 
+def test_headless_rejects_invalid_explicit_claude_bin_override(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "hapax-council--beta"
+    workdir.mkdir(parents=True)
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-beta"
+    claim_file.write_text("task-x\n")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fallback_marker = tmp_path / "fallback-used"
+    _stub_bin(bin_dir, "claude", f"touch {fallback_marker}\nexit 0\n")
+    explicit_bin = tmp_path / "explicit" / "claude"
+    explicit_bin.parent.mkdir()
+    explicit_bin.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    explicit_bin.chmod(0o644)
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_CLAUDE_BIN"] = str(explicit_bin)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 4
+    assert "configured Claude binary is not executable" in result.stderr
+    assert not fallback_marker.exists()
+
+
 def test_appendix_hop_passes_remote_args_without_shell_interpolation(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workdir = home / "projects" / "hapax-council--beta"

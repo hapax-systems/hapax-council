@@ -169,7 +169,17 @@ resolve_claude_bin() {
   local candidate=""
   for candidate in \
     "${HAPAX_CLAUDE_BIN:-}" \
-    "${HAPAX_CLAUDE_BIN_PATH:-}" \
+    "${HAPAX_CLAUDE_BIN_PATH:-}"
+  do
+    [[ -n "$candidate" ]] || continue
+    if [[ ! -x "$candidate" ]]; then
+      echo "hapax-claude-headless: configured Claude binary is not executable: $candidate" >&2
+      return 1
+    fi
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  for candidate in \
     "$(command -v claude 2>/dev/null || true)" \
     "$HOME/.npm-global/bin/claude" \
     "${NPM_CONFIG_PREFIX:+$NPM_CONFIG_PREFIX/bin/claude}" \
