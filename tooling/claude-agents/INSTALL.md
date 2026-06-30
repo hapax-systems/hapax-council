@@ -124,7 +124,7 @@ Recheck after install or launcher changes:
 
 ```bash
 rg -n 'HAPAX_PARENT_ROUTE_ENVELOPE|HAPAX_CHILD_SPAWN_ENVELOPE|hapax-child-spawn-receipt' scripts shared tests tooling/claude-agents
-uv run pytest tests/test_subagent_route_receipts.py tests/scripts/test_hapax_methodology_dispatch.py tests/scripts/test_hapax_codex_headless.py tests/scripts/test_hapax_claude_headless.py tests/scripts/test_vbe_dispatch.py tests/scripts/test_hapax_antigrav_launcher.py -q -k 'parent_route or child_spawn or envelope'
+uv run pytest tests/test_subagent_route_receipts.py tests/scripts/test_hapax_methodology_dispatch.py tests/scripts/test_hapax_codex_headless.py tests/scripts/test_hapax_claude_headless.py tests/scripts/test_vbe_dispatch.py tests/scripts/test_hapax_antigrav_launcher.py -q -k 'parent_route or child_spawn or envelope or receipt or required_parent'
 ```
 
 ## 5. Disable individually

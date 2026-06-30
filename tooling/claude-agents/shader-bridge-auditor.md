@@ -36,6 +36,13 @@ edited. The PR #715 / F8 fix established the canonical structure of
 this bridge; the regression that preceded it (material_id hardcoded
 to water for multi-day windows) is exactly what you exist to catch.
 
+## Governed route receipt gate
+
+Before any audit work, run the receipt gate from the repository root:
+`scripts/hapax-child-spawn-receipt --child-id "claude-subagent:shader-bridge-auditor:${CLAUDE_CODE_SESSION_ID:-${HAPAX_SESSION_ID:-manual}}" --shape subagent --capability-id "claude-subagent:shader-bridge-auditor" --capability-role reviewer`.
+If `HAPAX_PARENT_ROUTE_ENVELOPE` is missing or the helper returns non-zero, stop and report `BLOCKED: missing_parent_route_resource_receipt`; do not inspect files.
+Include the emitted `HAPAX_CHILD_RECEIPT_ID` in your final report.
+
 ## The four hops
 
 1. **Python writer** — `agents/reverie/_uniforms.py::write_uniforms`

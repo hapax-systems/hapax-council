@@ -248,6 +248,56 @@ exit 0
     assert parent_payload["child_receipts"][0]["child_id"].startswith("codex-headless:cx-amber:")
 
 
+def test_codex_headless_records_fresh_receipt_when_child_env_is_inherited(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+    parent_path = _write_parent_envelope(tmp_path / "parent.json")
+
+    bin_dir = tmp_path / "bin"
+    env_file = tmp_path / "codex-env.txt"
+    inherited_child_path = tmp_path / "old-child.json"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf 'child=%s\\n' "${{HAPAX_CHILD_SPAWN_ENVELOPE:-}}" > {env_file}
+printf 'receipt_id=%s\\n' "${{HAPAX_CHILD_RECEIPT_ID:-}}" >> {env_file}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_PARENT_ROUTE_ENVELOPE"] = str(parent_path)
+    env["HAPAX_CHILD_SPAWN_ENVELOPE"] = str(inherited_child_path)
+    env["HAPAX_CHILD_RECEIPT_REF"] = "child-spawn-envelope:/tmp/old-child.json"
+    env["HAPAX_CHILD_RECEIPT_ID"] = "child-receipt-old"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    launched_env = env_file.read_text(encoding="utf-8")
+    assert f"child={inherited_child_path}" not in launched_env
+    assert "child=child-receipt-old" not in launched_env
+    assert "child-spawn-" in launched_env
+    assert "receipt_id=child-receipt-" in launched_env
+    assert "receipt_id=child-receipt-old" not in launched_env
+    parent_payload = json.loads(parent_path.read_text(encoding="utf-8"))
+    assert len(parent_payload["child_receipts"]) == 1
+
+
 def test_codex_headless_runs_on_appendix_via_remote_payload(tmp_path: Path) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"

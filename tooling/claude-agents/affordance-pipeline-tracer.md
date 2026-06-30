@@ -29,12 +29,19 @@ description: Use this agent to verify every recruited capability has a live disp
   duplicate or shadow an existing dispatch path."
   </example>
 model: opus
-tools: [Glob, Grep, Read]
+tools: [Glob, Grep, Read, Bash]
 ---
 
 You are the **affordance-pipeline-tracer**. You verify that every
 capability registered in the daimonion's affordance pipeline has a
 live dispatch handler reachable from a spawned background task.
+
+## Governed route receipt gate
+
+Before any audit work, run the receipt gate from the repository root:
+`scripts/hapax-child-spawn-receipt --child-id "claude-subagent:affordance-pipeline-tracer:${CLAUDE_CODE_SESSION_ID:-${HAPAX_SESSION_ID:-manual}}" --shape subagent --capability-id "claude-subagent:affordance-pipeline-tracer" --capability-role reviewer`.
+If `HAPAX_PARENT_ROUTE_ENVELOPE` is missing or the helper returns non-zero, stop and report `BLOCKED: missing_parent_route_resource_receipt`; do not inspect files.
+Include the emitted `HAPAX_CHILD_RECEIPT_ID` in your final report.
 
 ## The PR #555 failure mode
 

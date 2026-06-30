@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -257,7 +258,7 @@ def test_tmux_launch_records_parent_child_spawn_receipt(tmp_path: Path) -> None:
 
     runner = next(spawns.glob("run-*vbe-1-demo-task.sh"))
     runner_text = runner.read_text(encoding="utf-8")
-    assert f"export HAPAX_PARENT_ROUTE_ENVELOPE={parent_path}" in runner_text
+    assert f"export HAPAX_PARENT_ROUTE_ENVELOPE={shlex.quote(str(parent_path))}" in runner_text
     assert "export HAPAX_CHILD_SPAWN_ENVELOPE=" in runner_text
     assert "child-spawn-" in runner_text
     assert "export HAPAX_CHILD_RECEIPT_REF=child-spawn-envelope:" in runner_text

@@ -147,14 +147,11 @@ record_child_spawn_receipt() {
   local helper="$COUNCIL_DIR/scripts/hapax-child-spawn-receipt"
   local receipt_exports=""
 
-  if [ -n "${HAPAX_CHILD_SPAWN_ENVELOPE:-}" ] && [ -n "${HAPAX_CHILD_RECEIPT_ID:-}" ]; then
-    return 0
-  fi
   if [ -z "${HAPAX_PARENT_ROUTE_ENVELOPE:-}" ] && [ "${HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-0}" != "1" ]; then
     return 0
   fi
   if [ ! -x "$helper" ]; then
-    echo "hapax-antigrav: parent route envelope required but helper is missing: $helper" >&2
+    echo "hapax-antigrav: parent route envelope required but helper is missing: $helper; next action: sync this worktree/branch so scripts/hapax-child-spawn-receipt exists, then relaunch through hapax-methodology-dispatch" >&2
     exit 18
   fi
   if ! receipt_exports="$("$helper" --task "$task_id" --child-id "$child_id" --shape "$shape" --capability-role "$role")"; then

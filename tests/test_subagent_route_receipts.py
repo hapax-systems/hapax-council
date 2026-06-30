@@ -28,6 +28,7 @@ from shared.subagent_route_receipts import (
 )
 
 NOW = datetime(2026, 6, 30, 5, 0, tzinfo=UTC)
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _parent(*, issued_at: datetime = NOW) -> ParentRouteResourceEnvelope:
@@ -207,3 +208,37 @@ def test_spawn_surface_inventory_covers_auto_fire_and_fugu_style_orchestration()
     assert (
         by_id["governed_worker_lane_dispatch"].shape is SpawnCapabilityShape.EXISTING_AGENT_HARNESS
     )
+
+
+def test_claude_subagent_definitions_require_parent_route_receipt_gate() -> None:
+    agent_dir = REPO_ROOT / "tooling" / "claude-agents"
+    agent_paths = sorted(path for path in agent_dir.glob("*.md") if path.name != "INSTALL.md")
+
+    assert agent_paths
+    for path in agent_paths:
+        text = path.read_text(encoding="utf-8")
+        frontmatter = text.split("---", 2)[1]
+        tools_line = next(
+            (line for line in frontmatter.splitlines() if line.startswith("tools:")),
+            "",
+        )
+        assert "Bash" in tools_line, path
+        assert "hapax-child-spawn-receipt" in text, path
+        assert "HAPAX_PARENT_ROUTE_ENVELOPE" in text, path
+        assert "HAPAX_CHILD_RECEIPT_ID" in text, path
+
+
+def test_worker_launchers_explain_missing_receipt_helper_next_action() -> None:
+    launchers = (
+        "hapax-antigrav",
+        "hapax-claude",
+        "hapax-claude-headless",
+        "hapax-codex",
+        "hapax-codex-headless",
+        "hapax-vibe",
+    )
+
+    for name in launchers:
+        text = (REPO_ROOT / "scripts" / name).read_text(encoding="utf-8")
+        assert "parent route envelope required but helper is missing" in text, name
+        assert "next action: sync this worktree/branch" in text, name
