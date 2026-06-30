@@ -1541,11 +1541,10 @@ printf '%s\\n' "$@" > {launcher_args}
     )
 
     assert result.returncode == 0, result.stderr
-    # hapax-codex-headless takes `--task <id> <lane> <prompt>` for ordinary
-    # launches. `--force` is reserved for the P0 incident drain-lane path.
+    # Strictly MQ-bound governed Codex launches may reactivate a clean retired
+    # relay. Local fallback remains independently restricted to P0 drain lanes.
     recorded = launcher_args.read_text(encoding="utf-8")
-    assert recorded.startswith("--task\ngoverned-build\ncx-green\n")
-    assert "\n--force\n" not in recorded
+    assert recorded.startswith("--task\ngoverned-build\n--force\ncx-green\n")
     assert "SDLC GOVERNED DISPATCH." in recorded
     assert "Task: governed-build" in recorded
     assert "AuthorityCase: CASE-TEST-001" in recorded
@@ -1628,6 +1627,123 @@ printf '%s\\n' "$@" > {launcher_args}
     assert recorded.startswith(f"--task\n{task_id}\n--force\ncx-p0\n")
 
 
+def test_codex_p0_incident_local_fallback_force_is_independent_of_reactivation_flag(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setenv("HAPAX_P0_CODEX_DRAIN_LANES", "cx-p0")
+    launcher_env = tmp_path / "launcher-env.txt"
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf 'host=%s\\nfallback=%s\\n' "$HAPAX_DISPATCH_HOST" "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" > {launcher_env}
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CODEX_HEADLESS", str(fake_launcher))
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "status": "claimed",
+                "priority": "p0",
+                "title": "P0 incident",
+                "kind": "recovery_triage",
+                "tags": ["incident-intake", "technical-alert"],
+            },
+        ),
+    )
+
+    reactivate_retired_relay = False
+    assert module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-sdlc-task-stalled-test", "cx-p0", validation
+    )
+
+    result = module.launch_codex_headless(
+        "p0-incident-sdlc-task-stalled-test",
+        "cx-p0",
+        "prompt",
+        validation,
+        module.PLATFORM_PATHS[("codex", "headless", "full")],
+        reactivate_retired_relay=reactivate_retired_relay,
+    )
+
+    assert result == 0
+    assert launcher_env.read_text(encoding="utf-8").splitlines() == [
+        "host=appendix",
+        "fallback=local",
+    ]
+    recorded = launcher_args.read_text(encoding="utf-8")
+    assert recorded.startswith(
+        "--task\np0-incident-sdlc-task-stalled-test\n--force\n--no-claim\ncx-p0\n"
+    )
+
+
+def test_governed_relay_reactivation_passes_force_to_headless_launcher(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    task_id = "governed-codex-retired-relay"
+    _task(
+        tmp_path / "tasks",
+        task_id,
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+        status="claimed",
+        assigned_to="cx-fugu",
+    )
+    home = tmp_path / "home"
+    relay = home / ".cache" / "hapax" / "relay"
+    relay.mkdir(parents=True)
+    (relay / "cx-fugu.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
+    launcher_env = tmp_path / "launcher-env.txt"
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex-headless"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf 'host=%s\\nfallback=%s\\n' "$HAPAX_DISPATCH_HOST" "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" > {launcher_env}
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        task_id,
+        "--lane",
+        "cx-fugu",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
+            "HAPAX_P0_CODEX_DRAIN_LANES": "",
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    recorded = launcher_args.read_text(encoding="utf-8")
+    assert recorded.startswith(f"--task\n{task_id}\n--force\n--no-claim\ncx-fugu\n")
+    assert launcher_env.read_text(encoding="utf-8").splitlines() == [
+        "host=appendix",
+        "fallback=",
+    ]
+
+
 def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: Path) -> None:
     worktree = _worktree(tmp_path / "worktree")
     (worktree / "scripts" / "cc-claim").chmod(0o755)
@@ -1699,16 +1815,198 @@ def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: P
     assert receipt["coord_dispatch_cleanup_state"] == "deferred"
 
 
-def test_codex_headless_dispatch_propagates_retired_relay_block(tmp_path: Path) -> None:
+def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
+    task_id = "governed-codex-retired-relay"
     _task(
         tmp_path / "tasks",
-        "governed-build",
+        task_id,
         f"""
         kind: build
         authority_case: CASE-TEST-001
         parent_spec: {spec}
+        """,
+        status="claimed",
+        assigned_to="cx-fugu",
+    )
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    relay = home / ".cache" / "hapax" / "relay"
+    relay.mkdir(parents=True)
+    (relay / "cx-fugu.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
+    pid_dir = tmp_path / "pids"
+    pid_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    codex_args = tmp_path / "codex-args.txt"
+    _write(
+        bin_dir / "codex",
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {codex_args}\n",
+    )
+    (bin_dir / "codex").chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        task_id,
+        "--lane",
+        "cx-fugu",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(REPO_ROOT / "scripts" / "hapax-codex-headless"),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+            "HAPAX_CODEX_HEADLESS_ALLOW": "1",
+            "HAPAX_CODEX_HEADLESS_WORKDIR": str(tmp_path / "worktree"),
+            "HAPAX_CODEX_HEADLESS_PID_DIR": str(pid_dir),
+            "HAPAX_DISPATCH_HOST": "local",
+            "HAPAX_P0_CODEX_DRAIN_LANES": "",
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "retired/wound-down" not in result.stderr
+    assert codex_args.exists()
+
+
+def test_governed_relay_reactivation_predicate_accepts_bound_mutable_launch(
+    tmp_path: Path,
+) -> None:
+    module = _dispatcher_module()
+    route_decision = type(
+        "RouteDecisionStub",
+        (),
+        {"action": module.DispatchAction.LAUNCH},
+    )()
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "status": "claimed",
+                "kind": "build",
+                "authority_case": "CASE-TEST-001",
+            },
+        ),
+    )
+
+    assert module.allow_codex_governed_relay_reactivation(
+        route=module.PLATFORM_PATHS[("codex", "headless", "full")],
+        route_decision=route_decision,
+        durable_binding=module.DurableDispatchBinding(
+            True,
+            False,
+            "durable_mq_dispatch_bound",
+            message_id="dispatch-message",
+        ),
+        validation=validation,
+    )
+
+
+def test_governed_relay_reactivation_rejects_advisory_or_unbound_binding(
+    tmp_path: Path, monkeypatch, capfd
+) -> None:
+    module = _dispatcher_module()
+    _worktree(tmp_path / "worktree")
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    relay = home / ".cache" / "hapax" / "relay"
+    relay.mkdir(parents=True)
+    (relay / "cx-green.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
+    pid_dir = tmp_path / "pids"
+    pid_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    codex_args = tmp_path / "codex-args.txt"
+    _write(
+        bin_dir / "codex",
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {codex_args}\n",
+    )
+    (bin_dir / "codex").chmod(0o755)
+    monkeypatch.setenv(
+        "HAPAX_METHODOLOGY_CODEX_HEADLESS",
+        str(REPO_ROOT / "scripts" / "hapax-codex-headless"),
+    )
+    monkeypatch.setenv("HAPAX_COUNCIL_DIR", str(REPO_ROOT))
+    monkeypatch.setenv("HAPAX_CODEX_HEADLESS_ALLOW", "1")
+    monkeypatch.setenv("HAPAX_CODEX_HEADLESS_WORKDIR", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(pid_dir))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "status": "claimed",
+                "kind": "build",
+                "authority_case": "CASE-TEST-001",
+            },
+        ),
+    )
+    route_decision = type(
+        "RouteDecisionStub",
+        (),
+        {"action": module.DispatchAction.LAUNCH},
+    )()
+    route = module.PLATFORM_PATHS[("codex", "headless", "full")]
+
+    for binding in (
+        module.DurableDispatchBinding(
+            True,
+            True,
+            "advisory_binding_must_not_reactivate",
+            message_id="dispatch-message",
+        ),
+        module.DurableDispatchBinding(
+            True,
+            False,
+            "message_id_required_for_reactivation",
+            message_id=None,
+        ),
+    ):
+        reactivate = module.allow_codex_governed_relay_reactivation(
+            route=route,
+            route_decision=route_decision,
+            durable_binding=binding,
+            validation=validation,
+        )
+
+        assert reactivate is False
+        result = module.launch_codex_headless(
+            "governed-codex-retired-relay",
+            "cx-green",
+            "prompt",
+            validation,
+            route,
+            reactivate_retired_relay=reactivate,
+        )
+        assert result == 6
+        captured = capfd.readouterr()
+        assert "relay 'cx-green' is retired/wound-down" in captured.err
+        assert "pass --force to reactivate" in captured.err
+        assert not codex_args.exists()
+
+
+def test_codex_headless_dispatch_propagates_retired_relay_block(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    _task(
+        tmp_path / "tasks",
+        "read-only-intake",
+        """
+        kind: intake
+        task_type: read-only
+        parent_spec: null
+        tags:
+          - intake
+          - read-only
         """,
         status="claimed",
         assigned_to="cx-green",
@@ -1729,7 +2027,65 @@ def test_codex_headless_dispatch_propagates_retired_relay_block(tmp_path: Path) 
     result = _run(
         tmp_path,
         "--task",
-        "governed-build",
+        "read-only-intake",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(REPO_ROOT / "scripts" / "hapax-codex-headless"),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+            "HAPAX_CODEX_HEADLESS_ALLOW": "1",
+            "HAPAX_CODEX_HEADLESS_WORKDIR": str(tmp_path / "worktree"),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        },
+        durable_mq=False,
+    )
+
+    assert result.returncode == 6
+    assert "retired/wound-down" in result.stderr
+    assert not codex_args.exists()
+
+
+def test_codex_headless_dispatch_blocks_mq_bound_read_only_exempt_retired_relay(
+    tmp_path: Path,
+) -> None:
+    _worktree(tmp_path / "worktree")
+    _task(
+        tmp_path / "tasks",
+        "mq-bound-read-only-intake",
+        """
+        kind: intake
+        task_type: read-only
+        authority_case: CASE-TEST-001
+        parent_spec: null
+        tags:
+          - intake
+          - read-only
+        """,
+        status="claimed",
+        assigned_to="cx-green",
+    )
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    relay = home / ".cache" / "hapax" / "relay"
+    relay.mkdir(parents=True)
+    (relay / "cx-green.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    codex_args = tmp_path / "codex-args.txt"
+    _write(
+        bin_dir / "codex",
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {codex_args}\n",
+    )
+    (bin_dir / "codex").chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "mq-bound-read-only-intake",
         "--lane",
         "cx-green",
         "--platform",
@@ -1749,6 +2105,15 @@ def test_codex_headless_dispatch_propagates_retired_relay_block(tmp_path: Path) 
     assert result.returncode == 6
     assert "retired/wound-down" in result.stderr
     assert not codex_args.exists()
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["exempt_read_only"] is True
+    assert receipt["durable_mq_dispatch_bound"] is True
+    assert receipt["durable_mq_reason"] == "read_only_exempt"
+    assert receipt["durable_mq_message_id"] is None
 
 
 def test_split_lane_list_accepts_commas_and_whitespace() -> None:
