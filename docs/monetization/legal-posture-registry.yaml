@@ -13,7 +13,7 @@
 schema_version: "1.0.0"
 schema_doc: docs/monetization/legal-posture-registry-schema.md
 last_updated: "2026-06-30"
-update_author: 20260628-registry-phase1-operator-state-of-residence-confirmation
+update_author: 20260628-registry-phase2-prediction-market-subtree
 
 surfaces:
   - prediction_market
@@ -37,10 +37,11 @@ rows:
     g2_verdict: DARK
     citation: >
       Operator state is now confirmed as Minnesota in
-      REQ-20260628-arbitrage-struck-and-blocked-register, but the wider
-      prediction-market legal matrix remains unresearched. See phase 1
-      (registry-phase1-operator-state-of-residence-confirmation) and phase 2
-      (registry-phase2-prediction-market-subtree).
+      REQ-20260628-arbitrage-struck-and-blocked-register. Phase 2 has added
+      specific DARK rows for Minnesota trading, CFTC event-contract posture,
+      IRS §1256 uncertainty, OBBBA/§165(d) wagering-loss risk, platform risk,
+      and the non-trading NDCVB feed boundary. Absence of a specific LIT or
+      PARTIAL row remains DARK.
     authority_basis: no_research
     review_date: "2026-06-30"
     freshness_ttl_days: 90
@@ -49,14 +50,15 @@ rows:
     notes: >
       Prediction markets have the highest legal volatility of any surface.
       Operator residence is a dated input, not a permanent profile rewrite.
-      The current state input is Minnesota, confirmed 2026-06-28. WA actively
-      suing Kalshi (Mar 2026), §1256 vs gambling classification, OBBBA 90%
-      loss cap, and platform ToS constraints remain phase-2 questions.
+      The current state input is Minnesota, confirmed 2026-06-28. Phase 2
+      research did not identify any operator-cleared trading route. The
+      NDCVB manipulation-detection feed is non-trading only and separately
+      held pending buyer/use analysis.
     open_questions:
-      - "§1256 mark-to-market vs state gambling classification"
-      - "OBBBA 90% loss cap applicability to event contracts"
+      - "Whether any future CFTC/state preemption holding reaches Minnesota and survives appeal"
+      - "Whether the IRS issues event-contract-specific §1256 or wagering guidance"
       - "50-state matrix of event-contract legality"
-      - "Kalshi/Polymarket ToS constraints on automated participation"
+      - "Platform ToS and market-data-license constraints on automation and feed resale"
     blocks_surfaces:
       - prediction_market
     source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
@@ -130,6 +132,219 @@ rows:
       - prediction_market
       - prediction_market_trading
     source_task: 20260628-registry-phase1-operator-state-of-residence-confirmation
+
+  # -- Prediction Market Phase 2 Rows ----------------------------------
+  # These rows keep all operator trading DARK, preserve the Minnesota
+  # strike, and split non-trading manipulation-detection feeds from
+  # position-taking.
+  - surface: prediction_market
+    venue: US-MN
+    instrument: operator_prediction_market_trading
+    g2_verdict: DARK
+    citation: >
+      Minnesota Laws 2026, Chapter 97, Article 8, amends Minn. Stat.
+      609.75 subd. 3 and creates Minn. Stat. 609.7615 effective
+      August 1, 2026. Section 609.7615 defines prediction markets and
+      makes specified prediction-market hosting, facilitation, data,
+      support, and advertising activity felony conduct. Minn. Stat.
+      609.755 separately makes making a bet a misdemeanor. See
+      https://www.revisor.mn.gov/laws/2026/0/Session%2BLaw/Chapter/97/,
+      https://www.revisor.mn.gov/statutes/cite/609.755, and
+      https://www.revisor.mn.gov/statutes/cite/609.75.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 60
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Standing Minnesota strike. The operator's current residence input is
+      Minnesota, confirmed 2026-06-28. No new authority in this task
+      overturns the RED/DARK posture for operator trading, automated
+      position-taking, market making, accepting wagers, settlement, pricing,
+      or value received from a prediction-market trade.
+    open_questions:
+      - "Whether federal preemption litigation eventually reaches and binds Minnesota"
+      - "Whether any counsel-approved non-wager instrument can be separated from prediction-market trading"
+      - "Whether Minnesota's August 1, 2026 effective date changes only enforcement timing or also present planning posture"
+    blocks_surfaces:
+      - prediction_market
+      - prediction_market_trading
+      - automated_prediction_market_trading
+    source_task: 20260628-registry-phase2-prediction-market-subtree
+
+  - surface: prediction_market
+    venue: US-CFTC
+    instrument: regulated_event_contract_trading
+    g2_verdict: DARK
+    citation: >
+      CFTC, Understanding Prediction Markets and Event Contracts:
+      https://www.cftc.gov/LearnandProtect/PredictionMarkets. CFTC,
+      Prediction Markets; Public Interest Determinations, 91 Fed. Reg.
+      35806 (June 12, 2026):
+      https://www.federalregister.gov/documents/2026/06/12/2026-11854/prediction-markets-public-interest-determinations.
+      CFTC Staff Advisory No. 25-36:
+      https://www.cftc.gov/csl/25-36/download.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 60
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Federal regulation does not create a Hapax g2 pass. CFTC materials
+      describe event contracts as typically swaps, DCM/SEF obligations,
+      self-certification, core-principle duties, manipulation surveillance,
+      and Special Rule review for event contracts involving gaming or
+      unlawful federal/state activity. State-preemption litigation is
+      unsettled across circuits and venues, so no operator trading row is
+      upgraded.
+    open_questions:
+      - "Whether a specific event contract is self-certified, approved, under CFTC review, or subject to a suspension request"
+      - "Whether the contract involves gaming or activity unlawful under federal or state law"
+      - "Whether state-law preemption is binding in the operator venue"
+      - "Whether the platform, broker, and contract terms support the intended activity without insider/manipulation exposure"
+    blocks_surfaces:
+      - prediction_market
+      - prediction_market_trading
+    source_task: 20260628-registry-phase2-prediction-market-subtree
+
+  - surface: prediction_market
+    venue: US-IRS
+    instrument: section_1256_event_contract_tax_position
+    g2_verdict: DARK
+    citation: >
+      26 USC §1256 requires mark-to-market treatment for covered section
+      1256 contracts and defines categories including regulated futures
+      contracts and nonequity options:
+      https://uscode.house.gov/view.xhtml?edition=prelim&num=0&req=granuleid%3AUSC-prelim-title26-section1256.
+      IRS Form 6781 is used for gains and losses on section 1256 contracts:
+      https://www.irs.gov/forms-pubs/about-form-6781.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      No affirmative row treats prediction-market event contracts as
+      section 1256 contracts for Hapax. A §1256 position would create
+      mark-to-market and 60/40 reporting consequences and may be fact,
+      platform, and contract dependent. Tax classification uncertainty is a
+      gate, not a clearance source.
+    open_questions:
+      - "Whether the IRS issues event-contract-specific guidance or reporting instructions"
+      - "Whether a concrete platform issues tax forms consistent with §1256 treatment"
+      - "Whether a CPA/counsel memo supports §1256, capital, ordinary, or wagering treatment for a concrete contract"
+      - "Whether year-end mark-to-market exposure is acceptable even if a later event resolves adversely"
+    blocks_surfaces:
+      - prediction_market
+      - prediction_market_trading
+      - tax_reporting
+    source_task: 20260628-registry-phase2-prediction-market-subtree
+
+  - surface: prediction_market
+    venue: US-IRS
+    instrument: obbba_165d_wagering_loss_cap
+    g2_verdict: DARK
+    citation: >
+      26 USC §165(d) now allows a deduction equal to 90 percent of wagering
+      losses during the taxable year and only to the extent of wagering
+      gains:
+      https://uscode.house.gov/view.xhtml?edition=prelim&num=0&req=granuleid%3AUSC-prelim-title26-section165.
+      IRS IRB 2026-19 states that OBBBA §70114(a), Pub. L. 119-21,
+      amended §165(d) to impose the 90 percent wagering-loss limit:
+      https://www.irs.gov/irb/2026-19_IRB.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      If event-contract activity is treated as wagering, OBBBA/§165(d)
+      creates tax drag and possible phantom-income exposure because only
+      90 percent of wagering losses are deductible against wagering gains
+      for taxable years beginning after 2025. The non-trading NDCVB feed
+      does not place positions and should not create wagering gains/losses;
+      that distinction is why it is represented separately.
+    open_questions:
+      - "Whether any prediction-market contract is wagering for federal tax purposes"
+      - "Whether state gambling classification affects federal tax reporting posture"
+      - "Whether gross trading volume, fees, and data costs create additional recordkeeping or deduction issues"
+      - "Whether a CPA memo is required before any taxable event-contract position"
+    blocks_surfaces:
+      - prediction_market
+      - prediction_market_trading
+      - tax_reporting
+    source_task: 20260628-registry-phase2-prediction-market-subtree
+
+  - surface: prediction_market
+    venue: polymarket_global
+    instrument: us_person_event_contract_trading
+    g2_verdict: DARK
+    citation: >
+      CFTC Order, In re Blockratize, Inc. d/b/a Polymarket.com, Docket
+      No. 22-09 (Jan. 3, 2022):
+      https://www.cftc.gov/media/6891/enfblockratizeorder010322/download.
+      The order found Polymarket offered event-based binary option markets
+      without CFTC registration/designation and required it to cease
+      noncompliant market access unless compliant with the CEA and CFTC
+      regulations.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 60
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      This row covers the offshore/global Polymarket posture for U.S.
+      persons. It does not evaluate any separate, CFTC-registered U.S.
+      venue that may share a brand or successor ownership. U.S. operator
+      access to noncompliant or geoblocked event-contract markets remains
+      DARK.
+    open_questions:
+      - "Whether a concrete Polymarket-branded U.S. venue is separately CFTC-registered and available to the operator"
+      - "Whether state-law blocks, Minnesota posture, tax treatment, and platform terms still fail g2 even on a registered U.S. venue"
+      - "Whether any data/feed use relies on nonpublic, scraped, or terms-restricted Polymarket data"
+    blocks_surfaces:
+      - prediction_market
+      - prediction_market_trading
+    source_task: 20260628-registry-phase2-prediction-market-subtree
+
+  - surface: prediction_market
+    venue: US-MN
+    instrument: ndcvb_manipulation_detection_feed_non_trading
+    g2_verdict: DARK
+    citation: >
+      Internal struck-register authority:
+      REQ-20260628-arbitrage-struck-and-blocked-register preserves only
+      the NDCVB manipulation-detection feed outside prediction-market
+      trading. Minnesota Laws 2026, Chapter 97, Article 8, §609.7615
+      prohibits direct data, information, or verification services to a
+      prediction market when known to be used to allow or settle prohibited
+      wagers. CFTC Learn & Protect materials distinguish trading event
+      contracts from market surveillance and accountability duties. See
+      https://www.revisor.mn.gov/laws/2026/0/Session%2BLaw/Chapter/97/
+      and https://www.cftc.gov/LearnandProtect/PredictionMarkets.
+    authority_basis: operator_judgment
+    review_date: "2026-06-30"
+    freshness_ttl_days: 60
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Boundary row: NDCVB manipulation detection is not a wager, not
+      automated trading, not market making, not settlement, and not position
+      management. The feed remains DARK until a concrete buyer/use case is
+      screened. It must not be sold directly to a prediction market for
+      pricing, settlement, event listing, geolocation, payment, or enabling
+      consumers to make wagers, and it must not feed a Hapax trading bot.
+    open_questions:
+      - "Who is the buyer: regulator/compliance/research user, or a prediction-market operator/trader?"
+      - "Will the feed be used to allow, price, settle, market, or facilitate wagers?"
+      - "Does the feed use only public/authorized market data and comply with platform market-data terms?"
+      - "Does the feed avoid investment-advice, market-manipulation, insider-information, and deceptive-marketing risks?"
+      - "Has the operator signed a non-trading package definition?"
+    blocks_surfaces:
+      - prediction_market
+      - REQ-ndcvb-as-a-service
+      - ndcvb_manipulation_detection_feed
+    source_task: 20260628-registry-phase2-prediction-market-subtree
 
   # ── Bug Bounty ───────────────────────────────────────────────────────
   - surface: bug_bounty
