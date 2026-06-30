@@ -22,6 +22,30 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 PLATFORM_CAPABILITY_REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 
 
+def _mark_route_fresh_for_registry_check(route: dict[str, object], checked_at: str) -> None:
+    freshness = route["freshness"]
+    assert isinstance(freshness, dict)
+    evidence = freshness["evidence"]
+    assert isinstance(evidence, dict)
+    for surface in ("capability", "quota", "resource", "provider_docs"):
+        freshness[f"{surface}_checked_at"] = checked_at
+        freshness[f"{surface}_stale_after"] = "24h"
+        surface_evidence = evidence[surface]
+        assert isinstance(surface_evidence, dict)
+        surface_evidence["blocked_reasons"] = []
+        if not surface_evidence.get("evidence_refs"):
+            surface_evidence["evidence_refs"] = [f"test:{route['route_id']}:{surface}"]
+    scores = route["capability_scores"]
+    assert isinstance(scores, dict)
+    for score in scores.values():
+        assert isinstance(score, dict)
+        score["observed_at"] = checked_at
+    for tool in route.get("tool_state", []):
+        assert isinstance(tool, dict)
+        tool["observed_at"] = checked_at
+        tool["stale_after"] = "24h"
+
+
 def _write_test_ledger(tmp_path: Path) -> Path:
     payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
     payload["ledger_id"] = "quota-spend-ledger-cctv-test"
@@ -109,21 +133,7 @@ def _write_platform_registry(
         else:
             gateway["route_state"] = "active"
             gateway["blocked_reasons"] = []
-            gateway["freshness"]["capability_checked_at"] = "2026-06-01T00:00:00Z"
-            gateway["freshness"]["quota_checked_at"] = "2026-06-01T00:00:00Z"
-            gateway["freshness"]["resource_checked_at"] = "2026-06-01T00:00:00Z"
-            gateway["freshness"]["evidence"]["capability"] = {
-                "evidence_refs": ["test:provider-gateway-capability"],
-                "blocked_reasons": [],
-            }
-            gateway["freshness"]["evidence"]["quota"] = {
-                "evidence_refs": ["test:provider-gateway-quota"],
-                "blocked_reasons": [],
-            }
-            gateway["freshness"]["evidence"]["resource"] = {
-                "evidence_refs": ["test:provider-gateway-resource"],
-                "blocked_reasons": [],
-            }
+            _mark_route_fresh_for_registry_check(gateway, "2026-06-01T00:00:00Z")
     target = tmp_path / "platform-capability-registry.json"
     target.write_text(json.dumps(payload), encoding="utf-8")
     return target
@@ -165,6 +175,36 @@ def test_paid_model_alias_refuses_blocked_platform_route(tmp_path: Path, monkeyp
     assert "provider_budget_receipt_absent" in admission.reason_codes
     assert "gateway_resource_receipt_absent" in admission.reason_codes
     assert "platform-capability-registry:api.headless.provider_gateway" in admission.receipt_refs
+
+
+def test_paid_model_alias_refuses_stale_platform_route_evidence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ledger = _write_test_ledger(tmp_path)
+    registry = _write_platform_registry(
+        tmp_path, local_worker_blocked=False, provider_gateway_blocked=False
+    )
+    payload = json.loads(registry.read_text(encoding="utf-8"))
+    gateway = next(
+        route for route in payload["routes"] if route["route_id"] == "api.headless.provider_gateway"
+    )
+    gateway["freshness"]["capability_checked_at"] = "2026-05-01T00:00:00Z"
+    gateway["freshness"]["quota_checked_at"] = "2026-05-01T00:00:00Z"
+    gateway["freshness"]["resource_checked_at"] = "2026-05-01T00:00:00Z"
+    registry.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
+    monkeypatch.setenv("HAPAX_CCTV_CAPABILITY_ADMISSION_NOW", "2026-06-01T00:10:00Z")
+
+    admission = admit_model_alias("opus")
+
+    assert admission.admitted is False
+    assert "platform_route_capability_stale" in admission.reason_codes
+    assert "platform_route_quota_stale" in admission.reason_codes
+    assert "platform_route_resource_stale" in admission.reason_codes
+    assert "test:api.headless.provider_gateway:capability" in admission.receipt_refs
+    assert "test:api.headless.provider_gateway:quota" in admission.receipt_refs
+    assert "test:api.headless.provider_gateway:resource" in admission.receipt_refs
 
 
 def test_paid_model_alias_refuses_missing_platform_route(tmp_path: Path, monkeypatch) -> None:

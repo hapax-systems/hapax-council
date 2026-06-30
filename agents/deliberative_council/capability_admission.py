@@ -19,6 +19,7 @@ from shared.platform_capability_registry import (
     PLATFORM_CAPABILITY_REGISTRY,
     PlatformCapabilityRegistryError,
     RouteState,
+    check_registry_freshness,
     load_platform_capability_registry,
     normalize_route_id,
 )
@@ -513,7 +514,36 @@ def _platform_route_block_reasons(
     if route.route_state is RouteState.BLOCKED:
         reasons.extend(route.blocked_reasons or ["platform_route_state_blocked"])
     reasons.extend(route.freshness.evidence.all_blocked_reasons())
+    if required:
+        freshness = check_registry_freshness(registry, route_ids=(route.route_id,), now=now)
+        if freshness.routes:
+            route_freshness = freshness.routes[0]
+            refs = (*refs, *route_freshness.evidence_refs)
+            reasons.extend(
+                _platform_route_freshness_reason(error) for error in route_freshness.errors
+            )
     return tuple(dict.fromkeys(reasons)), tuple(dict.fromkeys(refs))
+
+
+def _platform_route_freshness_reason(error: str) -> str:
+    detail = error.split(": ", 1)[1] if ": " in error else error
+    if detail.startswith("blocked: "):
+        return _reason_code(detail.removeprefix("blocked: "))
+    if " stale;" in detail:
+        return f"platform_route_{_reason_code(detail.split(' stale;', 1)[0])}_stale"
+    if " checked_at is in the future" in detail:
+        return f"platform_route_{_reason_code(detail.split(' checked_at', 1)[0])}_future"
+    if " freshness is unknown" in detail:
+        return f"platform_route_{_reason_code(detail.split(' freshness', 1)[0])}_unknown"
+    if " evidence refs missing" in detail:
+        return f"platform_route_{_reason_code(detail.split(' evidence', 1)[0])}_evidence_missing"
+    if detail.startswith("privacy posture is "):
+        return "platform_route_privacy_posture_unknown"
+    if detail.startswith("quota telemetry source is "):
+        return "platform_route_quota_telemetry_unknown"
+    if detail.startswith("resource telemetry source is "):
+        return "platform_route_resource_telemetry_unknown"
+    return f"platform_route_freshness_failed:{_reason_code(detail)}"
 
 
 def _receipt_for_missing_descriptor(capability_id: str, name: str) -> CapabilityAdmissionReceipt:
