@@ -531,6 +531,40 @@ class TestStatusGating:
         assert result.returncode == 2
         assert "no claimed task" in result.stderr.lower()
 
+    def test_mcp_app_connector_mutation_rejects_terminal_task(self, tmp_path: Path) -> None:
+        _, note = _make_vault(tmp_path, status="done", assigned="alpha")
+        active = tmp_path / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+        active.mkdir(parents=True, exist_ok=True)
+        note.rename(active / note.name)
+        _write_claim(tmp_path, "alpha", "test-001")
+
+        result = _run_hook(
+            {
+                "tool_name": "mcp__codex_apps__gmail___send_draft",
+                "tool_input": {"draft_id": "draft-1"},
+            },
+            home=tmp_path,
+        )
+
+        assert result.returncode == 2
+        assert "terminal" in result.stderr
+
+    def test_mcp_app_connector_mutation_rejects_reassigned_task(self, tmp_path: Path) -> None:
+        _make_vault(tmp_path, status="in_progress", assigned="beta")
+        _write_claim(tmp_path, "alpha", "test-001")
+
+        result = _run_hook(
+            {
+                "tool_name": "mcp__codex_apps__gmail___send_draft",
+                "tool_input": {"draft_id": "draft-1"},
+            },
+            home=tmp_path,
+            role="alpha",
+        )
+
+        assert result.returncode == 2
+        assert "assigned to 'beta'" in result.stderr
+
     def test_root_markdown_docs_edit_uses_docs_authorization(self, tmp_path: Path) -> None:
         _, note = _make_vault(
             tmp_path,

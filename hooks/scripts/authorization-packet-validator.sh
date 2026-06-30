@@ -56,6 +56,7 @@ case "$TOOL" in
         case "$TOOL" in
           *merge_pull_request*) canonical_tool="github.merge_pull_request" ;;
           *create_pull_request*) canonical_tool="github.create_pull_request" ;;
+          *update_ref*) canonical_tool="github.update_ref" ;;
           *push_files*|*create_or_update_file*|*create_file*|*update_file*|*delete_file*) canonical_tool="github.create_or_update_file" ;;
           *)
             echo "authorization-packet-validator: BLOCKED — MCP canonicalization failed for '$TOOL'." >&2

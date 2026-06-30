@@ -73,6 +73,7 @@ runtimes:
             - cc-task-gate.sh
         - matcher: "mcp__.*"
           hooks:
+            - cc-task-gate.sh
             - mcp-connector-mutator-gate.sh
             - authorization-packet-validator.sh
         - matcher: "Bash"

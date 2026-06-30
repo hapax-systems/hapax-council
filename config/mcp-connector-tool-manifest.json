@@ -62,11 +62,16 @@
         "mcp__codex_apps__github___create_file",
         "mcp__codex_apps__github___update_file",
         "mcp__codex_apps__github___delete_file",
-        "mcp__codex_apps__github___update_ref",
         "mcp__github__push_files"
       ],
       "effect_classes": ["external_mutation", "public_egress", "governance_mutation"],
       "description": "Write repository contents through GitHub."
+    },
+    {
+      "canonical_name": "github.update_ref",
+      "aliases": ["mcp__codex_apps__github___update_ref"],
+      "effect_classes": ["external_mutation", "public_egress", "governance_mutation"],
+      "description": "Update a Git ref through GitHub."
     },
     {
       "canonical_name": "github.issue_comment",
