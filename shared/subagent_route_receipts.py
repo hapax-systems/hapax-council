@@ -7,8 +7,10 @@ spawns without granting any new authority.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -24,6 +26,10 @@ PARENT_ROUTE_RESOURCE_ENVELOPE_SCHEMA = 1
 CHILD_SPAWN_ENVELOPE_SCHEMA = 1
 DEFAULT_PARENT_ENVELOPE_STALE_AFTER = "6h"
 PARENT_ROUTE_ENVELOPE_ENV = "HAPAX_PARENT_ROUTE_ENVELOPE"
+REQUIRE_PARENT_ROUTE_ENVELOPE_ENV = "HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE"
+CHILD_SPAWN_ENVELOPE_ENV = "HAPAX_CHILD_SPAWN_ENVELOPE"
+CHILD_RECEIPT_REF_ENV = "HAPAX_CHILD_RECEIPT_REF"
+CHILD_RECEIPT_ID_ENV = "HAPAX_CHILD_RECEIPT_ID"
 
 
 class SubagentRouteReceiptError(ValueError):
@@ -188,6 +194,8 @@ class ParentRouteResourceEnvelope(_EnvelopeModel):
     def with_child_receipt(self, receipt: ChildCapabilityReceipt) -> ParentRouteResourceEnvelope:
         if receipt.parent_envelope_id != self.envelope_id:
             raise SubagentRouteReceiptError("child_receipt_parent_mismatch")
+        if any(existing.receipt_id == receipt.receipt_id for existing in self.child_receipts):
+            return self
         return self.model_copy(update={"child_receipts": (*self.child_receipts, receipt)})
 
 
@@ -293,12 +301,116 @@ def write_parent_route_resource_envelope(
     return path
 
 
+def write_child_spawn_envelope(
+    envelope: ChildCapabilitySpawnEnvelope,
+    *,
+    ledger_dir: Path,
+) -> Path:
+    target_dir = ledger_dir / "child-spawn-envelopes"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / f"{envelope.envelope_id}.json"
+    _write_json_model(path, envelope)
+    return path
+
+
 def load_parent_route_resource_envelope(path: Path) -> ParentRouteResourceEnvelope:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         return ParentRouteResourceEnvelope.model_validate(payload)
     except (OSError, json.JSONDecodeError, ValidationError, ValueError) as exc:
         raise SubagentRouteReceiptError(f"invalid parent route envelope at {path}: {exc}") from exc
+
+
+class RecordedChildSpawn(_EnvelopeModel):
+    parent_envelope_path: str
+    child_envelope_path: str
+    child_envelope_id: str
+    child_receipt_id: str
+    child_receipt_ref: str
+
+
+def admit_and_record_child_spawn(
+    *,
+    parent_envelope_path: Path,
+    child: ChildCapabilityRequest,
+    ledger_dir: Path,
+    now: datetime | None = None,
+) -> RecordedChildSpawn:
+    """Admit a real child launch and append its receipt to the parent envelope.
+
+    This is the launcher/orchestrator integration point. It is intentionally
+    stricter than a plain model constructor: the parent envelope is reloaded
+    under a lock, the child spawn envelope is written as a durable artifact, and
+    the resulting child receipt is appended back to the parent envelope so the
+    parent route/resource calculus can see delegated work.
+    """
+
+    parent_path = parent_envelope_path.expanduser()
+    if not parent_path.is_file():
+        raise SubagentRouteReceiptError(f"missing_parent_route_envelope_file:{parent_path}")
+    lock_path = parent_path.with_suffix(parent_path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        parent = load_parent_route_resource_envelope(parent_path)
+        spawn = admit_child_spawn(parent, child, now=now)
+        child_path = write_child_spawn_envelope(spawn, ledger_dir=ledger_dir)
+        receipt_ref = f"child-spawn-envelope:{child_path}"
+        updated = record_child_receipt(
+            parent,
+            spawn,
+            receipt_refs=(
+                receipt_ref,
+                f"child-capability:{child.route_id or child.capability_id}",
+                f"child-runtime:{child.child_id}",
+            ),
+            emitted_at=now,
+        )
+        _write_json_model(parent_path, updated)
+        receipt = updated.child_receipts[-1]
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    return RecordedChildSpawn(
+        parent_envelope_path=str(parent_path),
+        child_envelope_path=str(child_path),
+        child_envelope_id=spawn.envelope_id,
+        child_receipt_id=receipt.receipt_id,
+        child_receipt_ref=receipt_ref,
+    )
+
+
+def child_request_for_parent(
+    parent: ParentRouteResourceEnvelope,
+    *,
+    child_id: str,
+    task_id: str | None = None,
+    shape: SpawnCapabilityShape = SpawnCapabilityShape.EXISTING_AGENT_HARNESS,
+    route_id: str | None = None,
+    capability_id: str | None = None,
+    capability_role: str = "worker",
+    proposed_child_capabilities: Iterable[str] = (),
+) -> ChildCapabilityRequest:
+    return ChildCapabilityRequest(
+        child_id=child_id,
+        task_id=task_id or parent.task_id,
+        authority_case=parent.authority_case,
+        shape=shape,
+        route_id=route_id or parent.route_id,
+        capability_id=capability_id,
+        capability_role=capability_role,
+        proposed_child_capabilities=tuple(proposed_child_capabilities),
+    )
+
+
+def require_parent_envelope_path_from_env(
+    environ: dict[str, str] | None = None,
+) -> Path | None:
+    env = os.environ if environ is None else environ
+    raw_path = env.get(PARENT_ROUTE_ENVELOPE_ENV, "").strip()
+    if raw_path:
+        return Path(raw_path).expanduser()
+    if env.get(REQUIRE_PARENT_ROUTE_ENVELOPE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+        raise SubagentRouteReceiptError("missing_parent_route_resource_receipt")
+    return None
 
 
 def admit_child_spawn(
@@ -415,6 +527,13 @@ def _stable_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _write_json_model(path: Path, model: BaseModel) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(model.model_dump(mode="json"), sort_keys=True) + "\n")
+    os.replace(tmp, path)
+
+
 _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
     ResourceBudgetReceipt._duration_is_valid,
     ChildCapabilityRequest._shape_has_identity,
@@ -425,22 +544,31 @@ _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
 
 __all__ = [
     "CHILD_SPAWN_ENVELOPE_SCHEMA",
+    "CHILD_RECEIPT_ID_ENV",
+    "CHILD_RECEIPT_REF_ENV",
+    "CHILD_SPAWN_ENVELOPE_ENV",
     "DEFAULT_PARENT_ENVELOPE_STALE_AFTER",
     "KNOWN_SPAWN_SURFACES",
     "PARENT_ROUTE_ENVELOPE_ENV",
     "PARENT_ROUTE_RESOURCE_ENVELOPE_SCHEMA",
+    "REQUIRE_PARENT_ROUTE_ENVELOPE_ENV",
     "ChildCapabilityRequest",
     "ChildCapabilityReceipt",
     "ChildCapabilitySpawnEnvelope",
     "ParentRouteResourceEnvelope",
+    "RecordedChildSpawn",
     "ResourceBudgetReceipt",
     "SpawnCapabilityShape",
     "SpawnSurfaceDescriptor",
     "SubagentRouteReceiptError",
+    "admit_and_record_child_spawn",
     "admit_child_spawn",
     "build_parent_route_resource_envelope",
+    "child_request_for_parent",
     "load_parent_route_resource_envelope",
     "record_child_receipt",
+    "require_parent_envelope_path_from_env",
     "spawn_surface_inventory",
+    "write_child_spawn_envelope",
     "write_parent_route_resource_envelope",
 ]

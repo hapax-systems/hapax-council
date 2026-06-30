@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from shared.subagent_route_receipts import (
+    PARENT_ROUTE_ENVELOPE_ENV,
+    REQUIRE_PARENT_ROUTE_ENVELOPE_ENV,
     ChildCapabilityRequest,
     ParentRouteResourceEnvelope,
     ResourceBudgetReceipt,
     SpawnCapabilityShape,
     SubagentRouteReceiptError,
+    admit_and_record_child_spawn,
     admit_child_spawn,
+    child_request_for_parent,
+    load_parent_route_resource_envelope,
     record_child_receipt,
+    require_parent_envelope_path_from_env,
     spawn_surface_inventory,
+    write_parent_route_resource_envelope,
 )
 
 NOW = datetime(2026, 6, 30, 5, 0, tzinfo=UTC)
@@ -145,6 +154,48 @@ def test_nested_orchestrator_is_capability_aggregator_and_records_child_receipts
     assert receipt.capability_role == "capability_aggregator"
     assert receipt.receipt_refs == ("child-route-receipt:1", "child-resource-receipt:1")
     assert "child-resource-receipt:1" in receipt.receipt_chain
+
+
+def test_admit_and_record_child_spawn_writes_child_envelope_and_parent_receipt(
+    tmp_path: Path,
+) -> None:
+    parent = _parent()
+    parent_path = write_parent_route_resource_envelope(parent, ledger_dir=tmp_path)
+    child = child_request_for_parent(
+        parent,
+        child_id="codex-headless:cx-cap-subagent:test-session",
+        capability_role="worker",
+    )
+
+    recorded = admit_and_record_child_spawn(
+        parent_envelope_path=parent_path,
+        child=child,
+        ledger_dir=tmp_path,
+        now=NOW,
+    )
+
+    child_path = Path(recorded.child_envelope_path)
+    assert child_path.is_file()
+    child_payload = json.loads(child_path.read_text(encoding="utf-8"))
+    assert child_payload["parent_envelope_id"] == parent.envelope_id
+    assert child_payload["child"]["child_id"] == "codex-headless:cx-cap-subagent:test-session"
+
+    updated = load_parent_route_resource_envelope(parent_path)
+    assert len(updated.child_receipts) == 1
+    receipt = updated.child_receipts[0]
+    assert receipt.receipt_id == recorded.child_receipt_id
+    assert receipt.child_envelope_id == recorded.child_envelope_id
+    assert recorded.child_receipt_ref in receipt.receipt_refs
+    assert "child-runtime:codex-headless:cx-cap-subagent:test-session" in receipt.receipt_refs
+
+
+def test_required_parent_route_envelope_env_fails_closed() -> None:
+    assert require_parent_envelope_path_from_env({}) is None
+    assert require_parent_envelope_path_from_env({PARENT_ROUTE_ENVELOPE_ENV: "/tmp/parent.json"}) == Path(
+        "/tmp/parent.json"
+    )
+    with pytest.raises(SubagentRouteReceiptError, match="missing_parent_route_resource_receipt"):
+        require_parent_envelope_path_from_env({REQUIRE_PARENT_ROUTE_ENVELOPE_ENV: "1"})
 
 
 def test_spawn_surface_inventory_covers_auto_fire_and_fugu_style_orchestration() -> None:

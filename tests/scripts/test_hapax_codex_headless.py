@@ -12,6 +12,45 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
 
 
+def _write_parent_envelope(path: Path, task_id: str = "task-x") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "parent_route_resource_envelope_schema": 1,
+        "envelope_id": "parent-route-codex-test",
+        "issued_at": "2026-06-30T05:00:00+00:00",
+        "stale_after": "999999h",
+        "task_id": task_id,
+        "lane": "cx-amber",
+        "platform": "codex",
+        "mode": "headless",
+        "profile": "full",
+        "route_id": "codex.headless.full",
+        "authority_case": "CASE-CAPACITY-ROUTING-001",
+        "parent_spec": "/vault/spec.md",
+        "route_decision_id": "decision-codex-test",
+        "route_decision_receipt_ref": "route-decision-receipt:test",
+        "capability_profile": "codex.headless.full",
+        "resource_budget": {
+            "quota_state": "ok",
+            "quota_receipt_refs": ["quota-receipt:test"],
+            "resource_receipt_refs": ["resource-receipt:test"],
+            "quota_freshness_green": True,
+            "resource_freshness_green": True,
+            "stale_after": "999999h",
+        },
+        "stop_conditions": ["parent_task_closed", "budget_or_resource_receipt_stale"],
+        "receipt_chain": [
+            "route-decision-receipt:test",
+            "route-decision:decision-codex-test",
+            "resource-receipt:test",
+            "quota-receipt:test",
+        ],
+        "child_receipts": [],
+    }
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
 def _write_executable(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
@@ -130,6 +169,83 @@ def _init_primary_council_repo(path: Path) -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def test_codex_headless_refuses_required_parent_route_without_envelope(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    codex_marker = tmp_path / "codex-called"
+    _write_executable(bin_dir / "codex", f": > {codex_marker}\nexit 0\n")
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE"] = "1"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 18
+    assert "missing_parent_route_resource_receipt" in result.stderr
+    assert "next action:" in result.stderr
+    assert not codex_marker.exists()
+
+
+def test_codex_headless_records_child_spawn_receipt_env(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+    parent_path = _write_parent_envelope(tmp_path / "parent.json")
+
+    bin_dir = tmp_path / "bin"
+    env_file = tmp_path / "codex-env.txt"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf 'parent=%s\\n' "${{HAPAX_PARENT_ROUTE_ENVELOPE:-}}" > {env_file}
+printf 'child=%s\\n' "${{HAPAX_CHILD_SPAWN_ENVELOPE:-}}" >> {env_file}
+printf 'receipt_ref=%s\\n' "${{HAPAX_CHILD_RECEIPT_REF:-}}" >> {env_file}
+printf 'receipt_id=%s\\n' "${{HAPAX_CHILD_RECEIPT_ID:-}}" >> {env_file}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_PARENT_ROUTE_ENVELOPE"] = str(parent_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    launched_env = env_file.read_text(encoding="utf-8")
+    assert f"parent={parent_path}" in launched_env
+    assert "child=" in launched_env and "child-spawn-" in launched_env
+    assert "receipt_ref=child-spawn-envelope:" in launched_env
+    assert "receipt_id=child-receipt-" in launched_env
+    parent_payload = json.loads(parent_path.read_text(encoding="utf-8"))
+    assert parent_payload["child_receipts"][0]["child_id"].startswith("codex-headless:cx-amber:")
 
 
 def test_codex_headless_runs_on_appendix_via_remote_payload(tmp_path: Path) -> None:
@@ -407,6 +523,12 @@ exit 99
     env["HAPAX_COUNCIL_DIR"] = str(primary)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+    env.pop("HAPAX_METHODOLOGY_DISPATCH_TASK", None)
+    env.pop("HAPAX_PARENT_ROUTE_ENVELOPE", None)
+    env.pop("HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE", None)
+    env.pop("HAPAX_CHILD_SPAWN_ENVELOPE", None)
+    env.pop("HAPAX_CHILD_RECEIPT_REF", None)
+    env.pop("HAPAX_CHILD_RECEIPT_ID", None)
 
     result = subprocess.run(
         [str(SCRIPT), "--no-claim", "--force", "cx-amber", "governed prompt"],

@@ -118,7 +118,14 @@ After editing `agents/reverie/_uniforms.py`, the main Claude should spontaneousl
 
 Subagent invocation is probabilistic — Claude may not always spawn the agent if the context is ambiguous. The `description:` field's `<example>` blocks shape Claude's reasoning, but they're hints, not guarantees. You can always force-invoke via the Task tool or the `/agent <name>` command.
 
-These subagents are spawned capabilities, not free side workers. A governed parent session must carry `HAPAX_PARENT_ROUTE_ENVELOPE` from `hapax-methodology-dispatch`, and any forced subagent invocation must preserve that parent route/resource envelope and return child receipt refs to the parent work log.
+These subagents are spawned capabilities, not free side workers. A governed parent session launched through `hapax-methodology-dispatch` carries `HAPAX_PARENT_ROUTE_ENVELOPE` and `HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE=1`. Worker launchers that spawn a child runtime run `scripts/hapax-child-spawn-receipt`, emit `HAPAX_CHILD_SPAWN_ENVELOPE` / `HAPAX_CHILD_RECEIPT_REF` / `HAPAX_CHILD_RECEIPT_ID`, and append the child receipt back to the parent route/resource envelope. Forced Task-tool subagent invocations must preserve the parent envelope path in their handoff context; do not treat the child as governed unless a child receipt exists in the parent envelope.
+
+Recheck after install or launcher changes:
+
+```bash
+rg -n 'HAPAX_PARENT_ROUTE_ENVELOPE|HAPAX_CHILD_SPAWN_ENVELOPE|hapax-child-spawn-receipt' scripts shared tests tooling/claude-agents
+uv run pytest tests/test_subagent_route_receipts.py tests/scripts/test_hapax_methodology_dispatch.py tests/scripts/test_hapax_codex_headless.py tests/scripts/test_hapax_claude_headless.py tests/scripts/test_vbe_dispatch.py tests/scripts/test_hapax_antigrav_launcher.py -q -k 'parent_route or child_spawn or envelope'
+```
 
 ## 5. Disable individually
 

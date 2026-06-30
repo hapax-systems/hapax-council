@@ -12,6 +12,54 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-claude-headless"
 VISIBLE = REPO_ROOT / "scripts" / "hapax-claude"
 
 
+def _write_parent_envelope(path: Path, task_id: str = "task-x") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "parent_route_resource_envelope_schema": 1,
+        "envelope_id": "parent-route-claude-test",
+        "issued_at": "2026-06-30T05:00:00+00:00",
+        "stale_after": "999999h",
+        "task_id": task_id,
+        "lane": "beta",
+        "platform": "claude",
+        "mode": "headless",
+        "profile": "full",
+        "route_id": "claude.headless.full",
+        "authority_case": "CASE-CAPACITY-ROUTING-001",
+        "parent_spec": "/vault/spec.md",
+        "route_decision_id": "decision-claude-test",
+        "route_decision_receipt_ref": "route-decision-receipt:test",
+        "capability_profile": "claude.headless.full",
+        "resource_budget": {
+            "quota_state": "ok",
+            "quota_receipt_refs": ["quota-receipt:test"],
+            "resource_receipt_refs": ["resource-receipt:test"],
+            "quota_freshness_green": True,
+            "resource_freshness_green": True,
+            "stale_after": "999999h",
+        },
+        "stop_conditions": ["parent_task_closed", "budget_or_resource_receipt_stale"],
+        "receipt_chain": [
+            "route-decision-receipt:test",
+            "route-decision:decision-claude-test",
+            "resource-receipt:test",
+            "quota-receipt:test",
+        ],
+        "child_receipts": [],
+    }
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _wire_child_receipt_helper(workdir: Path) -> None:
+    (workdir / "scripts").mkdir(parents=True, exist_ok=True)
+    _stub_bin(
+        workdir / "scripts",
+        "hapax-child-spawn-receipt",
+        f'exec "{REPO_ROOT / "scripts" / "hapax-child-spawn-receipt"}" "$@"\n',
+    )
+
+
 def _stub_bin(bin_dir: Path, name: str, body: str) -> None:
     path = bin_dir / name
     path.write_text("#!/usr/bin/env bash\n" + textwrap.dedent(body))
@@ -33,6 +81,11 @@ def _headless_env(home: Path, bin_dir: Path, pipe_dir: Path) -> dict[str, str]:
         "CLAUDE_ROLE",
         "HAPAX_WORKTREE_ROLE",
         "HAPAX_METHODOLOGY_DISPATCH_TASK",
+        "HAPAX_PARENT_ROUTE_ENVELOPE",
+        "HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE",
+        "HAPAX_CHILD_SPAWN_ENVELOPE",
+        "HAPAX_CHILD_RECEIPT_REF",
+        "HAPAX_CHILD_RECEIPT_ID",
         "HAPAX_CLAUDE_BIN",
         "HAPAX_CLAUDE_BIN_PATH",
         "NPM_CONFIG_PREFIX",
@@ -200,6 +253,86 @@ def test_headless_rejects_invalid_explicit_claude_bin_override(tmp_path: Path) -
     assert result.returncode == 4
     assert "configured Claude binary is not executable" in result.stderr
     assert not fallback_marker.exists()
+
+
+def test_headless_refuses_required_parent_route_without_envelope(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "hapax-council--beta"
+    workdir.mkdir(parents=True)
+    _wire_child_receipt_helper(workdir)
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-beta"
+    claim_file.write_text("task-x\n", encoding="utf-8")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_marker = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_marker}\n: > {claim_file}\nexit 0\n")
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE"] = "1"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 18
+    assert "missing_parent_route_resource_receipt" in result.stderr
+    assert "next action:" in result.stderr
+    assert not claude_marker.exists()
+
+
+def test_headless_records_child_spawn_receipt_env(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "hapax-council--beta"
+    workdir.mkdir(parents=True)
+    _wire_child_receipt_helper(workdir)
+    parent_path = _write_parent_envelope(tmp_path / "parent.json")
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    claim_file = cache / "cc-active-task-beta"
+    claim_file.write_text("task-x\n", encoding="utf-8")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    env_file = tmp_path / "claude-env.txt"
+    _stub_bin(
+        bin_dir,
+        "claude",
+        f"""
+        printf 'parent=%s\\n' "${{HAPAX_PARENT_ROUTE_ENVELOPE:-}}" > {env_file}
+        printf 'child=%s\\n' "${{HAPAX_CHILD_SPAWN_ENVELOPE:-}}" >> {env_file}
+        printf 'receipt_ref=%s\\n' "${{HAPAX_CHILD_RECEIPT_REF:-}}" >> {env_file}
+        printf 'receipt_id=%s\\n' "${{HAPAX_CHILD_RECEIPT_ID:-}}" >> {env_file}
+        : > {claim_file}
+        exit 0
+        """,
+    )
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_PARENT_ROUTE_ENVELOPE"] = str(parent_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    launched_env = env_file.read_text(encoding="utf-8")
+    assert f"parent={parent_path}" in launched_env
+    assert "child=" in launched_env and "child-spawn-" in launched_env
+    assert "receipt_ref=child-spawn-envelope:" in launched_env
+    assert "receipt_id=child-receipt-" in launched_env
+    parent_payload = json.loads(parent_path.read_text(encoding="utf-8"))
+    assert parent_payload["child_receipts"][0]["child_id"].startswith("claude-headless:beta:")
 
 
 def test_appendix_hop_passes_remote_args_without_shell_interpolation(tmp_path: Path) -> None:
@@ -394,6 +527,12 @@ def test_headless_refuses_without_task_or_existing_claim(tmp_path: Path) -> None
     # Sandbox the launcher lock/pipe dir so a live beta lane on the host doesn't
     # trip the duplicate-launcher guard (exit 16) before the no-task guard (15).
     env["HAPAX_CLAUDE_HEADLESS_PIPE_DIR"] = str(tmp_path / "pipe")
+    env.pop("HAPAX_METHODOLOGY_DISPATCH_TASK", None)
+    env.pop("HAPAX_PARENT_ROUTE_ENVELOPE", None)
+    env.pop("HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE", None)
+    env.pop("HAPAX_CHILD_SPAWN_ENVELOPE", None)
+    env.pop("HAPAX_CHILD_RECEIPT_REF", None)
+    env.pop("HAPAX_CHILD_RECEIPT_ID", None)
 
     result = subprocess.run(
         [str(SCRIPT), "beta", "Task: fake\nAuthorityCase: fake\nParent spec: fake"],

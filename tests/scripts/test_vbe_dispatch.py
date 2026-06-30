@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -11,6 +12,45 @@ LAUNCHER = REPO_ROOT / "scripts" / "hapax-vibe"
 SENDER = REPO_ROOT / "scripts" / "hapax-vibe-send"
 HEALTH = REPO_ROOT / "scripts" / "hapax-vibe-health"
 STANDUP = REPO_ROOT / "scripts" / "standup-vibe-team"
+
+
+def _write_parent_envelope(path: Path, task_id: str = "demo-task") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "parent_route_resource_envelope_schema": 1,
+        "envelope_id": "parent-route-vibe-test",
+        "issued_at": "2026-06-30T05:00:00+00:00",
+        "stale_after": "999999h",
+        "task_id": task_id,
+        "lane": "vbe-1",
+        "platform": "vibe",
+        "mode": "headless",
+        "profile": "worker",
+        "route_id": "vibe.headless.full",
+        "authority_case": "CASE-CAPACITY-ROUTING-001",
+        "parent_spec": "/vault/spec.md",
+        "route_decision_id": "decision-vibe-test",
+        "route_decision_receipt_ref": "route-decision-receipt:test",
+        "capability_profile": "vibe.headless.full",
+        "resource_budget": {
+            "quota_state": "ok",
+            "quota_receipt_refs": ["quota-receipt:test"],
+            "resource_receipt_refs": ["resource-receipt:test"],
+            "quota_freshness_green": True,
+            "resource_freshness_green": True,
+            "stale_after": "999999h",
+        },
+        "stop_conditions": ["parent_task_closed", "budget_or_resource_receipt_stale"],
+        "receipt_chain": [
+            "route-decision-receipt:test",
+            "route-decision:decision-vibe-test",
+            "resource-receipt:test",
+            "quota-receipt:test",
+        ],
+        "child_receipts": [],
+    }
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    return path
 
 
 def _base_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
@@ -36,6 +76,11 @@ def _base_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
     env.pop("HAPAX_AGENT_ROLE", None)
     env.pop("HAPAX_AGENT_INTERFACE", None)
     env.pop("CLAUDE_ROLE", None)
+    env.pop("HAPAX_PARENT_ROUTE_ENVELOPE", None)
+    env.pop("HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE", None)
+    env.pop("HAPAX_CHILD_SPAWN_ENVELOPE", None)
+    env.pop("HAPAX_CHILD_RECEIPT_REF", None)
+    env.pop("HAPAX_CHILD_RECEIPT_ID", None)
     return env, bin_dir, spawns
 
 
@@ -174,6 +219,49 @@ def test_tmux_launch_claims_task_and_writes_spawn_record(tmp_path: Path) -> None
     assert "--output streaming" in runner_text
     assert "export HAPAX_AGENT_ROLE=vbe-1" in runner_text
     assert "Hapax Vibe Lane - vbe-1" in (workdir / "AGENTS.md").read_text(encoding="utf-8")
+
+
+def test_tmux_launch_records_parent_child_spawn_receipt(tmp_path: Path) -> None:
+    env, bin_dir, spawns = _base_env(tmp_path)
+    _write_fake_vibe(bin_dir, tmp_path / "vibe.log")
+    _write_fake_tmux(bin_dir, tmp_path)
+    parent_path = _write_parent_envelope(tmp_path / "parent.json")
+    env["HAPAX_PARENT_ROUTE_ENVELOPE"] = str(parent_path)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "vbe-1",
+            "--task",
+            "demo-task",
+            "--cd",
+            str(workdir),
+            "--terminal",
+            "tmux",
+            "--no-claim",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    parent_payload = json.loads(parent_path.read_text(encoding="utf-8"))
+    receipt = parent_payload["child_receipts"][0]
+    assert receipt["child_id"].startswith("vibe:vbe-1:")
+    assert receipt["receipt_refs"][0].startswith("child-spawn-envelope:")
+
+    runner = next(spawns.glob("run-*vbe-1-demo-task.sh"))
+    runner_text = runner.read_text(encoding="utf-8")
+    assert f"export HAPAX_PARENT_ROUTE_ENVELOPE={parent_path}" in runner_text
+    assert "export HAPAX_CHILD_SPAWN_ENVELOPE=" in runner_text
+    assert "child-spawn-" in runner_text
+    assert "export HAPAX_CHILD_RECEIPT_REF=child-spawn-envelope:" in runner_text
+    assert "export HAPAX_CHILD_RECEIPT_ID=child-receipt-" in runner_text
 
 
 def test_sender_routes_message_to_tmux_session(tmp_path: Path) -> None:

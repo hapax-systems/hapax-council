@@ -18,6 +18,34 @@ headless_allowed() {
   [[ "${HAPAX_CLAUDE_HEADLESS_ALLOW:-}" == "1" || -e "$ENABLE_FILE" ]]
 }
 
+record_child_spawn_receipt() {
+  local task_id="$1"
+  local child_id="$2"
+  local shape="${3:-existing_agent_harness}"
+  local role="${4:-worker}"
+  local helper="$WORKDIR/scripts/hapax-child-spawn-receipt"
+  local receipt_exports=""
+
+  if [[ -n "${HAPAX_CHILD_SPAWN_ENVELOPE:-}" && -n "${HAPAX_CHILD_RECEIPT_ID:-}" ]]; then
+    return 0
+  fi
+  if [[ -z "${HAPAX_PARENT_ROUTE_ENVELOPE:-}" && "${HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-0}" != "1" ]]; then
+    return 0
+  fi
+  if [[ ! -x "$helper" ]]; then
+    echo "hapax-claude-headless: parent route envelope required but helper is missing: $helper" >&2
+    exit 18
+  fi
+  if ! receipt_exports="$("$helper" --task "$task_id" --child-id "$child_id" --shape "$shape" --capability-role "$role")"; then
+    echo "hapax-claude-headless: governed child spawn receipt refused for '$child_id'; see error above" >&2
+    exit 18
+  fi
+  if [[ -n "$receipt_exports" ]]; then
+    eval "$receipt_exports"
+    export HAPAX_PARENT_ROUTE_ENVELOPE HAPAX_CHILD_SPAWN_ENVELOPE HAPAX_CHILD_RECEIPT_REF HAPAX_CHILD_RECEIPT_ID
+  fi
+}
+
 ROLE=""
 CLAUDE_TASK="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
 while [[ $# -gt 0 ]]; do
@@ -244,6 +272,7 @@ if [[ -z "$CLAIMED_TASK" ]]; then
   (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")
 fi
 export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
+record_child_spawn_receipt "$CLAUDE_TASK" "claude-headless:$ROLE:$SESSION_UUID"
 
 SDLC_PREAMBLE="SDLC DISCIPLINE (MANDATORY):
 1. Work only on the task named in this dispatch.
@@ -445,6 +474,11 @@ elif kind == "exec":
         "CLAUDE_ROLE",
         "HAPAX_WORKTREE_ROLE",
         "HAPAX_METHODOLOGY_DISPATCH_TASK",
+        "HAPAX_PARENT_ROUTE_ENVELOPE",
+        "HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE",
+        "HAPAX_CHILD_SPAWN_ENVELOPE",
+        "HAPAX_CHILD_RECEIPT_REF",
+        "HAPAX_CHILD_RECEIPT_ID",
     )
     payload["env"].update(
         {k: os.environ[k] for k in identity_keys if os.environ.get(k)}

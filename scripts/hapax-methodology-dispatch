@@ -75,6 +75,7 @@ from shared.sdlc_pressure_gate import (
 )
 from shared.subagent_route_receipts import (
     PARENT_ROUTE_ENVELOPE_ENV,
+    REQUIRE_PARENT_ROUTE_ENVELOPE_ENV,
     SubagentRouteReceiptError,
     build_parent_route_resource_envelope,
     write_parent_route_resource_envelope,
@@ -1340,6 +1341,7 @@ def attach_parent_route_envelope_env(
 ) -> None:
     if parent_route_envelope_path is not None:
         env[PARENT_ROUTE_ENVELOPE_ENV] = str(parent_route_envelope_path)
+        env[REQUIRE_PARENT_ROUTE_ENVELOPE_ENV] = "1"
 
 
 def _write_delayed_receipt(args: argparse.Namespace, decision: AdmissionDecision) -> None:

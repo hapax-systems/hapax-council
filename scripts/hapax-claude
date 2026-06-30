@@ -52,6 +52,34 @@ CLAUDE_TASK="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
 READONLY=0
 CLAUDE_EXTRA=()
 
+record_child_spawn_receipt() {
+  local task_id="$1"
+  local child_id="$2"
+  local shape="${3:-existing_agent_harness}"
+  local role="${4:-worker}"
+  local helper="$COUNCIL_DIR/scripts/hapax-child-spawn-receipt"
+  local receipt_exports=""
+
+  if [ -n "${HAPAX_CHILD_SPAWN_ENVELOPE:-}" ] && [ -n "${HAPAX_CHILD_RECEIPT_ID:-}" ]; then
+    return 0
+  fi
+  if [ -z "${HAPAX_PARENT_ROUTE_ENVELOPE:-}" ] && [ "${HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-0}" != "1" ]; then
+    return 0
+  fi
+  if [ ! -x "$helper" ]; then
+    echo "hapax-claude: parent route envelope required but helper is missing: $helper" >&2
+    exit 18
+  fi
+  if ! receipt_exports="$("$helper" --task "$task_id" --child-id "$child_id" --shape "$shape" --capability-role "$role")"; then
+    echo "hapax-claude: governed child spawn receipt refused for '$child_id'; see error above" >&2
+    exit 18
+  fi
+  if [ -n "$receipt_exports" ]; then
+    eval "$receipt_exports"
+    export HAPAX_PARENT_ROUTE_ENVELOPE HAPAX_CHILD_SPAWN_ENVELOPE HAPAX_CHILD_RECEIPT_REF HAPAX_CHILD_RECEIPT_ID
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --role|--session|--name)
@@ -337,6 +365,7 @@ EOF
 fi
 if [ -n "$CLAUDE_TASK" ]; then
   export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
+  record_child_spawn_receipt "$CLAUDE_TASK" "claude:$ROLE:$SESSION_UUID"
 fi
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
@@ -365,6 +394,11 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   printf 'export HAPAX_WORKTREE_ROLE=%q\n' "$ROLE"
   printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
   printf 'export HAPAX_IDLE_UPDATE_SECONDS=%q\n' "$HAPAX_IDLE_UPDATE_SECONDS"
+  printf 'export HAPAX_PARENT_ROUTE_ENVELOPE=%q\n' "${HAPAX_PARENT_ROUTE_ENVELOPE:-}"
+  printf 'export HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE=%q\n' "${HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-}"
+  printf 'export HAPAX_CHILD_SPAWN_ENVELOPE=%q\n' "${HAPAX_CHILD_SPAWN_ENVELOPE:-}"
+  printf 'export HAPAX_CHILD_RECEIPT_REF=%q\n' "${HAPAX_CHILD_RECEIPT_REF:-}"
+  printf 'export HAPAX_CHILD_RECEIPT_ID=%q\n' "${HAPAX_CHILD_RECEIPT_ID:-}"
   if [ -n "$CLAUDE_TASK" ]; then
     printf 'export HAPAX_METHODOLOGY_DISPATCH_TASK=%q\n' "$CLAUDE_TASK"
   fi

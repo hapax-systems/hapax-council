@@ -1518,7 +1518,7 @@ def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:
     fake_launcher.parent.mkdir(parents=True, exist_ok=True)
     fake_launcher.write_text(
         f"""#!/usr/bin/env bash
-printf 'host=%s\\nfallback=%s\\nparent_route_envelope=%s\\n' "$HAPAX_DISPATCH_HOST" "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" "${{HAPAX_PARENT_ROUTE_ENVELOPE:-}}" > {launcher_env}
+printf 'host=%s\\nfallback=%s\\nparent_route_envelope=%s\\nrequire_parent_route_envelope=%s\\n' "$HAPAX_DISPATCH_HOST" "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" "${{HAPAX_PARENT_ROUTE_ENVELOPE:-}}" "${{HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-}}" > {launcher_env}
 printf '%s\\n' "$@" > {launcher_args}
 """,
         encoding="utf-8",
@@ -1572,6 +1572,7 @@ printf '%s\\n' "$@" > {launcher_args}
     env_lines = launcher_env.read_text(encoding="utf-8").splitlines()
     assert env_lines[:2] == ["host=appendix", "fallback="]
     parent_route_envelope = Path(env_lines[2].split("=", 1)[1])
+    assert env_lines[3] == "require_parent_route_envelope=1"
     assert parent_route_envelope == Path(receipt["parent_route_envelope_path"])
     envelope = json.loads(parent_route_envelope.read_text(encoding="utf-8"))
     assert envelope["task_id"] == "governed-build"
@@ -1644,6 +1645,8 @@ def test_codex_p0_incident_local_fallback_force_is_independent_of_reactivation_f
     tmp_path: Path, monkeypatch
 ) -> None:
     module = _dispatcher_module()
+    monkeypatch.delenv("HAPAX_DISPATCH_HOST", raising=False)
+    monkeypatch.delenv("HAPAX_DISPATCH_HOST_FALLBACK", raising=False)
     monkeypatch.setenv("HAPAX_P0_CODEX_DRAIN_LANES", "cx-p0")
     launcher_env = tmp_path / "launcher-env.txt"
     launcher_args = tmp_path / "launcher-args.txt"

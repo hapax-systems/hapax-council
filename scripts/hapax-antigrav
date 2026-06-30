@@ -139,6 +139,34 @@ WIRE_HOOKS_ONLY=0
 TERMINAL="tmux"
 ANTIGRAV_EXTRA=()
 
+record_child_spawn_receipt() {
+  local task_id="$1"
+  local child_id="$2"
+  local shape="${3:-existing_agent_harness}"
+  local role="${4:-worker}"
+  local helper="$COUNCIL_DIR/scripts/hapax-child-spawn-receipt"
+  local receipt_exports=""
+
+  if [ -n "${HAPAX_CHILD_SPAWN_ENVELOPE:-}" ] && [ -n "${HAPAX_CHILD_RECEIPT_ID:-}" ]; then
+    return 0
+  fi
+  if [ -z "${HAPAX_PARENT_ROUTE_ENVELOPE:-}" ] && [ "${HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-0}" != "1" ]; then
+    return 0
+  fi
+  if [ ! -x "$helper" ]; then
+    echo "hapax-antigrav: parent route envelope required but helper is missing: $helper" >&2
+    exit 18
+  fi
+  if ! receipt_exports="$("$helper" --task "$task_id" --child-id "$child_id" --shape "$shape" --capability-role "$role")"; then
+    echo "hapax-antigrav: governed child spawn receipt refused for '$child_id'; see error above" >&2
+    exit 18
+  fi
+  if [ -n "$receipt_exports" ]; then
+    eval "$receipt_exports"
+    export HAPAX_PARENT_ROUTE_ENVELOPE HAPAX_CHILD_SPAWN_ENVELOPE HAPAX_CHILD_RECEIPT_REF HAPAX_CHILD_RECEIPT_ID
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --session|--name|--lane)
@@ -512,6 +540,11 @@ if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   fi
 fi
 
+if [ -n "$TASK_ID" ]; then
+  export HAPAX_METHODOLOGY_DISPATCH_TASK="$TASK_ID"
+  record_child_spawn_receipt "$TASK_ID" "antigrav:$SESSION:$SESSION_UUID"
+fi
+
 # ---- inflection staging --------------------------------------------------
 
 PROMPT_FILE=""
@@ -590,6 +623,12 @@ export HAPAX_AGENT_ROLE="$SESSION"
 export HAPAX_WORKTREE_ROLE="$SESSION"
 export HAPAX_SESSION_ID="$SESSION_UUID"
 export CLAUDE_ROLE="$SESSION"
+export HAPAX_METHODOLOGY_DISPATCH_TASK="${TASK_ID:-}"
+export HAPAX_PARENT_ROUTE_ENVELOPE="${HAPAX_PARENT_ROUTE_ENVELOPE:-}"
+export HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE="${HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-}"
+export HAPAX_CHILD_SPAWN_ENVELOPE="${HAPAX_CHILD_SPAWN_ENVELOPE:-}"
+export HAPAX_CHILD_RECEIPT_REF="${HAPAX_CHILD_RECEIPT_REF:-}"
+export HAPAX_CHILD_RECEIPT_ID="${HAPAX_CHILD_RECEIPT_ID:-}"
 prompt=""
 if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
   prompt="\$(cat "$PROMPT_FILE")"
