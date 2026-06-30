@@ -138,7 +138,10 @@ def test_resource_prefixed_known_service_mutators_fail_closed() -> None:
         classification = classify_connector_tool(tool_name)
         assert classification is not None
         assert classification.side_effecting
-        assert classification.matched_by == "heuristic_unclassified_connector_tool"
+        assert classification.matched_by in {
+            "heuristic_mutating_verb",
+            "heuristic_unclassified_connector_tool",
+        }
 
 
 def test_unknown_connector_service_fails_closed_when_not_explicitly_read_only() -> None:
@@ -147,6 +150,25 @@ def test_unknown_connector_service_fails_closed_when_not_explicitly_read_only() 
     assert classification is not None
     assert classification.side_effecting
     assert classification.matched_by == "heuristic_unknown_connector_service"
+
+
+def test_read_only_prefix_does_not_hide_embedded_mutating_verbs() -> None:
+    classification = classify_connector_tool("mcp__codex_apps__gmail___get_or_create_label")
+
+    assert classification is not None
+    assert classification.side_effecting
+    assert classification.matched_by in {
+        "heuristic_mutating_verb",
+        "heuristic_unclassified_connector_tool",
+    }
+
+
+def test_unparseable_mcp_tool_fails_closed() -> None:
+    classification = classify_connector_tool("mcp__broken")
+
+    assert classification is not None
+    assert classification.side_effecting
+    assert classification.matched_by == "heuristic_unparseable_mcp_tool"
 
 
 def test_read_only_connector_does_not_require_receipts(tmp_path: Path) -> None:
@@ -172,6 +194,8 @@ def test_side_effecting_connector_blocks_without_route_decision(tmp_path: Path) 
         "mcp__codex_apps__google_drive___files_update",
         "mcp__codex_apps__github___pulls_merge",
         "mcp__codex_apps__google_calendar___events_delete",
+        "mcp__codex_apps__gmail___get_or_create_label",
+        "mcp__broken",
         "mcp__codex_apps__gmail___forward_emails",
         "mcp__codex_apps__gmail___apply_labels_to_emails",
     ):

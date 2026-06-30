@@ -96,7 +96,25 @@ case "$TOOL" in
         release_kind="ref_update"
         ;;
       *)
-        exit 0
+        set +e
+        PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}" \
+          python3 -m shared.mcp_connector_policy is-side-effecting "$TOOL" >/dev/null 2>&1
+        side_effecting_rc=$?
+        set -e
+        case "$side_effecting_rc" in
+          0)
+            release_tool=true
+            release_kind="connector_mutation"
+            ;;
+          10)
+            exit 0
+            ;;
+          *)
+            echo "authorization-packet-validator: BLOCKED — MCP side-effect classification failed for '$TOOL'." >&2
+            echo "  Repair shared.mcp_connector_policy or config/mcp-connector-tool-manifest.json before retrying." >&2
+            exit 2
+            ;;
+        esac
         ;;
     esac
     ;;

@@ -642,6 +642,34 @@ class TestAuthorizationPacketValidator:
             assert result.returncode == 2
             assert "release_authorized" in result.stderr
 
+    def test_mcp_non_github_mutators_require_implementation_authorization(
+        self, tmp_path: Path
+    ) -> None:
+        home = _make_case_vault(
+            tmp_path,
+            case_id="CASE-001",
+            stage="S6_implementation",
+            impl_authorized="false",
+            src_authorized="false",
+            docs_authorized="false",
+            runtime_authorized="false",
+            release_authorized="false",
+            public_current="false",
+        )
+        _write_claim(home, "alpha", "test-case-001")
+
+        result = _run(
+            VALIDATOR,
+            {
+                "tool_name": "mcp__codex_apps__gmail___send_draft",
+                "tool_input": {"message_ids": ["m1"]},
+            },
+            home=home,
+        )
+
+        assert result.returncode == 2
+        assert "implementation_authorized" in result.stderr
+
     def test_mcp_authorization_blocks_when_python3_is_unavailable(self, tmp_path: Path) -> None:
         home = _make_case_vault(
             tmp_path,

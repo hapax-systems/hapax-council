@@ -66,6 +66,37 @@ def _path_without_python(tmp_path: Path) -> str:
     return str(bin_dir)
 
 
+def _path_without_jq(tmp_path: Path) -> str:
+    bin_dir = tmp_path / "bin-no-jq"
+    bin_dir.mkdir()
+    for name in ("cat", "dirname"):
+        target = shutil.which(name)
+        assert target is not None
+        (bin_dir / name).symlink_to(target)
+    return str(bin_dir)
+
+
+def _run_gate_text(
+    payload: str, *, home: Path, extra_env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    for key in _CLEARED_ENV:
+        env.pop(key, None)
+    env["CODEX_THREAD_NAME"] = "cx-red"
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [str(BASH), str(HOOK)],
+        input=payload,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=REPO_ROOT,
+        timeout=10,
+    )
+
+
 def test_read_only_mcp_tool_passes_without_claim(tmp_path: Path) -> None:
     result = _run_gate(
         {
@@ -122,3 +153,26 @@ def test_python3_absent_classifier_path_fails_closed(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "connector classifier failed" in result.stderr
+
+
+def test_jq_absent_blocks_instead_of_passing_empty_tool_name(tmp_path: Path) -> None:
+    result = _run_gate(
+        {
+            "tool_name": "mcp__codex_apps__gmail___forward_emails",
+            "tool_input": {"message_ids": ["m1"], "to": "person@example.com"},
+        },
+        home=tmp_path,
+        extra_env={"PATH": _path_without_jq(tmp_path)},
+    )
+
+    assert result.returncode == 2
+    assert "cannot parse hook payload tool_name" in result.stderr
+
+
+def test_malformed_hook_payload_blocks_instead_of_passing_empty_tool_name(
+    tmp_path: Path,
+) -> None:
+    result = _run_gate_text("{", home=tmp_path)
+
+    assert result.returncode == 2
+    assert "cannot parse hook payload tool_name" in result.stderr

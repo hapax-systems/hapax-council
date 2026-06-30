@@ -83,6 +83,15 @@ _MUTATING_FUNCTION_RE = re.compile(
     r"|update|upload|write"
     r")(?:_|$)"
 )
+_MUTATING_FUNCTION_TOKEN_RE = re.compile(
+    r"(?:^|_)(?:"
+    r"act|add|apply|archive|batch_modify|batch_update|bulk_label|bulk_update|close|confirm"
+    r"|copy|correct|create|decide|delete|disable|dismiss|flush|forward|import|merge"
+    r"|modify|move|nudge_act|enable|invite|label|post|publish|push|rename|remove"
+    r"|replace|reply|reopen|respond|restore|send|set|share|star|trash|unstar"
+    r"|update|upload|write"
+    r")(?:_|$)"
+)
 _READ_ONLY_FUNCTION_RE = re.compile(
     r"^(?:"
     r"batch_read|briefing|chronicle(?:_narrate)?|copilot|cost|daily_summary|drift"
@@ -195,7 +204,10 @@ def _heuristic_classification(canonical_name: str) -> ConnectorToolClassificatio
         return None
     service, function = canonical_name.split(".", 1)
     function = function.lstrip("_")
-    if _READ_ONLY_FUNCTION_RE.match(function):
+    mutating_name = bool(
+        _MUTATING_FUNCTION_RE.match(function) or _MUTATING_FUNCTION_TOKEN_RE.search(function)
+    )
+    if not mutating_name and _READ_ONLY_FUNCTION_RE.match(function):
         return ConnectorToolClassification(
             canonical_name=canonical_name,
             effect_classes=(EFFECT_READ_ONLY,),
@@ -203,7 +215,6 @@ def _heuristic_classification(canonical_name: str) -> ConnectorToolClassificatio
             description="Heuristically classified read-only connector evidence tool.",
             matched_by="heuristic_read_only",
         )
-    mutating_name = bool(_MUTATING_FUNCTION_RE.match(function))
     if service not in _KNOWN_CONNECTOR_SERVICES:
         effects = [EFFECT_EXTERNAL]
         if function.startswith(("send", "share", "reply", "forward", "publish", "post")):
@@ -261,6 +272,18 @@ def classify_connector_tool(tool_name: str) -> ConnectorToolClassification | Non
     manifest_match = _manifest_index().get(canonical)
     if manifest_match is not None:
         return manifest_match
+    if canonical == tool_name.replace("-", "_") and str(tool_name).startswith("mcp__"):
+        effect_tuple = (EFFECT_EXTERNAL,)
+        return ConnectorToolClassification(
+            canonical_name=canonical,
+            effect_classes=effect_tuple,
+            required_mutation_surfaces=_surfaces_for_effects(effect_tuple),
+            description=(
+                "MCP tool name could not be canonicalized to service.function; fail closed "
+                "as side-effecting."
+            ),
+            matched_by="heuristic_unparseable_mcp_tool",
+        )
     return _heuristic_classification(canonical)
 
 

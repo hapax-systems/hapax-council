@@ -11,10 +11,16 @@ if [[ -f "$SCRIPT_DIR/agent-role.sh" ]]; then
 fi
 
 input="$(cat)"
-tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || echo "")"
+if ! tool_name="$(printf '%s' "$input" | jq -er '.tool_name // empty' 2>/dev/null)"; then
+  echo "mcp-connector-mutator-gate: BLOCKED — cannot parse hook payload tool_name." >&2
+  echo "  Next action: repair the hook JSON payload and ensure jq is installed on PATH." >&2
+  exit 2
+fi
 
 if [[ -z "$tool_name" ]]; then
-  exit 0
+  echo "mcp-connector-mutator-gate: BLOCKED — hook payload is missing tool_name." >&2
+  echo "  Next action: repair the hook payload so the MCP connector tool can be classified." >&2
+  exit 2
 fi
 
 classifier_rc=2
