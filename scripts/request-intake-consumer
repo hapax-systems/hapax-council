@@ -184,12 +184,57 @@ cctv_route_resource_admission_for_note() {
   return 0
 }
 
+cctv_capability_receipts_for_note() {
+  local note="$1"
+  python3 - "$note" <<'PY'
+from pathlib import Path
+import sys
+
+fields = (
+    "cctv_capability_receipts",
+    "cctv_capability_receipt_refs",
+    "capability_receipt_refs",
+    "capability_receipts",
+)
+try:
+    text = Path(sys.argv[1]).read_text(encoding="utf-8")
+except OSError:
+    raise SystemExit(0)
+if not text.startswith("---"):
+    raise SystemExit(0)
+end = text.find("\n---", 3)
+if end < 0:
+    raise SystemExit(0)
+lines = text[3:end].splitlines()
+nullish = {"", "null", "None", "unassigned", "[]"}
+for idx, line in enumerate(lines):
+    for field in fields:
+        if not line.startswith(f"{field}:"):
+            continue
+        value = line.split(":", 1)[1].strip().strip('"').strip("'")
+        if value not in nullish:
+            print(value)
+            raise SystemExit(0)
+        for item_line in lines[idx + 1 :]:
+            if item_line and not item_line[0].isspace():
+                break
+            item = item_line.strip()
+            if item.startswith("- "):
+                ref = item[2:].strip().strip('"').strip("'")
+                if ref:
+                    print(ref)
+                    raise SystemExit(0)
+raise SystemExit(0)
+PY
+}
+
 cctv_intake_blocker_for_note() {
   local note="$1"
-  local receipt admission route_admission
+  local receipt admission route_admission capability_receipts
   receipt="$(cctv_intake_receipt_for_note "$note")"
   admission="$(cctv_intake_admission_for_note "$note")"
   route_admission="$(cctv_route_resource_admission_for_note "$note")"
+  capability_receipts="$(cctv_capability_receipts_for_note "$note")"
   if [[ -z "$receipt" ]]; then
     printf '%s\n' "missing_cctv_intake_receipt"
     return 0
@@ -211,6 +256,10 @@ cctv_intake_blocker_for_note() {
   fi
   case "$route_admission" in
     admitted)
+      if [[ -z "$capability_receipts" ]]; then
+        printf '%s\n' "missing_cctv_capability_receipts"
+        return 0
+      fi
       return 0
       ;;
     *)
@@ -359,6 +408,23 @@ def first_scalar(data: dict[str, object], keys: tuple[str, ...]) -> str:
     return ""
 
 
+def first_values(data: dict[str, object], keys: tuple[str, ...]) -> list[str]:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, list):
+            refs = [
+                str(item).strip()
+                for item in value
+                if str(item).strip() and str(item).strip() not in {"null", "None", "unassigned"}
+            ]
+            if refs:
+                return refs
+        text = scalar(data, key)
+        if text:
+            return [text]
+    return []
+
+
 CCTV_READY_ADMISSION_VALUES = {"ready_to_plan", "advance", "admitted"}
 CCTV_INTAKE_RECEIPT_FIELDS = (
     "cctv_intake_receipt",
@@ -379,6 +445,12 @@ CCTV_ROUTE_RESOURCE_ADMISSION_FIELDS = (
     "cctv_capability_admission",
     "capability_admission",
 )
+CCTV_CAPABILITY_RECEIPT_FIELDS = (
+    "cctv_capability_receipts",
+    "cctv_capability_receipt_refs",
+    "capability_receipt_refs",
+    "capability_receipts",
+)
 
 
 def cctv_intake_blocker(data: dict[str, object]) -> str | None:
@@ -395,6 +467,9 @@ def cctv_intake_blocker(data: dict[str, object]) -> str | None:
         return "missing_cctv_route_resource_admission"
     if route_admission != "admitted":
         return f"cctv_route_resource_not_admitted:{route_admission}"
+    capability_receipts = first_values(data, CCTV_CAPABILITY_RECEIPT_FIELDS)
+    if not capability_receipts:
+        return "missing_cctv_capability_receipts"
     return None
 
 

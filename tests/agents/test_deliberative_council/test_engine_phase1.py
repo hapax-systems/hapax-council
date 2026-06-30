@@ -66,10 +66,11 @@ class TestRunPhase1:
         member.run = AsyncMock()
         member._cctv_capability_admission = _admission(admitted=False)
 
-        with pytest.raises(CapabilityAdmissionError):
+        with pytest.raises(CapabilityAdmissionError) as excinfo:
             await _call_member(member, "prompt")
 
         member.run.assert_not_called()
+        assert "next_action=refresh the quota/spend ledger" in str(excinfo.value)
 
     @pytest.mark.asyncio
     async def test_returns_results_per_model(self) -> None:
@@ -222,6 +223,48 @@ class TestRunPhase1:
         assert verdict.receipt["cache_policy"]["local-fast"]["cache_control"] is False
         # The health receipt is recorded even on the shortcircuit path.
         assert verdict.receipt["council_health"]["members_valid"] == 3
+
+    @pytest.mark.asyncio
+    async def test_council_receipt_records_actual_member_call_admissions(self) -> None:
+        admission = _admission(admitted=True)
+
+        class _RunResult:
+            def __init__(self, output):
+                self.output = output
+
+            def all_messages(self):
+                return []
+
+        class _FakeMember:
+            _cctv_capability_admission = admission
+
+            async def run(self, prompt, **kwargs):
+                if "output_type" in kwargs:
+                    return _RunResult(
+                        Phase1Output(
+                            scores={"claim_evidence_alignment": 4},
+                            rationale={},
+                            research_findings=[],
+                        )
+                    )
+                return _RunResult("researched")
+
+        with patch("agents.deliberative_council.engine.build_member", return_value=_FakeMember()):
+            config = CouncilConfig(model_aliases=("opus",), **_QUORUM_OFF)
+            inp = CouncilInput(text="test", source_ref="ref.md")
+            verdict = await deliberate(
+                inp, CouncilMode.DISCONFIRMATION, EpistemicQualityRubric(), config
+            )
+
+        assert verdict.receipt["capability_admission_source"] == "member_call_gate"
+        assert verdict.receipt["capability_admission_call_count"] == 2
+        assert verdict.receipt["route_resource_admission"] == "admitted"
+        assert verdict.receipt["capability_receipt_refs"] == [
+            "cctv-capability-admission:cctv-test-member"
+        ]
+        assert verdict.receipt["capability_admissions"][0]["receipt_ref"] == (
+            "cctv-capability-admission:cctv-test-member"
+        )
 
     @pytest.mark.asyncio
     async def test_shortcircuit_skips_when_iqr_high(self) -> None:

@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Sequence
+from contextvars import ContextVar
 
 from pydantic_ai import (  # noqa: TC002 — runtime use in _call_member
     Agent,
@@ -16,12 +17,13 @@ from pydantic_ai.messages import UserContent
 
 from .aggregation import AxisAggregate, aggregate_scores, should_shortcircuit
 from .capability_admission import (
-    admissions_for_model_aliases,
+    CapabilityAdmissionReceipt,
     capability_receipt_refs,
     member_capability_admission,
     require_member_admission,
     route_resource_admission_state,
     tool_call_log_label,
+    unique_capability_admissions,
 )
 from .members import (
     ToolLevel,
@@ -58,6 +60,9 @@ from .tools import tool_memoization_scope
 _log = logging.getLogger(__name__)
 
 _MEMBER_TIMEOUT_S = 120.0
+_capability_admission_events: ContextVar[list[CapabilityAdmissionReceipt] | None] = ContextVar(
+    "cctv_capability_admission_events", default=None
+)
 
 # ── PRINCIPLED EXECUTION BOUNDS ──────────────────────────────────────────────
 # cc-task cctv-council-perfect-health-faillloud-convergence. pydantic-ai 1.63's
@@ -107,6 +112,10 @@ async def _call_member(
         run_kwargs["output_type"] = output_type
     if usage_limits is not None:
         run_kwargs["usage_limits"] = usage_limits
+    admission = member_capability_admission(member)
+    admission_events = _capability_admission_events.get()
+    if admission is not None and admission_events is not None:
+        admission_events.append(admission)
     require_member_admission(member)
     result = await asyncio.wait_for(member.run(prompt, **run_kwargs), timeout=_MEMBER_TIMEOUT_S)
     tool_calls: list[str] = []
@@ -357,6 +366,19 @@ def _fold_overall(agg: dict[str, AxisAggregate]) -> ConvergenceStatus:
     return ConvergenceStatus.CONVERGED
 
 
+def _capability_admission_receipt_fields(
+    admissions: list[CapabilityAdmissionReceipt],
+) -> dict[str, object]:
+    unique = unique_capability_admissions(tuple(admissions))
+    return {
+        "capability_admissions": [admission.model_dump(mode="json") for admission in unique],
+        "route_resource_admission": route_resource_admission_state(unique),
+        "capability_receipt_refs": list(capability_receipt_refs(unique)),
+        "capability_admission_source": "member_call_gate",
+        "capability_admission_call_count": len(admissions),
+    }
+
+
 async def deliberate(
     inp: CouncilInput,
     mode: CouncilMode,
@@ -379,6 +401,21 @@ async def _deliberate(
     rubric: Rubric,
     config: CouncilConfig,
 ) -> CouncilVerdict:
+    capability_admission_events: list[CapabilityAdmissionReceipt] = []
+    token = _capability_admission_events.set(capability_admission_events)
+    try:
+        return await _deliberate_inner(inp, mode, rubric, config, capability_admission_events)
+    finally:
+        _capability_admission_events.reset(token)
+
+
+async def _deliberate_inner(
+    inp: CouncilInput,
+    mode: CouncilMode,
+    rubric: Rubric,
+    config: CouncilConfig,
+    capability_admission_events: list[CapabilityAdmissionReceipt],
+) -> CouncilVerdict:
     if not inp.source_context:
         from agents.deliberative_council.source_context import populate_source_context
 
@@ -390,12 +427,6 @@ async def _deliberate(
         json.dumps({"text": inp.text, "source_ref": inp.source_ref}, sort_keys=True).encode()
     ).hexdigest()
     cache_policy = cache_policy_for_aliases(config.model_aliases)
-    capability_admissions = admissions_for_model_aliases(config.model_aliases)
-    capability_admission_payload = [
-        admission.model_dump(mode="json") for admission in capability_admissions
-    ]
-    route_resource_admission = route_resource_admission_state(capability_admissions)
-    capability_refs = capability_receipt_refs(capability_admissions)
 
     failed_members: list[MemberFailure] = []
     phase1_results = await run_phase1(inp, rubric, config, failures_out=failed_members)
@@ -434,9 +465,7 @@ async def _deliberate(
                 "council_health": health_payload,
                 "failed_members": failed_members_payload,
                 "cache_policy": cache_policy,
-                "capability_admissions": capability_admission_payload,
-                "route_resource_admission": route_resource_admission,
-                "capability_receipt_refs": list(capability_refs),
+                **_capability_admission_receipt_fields(capability_admission_events),
             },
         )
 
@@ -460,9 +489,7 @@ async def _deliberate(
                 "ruler_substituted": (health_payload.get("served_substitutions") or 0) > 0,
                 "failed_members": failed_members_payload,
                 "cache_policy": cache_policy,
-                "capability_admissions": capability_admission_payload,
-                "route_resource_admission": route_resource_admission,
-                "capability_receipt_refs": list(capability_refs),
+                **_capability_admission_receipt_fields(capability_admission_events),
                 "phases_completed": [1],
                 "phase1_transcript": [
                     {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results
@@ -509,9 +536,7 @@ async def _deliberate(
             "ruler_substituted": (health_payload.get("served_substitutions") or 0) > 0,
             "failed_members": failed_members_payload,
             "cache_policy": cache_policy,
-            "capability_admissions": capability_admission_payload,
-            "route_resource_admission": route_resource_admission,
-            "capability_receipt_refs": list(capability_refs),
+            **_capability_admission_receipt_fields(capability_admission_events),
             "phases_completed": [1, 2, 3, 4, 5],
             "phase1_transcript": [
                 {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results
@@ -758,6 +783,7 @@ async def _run_phase4(
         try:
             member = build_member(original.model_alias)
             raw, _, _ = await _call_member(member, prompt)
+            revision_admission = member_capability_admission(member)
             text = raw.strip()
             if "```json" in text:
                 text = text.split("```json", 1)[1].split("```", 1)[0].strip()
@@ -768,6 +794,14 @@ async def _run_phase4(
             if revised_scores:
                 return PhaseOneResult(
                     model_alias=original.model_alias,
+                    capability_id=(revision_admission.capability_id if revision_admission else ""),
+                    route_id=revision_admission.route_id if revision_admission else "",
+                    capability_admission_action=(
+                        revision_admission.admission_action if revision_admission else ""
+                    ),
+                    capability_receipt_refs=(
+                        revision_admission.receipt_refs if revision_admission else ()
+                    ),
                     scores=revised_scores,
                     rationale=data.get("revision_rationale", original.rationale),
                     research_findings=original.research_findings,

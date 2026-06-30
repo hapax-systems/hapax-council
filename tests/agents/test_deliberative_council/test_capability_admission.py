@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agents.deliberative_council.capability_admission import admit_model_alias, admit_tool
+from agents.deliberative_council.capability_admission import (
+    CapabilityAdmissionReceipt,
+    admit_model_alias,
+    admit_tool,
+    route_resource_admission_state,
+)
 from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
 
 
@@ -60,3 +65,54 @@ def test_local_tool_admission_uses_local_resource_snapshot(tmp_path: Path, monke
     assert admission.admitted is True
     assert admission.capability_id == "cctv.tool.qdrant_lookup"
     assert "quota.local_resource_state:green" in admission.receipt_refs
+
+
+def test_missing_ledger_refuses_fail_closed(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(tmp_path / "missing.json"))
+
+    admission = admit_model_alias("opus")
+
+    assert admission.admitted is False
+    assert admission.admission_action == "refused"
+    assert admission.reason_codes[0].startswith("quota_spend_ledger_unavailable:")
+
+
+def test_missing_descriptor_refuses_with_receipt(monkeypatch) -> None:
+    monkeypatch.delenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", raising=False)
+
+    admission = admit_tool("not_a_council_tool")
+
+    assert admission.admitted is False
+    assert admission.capability_id == "cctv.tool.not_a_council_tool"
+    assert "capability_descriptor_missing" in admission.reason_codes
+    assert admission.receipt_ref.startswith("cctv-capability-admission:")
+
+
+def test_route_resource_admission_state_distinguishes_partial() -> None:
+    admitted = CapabilityAdmissionReceipt(
+        receipt_id="admitted",
+        receipt_ref="cctv-capability-admission:admitted",
+        capability_id="cctv.model.opus",
+        route_id="litellm.anthropic.claude-opus-4",
+        provider="anthropic",
+        capacity_pool="api_paid_spend",
+        admission_action="admitted",
+        admitted=True,
+        receipt_refs=("cctv-capability-admission:admitted",),
+    )
+    refused = CapabilityAdmissionReceipt(
+        receipt_id="refused",
+        receipt_ref="cctv-capability-admission:refused",
+        capability_id="cctv.model.web-research",
+        route_id="litellm.perplexity.web-research",
+        provider="perplexity",
+        capacity_pool="api_paid_spend",
+        admission_action="refused",
+        admitted=False,
+        reason_codes=("no_matching_transitionbudget",),
+        receipt_refs=("cctv-capability-admission:refused",),
+    )
+
+    assert route_resource_admission_state(()) == "missing"
+    assert route_resource_admission_state((admitted, refused)) == "partial_admitted"
+    assert route_resource_admission_state((refused,)) == "refused"

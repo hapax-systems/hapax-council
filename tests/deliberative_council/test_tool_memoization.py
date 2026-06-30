@@ -17,6 +17,7 @@ from agents.deliberative_council import tools
 from agents.deliberative_council.capability_admission import CapabilityAdmissionReceipt
 from agents.deliberative_council.tools import (
     grep_evidence,
+    qdrant_lookup,
     read_source,
     tool_memoization_scope,
     web_verify,
@@ -132,6 +133,21 @@ def _admitted_web_verify() -> CapabilityAdmissionReceipt:
     )
 
 
+def _refused_qdrant_lookup() -> CapabilityAdmissionReceipt:
+    return CapabilityAdmissionReceipt(
+        receipt_id="cctv-test-qdrant-lookup",
+        receipt_ref="cctv-capability-admission:cctv-test-qdrant-lookup",
+        capability_id="cctv.tool.qdrant_lookup",
+        route_id="local_tool.local.worker",
+        provider="local",
+        capacity_pool="local_compute",
+        admission_action="refused",
+        admitted=False,
+        reason_codes=("local_resource_state:red",),
+        receipt_refs=("cctv-capability-admission:cctv-test-qdrant-lookup",),
+    )
+
+
 def _counting_web_agent():
     calls = {"n": 0}
 
@@ -178,6 +194,18 @@ async def test_web_verify_uncached_without_scope() -> None:
         await web_verify(None, "q")
         await web_verify(None, "q")
     assert calls["n"] == 2  # no active scope → every call hits the web agent
+
+
+async def test_qdrant_refused_admission_memoized_within_scope() -> None:
+    refused = _refused_qdrant_lookup()
+    with patch("agents.deliberative_council.tools.admit_tool", return_value=refused) as admit:
+        with tool_memoization_scope():
+            r1 = await qdrant_lookup(None, "same query")
+            r2 = await qdrant_lookup(None, "same query")
+
+    assert r1 == r2
+    assert "refused before local embedding/resource invocation" in r1
+    assert admit.call_count == 1
 
 
 async def test_web_verify_timeout_memoized_within_scope() -> None:

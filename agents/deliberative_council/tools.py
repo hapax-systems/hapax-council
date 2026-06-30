@@ -181,12 +181,16 @@ async def web_verify(ctx: Any, query: str) -> str:
 
 async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -> str:
     """RAG search across ingested documents."""
+    key = ("qdrant_lookup", query, collection)
+    cached = _memo_get(key)
+    if cached is not None:
+        return cached
     log.info("council_tool call: qdrant_lookup(%s, %s)", query[:100], collection)
     admission = admit_tool("qdrant_lookup")
     prefix = tool_result_prefix(admission)
     if not admission.admitted:
         log.warning("qdrant_lookup refused by capability admission: %s", admission.short_reason())
-        return prefix + "refused before local embedding/resource invocation"
+        return _memo_put(key, prefix + "refused before local embedding/resource invocation")
     try:
         from shared.config import embed
 
@@ -196,12 +200,15 @@ async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -
         client = QdrantClient(host="localhost", port=6333)
         results = client.search(collection_name=collection, query_vector=vector, limit=3)
         if not results:
-            return prefix + f"No results in {collection} for: {query}"
-        return "\n---\n".join(
-            prefix + f"score={r.score:.3f}: {r.payload.get('text', '')[:500]}" for r in results
+            return _memo_put(key, prefix + f"No results in {collection} for: {query}")
+        return _memo_put(
+            key,
+            "\n---\n".join(
+                prefix + f"score={r.score:.3f}: {r.payload.get('text', '')[:500]}" for r in results
+            ),
         )
     except Exception as e:
-        return prefix + f"Qdrant error: {e}"
+        return _memo_put(key, prefix + f"Qdrant error: {e}")
 
 
 async def vault_read(ctx: Any, note_path: str) -> str:

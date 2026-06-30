@@ -208,12 +208,18 @@ def admit_capability(
 def require_member_admission(member: Any) -> CapabilityAdmissionReceipt:
     admission = member_capability_admission(member)
     if admission is None:
-        raise CapabilityAdmissionError("capability_admission_missing")
+        raise CapabilityAdmissionError(
+            "capability_admission_missing; "
+            "next_action=build the member with build_member() so route/resource admission "
+            "is attached before provider invocation"
+        )
     if not admission.admitted:
         raise CapabilityAdmissionError(
             f"capability_admission_refused capability_id={admission.capability_id} "
             f"route_id={admission.route_id} reason_codes={admission.short_reason()} "
-            f"receipt_refs={','.join(admission.receipt_refs)}"
+            f"receipt_refs={','.join(admission.receipt_refs)} "
+            "next_action=refresh the quota/spend ledger or change route before retrying "
+            "provider invocation"
         )
     return admission
 
@@ -246,6 +252,21 @@ def capability_receipt_refs(admissions: tuple[CapabilityAdmissionReceipt, ...]) 
     for admission in admissions:
         refs.extend(admission.receipt_refs)
     return tuple(dict.fromkeys(refs))
+
+
+def unique_capability_admissions(
+    admissions: tuple[CapabilityAdmissionReceipt, ...],
+) -> tuple[CapabilityAdmissionReceipt, ...]:
+    unique: dict[tuple[str, str, str, str], CapabilityAdmissionReceipt] = {}
+    for admission in admissions:
+        key = (
+            admission.receipt_ref,
+            admission.capability_id,
+            admission.route_id,
+            admission.admission_action,
+        )
+        unique.setdefault(key, admission)
+    return tuple(unique.values())
 
 
 def tool_call_log_label(tool_name: str) -> str:
