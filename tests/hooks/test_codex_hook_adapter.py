@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -55,6 +56,7 @@ def _run_adapter(
     home: Path,
     cwd: Path | None = None,
     extra_env: dict[str, str] | None = None,
+    event_arg: str | None = None,
 ) -> dict:
     env = os.environ.copy()
     env["HOME"] = str(home)
@@ -64,8 +66,11 @@ def _run_adapter(
     env["HAPAX_WORKTREE_ROLE"] = "alpha"
     if extra_env:
         env.update(extra_env)
+    command = ["bash", str(ADAPTER)]
+    if event_arg:
+        command.append(event_arg)
     result = subprocess.run(
-        ["bash", str(ADAPTER)],
+        command,
         input=json.dumps(payload),
         capture_output=True,
         text=True,
@@ -77,12 +82,81 @@ def _run_adapter(
     return json.loads(result.stdout)
 
 
+def _run_adapter_text(
+    payload: str,
+    *,
+    home: Path,
+    extra_env: dict[str, str] | None = None,
+    event_arg: str | None = None,
+) -> dict:
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    for key in _CLEARED_ENV:
+        env.pop(key, None)
+    env["CODEX_THREAD_NAME"] = "cx-red"
+    env["HAPAX_WORKTREE_ROLE"] = "alpha"
+    if extra_env:
+        env.update(extra_env)
+    command = ["bash", str(ADAPTER)]
+    if event_arg:
+        command.append(event_arg)
+    result = subprocess.run(
+        command,
+        input=payload,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(REPO_ROOT),
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def _path_without_jq(tmp_path: Path) -> str:
+    bin_dir = tmp_path / "bin-no-jq"
+    bin_dir.mkdir()
+    for name in ("bash", "cat", "dirname"):
+        target = shutil.which(name)
+        assert target is not None
+        (bin_dir / name).symlink_to(target)
+    return str(bin_dir)
+
+
 def test_permission_request_auto_approves_no_ask_policy(tmp_path: Path) -> None:
     result = _run_adapter(
         {"hook_event_name": "PermissionRequest", "session_id": "s1"},
         home=tmp_path,
     )
     assert result["decision"] == "approve"
+
+
+def test_pretooluse_blocks_when_jq_unavailable_before_tool_classification(
+    tmp_path: Path,
+) -> None:
+    result = _run_adapter(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "mcp__codex_apps__gmail___send_draft",
+            "tool_input": {"draft_id": "draft-1"},
+        },
+        home=tmp_path,
+        extra_env={"PATH": _path_without_jq(tmp_path)},
+        event_arg="PreToolUse",
+    )
+
+    assert result["decision"] == "block"
+    assert "cannot parse hook payload tool_name" in result["reason"]
+
+
+def test_pretooluse_blocks_malformed_payload_before_tool_classification(
+    tmp_path: Path,
+) -> None:
+    result = _run_adapter_text("{", home=tmp_path, event_arg="PreToolUse")
+
+    assert result["decision"] == "block"
+    assert "cannot parse hook payload tool_name" in result["reason"]
 
 
 def test_shell_command_normalizes_to_bash_and_blocks_direct_pip(tmp_path: Path) -> None:

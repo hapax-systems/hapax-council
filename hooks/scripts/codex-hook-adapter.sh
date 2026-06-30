@@ -14,9 +14,19 @@ fi
 INPUT="$(cat || true)"
 EVENT="${1:-}"
 if [ -z "$EVENT" ]; then
-  EVENT="$(printf '%s' "$INPUT" | jq -r '.hook_event_name // .event // empty' 2>/dev/null || true)"
+  if ! EVENT="$(printf '%s' "$INPUT" | jq -er '.hook_event_name // .event // empty' 2>/dev/null)"; then
+    printf '{"decision":"block","reason":"codex-hook-adapter: cannot parse hook payload event"}\n'
+    exit 0
+  fi
 fi
-TOOL_NAME="$(printf '%s' "$INPUT" | jq -r '.tool_name // .tool // empty' 2>/dev/null || true)"
+if [ "$EVENT" = "PreToolUse" ] || [ "$EVENT" = "PostToolUse" ]; then
+  if ! TOOL_NAME="$(printf '%s' "$INPUT" | jq -er '.tool_name // .tool // empty' 2>/dev/null)"; then
+    printf '{"decision":"block","reason":"codex-hook-adapter: cannot parse hook payload tool_name"}\n'
+    exit 0
+  fi
+else
+  TOOL_NAME="$(printf '%s' "$INPUT" | jq -r '.tool_name // .tool // empty' 2>/dev/null || true)"
+fi
 SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
 CWD_VALUE="$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)"
 
