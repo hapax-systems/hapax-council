@@ -163,7 +163,14 @@ The g2 gate fires at:
 
 ### 5.4 Recheck Commands
 
-Until the source gate exists, reviewers can recheck the registry contract with deterministic text/YAML checks:
+Reviewers can recheck the source gate and the registry contract with deterministic commands:
+
+```bash
+uv run pytest tests/shared/test_legal_posture_registry.py -q
+uv run --extra ci pytest tests -q -k 'g2 or legal_registry or mondlc'
+```
+
+The registry-only contract can also be rechecked with deterministic text/YAML checks:
 
 ```bash
 python3 - <<'PY'

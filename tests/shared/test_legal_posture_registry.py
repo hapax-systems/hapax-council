@@ -118,6 +118,34 @@ def test_legal_registry_g2_unsigned_lit_row_blocks_committed_disposition() -> No
     assert decision.reason is G2Reason.UNSIGNED_NON_DARK
 
 
+def test_legal_registry_g2_lit_with_open_questions_blocks_committed_disposition() -> None:
+    decision = evaluate_g2_commit_gate(
+        TARGET,
+        registry=_registry(
+            _row(
+                verdict="LIT",
+                operator_signed=True,
+                open_questions=["counsel signature required before commit"],
+            )
+        ),
+        today=TODAY,
+    )
+
+    assert decision.blocked is True
+    assert decision.reason is G2Reason.LIT_HAS_OPEN_QUESTIONS
+
+
+def test_legal_registry_g2_invalid_target_blocks_committed_disposition() -> None:
+    decision = evaluate_g2_commit_gate(
+        G2GateInput(" ", TARGET.venue, TARGET.instrument),
+        registry=_registry(_row(verdict="LIT", operator_signed=True)),
+        today=TODAY,
+    )
+
+    assert decision.blocked is True
+    assert decision.reason is G2Reason.INVALID_TARGET
+
+
 def test_legal_registry_g2_fresh_lit_row_admits_only_named_tuple() -> None:
     registry = _registry(_row(verdict="LIT", operator_signed=True))
 
@@ -159,6 +187,19 @@ def test_legal_registry_g2_wildcard_lit_is_not_commit_authority() -> None:
     assert decision.reason is G2Reason.NO_EXACT_ROW
     assert decision.advisory_row is not None
     assert decision.advisory_row.venue == "*"
+
+
+def test_legal_registry_rejects_duplicate_row_keys() -> None:
+    with pytest.raises(ValueError, match="duplicate legal-posture row keys"):
+        _registry(_row(), _row())
+
+
+def test_legal_registry_rejects_lit_row_without_required_evidence() -> None:
+    row = _row(verdict="LIT", operator_signed=True)
+    row["citation"] = ""
+
+    with pytest.raises(ValueError, match="citation must be a non-empty string"):
+        _registry(row)
 
 
 def test_legal_registry_g2_missing_registry_file_fails_closed(tmp_path: Path) -> None:
