@@ -186,6 +186,31 @@ class TestPollOnce:
         assert receiver.poll_once() == 0
         client.get.assert_not_called()
 
+    def test_missing_event_resource_receipt_blocks_event_append(self, tmp_path, monkeypatch):
+        log_path = tmp_path / "events.jsonl"
+        import agents.payment_processors.event_log as ev_log
+        import agents.payment_processors.lightning_receiver as lightning_mod
+
+        monkeypatch.setattr(ev_log, "DEFAULT_PAYMENT_LOG_PATH", log_path)
+        monkeypatch.setattr(
+            lightning_mod,
+            "record_payment_event_resource_receipt",
+            lambda **_kwargs: None,
+        )
+        body = [
+            {
+                "state": "settled",
+                "amount": 21000,
+                "memo": "thanks",
+                "payment_hash": "h1",
+            }
+        ]
+        client = _make_client(_make_response(status_code=200, body=body))
+        receiver = LightningReceiver(token="fake-token", http_client=client)
+
+        assert receiver.poll_once() == 0
+        assert tail_events(log_path=log_path) == []
+
     def test_skips_unsettled(self, tmp_path, monkeypatch):
         log_path = tmp_path / "events.jsonl"
         import agents.payment_processors.event_log as ev_log

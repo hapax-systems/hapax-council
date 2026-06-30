@@ -195,6 +195,43 @@ class TestNostrZapListener:
 
         await listener._consume_relay("wss://relay.example")  # noqa: SLF001
 
+    @pytest.mark.asyncio
+    async def test_consume_relay_records_subscription_resource_receipt(self, tmp_path, monkeypatch):
+        import agents.payment_processors.resource_receipts as resource_receipts
+
+        receipt_log = tmp_path / "resource-receipts.jsonl"
+        monkeypatch.setattr(
+            resource_receipts,
+            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+            receipt_log,
+        )
+
+        class _FakeWebSocket:
+            async def send(self, _message: str) -> None:
+                listener.stop()
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+            async def close(self) -> None:
+                return None
+
+        async def _open(_relay_url: str):
+            return _FakeWebSocket()
+
+        listener = NostrZapListener(npub_hex="abcd" * 16, websocket_factory=_open)
+
+        await listener._consume_relay("wss://relay.example")  # noqa: SLF001
+
+        from agents.payment_processors.resource_receipts import tail_resource_receipts
+
+        receipts = tail_resource_receipts(log_path=receipt_log)
+        assert [receipt.operation.value for receipt in receipts] == ["external_api_poll"]
+        assert receipts[0].rail == "nostr_zap"
+
     def test_handle_relay_message_dedupes(self, tmp_path, monkeypatch):
         import agents.payment_processors.event_log as ev_log
 

@@ -163,7 +163,11 @@ class MonetizationAggregator:
             receipt_count=receipt_count,
         )
         if receipt_ref is None:
-            log.warning("monetization awareness write blocked: resource receipt missing")
+            log.warning(
+                "monetization awareness write blocked: resource receipt missing; "
+                "check HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH, /dev/shm availability, "
+                "and receipt log permissions"
+            )
             return False
         block = build_monetization_block(log_path=self._log_path)
         from datetime import UTC, datetime
