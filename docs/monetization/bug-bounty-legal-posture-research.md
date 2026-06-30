@@ -89,6 +89,77 @@ to brokered resale when a direct lab program is unavailable.
 - Tax/hobby-loss: DARK until payout receipt handling, recordkeeping, expense
   treatment, and operator tax posture are documented.
 
+## Recheck Commands
+
+Registry contract:
+
+```bash
+uv run python - <<'PY'
+from pathlib import Path
+import yaml
+
+registry = Path("docs/monetization/legal-posture-registry.yaml")
+data = yaml.safe_load(registry.read_text())
+rows = data["rows"]
+keys = [(row["surface"], row["venue"], row["instrument"]) for row in rows]
+
+assert data["schema_version"] == "1.0.0"
+assert len(keys) == len(set(keys)), "duplicate registry tuple"
+assert all(row["g2_verdict"] == "DARK" for row in rows)
+assert all(
+    row["operator_signed"] is True or row["g2_verdict"] == "DARK"
+    for row in rows
+), "unsigned non-DARK row"
+phase3 = [
+    row for row in rows
+    if row.get("source_task") == "20260628-registry-phase3-bug-bounty-subtree"
+]
+assert len(phase3) == 7, f"expected 7 phase-three rows, got {len(phase3)}"
+assert {row["surface"] for row in phase3} == {"bug_bounty"}
+print(f"bug-bounty registry recheck OK: total={len(rows)} phase3={len(phase3)}")
+PY
+```
+
+Citation availability:
+
+```bash
+python3 - <<'PY'
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+sources = [
+    ("anthropic-bounty", "https://support.claude.com/en/articles/12119250-model-safety-bug-bounty-program"),
+    ("openai-bio-bounty", "https://openai.com/index/gpt-5-5-bio-bug-bounty/"),
+    ("ecfr-734-13", "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-734/section-734.13"),
+    ("ecfr-734-15", "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-734/section-734.15"),
+    ("ecfr-740-22", "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-740/section-740.22"),
+    ("ecfr-772-1", "https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-772/section-772.1"),
+    ("usc-1201", "https://uscode.house.gov/view.xhtml?req=%28title%3A17+section%3A1201+edition%3Aprelim%29"),
+    ("usc-183", "https://uscode.house.gov/view.xhtml?edition=prelim&num=0&req=granuleid%3AUSC-prelim-title26-section183"),
+    ("irs-hobby-business", "https://www.irs.gov/newsroom/know-the-difference-between-a-hobby-and-a-business"),
+    ("irs-p525", "https://www.irs.gov/publications/p525"),
+]
+
+for label, url in sources:
+    request = Request(url, headers={"User-Agent": "hapax-legal-registry-recheck/1.0"})
+    try:
+        with urlopen(request, timeout=20) as response:
+            code = response.status
+            final_url = response.geturl()
+    except HTTPError as exc:
+        code = exc.code
+        final_url = url
+    except URLError as exc:
+        raise SystemExit(f"{label}: unreachable: {exc}") from exc
+    print(f"{label}: HTTP {code} {final_url}")
+    assert code < 500, f"{label}: server error {code}"
+PY
+```
+
+The citation check is an availability/status check. It deliberately does not
+assert page text because public pages can redirect or challenge automated
+clients while remaining valid human-reviewable sources.
+
 ## Operating Rule
 
 For the first bug-bounty play, the lowest-risk legal posture is:

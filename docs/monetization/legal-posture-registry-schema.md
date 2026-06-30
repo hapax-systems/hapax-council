@@ -186,6 +186,9 @@ assert all(
     row["operator_signed"] is True or row["g2_verdict"] == "DARK"
     for row in rows
 ), "unsigned non-DARK row"
+# Phase 3 durability repair restores exactly seven recovered bug-bounty rows:
+# direct Anthropic, direct OpenAI, brokered resale, ACE/deemed export,
+# ECCN 4D004, DMCA 1201, and tax/hobby-loss.
 assert len([
     row for row in rows
     if row.get("source_task") == "20260628-registry-phase3-bug-bounty-subtree"
