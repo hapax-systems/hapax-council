@@ -64,6 +64,21 @@ def _council_verdict(
     )
 
 
+ADMITTED_COUNCIL_RECEIPT = {
+    "route_resource_admission": "admitted",
+    "capability_receipt_refs": ["cctv-capability-admission:test-member"],
+    "capability_admissions": [
+        {
+            "capability_id": "cctv.model.opus",
+            "route_id": "claude-opus",
+            "admitted": True,
+            "admission_action": "admitted",
+            "receipt_refs": ["cctv-capability-admission:test-member"],
+        }
+    ],
+}
+
+
 @pytest.mark.asyncio
 async def test_run_intake_returns_receipt_and_ready_advances_status(tmp_path: Path) -> None:
     request = tmp_path / "REQ-INTAKE-CLI.md"
@@ -71,14 +86,17 @@ async def test_run_intake_returns_receipt_and_ready_advances_status(tmp_path: Pa
 
     with patch(
         "agents.deliberative_council.engine.deliberate",
-        new=AsyncMock(return_value=_council_verdict(_scores(4))),
+        new=AsyncMock(return_value=_council_verdict(_scores(4), receipt=ADMITTED_COUNCIL_RECEIPT)),
     ) as deliberate_mock:
         receipt = await run_intake(request)
 
     assert isinstance(receipt, IntakeReceipt)
     assert receipt.verdict == IntakeVerdict.READY_TO_PLAN
     assert receipt.request_path == str(request)
+    assert receipt.route_resource_admission == "admitted"
+    assert receipt.capability_receipt_refs == ("cctv-capability-admission:test-member",)
     assert receipt.composite_score == pytest.approx(4.0)
+    assert receipt.receipt_ref.startswith("cctv-intake-receipt:REQ-INTAKE-CLI:")
 
     inp, mode, rubric, config = deliberate_mock.await_args.args
     assert inp.text == "# Request\n\nBuild a concrete intake artifact with a pytest check.\n"
@@ -89,7 +107,10 @@ async def test_run_intake_returns_receipt_and_ready_advances_status(tmp_path: Pa
 
     frontmatter, body = parse_frontmatter(request)
     assert frontmatter["status"] == "accepted_for_planning"
+    assert frontmatter["cctv_intake_receipt"] == receipt.receipt_ref
     assert frontmatter["cctv_intake_verdict"] == "ready_to_plan"
+    assert frontmatter["cctv_route_resource_admission"] == "admitted"
+    assert frontmatter["cctv_capability_receipts"] == ["cctv-capability-admission:test-member"]
     assert frontmatter["recommendation"] == "advance"
     assert set(frontmatter["axes"]) == set(AXIS_WEIGHTS)
     assert all(isinstance(axis["score"], int) for axis in frontmatter["axes"].values())
