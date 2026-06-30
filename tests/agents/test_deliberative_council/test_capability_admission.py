@@ -14,6 +14,9 @@ from agents.deliberative_council.capability_admission import (
 )
 from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+PLATFORM_CAPABILITY_REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
+
 
 def _write_test_ledger(tmp_path: Path) -> Path:
     payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
@@ -28,6 +31,50 @@ def _write_test_ledger(tmp_path: Path) -> Path:
             budget["task_classes_allowed"] = ["research"]
             budget["quality_floors_allowed"] = ["frontier_required"]
     target = tmp_path / "quota-spend-ledger.json"
+    target.write_text(json.dumps(payload), encoding="utf-8")
+    return target
+
+
+def _write_platform_registry(
+    tmp_path: Path,
+    *,
+    local_worker_blocked: bool,
+) -> Path:
+    payload = json.loads(PLATFORM_CAPABILITY_REGISTRY.read_text(encoding="utf-8"))
+    local_worker = next(
+        route for route in payload["routes"] if route["route_id"] == "local_tool.local.worker"
+    )
+    if local_worker_blocked:
+        local_worker["route_state"] = "blocked"
+        local_worker["blocked_reasons"] = [
+            "local_inference_worker_receipt_admission_required",
+            "fresh_capability_evidence_absent",
+            "quota_telemetry_unknown",
+        ]
+        local_worker["freshness"]["capability_checked_at"] = None
+        local_worker["freshness"]["quota_checked_at"] = None
+        local_worker["freshness"]["evidence"]["capability"] = {
+            "evidence_refs": [],
+            "blocked_reasons": ["fresh_capability_evidence_absent"],
+        }
+        local_worker["freshness"]["evidence"]["quota"] = {
+            "evidence_refs": [],
+            "blocked_reasons": ["quota_telemetry_unknown"],
+        }
+    else:
+        local_worker["route_state"] = "active"
+        local_worker["blocked_reasons"] = []
+        local_worker["freshness"]["capability_checked_at"] = "2026-06-01T00:00:00Z"
+        local_worker["freshness"]["quota_checked_at"] = "2026-06-01T00:00:00Z"
+        local_worker["freshness"]["evidence"]["capability"] = {
+            "evidence_refs": ["test:local-worker-capability"],
+            "blocked_reasons": [],
+        }
+        local_worker["freshness"]["evidence"]["quota"] = {
+            "evidence_refs": ["test:local-worker-quota"],
+            "blocked_reasons": [],
+        }
+    target = tmp_path / "platform-capability-registry.json"
     target.write_text(json.dumps(payload), encoding="utf-8")
     return target
 
@@ -60,7 +107,10 @@ def test_unbudgeted_provider_refuses_before_invocation(tmp_path: Path, monkeypat
 
 def test_local_tool_admission_uses_local_resource_snapshot(tmp_path: Path, monkeypatch) -> None:
     ledger = _write_test_ledger(tmp_path)
+    registry = _write_platform_registry(tmp_path, local_worker_blocked=False)
     monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
+    monkeypatch.delenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", raising=False)
     monkeypatch.setenv("HAPAX_CCTV_CAPABILITY_ADMISSION_NOW", "2026-06-01T00:10:00Z")
 
     admission = admit_tool("qdrant_lookup")
@@ -68,6 +118,24 @@ def test_local_tool_admission_uses_local_resource_snapshot(tmp_path: Path, monke
     assert admission.admitted is True
     assert admission.capability_id == "cctv.tool.qdrant_lookup"
     assert "quota.local_resource_state:green" in admission.receipt_refs
+
+
+def test_local_tool_admission_refuses_registry_blocked_route(tmp_path: Path, monkeypatch) -> None:
+    ledger = _write_test_ledger(tmp_path)
+    registry = _write_platform_registry(tmp_path, local_worker_blocked=True)
+    monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
+    monkeypatch.delenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", raising=False)
+    monkeypatch.setenv("HAPAX_CCTV_CAPABILITY_ADMISSION_NOW", "2026-06-01T00:10:00Z")
+
+    admission = admit_tool("qdrant_lookup")
+
+    assert admission.admitted is False
+    assert admission.capability_id == "cctv.tool.qdrant_lookup"
+    assert "local_inference_worker_receipt_admission_required" in admission.reason_codes
+    assert "fresh_capability_evidence_absent" in admission.reason_codes
+    assert "quota_telemetry_unknown" in admission.reason_codes
+    assert "platform-capability-registry:local_tool.local.worker" in admission.receipt_refs
 
 
 def test_local_model_admission_is_bound_to_route_snapshot(tmp_path: Path, monkeypatch) -> None:

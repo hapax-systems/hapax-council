@@ -69,6 +69,8 @@ def tool_memoization_scope() -> Iterator[None]:
 
 
 def _memo_get(key: tuple[str, ...]) -> str | None:
+    # Only deterministic read-only tools use this helper. Governed tools must
+    # use _memo_get_governed() so cached hits re-record their admission receipt.
     cache = _tool_cache.get()
     if cache is None:
         return None

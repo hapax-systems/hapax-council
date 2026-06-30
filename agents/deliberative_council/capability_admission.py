@@ -14,6 +14,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.platform_capability_registry import (
+    PLATFORM_CAPABILITY_REGISTRY,
+    PlatformCapabilityRegistryError,
+    RouteState,
+    load_platform_capability_registry,
+    normalize_route_id,
+)
 from shared.quota_spend_ledger import (
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
@@ -28,6 +35,8 @@ from shared.quota_spend_ledger import (
     load_quota_spend_ledger_resolved,
     subscription_quota_state_for_route,
 )
+
+PLATFORM_CAPABILITY_REGISTRY_ENV = "HAPAX_PLATFORM_CAPABILITY_REGISTRY"
 
 _capability_admission_events: ContextVar[list[CapabilityAdmissionReceipt] | None] = ContextVar(
     "cctv_capability_admission_events", default=None
@@ -76,6 +85,9 @@ class CapabilityDescriptor:
     estimated_cost_usd: Decimal = Decimal("0.01")
 
 
+# Keep these descriptors aligned with the routes invoked by members.model_route_for_alias().
+# Recheck with:
+# uv run pytest tests/agents/test_deliberative_council/test_tools.py::TestBuildMember::test_descriptor_route_matches_invoked_litellm_route -q
 MODEL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
     "opus": CapabilityDescriptor(
         capability_id="cctv.model.opus",
@@ -411,15 +423,55 @@ def _admit_local_route(
         reasons.append("local_resource_snapshot_not_fresh")
     if not resource_green:
         reasons.append(f"local_resource_state:{ledger.local_resource_state.value}")
+    platform_reasons, platform_refs = _platform_route_block_reasons(descriptor.route_id, now=now)
+    reasons.extend(platform_reasons)
     admitted = not reasons
     return _build_receipt(
         descriptor,
         action="admitted" if admitted else "refused",
         reason_codes=tuple(reasons) or ("local_resource_green",),
         quota_evidence_refs=quota_refs,
-        resource_evidence_refs=(f"quota.local_resource_state:{ledger.local_resource_state.value}",),
+        resource_evidence_refs=tuple(
+            dict.fromkeys(
+                (
+                    f"quota.local_resource_state:{ledger.local_resource_state.value}",
+                    *platform_refs,
+                )
+            )
+        ),
         ledger=ledger,
     )
+
+
+def _platform_route_block_reasons(
+    route_id: str,
+    *,
+    now: datetime,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    registry_path = Path(
+        os.environ.get(PLATFORM_CAPABILITY_REGISTRY_ENV, str(PLATFORM_CAPABILITY_REGISTRY))
+    ).expanduser()
+    try:
+        registry = load_platform_capability_registry(registry_path, now=now)
+    except PlatformCapabilityRegistryError as exc:
+        return (
+            (f"platform_capability_registry_unavailable:{type(exc).__name__}",),
+            (),
+        )
+
+    route = registry.route_map().get(normalize_route_id(route_id))
+    if route is None:
+        return (), ()
+
+    refs = (
+        f"platform-capability-registry:{route.route_id}",
+        *route.freshness.evidence.all_evidence_refs(),
+    )
+    reasons: list[str] = []
+    if route.route_state is RouteState.BLOCKED:
+        reasons.extend(route.blocked_reasons or ["platform_route_state_blocked"])
+    reasons.extend(route.freshness.evidence.all_blocked_reasons())
+    return tuple(dict.fromkeys(reasons)), tuple(dict.fromkeys(refs))
 
 
 def _receipt_for_missing_descriptor(capability_id: str, name: str) -> CapabilityAdmissionReceipt:
