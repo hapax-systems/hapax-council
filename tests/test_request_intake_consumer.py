@@ -855,6 +855,37 @@ def test_planning_feed_cctv_admitted_route_without_receipts_is_loud(tmp_path: Pa
     assert request["cctv_intake_blocker"] == "missing_cctv_capability_receipts"
 
 
+def test_planning_feed_accepts_pyyaml_block_list_capability_receipts(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    (active / "REQ-CCTV-BLOCK-LIST.md").write_text(
+        """---
+type: hapax-request
+request_id: REQ-CCTV-BLOCK-LIST
+title: Test
+status: accepted_for_planning
+updated_at: 2026-05-08T15:00:00Z
+planning_case: CASE-TEST-001
+cctv_intake_receipt: receipt://REQ-CCTV-BLOCK-LIST
+cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+- cctv-capability-admission:test-member
+---
+""",
+        encoding="utf-8",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    request = data["requests"][0]
+    assert request["coverage"] == "case_linked"
+    assert request["cctv_intake_blocker"] is None
+
+
 def test_planning_feed_untracked_coverage(tmp_path: Path) -> None:
     active = tmp_path / "requests" / "active"
     active.mkdir(parents=True)

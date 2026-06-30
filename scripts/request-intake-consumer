@@ -216,14 +216,14 @@ for idx, line in enumerate(lines):
             print(value)
             raise SystemExit(0)
         for item_line in lines[idx + 1 :]:
-            if item_line and not item_line[0].isspace():
-                break
             item = item_line.strip()
             if item.startswith("- "):
                 ref = item[2:].strip().strip('"').strip("'")
                 if ref:
                     print(ref)
                     raise SystemExit(0)
+            if item_line and not item_line[0].isspace():
+                break
 raise SystemExit(0)
 PY
 }
