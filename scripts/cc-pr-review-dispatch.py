@@ -39,6 +39,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -56,6 +57,15 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import review_team  # noqa: E402
 
+from shared.dispatcher_policy import (  # noqa: E402
+    DispatchAction,
+    DispatchPolicySources,
+    build_dispatch_request,
+    evaluate_dispatch_policy,
+    load_dispatch_policy_sources,
+    route_decision_receipt_payload,
+    write_route_decision_receipt,
+)
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
     requires_acceptance_receipt,
@@ -82,6 +92,21 @@ SEND_SESSION_ALIASES = {
 }
 YAML_FENCE_FULL_RE = re.compile(r"\A```ya?ml\s*\n(.*?)```\s*\Z", re.DOTALL)
 PARSEABLE_VERDICTS = {"accept", "accept-with-findings", "block"}
+REVIEW_SEAT_ROUTE_METADATA_FIELDS = (
+    "route_metadata_schema",
+    "quality_floor",
+    "authority_level",
+    "mutation_surface",
+    "mutation_scope_refs",
+    "risk_flags",
+    "verification_surface",
+)
+REVIEW_SEAT_AUTHORITY_FIELDS = ("authority_case", "parent_spec")
+REVIEW_SEAT_REVIEW_REQUIREMENT = {
+    "support_artifact_allowed": True,
+    "independent_review_required": True,
+    "authoritative_acceptor_profile": "frontier_full",
+}
 
 #: Family quota-wall state (postmortem 2026-06-12, failure class #1): a
 #: family whose seats ALL hit a provider wall in a round is OUT for the next
@@ -159,6 +184,26 @@ def load_family_outage(now_iso: str, state_path: Path | None = None) -> frozense
     return frozenset(load_family_outage_witness(now_iso, state_path))
 
 
+def _review_is_family_outage_signal(review: Mapping[str, Any]) -> bool:
+    verdict = str(review.get("verdict") or "")
+    if verdict != "reviewer-route-unavailable":
+        return verdict in review_team.FAMILY_OUTAGE_VERDICTS
+    admissions = review.get("route_admissions")
+    # A route-policy admission hold happens before provider/client invocation.
+    # It is task/receipt evidence, not proof that the model family is unavailable.
+    if isinstance(admissions, list):
+        if not admissions:
+            return False
+        return all(
+            isinstance(admission, Mapping)
+            and admission.get("admitted") is True
+            and bool(str(admission.get("route_decision_id") or "").strip())
+            and _route_admission_is_current(admission)
+            for admission in admissions
+        )
+    return True
+
+
 def update_family_outage(
     reviews: list[dict[str, Any]],
     now_iso: str,
@@ -183,12 +228,13 @@ def update_family_outage(
                     state = {}
             except (OSError, json.JSONDecodeError):
                 state = {}
-            by_family: dict[str, list[str]] = {}
+            by_family: dict[str, list[dict[str, Any]]] = {}
             for r in reviews:
-                by_family.setdefault(str(r.get("family")), []).append(str(r.get("verdict")))
+                by_family.setdefault(str(r.get("family")), []).append(r)
             available_verdicts = PARSEABLE_VERDICTS | {"invalid-output"}
-            for family, verdicts in by_family.items():
-                if all(v in review_team.FAMILY_OUTAGE_VERDICTS for v in verdicts):
+            for family, family_reviews in by_family.items():
+                verdicts = [str(r.get("verdict")) for r in family_reviews]
+                if all(_review_is_family_outage_signal(r) for r in family_reviews):
                     # Sustained outage: preserve the STABLE outage_started_at (set when this
                     # outage began) and only advance observed_at. Legacy str entries seed
                     # started == the old timestamp; a brand-new outage seeds started == now.
@@ -561,18 +607,335 @@ def default_reviewer_runner(seat: review_team.Seat, family_cfg: dict[str, Any], 
     return proc.stdout
 
 
+def _route_metadata_value(frontmatter: Mapping[str, Any], key: str) -> Any:
+    nested = frontmatter.get("route_metadata")
+    if isinstance(nested, Mapping) and key in nested:
+        return nested[key]
+    return frontmatter.get(key)
+
+
+def _missing_review_seat_authority(frontmatter: Mapping[str, Any]) -> list[str]:
+    missing: list[str] = []
+    for key in REVIEW_SEAT_AUTHORITY_FIELDS:
+        if not str(frontmatter.get(key) or "").strip():
+            missing.append(key)
+    for key in REVIEW_SEAT_ROUTE_METADATA_FIELDS:
+        value = _route_metadata_value(frontmatter, key)
+        if value is None or value == "":
+            missing.append(key)
+    return missing
+
+
+def _route_parts(route_id: str) -> tuple[str, str, str] | None:
+    parts = [part.strip() for part in route_id.strip().split(".")]
+    if len(parts) != 3 or any(not part for part in parts):
+        return None
+    return parts[0], parts[1], parts[2]
+
+
+def _review_seat_task_fields(
+    frontmatter: Mapping[str, Any],
+    *,
+    note_path: Path,
+    task_id: str,
+) -> dict[str, Any]:
+    """Build route metadata for a non-mutating review-seat invocation.
+
+    The reviewed task supplies authority, parent spec, risk, and verification context;
+    the seat invocation itself is a support artifact, so it is modeled as
+    ``mutation_surface:none`` and ``frontier_review_required``.
+    """
+
+    fields = dict(frontmatter)
+    fields["task_id"] = task_id
+    fields["__task_note_path"] = str(note_path)
+    fields["route_metadata_schema"] = (
+        _route_metadata_value(frontmatter, "route_metadata_schema") or 1
+    )
+    fields["quality_floor"] = "frontier_review_required"
+    fields["authority_level"] = "support_non_authoritative"
+    fields["mutation_surface"] = "none"
+    fields["mutation_scope_refs"] = []
+    fields["risk_flags"] = _route_metadata_value(frontmatter, "risk_flags") or {}
+    fields["context_shape"] = _route_metadata_value(frontmatter, "context_shape") or {}
+    fields["verification_surface"] = (
+        _route_metadata_value(frontmatter, "verification_surface") or {}
+    )
+    fields["route_constraints"] = _route_metadata_value(frontmatter, "route_constraints") or {}
+    fields["review_requirement"] = (
+        _route_metadata_value(frontmatter, "review_requirement") or REVIEW_SEAT_REVIEW_REQUIREMENT
+    )
+    return fields
+
+
+def _admission_blocked_record(
+    *,
+    seat: review_team.Seat,
+    task_id: str,
+    route_id: str | None,
+    reasons: list[str],
+    authority_case: str | None = None,
+    parent_spec: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "route_admission_schema": 1,
+        "seat_id": seat.id,
+        "family": seat.family,
+        "task_id": task_id,
+        "route_id": route_id,
+        "authority_case": authority_case,
+        "parent_spec": parent_spec,
+        "admitted": False,
+        "blocked_reasons": reasons,
+    }
+
+
+def _route_admission_is_current(payload: Mapping[str, Any]) -> bool:
+    quota_refs = payload.get("route_policy_quota_evidence_refs")
+    resource_refs = payload.get("route_policy_resource_state_refs")
+    return bool(
+        payload.get("route_policy_action") == DispatchAction.LAUNCH.value
+        and payload.get("route_policy_green") is True
+        and payload.get("route_policy_registry_freshness_green") is True
+        and payload.get("route_policy_quota_freshness_green") is True
+        and payload.get("route_policy_resource_freshness_green") is True
+        and isinstance(quota_refs, list)
+        and bool(quota_refs)
+        and isinstance(resource_refs, list)
+        and bool(resource_refs)
+    )
+
+
+def _admit_review_seat_for_task(
+    *,
+    seat: review_team.Seat,
+    family_cfg: Mapping[str, Any],
+    task_id: str,
+    note_path: Path,
+    frontmatter: Mapping[str, Any],
+    policy_sources: DispatchPolicySources,
+    route_decision_ledger_dir: Path | None,
+    now: datetime,
+) -> dict[str, Any]:
+    authority_case = str(frontmatter.get("authority_case") or "").strip() or None
+    parent_spec = str(frontmatter.get("parent_spec") or "").strip() or None
+    route_id = str(family_cfg.get("route_id") or "").strip()
+    if not route_id:
+        waiver = family_cfg.get("route_waiver")
+        if isinstance(waiver, Mapping):
+            return _admission_blocked_record(
+                seat=seat,
+                task_id=task_id,
+                route_id=None,
+                authority_case=authority_case,
+                parent_spec=parent_spec,
+                reasons=["review_family_route_waiver_not_sufficient_for_provider_use"],
+            )
+        return _admission_blocked_record(
+            seat=seat,
+            task_id=task_id,
+            route_id=None,
+            authority_case=authority_case,
+            parent_spec=parent_spec,
+            reasons=["review_family_route_id_missing"],
+        )
+
+    parts = _route_parts(route_id)
+    if parts is None:
+        return _admission_blocked_record(
+            seat=seat,
+            task_id=task_id,
+            route_id=route_id,
+            authority_case=authority_case,
+            parent_spec=parent_spec,
+            reasons=["review_family_route_id_malformed"],
+        )
+
+    missing = _missing_review_seat_authority(frontmatter)
+    if missing:
+        return _admission_blocked_record(
+            seat=seat,
+            task_id=task_id,
+            route_id=route_id,
+            authority_case=authority_case,
+            parent_spec=parent_spec,
+            reasons=[f"review_seat_task_metadata_missing:{','.join(sorted(missing))}"],
+        )
+
+    request = build_dispatch_request(
+        task_id=task_id,
+        lane=f"review-seat-{seat.id}",
+        platform=parts[0],
+        mode=parts[1],
+        profile=parts[2],
+        task_fields=_review_seat_task_fields(frontmatter, note_path=note_path, task_id=task_id),
+        registry=policy_sources.registry,
+        registry_error=policy_sources.registry_error,
+        quota_ledger=policy_sources.quota_ledger,
+        quota_error=policy_sources.quota_error,
+        route_authority_receipts=policy_sources.route_authority_receipts,
+        now=now,
+    )
+    decision = evaluate_dispatch_policy(request, now=now)
+    receipt_path = write_route_decision_receipt(decision, ledger_dir=route_decision_ledger_dir)
+    payload = {
+        "route_admission_schema": 1,
+        "seat_id": seat.id,
+        "family": seat.family,
+        "task_id": task_id,
+        "route_id": route_id,
+        "authority_case": authority_case,
+        "parent_spec": parent_spec,
+        "route_decision_ledger": str(receipt_path),
+        **route_decision_receipt_payload(decision),
+    }
+    payload["route_policy_resource_state_refs"] = list(decision.resource_state_refs)
+    payload["admitted"] = _route_admission_is_current(payload)
+    if not payload["admitted"]:
+        payload["blocked_reasons"] = list(decision.reason_codes) or ["route_admission_not_green"]
+        if not payload.get("route_policy_quota_evidence_refs"):
+            payload["blocked_reasons"].append("route_quota_evidence_refs_missing")
+        if not payload.get("route_policy_resource_state_refs"):
+            payload["blocked_reasons"].append("route_resource_state_refs_missing")
+    return payload
+
+
+def build_review_seat_admissions(
+    *,
+    constitution: review_team.Constitution,
+    registry: Mapping[str, Any],
+    keyed_matches: list[tuple[Path, dict[str, Any], str]],
+    policy_sources: DispatchPolicySources,
+    route_decision_ledger_dir: Path | None,
+    now: datetime,
+) -> dict[str, list[dict[str, Any]]]:
+    family_cfgs = {entry["family"]: entry for entry in registry["families"]}
+    admissions: dict[str, list[dict[str, Any]]] = {}
+    for seat in constitution.seats:
+        family_cfg = family_cfgs[seat.family]
+        admissions[seat.id] = [
+            _admit_review_seat_for_task(
+                seat=seat,
+                family_cfg=family_cfg,
+                task_id=task_id,
+                note_path=note_path,
+                frontmatter=frontmatter,
+                policy_sources=policy_sources,
+                route_decision_ledger_dir=route_decision_ledger_dir,
+                now=now,
+            )
+            for note_path, frontmatter, task_id in keyed_matches
+        ]
+    return admissions
+
+
+def _route_admission_use_blockers(
+    admission: Any,
+    *,
+    seat: review_team.Seat,
+    family_cfg: Mapping[str, Any],
+) -> list[str]:
+    if not isinstance(admission, Mapping):
+        return ["route_admission_malformed"]
+    blockers: list[str] = []
+    expected_route_id = str(family_cfg.get("route_id") or "").strip()
+    if not expected_route_id:
+        blockers.append("review_family_route_id_missing")
+    if str(admission.get("seat_id") or "") != seat.id:
+        blockers.append("route_admission_seat_mismatch")
+    if str(admission.get("family") or "") != seat.family:
+        blockers.append("route_admission_family_mismatch")
+    if expected_route_id and str(admission.get("route_id") or "") != expected_route_id:
+        blockers.append("route_admission_route_mismatch")
+    if not str(admission.get("route_decision_id") or "").strip():
+        blockers.append("route_decision_missing")
+    if admission.get("admitted") is not True:
+        blockers.extend(
+            str(reason)
+            for reason in (admission.get("blocked_reasons") or [])
+            if str(reason).strip()
+        )
+        if not any(reason.startswith("route_admission") for reason in blockers):
+            blockers.append("route_admission_not_admitted")
+    if admission.get("route_policy_action") != DispatchAction.LAUNCH.value:
+        blockers.append("route_policy_not_launch")
+    if admission.get("route_policy_launch_allowed") is not True:
+        blockers.append("route_policy_launch_not_allowed")
+    if admission.get("route_policy_green") is not True:
+        blockers.append("route_policy_not_green")
+    if admission.get("route_policy_registry_freshness_green") is not True:
+        blockers.append("route_registry_not_fresh")
+    quota_refs = admission.get("route_policy_quota_evidence_refs")
+    if admission.get("route_policy_quota_freshness_green") is not True:
+        blockers.append("route_quota_not_fresh")
+    if not isinstance(quota_refs, list) or not quota_refs:
+        blockers.append("route_quota_evidence_refs_missing")
+    resource_refs = admission.get("route_policy_resource_state_refs")
+    if admission.get("route_policy_resource_freshness_green") is not True:
+        blockers.append("route_resource_not_fresh")
+    if not isinstance(resource_refs, list) or not resource_refs:
+        blockers.append("route_resource_state_refs_missing")
+    return blockers
+
+
 def dispatch_reviews(
     constitution: review_team.Constitution,
     prompts: list[str],
     registry: dict[str, Any],
     reviewer_runner: Any,
+    seat_admissions: Mapping[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Run all seats in parallel; reviewer failure becomes invalid-output, loudly."""
 
     family_cfgs = {entry["family"]: entry for entry in registry["families"]}
+    seat_admissions = seat_admissions or {}
 
     def run_one(index: int) -> dict[str, Any]:
         seat = constitution.seats[index]
+        admissions = list(seat_admissions.get(seat.id) or [])
+        if not admissions:
+            return {
+                "id": seat.id,
+                "family": seat.family,
+                "verdict": "reviewer-route-unavailable",
+                "findings": [],
+                "checklist": {},
+                "route_admissions": [],
+                "raw_reply_excerpt": "reviewer route admission missing before provider use; "
+                "next action: refresh route, quota, and resource receipts or repair task "
+                "route metadata before rerunning review dispatch",
+            }
+        admission_blockers = [
+            reason
+            for admission in admissions
+            for reason in _route_admission_use_blockers(
+                admission,
+                seat=seat,
+                family_cfg=family_cfgs[seat.family],
+            )
+        ]
+        if admission_blockers:
+            reasons = list(dict.fromkeys(admission_blockers))
+            blocked_reasons = [
+                str(reason)
+                for admission in admissions
+                if isinstance(admission, Mapping)
+                for reason in (admission.get("blocked_reasons") or [])
+                if str(reason).strip()
+            ]
+            reasons.extend(reason for reason in blocked_reasons if reason not in reasons)
+            return {
+                "id": seat.id,
+                "family": seat.family,
+                "verdict": "reviewer-route-unavailable",
+                "findings": [],
+                "checklist": {},
+                "route_admissions": admissions,
+                "raw_reply_excerpt": "reviewer route admission blocked before provider use: "
+                + ", ".join(reasons)
+                + "; next action: refresh route, quota, and resource receipts or repair "
+                "task route metadata before rerunning review dispatch",
+            }
         process_failed = False
         process_output = ""
         quota_wall_output = ""
@@ -657,9 +1020,11 @@ def dispatch_reviews(
                 "verdict": verdict,
                 "findings": [],
                 "checklist": {},
+                "route_admissions": admissions,
                 "raw_reply_excerpt": reply_excerpt,
             }
         review = {"id": seat.id, "family": seat.family, **parsed}
+        review["route_admissions"] = admissions
         if parsed.get("parse_path") != "fence":
             review["raw_reply_excerpt"] = truncate_context(
                 reply or "", limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
@@ -1049,6 +1414,8 @@ def review_pr(
     send_runner: Any = None,
     registry_path: Path | None = None,
     now_iso: str | None = None,
+    policy_sources: DispatchPolicySources | None = None,
+    route_decision_ledger_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Constitute (and with ``apply``, dispatch) the review team for one PR."""
 
@@ -1250,7 +1617,25 @@ def review_pr(
         )
         for seat in constitution.seats
     ]
-    reviews = dispatch_reviews(constitution, prompts, registry, reviewer_runner)
+    admission_now = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+    if admission_now.tzinfo is None:
+        admission_now = admission_now.replace(tzinfo=UTC)
+    policy_sources = policy_sources or load_dispatch_policy_sources(now=admission_now)
+    seat_admissions = build_review_seat_admissions(
+        constitution=constitution,
+        registry=registry,
+        keyed_matches=keyed_matches,
+        policy_sources=policy_sources,
+        route_decision_ledger_dir=route_decision_ledger_dir,
+        now=admission_now,
+    )
+    reviews = dispatch_reviews(
+        constitution,
+        prompts,
+        registry,
+        reviewer_runner,
+        seat_admissions=seat_admissions,
+    )
     update_family_outage(reviews, now_iso)
     results: list[dict[str, Any]] = []
     comment_bodies: list[str] = []
@@ -1369,6 +1754,9 @@ def review_all_open_prs(
     reviewer_runner: Any = None,
     wake_dir: Path = DEFAULT_WAKE_DIR,
     send_runner: Any = None,
+    now_iso: str | None = None,
+    policy_sources: DispatchPolicySources | None = None,
+    route_decision_ledger_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
@@ -1407,6 +1795,9 @@ def review_all_open_prs(
                     reviewer_runner=reviewer_runner,
                     wake_dir=wake_dir,
                     send_runner=send_runner,
+                    now_iso=now_iso,
+                    policy_sources=policy_sources,
+                    route_decision_ledger_dir=route_decision_ledger_dir,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — one PR must not starve the scan

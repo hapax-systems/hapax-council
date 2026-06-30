@@ -840,6 +840,7 @@ def route_decision_receipt_payload(decision: RouteDecision) -> dict[str, Any]:
         "route_policy_quota_freshness_green": decision.quota_freshness_green,
         "route_policy_quota_evidence_refs": list(decision.quota_evidence_refs),
         "route_policy_resource_freshness_green": decision.resource_freshness_green,
+        "route_policy_resource_state_refs": list(decision.resource_state_refs),
         "route_policy_route_selection_authority": decision.route_selection_authority,
         "route_policy_quality_floor_satisfied": decision.quality_floor_satisfied,
         "route_policy_authority_allowed": decision.authority_allowed,
