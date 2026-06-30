@@ -191,9 +191,9 @@ def test_admit_and_record_child_spawn_writes_child_envelope_and_parent_receipt(
 
 def test_required_parent_route_envelope_env_fails_closed() -> None:
     assert require_parent_envelope_path_from_env({}) is None
-    assert require_parent_envelope_path_from_env({PARENT_ROUTE_ENVELOPE_ENV: "/tmp/parent.json"}) == Path(
-        "/tmp/parent.json"
-    )
+    assert require_parent_envelope_path_from_env(
+        {PARENT_ROUTE_ENVELOPE_ENV: "/tmp/parent.json"}
+    ) == Path("/tmp/parent.json")
     with pytest.raises(SubagentRouteReceiptError, match="missing_parent_route_resource_receipt"):
         require_parent_envelope_path_from_env({REQUIRE_PARENT_ROUTE_ENVELOPE_ENV: "1"})
 

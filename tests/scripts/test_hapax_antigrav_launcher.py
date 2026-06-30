@@ -208,10 +208,10 @@ exit 0
     assert run_scripts
     run_text = run_scripts[-1].read_text(encoding="utf-8")
     assert f'export HAPAX_PARENT_ROUTE_ENVELOPE="{parent_path}"' in run_text
-    assert "export HAPAX_CHILD_SPAWN_ENVELOPE=\"" in run_text
+    assert 'export HAPAX_CHILD_SPAWN_ENVELOPE="' in run_text
     assert "child-spawn-" in run_text
-    assert "export HAPAX_CHILD_RECEIPT_REF=\"child-spawn-envelope:" in run_text
-    assert "export HAPAX_CHILD_RECEIPT_ID=\"child-receipt-" in run_text
+    assert 'export HAPAX_CHILD_RECEIPT_REF="child-spawn-envelope:' in run_text
+    assert 'export HAPAX_CHILD_RECEIPT_ID="child-receipt-' in run_text
 
 
 def test_launcher_wires_agy_pretooluse_gate(tmp_path: Path) -> None:
