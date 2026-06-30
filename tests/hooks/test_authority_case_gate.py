@@ -120,6 +120,16 @@ def _path_without_python(tmp_path: Path) -> str:
     return str(bin_dir)
 
 
+def _path_without_jq(tmp_path: Path) -> str:
+    bin_dir = tmp_path / "bin-no-jq"
+    bin_dir.mkdir()
+    for name in ("bash", "cat", "dirname"):
+        target = shutil.which(name)
+        assert target is not None
+        (bin_dir / name).symlink_to(target)
+    return str(bin_dir)
+
+
 def _run(
     hook: Path,
     tool_input: dict,
@@ -138,6 +148,31 @@ def _run(
     return subprocess.run(
         [str(hook)],
         input=json.dumps(tool_input),
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+
+def _run_text(
+    hook: Path,
+    payload: str,
+    *,
+    home: Path,
+    role: str = "alpha",
+    extra_env: dict | None = None,
+) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    for key in _CLEARED_ENV:
+        env.pop(key, None)
+    env["CLAUDE_ROLE"] = role
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [str(hook)],
+        input=payload,
         capture_output=True,
         text=True,
         env=env,
@@ -696,3 +731,23 @@ class TestAuthorizationPacketValidator:
 
         assert result.returncode == 2
         assert "python3 missing" in result.stderr
+
+    def test_authorization_validator_blocks_when_jq_is_unavailable(self, tmp_path: Path) -> None:
+        result = _run(
+            VALIDATOR,
+            {
+                "tool_name": "mcp__codex_apps__github___merge_pull_request",
+                "tool_input": {"owner": "ryanklee", "repo": "hapax-council"},
+            },
+            home=tmp_path,
+            extra_env={"PATH": _path_without_jq(tmp_path)},
+        )
+
+        assert result.returncode == 2
+        assert "cannot parse hook payload tool_name" in result.stderr
+
+    def test_authorization_validator_blocks_malformed_hook_payload(self, tmp_path: Path) -> None:
+        result = _run_text(VALIDATOR, "{", home=tmp_path)
+
+        assert result.returncode == 2
+        assert "cannot parse hook payload tool_name" in result.stderr

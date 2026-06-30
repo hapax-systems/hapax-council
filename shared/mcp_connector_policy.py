@@ -95,10 +95,10 @@ _MUTATING_FUNCTION_TOKEN_RE = re.compile(
 _READ_ONLY_FUNCTION_RE = re.compile(
     r"^(?:"
     r"batch_read|briefing|chronicle(?:_narrate)?|copilot|cost|daily_summary|drift"
-    r"|goals|gpu|health|infrastructure|manual|profile$|profile_get$"
-    r"|readiness|scout$|status$|workspace$"
-    r"|working_mode$|cycle_mode$|nudges$|agents$|accommodations$"
-    r")"
+    r"|goals|gpu|health|infrastructure|manual|profile|profile_get"
+    r"|readiness|scout|status|workspace"
+    r"|working_mode|cycle_mode|nudges|agents|accommodations"
+    r")$"
 )
 
 

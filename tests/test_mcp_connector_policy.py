@@ -153,14 +153,19 @@ def test_unknown_connector_service_fails_closed_when_not_explicitly_read_only() 
 
 
 def test_read_only_prefix_does_not_hide_embedded_mutating_verbs() -> None:
-    classification = classify_connector_tool("mcp__codex_apps__gmail___get_or_create_label")
+    for tool_name in (
+        "mcp__codex_apps__gmail___get_or_create_label",
+        "mcp__hapax_mcp__healthDisableActuation",
+        "mcp__codex_apps__tavily___costUpdateBudget",
+    ):
+        classification = classify_connector_tool(tool_name)
 
-    assert classification is not None
-    assert classification.side_effecting
-    assert classification.matched_by in {
-        "heuristic_mutating_verb",
-        "heuristic_unclassified_connector_tool",
-    }
+        assert classification is not None
+        assert classification.side_effecting
+        assert classification.matched_by in {
+            "heuristic_mutating_verb",
+            "heuristic_unclassified_connector_tool",
+        }
 
 
 def test_unparseable_mcp_tool_fails_closed() -> None:

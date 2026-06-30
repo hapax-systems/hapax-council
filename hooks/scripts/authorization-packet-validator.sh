@@ -24,7 +24,16 @@ if [[ -f "$SCRIPT_DIR/agent-role.sh" ]]; then
 fi
 
 INPUT="$(cat)"
-TOOL="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)" || exit 0
+if ! TOOL="$(printf '%s' "$INPUT" | jq -er '.tool_name // empty' 2>/dev/null)"; then
+  echo "authorization-packet-validator: BLOCKED — cannot parse hook payload tool_name." >&2
+  echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+  exit 2
+fi
+if [[ -z "$TOOL" ]]; then
+  echo "authorization-packet-validator: BLOCKED — hook payload is missing tool_name." >&2
+  echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+  exit 2
+fi
 release_tool=false
 release_kind="none"
 case "$TOOL" in
