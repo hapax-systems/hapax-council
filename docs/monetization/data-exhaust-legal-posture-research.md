@@ -26,6 +26,35 @@ reidentifiable, data-broker, and struck tiers.
 - Treated biometric, health-adjacent, reidentifiable, non-operator, and struck
   data as held unless a later authority case proves a lawful and ethical route.
 
+## Recheck
+
+Run from the repository root:
+
+```bash
+python3 - <<'PY'
+from pathlib import Path
+import yaml
+
+data = yaml.safe_load(Path("docs/monetization/legal-posture-registry.yaml").read_text())
+rows = data["rows"]
+keys = [(row["surface"], row["venue"], row["instrument"]) for row in rows]
+data_exhaust = [row for row in rows if row["surface"] == "data_exhaust"]
+phase6 = [
+    row for row in data_exhaust
+    if row.get("source_task") == "20260628-registry-phase6-data-exhaust-subtree"
+]
+
+assert len(keys) == len(set(keys)), "duplicate registry tuple"
+assert len(phase6) == 9
+assert all(row["g2_verdict"] == "DARK" for row in data_exhaust)
+assert all(row["operator_signed"] is False for row in data_exhaust)
+assert ("data_exhaust", "US-IL", "biometric_identifier_or_information") in keys
+assert ("data_exhaust", "*", "deidentified_aggregate_operational_telemetry") in keys
+assert ("data_exhaust", "*", "struck_or_non_operator_person_data") in keys
+print("data-exhaust registry recheck OK")
+PY
+```
+
 ## Source Findings
 
 ### BIPA: Illinois Biometric Data

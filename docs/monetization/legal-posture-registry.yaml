@@ -241,7 +241,7 @@ rows:
   - surface: white_label
     venue: US-FTC
     instrument: disclosed_ai_b2b_service
-    g2_verdict: PARTIAL
+    g2_verdict: DARK
     citation: >
       FTC Act Section 5:
       https://www.ftc.gov/legal-library/browse/statutes/federal-trade-commission-act;
@@ -256,12 +256,11 @@ rows:
     operator_signed: false
     operator_sign_date: null
     notes: >
-      Candidate PARTIAL only. Under the schema, this row still fails the g2
-      gate until operator_signed is true. Required posture: clear disclosure
-      of material AI use, no fake-human positioning, substantiated claims,
-      no deceptive earnings/performance/refund promises, and contracts that
-      match actual privacy, confidentiality, retention, and model-training
-      behavior.
+      DARK candidate row. A later PARTIAL proposal requires clear disclosure
+      of material AI use, no fake-human positioning, substantiated claims, no
+      deceptive earnings/performance/refund promises, contracts that match
+      actual privacy, confidentiality, retention, and model-training behavior,
+      and operator signature on this exact tuple.
     open_questions:
       - "Operator signature required before this PARTIAL row can clear g2."
       - "What disclosure text appears in proposals, SOWs, terms, invoices, and deliverables?"
@@ -305,7 +304,7 @@ rows:
   - surface: white_label
     venue: "*"
     instrument: open_weight_model_stack_license_manifest
-    g2_verdict: PARTIAL
+    g2_verdict: DARK
     citation: >
       Meta Llama license:
       https://ai.meta.com/llama/license/; Mistral open-model license
@@ -319,12 +318,12 @@ rows:
     operator_signed: false
     operator_sign_date: null
     notes: >
-      Candidate PARTIAL only. Under the schema, this row still fails the g2
-      gate until operator_signed is true and a concrete model-stack license
-      manifest is attached. Open-weight is not a single legal posture:
-      Apache-2.0, Llama community licenses, Mistral modified licenses, and
-      model-specific acceptable-use policies carry different commercial,
-      redistribution, output-use, and scale-threshold obligations.
+      DARK candidate row. A later PARTIAL proposal requires a concrete
+      model-stack license manifest and operator signature on this exact tuple.
+      Open-weight is not a single legal posture: Apache-2.0, Llama community
+      licenses, Mistral modified licenses, and model-specific acceptable-use
+      policies carry different commercial, redistribution, output-use, and
+      scale-threshold obligations.
     open_questions:
       - "Operator signature required before this PARTIAL row can clear g2."
       - "Which exact model IDs, versions, model cards, licenses, and acceptable-use policies are in the white-label stack?"

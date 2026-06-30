@@ -25,8 +25,36 @@ posture.
 - Treated contractual platform restrictions, disclosure/deception risk, tenant
   isolation, and model-license variance as legal gate concerns, not business
   attractiveness concerns.
-- Treated every PARTIAL row as unsigned; under the registry schema, unsigned
-  non-DARK rows do not pass g2.
+- Kept all current rows `DARK`; candidate PARTIAL posture is documented in row
+  notes and open questions until operator signature exists.
+
+## Recheck
+
+Run from the repository root:
+
+```bash
+python3 - <<'PY'
+from pathlib import Path
+import yaml
+
+data = yaml.safe_load(Path("docs/monetization/legal-posture-registry.yaml").read_text())
+rows = data["rows"]
+keys = [(row["surface"], row["venue"], row["instrument"]) for row in rows]
+white_label = [row for row in rows if row["surface"] == "white_label"]
+phase5 = [
+    row for row in white_label
+    if row.get("source_task") == "20260628-registry-phase5-white-label-subtree"
+]
+
+assert len(keys) == len(set(keys)), "duplicate registry tuple"
+assert len(phase5) == 6
+assert all(row["g2_verdict"] == "DARK" for row in white_label)
+assert all(row["operator_signed"] is False for row in white_label)
+assert ("white_label", "US-FTC", "disclosed_ai_b2b_service") in keys
+assert ("white_label", "*", "open_weight_model_stack_license_manifest") in keys
+print("white-label registry recheck OK")
+PY
+```
 
 ## Source Findings
 
@@ -71,7 +99,8 @@ privacy/confidentiality commitments.
 
 Registry effect:
 - `US-FTC / undisclosed_ai_b2b_service` remains `DARK`.
-- `US-FTC / disclosed_ai_b2b_service` is only an unsigned `PARTIAL` candidate.
+- `US-FTC / disclosed_ai_b2b_service` remains `DARK`; its row records the
+  prerequisites for a later signed PARTIAL proposal.
 - `US-FTC / multi_tenant_without_contractual_isolation` remains `DARK`.
 
 Sources:
@@ -89,13 +118,13 @@ Sources:
 Open-weight model stacks do not create one uniform legal posture. Apache-2.0,
 Llama community licenses, Mistral model-specific licenses, and acceptable-use
 policies can impose different commercial, redistribution, attribution, output
-use, and scale-threshold constraints. The registry therefore records a PARTIAL
-candidate only when a concrete model-stack license manifest exists and the
-operator signs the row.
+use, and scale-threshold constraints. The registry therefore keeps the row
+`DARK` until a concrete model-stack license manifest exists and the operator
+signs the exact tuple.
 
 Registry effect:
-`* / open_weight_model_stack_license_manifest` is unsigned `PARTIAL`, which
-still fails g2 until signed.
+`* / open_weight_model_stack_license_manifest` remains `DARK`; its row records
+the prerequisites for a later signed PARTIAL proposal.
 
 Sources:
 - Meta Llama license:
@@ -112,9 +141,9 @@ Sources:
 | `anthropic_competing_product_or_resale` | `DARK` | No Anthropic-backed white-label or resale posture without express approval. |
 | `anthropic_third_party_harness_subscription_credentials` | `DARK` | No Claude.ai subscription credential routing for a third-party/customer harness. |
 | `undisclosed_ai_b2b_service` | `DARK` | No fake-human or materially undisclosed AI service positioning. |
-| `disclosed_ai_b2b_service` | `PARTIAL` unsigned | Candidate only with disclosure, substantiation, contract/privacy fit, and operator signature. |
+| `disclosed_ai_b2b_service` | `DARK` | Candidate only with disclosure, substantiation, contract/privacy fit, and operator signature. |
 | `multi_tenant_without_contractual_isolation` | `DARK` | No cross-tenant prompt/file/output/log/model artifact reuse without explicit contract authority. |
-| `open_weight_model_stack_license_manifest` | `PARTIAL` unsigned | Candidate only after exact model/version/license manifest and operator signature. |
+| `open_weight_model_stack_license_manifest` | `DARK` | Candidate only after exact model/version/license manifest and operator signature. |
 
 ## Minimum Later Evidence For Any Non-DARK White-Label Row
 
