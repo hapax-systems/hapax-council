@@ -18,15 +18,17 @@ to the P0 Codex drain-lane rule.
 Recheck dispatcher-level relay behavior from the council repo:
 
 ```bash
-uv run pytest tests/scripts/test_hapax_methodology_dispatch.py -q -k 'codex_p0_incident_drain_lane_allows_local_fallback or codex_p0_incident_local_fallback_force_survives_without_reactivation or governed_codex_dispatch_reactivates_clean_retired_relay or governed_relay_reactivation_predicate_accepts_bound_mutable_launch or governed_relay_reactivation_rejects_advisory_or_unbound_binding or codex_headless_dispatch_propagates_retired_relay_block or codex_headless_dispatch_blocks_mq_bound_read_only_exempt_retired_relay'
+rg -n "def test_(codex_p0_incident_drain_lane_allows_local_fallback|codex_p0_incident_local_fallback_force_is_independent_of_reactivation_flag|governed_relay_reactivation_passes_force_to_headless_launcher|governed_codex_dispatch_reactivates_clean_retired_relay|governed_relay_reactivation_predicate_accepts_bound_mutable_launch|governed_relay_reactivation_rejects_advisory_or_unbound_binding|codex_headless_dispatch_propagates_retired_relay_block|codex_headless_dispatch_blocks_mq_bound_read_only_exempt_retired_relay)" tests/scripts/test_hapax_methodology_dispatch.py
+uv run pytest tests/scripts/test_hapax_methodology_dispatch.py -q -k 'codex_p0_incident_drain_lane_allows_local_fallback or codex_p0_incident_local_fallback_force_is_independent_of_reactivation_flag or governed_relay_reactivation_passes_force_to_headless_launcher or governed_codex_dispatch_reactivates_clean_retired_relay or governed_relay_reactivation_predicate_accepts_bound_mutable_launch or governed_relay_reactivation_rejects_advisory_or_unbound_binding or codex_headless_dispatch_propagates_retired_relay_block or codex_headless_dispatch_blocks_mq_bound_read_only_exempt_retired_relay'
 uv run pytest tests/scripts/test_hapax_codex_headless.py -q -k 'force_reactivates_retired_relay or blocks_retired_relay_without_force'
 ```
 
-For a direct, read-only, advisory-only, or unbound launch into a retired relay,
-the expected result is fail-closed at the relay guard (`retired/wound-down`) and
-no Codex process start. For a P0 drain-lane local fallback, verify the launcher
-argv contains `--force` and the environment contains
-`HAPAX_DISPATCH_HOST_FALLBACK=local`.
+For a direct, read-only, or advisory-only launch into a retired relay, the
+expected result is fail-closed at the relay guard (`retired/wound-down`) and no
+Codex process start. For a mutable unbound methodology-dispatch launch, the
+expected result is an earlier durable-MQ block, before the headless launcher is
+invoked. For a P0 drain-lane local fallback, verify the launcher argv contains
+`--force` and the environment contains `HAPAX_DISPATCH_HOST_FALLBACK=local`.
 
 Remote appendix dispatch uses this order:
 
