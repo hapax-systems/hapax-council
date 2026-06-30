@@ -164,6 +164,13 @@ TOOL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
     ),
 }
 
+LOCAL_ROUTE_SNAPSHOT_ALIASES: dict[str, frozenset[str]] = {
+    "local-fast": frozenset({"local-fast", "litellm.local.command-r-35b"}),
+    "local_tool.local.worker": frozenset(
+        {"local_tool.local.worker", "local-fast", "litellm.local.command-r-35b"}
+    ),
+}
+
 
 def admit_model_alias(
     model_alias: str,
@@ -381,15 +388,14 @@ def _admit_local_route(
     ledger: QuotaSpendLedger,
     now: datetime,
 ) -> CapabilityAdmissionReceipt:
+    admitted_snapshot_routes = LOCAL_ROUTE_SNAPSHOT_ALIASES.get(
+        descriptor.route_id, frozenset({descriptor.route_id})
+    )
     snapshots = tuple(
         snapshot
         for snapshot in ledger.quota_snapshots
         if snapshot.capacity_pool is CapacityPool.LOCAL_COMPUTE
-        and (
-            snapshot.route_id == descriptor.route_id
-            or descriptor.route_id == "local_tool.local.worker"
-            or (descriptor.provider == "tabbyapi" and snapshot.provider == "tabbyapi")
-        )
+        and snapshot.route_id in admitted_snapshot_routes
     )
     quota_refs = tuple(ref for snapshot in snapshots for ref in snapshot.evidence_refs)
     fresh_snapshot = any(

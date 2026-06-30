@@ -70,6 +70,24 @@ def test_local_tool_admission_uses_local_resource_snapshot(tmp_path: Path, monke
     assert "quota.local_resource_state:green" in admission.receipt_refs
 
 
+def test_local_model_admission_is_bound_to_route_snapshot(tmp_path: Path, monkeypatch) -> None:
+    ledger = _write_test_ledger(tmp_path)
+    monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+    monkeypatch.setenv("HAPAX_CCTV_CAPABILITY_ADMISSION_NOW", "2026-06-01T00:10:00Z")
+
+    local_fast = admit_model_alias("local-fast")
+    appendix_fast = admit_model_alias("appendix-fast")
+
+    assert local_fast.admitted is True
+    assert local_fast.route_id == "local-fast"
+    assert "litellm:gateway-4000-local-fast-route-healthy" in local_fast.receipt_refs
+    assert appendix_fast.admitted is False
+    assert appendix_fast.route_id == "appendix-fast"
+    assert "local_resource_snapshot_missing" in appendix_fast.reason_codes
+    assert appendix_fast.quota_evidence_refs == ()
+    assert "litellm:gateway-4000-local-fast-route-healthy" not in appendix_fast.receipt_refs
+
+
 def test_missing_ledger_refuses_fail_closed(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(tmp_path / "missing.json"))
 

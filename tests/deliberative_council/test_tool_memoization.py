@@ -191,6 +191,28 @@ async def test_web_verify_memoized_within_scope() -> None:
         assert calls["n"] == 2
 
 
+async def test_governed_cache_records_admission_into_each_event_scope() -> None:
+    calls, fake_agent = _counting_web_agent()
+    admission = _admitted_web_verify()
+    first_events: list[CapabilityAdmissionReceipt] = []
+    second_events: list[CapabilityAdmissionReceipt] = []
+    with (
+        patch("agents.deliberative_council.tools.admit_tool", return_value=admission),
+        patch("pydantic_ai.Agent", fake_agent),
+        patch("shared.config.get_model", return_value="dummy-model"),
+    ):
+        with tool_memoization_scope():
+            with capability_admission_event_scope(first_events):
+                first = await web_verify(None, "shared governed query")
+            with capability_admission_event_scope(second_events):
+                second = await web_verify(None, "shared governed query")
+
+    assert first == second
+    assert calls["n"] == 1
+    assert first_events == [admission]
+    assert second_events == [admission]
+
+
 async def test_web_verify_uncached_without_scope() -> None:
     calls, fake_agent = _counting_web_agent()
     with (
