@@ -331,7 +331,7 @@ connector_tool_is_mutating() {
     set -e
     case "$rc" in
       0) return 0 ;;
-      1) return 1 ;;
+      10) return 1 ;;
       *) return 0 ;;
     esac
   fi

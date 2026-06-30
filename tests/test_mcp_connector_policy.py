@@ -97,6 +97,8 @@ def test_manifest_classifies_mutators_and_read_only_evidence() -> None:
         "mcp__codex_apps__google_drive___bulk_update_file_comments",
         "mcp__codex_apps__google_drive___batch_update_document",
         "mcp__codex_apps__github___reply_to_review_comment",
+        "mcp__codex_apps__gmail___forward_emails",
+        "mcp__codex_apps__gmail___apply_labels_to_emails",
     ):
         classification = classify_connector_tool(tool_name)
         assert classification is not None
@@ -108,6 +110,8 @@ def test_heuristic_catches_new_mutating_connector_names() -> None:
         "mcp__codex_apps__google_drive___delete_file",
         "mcp__codex_apps__google_drive___import_unregistered_file",
         "mcp__codex_apps__github___reply_to_unregistered_review_comment",
+        "mcp__codex_apps__gmail___forward_unregistered_email",
+        "mcp__codex_apps__gmail___apply_unregistered_label",
     ):
         classification = classify_connector_tool(tool_name)
         assert classification is not None
@@ -134,6 +138,8 @@ def test_side_effecting_connector_blocks_without_route_decision(tmp_path: Path) 
         "mcp__codex_apps__google_drive___import_document",
         "mcp__codex_apps__google_drive___bulk_update_file_comments",
         "mcp__codex_apps__github___reply_to_review_comment",
+        "mcp__codex_apps__gmail___forward_emails",
+        "mcp__codex_apps__gmail___apply_labels_to_emails",
     ):
         result = evaluate_connector_receipt_gate(
             tool_name,

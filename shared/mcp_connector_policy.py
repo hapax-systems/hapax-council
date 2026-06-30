@@ -76,8 +76,8 @@ _KNOWN_CONNECTOR_SERVICES = frozenset(
 )
 _MUTATING_FUNCTION_RE = re.compile(
     r"^(?:"
-    r"act|add|archive|batch_modify|batch_update|bulk_label|bulk_update|confirm"
-    r"|copy|correct|create|decide|delete|disable|dismiss|flush|import|merge"
+    r"act|add|apply|archive|batch_modify|batch_update|bulk_label|bulk_update|confirm"
+    r"|copy|correct|create|decide|delete|disable|dismiss|flush|forward|import|merge"
     r"|modify|move|nudge_act|push|rename|replace|reply|respond|restore|send|set"
     r"|share|trash|update|upload|write"
     r")(?:_|$)"
@@ -429,7 +429,10 @@ def evaluate_connector_receipt_gate(
         return ConnectorReceiptGateResult(
             allowed=False,
             reason_code="task_id_absent",
-            message="side-effecting connector tool requires a claimed task",
+            message=(
+                "side-effecting connector tool requires a claimed task. Next action: "
+                "claim the dispatched task before retrying the connector mutation."
+            ),
             classification=classification,
         )
     checked_at = (now or datetime.now(UTC)).astimezone(UTC)
@@ -442,7 +445,8 @@ def evaluate_connector_receipt_gate(
             reason_code=route_refusal,
             message=(
                 "side-effecting connector tool requires a fresh green route decision "
-                f"for task {task_id}"
+                f"for task {task_id}. Next action: refresh the route through governed "
+                "methodology dispatch so route, quota, and resource evidence are current."
             ),
             classification=classification,
         )
@@ -453,7 +457,10 @@ def evaluate_connector_receipt_gate(
         return ConnectorReceiptGateResult(
             allowed=False,
             reason_code="receipt_dir_disabled",
-            message="route-authority receipt directory is disabled",
+            message=(
+                "route-authority receipt directory is disabled. Next action: restore "
+                "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR or the default receipt directory."
+            ),
             classification=classification,
             route_id=route_id,
         )
@@ -480,7 +487,9 @@ def evaluate_connector_receipt_gate(
             message=(
                 "side-effecting connector tool requires a fresh connector_mutation "
                 f"receipt for route {route_id}, task {task_id}, surfaces "
-                f"{','.join(classification.required_mutation_surfaces)}"
+                f"{','.join(classification.required_mutation_surfaces)}. Next action: "
+                "mint a task-bound connector_mutation route-authority receipt after "
+                "refreshing route/quota/resource evidence."
             ),
             classification=classification,
             route_id=route_id,
@@ -559,7 +568,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(_classification_json(classify_connector_tool(args.tool_name))))
             return 0
         if args.command == "is-side-effecting":
-            return 0 if is_side_effecting_connector_tool(args.tool_name) else 1
+            return 0 if is_side_effecting_connector_tool(args.tool_name) else 10
 
         result = evaluate_connector_receipt_gate(
             args.tool_name,

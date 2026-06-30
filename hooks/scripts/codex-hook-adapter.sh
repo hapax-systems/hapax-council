@@ -125,7 +125,7 @@ tool_kind() {
         printf 'mutation\n'
         return 0
       fi
-      if [ "$connector_rc" -ne 1 ]; then
+      if [ "$connector_rc" -ne 10 ]; then
         printf 'mutation\n'
         return 0
       fi

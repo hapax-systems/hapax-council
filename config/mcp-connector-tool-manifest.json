@@ -96,9 +96,12 @@
     },
     {
       "canonical_name": "gmail.send_draft",
-      "aliases": ["mcp__codex_apps__gmail___send_draft"],
+      "aliases": [
+        "mcp__codex_apps__gmail___send_draft",
+        "mcp__codex_apps__gmail___forward_emails"
+      ],
       "effect_classes": ["external_mutation", "public_egress"],
-      "description": "Send a Gmail draft."
+      "description": "Send or forward Gmail messages."
     },
     {
       "canonical_name": "gmail.create_draft",
@@ -110,6 +113,7 @@
       "canonical_name": "gmail.modify_mailbox",
       "aliases": [
         "mcp__codex_apps__gmail___bulk_label_matching_emails",
+        "mcp__codex_apps__gmail___apply_labels_to_emails",
         "mcp__codex_apps__gmail___archive_emails",
         "mcp__codex_apps__gmail___delete_emails",
         "mcp__codex_apps__gmail___create_label",

@@ -74,6 +74,7 @@ runtimes:
         - matcher: "mcp__.*"
           hooks:
             - mcp-connector-mutator-gate.sh
+            - authorization-packet-validator.sh
         - matcher: "Bash"
           hooks:
             - authorization-packet-validator.sh

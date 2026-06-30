@@ -76,6 +76,16 @@ def test_claude_settings_fixture_matches_manifest(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_claude_mcp_mutators_run_connector_and_release_gates() -> None:
+    entries = _manifest()["runtimes"]["claude"]["phases"]["PreToolUse"]
+    mcp_entry = next(entry for entry in entries if entry["matcher"] == "mcp__.*")
+
+    assert mcp_entry["hooks"] == [
+        "mcp-connector-mutator-gate.sh",
+        "authorization-packet-validator.sh",
+    ]
+
+
 def test_claude_settings_hook_command_with_args_uses_command_basename(tmp_path: Path) -> None:
     settings = _write_claude_settings(
         tmp_path,

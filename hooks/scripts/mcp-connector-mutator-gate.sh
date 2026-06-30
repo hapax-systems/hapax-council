@@ -25,7 +25,7 @@ if command -v python3 >/dev/null 2>&1; then
   classifier_rc=$?
   set -e
 fi
-if [[ "$classifier_rc" == 1 ]]; then
+if [[ "$classifier_rc" == 10 ]]; then
   exit 0
 fi
 if [[ "$classifier_rc" != 0 ]]; then
