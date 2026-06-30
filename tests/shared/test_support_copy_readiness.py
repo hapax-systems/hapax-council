@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+import shared.support_copy_readiness as readiness_module
 from shared.conversion_target_readiness import REQUIRED_GATE_DIMENSIONS, GateDimension
 from shared.monetization_readiness_ledger import (
     GateDimensionEvidence,
@@ -81,6 +82,15 @@ def _refs(*, money: bool = True, no_perk: bool = True) -> dict[str, bool]:
         "support_surface_registry.no_perk_copy_valid": no_perk,
         "MonetizationReadiness.safe_to_publish_offer": money,
     }
+
+
+@pytest.fixture(autouse=True)
+def _verified_resource_receipt_refs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        readiness_module,
+        "resource_receipt_exists",
+        lambda _ref: True,
+    )
 
 
 def test_missing_registry_is_unavailable_and_fails_closed() -> None:
@@ -182,6 +192,26 @@ def test_missing_resource_receipt_holds_even_with_public_truth_and_monetization(
     assert decision.state == "monetization-held"
     assert decision.public_copy_allowed is False
     assert "money_rail_resource_receipt_missing" in decision.blockers
+
+
+def test_unverified_resource_receipt_holds_public_support_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        readiness_module,
+        "resource_receipt_exists",
+        lambda _ref: False,
+    )
+
+    decision = evaluate_support_copy_readiness(
+        _registry(),
+        _ledger(ALL_DIMS, resource_receipt=True),
+        readiness_refs=_refs(),
+    )
+
+    assert decision.state == "monetization-held"
+    assert decision.public_copy_allowed is False
+    assert "money_rail_resource_receipt_unverified" in decision.blockers
 
 
 def test_readme_and_package_cannot_invite_support_before_public_safe() -> None:

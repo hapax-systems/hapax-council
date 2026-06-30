@@ -252,7 +252,11 @@ def resource_receipt_exists(ref: str, *, log_path: Path | None = None) -> bool:
 
 def require_resource_receipt(ref: str, *, log_path: Path | None = None) -> None:
     if not resource_receipt_exists(ref, log_path=log_path):
-        raise MoneyRailResourceReceiptError(f"missing money-rail resource receipt: {ref}")
+        raise MoneyRailResourceReceiptError(
+            f"missing money-rail resource receipt: {ref}; "
+            "check HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH, /dev/shm availability, "
+            "and receipt log permissions"
+        )
 
 
 def record_ingress_resource_receipt(

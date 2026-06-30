@@ -13,6 +13,7 @@ from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from agents.payment_processors.resource_receipts import resource_receipt_exists
 from shared.conversion_target_readiness import GateDimension, TargetFamilyId
 from shared.monetization_readiness_ledger import MonetizationReadinessLedger
 from shared.support_surface_registry import SupportSurfaceRegistry, public_prompt_allowed
@@ -329,6 +330,17 @@ def evaluate_support_copy_readiness(
             surface_id=surface_id,
             blockers=("money_rail_resource_receipt_missing",),
             evidence_refs=entry.evidence_refs,
+            registry=registry,
+        )
+    unverified_receipt_refs = tuple(ref for ref in receipt_refs if not resource_receipt_exists(ref))
+    if unverified_receipt_refs:
+        return _decision(
+            state="monetization-held",
+            target_family_id=target_family_id,
+            surface_id=surface_id,
+            blockers=("money_rail_resource_receipt_unverified",),
+            evidence_refs=entry.evidence_refs,
+            resource_receipt_refs=receipt_refs,
             registry=registry,
         )
 

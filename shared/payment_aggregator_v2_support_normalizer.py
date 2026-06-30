@@ -27,6 +27,8 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from agents.payment_processors.resource_receipts import resource_receipt_exists
+
 MONEY_RAIL_RESOURCE_RECEIPT_REF_PREFIX = "money-rail-resource-receipt:"
 
 
@@ -243,14 +245,16 @@ def evaluate_public_emit(
         )
 
     missing_resource_receipts = tuple(
-        r.receipt_id for r in public_receipts if not r.resource_receipt_ref
+        r.receipt_id
+        for r in public_receipts
+        if not r.resource_receipt_ref or not resource_receipt_exists(r.resource_receipt_ref)
     )
     if missing_resource_receipts:
         return PublicEmitDecision(
             rail=rail,
             verdict=NormalizerVerdict.REFUSED_MISSING_RESOURCE_RECEIPT,
             reason=(
-                f"rail {rail.value!r} has receipts without governed resource receipt refs: "
+                f"rail {rail.value!r} has receipts without verified governed resource receipt refs: "
                 f"{', '.join(missing_resource_receipts)}"
             ),
         )
