@@ -62,6 +62,19 @@ CCTV_INTAKE_ADMISSION_FIELDS = (
     "cctv_intake_recommendation",
     "intake_recommendation",
 )
+CCTV_ROUTE_RESOURCE_ADMISSION_FIELDS = (
+    "cctv_route_resource_admission",
+    "route_resource_admission",
+    "cctv_capability_admission",
+    "capability_admission",
+)
+CCTV_CAPABILITY_RECEIPT_FIELDS = (
+    "cctv_capability_receipts",
+    "capability_receipts",
+    "cctv_capability_receipt_refs",
+    "capability_receipt_refs",
+)
+NULLISH_SCALARS = {"", "null", "none", "None", "NULL", "~", "unassigned", "[]"}
 
 DECOMPOSITION_PROMPT = """\
 You are the Hapax request decomposition engine. Given a request note,
@@ -124,7 +137,9 @@ def _scalar(value: Any) -> str:
     if isinstance(value, list):
         return ""
     text = str(value).strip()
-    return "" if text in {"null", "None", "~"} else text
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        text = text[1:-1].strip()
+    return "" if text in NULLISH_SCALARS or text.lower() in NULLISH_SCALARS else text
 
 
 def _string_list(value: Any) -> list[str]:
@@ -626,6 +641,15 @@ def _first_scalar(frontmatter: dict[str, Any], field_names: tuple[str, ...]) -> 
     return ""
 
 
+def _first_values(frontmatter: dict[str, Any], field_names: tuple[str, ...]) -> list[str]:
+    values: list[str] = []
+    for field_name in field_names:
+        for value in _string_list(frontmatter.get(field_name)):
+            if value and value not in values:
+                values.append(value)
+    return values
+
+
 def _authority_case(frontmatter: dict[str, Any]) -> str:
     return _scalar(frontmatter.get("planning_case")) or _scalar(frontmatter.get("authority_case"))
 
@@ -652,6 +676,14 @@ def _decomposition_admission_blockers(request_data: dict[str, Any]) -> list[str]
         blockers.append("missing_cctv_intake_verdict")
     elif admission_value not in CCTV_READY_ADMISSION_VALUES:
         blockers.append(f"cctv_intake_not_ready:{admission_value}")
+
+    route_admission = _first_scalar(fm, CCTV_ROUTE_RESOURCE_ADMISSION_FIELDS)
+    if not route_admission:
+        blockers.append("missing_cctv_route_resource_admission")
+    elif route_admission != "admitted":
+        blockers.append(f"cctv_route_resource_not_admitted:{route_admission}")
+    elif not _first_values(fm, CCTV_CAPABILITY_RECEIPT_FIELDS):
+        blockers.append("missing_cctv_capability_receipts")
 
     authority = _authority_case(fm)
     if not authority:
