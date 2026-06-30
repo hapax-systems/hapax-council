@@ -123,6 +123,16 @@ def _path_without_jq(tmp_path: Path) -> str:
     return str(bin_dir)
 
 
+def _path_without_python(tmp_path: Path) -> str:
+    bin_dir = tmp_path / "bin-no-python"
+    bin_dir.mkdir()
+    for name in ("bash", "cat", "dirname", "jq"):
+        target = shutil.which(name)
+        assert target is not None
+        (bin_dir / name).symlink_to(target)
+    return str(bin_dir)
+
+
 def test_permission_request_auto_approves_no_ask_policy(tmp_path: Path) -> None:
     result = _run_adapter(
         {"hook_event_name": "PermissionRequest", "session_id": "s1"},
@@ -360,6 +370,24 @@ def test_mcp_read_only_evidence_does_not_run_mutation_gates(tmp_path: Path) -> N
             "tool_input": {"libraryId": "/reactjs/react.dev", "question": "useEffect docs"},
         },
         home=tmp_path,
+    )
+
+    assert result.get("continue") is True
+    assert "decision" not in result
+
+
+def test_mcp_read_only_evidence_without_python_does_not_run_mutation_gates(
+    tmp_path: Path,
+) -> None:
+    result = _run_adapter(
+        {
+            "hook_event_name": "PreToolUse",
+            "session_id": "s1",
+            "tool_name": "mcp__context7__query-docs",
+            "tool_input": {"libraryId": "/reactjs/react.dev", "question": "useEffect docs"},
+        },
+        home=tmp_path,
+        extra_env={"PATH": _path_without_python(tmp_path)},
     )
 
     assert result.get("continue") is True

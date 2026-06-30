@@ -323,23 +323,29 @@ connector_tool_is_mutating() {
   local name="$1"
   local repo_root rc
   repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+  case "$name" in
+    mcp__context7__resolve-library-id|mcp__context7__query-docs)
+      return 1
+      ;;
+  esac
   if command -v python3 >/dev/null 2>&1; then
     set +e
     PYTHONPATH="$repo_root:${PYTHONPATH:-}" \
       python3 -m shared.mcp_connector_policy is-side-effecting "$name" >/dev/null 2>&1
     rc=$?
-    set -e
     case "$rc" in
       0) return 0 ;;
       10) return 1 ;;
       *)
-        echo "cc-task-gate: WARNING — connector classifier failed for '$name'; treating as mutating." >&2
-        return 0
+        echo "cc-task-gate: BLOCKED — connector classifier failed for '$name'." >&2
+        echo "  Next action: repair shared.mcp_connector_policy or config/mcp-connector-tool-manifest.json, then retry." >&2
+        return 2
         ;;
     esac
   fi
-  printf '%s' "$name" | grep -Eiq \
-    '(create|update|delete|merge|push|commit|branch|tag|release|pull_request|issue_comment|send|archive|label|modify|share|upload|respond|dismiss|confirm|disable|flush|decide|nudge_act|set)'
+  echo "cc-task-gate: BLOCKED — python3 missing; cannot classify MCP connector '$name'." >&2
+  echo "  Next action: restore python3 on PATH or repair the lane environment, then retry." >&2
+  return 2
 }
 
 # Cognition / diagnostic surfaces are never release-risk: operator auto-memory,
@@ -391,9 +397,21 @@ case "$tool_name" in
     fi
     ;;
   mcp__*)
-    if ! connector_tool_is_mutating "$tool_name"; then
-      exit 0
-    fi
+    set +e
+    connector_tool_is_mutating "$tool_name"
+    connector_rc=$?
+    set -e
+    case "$connector_rc" in
+      0) ;;
+      1) exit 0 ;;
+      *)
+        _emit_block <<EOF
+cc-task-gate: BLOCKED — connector classifier failed for '$tool_name'.
+  Next action: repair shared.mcp_connector_policy or config/mcp-connector-tool-manifest.json, then retry.
+EOF
+        exit 2
+        ;;
+    esac
     ;;
   *)
     exit 0

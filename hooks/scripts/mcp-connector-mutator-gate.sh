@@ -23,6 +23,17 @@ if [[ -z "$tool_name" ]]; then
   exit 2
 fi
 
+mcp_known_read_only_tool() {
+  case "$1" in
+    mcp__context7__resolve-library-id|mcp__context7__query-docs)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 classifier_rc=2
 if command -v python3 >/dev/null 2>&1; then
   set +e
@@ -31,14 +42,20 @@ if command -v python3 >/dev/null 2>&1; then
   classifier_rc=$?
   set -e
 fi
-if [[ "$classifier_rc" == 10 ]]; then
-  exit 0
-fi
-if [[ "$classifier_rc" != 0 ]]; then
-  echo "mcp-connector-mutator-gate: BLOCKED — connector classifier failed for '$tool_name'." >&2
-  echo "  Next action: repair shared.mcp_connector_policy or config/mcp-connector-tool-manifest.json, then retry." >&2
-  exit 2
-fi
+case "$classifier_rc" in
+  0) ;;
+  10)
+    exit 0
+    ;;
+  *)
+    if mcp_known_read_only_tool "$tool_name"; then
+      exit 0
+    fi
+    echo "mcp-connector-mutator-gate: BLOCKED — connector classifier failed for '$tool_name'." >&2
+    echo "  Next action: repair shared.mcp_connector_policy or config/mcp-connector-tool-manifest.json, then retry." >&2
+    exit 2
+    ;;
+esac
 
 session_id=""
 if declare -F hapax_session_id >/dev/null 2>&1; then

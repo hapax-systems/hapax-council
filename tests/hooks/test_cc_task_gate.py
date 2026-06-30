@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -198,6 +199,16 @@ def _run_hook(
         cwd=str(cwd) if cwd is not None else None,
         timeout=10,
     )
+
+
+def _path_without_python(tmp_path: Path) -> str:
+    bin_dir = tmp_path / "bin-no-python"
+    bin_dir.mkdir()
+    for name in ("bash", "cat", "dirname", "grep", "jq", "tr"):
+        target = shutil.which(name)
+        assert target is not None
+        (bin_dir / name).symlink_to(target)
+    return str(bin_dir)
 
 
 def _git_repo_on_branch(tmp_path: Path, branch: str) -> Path:
@@ -530,6 +541,20 @@ class TestStatusGating:
         )
         assert result.returncode == 2
         assert "no claimed task" in result.stderr.lower()
+
+    def test_mcp_app_connector_classifier_failure_blocks(self, tmp_path: Path) -> None:
+        result = _run_hook(
+            {
+                "tool_name": "mcp__codex_apps__gmail___send_draft",
+                "tool_input": {"draft_id": "draft-1"},
+            },
+            home=tmp_path,
+            extra_env={"PATH": _path_without_python(tmp_path)},
+        )
+
+        assert result.returncode == 2
+        assert "connector classifier failed" in result.stderr
+        assert "Next action:" in result.stderr
 
     def test_mcp_app_connector_mutation_rejects_terminal_task(self, tmp_path: Path) -> None:
         _, note = _make_vault(tmp_path, status="done", assigned="alpha")

@@ -110,6 +110,17 @@ run_hook() {
   return 0
 }
 
+mcp_known_read_only_tool() {
+  case "$1" in
+    mcp__context7__resolve-library-id|mcp__context7__query-docs)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 tool_kind() {
   local connector_rc
   case "$TOOL_NAME" in
@@ -131,14 +142,16 @@ tool_kind() {
         connector_rc=$?
         set -e
       fi
+      if [ "$connector_rc" -eq 10 ] || mcp_known_read_only_tool "$TOOL_NAME"; then
+        printf 'other\n'
+        return 0
+      fi
       if [ "$connector_rc" -eq 0 ]; then
         printf 'mutation\n'
         return 0
       fi
-      if [ "$connector_rc" -ne 10 ]; then
-        printf 'mutation\n'
-        return 0
-      fi
+      printf 'mutation\n'
+      return 0
       ;;
   esac
   if printf '%s' "$INPUT" | jq -e '

@@ -109,6 +109,19 @@ def test_read_only_mcp_tool_passes_without_claim(tmp_path: Path) -> None:
     assert result.returncode == 0
 
 
+def test_python3_absent_read_only_mcp_tool_passes_without_claim(tmp_path: Path) -> None:
+    result = _run_gate(
+        {
+            "tool_name": "mcp__context7__query-docs",
+            "tool_input": {"libraryId": "/reactjs/react.dev"},
+        },
+        home=tmp_path,
+        extra_env={"PATH": _path_without_python(tmp_path)},
+    )
+
+    assert result.returncode == 0
+
+
 def test_side_effecting_connector_without_claim_blocks_with_next_action(tmp_path: Path) -> None:
     result = _run_gate(
         {
