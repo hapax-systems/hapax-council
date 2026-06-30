@@ -40,6 +40,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.dispatcher_policy import ROUTE_DECISION_LEDGER  # noqa: E402
 from shared.failure_classification import (  # noqa: E402
     STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
     STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES,
@@ -51,6 +52,10 @@ from shared.failure_classification import (  # noqa: E402
 
 DEFAULT_REGISTRY_PATH = REPO_ROOT / "config" / "review-lenses" / "registry.yaml"
 LENS_DIR = REPO_ROOT / "config" / "review-lenses"
+DEFAULT_ROUTE_DECISION_LEDGER_PATH = (
+    Path.home() / ".cache" / "hapax" / "orchestration" / ROUTE_DECISION_LEDGER
+)
+ROUTE_DECISION_LEDGER_PATH = DEFAULT_ROUTE_DECISION_LEDGER_PATH
 
 #: Dossier filename suffix; the dossier lives beside the task note.
 REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
@@ -1231,6 +1236,15 @@ def _route_decision_ledger_record(
     if not ledger_ref:
         return None, "ledger_missing"
     path = Path(ledger_ref).expanduser()
+    try:
+        resolved_path = path.resolve(strict=False)
+        trusted_path = ROUTE_DECISION_LEDGER_PATH.expanduser().resolve(strict=False)
+    except OSError:
+        return None, "ledger_unreadable"
+    if resolved_path != trusted_path:
+        return None, "ledger_untrusted"
+    if not path.is_file():
+        return None, "ledger_unreadable"
     try:
         with path.open("r", encoding="utf-8") as ledger:
             for line in ledger:

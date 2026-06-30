@@ -58,6 +58,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import review_team  # noqa: E402
 
 from shared.dispatcher_policy import (  # noqa: E402
+    ROUTE_DECISION_LEDGER,
     DispatchAction,
     DispatchPolicySources,
     build_dispatch_request,
@@ -1438,6 +1439,11 @@ def review_pr(
     send_runner = send_runner or _default_send_runner
     now_iso = now_iso or datetime.now(UTC).isoformat(timespec="seconds")
     registry = review_team.load_lens_registry(registry_path)
+    review_team.ROUTE_DECISION_LEDGER_PATH = (
+        Path(route_decision_ledger_dir) / ROUTE_DECISION_LEDGER
+        if route_decision_ledger_dir is not None
+        else review_team.DEFAULT_ROUTE_DECISION_LEDGER_PATH
+    )
 
     pr_info = fetch_pr(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner)
     if pr_info.is_draft:

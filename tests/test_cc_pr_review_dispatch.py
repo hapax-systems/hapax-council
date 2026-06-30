@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 import yaml
 
-from shared.dispatcher_policy import DispatchPolicySources
+from shared.dispatcher_policy import ROUTE_DECISION_LEDGER, DispatchPolicySources
 from shared.frontmatter import parse_frontmatter
 from shared.platform_capability_registry import PlatformCapabilityRegistry
 from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES, QuotaSpendLedger
@@ -384,7 +384,15 @@ def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingRe
     reviewers = overrides.pop("reviewers", RecordingReviewers())
     now_iso = overrides.pop("now_iso", "2026-06-11T21:00:00+00:00")
     policy_sources = overrides.pop("policy_sources", _admitted_policy_sources(now_iso=now_iso))
+    route_decision_ledger_dir = overrides.pop(
+        "route_decision_ledger_dir", tmp_path / "route-ledger"
+    )
     default_outage_state = dispatch.FAMILY_OUTAGE_STATE == dispatch.review_team.FAMILY_OUTAGE_STATE
+    old_review_team_route_decision_ledger_path = dispatch.review_team.ROUTE_DECISION_LEDGER_PATH
+    if route_decision_ledger_dir is not None:
+        dispatch.review_team.ROUTE_DECISION_LEDGER_PATH = (
+            Path(route_decision_ledger_dir) / ROUTE_DECISION_LEDGER
+        )
     if default_outage_state:
         old_dispatch_outage_state = dispatch.FAMILY_OUTAGE_STATE
         old_review_team_outage_state = dispatch.review_team.FAMILY_OUTAGE_STATE
@@ -402,12 +410,13 @@ def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingRe
         "send_runner": lambda cmd: None,
         "now_iso": now_iso,
         "policy_sources": policy_sources,
-        "route_decision_ledger_dir": tmp_path / "route-ledger",
+        "route_decision_ledger_dir": route_decision_ledger_dir,
     }
     kwargs.update(overrides)
     try:
         result = dispatch.review_pr(42, **kwargs)
     finally:
+        dispatch.review_team.ROUTE_DECISION_LEDGER_PATH = old_review_team_route_decision_ledger_path
         if default_outage_state:
             dispatch.FAMILY_OUTAGE_STATE = old_dispatch_outage_state
             dispatch.review_team.FAMILY_OUTAGE_STATE = old_review_team_outage_state
