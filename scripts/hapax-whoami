@@ -20,12 +20,29 @@ set -eu
 
 # Canonical identity regex — shared by the --match-title seam and the foot-window
 # -title path below. Mirrors the lane vocabulary in hooks/scripts/agent-role.sh.
-_IDENTITY_RE='\b(cx-[a-z][a-z-]*|cc-[a-z][a-z-]*|vbe-[0-9]+|antigrav|alpha|beta|gamma|delta|epsilon|zeta|eta|theta)\b'
+_IDENTITY_RE='\b(cx-[a-z][a-z-]*|cc-[a-z][a-z-]*|vbe-[0-9]+|agy(-[a-z0-9-]+)?|antigrav(ity)?(-[a-z0-9-]+)?|alpha|beta|gamma|delta|epsilon|zeta|eta|theta)\b'
+
+normalize_identity() {
+  case "$1" in
+    antigrav|antigravity)
+      printf '%s\n' "agy"
+      ;;
+    antigrav-*|antigravity-*)
+      suffix="${1#antigrav}"
+      suffix="${suffix#ity}"
+      printf 'agy%s\n' "$suffix"
+      ;;
+    *)
+      printf '%s\n' "$1"
+      ;;
+  esac
+}
 
 # Testable seam: `hapax-whoami --match-title "<title>"` runs ONLY the title->identity
 # match (the foot-window-title path) so the matcher is unit-testable without a compositor.
 if [ "${1:-}" = "--match-title" ]; then
-  printf '%s\n' "$(printf '%s' "${2:-}" | grep -oiE "$_IDENTITY_RE" | tail -1 | tr '[:upper:]' '[:lower:]')"
+  _match="$(printf '%s' "${2:-}" | grep -oiE "$_IDENTITY_RE" | tail -1 | tr '[:upper:]' '[:lower:]')"
+  normalize_identity "$_match"
   exit 0
 fi
 
@@ -40,7 +57,7 @@ fi
 for _ev in "${HAPAX_AGENT_NAME:-}" "${CODEX_THREAD_NAME:-}" "${CODEX_SESSION_NAME:-}" \
   "${CODEX_SESSION:-}" "${CODEX_ROLE:-}" "${HAPAX_AGENT_ROLE:-}" "${CLAUDE_ROLE:-}"; do
   if [ -n "$_ev" ]; then
-    printf '%s\n' "$_ev"
+    normalize_identity "$_ev"
     exit 0
   fi
 done
@@ -55,7 +72,7 @@ _sid="${HAPAX_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}"
 if [ -n "$_sid" ] && [ -f "$HOME/.cache/hapax/session-role-$_sid" ]; then
   _role="$(head -n1 "$HOME/.cache/hapax/session-role-$_sid" 2>/dev/null | tr -d '[:space:]' || true)"
   if [ -n "$_role" ]; then
-    printf '%s\n' "$_role"
+    normalize_identity "$_role"
     exit 0
   fi
 fi
@@ -120,4 +137,4 @@ if [ -z "$identity" ]; then
   exit 1
 fi
 
-echo "$identity"
+normalize_identity "$identity"

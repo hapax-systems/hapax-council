@@ -410,6 +410,17 @@ def render_reviewer_prompt(
             + render_untrusted_block("Prior unresolved criticals", prior_yaml, limit=20_000)
             + "\n"
         )
+    diff_semantics = """# Unified Diff Semantics And Finding Evidence
+
+The PR diff below is a unified diff. Lines beginning with `-` are removed from
+the PR head and MUST NOT be cited as current source. Lines beginning with `+`
+are added/current in the PR head. Context lines beginning with a space are
+unchanged. A finding about current behavior must be supported by a `+` line,
+an unchanged context line, a current-source excerpt above, or another current
+artifact such as the linked task note. If a prior critical is contradicted by
+current-source excerpts or by `+` replacement lines in the diff, do not repeat
+it as unresolved.
+"""
     pr_metadata = yaml.safe_dump(
         {
             "pr": pr_info.number,
@@ -438,7 +449,9 @@ Apply EVERY lens charter below. Address every checklist item explicitly (pass / 
 
 {charters}
 
-{prior_block}{prior_file_excerpts}{render_untrusted_block("PR diff", diff, limit=MAX_DIFF_CHARS + 500)}
+{prior_block}{prior_file_excerpts}{diff_semantics}
+
+{render_untrusted_block("PR diff", diff, limit=MAX_DIFF_CHARS + 500)}
 
 # Output contract
 

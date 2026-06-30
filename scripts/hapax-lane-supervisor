@@ -17,7 +17,7 @@
 #   - claude (greek): headless pidfile model at $RUNTIME_DIR/<lane>.pid, OR a
 #                     live tmux session hapax-claude-<lane>.
 #   - codex  (cx-*):  tmux session hapax-codex-<lane>.
-#   - antigrav:       tmux session hapax-antigrav-<lane>.
+#   - agy:            tmux session hapax-agy-<lane>.
 #
 # Spam control mirrors systemd Restart=always + StartLimit: a per-lane restart
 # cooldown plus a burst cap over a sliding window.
@@ -36,14 +36,14 @@ VAULT_ROOT="${HAPAX_SUPERVISOR_VAULT_ROOT:-$HOME/Documents/Personal/20-projects/
 # the operator-attended integrator, never auto-respawned); all greek lanes have
 # real worktrees (some parked under ~/.claude/worktrees/ — see lane_has_worktree).
 #
-# Codex/antigrav supervision is OPT-IN (default empty). The prior hardcoded
+# Codex/agy supervision is OPT-IN (default empty). The prior hardcoded
 # defaults (cx-cpu-bridge/cx-effect-drift-current/cx-preset-storm/cx-visual-bandwidth
 # and a bare `antigrav`) named lanes with NO git worktree and NO repo references —
 # stale entries whose only effect was a permanent rc=4 respawn storm (codex) and
 # silent "no worktree — skipping" lines every cycle. The live codex lanes are
-# color-named and task-spawned; designating an always-on codex/antigrav roster is
+# color-named and task-spawned; designating an always-on codex/agy roster is
 # an operator policy decision (Phase 6 canonical lane registry). Set
-# HAPAX_SUPERVISOR_CODEX_LANES / HAPAX_SUPERVISOR_ANTIGRAV_LANES (e.g. a systemd
+# HAPAX_SUPERVISOR_CODEX_LANES / HAPAX_SUPERVISOR_AGY_LANES (e.g. a systemd
 # drop-in) to supervise specific lanes — a rostered lane that lacks a worktree now
 # ESCALATES (below) instead of being silently skipped.
 # P0 incident intake is the exception: when an offered P0 incident backlog exists,
@@ -55,7 +55,32 @@ VAULT_ROOT="${HAPAX_SUPERVISOR_VAULT_ROOT:-$HOME/Documents/Personal/20-projects/
 # lanes of this kind", not "fall back to the default". Only an UNSET var defaults.
 CLAUDE_LANES="${HAPAX_SUPERVISOR_CLAUDE_LANES-beta gamma delta epsilon zeta eta theta}"
 CODEX_LANES="${HAPAX_SUPERVISOR_CODEX_LANES-}"
-ANTIGRAV_LANES="${HAPAX_SUPERVISOR_ANTIGRAV_LANES-}"
+AGY_LANES="${HAPAX_SUPERVISOR_AGY_LANES-}"
+normalize_legacy_agy_lanes() {
+  local lane suffix out=()
+  for lane in "$@"; do
+    case "$lane" in
+      antigrav|antigravity)
+        out+=(agy)
+        ;;
+      antigrav-*|antigravity-*)
+        suffix="${lane#antigrav}"
+        suffix="${suffix#ity}"
+        out+=("agy$suffix")
+        ;;
+      *)
+        out+=("$lane")
+        ;;
+    esac
+  done
+  printf '%s\n' "${out[*]}"
+}
+if [ "${HAPAX_SUPERVISOR_AGY_LANES+x}" != x ] && [ -z "$AGY_LANES" ] && [ "${HAPAX_SUPERVISOR_ANTIGRAV_LANES+x}" = x ]; then
+  AGY_LANES="$HAPAX_SUPERVISOR_ANTIGRAV_LANES"
+  # shellcheck disable=SC2086 # Deliberately split the whitespace roster.
+  AGY_LANES="$(normalize_legacy_agy_lanes $AGY_LANES)"
+  [ -n "$AGY_LANES" ] && printf '%s lane-supervisor: deprecated HAPAX_SUPERVISOR_ANTIGRAV_LANES normalized to agy lanes: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$AGY_LANES"
+fi
 if [ "${HAPAX_P0_CODEX_DRAIN_LANES+x}" = x ]; then
   P0_CODEX_LANES="$HAPAX_P0_CODEX_DRAIN_LANES"
 elif [ "${HAPAX_SUPERVISOR_P0_CODEX_LANES+x}" = x ]; then
@@ -75,7 +100,7 @@ DRY_RUN="${HAPAX_SUPERVISOR_DRY_RUN:-0}"
 CLAUDE_HEADLESS_BIN="${HAPAX_CLAUDE_HEADLESS_BIN:-$HOME/.local/bin/hapax-claude-headless}"
 CLAUDE_BIN="${HAPAX_CLAUDE_BIN:-$HOME/.local/bin/hapax-claude}"
 CODEX_BIN="${HAPAX_CODEX_BIN:-$HOME/.local/bin/hapax-codex}"
-ANTIGRAV_BIN="${HAPAX_ANTIGRAV_BIN:-$HOME/.local/bin/hapax-antigrav}"
+AGY_LAUNCHER_BIN="${HAPAX_AGY_LAUNCHER_BIN:-${HAPAX_ANTIGRAV_LAUNCHER_BIN:-$HOME/.local/bin/hapax-agy}}"
 
 # ── escalation thresholds (surface chronic failures; never exit-0-silently) ─────
 # A lane that respawn-fails this many times in a row, or sits in the roster with no
@@ -336,7 +361,7 @@ claude_alive() {
   tmux has-session -t "hapax-claude-$lane" 2>/dev/null
 }
 
-tmux_session_alive() { tmux has-session -t "$1" 2>/dev/null; }
+tmux_session_alive() { tmux has-session -t "=$1" 2>/dev/null; }
 
 # ── spam control ────────────────────────────────────────────────────────────
 
@@ -497,7 +522,7 @@ PY
 
 # ── respawn ───────────────────────────────────────────────────────────────────
 
-# Fast launchers (hapax-claude --readonly / hapax-codex / hapax-antigrav) create
+# Fast launchers (hapax-claude --readonly / hapax-codex / hapax-agy) create
 # a detached tmux session and return promptly, so run them synchronously bounded
 # by a timeout. The headless launcher runs a foreground supervise-loop forever,
 # so it is the only one backgrounded (setsid + disown).
@@ -542,7 +567,7 @@ guard() {
   case "$kind" in
     claude)   reap_guard "$lane"; if launcher_alive "$lane" || claude_alive "$lane"; then progress_guard "$lane"; return 0; fi ;;
     codex)    tmux_session_alive "hapax-codex-$lane" && return 0 ;;
-    antigrav) tmux_session_alive "hapax-antigrav-$lane" && return 0 ;;
+    agy) tmux_session_alive "hapax-agy-$lane" && return 0 ;;
   esac
 
   # Lane is DEAD. It must be respawned regardless of task presence; only spam
@@ -609,9 +634,9 @@ guard() {
       fi
       respawn_tracked=1
       ;;
-    antigrav)
+    agy)
       log "$lane ($kind): DEAD — respawning tmux lane (idle-await; lane reads its own claim)"
-      respawn_sync "$lane" "$ANTIGRAV_BIN" --session "$lane" --no-claim --terminal tmux || respawn_rc=$?
+      respawn_sync "$lane" "$AGY_LAUNCHER_BIN" --session "$lane" --no-claim --terminal tmux || respawn_rc=$?
       respawn_tracked=1
       ;;
   esac
@@ -1127,7 +1152,7 @@ activate_p0_codex_drain_lane
 
 for lane in $CLAUDE_LANES;   do guard "$lane" claude;   done
 for lane in $CODEX_LANES;    do guard "$lane" codex;     done
-for lane in $ANTIGRAV_LANES; do guard "$lane" antigrav;  done
+for lane in $AGY_LANES;      do guard "$lane" agy;        done
 
 emit_progress_metrics
 

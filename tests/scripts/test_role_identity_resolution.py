@@ -61,7 +61,7 @@ def test_whoami_marker_still_resolves_when_no_env(tmp_path: Path) -> None:
 # --- hapax-whoami-audit.sh: approved-set == canonical lane vocabulary ---
 
 
-@pytest.mark.parametrize("name", ["cc-zai", "cx-red", "zeta", "theta", "antigrav", "vbe-2"])
+@pytest.mark.parametrize("name", ["cc-zai", "cx-red", "zeta", "theta", "agy", "vbe-2"])
 def test_audit_accepts_full_vocabulary(tmp_path: Path, name: str) -> None:
     r = _run(["bash", str(AUDIT)], tmp_path, {"HAPAX_AGENT_ROLE": name})
     assert r.returncode == 0, f"{name}: {r.stderr}"
@@ -174,12 +174,30 @@ def test_whoami_env_beats_present_and_reachable_marker(tmp_path: Path) -> None:
         ("iota", ""),
         ("cx-red", "cx-red"),
         ("no identity here", ""),
+        ("legacy antigrav window", "agy"),
+        ("legacy antigrav-2 window", "agy-2"),
+        ("legacy antigravity window", "agy"),
+        ("legacy antigravity-2 window", "agy-2"),
     ],
 )
 def test_whoami_match_title(tmp_path: Path, title: str, expected: str) -> None:
     r = _run(["bash", str(WHOAMI), "--match-title", title], tmp_path, {})
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == expected
+
+
+def test_whoami_env_normalizes_legacy_antigrav(tmp_path: Path) -> None:
+    r = _run(["bash", str(WHOAMI)], tmp_path, {"HAPAX_AGENT_NAME": "antigrav-2"})
+
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "agy-2"
+
+
+def test_whoami_env_normalizes_legacy_antigravity(tmp_path: Path) -> None:
+    r = _run(["bash", str(WHOAMI)], tmp_path, {"HAPAX_AGENT_NAME": "antigravity-2"})
+
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "agy-2"
 
 
 # --- hapax-whoami: full env precedence == hapax_agent_identity's order ---

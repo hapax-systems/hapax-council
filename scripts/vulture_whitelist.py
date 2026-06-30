@@ -4467,7 +4467,7 @@ _glmcp_failure_code_for_zai
 # exercises the methods, which the production vulture pass does not count. Reference the
 # consumer-pending surface so the unused-callable gate sees the use.
 from shared.capability_adapter_protocol import (  # noqa: E402
-    AntigravAdapter as _AntigravAdapter,
+    AgyAdapter as _AgyAdapter,
 )
 from shared.capability_adapter_protocol import (  # noqa: E402
     BudgetAuthorityAdapter as _BudgetAuthorityAdapter,
@@ -4501,7 +4501,7 @@ _WorkerAdapter.launch
 _SendCapableAdapter.send
 _BudgetAuthorityAdapter
 _ReviewSeatAdapter
-_AntigravAdapter
+_AgyAdapter
 _ClaudeAdapter
 _CodexAdapter
 

@@ -45,7 +45,7 @@ CAPACITY_INVARIANT = (
 
 REQUIRED_ROUTE_IDS = frozenset(
     {
-        "antigrav.interactive.full",
+        "agy.interactive.full",
         "api.headless.api_frontier",
         "api.headless.provider_gateway",
         "claude.headless.full",
@@ -75,7 +75,7 @@ class StrictModel(BaseModel):
 
 
 class Platform(StrEnum):
-    ANTIGRAV = "antigrav"
+    AGY = "agy"
     API = "api"
     CLAUDE = "claude"
     CODEX = "codex"

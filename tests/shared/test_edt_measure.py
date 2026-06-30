@@ -160,7 +160,7 @@ def _knobs_file(members: list[str], *, expected_set: int = 12, depth_cap: int = 
     return Path(tmp.name)
 
 
-_OBSERVED_MEMBERS = ["antigrav", "api", "claude", "codex", "glmcp", "local_tool", "vibe", "gemini"]
+_OBSERVED_MEMBERS = ["agy", "api", "claude", "codex", "glmcp", "local_tool", "vibe", "gemini"]
 
 # Frozen drift anchors for the opus BASE leaf at score=4/confidence=4 (leaf-specific D1 = 1 own cell):
 # specificity = mean(d1_comp=1/20=0.05, d2_comp~0.64, d5_comp=8/11) ~= 0.472 ; completeness = 8/11 ~= 0.727.

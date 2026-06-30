@@ -1,8 +1,8 @@
 """Executor adapter contract — the one capability surface every runtime conforms
 to (reform §6 P1).
 
-Each launcher (Claude, Codex, Vibe, Antigrav) speaks a common adapter CLI; their
-genuine differences (Antigrav's IDE-surface hook gap, which runtimes have a real
+Each launcher (Claude, Codex, Vibe, agy) speaks a common adapter CLI; their
+genuine differences (agy's remaining wrapper constraints, which runtimes have a real
 headless path) are reported as machine-legible *capability flags* by
 :func:`capabilities`, NOT branched in the dispatcher. The dispatcher consumes
 :func:`supports_route` to decide launchability instead of a hard
@@ -131,8 +131,8 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
         headless=True,
         notes="bounded one-shot headless worker lane",
     ),
-    "antigrav": ExecutorCapabilities(
-        platform="antigrav",
+    "agy": ExecutorCapabilities(
+        platform="agy",
         modes=("interactive",),
         profiles=("full",),
         mutates=True,
@@ -140,8 +140,9 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
         hooks_wired=True,
         headless=False,
         notes=(
-            "agy CLI interactive; PreToolUse gate wired via antigrav-hook-adapter "
-            "(#3802). Residual gap: the IDE Edit/Write surface is not gated."
+            "agy CLI interactive; PreToolUse gate wired via the legacy "
+            "antigrav-hook-adapter compatibility wrapper (#3802). Antigrav is "
+            "deprecated and not a selectable platform identity."
         ),
     ),
 }

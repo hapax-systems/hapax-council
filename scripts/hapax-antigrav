@@ -36,26 +36,27 @@ _HAPAX_LATCH_HELPER="$_HAPAX_ANTIGRAV_SELF_DIR/../hooks/scripts/hapax_check_enab
 
 usage() {
   cat <<'EOF'
-usage: hapax-antigrav [--session antigrav] [--task TASK_ID] [--cd DIR]
+usage: hapax-antigrav [--session agy] [--task TASK_ID] [--cd DIR]
                       [--inflection FILE] [--no-claim] [--no-open]
                       [--terminal tmux|current] [--] [agy args...]
 
-Launches Google Antigravity CLI on the Hapax antigrav worktree, with
+Launches Google Antigravity CLI (`agy`) on the Hapax agy worktree, with
 identity envvars wired and (optionally) cc-claim run.
 
-Antigrav is an audited full-worker lane. Onboarding:
+agy is an audited full-worker lane. Historical Antigrav paths are compatibility
+provenance only. Onboarding:
   ~/.cache/hapax/relay/onboarding-antigrav.md
 
 Examples:
-  hapax-antigrav                          # just open the worktree in tmux
-  hapax-antigrav --task add-tests-foo     # claim + start agy in tmux
-  hapax-antigrav --terminal current       # run agy in the current terminal
-  hapax-antigrav --no-open                # provision worktree only, don't launch agy
+  hapax-agy                               # just open the worktree in tmux
+  hapax-agy --task add-tests-foo          # claim + start agy in tmux
+  hapax-agy --terminal current            # run agy in the current terminal
+  hapax-agy --no-open                     # provision worktree only, don't launch agy
 
 Environment exports:
-  HAPAX_AGENT_INTERFACE=antigravity
-  HAPAX_AGENT_NAME=antigrav
-  HAPAX_AGENT_SLOT=antigrav
+  HAPAX_AGENT_INTERFACE=agy
+  HAPAX_AGENT_NAME=agy
+  HAPAX_AGENT_SLOT=agy
 EOF
 }
 
@@ -195,25 +196,34 @@ case "$TERMINAL" in
     ;;
 esac
 
-if ! [[ "$SESSION" =~ ^antigrav(-[a-z0-9-]+)?$|^antigravity$ ]]; then
-  echo "hapax-antigrav: invalid session '$SESSION' (expected antigrav or antigrav-*)" >&2
+if ! [[ "$SESSION" =~ ^agy(-[a-z0-9-]+)?$|^antigrav(-[a-z0-9-]+)?$|^antigravity$ ]]; then
+  echo "hapax-antigrav: invalid session '$SESSION' (expected agy or agy-*; antigrav is deprecated alias)" >&2
   exit 2
 fi
 
-# Map legacy 'antigravity' to 'antigrav' for relay/claim consistency.
+# Map legacy names to the canonical agy lane for relay/claim consistency.
 if [ "$SESSION" = "antigravity" ]; then
-  echo "hapax-antigrav: normalizing legacy 'antigravity' → 'antigrav' for relay/claim" >&2
-  SESSION="antigrav"
+  echo "hapax-antigrav: normalizing legacy 'antigravity' -> 'agy' for relay/claim" >&2
+  SESSION="agy"
+elif [[ "$SESSION" =~ ^antigrav(.*)$ ]]; then
+  suffix="${SESSION#antigrav}"
+  echo "hapax-antigrav: normalizing deprecated '$SESSION' -> 'agy$suffix' for relay/claim" >&2
+  SESSION="agy$suffix"
 fi
 
 resolve_antigrav_bin() {
-  if [ -n "${HAPAX_ANTIGRAV_BIN:-}" ]; then
-    if [ "$(basename "$HAPAX_ANTIGRAV_BIN")" != "agy" ]; then
-      echo "hapax-antigrav: HAPAX_ANTIGRAV_BIN must point to an agy executable" >&2
+  local override="${HAPAX_AGY_BIN:-${HAPAX_ANTIGRAV_BIN:-}}"
+  local override_name="HAPAX_AGY_BIN"
+  if [ -z "${HAPAX_AGY_BIN:-}" ] && [ -n "${HAPAX_ANTIGRAV_BIN:-}" ]; then
+    override_name="HAPAX_ANTIGRAV_BIN"
+  fi
+  if [ -n "$override" ]; then
+    if [ "$(basename "$override")" != "agy" ]; then
+      echo "hapax-antigrav: $override_name must point to an agy executable" >&2
       return 1
     fi
-    [ -x "$HAPAX_ANTIGRAV_BIN" ] || return 1
-    printf '%s\n' "$HAPAX_ANTIGRAV_BIN"
+    [ -x "$override" ] || return 1
+    printf '%s\n' "$override"
     return 0
   fi
 
@@ -233,11 +243,11 @@ resolve_antigrav_bin() {
 
 ANTIGRAV_BIN="$(resolve_antigrav_bin || true)"
 if [ -z "$ANTIGRAV_BIN" ] && [ "$OPEN_IDE" -eq 1 ]; then
-  echo "hapax-antigrav: Antigravity CLI not found (expected agy or HAPAX_ANTIGRAV_BIN=/path/to/agy)" >&2
+  echo "hapax-antigrav: agy CLI not found (expected agy or HAPAX_AGY_BIN=/path/to/agy)" >&2
   exit 4
 fi
 if [ -n "$ANTIGRAV_BIN" ]; then
-  echo "hapax-antigrav: using Antigravity CLI: $ANTIGRAV_BIN" >&2
+  echo "hapax-antigrav: using agy CLI: $ANTIGRAV_BIN" >&2
 fi
 
 # ---- worktree ------------------------------------------------------------
@@ -249,7 +259,8 @@ fi
 ensure_worktree() {
   local target="$1"
   local base_ref="${HAPAX_ANTIGRAV_WORKTREE_BASE:-main}"
-  local branch="${HAPAX_ANTIGRAV_BRANCH_PREFIX:-antigrav}/scratch"
+  local branch_prefix="${HAPAX_AGY_BRANCH_PREFIX:-${HAPAX_ANTIGRAV_BRANCH_PREFIX:-agy}}"
+  local branch="$branch_prefix/$SESSION/scratch"
 
   [ ! -d "$target" ] || return 0
   git -C "$COUNCIL_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
@@ -291,17 +302,19 @@ if [ ! -f "$WORKTREE_AGENTS" ] || head -1 "$WORKTREE_AGENTS" 2>/dev/null | grep 
   cat > "$WORKTREE_AGENTS" <<EOF_AGENTS
 <!-- HAPAX-ANTIGRAV-MANAGED: regenerated on every hapax-antigrav launch. Do not hand-edit. -->
 
-# Hapax Antigrav Lane — $SESSION
+# Hapax agy Lane — $SESSION
 
-You are running inside Antigravity CLI (\`agy\`) as the **$SESSION** lane in the
-Hapax quad+ relay protocol. Your tier is **audited full worker**: governed
-cc-task work is allowed only from an explicit dispatch packet.
+You are running as the **$SESSION** agy lane in the Hapax quad+ relay protocol.
+The underlying terminal tool is Google Antigravity CLI invoked as \`agy\`. Your
+tier is **audited full worker**: governed cc-task work is allowed only from an
+explicit dispatch packet.
 
 ## Your identity
 
 - Lane: \`$SESSION\`
 - Worktree: \`$WORKDIR\`
-- Interface: \`antigravity-cli\`
+- Interface: \`agy\`
+- Tool: \`Google Antigravity CLI\`
 - Model: \`agy configured model\`
 
 ## Where to read first
@@ -317,7 +330,7 @@ This file is generated at launch and may be stale. Resolve dynamic state from:
 
 \`\`\`bash
 cat ~/.cache/hapax/cc-active-task-$SESSION 2>/dev/null || true
-find ~/.cache/hapax/relay -maxdepth 1 -name 'alpha-to-antigrav-*.yaml' -mmin -120 -print
+find ~/.cache/hapax/relay -maxdepth 1 \( -name 'alpha-to-agy-*.yaml' -o -name 'alpha-to-antigrav-*.yaml' -o -name 'alpha-to-antigravity-*.yaml' \) -mmin -120 -print
 \`\`\`
 
 ## Scope
@@ -376,11 +389,12 @@ Dynamic active task pointer:
 cat "$HOME/.cache/hapax/cc-active-task-$SESSION" "$HOME/.cache/hapax/cc-active-task-antigravity" 2>/dev/null || true
 \`\`\`
 
-Recent alpha-to-antigrav inflections are intake only unless they name an active
-cc-task and match the current dispatch packet:
+Recent alpha-to-agy inflections are intake only unless they name an active
+cc-task and match the current dispatch packet. Legacy alpha-to-antigrav files are
+historical compatibility intake, not current route authority:
 
 \`\`\`
-find "$RELAY_DIR" -maxdepth 1 \( -name 'alpha-to-antigrav-*.yaml' -o -name 'alpha-to-antigravity-*.yaml' \) -mmin -120 -print
+find "$RELAY_DIR" -maxdepth 1 \( -name 'alpha-to-agy-*.yaml' -o -name 'alpha-to-antigrav-*.yaml' -o -name 'alpha-to-antigravity-*.yaml' \) -mmin -120 -print
 \`\`\`
 
 Recent codex/antigrav transfer notes:
@@ -394,7 +408,7 @@ Operational contract:
 - Accept explicit governed dispatch packets only. If no current dispatch packet is waiting, remain idle and write a relay status indicating readiness. Do not self-claim from the WSJF queue.
 - Treat stale relay notes as context, not authority. A relay inflection is actionable only when it names a current active cc-task and matches the dispatch packet.
 - Latest operator/alpha inflection controls sequencing. A handoff can be mandatory context or standing strictures without being the first execution path.
-- Start by reading the active cc-task, latest alpha-to-antigrav inflection, relay status, and branch state.
+- Start by reading the active cc-task, latest alpha-to-agy inflection, relay status, and branch state.
 - Code edits, tests, commits, and PRs are allowed only inside assigned scope.
 - Always PR; never merge your own PR.
 - When directed to clean up or continue outstanding workstreams, bring them to natural completion: verified and PR'd/mergeable or merged through normal checks, correctly closed/returned to queue, or made safe with exact blocker evidence and next action.
@@ -472,19 +486,18 @@ fi
 
 # ---- governed enable-latch (capability-adapter glue) ----------------------
 # Refuse the interactive agy spawn when the governed enable-latch is absent, honoring the
-# registry's DEFAULT_DENY_ENABLE_LATCH posture (antigrav-only; vibe is auto-approve-task-scoped,
-# not a latch gap). OPEN_IDE-gated so --no-open / --wire-hooks-only provisioning is unaffected;
+# registry's DEFAULT_DENY_ENABLE_LATCH posture. OPEN_IDE-gated so --no-open / --wire-hooks-only provisioning is unaffected;
 # hooks are already wired above, so a refusal leaves no half state. Skipped if the helper is absent
 # (deployment integrity is enforced by hooks-doctor) to avoid bricking on a deploy bug.
 if [ "$OPEN_IDE" -eq 1 ] && command -v hapax_check_enable_latch >/dev/null 2>&1; then
-  hapax_check_enable_latch antigrav || exit 7
+  hapax_check_enable_latch agy || exit 7
 fi
 
 # ---- export identity envs (for cc-claim and downstream tools) -------------
 
 # Per-session id (coordination reform Phase 1): stable uuid for FM-2 lease keying.
 SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
-export HAPAX_AGENT_INTERFACE="antigravity"
+export HAPAX_AGENT_INTERFACE="agy"
 export HAPAX_AGENT_NAME="$SESSION"
 export HAPAX_AGENT_SLOT="$SESSION"
 export HAPAX_AGENT_ROLE="$SESSION"
@@ -523,10 +536,12 @@ if [ -n "$INFLECTION_FILE" ]; then
   # Symlink/copy into the relay dir so the lane's session-start reads it
   base="$(basename "$INFLECTION_FILE")"
   case "$base" in
-    alpha-to-antigrav-*.yaml|alpha-to-antigravity-*.yaml) ;;
+    alpha-to-agy-*.yaml|alpha-to-antigrav-*.yaml|alpha-to-antigravity-*.yaml) ;;
     *)
       ts="$(date -u +%Y%m%dT%H%M%SZ)"
-      base="alpha-to-antigrav-${ts}-staged.yaml"
+      staged_slug="$(printf '%s\n' "$SESSION-${TASK_ID:-no-task}" | tr -cs 'A-Za-z0-9_.-' '-' | sed 's/^-//; s/-$//')"
+      nonce="$(cat /proc/sys/kernel/random/uuid 2>/dev/null | cut -c1-8 || printf '%s' "$$")"
+      base="alpha-to-agy-${ts}-${staged_slug}-${nonce}-staged.yaml"
       ;;
   esac
   cp "$INFLECTION_FILE" "$RELAY_DIR/$base"
@@ -583,7 +598,7 @@ cat >"$RUN_SCRIPT" <<EOF_RUN
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$WORKDIR"
-export HAPAX_AGENT_INTERFACE="antigravity"
+export HAPAX_AGENT_INTERFACE="agy"
 export HAPAX_AGENT_NAME="$SESSION"
 export HAPAX_AGENT_SLOT="$SESSION"
 export HAPAX_AGENT_ROLE="$SESSION"
@@ -616,11 +631,11 @@ if ! command -v tmux >/dev/null 2>&1; then
   exit 5
 fi
 
-TMUX_SESSION="hapax-antigrav-$SESSION"
+TMUX_SESSION="hapax-agy-$SESSION"
 TMUX_WINDOW="$(printf '%s\n' "${TASK_ID:-antigrav}" | tr -cs 'A-Za-z0-9_.-' '-' | cut -c1-40)"
 tmux_cmd="$(printf '%q ' "$RUN_SCRIPT" "${ANTIGRAV_EXTRA[@]}")"
-if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-  tmux new-window -t "$TMUX_SESSION" -n "$TMUX_WINDOW" -c "$WORKDIR" "$tmux_cmd" >/dev/null
+if tmux has-session -t "=$TMUX_SESSION" 2>/dev/null; then
+  tmux new-window -t "=$TMUX_SESSION" -n "$TMUX_WINDOW" -c "$WORKDIR" "$tmux_cmd" >/dev/null
 else
   tmux new-session -d -s "$TMUX_SESSION" -n "$TMUX_WINDOW" -c "$WORKDIR" "$tmux_cmd" >/dev/null
 fi

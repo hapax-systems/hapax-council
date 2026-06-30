@@ -103,9 +103,115 @@ class TestTeamRegistry:
         loaded = reg.read("antigrav")
 
         assert loaded is not None
-        assert loaded.platform == "antigrav"
-        assert "gemini-cli normalized to antigrav" in loaded.notes
+        assert loaded.lane_id == "agy"
+        assert loaded.platform == "agy"
+        assert "legacy lane antigrav normalized to agy" in loaded.notes
+        assert "gemini-cli normalized to agy" in loaded.notes
         assert "normalized legacy team-registry platform" in caplog.text
+
+    def test_read_normalizes_legacy_antigrav_lane_and_platform(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        reg = TeamRegistry(tmp_path)
+        (tmp_path / "antigrav-2.json").write_text(
+            json.dumps(
+                {
+                    "lane_id": "antigrav-2",
+                    "platform": "antigrav",
+                    "model_id": "gemini-3.1-pro-preview",
+                    "context_window": 1_000_000,
+                    "tools_available": ["Bash"],
+                    "last_probe_utc": time.time(),
+                    "freshness_ttl_s": 3600.0,
+                    "notes": "old cache",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        loaded = reg.read("antigrav-2")
+
+        assert loaded is not None
+        assert loaded.lane_id == "agy-2"
+        assert loaded.platform == "agy"
+        assert "legacy lane antigrav-2 normalized to agy-2" in loaded.notes
+        assert "antigrav normalized to agy" in loaded.notes
+        assert "normalized legacy team-registry platform" in caplog.text
+
+    def test_read_normalizes_legacy_antigravity_platform(self, tmp_path: Path, caplog) -> None:
+        reg = TeamRegistry(tmp_path)
+        (tmp_path / "antigravity.json").write_text(
+            json.dumps(
+                {
+                    "lane_id": "antigravity",
+                    "platform": "antigravity",
+                    "model_id": "gemini-3.1-pro-preview",
+                    "context_window": 1_000_000,
+                    "tools_available": ["Bash"],
+                    "last_probe_utc": time.time(),
+                    "freshness_ttl_s": 3600.0,
+                    "notes": "old cache",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        loaded = reg.read("antigravity")
+
+        assert loaded is not None
+        assert loaded.lane_id == "agy"
+        assert loaded.platform == "agy"
+        assert "legacy lane antigravity normalized to agy" in loaded.notes
+        assert "antigravity normalized to agy" in loaded.notes
+        assert "normalized legacy team-registry platform" in caplog.text
+
+    def test_fresh_lanes_do_not_expose_legacy_antigrav_lane_id(self, tmp_path: Path) -> None:
+        now = time.time()
+        reg = TeamRegistry(tmp_path)
+        (tmp_path / "antigrav.json").write_text(
+            json.dumps(
+                {
+                    "lane_id": "antigrav",
+                    "platform": "antigrav",
+                    "model_id": "gemini-3.1-pro-preview",
+                    "context_window": 1_000_000,
+                    "tools_available": ["Bash"],
+                    "last_probe_utc": now,
+                    "freshness_ttl_s": 3600.0,
+                    "notes": "old cache",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fresh = reg.fresh_lanes(now)
+
+        assert [lane.lane_id for lane in fresh] == ["agy"]
+        assert all(lane.lane_id != "antigrav" for lane in fresh)
+
+    def test_fresh_lanes_do_not_expose_legacy_antigravity_lane_id(self, tmp_path: Path) -> None:
+        now = time.time()
+        reg = TeamRegistry(tmp_path)
+        (tmp_path / "antigravity.json").write_text(
+            json.dumps(
+                {
+                    "lane_id": "antigravity",
+                    "platform": "antigrav",
+                    "model_id": "gemini-3.1-pro-preview",
+                    "context_window": 1_000_000,
+                    "tools_available": ["Bash"],
+                    "last_probe_utc": now,
+                    "freshness_ttl_s": 3600.0,
+                    "notes": "old cache",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fresh = reg.fresh_lanes(now)
+
+        assert [lane.lane_id for lane in fresh] == ["agy"]
+        assert all(lane.lane_id != "antigravity" for lane in fresh)
 
     def test_all_lanes(self, tmp_path: Path) -> None:
         reg = TeamRegistry(tmp_path)

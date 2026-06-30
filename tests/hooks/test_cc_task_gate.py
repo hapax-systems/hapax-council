@@ -950,7 +950,7 @@ class TestRelayInference:
 
 
 class TestGeneralizedPathRecovery:
-    """hapax_agent_role_from_path covers live greek slots + cx-*/antigrav/vbe-*."""
+    """hapax_agent_role_from_path covers live greek slots + cx-*/agy/vbe-*."""
 
     @pytest.mark.parametrize(
         "dirname,expected",
@@ -967,8 +967,10 @@ class TestGeneralizedPathRecovery:
             ("hapax-council--eta", "eta"),
             ("hapax-council--cx-red", "cx-red"),
             ("hapax-council--cx-blue-scratch", "cx-blue"),
-            ("hapax-council--antigrav", "antigrav"),
-            ("hapax-council--antigrav-2", "antigrav"),
+            ("hapax-council--agy", "agy"),
+            ("hapax-council--agy-2", "agy-2"),
+            ("hapax-council--antigrav", "agy"),
+            ("hapax-council--antigrav-2", "agy-2"),
             ("hapax-council--vbe-3", "vbe-3"),
         ],
     )

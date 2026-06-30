@@ -10,6 +10,7 @@
 # Usage:
 #   hapax-cross-runtime-dispatch --lane beta --task ari-sierpinski --platform claude
 #   hapax-cross-runtime-dispatch --lane cx-red --task some-task --platform codex
+#   hapax-cross-runtime-dispatch --lane agy --task some-task --platform agy
 #   hapax-cross-runtime-dispatch --list-eligible          # show dispatch candidates
 #   hapax-cross-runtime-dispatch --check-lane beta        # freshness + protection check
 
@@ -29,8 +30,8 @@ usage() {
 hapax-cross-runtime-dispatch — cross-runtime dispatch with orchestration receipts
 
 Options:
-  --lane LANE          Target lane (e.g., beta, cx-red, antigrav)
-  --platform PLATFORM  Target platform (claude, codex, vibe, antigrav)
+  --lane LANE          Target lane (e.g., beta, cx-red, agy)
+  --platform PLATFORM  Target platform (claude, codex, vibe, agy)
   --task TASK_ID       cc-task to dispatch
   --case CASE_ID       AuthorityCase reference (optional)
   --mq-message-id ID   Durable relay MQ dispatch message id
@@ -49,10 +50,11 @@ USAGE
 }
 
 # Parse arguments
-LANE="" PLATFORM="" TASK="" CASE_ID="" MQ_MESSAGE_ID="" MODE="single_lane" RUNTIME_MODE="headless" PROFILE="full" REASON="" DRY_RUN=false
+LANE="" PLATFORM="" TASK="" CASE_ID="" MQ_MESSAGE_ID="" MODE="single_lane" RUNTIME_MODE="" PROFILE="full" REASON="" DRY_RUN=false
 ADVISORY_ONLY=false
 POLICY_ROLLBACK=false
 LIST_ELIGIBLE=false CHECK_LANE=""
+RUNTIME_MODE_EXPLICIT=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -63,7 +65,7 @@ while [[ $# -gt 0 ]]; do
         --mq-message-id) MQ_MESSAGE_ID="$2"; shift 2 ;;
         --advisory-only) ADVISORY_ONLY=true; shift ;;
         --mode)       MODE="$2"; shift 2 ;;
-        --runtime-mode|--methodology-mode) RUNTIME_MODE="$2"; shift 2 ;;
+        --runtime-mode|--methodology-mode) RUNTIME_MODE="$2"; RUNTIME_MODE_EXPLICIT=true; shift 2 ;;
         --profile)    PROFILE="$2"; shift 2 ;;
         --policy-rollback) POLICY_ROLLBACK=true; shift ;;
         --reason)     REASON="$2"; shift 2 ;;
@@ -116,6 +118,20 @@ check_protection() {
     return 0
 }
 
+is_deprecated_antigrav_lane() {
+    case "$1" in
+        antigrav|antigravity|antigrav-*|antigravity-*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_agy_lane() {
+    case "$1" in
+        agy|agy-*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # --- Duplicate check ---
 check_duplicate() {
     local lane="$1" platform="$2"
@@ -123,16 +139,31 @@ check_duplicate() {
     if [[ ! -f "$ledger" ]]; then
         return 0
     fi
-    local active
-    active=$(grep "\"target_lane\":\"${lane}\"" "$ledger" 2>/dev/null \
-        | grep "\"target_platform\":\"${platform}\"" \
-        | grep "\"outcome\":\"dispatched\"" \
-        | tail -1) || true
-    if [[ -n "$active" ]]; then
+    if python3 - "$ledger" "$lane" "$platform" <<'PY'
+import json
+import sys
+
+ledger, lane, platform = sys.argv[1:4]
+with open(ledger, encoding="utf-8") as fh:
+    for line in fh:
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            row.get("target_lane") == lane
+            and row.get("target_platform") == platform
+            and row.get("outcome") == "dispatched"
+        ):
+            sys.exit(1)
+sys.exit(0)
+PY
+    then
+        return 0
+    else
         echo "DUPLICATE: lane $lane already has active $platform dispatch"
         return 1
     fi
-    return 0
 }
 
 check_durable_mq_binding() {
@@ -229,6 +260,17 @@ if $LIST_ELIGIBLE; then
         [[ -f "$meta_file" ]] || continue
         lane=$(basename "$meta_file" .json)
         platform=$(python3 -c "import json; print(json.load(open('$meta_file')).get('platform','?'))" 2>/dev/null)
+        if [[ "$platform" == "antigrav" || "$platform" == "antigravity" ]] || is_deprecated_antigrav_lane "$lane"; then
+            printf "  %-12s %-12s %-8s  %s\n" "$lane" "agy" "deprecated" "deprecated antigrav metadata; use agy/agy-*"
+            continue
+        fi
+        if [[ "$platform" == "gemini-cli" ]]; then
+            platform="agy"
+        fi
+        if [[ "$platform" == "agy" ]] && ! is_agy_lane "$lane"; then
+            printf "  %-12s %-12s %-8s  %s\n" "$lane" "$platform" "invalid" "non-canonical agy lane; use agy/agy-*"
+            continue
+        fi
         freshness=$(check_lane_freshness "$lane" 2>&1) || true
         protection=$(check_protection "$lane" 2>&1) || true
         status="eligible"
@@ -243,6 +285,10 @@ fi
 # --- Check single lane ---
 if [[ -n "$CHECK_LANE" ]]; then
     echo "=== Lane check: $CHECK_LANE ==="
+    if is_deprecated_antigrav_lane "$CHECK_LANE"; then
+        echo "DEPRECATED: lane $CHECK_LANE is retired; use lane agy or agy-* instead" >&2
+        exit 2
+    fi
     check_lane_freshness "$CHECK_LANE" 2>&1 || true
     check_protection "$CHECK_LANE" 2>&1 || true
     exit 0
@@ -254,12 +300,37 @@ if [[ -z "$LANE" || -z "$PLATFORM" ]]; then
     exit 2
 fi
 case "$PLATFORM" in
-    claude|codex|vibe|antigrav) ;;
+    antigrav|antigravity)
+        echo "error: deprecated platform: $PLATFORM; use platform agy and lane agy/agy-* instead" >&2
+        exit 2
+        ;;
+    claude|codex|vibe|agy) ;;
     *)
         echo "error: unsupported platform: $PLATFORM" >&2
         exit 2
         ;;
 esac
+
+if is_deprecated_antigrav_lane "$LANE"; then
+    echo "error: deprecated lane: $LANE; use lane agy or agy-* instead" >&2
+    exit 2
+fi
+
+if [[ "$PLATFORM" == "agy" ]]; then
+    if ! is_agy_lane "$LANE"; then
+        echo "error: invalid agy lane: $LANE; use lane agy or agy-* instead" >&2
+        exit 2
+    fi
+    if [[ "$RUNTIME_MODE_EXPLICIT" != "true" && -z "$RUNTIME_MODE" ]]; then
+        RUNTIME_MODE="interactive"
+    fi
+    if [[ "$RUNTIME_MODE" != "interactive" ]]; then
+        echo "error: agy supports runtime-mode interactive only; got $RUNTIME_MODE" >&2
+        exit 2
+    fi
+elif [[ -z "$RUNTIME_MODE" ]]; then
+    RUNTIME_MODE="headless"
+fi
 
 echo "--- Pre-dispatch checks for $LANE ($PLATFORM) ---"
 
@@ -323,30 +394,6 @@ if $DRY_RUN; then
     exit 0
 fi
 
-# Write dispatch receipt
-mkdir -p "$LEDGER_DIR"
-python3 -c "
-import json
-receipt = {
-    'dispatch_id': '$DISPATCH_ID',
-    'timestamp': '$TIMESTAMP',
-    'dispatcher': '$DISPATCHER',
-    'target_lane': '$LANE',
-    'target_platform': '$PLATFORM',
-    'task_id': '${TASK}' or None,
-    'authority_case_id': '${CASE_ID}' or None,
-    'durable_mq_dispatch_bound': '${DURABLE_MQ_BOUND}' == 'true',
-    'advisory_only': '${ADVISORY_ONLY}' == 'true',
-    'durable_mq_reason': '${DURABLE_MQ_REASON}',
-    'workstream_mode': '$MODE',
-    'reason': '${REASON}',
-    'outcome': 'dispatched',
-}
-with open('$LEDGER_DIR/dispatch-ledger.jsonl', 'a') as f:
-    f.write(json.dumps(receipt) + '\n')
-print('  receipt written')
-"
-
 # Methodology-dispatch gate: when HAPAX_METHODOLOGY_DISPATCH is set (or the
 # script exists at the standard path), delegate task-bearing dispatches through
 # it. Taskless dispatches are blocked — methodology requires a task.
@@ -385,21 +432,21 @@ fi
 # Fallback: direct launcher (methodology-dispatch not available)
 case "$PLATFORM" in
     claude)
-        LAUNCHER="$SCRIPT_DIR/hapax-claude"
+        LAUNCHER="${HAPAX_CROSS_RUNTIME_CLAUDE_LAUNCHER:-$SCRIPT_DIR/hapax-claude}"
         ARGS=(--role "$LANE" --terminal tmux)
         ;;
     codex)
-        LAUNCHER="$SCRIPT_DIR/hapax-codex"
+        LAUNCHER="${HAPAX_CROSS_RUNTIME_CODEX_LAUNCHER:-$SCRIPT_DIR/hapax-codex}"
         ARGS=(--session "$LANE" --terminal tmux)
         [[ -n "$TASK" ]] && ARGS+=(--task "$TASK")
         ;;
     vibe)
-        LAUNCHER="$SCRIPT_DIR/hapax-vibe"
+        LAUNCHER="${HAPAX_CROSS_RUNTIME_VIBE_LAUNCHER:-$SCRIPT_DIR/hapax-vibe}"
         ARGS=(--session "$LANE" --terminal tmux)
         [[ -n "$TASK" ]] && ARGS+=(--task "$TASK")
         ;;
-    antigrav)
-        LAUNCHER="$SCRIPT_DIR/hapax-antigrav"
+    agy)
+        LAUNCHER="${HAPAX_CROSS_RUNTIME_AGY_LAUNCHER:-$SCRIPT_DIR/hapax-agy}"
         ARGS=(--session "$LANE" --terminal tmux)
         [[ -n "$TASK" ]] && ARGS+=(--task "$TASK")
         ;;
@@ -411,8 +458,37 @@ esac
 
 if [[ -x "$LAUNCHER" ]]; then
     echo "  invoking: $LAUNCHER ${ARGS[*]}"
-    exec "$LAUNCHER" "${ARGS[@]}"
+    "$LAUNCHER" "${ARGS[@]}" || {
+        rc=$?
+        echo "  launcher failed rc=$rc; no dispatched receipt written" >&2
+        exit "$rc"
+    }
 else
-    echo "  warning: launcher not found at $LAUNCHER — receipt written but not launched" >&2
-    exit 0
+    echo "  launcher not found at $LAUNCHER; no dispatched receipt written" >&2
+    exit 2
 fi
+
+# Write a cross-runtime fallback receipt only after the fallback launcher returns
+# success. The governed methodology path owns its own launch evidence.
+mkdir -p "$LEDGER_DIR"
+python3 -c "
+import json
+receipt = {
+    'dispatch_id': '$DISPATCH_ID',
+    'timestamp': '$TIMESTAMP',
+    'dispatcher': '$DISPATCHER',
+    'target_lane': '$LANE',
+    'target_platform': '$PLATFORM',
+    'task_id': '${TASK}' or None,
+    'authority_case_id': '${CASE_ID}' or None,
+    'durable_mq_dispatch_bound': '${DURABLE_MQ_BOUND}' == 'true',
+    'advisory_only': '${ADVISORY_ONLY}' == 'true',
+    'durable_mq_reason': '${DURABLE_MQ_REASON}',
+    'workstream_mode': '$MODE',
+    'reason': '${REASON}',
+    'outcome': 'dispatched',
+}
+with open('$LEDGER_DIR/dispatch-ledger.jsonl', 'a') as f:
+    f.write(json.dumps(receipt) + '\n')
+print('  receipt written')
+"

@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 REGISTRY_DIR = Path.home() / ".cache" / "hapax" / "team-registry"
 LOG = logging.getLogger(__name__)
 
-Platform = Literal["claude-code", "codex", "vibe", "antigrav"]
+Platform = Literal["claude-code", "codex", "vibe", "agy"]
 FreshnessResult = Literal["fresh", "stale", "unknown", "blocked"]
 
 
@@ -29,10 +29,27 @@ def _normalize_legacy_payload(raw: str) -> tuple[str, bool]:
 
     payload = json.loads(raw)
     normalized = False
-    if payload.get("platform") == "gemini-cli":
-        payload["platform"] = "antigrav"
+    lane_id = payload.get("lane_id")
+    # Legacy lane normalization table:
+    # antigrav -> agy; antigravity -> agy; antigrav-N -> agy-N;
+    # antigravity-N -> agy-N. Avoid plain prefix replacement, which previously
+    # produced malformed artifacts such as agyity-N.
+    if lane_id in {"antigrav", "antigravity"} or (
+        isinstance(lane_id, str)
+        and (lane_id.startswith("antigrav-") or lane_id.startswith("antigravity-"))
+    ):
+        payload["lane_id"] = (
+            "agy" if lane_id in {"antigrav", "antigravity"} else f"agy-{lane_id.split('-', 1)[1]}"
+        )
         note = str(payload.get("notes") or "").strip()
-        legacy_note = "legacy platform gemini-cli normalized to antigrav"
+        legacy_note = f"legacy lane {lane_id} normalized to {payload['lane_id']}"
+        payload["notes"] = f"{note}; {legacy_note}" if note else legacy_note
+        normalized = True
+    if payload.get("platform") in {"gemini-cli", "antigrav", "antigravity"}:
+        old_platform = payload.get("platform")
+        payload["platform"] = "agy"
+        note = str(payload.get("notes") or "").strip()
+        legacy_note = f"legacy platform {old_platform} normalized to agy"
         payload["notes"] = f"{note}; {legacy_note}" if note else legacy_note
         normalized = True
     return json.dumps(payload), normalized

@@ -52,7 +52,7 @@ rather than the dirty canonical checkout. See
 
 The canonical lane vocabulary (SSOT: `hooks/scripts/agent-role.sh`
 `assert-identity`) is: greek slots `alpha` `beta` `gamma` `delta`
-`epsilon` `zeta` `eta` `theta`, plus `antigrav`; Codex
+`epsilon` `zeta` `eta` `theta`, plus `agy` / `agy-*`; Codex
 `cx-<color>` (e.g. `cx-red`); Claude relay lanes `cc-<name>` (e.g.
 `cc-zai`); and Vibe `vbe-<n>`. These are operational identities — not
 rhetorical choices — and the tooling assumes them:
@@ -69,7 +69,7 @@ rhetorical choices — and the tooling assumes them:
   that reference a greek-letter-shaped token OUTSIDE the approved greek
   slots (i.e. `kappa` and beyond) when used as a session identifier.
 - The worktree cap (`no-stale-branches.sh`) is sized for the full
-  multi-interface team (greek + `cx-*` + `cc-*` + `vbe-*` + antigrav).
+  multi-interface team (greek + `cx-*` + `cc-*` + `vbe-*` + `agy` / `agy-*`).
 - Legacy `iota` was the retired Gemini CLI lane and is intentionally no longer
   accepted as a session identity.
 

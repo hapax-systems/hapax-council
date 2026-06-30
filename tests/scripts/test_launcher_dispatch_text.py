@@ -52,10 +52,11 @@ def test_antigrav_launcher_resolves_installed_agy_binary_name() -> None:
     text = (REPO_ROOT / "scripts" / "hapax-antigrav").read_text()
 
     assert "resolve_antigrav_bin()" in text
+    assert "HAPAX_AGY_BIN" in text
     assert "HAPAX_ANTIGRAV_BIN" in text
     assert "command -v agy" in text
     assert "for candidate in /usr/bin/agy" in text
-    assert "expected agy or HAPAX_ANTIGRAV_BIN=/path/to/agy" in text
+    assert "expected agy or HAPAX_AGY_BIN=/path/to/agy" in text
     assert "command -v antigravity" not in text
     assert "/usr/bin/antigravity" not in text
 

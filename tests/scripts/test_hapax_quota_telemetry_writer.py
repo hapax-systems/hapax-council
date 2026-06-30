@@ -18,6 +18,16 @@ FIXTURES = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
 NOW = "2026-06-10T00:00:00Z"
 
 
+def test_role_platform_normalizes_legacy_antigrav_and_canonical_agy() -> None:
+    namespace = runpy.run_path(str(SCRIPT), run_name="hapax_quota_telemetry_writer")
+    role_platform = namespace["role_platform"]
+
+    assert role_platform("antigrav") == "agy"
+    assert role_platform("antigrav-2") == "agy"
+    assert role_platform("agy") == "agy"
+    assert role_platform("agy-2") == "agy"
+
+
 def _fake_nvidia_smi(tmp_path: Path, body: str) -> Path:
     stub = tmp_path / "fake-nvidia-smi"
     stub.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")

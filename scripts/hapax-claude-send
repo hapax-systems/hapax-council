@@ -69,7 +69,9 @@ RTE_BYPASS=0
 MESSAGE_PARTS=()
 TMP_FILES=()
 
-ROLE_ALLOWLIST="${HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST:-alpha beta gamma delta epsilon zeta eta theta antigrav}"
+# Antigrav was intentionally removed from the default allowlist; it is a
+# deprecated agy-family carrier name, not a Claude-sendable live role.
+ROLE_ALLOWLIST="${HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST:-alpha beta gamma delta epsilon zeta eta theta}"
 
 # Default busy regex covers Claude Code's animated activity verbs and
 # the "Messages to be submitted after next tool call" queue indicator.
@@ -180,7 +182,7 @@ if [ -z "$SESSION" ]; then
   exit 2
 fi
 
-# Validate ROLE: the space-separated allowlist (fixed greek slots + antigrav,
+# Validate ROLE: the space-separated allowlist (fixed greek slots,
 # env-tunable) PLUS the cc-<name> pattern (relay-coordinated Claude lanes) PLUS
 # the hapax-dev interactive pool (dev, dev2..devN) — all first-class governed
 # lanes (hooks/scripts/agent-role.sh assert-identity). The dev-pool pattern keeps

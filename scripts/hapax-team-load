@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """hapax-team-load — RTE resource dashboard for coordinated team + operational layer.
 
-Walks tmux sessions matching ``hapax-(claude|codex|gemini|vibe|antigrav)-*``,
+Walks tmux sessions matching ``hapax-(claude|codex|gemini|vibe|agy)-*``,
 collects descendant process resource consumption (CPU, RSS, swap), classifies
 operational services separately, and prints a per-session breakdown plus
 totals + a green/yellow/red recommendation.
@@ -66,7 +66,7 @@ OPERATIONAL_PROCS: tuple[str, ...] = (
     "hapax-imagination-loop",
 )
 
-TEAM_SESSION_PATTERN = re.compile(r"^hapax-(claude|codex|gemini|vibe|antigrav)-(\S+)$")
+TEAM_SESSION_PATTERN = re.compile(r"^hapax-(claude|codex|gemini|vibe|agy|antigrav)-(\S+)$")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -83,8 +83,8 @@ class ProcStat:
 
 @dataclass
 class SessionAccount:
-    interface: str  # claude, codex, gemini, vibe, antigrav
-    role: str  # beta, cx-amber, antigrav, ...
+    interface: str  # claude, codex, gemini, vibe, agy
+    role: str  # beta, cx-amber, agy, ...
     pids: list[int] = field(default_factory=list)
     cpu_pct: float = 0.0
     rss_kb: int = 0
@@ -249,6 +249,12 @@ def list_team_sessions() -> list[tuple[str, str, list[int]]]:
         if not m:
             continue
         interface, role = m.group(1), m.group(2)
+        if interface == "antigrav":
+            interface = "agy"
+            if role in {"antigrav", "antigravity"}:
+                role = "agy"
+            elif role.startswith("antigrav-") or role.startswith("antigravity-"):
+                role = f"agy-{role.split('-', 1)[1]}"
         try:
             pids_out = subprocess.check_output(
                 ["tmux", "list-panes", "-t", line.strip(), "-F", "#{pane_pid}"],

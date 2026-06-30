@@ -384,6 +384,7 @@ class TestConstitution:
         assert rt.writer_family_for_lane("zeta", reg) == "claude"
         assert rt.writer_family_for_lane("cx-gold", reg) == "codex"
         assert rt.writer_family_for_lane("codex-agy-cli", reg) == "codex"
+        assert rt.writer_family_for_lane("agy", reg) == "gemini"
         assert rt.writer_family_for_lane("antigrav", reg) == "gemini"
         assert rt.writer_family_for_lane("antigrav-2", reg) == "gemini"
         assert rt.writer_family_for_lane("agy-review", reg) == "gemini"

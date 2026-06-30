@@ -72,7 +72,7 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
         "codex",
         "gemini",
         "vibe",
-        "antigrav",
+        "agy",
         "local_tool",
         "api",
     }

@@ -39,6 +39,23 @@ hapax_agent_is_slot_role() {
   esac
 }
 
+hapax_agent_normalize_identity() {
+  case "${1:-}" in
+    antigrav|antigravity)
+      printf '%s\n' "agy"
+      ;;
+    antigrav-*|antigravity-*)
+      local suffix
+      suffix="${1#antigrav}"
+      suffix="${suffix#ity}"
+      printf 'agy%s\n' "$suffix"
+      ;;
+    *)
+      printf '%s\n' "${1:-}"
+      ;;
+  esac
+}
+
 hapax_agent_role_from_path() {
   local path="${1:-$PWD}"
   local base suffix
@@ -63,9 +80,18 @@ hapax_agent_role_from_path() {
       [ -n "$color" ] && { printf 'cx-%s\n' "$color"; return 0; }
       ;;
   esac
-  # Antigrav lane: hapax-council--antigrav[-N] -> antigrav (a live interface).
+  # agy lane: hapax-council--agy[-N] -> agy[-N]. Legacy antigrav worktrees
+  # normalize to agy so recovery never resurrects a deprecated live identity.
   case "$suffix" in
-    antigrav|antigrav-*) printf 'antigrav\n'; return 0 ;;
+    agy|agy-*) printf '%s\n' "$suffix"; return 0 ;;
+    antigrav|antigravity) printf 'agy\n'; return 0 ;;
+    antigrav-*|antigravity-*)
+      local legacy_suffix
+      legacy_suffix="${suffix#antigrav}"
+      legacy_suffix="${legacy_suffix#ity}"
+      printf 'agy%s\n' "$legacy_suffix"
+      return 0
+      ;;
   esac
   # Vibe lanes: hapax-council--vbe-<n>[-descriptor] -> vbe-<n>.
   case "$suffix" in
@@ -87,31 +113,31 @@ hapax_agent_role_from_path() {
 
 hapax_agent_identity() {
   if [ -n "${HAPAX_AGENT_NAME:-}" ]; then
-    printf '%s\n' "$HAPAX_AGENT_NAME"
+    hapax_agent_normalize_identity "$HAPAX_AGENT_NAME"
     return 0
   fi
   if [ -n "${CODEX_THREAD_NAME:-}" ]; then
-    printf '%s\n' "$CODEX_THREAD_NAME"
+    hapax_agent_normalize_identity "$CODEX_THREAD_NAME"
     return 0
   fi
   if [ -n "${CODEX_SESSION_NAME:-}" ]; then
-    printf '%s\n' "$CODEX_SESSION_NAME"
+    hapax_agent_normalize_identity "$CODEX_SESSION_NAME"
     return 0
   fi
   if [ -n "${CODEX_SESSION:-}" ]; then
-    printf '%s\n' "$CODEX_SESSION"
+    hapax_agent_normalize_identity "$CODEX_SESSION"
     return 0
   fi
   if [ -n "${CODEX_ROLE:-}" ]; then
-    printf '%s\n' "$CODEX_ROLE"
+    hapax_agent_normalize_identity "$CODEX_ROLE"
     return 0
   fi
   if [ -n "${HAPAX_AGENT_ROLE:-}" ]; then
-    printf '%s\n' "$HAPAX_AGENT_ROLE"
+    hapax_agent_normalize_identity "$HAPAX_AGENT_ROLE"
     return 0
   fi
   if [ -n "${CLAUDE_ROLE:-}" ]; then
-    printf '%s\n' "$CLAUDE_ROLE"
+    hapax_agent_normalize_identity "$CLAUDE_ROLE"
     return 0
   fi
 
@@ -120,7 +146,7 @@ hapax_agent_identity() {
   # which is dead on niri/KWin — so identity survives a missing hyprctl.
   local marker_role
   if marker_role="$(hapax_session_role_read 2>/dev/null)" && [ -n "$marker_role" ]; then
-    printf '%s\n' "$marker_role"
+    hapax_agent_normalize_identity "$marker_role"
     return 0
   fi
 
@@ -128,7 +154,7 @@ hapax_agent_identity() {
     local who
     who="$(hapax-whoami 2>/dev/null | tr -d '[:space:]' || true)"
     if [ -n "$who" ]; then
-      printf '%s\n' "$who"
+      hapax_agent_normalize_identity "$who"
       return 0
     fi
   fi
@@ -296,16 +322,17 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         exit 2
       fi
       # Validate against the known lane vocabulary so a typo cannot mint a bogus
-      # identity: greek slots, cx-<color>, vbe-<n>, cc-<name>, antigrav.
+      # identity: greek slots, cx-<color>, vbe-<n>, cc-<name>, agy/agy-*.
       # cc-<name> = relay-coordinated Claude lanes (cc-zai, cc-cns, cc-cutovr, ...),
       # first-class governed lanes per the operator decision 2026-06-17.
       case "$_ar_role" in
-        alpha | beta | gamma | delta | epsilon | zeta | eta | theta | antigrav) ;;
+        alpha | beta | gamma | delta | epsilon | zeta | eta | theta | agy) ;;
+        agy-[a-z0-9-]*) ;;
         cx-[a-z]*) ;;
         cc-[a-z]*) ;;
         vbe-[0-9]*) ;;
         *)
-          echo "agent-role.sh: unknown role '$_ar_role' (expected a greek slot, cx-<color>, cc-<name>, vbe-<n>, or antigrav)" >&2
+          echo "agent-role.sh: unknown role '$_ar_role' (expected a greek slot, cx-<color>, cc-<name>, vbe-<n>, or agy/agy-*)" >&2
           exit 2
           ;;
       esac

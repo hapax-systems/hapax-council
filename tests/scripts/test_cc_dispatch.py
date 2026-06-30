@@ -17,7 +17,7 @@ _CC_PATH = Path(__file__).resolve().parents[2] / "scripts" / "cc-dispatch"
 # silently narrower than the real registry exposes.
 VALID = frozenset(
     {
-        "antigrav.interactive.full",
+        "agy.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
         "claude.headless.full",
@@ -52,7 +52,7 @@ def test_list(monkeypatch, capsys) -> None:
     _patch_valid(monkeypatch, mod)
     assert mod.main(["--list"]) == 0
     out = capsys.readouterr().out
-    assert "agy" in out and "antigrav.interactive.full" in out
+    assert "agy" in out and "agy.interactive.full" in out
     assert "glmcp-review" not in out  # non-spawnable excluded
 
 
@@ -102,7 +102,7 @@ def test_dispatch_validate_builds_correct_cmd(monkeypatch) -> None:
     assert cmd[:1] == ["DISPATCH"]
     assert "--task" in cmd and "cc-task-x" in cmd
     assert cmd[cmd.index("--lane") + 1] == "agy-1"  # dispatcher requires --task AND --lane
-    assert cmd[cmd.index("--platform") + 1] == "antigrav"
+    assert cmd[cmd.index("--platform") + 1] == "agy"
     assert cmd[cmd.index("--mode") + 1] == "interactive"
     assert cmd[cmd.index("--profile") + 1] == "full"
     assert "--launch" not in cmd  # validate-only by default
