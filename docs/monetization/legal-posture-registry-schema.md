@@ -58,6 +58,7 @@ A row is uniquely identified by the tuple `(surface, venue, instrument)`. There 
 - Specificity: `(surface, venue, instrument)` > `(surface, venue, *)` > `(surface, *, instrument)` > `(surface, *, *)`.
 - Venue-specific rows outrank global instrument defaults because g2 is a legal-in-venue gate; the wildcard-venue instrument row exists for deterministic fallback only.
 - The most specific matching row wins. If the most specific match is DARK, the disposition is blocked regardless of less-specific LIT rows.
+- For committed dispositions, wildcard rows are advisory context only. Commit authority requires an exact fresh LIT row for the named `(surface, venue, instrument)` tuple.
 
 ## 3. G2 Verdict Semantics — LIT / PARTIAL / DARK
 
@@ -84,7 +85,7 @@ A row is uniquely identified by the tuple `(surface, venue, instrument)`. There 
 - `operator_signed` must be `true`.
 - Row must not be stale.
 
-**Effect:** The g2 gate passes with advisory warning. The disposition may proceed but the open questions are surfaced as a governance advisory. A PARTIAL verdict with stale review degrades to DARK.
+**Effect:** The planning-time g2 read may surface PARTIAL as advisory context, but a committed disposition does not proceed on PARTIAL. Commit authority requires LIT. A PARTIAL verdict with stale review degrades to DARK.
 
 ### 3.3 DARK (No Clearance)
 
@@ -131,30 +132,24 @@ The operator should review all non-DARK rows at least once per `freshness_ttl_da
 
 ### 5.1 Gate Predicate
 
-The g2 gate is a presence-check against this registry. Formally:
+The disposition-commit g2 gate is a presence-check against this registry. Formally:
 
 ```text
-g2_gate(surface, venue, instrument) → { PASS, PASS_WITH_ADVISORY, FAIL }
+g2_commit_gate(surface, venue, instrument) → { PASS, FAIL }
 
-1. Find the most specific matching row R for (surface, venue, instrument), using this deterministic order:
-   a. (surface, venue, instrument)
-   b. (surface, venue, *)
-   c. (surface, *, instrument)
-   d. (surface, *, *)
-2. If no row exists → FAIL (absence = DARK).
-3. If R.operator_signed == false AND R.g2_verdict != DARK → FAIL (unsigned non-DARK is invalid).
-4. Compute effective_verdict:
-   a. If R is stale AND R.g2_verdict != DARK → effective_verdict = DARK.
-   b. Otherwise → effective_verdict = R.g2_verdict.
-5. If effective_verdict == LIT → PASS.
-6. If effective_verdict == PARTIAL → PASS_WITH_ADVISORY (surface open_questions + staleness warning).
-7. If effective_verdict == DARK → FAIL.
+1. Find the exact row R for `(surface, venue, instrument)`.
+2. If no exact row exists → FAIL (absence = DARK). Wildcard rows may be displayed as advisory context, but they are not commit authority.
+3. If R.g2_verdict == DARK → FAIL.
+4. If R.operator_signed == false AND R.g2_verdict != DARK → FAIL (unsigned non-DARK is invalid).
+5. If R is stale AND R.g2_verdict != DARK → FAIL (stale non-DARK degrades to DARK).
+6. If R.g2_verdict == PARTIAL → FAIL for commit (advisory only).
+7. If R.g2_verdict == LIT and `open_questions` is empty → PASS.
 ```
 
 ### 5.2 Fail-Closed Invariant
 
-**A disposition touching a surface+venue+instrument tuple MUST NOT commit if `g2_gate()` returns FAIL.** This is a hard gate, not an advisory. The only escape is:
-- Add or update a registry row with LIT or PARTIAL verdict.
+**A disposition touching a surface+venue+instrument tuple MUST NOT commit if `g2_commit_gate()` returns FAIL.** This is a hard gate, not an advisory. The only escape is:
+- Add or update an exact registry row with LIT verdict.
 - Obtain operator signature.
 - Ensure freshness.
 
