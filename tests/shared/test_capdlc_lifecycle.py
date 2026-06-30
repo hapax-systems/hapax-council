@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import shared.capdlc_lifecycle as capdlc_lifecycle
 from shared.capdlc_lifecycle import (
     CAPDLC_CANONICAL_LABEL,
@@ -15,9 +13,6 @@ from shared.capdlc_lifecycle import (
     measured_capdlc_entries,
     resolve_capdlc_lifecycle,
 )
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def test_registry_uses_capdlc_as_future_facing_label() -> None:
@@ -72,7 +67,7 @@ def test_measured_state_without_value_is_falsy() -> None:
     assert bool(entry) is False
 
 
-def test_measured_registry_entries_are_returned(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_measured_registry_entries_are_returned(monkeypatch) -> None:
     entry = CapDLCLifecycleEntry(
         slug="capdlc-measured-fixture",
         canonical_label="CapDLC",
