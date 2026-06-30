@@ -48,6 +48,21 @@ def _admission(*, admitted: bool) -> CapabilityAdmissionReceipt:
     )
 
 
+def _tool_admission(*, admitted: bool) -> CapabilityAdmissionReceipt:
+    return CapabilityAdmissionReceipt(
+        receipt_id="cctv-test-tool",
+        receipt_ref="cctv-capability-admission:cctv-test-tool",
+        capability_id="cctv.tool.qdrant_lookup",
+        route_id="local_tool.local.worker",
+        provider="local",
+        capacity_pool="local_compute",
+        admission_action="admitted" if admitted else "refused",
+        admitted=admitted,
+        reason_codes=("local_resource_green" if admitted else "local_resource_state:red",),
+        receipt_refs=("cctv-capability-admission:cctv-test-tool",),
+    )
+
+
 def _phase1_mock(score: Phase1Output | Exception):
     async def _mock(member, prompt, *, output_type=None, usage_limits=None):
         if output_type is None:  # investigate (research) call
@@ -265,6 +280,58 @@ class TestRunPhase1:
         assert verdict.receipt["capability_admissions"][0]["receipt_ref"] == (
             "cctv-capability-admission:cctv-test-member"
         )
+
+    @pytest.mark.asyncio
+    async def test_council_receipt_records_governed_tool_admissions(self) -> None:
+        member_admission = _admission(admitted=True)
+        tool_admission = _tool_admission(admitted=False)
+
+        class _RunResult:
+            def __init__(self, output):
+                self.output = output
+
+            def all_messages(self):
+                return []
+
+        class _FakeMember:
+            _cctv_capability_admission = member_admission
+
+            async def run(self, prompt, **kwargs):
+                if "output_type" not in kwargs:
+                    from agents.deliberative_council.tools import qdrant_lookup
+
+                    await qdrant_lookup(None, "same query")
+                    return _RunResult("researched")
+                return _RunResult(
+                    Phase1Output(
+                        scores={"claim_evidence_alignment": 4},
+                        rationale={},
+                        research_findings=[],
+                    )
+                )
+
+        with (
+            patch("agents.deliberative_council.engine.build_member", return_value=_FakeMember()),
+            patch(
+                "agents.deliberative_council.tools.admit_tool",
+                return_value=tool_admission,
+            ),
+        ):
+            config = CouncilConfig(model_aliases=("opus",), **_QUORUM_OFF)
+            inp = CouncilInput(text="test", source_ref="ref.md")
+            verdict = await deliberate(
+                inp, CouncilMode.DISCONFIRMATION, EpistemicQualityRubric(), config
+            )
+
+        assert verdict.receipt["route_resource_admission"] == "partial_admitted"
+        assert set(verdict.receipt["capability_receipt_refs"]) == {
+            "cctv-capability-admission:cctv-test-member",
+            "cctv-capability-admission:cctv-test-tool",
+        }
+        assert {item["capability_id"] for item in verdict.receipt["capability_admissions"]} == {
+            "cctv.model.opus",
+            "cctv.tool.qdrant_lookup",
+        }
 
     @pytest.mark.asyncio
     async def test_shortcircuit_skips_when_iqr_high(self) -> None:

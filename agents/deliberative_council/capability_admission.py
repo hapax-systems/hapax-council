@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -23,6 +26,10 @@ from shared.quota_spend_ledger import (
     load_quota_spend_ledger,
     load_quota_spend_ledger_resolved,
     subscription_quota_state_for_route,
+)
+
+_capability_admission_events: ContextVar[list[CapabilityAdmissionReceipt] | None] = ContextVar(
+    "cctv_capability_admission_events", default=None
 )
 
 
@@ -267,6 +274,25 @@ def unique_capability_admissions(
         )
         unique.setdefault(key, admission)
     return tuple(unique.values())
+
+
+@contextmanager
+def capability_admission_event_scope(
+    events: list[CapabilityAdmissionReceipt],
+) -> Iterator[None]:
+    token = _capability_admission_events.set(events)
+    try:
+        yield
+    finally:
+        _capability_admission_events.reset(token)
+
+
+def record_capability_admission(admission: CapabilityAdmissionReceipt | None) -> None:
+    if admission is None:
+        return
+    events = _capability_admission_events.get()
+    if events is not None:
+        events.append(admission)
 
 
 def tool_call_log_label(tool_name: str) -> str:

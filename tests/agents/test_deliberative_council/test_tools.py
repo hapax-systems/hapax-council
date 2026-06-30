@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,6 +29,7 @@ from agents.deliberative_council.tools import (
     vault_read,
     web_verify,
 )
+from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
 
 
 def _tool_admission(
@@ -177,6 +179,25 @@ class TestQdrantLookup:
         ):
             result = await qdrant_lookup(None, "test")
             assert "error" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_refuses_with_real_local_resource_admission(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+        payload["local_resource_state"] = "red"
+        ledger = tmp_path / "quota-spend-ledger.json"
+        ledger.write_text(json.dumps(payload), encoding="utf-8")
+        monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+        monkeypatch.setenv("HAPAX_CCTV_CAPABILITY_ADMISSION_NOW", "2026-06-01T00:10:00Z")
+
+        with patch("shared.config.embed") as embed:
+            result = await qdrant_lookup(None, "test")
+
+        embed.assert_not_called()
+        assert "capability_id=cctv.tool.qdrant_lookup" in result
+        assert "action=refused" in result
+        assert "next_action=refresh local resource snapshot" in result
 
     @pytest.mark.asyncio
     async def test_web_verify_refuses_without_admission(self) -> None:

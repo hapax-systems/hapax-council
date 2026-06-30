@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from .capability_admission import admit_tool, tool_result_prefix
+from .capability_admission import admit_tool, record_capability_admission, tool_result_prefix
 
 log = logging.getLogger(__name__)
 
@@ -152,12 +152,14 @@ async def web_verify(ctx: Any, query: str) -> str:
         return cached
     log.info("council_tool call: web_verify(%s)", query[:100])
     admission = admit_tool("web_verify")
+    record_capability_admission(admission)
     prefix = tool_result_prefix(admission)
     if not admission.admitted:
         log.warning("web_verify refused by capability admission: %s", admission.short_reason())
         return _memo_put(
             key,
-            prefix + "refused before external research provider invocation",
+            prefix + "refused before external research provider invocation; "
+            "next_action=refresh quota/spend ledger or choose an admitted web research route",
         )
     from pydantic_ai import Agent
 
@@ -174,7 +176,8 @@ async def web_verify(ctx: Any, query: str) -> str:
         return _memo_put(
             key,
             prefix
-            + f"(web_verify timed out after {_WEB_VERIFY_TIMEOUT_S:.0f}s — no external evidence gathered)",
+            + f"(web_verify timed out after {_WEB_VERIFY_TIMEOUT_S:.0f}s — no external evidence gathered; "
+            "next_action=retry later or proceed without external web evidence)",
         )
     return _memo_put(key, prefix + str(result.output)[:MAX_READ_CHARS])
 
@@ -187,10 +190,15 @@ async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -
         return cached
     log.info("council_tool call: qdrant_lookup(%s, %s)", query[:100], collection)
     admission = admit_tool("qdrant_lookup")
+    record_capability_admission(admission)
     prefix = tool_result_prefix(admission)
     if not admission.admitted:
         log.warning("qdrant_lookup refused by capability admission: %s", admission.short_reason())
-        return _memo_put(key, prefix + "refused before local embedding/resource invocation")
+        return _memo_put(
+            key,
+            prefix + "refused before local embedding/resource invocation; "
+            "next_action=refresh local resource snapshot or defer local RAG lookup",
+        )
     try:
         from shared.config import embed
 
@@ -208,7 +216,11 @@ async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -
             ),
         )
     except Exception as e:
-        return _memo_put(key, prefix + f"Qdrant error: {e}")
+        return _memo_put(
+            key,
+            prefix + f"Qdrant error: {e}; "
+            "next_action=check qdrant service, collection name, and local embedding route",
+        )
 
 
 async def vault_read(ctx: Any, note_path: str) -> str:

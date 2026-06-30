@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 from collections.abc import Sequence
-from contextvars import ContextVar
 
 from pydantic_ai import (  # noqa: TC002 — runtime use in _call_member
     Agent,
@@ -18,8 +17,10 @@ from pydantic_ai.messages import UserContent
 from .aggregation import AxisAggregate, aggregate_scores, should_shortcircuit
 from .capability_admission import (
     CapabilityAdmissionReceipt,
+    capability_admission_event_scope,
     capability_receipt_refs,
     member_capability_admission,
+    record_capability_admission,
     require_member_admission,
     route_resource_admission_state,
     tool_call_log_label,
@@ -60,9 +61,6 @@ from .tools import tool_memoization_scope
 _log = logging.getLogger(__name__)
 
 _MEMBER_TIMEOUT_S = 120.0
-_capability_admission_events: ContextVar[list[CapabilityAdmissionReceipt] | None] = ContextVar(
-    "cctv_capability_admission_events", default=None
-)
 
 # ── PRINCIPLED EXECUTION BOUNDS ──────────────────────────────────────────────
 # cc-task cctv-council-perfect-health-faillloud-convergence. pydantic-ai 1.63's
@@ -113,9 +111,7 @@ async def _call_member(
     if usage_limits is not None:
         run_kwargs["usage_limits"] = usage_limits
     admission = member_capability_admission(member)
-    admission_events = _capability_admission_events.get()
-    if admission is not None and admission_events is not None:
-        admission_events.append(admission)
+    record_capability_admission(admission)
     require_member_admission(member)
     result = await asyncio.wait_for(member.run(prompt, **run_kwargs), timeout=_MEMBER_TIMEOUT_S)
     tool_calls: list[str] = []
@@ -402,11 +398,8 @@ async def _deliberate(
     config: CouncilConfig,
 ) -> CouncilVerdict:
     capability_admission_events: list[CapabilityAdmissionReceipt] = []
-    token = _capability_admission_events.set(capability_admission_events)
-    try:
+    with capability_admission_event_scope(capability_admission_events):
         return await _deliberate_inner(inp, mode, rubric, config, capability_admission_events)
-    finally:
-        _capability_admission_events.reset(token)
 
 
 async def _deliberate_inner(
