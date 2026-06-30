@@ -23,7 +23,7 @@ from shared.fix_capabilities.background_admission import (
     admit_background_capability,
 )
 from shared.fix_capabilities.base import ExecutionResult, FixProposal, Safety
-from shared.fix_capabilities.evaluator import _admit_fix_evaluator, evaluate_check
+from shared.fix_capabilities.evaluator import admit_fix_evaluator, evaluate_check
 from shared.maintenance_lock import (
     first_docker_maintenance_lock,
     maintenance_lock_for_target,
@@ -292,7 +292,9 @@ def _admission_denied_outcome(
         proposal=proposal,
         rejected_reason=(
             f"Capability admission denied for route {admission.route_id}: "
-            f"{admission.denial_summary()}"
+            f"{admission.denial_summary()}. Next action: set "
+            "HAPAX_BACKGROUND_CAPABILITY_TASK_NOTE for this service and refresh "
+            "route/resource/quota/runtime-actuation receipts."
         ),
         admission=admission.metadata(),
     )
@@ -355,7 +357,7 @@ async def run_fix_pipeline(
                 check,
                 probe,
                 cap.available_actions(),
-                admission_gate=_admit_fix_evaluator,
+                admission_gate=admit_fix_evaluator,
             )
 
         if proposal is None:

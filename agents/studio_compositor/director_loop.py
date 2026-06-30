@@ -29,7 +29,10 @@ from shared.claim import Claim
 from shared.claim_prompt import SURFACE_FLOORS, render_envelope
 from shared.config import LITELLM_KEY
 from shared.director_intent import CompositionalImpingement, DirectorIntent
-from shared.fix_capabilities.background_admission import admit_background_capability
+from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+    admit_background_capability,
+)
 from shared.persona_prompt_composer import compose_persona_prompt, role_scope_line
 from shared.stimmung import Stance
 
@@ -4370,9 +4373,11 @@ class DirectorLoop:
         admission = _admit_director_llm()
         if not admission.admitted:
             log.warning(
-                "director LLM admission denied route=%s reason=%s",
+                "director LLM admission denied route=%s reason=%s; "
+                "next_action=set %s and refresh route/resource/quota receipts",
                 admission.route_id,
                 admission.denial_summary(),
+                BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
             )
             return ""
 

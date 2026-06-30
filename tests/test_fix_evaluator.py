@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agents.health_monitor import CheckResult, Status
+from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
 from shared.fix_capabilities.base import Action, FixProposal, ProbeResult, Safety
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -65,6 +66,22 @@ def _make_proposal() -> FixProposal:
     )
 
 
+def _admission(*, admitted: bool = True) -> BackgroundCapabilityAdmission:
+    return BackgroundCapabilityAdmission(
+        capability_name="health_monitor.fix_evaluator.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias="claude-sonnet",
+        admitted=admitted,
+        denied_reason=None if admitted else "route_policy_denied",
+        reason_codes=("policy_launch",) if admitted else ("provider_gateway_evidence_absent",),
+        task_id="task-x",
+        authority_case="CASE-CAPACITY-ROUTING-001",
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        route_decision_id="rd-test",
+    )
+
+
 # ── Tests ────────────────────────────────────────────────────────────────────
 
 
@@ -82,7 +99,12 @@ async def test_returns_fix_proposal():
         new_callable=AsyncMock,
         return_value=mock_result,
     ):
-        result = await evaluate_check(_make_check(), _make_probe(), _make_actions())
+        result = await evaluate_check(
+            _make_check(),
+            _make_probe(),
+            _make_actions(),
+            admission_gate=lambda: _admission(),
+        )
 
     assert result is not None
     assert result.action_name == "restart_container"
@@ -99,7 +121,12 @@ async def test_returns_none_on_llm_error():
         new_callable=AsyncMock,
         side_effect=Exception("LLM timeout"),
     ):
-        result = await evaluate_check(_make_check(), _make_probe(), _make_actions())
+        result = await evaluate_check(
+            _make_check(),
+            _make_probe(),
+            _make_actions(),
+            admission_gate=lambda: _admission(),
+        )
 
     assert result is None
 
@@ -140,7 +167,12 @@ async def test_returns_none_for_no_action():
         new_callable=AsyncMock,
         return_value=mock_result,
     ):
-        result = await evaluate_check(_make_check(), _make_probe(), _make_actions())
+        result = await evaluate_check(
+            _make_check(),
+            _make_probe(),
+            _make_actions(),
+            admission_gate=lambda: _admission(),
+        )
 
     assert result is None
 
@@ -176,9 +208,51 @@ async def test_prompt_includes_check_context():
         new_callable=AsyncMock,
         return_value=mock_result,
     ) as mock_run:
-        await evaluate_check(check, _make_probe(), _make_actions())
+        await evaluate_check(
+            check,
+            _make_probe(),
+            _make_actions(),
+            admission_gate=lambda: _admission(),
+        )
 
     mock_run.assert_called_once()
     prompt_arg = mock_run.call_args[0][0]
     assert "docker_litellm" in prompt_arg
     assert "container not running" in prompt_arg
+
+
+@pytest.mark.asyncio
+async def test_default_admission_denial_skips_llm():
+    """The public evaluator API fails closed by default before model use."""
+    from shared.fix_capabilities.evaluator import evaluate_check
+
+    with (
+        patch(
+            "shared.fix_capabilities.evaluator.admit_fix_evaluator",
+            return_value=_admission(admitted=False),
+        ),
+        patch(
+            "shared.fix_capabilities.evaluator._evaluator_agent.run",
+            new_callable=AsyncMock,
+        ) as mock_run,
+    ):
+        result = await evaluate_check(_make_check(), _make_probe(), _make_actions())
+
+    assert result is None
+    mock_run.assert_not_called()
+
+
+def test_fix_evaluator_admission_uses_provider_gateway_route():
+    """The evaluator gate requests admission for the route backing balanced."""
+    from shared.fix_capabilities.evaluator import admit_fix_evaluator
+
+    with patch("shared.fix_capabilities.evaluator.admit_background_capability") as mock_admit:
+        mock_admit.return_value = _admission()
+        admission = admit_fix_evaluator()
+
+    assert admission.admitted is True
+    kwargs = mock_admit.call_args.kwargs
+    assert kwargs["route_id"] == "api.headless.provider_gateway"
+    assert kwargs["model_alias"] == "claude-sonnet"
+    assert kwargs["mutation_surface"] == "provider_spend"
+    assert kwargs["quality_floor"] == "frontier_required"

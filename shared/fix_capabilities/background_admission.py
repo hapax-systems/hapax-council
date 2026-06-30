@@ -146,7 +146,18 @@ def admit_background_capability(
                 quality_floor=quality_floor,
                 authority_level=authority_level,
             )
-        fields, _body = parse_frontmatter(resolved_task_path)
+        try:
+            fields, _body = parse_frontmatter(resolved_task_path)
+        except Exception as exc:
+            return _denied(
+                capability_name=capability_name,
+                route_id=normalized_route_id,
+                model_alias=model_alias,
+                denied_reason=f"task_note_unreadable:{resolved_task_path}:{exc}",
+                mutation_surface=mutation_surface,
+                quality_floor=quality_floor,
+                authority_level=authority_level,
+            )
         if not fields:
             return _denied(
                 capability_name=capability_name,
