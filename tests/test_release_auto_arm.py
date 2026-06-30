@@ -4,13 +4,20 @@ Reform improve (CASE-CAPACITY-ROUTING-001): a lane that dies after creating its
 PR but before flipping ``release_authorized: true`` strands a CLEAN, green,
 mergeable PR at ``pr_open`` forever. The autoqueue (running as the system,
 unclaimed — FM-20) must auto-arm such a task — but only when its release was
-already authorized-in-principle by its ISAP and its risk profile carries no
-governance/public/audio-egress veto. Sensitive tasks stay manual.
+already authorized-in-principle by its ISAP and every applicable sensitivity
+class has machine-verified mitigation evidence.
+
+Release auto-arm blocker reason codes are part of the reconciler/ledger
+contract: ``risk_flag:{name}`` means no PR check evidence was supplied,
+``needs_mitigation:{name}:{check}`` is emitted once per missing mitigation
+check, and ``unmitigable_risk_flag:{name}`` means no automated mitigation gate
+exists for that sensitive class.
 """
 
 from __future__ import annotations
 
 from shared.sdlc_lifecycle import (
+    RELEASE_MITIGATION_CHECKS,
     apply_release_auto_arm,
     assess_release_auto_arm,
     release_auto_arm_waivers,
@@ -78,7 +85,7 @@ def test_ineligible_when_explicit_governance_risk_flag_set() -> None:
     assessment = assess_release_auto_arm(fm)
     assert assessment.needs_arming is True
     assert assessment.eligible is False
-    assert any("governance" in blocker for blocker in assessment.blockers)
+    assert "risk_flag:governance_sensitive" in assessment.blockers
 
 
 def test_ineligible_when_governance_keyword_in_title_without_explicit_flags() -> None:
@@ -383,14 +390,40 @@ def test_privacy_secret_held_when_mitigation_evidence_missing() -> None:
     assert "needs_mitigation:privacy_or_secret_sensitive:secrets-scan" in assessment.blockers
 
 
+def test_governance_sensitive_auto_arms_when_mitigation_evidence_present() -> None:
+    fm = _eligible_frontmatter(risk_flags={"governance_sensitive": True})
+    verified_checks = set(RELEASE_MITIGATION_CHECKS["governance_sensitive"])
+
+    assessment = assess_release_auto_arm(fm, verified_checks=verified_checks)
+
+    assert assessment.eligible
+    assert assessment.blockers == ()
+
+
+def test_governance_sensitive_held_when_mitigation_evidence_missing() -> None:
+    fm = _eligible_frontmatter(risk_flags={"governance_sensitive": True})
+    assessment = assess_release_auto_arm(fm, verified_checks={"authority-case-check"})
+
+    assert not assessment.eligible
+    assert assessment.blockers == ("needs_mitigation:governance_sensitive:review-team-quorum",)
+
+
+def test_governance_sensitive_still_fails_closed_without_verified_checks() -> None:
+    fm = _eligible_frontmatter(risk_flags={"governance_sensitive": True})
+    assessment = assess_release_auto_arm(fm)
+
+    assert not assessment.eligible
+    assert assessment.blockers == ("risk_flag:governance_sensitive",)
+
+
 def test_undefined_sensitivity_class_fails_closed_under_evidence_gating() -> None:
-    # A sensitive class with no mitigation gate defined yet (governance in v1) fails
+    # A sensitive class with no mitigation gate defined yet fails
     # CLOSED even with checks present — the model never silently releases something
     # it cannot mitigate; the resolution is to DEFINE its gate, never to hand-arm.
-    fm = _eligible_frontmatter(risk_flags={"governance_sensitive": True})
+    fm = _eligible_frontmatter(risk_flags={"public_claim_sensitive": True})
     assessment = assess_release_auto_arm(fm, verified_checks={"secrets-scan", "test", "review"})
     assert not assessment.eligible
-    assert "unmitigable_risk_flag:governance_sensitive" in assessment.blockers
+    assert "unmitigable_risk_flag:public_claim_sensitive" in assessment.blockers
 
 
 def test_nonsensitive_task_stays_eligible_with_verified_checks() -> None:
