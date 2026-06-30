@@ -188,6 +188,10 @@ assert all(
 ), "unsigned non-DARK row"
 assert len([
     row for row in rows
+    if row.get("source_task") == "20260628-registry-phase3-bug-bounty-subtree"
+]) == 7
+assert len([
+    row for row in rows
     if row.get("source_task") == "20260628-registry-phase5-white-label-subtree"
 ]) == 6
 assert len([

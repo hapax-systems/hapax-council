@@ -88,6 +88,227 @@ rows:
       - bug_bounty
     source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
 
+  # -- Bug Bounty Phase 3 Rows -----------------------------------------
+  # These rows separate direct invited lab bounty programs from brokered
+  # vulnerability resale. Every recovered row is DARK until a separate
+  # operator-signed legal upgrade changes it.
+  - surface: bug_bounty
+    venue: anthropic
+    instrument: direct_invited_model_safety_universal_jailbreak_bounty
+    g2_verdict: DARK
+    citation: >
+      Anthropic Claude Help Center, Model Safety Bug Bounty Program,
+      Mar. 16, 2026:
+      https://support.claude.com/en/articles/12119250-model-safety-bug-bounty-program.
+      The program is run through HackerOne, is application/invite gated,
+      limits the free model alias to authorized red-teaming activities,
+      requires NDA participation, and pays up to $35,000 for novel
+      universal jailbreaks meeting Anthropic's criteria.
+    authority_basis: tos_clause
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Candidate direct-lab route only. This row does not cover independent
+      public disclosure, scraping, account abuse, infrastructure testing,
+      or any activity outside the accepted participant scope. It remains
+      DARK until program acceptance, NDA compliance, scope control, and
+      operator signature are documented.
+    open_questions:
+      - "Has the operator been accepted into Anthropic's HackerOne-backed program and signed the required NDA?"
+      - "Is the planned submission limited to the authorized program scope and model alias?"
+      - "Does the repro package avoid exporting code, tooling, data, or technology outside the direct program channel?"
+      - "Has the operator signed the legal-posture row after reviewing current program terms?"
+    blocks_surfaces:
+      - bug_bounty
+      - REQ-20260628-ai-redteam-bug-bounty-play
+    source_task: 20260628-registry-phase3-bug-bounty-subtree
+
+  - surface: bug_bounty
+    venue: openai
+    instrument: direct_invited_bio_universal_jailbreak_bounty
+    g2_verdict: DARK
+    citation: >
+      OpenAI, GPT-5.5 Bio Bug Bounty, Apr. 23, 2026:
+      https://openai.com/index/gpt-5-5-bio-bug-bounty/.
+      OpenAI describes an application/invite-gated bio safety bounty for
+      GPT-5.5 in Codex Desktop, with NDA-covered prompts, completions,
+      findings, and communications, and a $25,000 reward for the first true
+      universal jailbreak clearing all five bio safety questions.
+    authority_basis: tos_clause
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Candidate direct-lab route only. As recovered from child research,
+      OpenAI's public page had a 2026-06-22 application deadline and
+      testing through 2026-07-27, so g2 depends on existing acceptance or
+      a later reopened/accepted cohort. It remains DARK until acceptance,
+      NDA compliance, scope control, and operator signature are documented.
+    open_questions:
+      - "Was the operator accepted into the GPT-5.5 Bio Bug Bounty before the June 22, 2026 application deadline, or has OpenAI reopened/extended access?"
+      - "Is testing limited to GPT-5.5 in Codex Desktop and the five-question challenge described by OpenAI?"
+      - "Does the submission remain within NDA, disclosure, and onboarding terms?"
+      - "Has the operator signed the legal-posture row after reviewing current program terms?"
+    blocks_surfaces:
+      - bug_bounty
+      - REQ-20260628-ai-redteam-bug-bounty-play
+    source_task: 20260628-registry-phase3-bug-bounty-subtree
+
+  - surface: bug_bounty
+    venue: "*"
+    instrument: brokered_vulnerability_resale
+    g2_verdict: DARK
+    citation: >
+      Internal struck-register authority:
+      REQ-20260628-arbitrage-struck-and-blocked-register.
+      The register marks the ZDI/ExploitHub-style broker lane as struck
+      because weaponizable vulnerabilities would be sold to undisclosed
+      downstream buyers with possible nation-state use; it is not a
+      sub-route of direct invited lab bounty work.
+    authority_basis: operator_judgment
+    review_date: "2026-06-30"
+    freshness_ttl_days: 365
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      This is a governance DARK row, not a request for more legal research.
+      It exists so the registry does not accidentally treat brokered resale
+      as a missing variant of direct lab programs.
+    open_questions: []
+    blocks_surfaces:
+      - bug_bounty
+      - brokered_vulnerability_resale
+    source_task: 20260628-registry-phase3-bug-bounty-subtree
+
+  - surface: bug_bounty
+    venue: US-BIS
+    instrument: ace_deemed_export_or_reexport
+    g2_verdict: DARK
+    citation: >
+      15 CFR 740.22(a), (c), License Exception ACE:
+      https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-740/section-740.22;
+      15 CFR 734.13(b), deemed exports:
+      https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-734/section-734.13;
+      15 CFR 734.15, release:
+      https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-734/section-734.15.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Direct text-only submissions to the lab through the lab's own program
+      are not treated here as tool export. Any collaboration, foreign-person
+      access, source-code sharing, technology transfer, or cross-border
+      release of cybersecurity items needs item classification, counterparty
+      screening, and ACE restriction review before g2 can pass.
+    open_questions:
+      - "Will any foreign person receive technology or source code rather than only the lab's final text prompt/report?"
+      - "Is any item a 740.22 cybersecurity item, and if so is ACE available for the destination, end user, and end use?"
+      - "Are any E:1/E:2, D-group government end-user, or unauthorized-confidentiality/integrity/availability use restrictions implicated?"
+      - "Is the submission channel only the direct lab program, with no third-party disclosure or resale?"
+    blocks_surfaces:
+      - bug_bounty
+      - REQ-20260628-ai-redteam-bug-bounty-play
+    source_task: 20260628-registry-phase3-bug-bounty-subtree
+
+  - surface: bug_bounty
+    venue: US-BIS
+    instrument: eccn_4d004_security_tool_or_agentic_harness_export
+    g2_verdict: DARK
+    citation: >
+      15 CFR 740.22(b)(1) lists ECCN 4D004 as a cybersecurity item:
+      https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-740/section-740.22;
+      15 CFR 772.1 defines intrusion software:
+      https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-772/section-772.1.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Text prompts and written reports are separated from software/tooling.
+      Any agentic harness, exploit generator, command-and-control helper,
+      delivery tool, or other software specially designed or modified for
+      intrusion-software generation, command and control, or delivery remains
+      DARK until classified and cleared.
+    open_questions:
+      - "Does the repro harness include software beyond ordinary text prompts, screenshots, and written steps?"
+      - "Could any code be classified under 4D004 or related 4D001.a/4E001 entries?"
+      - "Will any tool or source be exported, reexported, transferred in-country, or released to a foreign person?"
+      - "Can the direct lab submission be reduced to text-only reproduction artifacts?"
+    blocks_surfaces:
+      - bug_bounty
+      - REQ-20260628-ai-redteam-bug-bounty-play
+    source_task: 20260628-registry-phase3-bug-bounty-subtree
+
+  - surface: bug_bounty
+    venue: US-DMCA
+    instrument: dmca_1201_security_testing_direct_disclosure
+    g2_verdict: DARK
+    citation: >
+      17 USC 1201(a), (j), Circumvention of copyright protection systems:
+      https://uscode.house.gov/view.xhtml?req=%28title%3A17+section%3A1201+edition%3Aprelim%29.
+      Section 1201(j) defines security testing around good-faith testing,
+      investigation, or correction of security flaws with owner/operator
+      authorization, and considers whether information is used to promote
+      security or shared directly with the developer.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Candidate direct authorized security-testing route only. Pure
+      text-prompt model-safety testing may not involve a technological
+      protection measure, but any bypass of access controls, DRM, paywalls,
+      API limits, or infrastructure protections needs fresh review. This
+      remains DARK until authorization and scope are documented and signed.
+    open_questions:
+      - "Does the candidate require bypassing any technological measure controlling access to a copyrighted work or platform resource?"
+      - "Is the work authorized by the owner/operator and limited to good-faith testing or direct developer disclosure?"
+      - "Does the activity avoid CFAA, privacy, infringement, account-abuse, and non-DMCA violations?"
+      - "Does the repro package avoid distributing circumvention tools outside the direct authorized program?"
+    blocks_surfaces:
+      - bug_bounty
+      - REQ-20260628-ai-redteam-bug-bounty-play
+    source_task: 20260628-registry-phase3-bug-bounty-subtree
+
+  - surface: bug_bounty
+    venue: US-IRS
+    instrument: bounty_income_and_hobby_loss
+    g2_verdict: DARK
+    citation: >
+      26 USC 183, Activities not engaged in for profit:
+      https://uscode.house.gov/view.xhtml?edition=prelim&num=0&req=granuleid%3AUSC-prelim-title26-section183;
+      IRS FS-2022-38, Know the difference between a hobby and a business:
+      https://www.irs.gov/newsroom/know-the-difference-between-a-hobby-and-a-business;
+      IRS Publication 525 (2025), Taxable and Nontaxable Income:
+      https://www.irs.gov/publications/p525.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Bug-bounty rewards are income events, and Section 183 can limit loss
+      deductions if the activity is not engaged in for profit. This remains
+      DARK until payout receipt handling, books/records, expense treatment,
+      and operator tax posture are documented.
+    open_questions:
+      - "Will bounty activity be conducted with complete books, records, and businesslike methods?"
+      - "How will cash or noncash bounty awards be reported and reconciled to the durable receipt sink?"
+      - "Are expenses ordinary/necessary business expenses or limited by Section 183 hobby-loss treatment?"
+      - "Does the operator need CPA review before the first paid submission?"
+    blocks_surfaces:
+      - bug_bounty
+      - REQ-20260628-ai-redteam-bug-bounty-play
+      - 20260628-bounty-phase5-receipt-and-M-scoring-CORROBORATED
+    source_task: 20260628-registry-phase3-bug-bounty-subtree
+
   # ── Whistleblower ────────────────────────────────────────────────────
   - surface: whistleblower
     venue: "*"
