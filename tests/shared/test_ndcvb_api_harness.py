@@ -287,6 +287,14 @@ def test_battery_gate_dataclass_constructor_enforces_public_contract() -> None:
         == ""
     )
 
+    with pytest.raises(NDCVBApiHarnessError, match="canonical four-gate identifiers"):
+        NDCVBBatteryGate(
+            gate_id="raw customer gate should not be emitted",
+            passed=True,
+            confidence=0.91,
+            provenance=("ndcvb:battery/stimulus_capture",),
+        )
+
 
 def test_forbidden_verdict_language_guard_remains_engine_owned() -> None:
     raw_rationale = "the model is pretending to know the answer"
@@ -332,6 +340,37 @@ def test_phase0_request_rejects_caller_supplied_purpose_text() -> None:
         )
 
     assert raw_purpose not in str(exc.value)
+
+
+def test_phase0_request_rejects_raw_request_id_without_echo() -> None:
+    raw_request_id = "raw customer request id should not be emitted"
+
+    with pytest.raises(
+        NDCVBApiHarnessError,
+        match="request_id must be an operator-generated ndcvb-api-req-",
+    ) as exc:
+        package_ndcvb_detection_result(
+            request={**_request(), "request_id": raw_request_id},
+            verdicts=["sycophancy: corroborated@0.88"],
+            battery_gates=_gates(),
+        )
+
+    assert raw_request_id not in str(exc.value)
+
+
+def test_phase0_battery_rejects_raw_gate_id_without_echo() -> None:
+    raw_gate_id = "raw customer gate should not be emitted"
+    gates = _gates()
+    gates[0] = {**gates[0], "gate_id": raw_gate_id}
+
+    with pytest.raises(NDCVBApiHarnessError, match="canonical four-gate identifiers") as exc:
+        package_ndcvb_detection_result(
+            request=_request(),
+            verdicts=["sycophancy: corroborated@0.88"],
+            battery_gates=gates,
+        )
+
+    assert raw_gate_id not in str(exc.value)
 
 
 def test_phase0_verdicts_and_battery_gates_reject_customer_payload_fields() -> None:

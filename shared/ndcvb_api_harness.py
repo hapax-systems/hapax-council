@@ -23,6 +23,15 @@ NDCVB_PRODUCT_SURFACE_ID: Final = "ndcvb-b2b-api-phase0-harness"
 NDCVB_PHASE: Final = "phase0_packaging_only"
 NDCVB_REQUIRED_BATTERY_GATE_COUNT: Final = 4
 _DEFAULT_PURPOSE: Final = "operator_internal_phase0_packaging"
+_REQUIRED_GATE_IDS: Final[frozenset[str]] = frozenset(
+    {
+        "stimulus_capture",
+        "counterfactual_probe",
+        "cross_context_consistency",
+        "source_traceability",
+    }
+)
+_REQUEST_ID_RE: Final = re.compile(r"^ndcvb-api-req-[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _REFERENCE_RE: Final = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s]+$")
 
 _REQUEST_KEYS: Final = frozenset(
@@ -78,7 +87,8 @@ _FORBIDDEN_REQUEST_KEYS: Final = frozenset(
     }
 )
 _REQUEST_NEXT_ACTION: Final = (
-    "next_action=send only request_id, artifact_ref, evidence_ref, optional run_ref, "
+    "next_action=send only operator-generated request_id matching ndcvb-api-req-*, "
+    "artifact_ref, evidence_ref, optional run_ref, "
     f"and optional purpose exactly {_DEFAULT_PURPOSE!r}; do not pass raw payload, "
     "customer, tenant, or user data"
 )
@@ -88,10 +98,11 @@ _VERDICT_NEXT_ACTION: Final = (
     "tenant, or user data"
 )
 _BATTERY_NEXT_ACTION: Final = (
-    "next_action=provide exactly four gate mappings with unique gate_id, boolean "
-    "passed, confidence in [0.0, 1.0], non-empty provenance refs, and optional "
-    "local-only detail that is not returned by the public envelope; do not pass raw "
-    "payload, customer, tenant, or user data"
+    "next_action=provide exactly four canonical gate mappings "
+    "(stimulus_capture, counterfactual_probe, cross_context_consistency, "
+    "source_traceability) with boolean passed, confidence in [0.0, 1.0], non-empty "
+    "provenance refs, and optional local-only detail that is not returned by the "
+    "public envelope; do not pass raw payload, customer, tenant, or user data"
 )
 _TEXT_NEXT_ACTION: Final = "next_action=provide a non-empty string reference value"
 _REF_NEXT_ACTION: Final = (
@@ -126,7 +137,7 @@ class NDCVBPackagingRequest:
     purpose: str = _DEFAULT_PURPOSE
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "request_id", _required_text(self.request_id, "request_id"))
+        object.__setattr__(self, "request_id", _request_id(self.request_id))
         object.__setattr__(
             self,
             "artifact_ref",
@@ -155,7 +166,7 @@ class NDCVBPackagingRequest:
             label="phase-0 harness request",
         )
         return cls(
-            request_id=_required_text(raw.get("request_id"), "request_id"),
+            request_id=_request_id(raw.get("request_id")),
             artifact_ref=_required_text(raw.get("artifact_ref"), "artifact_ref"),
             evidence_ref=_required_text(raw.get("evidence_ref"), "evidence_ref"),
             run_ref=_optional_text(raw.get("run_ref"), "run_ref"),
@@ -187,7 +198,7 @@ class NDCVBBatteryGate:
     detail: str = ""
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "gate_id", _required_text(self.gate_id, "gate_id"))
+        object.__setattr__(self, "gate_id", _gate_id(self.gate_id))
         if not isinstance(self.passed, bool):
             raise NDCVBApiHarnessError(
                 _with_next_action("battery gate passed must be a boolean", _BATTERY_NEXT_ACTION)
@@ -214,7 +225,7 @@ class NDCVBBatteryGate:
             next_action=_BATTERY_NEXT_ACTION,
             label="battery gate",
         )
-        gate_id = _required_text(raw.get("gate_id"), "gate_id")
+        gate_id = _gate_id(raw.get("gate_id"))
         passed = raw.get("passed")
         if not isinstance(passed, bool):
             raise NDCVBApiHarnessError(
@@ -531,6 +542,30 @@ def _optional_text(value: Any, field: str) -> str | None:
     if not text:
         raise NDCVBApiHarnessError(
             _with_next_action(f"{field} must not be empty", _TEXT_NEXT_ACTION)
+        )
+    return text
+
+
+def _request_id(value: Any) -> str:
+    text = _required_text(value, "request_id")
+    if not _REQUEST_ID_RE.match(text):
+        raise NDCVBApiHarnessError(
+            _with_next_action(
+                "request_id must be an operator-generated ndcvb-api-req-* identifier",
+                _REQUEST_NEXT_ACTION,
+            )
+        )
+    return text
+
+
+def _gate_id(value: Any) -> str:
+    text = _required_text(value, "gate_id")
+    if text not in _REQUIRED_GATE_IDS:
+        raise NDCVBApiHarnessError(
+            _with_next_action(
+                "battery gate_id must be one of the canonical four-gate identifiers",
+                _BATTERY_NEXT_ACTION,
+            )
         )
     return text
 
