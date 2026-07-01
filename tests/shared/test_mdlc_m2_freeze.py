@@ -176,6 +176,15 @@ def test_missing_ruler_hash_commit_refuses_before_m2_commit() -> None:
     assert result.next_action == "supply the commit ruler hash from the freeze artifact"
 
 
+def test_whitespace_ruler_hash_commit_refuses_before_m2_commit() -> None:
+    result = verify_m2_freeze_artifact(_artifact(), ruler_hash_commit="  ")
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is M2FreezeRefusalReason.MISSING_RULER_HASH_COMMIT
+    assert result.expected_ruler_hash == HASH
+    assert result.next_action == "supply the commit ruler hash from the freeze artifact"
+
+
 def test_mismatched_ruler_hash_refuses_and_require_raises() -> None:
     result = verify_m2_freeze_artifact(_artifact(), ruler_hash_commit="different")
 

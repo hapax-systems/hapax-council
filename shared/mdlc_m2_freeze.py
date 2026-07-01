@@ -1,8 +1,11 @@
 """MonDLC M2 freeze artifact contract.
 
-The scorer consumes a frozen ladder. This module proves the freeze itself:
-budget envelope, ladder, ruler hash, signer, and timestamp must be present.
-Boolean freeze flags are intentionally ignored.
+The scorer consumes a frozen ladder. This module proves the freeze artifact
+itself: artifact id, budget envelope, ladder, artifact ruler hash, signer,
+timestamp, and signature reference must be present. The artifact ruler hash is
+the authoritative frozen value; callers must pass the commit's carried ruler
+hash so verifier admission proves end-to-end equality. Boolean freeze flags are
+intentionally ignored.
 """
 
 from __future__ import annotations
