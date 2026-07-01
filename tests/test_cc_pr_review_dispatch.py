@@ -1182,6 +1182,7 @@ checklist:
         dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
 
         reviewers = RecordingReviewers()
+        route_ledger_dir = tmp_path / "route-ledger"
         result = dispatch.review_pr(
             42,
             repo="owner/repo",
@@ -1197,13 +1198,14 @@ checklist:
                 now_iso="2026-06-11T22:00:00+00:00",
                 omit_quota_for={"codex.headless.full"},
             ),
-            route_decision_ledger_dir=tmp_path / "route-ledger",
+            route_decision_ledger_dir=route_ledger_dir,
         )
 
         assert result["status"] == "skipped_blocked"
         assert result["review_team_verdict"] == "no-quorum"
         assert "--force" in result["route_hold_recovery"]
         assert reviewers.invocations == []
+        assert not (route_ledger_dir / "route-decisions.jsonl").exists()
 
     def test_multi_task_pr_writes_each_task_dossier(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
@@ -2450,6 +2452,7 @@ class TestFamilyOutageDegradation:
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
         state, _ = self._isolate_state(monkeypatch, tmp_path)
+        monkeypatch.setenv("HAPAX_REVIEW_TEAM_GATE_OFF", "1")
         constitution = dispatch.review_team.Constitution(
             team_class="t2_standard",
             quorum_required=2,
@@ -2484,6 +2487,7 @@ class TestFamilyOutageDegradation:
         assert reviews[0]["verdict"] == "reviewer-route-unavailable"
         assert reviews[0]["provider_invoked"] is False
         assert "route_decision_missing" in reviews[0]["route_admission_diagnostic"]
+        assert "not a dispatch-time bypass" in reviews[0]["route_admission_diagnostic"]
         assert "route_decision_missing" in reviews[0]["raw_reply_excerpt"]
         dispatch.update_family_outage(reviews, "2026-06-12T21:00:00+00:00")
         recorded = json.loads(state.read_text(encoding="utf-8"))

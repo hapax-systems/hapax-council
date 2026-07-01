@@ -90,6 +90,12 @@ ROUTE_HOLD_RECOVERY_HINT = (
     "known-stale dossier after evidence repair fails to refresh it; do not bypass the "
     "pre-provider route gate."
 )
+PRE_PROVIDER_ROUTE_GATE_INVARIANT = (
+    "HAPAX_REVIEW_TEAM_GATE_OFF applies only after a current review dossier exists; it is "
+    "not a dispatch-time bypass for route, quota, resource, or authority admission. "
+    "Repair or refresh governing evidence instead of invoking a reviewer outside the "
+    "capability-routing spine."
+)
 SEND_SCRIPTS = {
     "claude": "hapax-claude-send",
     "codex": "hapax-codex-send",
@@ -730,6 +736,7 @@ def _admit_review_seat_for_task(
     policy_sources: DispatchPolicySources,
     route_decision_ledger_dir: Path | None,
     now: datetime,
+    record_route_decision: bool = True,
 ) -> dict[str, Any]:
     authority_case = str(frontmatter.get("authority_case") or "").strip() or None
     parent_spec = str(frontmatter.get("parent_spec") or "").strip() or None
@@ -791,7 +798,11 @@ def _admit_review_seat_for_task(
         now=now,
     )
     decision = evaluate_dispatch_policy(request, now=now)
-    receipt_path = write_route_decision_receipt(decision, ledger_dir=route_decision_ledger_dir)
+    receipt_path = (
+        write_route_decision_receipt(decision, ledger_dir=route_decision_ledger_dir)
+        if record_route_decision
+        else "not-written:same-head-route-hold-current-admission-check"
+    )
     payload = {
         "route_admission_schema": 1,
         "seat_id": seat.id,
@@ -822,6 +833,7 @@ def build_review_seat_admissions(
     policy_sources: DispatchPolicySources,
     route_decision_ledger_dir: Path | None,
     now: datetime,
+    record_route_decisions: bool = True,
 ) -> dict[str, list[dict[str, Any]]]:
     family_cfgs = {entry["family"]: entry for entry in registry["families"]}
     admissions: dict[str, list[dict[str, Any]]] = {}
@@ -837,6 +849,7 @@ def build_review_seat_admissions(
                 policy_sources=policy_sources,
                 route_decision_ledger_dir=route_decision_ledger_dir,
                 now=now,
+                record_route_decision=record_route_decisions,
             )
             for note_path, frontmatter, task_id in keyed_matches
         ]
@@ -936,7 +949,7 @@ def dispatch_reviews(
             route_admission_diagnostic = (
                 "reviewer route admission missing before provider use; next action: refresh route, "
                 "quota, and resource receipts or repair task route metadata before rerunning review "
-                "dispatch. " + ROUTE_HOLD_RECOVERY_HINT
+                "dispatch. " + ROUTE_HOLD_RECOVERY_HINT + " " + PRE_PROVIDER_ROUTE_GATE_INVARIANT
             )
             return {
                 "id": seat.id,
@@ -973,7 +986,10 @@ def dispatch_reviews(
                 "reviewer route admission blocked before provider use: "
                 + ", ".join(reasons)
                 + "; next action: refresh route, quota, and resource receipts or repair "
-                "task route metadata before rerunning review dispatch. " + ROUTE_HOLD_RECOVERY_HINT
+                "task route metadata before rerunning review dispatch. "
+                + ROUTE_HOLD_RECOVERY_HINT
+                + " "
+                + PRE_PROVIDER_ROUTE_GATE_INVARIANT
             )
             return {
                 "id": seat.id,
@@ -1570,21 +1586,27 @@ def review_pr(
     computed_policy_sources: DispatchPolicySources | None = None
     computed_seat_admissions: dict[str, list[dict[str, Any]]] | None = None
 
-    def compute_current_seat_admissions() -> dict[str, list[dict[str, Any]]]:
+    def compute_current_seat_admissions(
+        *,
+        record_route_decisions: bool = True,
+    ) -> dict[str, list[dict[str, Any]]]:
         nonlocal computed_policy_sources
         nonlocal computed_seat_admissions
-        if computed_seat_admissions is not None:
+        if record_route_decisions and computed_seat_admissions is not None:
             return computed_seat_admissions
         computed_policy_sources = policy_sources or load_dispatch_policy_sources(now=admission_now)
-        computed_seat_admissions = build_review_seat_admissions(
+        seat_admissions = build_review_seat_admissions(
             constitution=constitution,
             registry=registry,
             keyed_matches=keyed_matches,
             policy_sources=computed_policy_sources,
             route_decision_ledger_dir=route_decision_ledger_dir,
             now=admission_now,
+            record_route_decisions=record_route_decisions,
         )
-        return computed_seat_admissions
+        if record_route_decisions:
+            computed_seat_admissions = seat_admissions
+        return seat_admissions
 
     if not force:
         fresh_results: list[dict[str, Any]] = []
@@ -1610,7 +1632,9 @@ def review_pr(
             if blockers:
                 route_hold = _dossier_has_route_admission_hold(existing)
                 if route_hold:
-                    current_seat_admissions = compute_current_seat_admissions()
+                    current_seat_admissions = compute_current_seat_admissions(
+                        record_route_decisions=False
+                    )
                     current_admission_blockers = _review_seat_admission_blockers(
                         constitution,
                         registry,
