@@ -420,6 +420,38 @@ def _frontmatter_lines(fields: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _frontmatter_field_value(text: str, field: str) -> str | None:
+    match = re.search(rf"^{re.escape(field)}:\s*(.*?)\s*$", text, flags=re.MULTILINE)
+    if match is None:
+        return None
+    raw = match.group(1).strip()
+    if raw in {"", "null", "None"}:
+        return None
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    return str(loaded) if loaded is not None else None
+
+
+def _active_task_allows_refresh(text: str) -> bool:
+    return (
+        _frontmatter_field_value(text, "status") == "offered"
+        and _frontmatter_field_value(text, "assigned_to") == "unassigned"
+        and _frontmatter_field_value(text, "claimed_at") is None
+    )
+
+
+def _active_task_created_at(text: str) -> datetime | None:
+    raw = _frontmatter_field_value(text, "created_at")
+    if raw is None:
+        return None
+    try:
+        return ensure_utc(datetime.fromisoformat(raw.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
 def _delta_priority(delta: CapabilitySurfaceDelta) -> str:
     if delta.public_egress or delta.money_rail or delta.privacy_sensitive:
         return "p0"
@@ -615,19 +647,27 @@ def write_capability_surface_delta_tasks(
             skipped_existing.append(str(terminal_path))
             continue
         path = active_root / filename
-        rendered = render_capability_surface_delta_task(delta, generated_at=generated_at)
         existing_active = path.exists()
+        existing_text: str | None = None
         if existing_active:
             try:
-                if path.read_text(encoding="utf-8") == rendered:
-                    skipped_existing.append(str(path))
-                    continue
+                existing_text = path.read_text(encoding="utf-8")
             except OSError as exc:
                 errors.append(
                     f"{path}: {exc}; next action: repair task-root permissions or "
                     "filesystem availability, then rerun this intake command"
                 )
                 continue
+            if not _active_task_allows_refresh(existing_text):
+                skipped_existing.append(str(path))
+                continue
+        render_time = (
+            _active_task_created_at(existing_text) if existing_text is not None else generated_at
+        )
+        rendered = render_capability_surface_delta_task(delta, generated_at=render_time)
+        if existing_text == rendered:
+            skipped_existing.append(str(path))
+            continue
         if not apply:
             (would_update if existing_active else would_write).append(str(path))
             continue

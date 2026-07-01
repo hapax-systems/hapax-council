@@ -635,27 +635,59 @@ def test_delta_task_writer_updates_changed_active_task(tmp_path) -> None:
     delta = load_capability_surface_delta_fixtures().deltas[0]
     active = tmp_path / "active" / task_filename_for_delta(delta)
     active.parent.mkdir(parents=True)
-    active.write_text("stale content\n", encoding="utf-8")
+    stale_rendered = render_capability_surface_delta_task(delta, generated_at=NOW).replace(
+        f'capability_freshness_state: "{delta.freshness_state.value}"',
+        'capability_freshness_state: "stale-local-test"',
+    )
+    active.write_text(stale_rendered, encoding="utf-8")
 
     dry = write_capability_surface_delta_tasks(
         [delta],
         task_root=tmp_path,
-        generated_at=NOW,
+        generated_at=NOW.replace(hour=5),
         apply=False,
     )
     assert dry["would_update"] == [str(active)]
-    assert active.read_text(encoding="utf-8") == "stale content\n"
+    assert "stale-local-test" in active.read_text(encoding="utf-8")
 
     applied = write_capability_surface_delta_tasks(
         [delta],
         task_root=tmp_path,
-        generated_at=NOW,
+        generated_at=NOW.replace(hour=5),
         apply=True,
     )
 
     assert applied["written"] == []
     assert applied["updated"] == [str(active)]
-    assert f'capability_surface_delta_id: "{delta.delta_id}"' in active.read_text(encoding="utf-8")
+    updated_text = active.read_text(encoding="utf-8")
+    assert f'capability_surface_delta_id: "{delta.delta_id}"' in updated_text
+    assert "stale-local-test" not in updated_text
+    assert 'created_at: "2026-07-01T04:30:00Z"' in updated_text
+
+
+def test_delta_task_writer_does_not_overwrite_claimed_active_task(tmp_path) -> None:
+    delta = load_capability_surface_delta_fixtures().deltas[0]
+    active = tmp_path / "active" / task_filename_for_delta(delta)
+    active.parent.mkdir(parents=True)
+    claimed = (
+        render_capability_surface_delta_task(delta, generated_at=NOW)
+        .replace('status: "offered"', 'status: "active"')
+        .replace('assigned_to: "unassigned"', 'assigned_to: "cx-status-vector"')
+        .replace("claimed_at: null", 'claimed_at: "2026-07-01T05:00:00Z"')
+    )
+    active.write_text(claimed, encoding="utf-8")
+
+    result = write_capability_surface_delta_tasks(
+        [delta],
+        task_root=tmp_path,
+        generated_at=NOW.replace(hour=5),
+        apply=True,
+    )
+
+    assert result["written"] == []
+    assert result["updated"] == []
+    assert result["skipped_existing"] == [str(active)]
+    assert active.read_text(encoding="utf-8") == claimed
 
 
 def test_delta_task_writer_does_not_remint_closed_or_refused_tasks(tmp_path) -> None:
