@@ -166,6 +166,16 @@ def test_executor_configuration_fails_closed(base_registry: AccountFederationReg
             registry=base_registry,
         )
 
+    with pytest.raises(ValueError, match="notional_cap must be finite"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist={"internal"},
+            notional_cap=10**400,
+            position_cap=500.0,
+            kill_switch=False,
+            registry=base_registry,
+        )
+
     with pytest.raises(ValueError, match="position_cap"):
         OutboundExecutor(
             authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
@@ -316,7 +326,7 @@ def test_executor_configuration_rejects_invalid_types(
 
 
 def test_request_rejects_non_finite_amount() -> None:
-    for amount in (float("nan"), float("inf"), float("-inf"), -1.0):
+    for amount in (float("nan"), float("inf"), float("-inf"), -1.0, 10**400):
         with pytest.raises(ValidationError, match="next action"):
             OutboundExecutionRequest(
                 scope="gmail_send_internal",
@@ -355,6 +365,20 @@ def test_request_rejects_coerced_default_token_flag() -> None:
                 amount=1.0,
                 use_default_token=use_default_token,
             )
+
+
+def test_request_is_immutable_after_validation() -> None:
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=1.0,
+        evidence_refs=["public-gate:receipt-1"],
+    )
+
+    with pytest.raises(ValidationError, match="frozen"):
+        request.amount = -100.0  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        request.evidence_refs.append("public-gate:forged")  # type: ignore[attr-defined]
 
 
 def test_request_rejects_blank_evidence_refs() -> None:

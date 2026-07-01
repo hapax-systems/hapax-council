@@ -3,10 +3,11 @@ from __future__ import annotations
 import math
 import threading
 import uuid
+from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any, Final, Literal
 
-from pydantic import Field, field_validator
+from pydantic import ConfigDict, Field, field_validator
 
 from shared.license_request_price_class_router import ReceiveOnlyRail as LicenseReceiveOnlyRail
 from shared.payment_aggregator_v2_support_normalizer import Rail as SupportRail
@@ -80,11 +81,13 @@ RECEIVE_ONLY_PROVIDERS: Final[frozenset[str]] = frozenset(
 
 
 class OutboundExecutionRequest(StrictModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     scope: str
     venue: str
     amount: float
     use_default_token: bool = False
-    evidence_refs: list[str] = Field(default_factory=list)
+    evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
     public_gate_passed: bool = False
     payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -120,11 +123,14 @@ class OutboundExecutionRequest(StrictModel):
     @classmethod
     def _evidence_refs_are_nonblank_strings(cls, value: Any) -> Any:
         if value is None:
-            return value
-        if not isinstance(value, list):
             raise ValueError(
-                "evidence_refs must be a list of strings; next action: attach "
-                "durable evidence reference strings"
+                "evidence_refs must be a list or tuple of strings; next action: "
+                "attach durable evidence reference strings"
+            )
+        if not isinstance(value, list | tuple):
+            raise ValueError(
+                "evidence_refs must be a list or tuple of strings; next action: "
+                "attach durable evidence reference strings"
             )
         for ref in value:
             if not isinstance(ref, str) or not ref.strip():
@@ -132,13 +138,15 @@ class OutboundExecutionRequest(StrictModel):
                     "evidence_refs must contain only nonblank strings; next action: "
                     "attach durable evidence reference strings"
                 )
-        return value
+        return tuple(value)
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
 
 
 class OutboundExecutionReceipt(StrictModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     receipt_id: str
     status: Literal["admitted", "refused"]
     request: OutboundExecutionRequest
@@ -148,7 +156,7 @@ class OutboundExecutionReceipt(StrictModel):
     position_cap: float
     current_position_before: float
     current_position_after: float
-    evidence_refs: list[str] = Field(default_factory=list)
+    evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -415,7 +423,12 @@ def _finite_nonnegative_float(name: str, value: float) -> float:
         raise TypeError(
             f"{name} must be a numeric cap; next action: supply a finite non-negative number"
         )
-    normalized = float(value)
+    try:
+        normalized = float(value)
+    except OverflowError as exc:
+        raise ValueError(
+            f"{name} must be finite and >= 0; next action: supply a bounded non-negative number"
+        ) from exc
     if not math.isfinite(normalized) or normalized < 0:
         raise ValueError(
             f"{name} must be finite and >= 0; next action: supply a bounded non-negative number"
@@ -469,7 +482,7 @@ def _normalize_public_gate_receipts(
     return normalized
 
 
-def _has_durable_evidence(evidence_refs: list[str]) -> bool:
+def _has_durable_evidence(evidence_refs: Sequence[str]) -> bool:
     return any(ref.strip() for ref in evidence_refs)
 
 
@@ -478,7 +491,7 @@ def _is_public_gate_evidence_ref(ref: str) -> bool:
 
 
 def _bound_public_gate_evidence_ref(
-    evidence_refs: list[str],
+    evidence_refs: Sequence[str],
     public_gate_receipts: frozenset[str],
 ) -> str | None:
     if not public_gate_receipts:
