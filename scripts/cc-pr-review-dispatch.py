@@ -1199,6 +1199,20 @@ def _dossier_has_route_admission_hold(dossier: Mapping[str, Any]) -> bool:
     return False
 
 
+def _only_route_admission_dossier_blockers(blockers: Sequence[str]) -> bool:
+    route_derived = {
+        "review_dossier_family_diversity",
+        "review_dossier_quorum_not_met",
+        "review_dossier_team_undersized",
+        "review_team_verdict_not_quorum_accept",
+    }
+    return bool(blockers) and all(
+        str(blocker).startswith("review_dossier_route_")
+        or any(str(blocker).startswith(prefix) for prefix in route_derived)
+        for blocker in blockers
+    )
+
+
 def render_prior_file_excerpts(
     prior_criticals: list[dict[str, Any]],
     *,
@@ -1631,7 +1645,7 @@ def review_pr(
             )
             if blockers:
                 route_hold = _dossier_has_route_admission_hold(existing)
-                if route_hold:
+                if route_hold and _only_route_admission_dossier_blockers(blockers):
                     current_seat_admissions = compute_current_seat_admissions(
                         record_route_decisions=False
                     )
