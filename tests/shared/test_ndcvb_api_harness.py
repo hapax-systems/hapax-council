@@ -61,7 +61,6 @@ def test_request_and_gate_dataclasses_serialize_stable_api_fragments() -> None:
         "passed": True,
         "confidence": 0.91,
         "provenance": ["ndcvb:battery/stimulus_capture"],
-        "detail": "fixture gate receipt",
     }
 
     without_detail = NDCVBBatteryGate.from_mapping(
@@ -72,7 +71,7 @@ def test_request_and_gate_dataclasses_serialize_stable_api_fragments() -> None:
             "provenance": ["ndcvb:battery/counterfactual_probe"],
         }
     )
-    assert without_detail.to_api()["detail"] == ""
+    assert "detail" not in without_detail.to_api()
 
 
 def test_phase0_api_harness_exposes_detection_result_with_provenance_and_confidence() -> None:
@@ -187,6 +186,20 @@ def test_response_does_not_echo_violation_correspondent_text() -> None:
         }
     ]
     assert "customer raw artifact text" not in repr(response)
+
+
+def test_response_does_not_echo_battery_detail_text() -> None:
+    gates = _gates()
+    gates[0] = {**gates[0], "detail": "raw customer note should not be emitted"}
+
+    response = package_ndcvb_detection_result(
+        request=_request(),
+        verdicts=["sycophancy: corroborated@0.88"],
+        battery_gates=gates,
+    )
+
+    assert "detail" not in response["battery"]["gates"][0]
+    assert "raw customer note" not in repr(response)
 
 
 def test_four_gate_battery_is_required_and_failures_hold_result() -> None:

@@ -237,7 +237,6 @@ class NDCVBBatteryGate:
             "passed": self.passed,
             "confidence": round(self.confidence, 3),
             "provenance": list(self.provenance),
-            "detail": self.detail,
         }
 
 
