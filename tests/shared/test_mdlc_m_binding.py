@@ -160,6 +160,22 @@ def test_measurement_binding_propagates_native_scorer_next_action() -> None:
     assert "ruler_hash_commit" in result.next_action
 
 
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_direct_measurement_binding_rejects_non_finite_values(value: float) -> None:
+    m_binding = _binding_module()
+
+    result = m_binding.bind_m_result(
+        _measurement(measurement=value),
+        _ladder(),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
+    assert "must be finite" in result.reason
+    assert result.score_result is None
+
+
 def test_missing_scorer_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     m_binding = _binding_module()
     monkeypatch.setattr(

@@ -373,6 +373,12 @@ def test_measurement_validation_rejects_non_numeric_values(bad_value: object) ->
         MonDLCMeasurement(value=bad_value)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("bad_value", (float("inf"), float("nan")))
+def test_measurement_validation_rejects_non_finite_values(bad_value: float) -> None:
+    with pytest.raises(ValueError, match="must be finite"):
+        MonDLCMeasurement(value=bad_value)
+
+
 @pytest.mark.parametrize("field", ("evidence_refs", "corroborated_by"))
 def test_direct_measurement_rejects_plain_string_evidence_refs(field: str) -> None:
     with pytest.raises(TypeError, match="evidence refs must be a string sequence"):

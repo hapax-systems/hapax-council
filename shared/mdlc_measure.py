@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from math import isfinite
 from typing import Any
 
 from shared.capdlc_lifecycle import GateResult, GateStatus
@@ -89,21 +90,19 @@ class MonDLCMeasurement:
     corroborated_by: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.value is not None and isinstance(self.value, bool):
-            raise TypeError(
-                "MonDLCMeasurement.value must be numeric or None; attach a witnessed numeric "
-                "realized return"
-            )
-        if self.value is not None and not isinstance(self.value, (int, float)):
-            raise TypeError(
-                "MonDLCMeasurement.value must be numeric or None; attach a witnessed numeric "
-                "realized return"
-            )
-        object.__setattr__(
-            self,
-            "value",
-            None if self.value is None else float(self.value),
-        )
+        if self.value is not None:
+            if isinstance(self.value, bool) or not isinstance(self.value, (int, float)):
+                raise TypeError(
+                    "MonDLCMeasurement.value must be numeric or None; attach a witnessed numeric "
+                    "realized return"
+                )
+            numeric_value = float(self.value)
+            if not isfinite(numeric_value):
+                raise ValueError(
+                    "MonDLCMeasurement.value must be finite; attach a witnessed numeric "
+                    "realized return"
+                )
+            object.__setattr__(self, "value", numeric_value)
         if self.observed_at is not None:
             object.__setattr__(self, "observed_at", _ensure_utc(self.observed_at))
         object.__setattr__(self, "evidence_refs", _string_tuple(self.evidence_refs))
@@ -479,7 +478,10 @@ def _first_present(mapping: Mapping[str, Any], *keys: str) -> Any:
 def _numeric(value: Any, *, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{field} must be numeric; attach a witnessed numeric realized return")
-    return float(value)
+    numeric_value = float(value)
+    if not isfinite(numeric_value):
+        raise ValueError(f"{field} must be finite; attach a witnessed numeric realized return")
+    return numeric_value
 
 
 def _required_str(value: Any, *, field: str) -> str:
