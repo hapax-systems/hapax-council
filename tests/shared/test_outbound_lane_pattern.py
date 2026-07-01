@@ -144,13 +144,14 @@ def test_lane_constructor_requires_scoped_token_rate_limit_and_explicit_kill_swi
     }
 
     for field, bad_value, error in (
+        ("registry", None, TypeError),
         ("scoped_token", None, TypeError),
         ("rate_limit", None, TypeError),
         ("kill_switch", None, TypeError),
     ):
         kwargs = dict(base_kwargs)
         kwargs[field] = bad_value
-        with pytest.raises(error):
+        with pytest.raises(error, match="next action"):
             BoundedOutboundLane(**kwargs)  # type: ignore[arg-type]
 
 

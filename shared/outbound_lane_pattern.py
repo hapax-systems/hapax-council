@@ -243,6 +243,11 @@ class BoundedOutboundLane:
         now_fn: Callable[[], float] | None = None,
     ) -> None:
         self._lane_id = _nonblank_string("lane_id", lane_id)
+        if not isinstance(registry, AccountFederationRegistry):
+            raise TypeError(
+                "registry must be an AccountFederationRegistry; next action: load "
+                "the route-specific account federation registry"
+            )
         if not isinstance(scoped_token, ScopedOutboundToken):
             raise TypeError(
                 "scoped_token must be a ScopedOutboundToken; next action: bind "

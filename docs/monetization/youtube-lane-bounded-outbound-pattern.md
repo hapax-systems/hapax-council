@@ -7,7 +7,7 @@ Status: implementation template only. This document does not authorize or wire a
 The YouTube public-egress lane uses the bounded outbound executor through `shared.outbound_lane_pattern`. A valid act must satisfy all of these gates before any provider adapter can be wired later:
 
 - Scoped token: the account federation registry must point at `pass:google/token-youtube-streaming`, and the lane token must cover `youtube_video_insert`.
-- Rate limit: the lane must bind a fixed-window `OutboundRateLimit`; a second act beyond the window produces a refusal receipt. The template limiter is intentionally in-memory. Durable restart-surviving rate limits are future adapter evidence, not a claim made by this PR.
+- Rate limit: the lane must bind a fixed-window `OutboundRateLimit`; a second act within an exhausted window produces a refusal receipt. The template limiter is intentionally in-memory. Durable restart-surviving rate limits are future adapter evidence, not a claim made by this PR.
 - Per-act receipt: every admitted or refused act returns an `OutboundLaneActReceipt`.
 - Kill switch: the lane constructor requires an explicit kill-switch boolean and passes it to `OutboundExecutor`.
 - Public gate: the template uses `AuthorityCeiling.PUBLIC_GATE_REQUIRED`, so public egress needs a bound `public-gate:` receipt.
@@ -18,9 +18,23 @@ Recheck:
 ```bash
 uv run pytest tests/shared/test_outbound_lane_pattern.py -q
 git diff --name-only origin/main...HEAD | sort
-! git diff --name-only origin/main...HEAD | rg -q '^(agents/auto_clip/platform_dispatch\.py|shared/google_auth\.py|scripts/youtube-auth\.py|.*\.service$)'
+python3 - <<'PY'
+import re
+import subprocess
+
+for path in subprocess.check_output(
+    ["git", "diff", "--name-only", "origin/main...HEAD"],
+    text=True,
+).splitlines():
+    if re.match(
+        r"^(agents/auto_clip/platform_dispatch\.py|shared/google_auth\.py|scripts/youtube-auth\.py|.*\.service$)",
+        path,
+    ):
+        raise SystemExit(f"live provider wiring path changed: {path}")
+PY
 uv run ruff check shared/outbound_lane_pattern.py tests/shared/test_outbound_lane_pattern.py
 uv run ruff format --check shared/outbound_lane_pattern.py tests/shared/test_outbound_lane_pattern.py
+uv run pre-commit run --files shared/outbound_lane_pattern.py tests/shared/test_outbound_lane_pattern.py docs/monetization/youtube-lane-bounded-outbound-pattern.md
 ```
 
 ## Non-Authority
