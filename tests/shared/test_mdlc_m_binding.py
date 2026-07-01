@@ -205,6 +205,40 @@ def test_malformed_native_score_result_evidence_refs_fail_closed() -> None:
     assert result.score_result is None
 
 
+@pytest.mark.parametrize(
+    "gate_refs",
+    (
+        ("rail:event:stub", object()),
+        ("rail:event:different",),
+    ),
+)
+def test_malformed_native_score_result_gate_refs_fail_closed(
+    gate_refs: tuple[object, ...],
+) -> None:
+    m_binding = _binding_module()
+    native_shape = SimpleNamespace(
+        scorer="mdlc_measure",
+        scorer_version=1,
+        status=GateStatus.LIT,
+        verdict=SimpleNamespace(value="corroborated"),
+        gate_result=GateResult(
+            status=GateStatus.LIT,
+            verdict=True,
+            reason="corroborated_realized_return",
+            evidence_refs=gate_refs,
+        ),
+        reason="corroborated_realized_return",
+        evidence_refs=("rail:event:stub",),
+        refusal_reason=None,
+    )
+
+    result = m_binding.bind_m_result(native_shape)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
+    assert result.score_result is None
+
+
 def test_measurement_binding_delegates_to_scorer(monkeypatch: pytest.MonkeyPatch) -> None:
     m_binding = _binding_module()
     calls: list[tuple[Any, Any, str]] = []

@@ -208,11 +208,16 @@ def _lift_score_result(
     gate_result = score_result.gate_result
     verdict = score_result.verdict
     verdict_value = _value(verdict)
-    _validate_native_score_result(status=status, verdict=verdict_value, gate_result=gate_result)
+    evidence_refs = _strict_native_ref_tuple(getattr(score_result, "evidence_refs", ()))
+    _validate_native_score_result(
+        status=status,
+        verdict=verdict_value,
+        gate_result=gate_result,
+        evidence_refs=evidence_refs,
+    )
     reason = str(getattr(score_result, "reason", "") or "")
     refusal = str(getattr(score_result, "refusal_reason", "") or "") or None
     next_action = str(getattr(score_result, "next_action", "") or "") or None
-    evidence_refs = _strict_native_ref_tuple(getattr(score_result, "evidence_refs", ()))
     return MonDLCBindingResult(
         binding=MONDLC_M_BINDING_NAME,
         binding_version=MONDLC_M_BINDING_VERSION,
@@ -237,6 +242,7 @@ def _validate_native_score_result(
     status: Any,
     verdict: str,
     gate_result: Any,
+    evidence_refs: tuple[str, ...],
 ) -> None:
     if not isinstance(status, GateStatus):
         raise TypeError("native score_result.status must be a GateStatus identity")
@@ -252,6 +258,9 @@ def _validate_native_score_result(
         expected_gate_verdict = verdict == _CORROBORATED_VERDICT
     if gate_result.verdict is not expected_gate_verdict:
         raise ValueError("native score_result gate verdict does not match verdict")
+    gate_evidence_refs = _strict_native_ref_tuple(gate_result.evidence_refs)
+    if gate_evidence_refs != evidence_refs:
+        raise ValueError("native score_result evidence refs do not match gate result")
 
 
 def _score_rail_results(
