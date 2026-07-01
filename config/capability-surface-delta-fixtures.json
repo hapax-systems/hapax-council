@@ -67,7 +67,7 @@
       "surface_id": "surface.glmcp.receipt-check",
       "delta_kind": "stale_determination",
       "prior_descriptor_ref": "platform-capability-receipt:glmcp:previous",
-      "observed_descriptor_ref": "platform-capability-receipt:glmcp:expired",
+      "observed_descriptor_ref": "platform-capability-receipt:glmcp:current-expired",
       "evidence_refs": ["platform-capability-receipt:glmcp:expired"],
       "authority_ceiling": "read_only",
       "affected_resource_pools": ["subscription_quota"],

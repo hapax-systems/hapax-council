@@ -568,16 +568,32 @@ def _surface_delta_route_keys(
     descriptor_keys_by_ref: Mapping[str, Sequence[str]],
 ) -> tuple[str, ...]:
     keys = {delta.surface_id}
+    dispatch_keys: set[str] = set()
     if delta.surface_id.startswith("route."):
-        keys.add(normalize_route_id(delta.surface_id.removeprefix("route.")))
-    keys.update(descriptor_keys_by_ref.get(delta.surface_id, ()))
+        route_key = normalize_route_id(delta.surface_id.removeprefix("route."))
+        keys.add(route_key)
+        dispatch_keys.add(route_key)
+
+    def join_ref(ref: str) -> None:
+        keys.add(ref)
+        joined_keys = tuple(descriptor_keys_by_ref.get(ref, ()))
+        keys.update(joined_keys)
+        dispatch_keys.update(_surface_delta_dispatch_lookup_keys(joined_keys))
+
+    join_ref(delta.surface_id)
     if delta.prior_descriptor_ref:
-        keys.add(delta.prior_descriptor_ref)
-        keys.update(descriptor_keys_by_ref.get(delta.prior_descriptor_ref, ()))
+        join_ref(delta.prior_descriptor_ref)
     if delta.observed_descriptor_ref:
-        keys.add(delta.observed_descriptor_ref)
-        keys.update(descriptor_keys_by_ref.get(delta.observed_descriptor_ref, ()))
+        join_ref(delta.observed_descriptor_ref)
+    for evidence_ref in delta.evidence_refs:
+        join_ref(evidence_ref)
+    if not delta.allows_demand_fulfillment() and not dispatch_keys:
+        keys.add(GLOBAL_SURFACE_DELTA_ROUTE_KEY)
     return tuple(sorted(keys))
+
+
+def _surface_delta_dispatch_lookup_keys(keys: Sequence[str]) -> set[str]:
+    return {key for key in keys if ":" not in key and not key.startswith(("route.", "surface."))}
 
 
 def _surface_delta_values_for_route(

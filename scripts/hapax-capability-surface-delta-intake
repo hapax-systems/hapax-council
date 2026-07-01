@@ -90,7 +90,13 @@ def main(argv: list[str] | None = None) -> int:
             "error": f"invalid --now value: {exc}; next action: pass an ISO-8601 UTC timestamp",
         }
     except OSError as exc:
-        result = {"ok": False, "error": str(exc)}
+        result = {
+            "ok": False,
+            "error": (
+                f"{exc}; next action: verify fixture path, task-root path, and filesystem "
+                "permissions before retrying"
+            ),
+        }
 
     result = {"applied": args.apply, **result}
     if args.json:
