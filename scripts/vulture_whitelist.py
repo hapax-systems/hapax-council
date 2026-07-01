@@ -4639,7 +4639,7 @@ _ = (
 # blocked follow-up phases, so keep the library entrypoint explicit.
 from shared.durable_jsonl_sink import DurableJsonlSink as _Stage0DurableJsonlSink  # noqa: E402
 
-_stage0_durable_sink_entrypoints = (
+_ = (
     _Stage0DurableJsonlSink,
     _Stage0DurableJsonlSink.path_for_stream,
 )
