@@ -696,6 +696,13 @@ class TestVerdictBlockers:
     def _frontmatter(self, task_id: str = "task-x") -> dict:
         return {"task_id": task_id}
 
+    def _route_frontmatter(self, task_id: str = "task-x") -> dict:
+        return {
+            "task_id": task_id,
+            "authority_case": "CASE-TEST",
+            "parent_spec": "docs/spec.md",
+        }
+
     def _good_dossier(self, rt) -> dict:
         return _synth(
             rt,
@@ -739,6 +746,78 @@ class TestVerdictBlockers:
         blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert blockers == ()
 
+    def test_route_admission_required_blocks_authority_case_drift(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["route_admission_required"] = True
+        ledger_path = tmp_path / "route-decisions.jsonl"
+        monkeypatch.setattr(rt, "ROUTE_DECISION_LEDGER_PATH", ledger_path)
+        route_ids = {
+            "codex-1": "codex.headless.full",
+            "gemini-1": "antigrav.interactive.full",
+            "claude-1": "claude.headless.full",
+        }
+        admissions = []
+        for review in dossier["reviewers"]:
+            admission = _route_admission(review["id"], route_ids[review["id"]])
+            admissions.append(admission)
+            review["route_admissions"] = [admission]
+        _write_route_decision_ledger(ledger_path, admissions)
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        blockers = rt.review_team_verdict_blockers(
+            {
+                "task_id": "task-x",
+                "authority_case": "CASE-CHANGED",
+                "parent_spec": "docs/spec.md",
+            },
+            note,
+            pr_head_sha="a" * 40,
+        )
+
+        assert any(
+            blocker.startswith("review_dossier_route_admission_authority_case_mismatch:")
+            for blocker in blockers
+        )
+
+    def test_route_admission_required_blocks_parent_spec_drift(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["route_admission_required"] = True
+        ledger_path = tmp_path / "route-decisions.jsonl"
+        monkeypatch.setattr(rt, "ROUTE_DECISION_LEDGER_PATH", ledger_path)
+        route_ids = {
+            "codex-1": "codex.headless.full",
+            "gemini-1": "antigrav.interactive.full",
+            "claude-1": "claude.headless.full",
+        }
+        admissions = []
+        for review in dossier["reviewers"]:
+            admission = _route_admission(review["id"], route_ids[review["id"]])
+            admissions.append(admission)
+            review["route_admissions"] = [admission]
+        _write_route_decision_ledger(ledger_path, admissions)
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        blockers = rt.review_team_verdict_blockers(
+            {
+                "task_id": "task-x",
+                "authority_case": "CASE-TEST",
+                "parent_spec": "docs/changed-spec.md",
+            },
+            note,
+            pr_head_sha="a" * 40,
+        )
+
+        assert any(
+            blocker.startswith("review_dossier_route_admission_parent_spec_mismatch:")
+            for blocker in blockers
+        )
+
     def test_route_admission_required_dossier_passes_with_admitted_receipts(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
@@ -759,7 +838,9 @@ class TestVerdictBlockers:
             review["route_admissions"] = [admission]
         _write_route_decision_ledger(ledger_path, admissions)
         note = _write_dossier(tmp_path, "task-x", dossier)
-        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        blockers = rt.review_team_verdict_blockers(
+            self._route_frontmatter(), note, pr_head_sha="a" * 40
+        )
         assert blockers == ()
 
     def test_route_admission_required_blocks_inline_receipt_without_ledger(

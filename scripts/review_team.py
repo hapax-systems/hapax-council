@@ -1314,10 +1314,19 @@ def _route_decision_ledger_blockers(
 
 
 def _route_admission_blockers(
-    review: Mapping[str, Any], *, task_id: str, registry: Mapping[str, Any]
+    review: Mapping[str, Any],
+    *,
+    task_id: str,
+    registry: Mapping[str, Any],
+    frontmatter: Mapping[str, Any] | None = None,
 ) -> list[str]:
     reviewer_id = str(review.get("id") or "missing")
     reviewer_family = str(review.get("family") or "missing")
+    expected_authority_case = ""
+    expected_parent_spec = ""
+    if isinstance(frontmatter, Mapping):
+        expected_authority_case = str(frontmatter.get("authority_case") or "").strip()
+        expected_parent_spec = str(frontmatter.get("parent_spec") or "").strip()
     expected_route_ids = {
         str(entry.get("family")): str(entry.get("route_id") or "")
         for entry in (registry.get("families") or [])
@@ -1352,6 +1361,22 @@ def _route_admission_blockers(
             blockers.append(
                 f"review_dossier_route_admission_family_mismatch:{reviewer_id}:"
                 f"{admission_family}!={reviewer_family}"
+            )
+        admission_authority_case = str(admission.get("authority_case") or "").strip()
+        if not expected_authority_case:
+            blockers.append(f"review_dossier_route_admission_authority_case_missing:{prefix}")
+        elif admission_authority_case != expected_authority_case:
+            blockers.append(
+                "review_dossier_route_admission_authority_case_mismatch:"
+                f"{prefix}:{admission_authority_case or 'missing'}!={expected_authority_case}"
+            )
+        admission_parent_spec = str(admission.get("parent_spec") or "").strip()
+        if not expected_parent_spec:
+            blockers.append(f"review_dossier_route_admission_parent_spec_missing:{prefix}")
+        elif admission_parent_spec != expected_parent_spec:
+            blockers.append(
+                "review_dossier_route_admission_parent_spec_mismatch:"
+                f"{prefix}:{admission_parent_spec or 'missing'}!={expected_parent_spec}"
             )
         if expected_route_id and route_id != expected_route_id:
             blockers.append(
@@ -1602,7 +1627,14 @@ def _dossier_validity_blockers(
     if _dossier_requires_route_admissions(dossier, frontmatter):
         task_id = str(dossier.get("task_id") or "")
         for review in reviews:
-            blockers.extend(_route_admission_blockers(review, task_id=task_id, registry=registry))
+            blockers.extend(
+                _route_admission_blockers(
+                    review,
+                    task_id=task_id,
+                    registry=registry,
+                    frontmatter=frontmatter,
+                )
+            )
 
     required_size = _required_team_size(sizing)
     if len(reviews) < required_size:
