@@ -836,19 +836,17 @@ def _review_seat_task_fields(
     fields = dict(frontmatter)
     fields["task_id"] = task_id
     fields["__task_note_path"] = str(note_path)
+    route_metadata_schema = _route_metadata_value(frontmatter, "route_metadata_schema")
     fields["route_metadata_schema"] = (
-        _route_metadata_value(frontmatter, "route_metadata_schema") or 1
+        route_metadata_schema if route_metadata_schema is not None else 1
     )
     fields["quality_floor"] = "frontier_review_required"
     fields["authority_level"] = "support_non_authoritative"
     fields["mutation_surface"] = "none"
     fields["mutation_scope_refs"] = []
-    fields["risk_flags"] = _route_metadata_value(frontmatter, "risk_flags") or {}
-    fields["context_shape"] = _route_metadata_value(frontmatter, "context_shape") or {}
-    fields["verification_surface"] = (
-        _route_metadata_value(frontmatter, "verification_surface") or {}
-    )
-    fields["route_constraints"] = _route_metadata_value(frontmatter, "route_constraints") or {}
+    for key in ("risk_flags", "context_shape", "verification_surface", "route_constraints"):
+        value = _route_metadata_value(frontmatter, key)
+        fields[key] = value if value is not None else {}
     fields["review_requirement"] = REVIEW_SEAT_REVIEW_REQUIREMENT
     fields.pop("route_metadata", None)
     return fields

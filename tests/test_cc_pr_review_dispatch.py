@@ -580,6 +580,21 @@ class TestReviewSeatAdmissionContract:
             "review_seat_task_metadata_missing:authority_case,verification_surface"
         ]
 
+    def test_falsey_malformed_task_route_metadata_blocks_admission(self, tmp_path: Path) -> None:
+        note = _write_task(_make_vault(tmp_path))
+        frontmatter = _task_frontmatter(note)
+        frontmatter["route_metadata_schema"] = 0
+        frontmatter["risk_flags"] = []
+
+        admission = _admit_glm_review_seat(tmp_path, frontmatter)
+
+        assert admission["admitted"] is False
+        assert admission["route_policy_action"] == "hold"
+        assert admission["route_policy_launch_allowed"] is False
+        assert "route_metadata_malformed" in admission["blocked_reasons"]
+        assert "route_metadata_schema: Input should be 1" in admission["blocked_reasons"]
+        assert any(reason.startswith("risk_flags:") for reason in admission["blocked_reasons"])
+
 
 class TestDryRun:
     def test_dry_run_plans_without_dispatching(self, tmp_path: Path) -> None:
