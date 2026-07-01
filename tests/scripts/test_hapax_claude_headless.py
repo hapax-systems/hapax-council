@@ -942,17 +942,34 @@ def test_terminal_check_survives_claim_stamp_drift(tmp_path: Path) -> None:
     assert rc == 1
 
 
-def test_terminal_check_survives_foreign_assignee_with_matching_cache(
+def test_terminal_check_reaps_reassignment_even_with_fresh_cache(
     tmp_path: Path,
 ) -> None:
-    """Matching cache is stronger than a drifted assigned_to — indeterminate."""
+    """assigned_to naming ANOTHER ROLE is definitive terminal even while our
+    cache is fresh — the gate touches the cache before any check (lease
+    keep-alive), so a reassigned old lane attempting gated writes keeps its
+    own cache fresh; an mtime bound alone could never reap it."""
     rc = _run_task_is_terminal(
         tmp_path,
         cache_task="task-under-test",
         note_status="claimed",
         note_assigned="some-other-role",
+        cache_age_s=0,
     )
-    assert rc == 1
+    assert rc == 0
+
+
+def test_terminal_check_reaps_long_unassigned_with_stale_cache(tmp_path: Path) -> None:
+    """The H1-revert indeterminate shape is freshness-bounded: a lane sitting
+    on a long-unassigned task should have re-claimed — reap it."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        cache_age_s=3600,
+    )
+    assert rc == 0
 
 
 def test_terminal_check_reaps_when_cache_repointed(tmp_path: Path) -> None:
@@ -977,8 +994,7 @@ def test_terminal_check_reaps_done_note(tmp_path: Path) -> None:
 
 
 def test_terminal_check_reaps_foreign_assignee_when_cache_stale(tmp_path: Path) -> None:
-    """The indeterminate exception is freshness-bounded: a stale cache naming
-    the task no longer overrides a reassignment — old lanes must reap."""
+    """Reassignment to a named role reaps regardless of cache age."""
     rc = _run_task_is_terminal(
         tmp_path,
         cache_task="task-under-test",

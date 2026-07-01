@@ -357,17 +357,24 @@ task_is_terminal() {
   local note_assigned=""
   note_assigned="$(grep -oP '^assigned_to:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
   if [[ -n "$note_assigned" && "$note_assigned" != "$ROLE" ]]; then
-    # assigned_to mismatch. If OUR claim cache names exactly this task AND is
-    # FRESH, the cache — which this launcher's own cc-claim just wrote — is
-    # stronger evidence of liveness than the note: a partially stamped claim
-    # can look unassigned for a moment and cc-hygiene H1 may revert it out
-    # from under a freshly launched lane (2026-07-01 eta/ndcvb-phase1:
-    # reverted 13s after claim, lane SIGTERMed while the worker was healthy).
-    # Treat that combination as INDETERMINATE and fall through to the
-    # PR-state check. The freshness bound (HAPAX_CLAIM_STAMP_GRACE_S, default
-    # 900s; the gate refreshes a live lane's cache mtime on each mutation) is
-    # what keeps a FORCED reassignment terminal: an old lane whose cache has
-    # gone stale must reap, or two lanes would own one task indefinitely.
+    # assigned_to mismatch. Discriminate by the SHAPE of the mismatch, not by
+    # cache mtime — the gate touches the claim cache before any check (lease
+    # keep-alive), so a reassigned old lane attempting gated writes would
+    # keep its own cache "fresh" forever and an mtime bound cannot reap it.
+    #
+    # - assigned_to names ANOTHER ROLE: a genuine (re)claim by a live
+    #   claimant — DEFINITIVE terminal, regardless of our cache. Two lanes
+    #   must never own one task.
+    # - assigned_to is 'unassigned' while OUR claim cache names exactly this
+    #   task: that is the cc-hygiene H1 ghost-revert shape (a revert always
+    #   leaves offered/unassigned/claimed_at:null; 2026-07-01 eta/ndcvb-phase1:
+    #   reverted 13s after claim, healthy worker SIGTERMed). INDETERMINATE —
+    #   fall through to the PR-state check — but only while the cache is
+    #   fresh (HAPAX_CLAIM_STAMP_GRACE_S, default 900s): a lane sitting on a
+    #   long-unassigned task should have re-claimed; reap it.
+    if [[ "$note_assigned" != "unassigned" ]]; then
+      return 0
+    fi
     local _stamp_grace="${HAPAX_CLAIM_STAMP_GRACE_S:-900}" _cache_mtime=0 _cache_age=-1
     if [[ "$claimed" == "$task" && -n "$claim_file_used" ]]; then
       _cache_mtime="$(stat -c %Y "$claim_file_used" 2>/dev/null || echo 0)"
@@ -376,8 +383,8 @@ task_is_terminal() {
       fi
     fi
     if [[ "$claimed" == "$task" ]] && (( _cache_age >= 0 && _cache_age <= _stamp_grace )); then
-      printf 'hapax-claude-headless[%s]: task_is_terminal: note assigned_to=%s != role=%s but fresh %s claim cache (age=%ss) names this task — treating as indeterminate (claim-stamp drift?)\n' \
-        "$$" "$note_assigned" "$ROLE" "$claim_source" "$_cache_age" >&2
+      printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but fresh %s claim cache (age=%ss) names this task — treating as indeterminate (H1 ghost-revert shape)\n' \
+        "$$" "$claim_source" "$_cache_age" >&2
     else
       return 0
     fi
