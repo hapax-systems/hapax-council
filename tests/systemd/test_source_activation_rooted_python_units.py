@@ -61,6 +61,7 @@ MIGRATED_UNITS = (
     "hapax-datacite-graph-publish.service",
     "hapax-datacite-mirror.service",
     "hapax-datacite-snapshot.service",
+    "hapax-dmn.service",
     "hapax-orcid-verifier.service",
     "hapax-publish-orchestrator.service",
 )
@@ -123,7 +124,6 @@ KNOWN_CANONICAL_EXCEPTIONS = frozenset(
         "gmail-sync.service",
         "hapax-content-candidate-discovery.service",
         "hapax-content-resolver.service",
-        "hapax-dmn.service",
         "hapax-imagination-loop.service",
         "hapax-omg-lol-fanout.service",
         "hapax-operator-awareness.service",
