@@ -313,8 +313,9 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
     for item in value:
         if not isinstance(item, str):
             raise TypeError("evidence refs must be a string sequence")
-        if item.strip():
-            refs.append(item.strip())
+        if not item.strip():
+            raise TypeError("evidence refs must contain non-empty strings")
+        refs.append(item.strip())
     return tuple(refs)
 
 

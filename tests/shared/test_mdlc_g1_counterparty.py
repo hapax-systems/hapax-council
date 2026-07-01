@@ -70,7 +70,11 @@ def test_lit_result_to_dict_preserves_gate_contract() -> None:
         "status": "lit",
         "verdict": True,
         "reason": "counterparty_class_eligible",
-        "evidence_refs": list(result.evidence_refs),
+        "evidence_refs": [
+            "counterparty-class:market",
+            "counterparty:test-market-maker",
+            "counterparty-registry:test-market-maker",
+        ],
     }
 
 
@@ -143,7 +147,7 @@ def test_missing_counterparty_class_refuses(missing_value: object) -> None:
 
 
 @pytest.mark.parametrize("counterparty_class", ("retail", "general_public", "operator"))
-def test_ineligible_counterparty_class_refuses_and_require_raises(
+def test_ineligible_counterparty_class_refuses(
     counterparty_class: str,
 ) -> None:
     result = verify_g1_counterparty(_counterparty(counterparty_class=counterparty_class))
@@ -152,8 +156,10 @@ def test_ineligible_counterparty_class_refuses_and_require_raises(
     assert result.refusal_reason is G1CounterpartyRefusalReason.INELIGIBLE_COUNTERPARTY_CLASS
     assert result.gate_result.evidence_refs == ()
 
+
+def test_require_raises_arbitrage_refusal_for_ineligible_counterparty() -> None:
     with pytest.raises(ArbitrageRefusal) as exc:
-        require_g1_counterparty(_counterparty(counterparty_class=counterparty_class))
+        require_g1_counterparty(_counterparty(counterparty_class="retail"))
     assert (
         exc.value.verification.refusal_reason
         is G1CounterpartyRefusalReason.INELIGIBLE_COUNTERPARTY_CLASS
@@ -183,6 +189,13 @@ def test_invalid_evidence_refs_has_specific_refusal_reason() -> None:
 
 def test_invalid_evidence_ref_item_has_specific_refusal_reason() -> None:
     result = verify_g1_counterparty(_counterparty(evidence_refs=("valid-ref", 123)))
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is G1CounterpartyRefusalReason.INVALID_EVIDENCE_REFS
+
+
+def test_blank_evidence_ref_item_has_specific_refusal_reason() -> None:
+    result = verify_g1_counterparty(_counterparty(evidence_refs=("   ",)))
 
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is G1CounterpartyRefusalReason.INVALID_EVIDENCE_REFS
@@ -266,6 +279,14 @@ def test_g1_does_not_decide_g2_venue_or_instrument_legality() -> None:
 
     assert result.status is GateStatus.LIT
     assert result.counterparty_class == "corporation"
+    assert result.counterparty is not None
+    assert result.counterparty.to_dict() == {
+        "counterparty_class": "corporation",
+        "counterparty_id": "counterparty:test-market-maker",
+        "evidence_refs": ["counterparty-registry:test-market-maker"],
+    }
+    assert not hasattr(result.counterparty, "venue")
+    assert not hasattr(result.counterparty, "instrument")
 
 
 def test_g1_refusal_is_class_based_not_g2_surface_based() -> None:
@@ -294,3 +315,12 @@ def test_g1_does_not_score_m_value_measurement_fields() -> None:
 
     assert result.status is GateStatus.LIT
     assert result.counterparty_class == "the_wealthy"
+    assert result.counterparty is not None
+    assert result.counterparty.to_dict() == {
+        "counterparty_class": "the_wealthy",
+        "counterparty_id": "counterparty:test-market-maker",
+        "evidence_refs": ["counterparty-registry:test-market-maker"],
+    }
+    assert not hasattr(result.counterparty, "measurement")
+    assert not hasattr(result.counterparty, "observed_at")
+    assert not hasattr(result.counterparty, "provenance")
