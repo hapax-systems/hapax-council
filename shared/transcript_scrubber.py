@@ -122,6 +122,10 @@ _SECRET_KEY = (
     r"private[_-]?key|client[_-]?secret|auth|credential|bearer|session[_-]?key)"
     r"[A-Za-z0-9_]*)"
 )
+_STRUCTURED_SECRET_KEY = re.compile(
+    r"(?i)(?:secret|token|passwd|password|api[-_]?key|apikey|access[-_]?key|"
+    r"private[-_]?key|client[-_]?secret|auth|credential|bearer|session[-_]?key)"
+)
 _PRIVATE_TEXT_KEY = re.compile(
     r"(?i)(?:^|[_-])(?:text|utterance|transcript|message|content|prompt|response)(?:$|[_-])"
 )
@@ -336,7 +340,7 @@ def assert_clean(
 
 
 def _sensitive_key_context(key: str) -> bool:
-    return bool(_ASSIGNMENT_PATTERNS[1][1].fullmatch(f"{key}: placeholder"))
+    return bool(_STRUCTURED_SECRET_KEY.search(key))
 
 
 def _private_text_key_context(key: str) -> bool:

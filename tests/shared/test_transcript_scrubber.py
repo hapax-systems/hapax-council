@@ -207,8 +207,22 @@ def test_short_env_value_not_denylisted(tmp_path: Path) -> None:
 
 
 def test_structured_scrub_uses_secret_key_context() -> None:
-    scrubbed = scrub_structured_value({"nested": {"api_key": "hunter2"}})
-    assert scrubbed == {"nested": {"api_key": "[REDACTED:secret_assignment]"}}
+    scrubbed = scrub_structured_value(
+        {
+            "nested": {
+                "api_key": "hunter2",
+                "X-API-Key": "hunter3",
+                "access-token": "hunter4",
+            }
+        }
+    )
+    assert scrubbed == {
+        "nested": {
+            "api_key": "[REDACTED:secret_assignment]",
+            "X-API-Key": "[REDACTED:secret_assignment]",
+            "access-token": "[REDACTED:secret_assignment]",
+        }
+    }
 
 
 def test_structured_scrub_preserves_hash_but_redacts_text() -> None:
@@ -221,4 +235,23 @@ def test_structured_scrub_preserves_hash_but_redacts_text() -> None:
     assert scrubbed == {
         "utterance_hash": "abc123",
         "utterance_text": "[REDACTED:private_text]",
+    }
+
+
+def test_structured_scrub_preserves_non_string_scalars() -> None:
+    scrubbed = scrub_structured_value(
+        {
+            "cascade_depth": 3,
+            "valence": 0.5,
+            "active": True,
+            "missing": None,
+            "items": [1, 2.0, False, None],
+        }
+    )
+    assert scrubbed == {
+        "cascade_depth": 3,
+        "valence": 0.5,
+        "active": True,
+        "missing": None,
+        "items": [1, 2.0, False, None],
     }

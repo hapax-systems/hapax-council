@@ -233,12 +233,14 @@ class TestAppendAndRead:
             _record(
                 route_decision={"destination": "livestream", "api_key": "hunter2"},
                 tts_result={"status": "completed", "transcript": "hello world"},
-                playback_result={"nested": {"access_token": "hunter2"}},
+                playback_result={"nested": {"X-API-Key": "hunter3", "access-token": "hunter4"}},
             )
         )
 
         content = (durable_root / "public-speech-event.jsonl").read_text(encoding="utf-8")
         assert "hunter2" not in content
+        assert "hunter3" not in content
+        assert "hunter4" not in content
         assert "hello world" not in content
         assert "[REDACTED:secret_assignment]" in content
         assert "[REDACTED:private_text]" in content

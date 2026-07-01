@@ -158,7 +158,11 @@ def test_default_gate_log_durable_payload_scrubs_structured_secret_keys(
             routing_class="edit-refine-iterate:single-file",
             requirement_vector={
                 "api_key": "hunter2",
-                "nested": {"prompt": "private routing text"},
+                "nested": {
+                    "X-API-Key": "hunter3",
+                    "access-token": "hunter4",
+                    "prompt": "private routing text",
+                },
             },
             task_hash="abc123",
         )
@@ -166,6 +170,8 @@ def test_default_gate_log_durable_payload_scrubs_structured_secret_keys(
 
     content = (durable_root / "gate-log.jsonl").read_text(encoding="utf-8")
     assert "hunter2" not in content
+    assert "hunter3" not in content
+    assert "hunter4" not in content
     assert "private routing text" not in content
     assert "[REDACTED:secret_assignment]" in content
     assert "[REDACTED:private_text]" in content
