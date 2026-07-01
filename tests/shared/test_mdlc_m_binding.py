@@ -83,14 +83,25 @@ def _rail_result(
 
 
 def test_import_is_lazy_for_measure_and_rail_modules() -> None:
-    sys.modules.pop("shared.mdlc_m_binding", None)
-    sys.modules.pop("shared.mdlc_measure", None)
-    sys.modules.pop("shared.mdlc_realized_return", None)
+    module_names = (
+        "shared.mdlc_m_binding",
+        "shared.mdlc_measure",
+        "shared.mdlc_realized_return",
+    )
+    previous_modules = {name: sys.modules.get(name) for name in module_names}
+    try:
+        for name in module_names:
+            sys.modules.pop(name, None)
 
-    importlib.import_module("shared.mdlc_m_binding")
+        importlib.import_module("shared.mdlc_m_binding")
 
-    assert "shared.mdlc_measure" not in sys.modules
-    assert "shared.mdlc_realized_return" not in sys.modules
+        assert "shared.mdlc_measure" not in sys.modules
+        assert "shared.mdlc_realized_return" not in sys.modules
+    finally:
+        for name in module_names:
+            sys.modules.pop(name, None)
+            if previous_modules[name] is not None:
+                sys.modules[name] = previous_modules[name]
 
 
 def test_native_score_result_lifts_without_recomputing_or_mutating(
