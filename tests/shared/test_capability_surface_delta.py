@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+import yaml
 
 from shared.capability_surface_delta import (
     AuthorityCeiling,
@@ -22,8 +23,13 @@ from shared.capability_surface_delta import (
     task_id_for_delta,
     write_capability_surface_delta_tasks,
 )
+from shared.route_metadata_schema import assess_route_metadata
 
 NOW = datetime(2026, 7, 1, 4, 30, tzinfo=UTC)
+
+
+def _frontmatter(rendered: str) -> dict[str, object]:
+    return yaml.safe_load(rendered.split("---", 2)[1])
 
 
 def _descriptor(**overrides: object) -> CapabilitySurfaceDescriptor:
@@ -459,9 +465,35 @@ def test_delta_task_render_preserves_governance_metadata() -> None:
     assert f'task_id: "{task_id_for_delta(delta)}"' in rendered
     assert 'type: "cc-task"' in rendered
     assert 'authority_case: "CASE-CAPACITY-ROUTING-001"' in rendered
+    assert "risk_flags:" in rendered
+    assert "  governance_sensitive: true" in rendered
+    assert "  privacy_or_secret_sensitive: true" in rendered
+    assert "  provider_billing_sensitive: true" in rendered
+    assert "verification_surface:" in rendered
+    assert "review_requirement:" in rendered
+    assert "  independent_review_required: true" in rendered
     assert f'capability_surface_delta_id: "{delta.delta_id}"' in rendered
     assert f"- `{delta.evidence_refs[0]}`" in rendered
     assert "auto-minted from `capability_surface_delta`" in rendered
+    assessment = assess_route_metadata(_frontmatter(rendered))
+    assert assessment.metadata is not None
+    assert assessment.metadata.risk_flags.privacy_or_secret_sensitive is True
+    assert assessment.metadata.risk_flags.provider_billing_sensitive is True
+    assert assessment.metadata.review_requirement.independent_review_required is True
+
+
+def test_delta_task_render_maps_public_egress_to_release_risk_flags() -> None:
+    delta = load_capability_surface_delta_fixtures().deltas[2]
+    rendered = render_capability_surface_delta_task(delta, generated_at=NOW)
+
+    assert delta.public_egress is True
+    assert "  public_claim_sensitive: true" in rendered
+    assert "  audio_or_live_egress_sensitive: true" in rendered
+    assert "hapax-council/shared/publication_bus*" in rendered
+    assessment = assess_route_metadata(_frontmatter(rendered))
+    assert assessment.metadata is not None
+    assert assessment.metadata.risk_flags.public_claim_sensitive is True
+    assert assessment.metadata.risk_flags.audio_or_live_egress_sensitive is True
 
 
 def test_delta_task_writer_dry_run_and_apply_are_idempotent(tmp_path) -> None:

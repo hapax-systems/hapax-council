@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -389,18 +390,29 @@ def _frontmatter_scalar(value: Any) -> str:
     return json.dumps(str(value), ensure_ascii=True)
 
 
+def _frontmatter_value_lines(key: str, value: Any, *, indent: int = 0) -> list[str]:
+    prefix = " " * indent
+    if isinstance(value, Mapping):
+        if not value:
+            return [f"{prefix}{key}: {{}}"]
+        lines = [f"{prefix}{key}:"]
+        for child_key, child_value in value.items():
+            lines.extend(_frontmatter_value_lines(str(child_key), child_value, indent=indent + 2))
+        return lines
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return [f"{prefix}{key}: []"]
+        lines = [f"{prefix}{key}:"]
+        for item in value:
+            lines.append(f"{prefix}  - {_frontmatter_scalar(item)}")
+        return lines
+    return [f"{prefix}{key}: {_frontmatter_scalar(value)}"]
+
+
 def _frontmatter_lines(fields: dict[str, Any]) -> list[str]:
     lines = ["---"]
     for key, value in fields.items():
-        if isinstance(value, (list, tuple)):
-            if not value:
-                lines.append(f"{key}: []")
-            else:
-                lines.append(f"{key}:")
-                for item in value:
-                    lines.append(f"  - {_frontmatter_scalar(item)}")
-        else:
-            lines.append(f"{key}: {_frontmatter_scalar(value)}")
+        lines.extend(_frontmatter_value_lines(key, value))
     lines.append("---")
     return lines
 
@@ -442,6 +454,32 @@ def _delta_mutation_scope(delta: CapabilitySurfaceDelta) -> tuple[str, ...]:
     if delta.money_rail:
         base.append("hapax-council/shared/*quota*")
     return tuple(base)
+
+
+def _delta_risk_flags(delta: CapabilitySurfaceDelta) -> dict[str, bool]:
+    return {
+        "governance_sensitive": True,
+        "privacy_or_secret_sensitive": delta.privacy_sensitive,
+        "public_claim_sensitive": delta.public_egress,
+        "aesthetic_theory_sensitive": False,
+        "audio_or_live_egress_sensitive": delta.public_egress,
+        "provider_billing_sensitive": delta.money_rail,
+    }
+
+
+def _delta_verification_surface(delta: CapabilitySurfaceDelta) -> dict[str, tuple[str, ...]]:
+    static_checks = ["uv run ruff check shared/capability_surface_delta.py"]
+    if delta.public_egress:
+        static_checks.append("uv run ruff check shared/dispatcher_policy.py")
+    if delta.money_rail:
+        static_checks.append("uv run ruff check shared/dispatcher_policy.py")
+    return {
+        "deterministic_tests": (
+            "uv run pytest tests/shared/test_capability_surface_delta.py "
+            "tests/shared/test_dispatcher_policy.py -q",
+        ),
+        "static_checks": tuple(dict.fromkeys(static_checks)),
+    }
 
 
 def render_capability_surface_delta_task(
@@ -492,6 +530,13 @@ def render_capability_surface_delta_task(
         "public_current": False,
         "provider_spend_authorized": False,
         "no_secret_value_storage": True,
+        "risk_flags": _delta_risk_flags(delta),
+        "verification_surface": _delta_verification_surface(delta),
+        "review_requirement": {
+            "support_artifact_allowed": True,
+            "independent_review_required": True,
+            "authoritative_acceptor_profile": "frontier_full",
+        },
         "capability_surface_delta_id": delta.delta_id,
         "capability_surface_id": delta.surface_id,
         "capability_delta_kind": delta.delta_kind.value,
