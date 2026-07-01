@@ -118,16 +118,19 @@ def test_configured_root_refuses_volatile_filesystem(
     root.mkdir()
     monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "tmpfs")
 
-    with pytest.raises(DurableSinkPathError, match="volatile filesystem tmpfs.*next action"):
+    with pytest.raises(DurableSinkPathError, match="non-durable filesystem tmpfs.*next action"):
         DurableJsonlSink(root)
 
 
-def test_configured_root_refuses_devtmpfs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("fstype", ["devtmpfs", "proc", "sysfs", "devpts", "cgroup2"])
+def test_configured_root_refuses_known_non_durable_filesystems(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fstype: str
+) -> None:
     root = tmp_path / "durable"
     root.mkdir()
-    monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "devtmpfs")
+    monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: fstype)
 
-    with pytest.raises(DurableSinkPathError, match="volatile filesystem devtmpfs.*next action"):
+    with pytest.raises(DurableSinkPathError, match=f"non-durable filesystem {fstype}.*next action"):
         DurableJsonlSink(root)
 
 
@@ -608,6 +611,54 @@ def test_append_lock_open_failure_has_next_action(
         )
 
     assert not sink.path_for_stream("payment-event").exists()
+
+
+def test_append_lock_acquire_failure_has_next_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+
+    def failing_flock(_fd: int, op: int) -> None:
+        if op == sink_mod.fcntl.LOCK_EX:
+            raise OSError("simulated lock acquire failure")
+
+    monkeypatch.setattr(sink_mod.fcntl, "flock", failing_flock)
+
+    with pytest.raises(DurableSinkAppendError, match="acquire durable sink lock.*next action"):
+        sink.append(
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/1",
+            payload={"idx": 1},
+            timestamp="2026-07-01T00:00:00Z",
+        )
+
+    assert not sink.path_for_stream("payment-event").exists()
+
+
+def test_append_lock_release_failure_has_next_action_after_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+
+    def failing_unlock(_fd: int, op: int) -> None:
+        if op == sink_mod.fcntl.LOCK_UN:
+            raise OSError("simulated lock release failure")
+
+    monkeypatch.setattr(sink_mod.fcntl, "flock", failing_unlock)
+
+    with pytest.raises(DurableSinkAppendError, match="release durable sink lock.*next action"):
+        sink.append(
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/1",
+            payload={"idx": 1},
+            timestamp="2026-07-01T00:00:00Z",
+        )
+
+    result = validate_chain(sink.path_for_stream("payment-event"), stream_id="payment-event")
+    assert result.valid is True
+    assert result.row_count == 1
 
 
 def test_append_stream_open_failure_has_next_action(

@@ -21,7 +21,33 @@ from typing import Any, Final
 
 SCHEMA_VERSION: Final = 1
 GENESIS_HASH: Final = "0" * 64
-VOLATILE_FS_TYPES: Final[frozenset[str]] = frozenset({"tmpfs", "ramfs", "devtmpfs"})
+NON_DURABLE_FS_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "autofs",
+        "bdev",
+        "bpf",
+        "binfmt_misc",
+        "cgroup",
+        "cgroup2",
+        "configfs",
+        "debugfs",
+        "devpts",
+        "devtmpfs",
+        "efivarfs",
+        "fusectl",
+        "hugetlbfs",
+        "mqueue",
+        "nsfs",
+        "proc",
+        "pstore",
+        "ramfs",
+        "rpc_pipefs",
+        "securityfs",
+        "sysfs",
+        "tmpfs",
+        "tracefs",
+    }
+)
 DEFAULT_ROOT_ENV: Final = "HAPAX_DURABLE_SINK_ROOT"
 _STREAM_ID_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
@@ -117,9 +143,9 @@ def assert_durable_root(root: Path | str) -> Path:
     """Resolve and validate the configured durable sink root.
 
     The root must already exist, be a directory, and live on a filesystem that
-    is not reported as tmpfs/ramfs/devtmpfs. We fail closed when the mount type
-    cannot be determined because a reboot-survival sink cannot assume
-    persistence.
+    is not reported as a known volatile or pseudo filesystem. We fail closed
+    when the mount type cannot be determined because a reboot-survival sink
+    cannot assume persistence.
     """
 
     candidate = Path(root).expanduser()
@@ -147,9 +173,9 @@ def assert_durable_root(root: Path | str) -> Path:
             f"/proc/mounts is readable and set {DEFAULT_ROOT_ENV} to a known "
             "persistent mount"
         )
-    if fstype in VOLATILE_FS_TYPES:
+    if fstype in NON_DURABLE_FS_TYPES:
         raise DurableSinkPathError(
-            f"durable sink root is on volatile filesystem {fstype}: {resolved}; "
+            f"durable sink root is on non-durable filesystem {fstype}: {resolved}; "
             f"next action: move {DEFAULT_ROOT_ENV} to non-volatile storage"
         )
     if resolved.stat().st_mode & 0o002:
@@ -195,25 +221,46 @@ class DurableJsonlSink:
                 f"failed to open durable sink lock {lock_path}; next action: verify "
                 "the durable root still exists and is writable"
             ) from exc
+        locked = False
+        body_error: BaseException | None = None
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            # Phase 1 intentionally revalidates the whole stream before each
-            # append. Later Stage0 consumers can add persisted tail anchors;
-            # until then, trusting fresh on-disk evidence is the safer tradeoff.
-            validation = validate_chain(target, stream_id=stream_id)
-            validation.raise_for_issues()
-            row = make_row(
-                stream_id=stream_id,
-                data_class=data_class,
-                source_receipt_ref=source_receipt_ref,
-                payload=payload,
-                prior_hash=validation.tail_hash,
-                timestamp=timestamp,
-            )
-            _append_row_locked(target, row)
-            return row
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                locked = True
+            except OSError as exc:
+                raise DurableSinkAppendError(
+                    f"failed to acquire durable sink lock {lock_path}; next action: "
+                    "retry after verifying no stale writer holds the stream lock"
+                ) from exc
+            try:
+                # Phase 1 intentionally revalidates the whole stream before each
+                # append. Later Stage0 consumers can add persisted tail anchors;
+                # until then, trusting fresh on-disk evidence is the safer tradeoff.
+                validation = validate_chain(target, stream_id=stream_id)
+                validation.raise_for_issues()
+                row = make_row(
+                    stream_id=stream_id,
+                    data_class=data_class,
+                    source_receipt_ref=source_receipt_ref,
+                    payload=payload,
+                    prior_hash=validation.tail_hash,
+                    timestamp=timestamp,
+                )
+                _append_row_locked(target, row)
+                return row
+            except BaseException as exc:
+                body_error = exc
+                raise
         finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            if locked:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                except OSError as exc:
+                    if body_error is None:
+                        raise DurableSinkAppendError(
+                            f"failed to release durable sink lock {lock_path}; next "
+                            "action: verify lock state before retrying append"
+                        ) from exc
             os.close(lock_fd)
 
 
