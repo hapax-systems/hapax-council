@@ -32,6 +32,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 #: Default materialised-secrets env file (hapax-secrets.service writes it from `pass`).
 DEFAULT_SECRETS_ENV = Path("/run/user/1000/hapax-secrets.env")
@@ -120,6 +121,13 @@ _SECRET_KEY = (
     r"(?:secret|token|passwd|password|api[_-]?key|apikey|access[_-]?key|"
     r"private[_-]?key|client[_-]?secret|auth|credential|bearer|session[_-]?key)"
     r"[A-Za-z0-9_]*)"
+)
+_STRUCTURED_SECRET_KEY = re.compile(
+    r"(?i)(?:secret|token|passwd|password|api[-_]?key|apikey|access[-_]?key|"
+    r"private[-_]?key|client[-_]?secret|auth|credential|bearer|session[-_]?key)"
+)
+_PRIVATE_TEXT_KEY = re.compile(
+    r"(?i)(?:^|[_-])(?:text|utterance|transcript|message|content|prompt|response)(?:$|[_-])"
 )
 _ASSIGNMENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("secret_assignment", re.compile(rf'(?i)"{_SECRET_KEY}"\s*:\s*"[^"]+"')),
@@ -329,3 +337,53 @@ def assert_clean(
         for m in matches:
             categories[m.category] = categories.get(m.category, 0) + 1
         raise ResidualSecretError(categories)
+
+
+def _sensitive_key_context(key: str) -> bool:
+    return bool(_STRUCTURED_SECRET_KEY.search(key))
+
+
+def _private_text_key_context(key: str) -> bool:
+    lowered = key.lower()
+    if lowered.endswith(("_hash", "_id", "_ids", "_ref", "_refs")):
+        return False
+    return bool(_PRIVATE_TEXT_KEY.search(key))
+
+
+def _child_key_context(parent: str | None, key: str) -> str:
+    if _sensitive_key_context(key) or _private_text_key_context(key):
+        return key
+    if parent is not None and (_sensitive_key_context(parent) or _private_text_key_context(parent)):
+        return parent
+    return key
+
+
+def scrub_structured_value(value: Any, *, key_context: str | None = None) -> Any:
+    """Scrub JSON-like values while preserving key context for assignment detectors.
+
+    Scalar :func:`scrub` calls cannot see that ``{"api_key": "hunter2"}`` is a
+    secret assignment because the key and value are separated by structured
+    serialization. This helper recurses through dict/list payloads and uses the
+    current field name as detector context before durable persistence.
+    """
+
+    if isinstance(value, dict):
+        return {
+            str(k): scrub_structured_value(v, key_context=_child_key_context(key_context, str(k)))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [scrub_structured_value(v, key_context=key_context) for v in value]
+    if isinstance(value, str):
+        if key_context and _private_text_key_context(key_context) and value:
+            return "[REDACTED:private_text]"
+
+        cleaned = scrub(value).text
+        assert_clean(cleaned)
+
+        if key_context and _sensitive_key_context(key_context):
+            contextual = scrub(f"{key_context}: {value}")
+            if contextual.redactions:
+                return "[REDACTED:secret_assignment]"
+        return cleaned
+    return value

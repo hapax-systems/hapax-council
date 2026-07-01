@@ -192,6 +192,72 @@ class TestAppendAndRead:
         assert parsed["speech_event_id"] == "se-001"
         assert parsed["scope"] == "public_broadcast"
 
+    def test_default_append_writes_durable_witness(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shared.durable_jsonl_sink as sink_mod
+
+        durable_root = tmp_path / "durable"
+        durable_root.mkdir()
+        monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(durable_root))
+        monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "btrfs")
+        monkeypatch.setattr("shared.public_speech_index.INDEX_PATH", tmp_path / "events.jsonl")
+
+        append_public_speech_event(_record())
+
+        rows = [
+            json.loads(line)
+            for line in (durable_root / "public-speech-event.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert len(rows) == 1
+        assert rows[0]["stream_id"] == "public-speech-event"
+        assert rows[0]["data_class"] == "public_speech_event_witness"
+        assert rows[0]["payload"]["utterance_hash"] == compute_utterance_hash("hello world")
+        assert "hello world" not in json.dumps(rows[0])
+        assert "public_claim_authorized" not in rows[0]["payload"]
+
+    def test_default_append_scrubs_structured_private_payload(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shared.durable_jsonl_sink as sink_mod
+
+        durable_root = tmp_path / "durable"
+        durable_root.mkdir()
+        monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(durable_root))
+        monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "btrfs")
+        monkeypatch.setattr("shared.public_speech_index.INDEX_PATH", tmp_path / "events.jsonl")
+
+        append_public_speech_event(
+            _record(
+                route_decision={"destination": "livestream", "api_key": "hunter2"},
+                tts_result={"status": "completed", "transcript": "hello world"},
+                playback_result={"nested": {"X-API-Key": "hunter3", "access-token": "hunter4"}},
+            )
+        )
+
+        content = (durable_root / "public-speech-event.jsonl").read_text(encoding="utf-8")
+        assert "hunter2" not in content
+        assert "hunter3" not in content
+        assert "hunter4" not in content
+        assert "hello world" not in content
+        assert "[REDACTED:secret_assignment]" in content
+        assert "[REDACTED:private_text]" in content
+
+    def test_default_append_missing_durable_root_refuses_before_index(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shared.durable_jsonl_sink as sink_mod
+
+        index_path = tmp_path / "events.jsonl"
+        monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(tmp_path / "missing"))
+        monkeypatch.setattr("shared.public_speech_index.INDEX_PATH", index_path)
+
+        with pytest.raises(sink_mod.DurableSinkPathError):
+            append_public_speech_event(_record())
+        assert not index_path.exists()
+
 
 class TestLookup:
     def test_lookup_existing(self, tmp_path: Path) -> None:
