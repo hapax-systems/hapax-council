@@ -107,6 +107,12 @@ OUTBOUND_DIRECTION_VALUES: Final[frozenset[str]] = frozenset({"debit", "outgoing
 CHECKOUT_SESSION_EVENT_KINDS: Final[frozenset[str]] = frozenset({"checkout_session_completed"})
 CHECKOUT_ONE_TIME_MODES: Final[frozenset[str]] = frozenset({"payment"})
 CHECKOUT_PAID_STATUSES: Final[frozenset[str]] = frozenset({"paid"})
+SOURCE_AMOUNT_POSITIVE_VALUES: Final[frozenset[str]] = frozenset(
+    {"positive", "credit", "inflow", "inbound"}
+)
+SOURCE_AMOUNT_NEGATIVE_VALUES: Final[frozenset[str]] = frozenset(
+    {"negative", "debit", "outflow", "outbound", "refund", "reversal", "return"}
+)
 
 
 class RealizedReturnStatus(StrEnum):
@@ -133,6 +139,7 @@ class RealizedReturnRefusalReason(StrEnum):
     AMBIGUOUS_BANK_TRANSACTION_EVENT = "ambiguous_bank_transaction_event"
     MISSING_OBSERVED_AT = "missing_observed_at"
     MISSING_RAIL_EVIDENCE = "missing_rail_evidence"
+    MISSING_SOURCE_AMOUNT_SIGN = "missing_source_amount_sign"
     INVALID_EVENT_SHAPE = "invalid_event_shape"
     NOT_STAGE0_PAYMENT_EVENT = "not_stage0_payment_event"
 
@@ -307,6 +314,19 @@ def realized_return_from_rail(
             amount_minor_units=amount_minor_units,
             currency=currency,
             detail="realized return must be positive before score folding",
+        )
+
+    source_sign_result = _source_amount_sign_result(event)
+    if isinstance(source_sign_result, RealizedReturnRefusalReason):
+        return _refused(
+            source_sign_result,
+            event=event,
+            source_receipt_ref=source_receipt_ref,
+            durable_row_hash=durable_row_hash,
+            event_kind=event_kind,
+            amount_minor_units=amount_minor_units,
+            currency=currency,
+            detail="rail amount requires an explicit positive source-sign witness",
         )
 
     observed_at_result = _observed_at_result(event)
@@ -541,6 +561,32 @@ def _paid_one_time_checkout(event: Any) -> bool:
         and _nonempty_text(payment_intent)
         and not _nonempty_text(subscription)
     )
+
+
+def _source_amount_sign_result(event: Any) -> RealizedReturnRefusalReason | None:
+    if _direction(event) in INBOUND_DIRECTION_VALUES:
+        return None
+    raw_sign = _text_field(event, "source_amount_sign", "amount_sign", "raw_amount_sign")
+    if raw_sign is not None:
+        sign = raw_sign.casefold()
+        if sign in SOURCE_AMOUNT_POSITIVE_VALUES:
+            return None
+        if sign in SOURCE_AMOUNT_NEGATIVE_VALUES:
+            return RealizedReturnRefusalReason.REFUND_OR_REVERSAL_EVENT
+        return RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+
+    raw_amount = _field(event, "source_amount", "raw_amount", "signed_amount")
+    if raw_amount is None:
+        return RealizedReturnRefusalReason.MISSING_SOURCE_AMOUNT_SIGN
+    try:
+        signed = Decimal(str(raw_amount))
+    except (InvalidOperation, ValueError):
+        return RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+    if not signed.is_finite():
+        return RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+    if signed < 0:
+        return RealizedReturnRefusalReason.REFUND_OR_REVERSAL_EVENT
+    return None
 
 
 def _refused(

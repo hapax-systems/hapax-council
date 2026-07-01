@@ -19,12 +19,6 @@ from shared.modern_treasury_receive_only_rail import (
 )
 from shared.open_collective_receive_only_rail import OpenCollectiveRailReceiver
 from shared.stripe_payment_link_receive_only_rail import (
-    PaymentEvent as StripePaymentEvent,
-)
-from shared.stripe_payment_link_receive_only_rail import (
-    PaymentEventKind as StripePaymentEventKind,
-)
-from shared.stripe_payment_link_receive_only_rail import (
     StripePaymentLinkRailReceiver,
 )
 from shared.treasury_prime_receive_only_rail import TreasuryPrimeRailReceiver
@@ -41,6 +35,7 @@ def _accepted_event(event_kind: str, **overrides: object) -> dict[str, object]:
         "currency": "USD",
         "occurred_at": NOW,
         "raw_payload_sha256": RAW_SHA,
+        "source_amount_sign": "positive",
     }
     if event_kind in realized_return_mod.DIRECTION_FILTERED_EVENT_KINDS:
         event["direction"] = "credit"
@@ -114,6 +109,28 @@ def _stripe_checkout_session_payload(
     }
 
 
+def _stripe_payment_intent_payload(
+    *,
+    amount: int = 2500,
+    currency: str = "usd",
+) -> dict[str, object]:
+    return {
+        "id": "evt_test_payment_intent_mondlc",
+        "type": "payment_intent.succeeded",
+        "created": 1_745_000_000,
+        "data": {
+            "object": {
+                "id": "pi_test_mondlc",
+                "object": "payment_intent",
+                "customer": "cus_TestRail01",
+                "amount": amount,
+                "amount_received": amount,
+                "currency": currency,
+            }
+        },
+    }
+
+
 def _treasury_prime_ach_payload(
     *,
     amount: object = 10000,
@@ -182,13 +199,10 @@ def test_all_enumerated_realized_inbound_event_kinds_become_measurements(
 
 
 def test_stripe_payment_intent_measurement_scores_lit_with_two_witness_refs() -> None:
-    event = StripePaymentEvent(
-        customer_handle="cus_TestRail01",
+    event = _accepted_event(
+        "payment_intent_succeeded",
         amount_currency_cents=2500,
-        currency="USD",
-        event_kind=StripePaymentEventKind.PAYMENT_INTENT_SUCCEEDED,
-        occurred_at=NOW,
-        raw_payload_sha256=RAW_SHA,
+        event_id="pi_test_rail_01",
     )
 
     rail_result = realized_return_mod.realized_return_from_rail(
@@ -213,6 +227,25 @@ def test_stripe_payment_intent_measurement_scores_lit_with_two_witness_refs() ->
     assert rail_result.currency == "USD"
     assert scored.status is GateStatus.LIT
     assert scored.verdict is MonDLCVerdict.CORROBORATED
+
+
+def test_stripe_payment_intent_from_receiver_refuses_without_source_sign_witness() -> None:
+    event = StripePaymentLinkRailReceiver().ingest_webhook(
+        _stripe_payment_intent_payload(amount=-2500),
+        signature=None,
+    )
+
+    result = realized_return_mod.realized_return_from_rail(
+        event,
+        source_receipt_ref="receipt://payment/stripe/payment-intent-succeeded",
+    )
+
+    assert result.status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert (
+        result.refusal_reason
+        is realized_return_mod.RealizedReturnRefusalReason.MISSING_SOURCE_AMOUNT_SIGN
+    )
+    assert result.measurement is None
 
 
 def test_stripe_checkout_session_from_receiver_refuses_without_paid_one_time_witness() -> None:
@@ -411,6 +444,22 @@ def test_open_collective_transaction_debit_direction_refuses_outbound() -> None:
         (
             _accepted_event("unknown_payment_kind"),
             realized_return_mod.RealizedReturnRefusalReason.UNSUPPORTED_EVENT_KIND,
+        ),
+        (
+            _accepted_event("payment_intent_succeeded", source_amount_sign=None),
+            realized_return_mod.RealizedReturnRefusalReason.MISSING_SOURCE_AMOUNT_SIGN,
+        ),
+        (
+            _accepted_event("payment_intent_succeeded", source_amount_sign="negative"),
+            realized_return_mod.RealizedReturnRefusalReason.REFUND_OR_REVERSAL_EVENT,
+        ),
+        (
+            _accepted_event(
+                "payment_intent_succeeded",
+                source_amount_sign=None,
+                signed_amount=-2500,
+            ),
+            realized_return_mod.RealizedReturnRefusalReason.REFUND_OR_REVERSAL_EVENT,
         ),
         (
             {
