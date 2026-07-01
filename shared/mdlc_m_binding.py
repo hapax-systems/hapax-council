@@ -304,13 +304,14 @@ def _measurement_from_rail_results(rail_results: tuple[Any, ...]) -> Mapping[str
         value = getattr(measurement, "value", None)
         if value is None:
             continue
+        observed_at = getattr(measurement, "observed_at", None)
+        if observed_at is None:
+            continue
         try:
             values.append(float(value))
         except (TypeError, ValueError):
             continue
-        observed_at = getattr(measurement, "observed_at", None)
-        if observed_at is not None:
-            observed_values.append(observed_at)
+        observed_values.append(observed_at)
         evidence_refs.extend(_string_tuple(getattr(measurement, "evidence_refs", ())))
         evidence_refs.extend(_string_tuple(getattr(measurement, "corroborated_by", ())))
         evidence_refs.extend(_string_tuple(getattr(result, "evidence_refs", ())))

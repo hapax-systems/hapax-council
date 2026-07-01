@@ -13,6 +13,7 @@ import pytest
 from shared.capdlc_lifecycle import GateResult, GateStatus
 
 NOW = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+OBSERVED_AT = NOW - timedelta(minutes=5)
 HASH = "ruler-hash-fixture"
 
 
@@ -60,6 +61,7 @@ def _rail_result(
     *,
     status: str = "accepted",
     value: float | None = 12.5,
+    observed_at: datetime | None = OBSERVED_AT,
     evidence_refs: tuple[str, ...] = ("rail:event:1",),
     refusal_reason: str | None = None,
 ):
@@ -68,7 +70,7 @@ def _rail_result(
         measurement = SimpleNamespace(
             value=value,
             provenance="inbound_rail",
-            observed_at=NOW - timedelta(minutes=5),
+            observed_at=observed_at,
             evidence_refs=evidence_refs,
             corroborated_by=(),
         )
@@ -232,6 +234,27 @@ def test_rail_result_sequence_scores_through_binding() -> None:
     assert result.score_result.measurement_value == 20.0
     assert result.evidence_refs == ("rail:event:1", "rail:event:2")
     assert len(result.rail_results) == 2
+
+
+def test_rail_result_sequence_ignores_values_without_observed_at() -> None:
+    m_binding = _binding_module()
+
+    result = m_binding.bind_m_result(
+        (
+            _rail_result(value=12.5, evidence_refs=("rail:event:complete",)),
+            _rail_result(
+                value=99.0,
+                observed_at=None,
+                evidence_refs=("rail:event:missing-observed-at",),
+            ),
+        ),
+        _ladder(min_corroboration_count=1),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.LIT
+    assert result.score_result.measurement_value == 12.5
+    assert result.evidence_refs == ("rail:event:complete",)
 
 
 def test_empty_rail_result_sequence_fails_closed_as_missing_evidence() -> None:
