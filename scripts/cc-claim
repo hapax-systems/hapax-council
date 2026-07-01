@@ -640,24 +640,31 @@ mkdir -p "$HOME/.cache/hapax"
 # consumers read the claim file's FULL content as the task id, so the id file
 # must stay single-line — and the gate touches the claim file as a lease
 # keep-alive before its checks, so its mtime cannot witness claim age.
-# task_is_terminal reads the sidecar for a heartbeat-immune freshness source
-# (H1-ghost-revert indeterminate shape); a missing sidecar falls back to
-# mtime. The distinct prefix keeps sidecars out of every `cc-active-task-*`
-# glob (sweeps, terminal checks) so an epoch can never masquerade as a claim.
+# task_is_terminal reads the sidecar as its ONLY heartbeat-immune freshness
+# source (H1-ghost-revert indeterminate shape); there is deliberately no
+# mtime fallback, so every cache writer must keep the sidecar in step. The
+# distinct prefix keeps sidecars out of every `cc-active-task-*` glob
+# (sweeps, terminal checks) so an epoch can never masquerade as a claim.
+# Paths are constructed EXPLICITLY (never by substring substitution on the
+# full path — `${var/cc-active-task/...}` rewrites the FIRST occurrence
+# anywhere, corrupting the target when a parent directory contains the
+# substring).
 claim_epoch="$(date +%s)"
 # Sidecar format: `<epoch> <task_id>` — task-bound so a stale sidecar left by
 # an earlier claim can never age a NEW claim of a different task; consumers
 # ignore a sidecar whose task id does not match the claim cache.
+# Sidecars are written BEFORE their claim caches: a conforming writer can
+# never expose a matching cache whose sidecar is not yet visible.
+echo "$claim_epoch $task_id" > "$HOME/.cache/hapax/cc-claim-epoch-$role"
 # Legacy role-keyed file: read by cc-close, session-context, the coordinator, the
 # coordination TUI, and other consumers outside this task's scope. Always written.
 echo "$task_id" > "$legacy_claim_file"
-echo "$claim_epoch $task_id" > "${legacy_claim_file/cc-active-task/cc-claim-epoch}"
 if [[ -n "$session_claim_file" ]]; then
   # Session-keyed lease (FM-2): the gate reads this FIRST so two same-role
   # sessions never collide on the shared legacy file. Same task id; the filename
   # carries the session identity.
+  echo "$claim_epoch $task_id" > "$HOME/.cache/hapax/cc-claim-epoch-$role-$session_id"
   echo "$task_id" > "$session_claim_file"
-  echo "$claim_epoch $task_id" > "${session_claim_file/cc-active-task/cc-claim-epoch}"
   echo "cc-claim: wrote $session_claim_file (+ legacy cc-active-task-$role)"
 else
   echo "cc-claim: wrote ~/.cache/hapax/cc-active-task-$role"

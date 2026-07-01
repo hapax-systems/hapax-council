@@ -386,9 +386,14 @@ task_is_terminal() {
     # the remote-exec claim materializer write the sidecar; a matching cache
     # with NO valid sidecar is a non-conforming writer and reaps.
     local _stamp_grace="${HAPAX_CLAIM_STAMP_GRACE_S:-900}" _cache_age=-1
-    local _epoch_line="" _claim_epoch="" _epoch_task="" _epoch_file=""
+    local _epoch_line="" _claim_epoch="" _epoch_task="" _epoch_file="" _claim_base=""
     if [[ "$claimed" == "$task" && -n "$claim_file_used" ]]; then
-      _epoch_file="${claim_file_used/cc-active-task/cc-claim-epoch}"
+      # Basename-anchored derivation: substring substitution on the FULL path
+      # would rewrite the first `cc-active-task` occurrence anywhere (e.g. in
+      # a parent directory name) and read a nonexistent sidecar, falsely
+      # reaping a fresh lane.
+      _claim_base="$(basename "$claim_file_used")"
+      _epoch_file="$(dirname "$claim_file_used")/cc-claim-epoch-${_claim_base#cc-active-task-}"
       _epoch_line="$(head -n1 "$_epoch_file" 2>/dev/null || true)"
       _claim_epoch="${_epoch_line%% *}"
       _epoch_task="${_epoch_line#* }"
@@ -528,14 +533,14 @@ try:
         if task:
             import time as _time
             epoch_line=str(int(_time.time()))+" "+task+"\n"
-            open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
-            open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
-            # Keep the task-bound epoch sidecars in step with the caches:
-            # task_is_terminal trusts a sidecar only when it names this task,
-            # so a materialized cache without one would look age-unknown and
-            # reap in the unassigned-drift shape.
+            # Task-bound epoch sidecars are written BEFORE the caches they
+            # vouch for: task_is_terminal trusts a sidecar only when it names
+            # this task and has NO mtime fallback, so a matching cache must
+            # never be visible without its sidecar.
             open(os.path.join(cache,"cc-claim-epoch-"+role),"w",encoding="utf-8").write(epoch_line)
             open(os.path.join(cache,"cc-claim-epoch-"+role+"-"+sid),"w",encoding="utf-8").write(epoch_line)
+            open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
+            open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
             materialized=True
 except Exception:
     pass

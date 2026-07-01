@@ -744,6 +744,37 @@ def test_claim_writes_task_bound_epoch_sidecar(tmp_path: Path) -> None:
     assert task == "cc-sidecar"
 
 
+def test_claim_writes_session_keyed_epoch_sidecar(tmp_path: Path) -> None:
+    """The session-keyed sidecar is written alongside the session-keyed cache
+    with an explicitly constructed path (never substring substitution on the
+    full path, which corrupts when a parent dir contains cc-active-task)."""
+    home = tmp_path / "home"
+    _write_task(home, "active", "cc-sidecar-session")
+    sid = "0f9f9f9f-1111-2222-3333-444455556666"
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["HAPAX_AGENT_ROLE"] = "cx-test"
+    env["HAPAX_SESSION_ID"] = sid
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "cc-sidecar-session"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    cache_dir = home / ".cache" / "hapax"
+    session_cache = cache_dir / f"cc-active-task-cx-test-{sid}"
+    assert session_cache.read_text(encoding="utf-8").strip() == "cc-sidecar-session"
+    session_sidecar = cache_dir / f"cc-claim-epoch-cx-test-{sid}"
+    assert session_sidecar.exists(), sorted(p.name for p in cache_dir.iterdir())
+    epoch, _, task = session_sidecar.read_text(encoding="utf-8").strip().partition(" ")
+    assert epoch.isdigit()
+    assert task == "cc-sidecar-session"
+
+
 def test_claim_refuses_duplicate_claim_keys(tmp_path: Path) -> None:
     """Duplicate claim keys are fail-closed: re.sub stamps only the FIRST
     occurrence while YAML consumers treat the LAST as authoritative — the
