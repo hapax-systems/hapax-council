@@ -627,7 +627,35 @@ def test_delta_task_writer_dry_run_and_apply_are_idempotent(tmp_path) -> None:
     )
     assert again["ok"] is True
     assert again["written"] == []
+    assert again["updated"] == []
     assert again["skipped_existing"] == [str(written)]
+
+
+def test_delta_task_writer_updates_changed_active_task(tmp_path) -> None:
+    delta = load_capability_surface_delta_fixtures().deltas[0]
+    active = tmp_path / "active" / task_filename_for_delta(delta)
+    active.parent.mkdir(parents=True)
+    active.write_text("stale content\n", encoding="utf-8")
+
+    dry = write_capability_surface_delta_tasks(
+        [delta],
+        task_root=tmp_path,
+        generated_at=NOW,
+        apply=False,
+    )
+    assert dry["would_update"] == [str(active)]
+    assert active.read_text(encoding="utf-8") == "stale content\n"
+
+    applied = write_capability_surface_delta_tasks(
+        [delta],
+        task_root=tmp_path,
+        generated_at=NOW,
+        apply=True,
+    )
+
+    assert applied["written"] == []
+    assert applied["updated"] == [str(active)]
+    assert f'capability_surface_delta_id: "{delta.delta_id}"' in active.read_text(encoding="utf-8")
 
 
 def test_delta_task_writer_does_not_remint_closed_or_refused_tasks(tmp_path) -> None:

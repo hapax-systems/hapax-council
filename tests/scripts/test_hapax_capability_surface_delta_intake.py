@@ -171,6 +171,26 @@ def test_cli_accepts_live_producer_file_without_fixture_set_id(tmp_path: Path) -
     assert 'required_intake_action: "refresh_receipt"' in written
 
 
+def test_cli_detect_from_descriptors_smoke(tmp_path: Path) -> None:
+    result = _run(
+        "--fixtures",
+        str(FIXTURES),
+        "--task-root",
+        str(tmp_path),
+        "--now",
+        NOW,
+        "--detect-from-descriptors",
+        "--json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["loaded"] >= 3
+    assert payload["would_write"]
+    assert payload["written"] == []
+
+
 def test_cli_bad_now_reports_next_action(tmp_path: Path) -> None:
     result = _run(
         "--fixtures",

@@ -595,34 +595,48 @@ def write_capability_surface_delta_tasks(
     apply: bool = True,
 ) -> dict[str, Any]:
     written: list[str] = []
+    updated: list[str] = []
     skipped_existing: list[str] = []
     would_write: list[str] = []
+    would_update: list[str] = []
     errors: list[str] = []
     active_root = task_root / "active"
     for delta in deltas:
         filename = task_filename_for_delta(delta)
-        existing_path = next(
+        terminal_path = next(
             (
                 task_root / state / filename
-                for state in ("active", "closed", "refused")
+                for state in ("closed", "refused")
                 if (task_root / state / filename).exists()
             ),
             None,
         )
-        if existing_path is not None:
-            skipped_existing.append(str(existing_path))
+        if terminal_path is not None:
+            skipped_existing.append(str(terminal_path))
             continue
         path = active_root / filename
         rendered = render_capability_surface_delta_task(delta, generated_at=generated_at)
+        existing_active = path.exists()
+        if existing_active:
+            try:
+                if path.read_text(encoding="utf-8") == rendered:
+                    skipped_existing.append(str(path))
+                    continue
+            except OSError as exc:
+                errors.append(
+                    f"{path}: {exc}; next action: repair task-root permissions or "
+                    "filesystem availability, then rerun this intake command"
+                )
+                continue
         if not apply:
-            would_write.append(str(path))
+            (would_update if existing_active else would_write).append(str(path))
             continue
         try:
             active_root.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(path.suffix + ".tmp")
             tmp.write_text(rendered, encoding="utf-8")
             tmp.replace(path)
-            written.append(str(path))
+            (updated if existing_active else written).append(str(path))
         except OSError as exc:
             errors.append(
                 f"{path}: {exc}; next action: repair task-root permissions or "
@@ -632,7 +646,9 @@ def write_capability_surface_delta_tasks(
         "ok": not errors,
         "loaded": len(deltas),
         "written": written,
+        "updated": updated,
         "would_write": would_write,
+        "would_update": would_update,
         "skipped_existing": skipped_existing,
         "errors": errors,
     }
@@ -668,7 +684,10 @@ def build_surface_delta(
 ) -> CapabilitySurfaceDelta | None:
     checked_now = ensure_utc(now or datetime.now(UTC))
     if prior is None and observed is None:
-        raise ValueError("prior and observed cannot both be None")
+        raise ValueError(
+            "prior and observed cannot both be None; next action: pass a registered "
+            "prior descriptor, an observed descriptor, or both"
+        )
     if observed is None:
         assert prior is not None
         return CapabilitySurfaceDelta(
