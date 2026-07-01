@@ -346,6 +346,17 @@ def test_request_rejects_forged_public_gate_flag() -> None:
             )
 
 
+def test_request_rejects_coerced_default_token_flag() -> None:
+    for use_default_token in ("false", 0, "off"):
+        with pytest.raises(ValidationError, match="use_default_token"):
+            OutboundExecutionRequest(
+                scope="gmail_send_internal",
+                venue="internal",
+                amount=1.0,
+                use_default_token=use_default_token,
+            )
+
+
 def test_request_rejects_blank_evidence_refs() -> None:
     with pytest.raises(ValidationError, match="evidence_refs"):
         OutboundExecutionRequest(
@@ -488,8 +499,17 @@ def test_receive_only_rail_blocks(base_registry: AccountFederationRegistry) -> N
         "Open Collective",
         "Stripe Payment Link",
         "GitHub Sponsors",
+        "github-sponsors-receiver",
         "Treasury Prime",
+        "treasury-prime-receiver",
         "Modern Treasury",
+        "modern-treasury-receiver",
+        "stripe-payment-link-receiver",
+        "open-collective-receiver",
+        "ko-fi-receiver",
+        "patreon-receiver",
+        "buy-me-a-coffee-receiver",
+        "mercury-receiver",
     ),
 )
 def test_receive_only_provider_aliases_block(

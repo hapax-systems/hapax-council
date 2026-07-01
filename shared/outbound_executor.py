@@ -20,7 +20,15 @@ from shared.resource_capability import (
 
 def _provider_keys(provider: str) -> frozenset[str]:
     normalized = provider.strip().casefold().replace("-", "_").replace(" ", "_").replace(".", "_")
-    return frozenset({normalized.strip("_"), "".join(ch for ch in normalized if ch.isalnum())})
+    aliases = {normalized.strip("_")}
+    if normalized.endswith("_receiver"):
+        aliases.add(normalized.removesuffix("_receiver").strip("_"))
+    return frozenset(
+        alias
+        for key in aliases
+        if key
+        for alias in (key, "".join(ch for ch in key if ch.isalnum()))
+    )
 
 
 def _provider_alias_keys(providers: frozenset[str]) -> frozenset[str]:
@@ -95,6 +103,16 @@ class OutboundExecutionRequest(StrictModel):
             raise ValueError(
                 "public_gate_passed must be an explicit bool; next action: bind "
                 "only a governed public gate receipt result"
+            )
+        return value
+
+    @field_validator("use_default_token", mode="before")
+    @classmethod
+    def _use_default_token_is_explicit_bool(cls, value: Any) -> bool:
+        if not isinstance(value, bool):
+            raise ValueError(
+                "use_default_token must be an explicit bool; next action: bind "
+                "a governed token decision without fallback coercion"
             )
         return value
 
@@ -479,6 +497,7 @@ _OUTBOUND_EXECUTOR_ENTRYPOINTS: Final = (
     OutboundExecutionRefusal,
     OutboundExecutionRequest._amount_is_finite_nonnegative,
     OutboundExecutionRequest._public_gate_passed_is_explicit_bool,
+    OutboundExecutionRequest._use_default_token_is_explicit_bool,
     OutboundExecutionRequest._evidence_refs_are_nonblank_strings,
     OutboundExecutor,
     OutboundExecutor.validate_request,
