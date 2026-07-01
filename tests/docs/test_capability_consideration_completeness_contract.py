@@ -26,9 +26,12 @@ forcing function.
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+
+from jsonschema import Draft202012Validator
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
@@ -123,6 +126,7 @@ WAIVERS: tuple[dict[str, str], ...] = (
     # harness flag with no governed launch path, so the spend-ledger metering stays deferred.
     {
         "axis": "fast_mode",
+        "value": "fast",
         "site": "quota_ledger",
         "expires_at": _EXP,
         "tracking_ref": _WAIVER_TASK,
@@ -130,13 +134,43 @@ WAIVERS: tuple[dict[str, str], ...] = (
     },
     # quantization — NOW modeled at the spend ledger (SpendReceipt.quantization) as well as the
     # registry (ExecutionDescriptor.quantization). Fully modeled; no waiver.
+    # platform/provider route debts — not field-introspection gaps, but still capability
+    # consideration debt that must remain visible and expiring instead of silently absent.
+    {
+        "axis": "platform",
+        "value": "gemini",
+        "site": "registry_route",
+        "expires_at": _EXP,
+        "tracking_ref": "capability-adapter-agy-gemini35-flash-receipts-20260625",
+        "reason": "legacy direct Gemini CLI is retired for consumer subscription use; route through agy/Antigravity or an explicitly API-backed exception",
+    },
+    {
+        "axis": "provider_family",
+        "value": "cloud_open_coding",
+        "site": "registry_route",
+        "expires_at": _EXP,
+        "tracking_ref": "capability-provider-spend-dimension-20260619",
+        "reason": "DeepSeek/StepFun/MiniMax/GLM-worker style cloud-open aliases require an operator-signed provider-spend S5 before route activation",
+    },
 )
 
 MAX_WAIVERS = 20  # bound: intentional asymmetry must shrink, not accrete
 
 
+def _structural_waivers() -> tuple[dict[str, str], ...]:
+    """Waivers that correspond to the field-introspection detector.
+
+    Route/provider-family waivers are real consideration debt, but they are not
+    modeled by the site field universe and must not be mistaken for a modeled
+    axis absence in ``test_no_silent_absence``.
+    """
+
+    structural_sites = set(_site_field_universes())
+    return tuple(w for w in WAIVERS if w["axis"] in AXIS_TOKENS and w["site"] in structural_sites)
+
+
 def _waived_pairs() -> set[tuple[str, str]]:
-    return {(w["axis"], w["site"]) for w in WAIVERS}
+    return {(w["axis"], w["site"]) for w in _structural_waivers()}
 
 
 # ----------------------------------------------------------------------------------
@@ -165,7 +199,7 @@ def test_waivers_name_real_absences() -> None:
     (this is how 'considered where any is considered' is actually enforced over time)."""
     universes = _site_field_universes()
     stale: list[str] = []
-    for w in WAIVERS:
+    for w in _structural_waivers():
         if _is_modeled(w["axis"], universes[w["site"]]):
             stale.append(
                 f"{w['axis']}@{w['site']} (now MODELED — remove waiver -> {w['tracking_ref']})"
@@ -179,20 +213,47 @@ def test_waiver_hygiene() -> None:
     assert len(WAIVERS) <= MAX_WAIVERS, (
         f"too many waivers ({len(WAIVERS)} > {MAX_WAIVERS}) — asymmetry must shrink"
     )
+    allowed_axes = set(AXIS_TOKENS) | {"platform", "provider_family"}
+    allowed_sites = set(_site_field_universes()) | {"registry_route"}
     for w in WAIVERS:
-        assert set(w) >= {"axis", "site", "expires_at", "tracking_ref", "reason"}, (
+        assert set(w) >= {"axis", "value", "site", "expires_at", "tracking_ref", "reason"}, (
             f"malformed waiver: {w}"
         )
-        assert w["axis"] in AXIS_TOKENS, f"unknown axis in waiver: {w['axis']}"
-        assert w["site"] in _site_field_universes(), f"unknown site in waiver: {w['site']}"
-        assert (w["axis"], w["site"]) in {(a, s) for a, ss in APPLICABLE.items() for s in ss}, (
-            f"waiver for non-applicable pair: {w['axis']}@{w['site']}"
-        )
+        assert w["axis"] in allowed_axes, f"unknown axis in waiver: {w['axis']}"
+        assert w["value"].strip(), f"waiver missing value: {w}"
+        assert w["site"] in allowed_sites, f"unknown site in waiver: {w['site']}"
+        if w in _structural_waivers():
+            assert (w["axis"], w["site"]) in {(a, s) for a, ss in APPLICABLE.items() for s in ss}, (
+                f"waiver for non-applicable pair: {w['axis']}@{w['site']}"
+            )
         expiry = datetime.fromisoformat(w["expires_at"].replace("Z", "+00:00"))
         assert expiry > now, (
             f"EXPIRED waiver (intentional debt came due): {w['axis']}@{w['site']} {w['expires_at']}"
         )
         assert w["tracking_ref"].strip(), f"waiver missing tracking_ref: {w}"
+
+
+def test_waivers_validate_against_registry_schema() -> None:
+    """The waiver contract is schema-backed, not only a Python test convention."""
+    schema = json.loads(
+        (REPO_ROOT / "schemas/platform-capability-registry.schema.json").read_text()
+    )
+    Draft202012Validator.check_schema(schema)
+    waiver_schema = {
+        "$schema": schema["$schema"],
+        "$defs": schema["$defs"],
+        **schema["$defs"]["consideration_waiver"],
+    }
+    validator = Draft202012Validator(waiver_schema)
+    for waiver in WAIVERS:
+        validator.validate(waiver)
+
+    seeded_debt = {(w["axis"], w["value"], w["site"]) for w in WAIVERS}
+    assert {
+        ("fast_mode", "fast", "quota_ledger"),
+        ("platform", "gemini", "registry_route"),
+        ("provider_family", "cloud_open_coding", "registry_route"),
+    } <= seeded_debt
 
 
 def test_capacity_pool_positive_control() -> None:
