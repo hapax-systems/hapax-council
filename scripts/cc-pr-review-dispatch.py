@@ -1109,6 +1109,31 @@ def _route_admission_use_blockers(
     return blockers
 
 
+def _review_seat_admission_blockers(
+    constitution: review_team.Constitution,
+    registry: Mapping[str, Any],
+    seat_admissions: Mapping[str, list[dict[str, Any]]],
+) -> list[str]:
+    family_cfgs = {entry["family"]: entry for entry in registry["families"]}
+    blockers: list[str] = []
+    for seat in constitution.seats:
+        admissions = list(seat_admissions.get(seat.id) or [])
+        if not admissions:
+            blockers.append(f"{seat.id}:route_admission_missing")
+            continue
+        family_cfg = family_cfgs[seat.family]
+        for admission in admissions:
+            blockers.extend(
+                f"{seat.id}:{reason}"
+                for reason in _route_admission_use_blockers(
+                    admission,
+                    seat=seat,
+                    family_cfg=family_cfg,
+                )
+            )
+    return list(dict.fromkeys(blockers))
+
+
 def dispatch_reviews(
     constitution: review_team.Constitution,
     prompts: list[str],
@@ -1125,6 +1150,11 @@ def dispatch_reviews(
         seat = constitution.seats[index]
         admissions = list(seat_admissions.get(seat.id) or [])
         if not admissions:
+            route_admission_diagnostic = (
+                "reviewer route admission missing before provider use; next action: refresh route, "
+                "quota, and resource receipts or repair task route metadata before rerunning review "
+                "dispatch. " + ROUTE_HOLD_RECOVERY_HINT
+            )
             return {
                 "id": seat.id,
                 "family": seat.family,
@@ -1133,9 +1163,9 @@ def dispatch_reviews(
                 "findings": [],
                 "checklist": {},
                 "route_admissions": [],
-                "raw_reply_excerpt": "reviewer route admission missing before provider use; "
-                "next action: refresh route, quota, and resource receipts or repair task "
-                "route metadata before rerunning review dispatch. " + ROUTE_HOLD_RECOVERY_HINT,
+                "provider_invoked": False,
+                "route_admission_diagnostic": route_admission_diagnostic,
+                "raw_reply_excerpt": route_admission_diagnostic,
             }
         admission_blockers = [
             reason
@@ -1156,6 +1186,12 @@ def dispatch_reviews(
                 if str(reason).strip()
             ]
             reasons.extend(reason for reason in blocked_reasons if reason not in reasons)
+            route_admission_diagnostic = (
+                "reviewer route admission blocked before provider use: "
+                + ", ".join(reasons)
+                + "; next action: refresh route, quota, and resource receipts or repair "
+                "task route metadata before rerunning review dispatch. " + ROUTE_HOLD_RECOVERY_HINT
+            )
             return {
                 "id": seat.id,
                 "family": seat.family,
@@ -1164,10 +1200,9 @@ def dispatch_reviews(
                 "findings": [],
                 "checklist": {},
                 "route_admissions": admissions,
-                "raw_reply_excerpt": "reviewer route admission blocked before provider use: "
-                + ", ".join(reasons)
-                + "; next action: refresh route, quota, and resource receipts or repair "
-                "task route metadata before rerunning review dispatch. " + ROUTE_HOLD_RECOVERY_HINT,
+                "provider_invoked": False,
+                "route_admission_diagnostic": route_admission_diagnostic,
+                "raw_reply_excerpt": route_admission_diagnostic,
             }
         process_failed = False
         process_output = ""
@@ -1716,6 +1751,78 @@ def review_pr(
         keyed_matches.append((note_path, frontmatter, task_id))
     task_ids = [item[2] for item in keyed_matches]
 
+    lenses = review_team.lenses_for_files(pr_info.files, registry)
+    team_class = review_team.strongest_team_class(
+        [review_team.team_class_for(fm, pr_info.files, registry) for _, fm, _ in keyed_matches]
+    )
+    assigned_lane = next(
+        (str(fm.get("assigned_to") or "") for _, fm, _ in keyed_matches if fm.get("assigned_to")),
+        "",
+    )
+    writer_family = review_team.writer_family_for_lane(assigned_lane, registry)
+    outage_witness = load_family_outage_witness(now_iso)
+    outage_families = frozenset(outage_witness)
+    if outage_families:
+        LOG.warning(
+            "family outage active (%s) — constitution may degrade (never seals)",
+            ",".join(sorted(outage_families)),
+        )
+    constitution = review_team.constitute_team(
+        team_class, writer_family, registry, pr_number=pr_number, outage_families=outage_families
+    )
+    plan = {
+        "pr": pr_number,
+        "task_id": task_ids[0] if len(task_ids) == 1 else task_ids,
+        "head_sha": pr_info.head_sha,
+        "team_class": team_class,
+        "quorum_required": constitution.quorum_required,
+        "writer_family": writer_family,
+        "seats": [{"id": seat.id, "family": seat.family} for seat in constitution.seats],
+        "lenses": list(lenses),
+        "constitution_notes": list(constitution.notes),
+    }
+
+    admission_now = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+    if admission_now.tzinfo is None:
+        admission_now = admission_now.replace(tzinfo=UTC)
+    computed_policy_sources: DispatchPolicySources | None = None
+    computed_seat_admissions: dict[str, list[dict[str, Any]]] | None = None
+    computed_admission_probe_result: GlmcpAdmissionProbeResult | None = None
+
+    def compute_current_seat_admissions() -> dict[str, list[dict[str, Any]]]:
+        nonlocal computed_policy_sources
+        nonlocal computed_seat_admissions
+        nonlocal computed_admission_probe_result
+        if computed_seat_admissions is not None:
+            return computed_seat_admissions
+        computed_policy_sources = policy_sources or load_dispatch_policy_sources(now=admission_now)
+        computed_seat_admissions = build_review_seat_admissions(
+            constitution=constitution,
+            registry=registry,
+            keyed_matches=keyed_matches,
+            policy_sources=computed_policy_sources,
+            route_decision_ledger_dir=route_decision_ledger_dir,
+            now=admission_now,
+        )
+        if _should_probe_glmcp_admission(computed_seat_admissions, registry=registry):
+            computed_admission_probe_result = probe_glmcp_review_admission(
+                registry,
+                now=admission_now,
+                probe_runner=admission_probe_runner,
+            )
+            if computed_admission_probe_result.receipt_written:
+                refresh_quota_telemetry_for_probe()
+                computed_policy_sources = load_dispatch_policy_sources(now=admission_now)
+                computed_seat_admissions = build_review_seat_admissions(
+                    constitution=constitution,
+                    registry=registry,
+                    keyed_matches=keyed_matches,
+                    policy_sources=computed_policy_sources,
+                    route_decision_ledger_dir=route_decision_ledger_dir,
+                    now=admission_now,
+                )
+        return computed_seat_admissions
+
     if not force:
         fresh_results: list[dict[str, Any]] = []
         fresh_blockers: list[str] = []
@@ -1739,6 +1846,16 @@ def review_pr(
             )
             if blockers:
                 route_hold = _dossier_has_route_admission_hold(existing)
+                if route_hold:
+                    current_seat_admissions = compute_current_seat_admissions()
+                    current_admission_blockers = _review_seat_admission_blockers(
+                        constitution,
+                        registry,
+                        current_seat_admissions,
+                    )
+                    if not current_admission_blockers:
+                        fresh_blockers.append(f"{target_task_id}:route_hold_recovered")
+                        break
                 if (
                     str(existing.get("review_team_verdict") or "").lower() == "blocked"
                     or route_hold
@@ -1828,36 +1945,6 @@ def review_pr(
                 " | ".join(fresh_blockers),
             )
 
-    lenses = review_team.lenses_for_files(pr_info.files, registry)
-    team_class = review_team.strongest_team_class(
-        [review_team.team_class_for(fm, pr_info.files, registry) for _, fm, _ in keyed_matches]
-    )
-    assigned_lane = next(
-        (str(fm.get("assigned_to") or "") for _, fm, _ in keyed_matches if fm.get("assigned_to")),
-        "",
-    )
-    writer_family = review_team.writer_family_for_lane(assigned_lane, registry)
-    outage_witness = load_family_outage_witness(now_iso)
-    outage_families = frozenset(outage_witness)
-    if outage_families:
-        LOG.warning(
-            "family outage active (%s) — constitution may degrade (never seals)",
-            ",".join(sorted(outage_families)),
-        )
-    constitution = review_team.constitute_team(
-        team_class, writer_family, registry, pr_number=pr_number, outage_families=outage_families
-    )
-    plan = {
-        "pr": pr_number,
-        "task_id": task_ids[0] if len(task_ids) == 1 else task_ids,
-        "head_sha": pr_info.head_sha,
-        "team_class": team_class,
-        "quorum_required": constitution.quorum_required,
-        "writer_family": writer_family,
-        "seats": [{"id": seat.id, "family": seat.family} for seat in constitution.seats],
-        "lenses": list(lenses),
-        "constitution_notes": list(constitution.notes),
-    }
     if not apply:
         return {"status": "planned", "plan": plan}
 
@@ -1891,36 +1978,8 @@ def review_pr(
         )
         for seat in constitution.seats
     ]
-    admission_now = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
-    if admission_now.tzinfo is None:
-        admission_now = admission_now.replace(tzinfo=UTC)
-    policy_sources = policy_sources or load_dispatch_policy_sources(now=admission_now)
-    seat_admissions = build_review_seat_admissions(
-        constitution=constitution,
-        registry=registry,
-        keyed_matches=keyed_matches,
-        policy_sources=policy_sources,
-        route_decision_ledger_dir=route_decision_ledger_dir,
-        now=admission_now,
-    )
-    admission_probe_result: GlmcpAdmissionProbeResult | None = None
-    if _should_probe_glmcp_admission(seat_admissions, registry=registry):
-        admission_probe_result = probe_glmcp_review_admission(
-            registry,
-            now=admission_now,
-            probe_runner=admission_probe_runner,
-        )
-        if admission_probe_result.receipt_written:
-            refresh_quota_telemetry_for_probe()
-            policy_sources = load_dispatch_policy_sources(now=admission_now)
-            seat_admissions = build_review_seat_admissions(
-                constitution=constitution,
-                registry=registry,
-                keyed_matches=keyed_matches,
-                policy_sources=policy_sources,
-                route_decision_ledger_dir=route_decision_ledger_dir,
-                now=admission_now,
-            )
+    seat_admissions = compute_current_seat_admissions()
+    admission_probe_result = computed_admission_probe_result
     reviews = dispatch_reviews(
         constitution,
         prompts,

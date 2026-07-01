@@ -1269,7 +1269,7 @@ checklist:
         assert second["review_team_verdict"] == "blocked"
         assert second_reviewers.invocations == []
 
-    def test_same_head_route_hold_no_quorum_dossier_skips_without_force(
+    def test_same_head_route_hold_no_quorum_dossier_recovers_when_current_admission_green(
         self, tmp_path: Path
     ) -> None:
         vault = _make_vault(tmp_path)
@@ -1347,6 +1347,94 @@ checklist:
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T22:00:00+00:00",
             **_policy_kwargs(tmp_path, now_iso="2026-06-11T22:00:00+00:00"),
+        )
+
+        assert result["status"] == "dispatched"
+        assert result["dossier"]["review_team_verdict"] == dispatch.review_team.QUORUM_ACCEPT
+        assert reviewers.invocations
+
+    def test_same_head_route_hold_no_quorum_dossier_stays_blocked_when_current_admission_held(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault)
+        dossier_path = dispatch.review_team.review_dossier_path(note, "task-a")
+        dossier = {
+            "dossier_schema": 1,
+            "task_id": "task-a",
+            "pr": 42,
+            "head_sha": "c" * 40,
+            "team_class": "t2_standard",
+            "quorum_required": 2,
+            "constituted_at": "2026-06-11T21:00:00+00:00",
+            "registry_id": "review-lenses",
+            "registry_declared_at": "2026-06-11T00:00:00Z",
+            "writer_family": "claude",
+            "constitution_writer_family": "claude",
+            "changed_file_count": 2,
+            "changed_files": ["shared/foo.py", "tests/test_foo.py"],
+            "constitution_notes": [],
+            "route_admission_required": True,
+            "lenses": [
+                "tests-cover-the-diff",
+                "exit-predicate-adequacy",
+                "doc-claims-recheck",
+            ],
+            "reviewers": [
+                {
+                    "id": "codex-1",
+                    "family": "codex",
+                    "route_id": "codex.headless.full",
+                    "verdict": "reviewer-route-unavailable",
+                    "findings": [],
+                    "checklist": {},
+                    "route_admissions": [
+                        {
+                            "route_admission_schema": 1,
+                            "seat_id": "codex-1",
+                            "family": "codex",
+                            "task_id": "task-a",
+                            "route_id": "codex.headless.full",
+                            "route_decision_id": "route-decision-held",
+                            "route_policy_action": "hold",
+                            "route_policy_launch_allowed": False,
+                            "route_policy_green": False,
+                            "route_policy_registry_freshness_green": True,
+                            "route_policy_quota_freshness_green": False,
+                            "route_policy_quota_evidence_refs": [
+                                "relay-receipt:codex:quota:absent"
+                            ],
+                            "route_policy_resource_freshness_green": True,
+                            "route_policy_resource_state_refs": ["test:resource"],
+                            "admitted": False,
+                            "blocked_reasons": ["subscription_route_quota_not_fresh"],
+                        }
+                    ],
+                }
+            ],
+            "escalations": [],
+            "accept_count": 0,
+            "review_team_verdict": "no-quorum",
+        }
+        dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
+
+        reviewers = RecordingReviewers()
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            policy_sources=_admitted_policy_sources(
+                now_iso="2026-06-11T22:00:00+00:00",
+                omit_quota_for={"codex.headless.full"},
+            ),
+            route_decision_ledger_dir=tmp_path / "route-ledger",
         )
 
         assert result["status"] == "skipped_blocked"
@@ -2631,6 +2719,8 @@ class TestFamilyOutageDegradation:
 
         assert calls["count"] == 0
         assert reviews[0]["verdict"] == "reviewer-route-unavailable"
+        assert reviews[0]["provider_invoked"] is False
+        assert "route_decision_missing" in reviews[0]["route_admission_diagnostic"]
         assert "route_decision_missing" in reviews[0]["raw_reply_excerpt"]
         dispatch.update_family_outage(reviews, "2026-06-12T21:00:00+00:00")
         recorded = json.loads(state.read_text(encoding="utf-8"))
