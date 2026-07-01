@@ -2484,6 +2484,46 @@ class TestFamilyOutageDegradation:
         assert "gemini" in {family for _, family, _ in reviewers.invocations}
         assert "degraded_family_outage:gemini" not in result["plan"]["constitution_notes"]
 
+    def test_legacy_unscoped_outage_yields_to_current_route_hold(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-12T21:00:00+00:00"
+        state.write_text(json.dumps({"gemini": now}), encoding="utf-8")
+
+        result, _, reviewers, note = _review(
+            tmp_path,
+            now_iso=now,
+            task_kwargs={"risk_tier": "T1"},
+            gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
+            policy_sources=_admitted_policy_sources(
+                now_iso=now,
+                omit_quota_for={"antigrav.interactive.full"},
+            ),
+        )
+
+        gemini_reviews = [
+            review for review in result["dossier"]["reviewers"] if review["family"] == "gemini"
+        ]
+        assert gemini_reviews
+        assert gemini_reviews[0]["verdict"] == "reviewer-route-unavailable"
+        assert not any(family == "gemini" for _, family, _ in reviewers.invocations)
+        assert "degraded_family_outage:gemini" not in result["plan"]["constitution_notes"]
+        blockers = dispatch.review_team.review_dossier_validity_blockers(
+            _task_frontmatter(note),
+            note,
+            pr_head_sha="c" * 40,
+            pr_number=42,
+            changed_files=("shared/foo.py", "tests/test_foo.py"),
+            changed_file_count=2,
+            outage_state_path=state,
+            admission_time=now,
+        )
+        assert not any(
+            blocker.startswith("review_dossier_degradation_unwitnessed:gemini")
+            for blocker in blockers
+        )
+
     def test_structured_outage_still_degrades_even_when_route_admits(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:

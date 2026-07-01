@@ -307,13 +307,13 @@ def filter_outage_witness_for_current_routes(
     route_decision_ledger_dir: Path | None,
     now: datetime,
 ) -> dict[str, str]:
-    """Drop stale legacy outage entries contradicted by current route admission.
+    """Drop outage entries that cannot validate against the current route.
 
     Structured quota/provider outage evidence remains load-bearing for the TTL:
-    route admission can be green while the provider is still quota-walled. Legacy
-    and unscoped entries, however, are not strong enough to suppress a family
-    once the current concrete reviewer route has fresh route/quota/resource
-    admission for all linked tasks.
+    route admission can be green while the provider is still quota-walled.
+    Legacy and unscoped entries, however, are not strong enough to suppress a
+    family because the review-team verifier requires the outage witness to bind
+    the concrete route that was degraded.
     """
 
     filtered_entries = filter_outage_entries_for_current_routes(
@@ -349,27 +349,13 @@ def filter_outage_entries_for_current_routes(
         if observed_at is None:
             continue
         family_cfg = family_cfgs.get(family)
-        if (
-            family_cfg is not None
-            and _outage_entry_is_legacy_or_unscoped(
-                entry,
-                route_id=str(family_cfg.get("route_id") or "").strip() or None,
-            )
-            and all(
-                _route_admission_is_current(admission)
-                for admission in _admit_review_family_for_current_tasks(
-                    family=family,
-                    family_cfg=family_cfg,
-                    keyed_matches=keyed_matches,
-                    policy_sources=policy_sources,
-                    route_decision_ledger_dir=route_decision_ledger_dir,
-                    now=now,
-                )
-            )
+        if _outage_entry_is_legacy_or_unscoped(
+            entry,
+            route_id=str((family_cfg or {}).get("route_id") or "").strip() or None,
         ):
             LOG.warning(
-                "family outage witness for %s ignored: legacy/unscoped entry contradicted "
-                "by current route admission",
+                "family outage witness for %s ignored: legacy/unscoped entry lacks current "
+                "route binding",
                 family,
             )
             continue
