@@ -728,6 +728,70 @@ def test_claim_stamp_ignores_body_decoy_lines(tmp_path: Path) -> None:
     assert "claimed_at: 1999-01-01T00:00:00Z" in text
 
 
+def test_claim_writes_task_bound_epoch_sidecar(tmp_path: Path) -> None:
+    """cc-claim records `<epoch> <task_id>` in the cc-claim-epoch sidecar so
+    task_is_terminal has a heartbeat-immune, task-bound claim-age witness."""
+    home = tmp_path / "home"
+    _write_task(home, "active", "cc-sidecar")
+
+    result = _claim(home, "cc-sidecar")
+
+    assert result.returncode == 0, result.stderr
+    sidecar = home / ".cache" / "hapax" / "cc-claim-epoch-cx-test"
+    assert sidecar.exists()
+    epoch, _, task = sidecar.read_text(encoding="utf-8").strip().partition(" ")
+    assert epoch.isdigit()
+    assert task == "cc-sidecar"
+
+
+def test_claim_refuses_duplicate_claim_keys(tmp_path: Path) -> None:
+    """Duplicate claim keys are fail-closed: re.sub stamps only the FIRST
+    occurrence while YAML consumers treat the LAST as authoritative — the
+    combination would leave a ghost-claimable note behind a written cache."""
+    home = tmp_path / "home"
+    root = _task_root(home)
+    task_id = "cc-duplicate-keys"
+    path = root / "active" / f"{task_id}.md"
+    path.write_text(
+        textwrap.dedent(
+            f"""\
+            ---
+            type: cc-task
+            task_id: {task_id}
+            title: "{task_id}"
+            status: offered
+            assigned_to: unassigned
+            kind: build
+            authority_case: CASE-TEST-001
+            parent_spec: /tmp/isap-test.md
+            quality_floor: frontier_required
+            mutation_surface: source
+            authority_level: authoritative
+            route_metadata_schema: 1
+            depends_on: []
+            created_at: 2026-05-09T00:00:00Z
+            updated_at: 2026-05-09T00:00:00Z
+            claimed_at: null
+            claimed_at: null
+            ---
+
+            # {task_id}
+
+            ## Session log
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = _claim(home, task_id)
+
+    assert result.returncode != 0
+    assert "duplicate frontmatter keys" in result.stderr
+    cache_dir = home / ".cache" / "hapax"
+    leaked = list(cache_dir.glob("cc-active-task-*")) if cache_dir.exists() else []
+    assert leaked == [], f"claim caches must not be written for a duplicate-key note: {leaked}"
+
+
 def test_claim_refuses_note_without_closing_frontmatter(tmp_path: Path) -> None:
     """An unstampable note must fail loudly WITHOUT writing claim caches —
     the no-cache-on-failure guarantee is the load-bearing fail-closed

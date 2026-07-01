@@ -890,16 +890,18 @@ def _run_task_is_terminal(
     note_pr: int | None = None,
     gh_state: str = "",
     legacy_cache: bool = False,
+    sidecar_task: str | None = None,
 ) -> int:
     """Extract task_is_terminal() from the launcher and drive it with fixtures.
 
     Returns the bash exit code: 0 = terminal (lane reaped), 1 = live.
 
-    ``cache_age_s`` ages the claim EPOCH recorded in the ``cc-claim-epoch-*``
-    sidecar while the claim file's mtime stays fresh — deliberately
-    simulating the cc-task-gate lease-keep-alive ``touch`` that makes mtime
-    useless as a claim-age witness. ``legacy_cache`` writes no sidecar (the
-    mtime fallback path), aged via utime instead.
+    ``cache_age_s`` ages the claim EPOCH recorded in the task-bound
+    ``cc-claim-epoch-*`` sidecar while the claim file's mtime stays fresh —
+    deliberately simulating the cc-task-gate lease-keep-alive ``touch`` that
+    makes mtime useless as a claim-age witness. ``legacy_cache`` writes no
+    sidecar (non-conforming-writer shape). ``sidecar_task`` overrides the
+    task id recorded in the sidecar (stale-sidecar shape).
     """
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
@@ -921,7 +923,8 @@ def _run_task_is_terminal(
                 os.utime(claim_file, (aged, aged))
         else:
             epoch = int(time.time()) - cache_age_s
-            sidecar.write_text(f"{epoch}\n", encoding="utf-8")
+            bound_task = sidecar_task if sidecar_task is not None else cache_task
+            sidecar.write_text(f"{epoch} {bound_task}\n", encoding="utf-8")
     text = SCRIPT.read_text(encoding="utf-8")
     start = text.index("task_is_terminal()")
     end = text.index("\n}\n", start) + 3
@@ -989,25 +992,31 @@ def test_terminal_check_reaps_long_unassigned_despite_gate_heartbeat(
     assert rc == 0
 
 
-def test_terminal_check_legacy_cache_falls_back_to_mtime(tmp_path: Path) -> None:
-    """Pre-epoch single-line caches keep working via the mtime fallback."""
-    live = _run_task_is_terminal(
+def test_terminal_check_reaps_sidecarless_cache(tmp_path: Path) -> None:
+    """No mtime fallback: mtime is heartbeat-refreshed by the gate, so a
+    matching cache with NO sidecar (non-conforming writer) reaps in the
+    unassigned-drift shape rather than living unbounded."""
+    rc = _run_task_is_terminal(
         tmp_path,
         cache_task="task-under-test",
         note_status="offered",
         note_assigned="unassigned",
         legacy_cache=True,
     )
-    assert live == 1
-    reaped = _run_task_is_terminal(
+    assert rc == 0
+
+
+def test_terminal_check_ignores_stale_sidecar_bound_to_other_task(tmp_path: Path) -> None:
+    """A sidecar naming a DIFFERENT task (stale leftover from an earlier
+    claim) must not vouch for this claim — the lane reaps."""
+    rc = _run_task_is_terminal(
         tmp_path,
         cache_task="task-under-test",
         note_status="offered",
         note_assigned="unassigned",
-        cache_age_s=3600,
-        legacy_cache=True,
+        sidecar_task="an-earlier-task",
     )
-    assert reaped == 0
+    assert rc == 0
 
 
 def test_terminal_check_reaps_when_cache_repointed(tmp_path: Path) -> None:

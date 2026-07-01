@@ -377,22 +377,24 @@ task_is_terminal() {
     fi
     # Freshness must be HEARTBEAT-IMMUNE: the gate touches the claim file
     # before its checks (lease keep-alive), so mtime is refreshed even by a
-    # lane whose writes the gate then blocks. Prefer the claim epoch cc-claim
-    # records in the `cc-claim-epoch-*` sidecar (a distinct prefix, outside
-    # every cc-active-task-* glob and never touched by the gate); fall back
-    # to mtime only for legacy caches written before the sidecar existed.
+    # lane whose writes the gate then blocks — mtime can NEVER witness claim
+    # age here, so there is deliberately no mtime fallback. The claim epoch
+    # comes from the `cc-claim-epoch-*` sidecar (distinct prefix: outside
+    # every cc-active-task-* glob, never gate-touched), and only counts when
+    # its recorded task id matches this claim — a stale sidecar left by an
+    # earlier claim cannot age a fresh materialized cache. Both cc-claim and
+    # the remote-exec claim materializer write the sidecar; a matching cache
+    # with NO valid sidecar is a non-conforming writer and reaps.
     local _stamp_grace="${HAPAX_CLAIM_STAMP_GRACE_S:-900}" _cache_age=-1
-    local _claim_epoch="" _cache_mtime=0 _epoch_file=""
+    local _epoch_line="" _claim_epoch="" _epoch_task="" _epoch_file=""
     if [[ "$claimed" == "$task" && -n "$claim_file_used" ]]; then
       _epoch_file="${claim_file_used/cc-active-task/cc-claim-epoch}"
-      _claim_epoch="$(head -n1 "$_epoch_file" 2>/dev/null | tr -d '[:space:]' || true)"
-      if [[ "$_claim_epoch" =~ ^[0-9]+$ ]]; then
+      _epoch_line="$(head -n1 "$_epoch_file" 2>/dev/null || true)"
+      _claim_epoch="${_epoch_line%% *}"
+      _epoch_task="${_epoch_line#* }"
+      _epoch_task="$(printf '%s' "$_epoch_task" | tr -d '[:space:]')"
+      if [[ "$_claim_epoch" =~ ^[0-9]+$ && "$_epoch_task" == "$task" ]]; then
         _cache_age=$(( $(date +%s) - _claim_epoch ))
-      else
-        _cache_mtime="$(stat -c %Y "$claim_file_used" 2>/dev/null || echo 0)"
-        if (( _cache_mtime > 0 )); then
-          _cache_age=$(( $(date +%s) - _cache_mtime ))
-        fi
       fi
     fi
     if [[ "$claimed" == "$task" ]] && (( _cache_age >= 0 && _cache_age <= _stamp_grace )); then
@@ -524,8 +526,16 @@ try:
         os.makedirs(cache,exist_ok=True)
         open(os.path.join(cache,"session-role-"+sid),"w",encoding="utf-8").write(role+"\n")
         if task:
+            import time as _time
+            epoch_line=str(int(_time.time()))+" "+task+"\n"
             open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
             open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
+            # Keep the task-bound epoch sidecars in step with the caches:
+            # task_is_terminal trusts a sidecar only when it names this task,
+            # so a materialized cache without one would look age-unknown and
+            # reap in the unassigned-drift shape.
+            open(os.path.join(cache,"cc-claim-epoch-"+role),"w",encoding="utf-8").write(epoch_line)
+            open(os.path.join(cache,"cc-claim-epoch-"+role+"-"+sid),"w",encoding="utf-8").write(epoch_line)
             materialized=True
 except Exception:
     pass
