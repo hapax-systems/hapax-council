@@ -73,7 +73,7 @@ def _admission(
     return BackgroundCapabilityAdmission(
         capability_name="studio.director.llm",
         route_id=route_id,
-        model_alias="local-fast",
+        model_alias="command-r-08-2024",
         admitted=admitted,
         denied_reason=None if admitted else "route_policy_denied",
         reason_codes=("policy_launch",) if admitted else ("director_route_model_mismatch",),
@@ -132,6 +132,22 @@ class TestSingleFlightLock:
         assert kwargs["model_alias"] == "claude-sonnet"
         assert kwargs["mutation_surface"] == "provider_spend"
         assert kwargs["quality_floor"] == "frontier_required"
+
+    def test_director_local_alias_resolves_to_registered_leaf(self, monkeypatch) -> None:
+        monkeypatch.delenv(dl_mod.DIRECTOR_LLM_ROUTE_ID_ENV, raising=False)
+        with (
+            patch.object(dl_mod, "DIRECTOR_MODEL", "local-fast"),
+            patch.object(dl_mod, "admit_background_capability") as mock_admit,
+        ):
+            mock_admit.return_value = _admission()
+            admission = dl_mod._admit_director_llm()
+
+        assert admission.admitted is True
+        kwargs = mock_admit.call_args.kwargs
+        assert kwargs["route_id"] == "local_tool.local.worker"
+        assert kwargs["model_alias"] == "command-r-08-2024"
+        assert kwargs["mutation_surface"] == "none"
+        assert kwargs["quality_floor"] == "deterministic_ok"
 
     def test_director_route_model_mismatch_fails_closed(self, monkeypatch) -> None:
         monkeypatch.setenv(dl_mod.DIRECTOR_LLM_ROUTE_ID_ENV, "local_tool.local.worker")

@@ -463,7 +463,7 @@ def test_local_worker_model_call_refuses_mismatched_served_leaf(tmp_path: Path) 
     assert "command-r-08-2024" in (admission.denied_reason or "")
 
 
-def test_local_worker_admits_registered_local_fast_alias_to_policy(tmp_path: Path) -> None:
+def test_local_worker_refuses_unbound_local_fast_alias(tmp_path: Path) -> None:
     admission = admit_background_capability(
         capability_name="studio.director.llm",
         route_id="local_tool.local.worker",
@@ -479,9 +479,32 @@ def test_local_worker_admits_registered_local_fast_alias_to_policy(tmp_path: Pat
     )
 
     assert admission.admitted is False
-    assert admission.policy_outcome is not None
-    assert admission.reason_codes != ("model_descriptor_mismatch",)
-    assert admission.model_descriptor["execution_descriptor"]["model_id"] == "command-r-08-2024"
+    assert admission.policy_outcome is None
+    assert admission.reason_codes == ("model_descriptor_mismatch",)
+    assert "requested_model=local-fast" in (admission.denied_reason or "")
+    assert "command-r-08-2024" in (admission.denied_reason or "")
+
+
+def test_background_admission_refuses_unregistered_route_with_model_alias(tmp_path: Path) -> None:
+    admission = admit_background_capability(
+        capability_name="studio.scene_classifier.llm",
+        route_id="api.headless.missing",
+        model_alias="gemini-flash",
+        task_fields=_provider_task_fields(),
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is False
+    assert admission.policy_outcome is None
+    assert admission.reason_codes == ("model_route_unregistered",)
+    assert admission.denied_reason == (
+        "model_route_unregistered:route=api.headless.missing model=gemini-flash"
+    )
 
 
 def test_background_admission_refuses_invalid_route_id(tmp_path: Path) -> None:

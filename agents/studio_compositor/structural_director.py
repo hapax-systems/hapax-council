@@ -49,8 +49,9 @@ _STRUCTURAL_INTENT_JSONL = Path(
 _ACTION_RECEIPTS_JSONL = Path("/dev/shm/hapax-compositor/action-receipts.jsonl")
 STRUCTURAL_MODEL_ENV = "HAPAX_STRUCTURAL_MODEL"
 STRUCTURAL_LLM_ROUTE_ID_ENV = "HAPAX_STRUCTURAL_LLM_ROUTE_ID"
+STRUCTURAL_LOCAL_MODEL_ALIASES: frozenset[str] = frozenset({"local-fast"})
 STRUCTURAL_LOCAL_MODEL_IDS: frozenset[str] = frozenset(
-    {"local-fast", "appendix-fast", "local-research-instruct", "command-r-08-2024"}
+    {"appendix-fast", "local-research-instruct", "command-r-08-2024"}
 )
 
 SceneMode = Literal[
@@ -524,6 +525,8 @@ def _admit_structural_llm(model_alias: str) -> BackgroundCapabilityAdmission:
 
 
 def _resolved_structural_model(model_alias: str) -> str:
+    if model_alias in STRUCTURAL_LOCAL_MODEL_ALIASES:
+        return "command-r-08-2024"
     return MODELS.get(model_alias, model_alias)
 
 

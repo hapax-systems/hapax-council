@@ -145,7 +145,7 @@ class TestDefaultLlmBackpressure:
             lambda _model: BackgroundCapabilityAdmission(
                 capability_name="studio.structural_director.llm",
                 route_id="local_tool.local.worker",
-                model_alias="local-fast",
+                model_alias="command-r-08-2024",
                 admitted=False,
                 denied_reason="test_denied",
                 reason_codes=("test_denied",),
@@ -211,7 +211,7 @@ class TestDefaultLlmBackpressure:
             lambda _model: BackgroundCapabilityAdmission(
                 capability_name="studio.structural_director.llm",
                 route_id="local_tool.local.worker",
-                model_alias="local-fast",
+                model_alias="command-r-08-2024",
                 admitted=True,
                 mutation_surface="none",
                 quality_floor="deterministic_ok",
@@ -225,6 +225,28 @@ class TestDefaultLlmBackpressure:
 
         assert dl_mod._DIRECTOR_LLM_LOCK.acquire(blocking=False)
         dl_mod._DIRECTOR_LLM_LOCK.release()
+
+    def test_structural_local_alias_resolves_to_registered_leaf(self, monkeypatch):
+        monkeypatch.delenv(sd.STRUCTURAL_LLM_ROUTE_ID_ENV, raising=False)
+        with patch(
+            "agents.studio_compositor.structural_director.admit_background_capability"
+        ) as gate:
+            gate.return_value = BackgroundCapabilityAdmission(
+                capability_name="studio.structural_director.llm",
+                route_id="local_tool.local.worker",
+                model_alias="command-r-08-2024",
+                admitted=True,
+                mutation_surface="none",
+                quality_floor="deterministic_ok",
+            )
+            admission = sd._admit_structural_llm("local-fast")
+
+        assert admission.admitted is True
+        kwargs = gate.call_args.kwargs
+        assert kwargs["route_id"] == "local_tool.local.worker"
+        assert kwargs["model_alias"] == "command-r-08-2024"
+        assert kwargs["mutation_surface"] == "none"
+        assert kwargs["quality_floor"] == "deterministic_ok"
 
     def test_tick_once_catches_default_llm_timeout(self):
         director = sd.StructuralDirector(

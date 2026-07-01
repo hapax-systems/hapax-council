@@ -822,8 +822,9 @@ LITELLM_URL = "http://localhost:4000/v1/chat/completions"
 # the director strips images before the call.
 DIRECTOR_MODEL = os.environ.get("HAPAX_DIRECTOR_MODEL", "local-fast")
 DIRECTOR_LLM_ROUTE_ID_ENV = "HAPAX_DIRECTOR_LLM_ROUTE_ID"
+DIRECTOR_LOCAL_MODEL_ALIASES: frozenset[str] = frozenset({"local-fast"})
 DIRECTOR_LOCAL_MODEL_IDS: frozenset[str] = frozenset(
-    {"local-fast", "appendix-fast", "local-research-instruct", "command-r-08-2024"}
+    {"appendix-fast", "local-research-instruct", "command-r-08-2024"}
 )
 
 # Director watchdog Phase 2 (§8.2): process-wide single-flight lock keyed on
@@ -895,6 +896,8 @@ def _admit_director_llm():
 
 
 def _resolved_director_model(model_alias: str) -> str:
+    if model_alias in DIRECTOR_LOCAL_MODEL_ALIASES:
+        return "command-r-08-2024"
     return MODELS.get(model_alias, model_alias)
 
 

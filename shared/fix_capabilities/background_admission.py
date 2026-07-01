@@ -56,9 +56,6 @@ _AUTHORITY_LEVEL_ORDER: dict[str, int] = {
 
 _ACTIVE_TASK_STATUSES: frozenset[str] = frozenset({"claimed", "in_progress", "pr_open"})
 _UNASSIGNED_VALUES: frozenset[str] = frozenset({"", "null", "none", "unassigned"})
-_ROUTE_MODEL_ALIASES: dict[str, frozenset[str]] = {
-    "local_tool.local.worker": frozenset({"local-fast"}),
-}
 
 
 @dataclass(frozen=True)
@@ -617,13 +614,15 @@ def _model_binding_blocker(
         )
     route = registry.route_map().get(normalize_route_id(route_id))
     if route is None:
-        return None
+        return (
+            f"model_route_unregistered:route={route_id} model={requested}",
+            "model_route_unregistered",
+        )
     descriptor = route.execution_descriptor
     allowed = {
         str(route.model_or_engine or "").strip(),
         str(descriptor.model_id).strip(),
     }
-    allowed.update(_ROUTE_MODEL_ALIASES.get(normalize_route_id(route_id), frozenset()))
     model_fingerprint = getattr(descriptor, "model_fingerprint", None)
     if model_fingerprint is not None:
         allowed.add(str(model_fingerprint).strip())
