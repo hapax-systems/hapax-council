@@ -543,13 +543,18 @@ def _surface_delta_route_index(
     blockers: dict[str, list[str]] = {}
     for delta in producer_file.deltas:
         delta_ref = _surface_delta_ref(delta)
-        route_keys = _surface_delta_route_keys(delta, descriptor_keys_by_ref_frozen)
+        route_keys, dispatch_keys = _surface_delta_route_key_sets(
+            delta,
+            descriptor_keys_by_ref_frozen,
+        )
         if (
             known_routes is not None
             and not delta.allows_demand_fulfillment()
-            and not (_surface_delta_dispatch_lookup_keys(route_keys) & known_routes)
+            and not (dispatch_keys & known_routes)
         ):
-            route_keys = tuple(sorted({*route_keys, GLOBAL_SURFACE_DELTA_ROUTE_KEY}))
+            route_keys.add(GLOBAL_SURFACE_DELTA_ROUTE_KEY)
+        if known_routes is None and not delta.allows_demand_fulfillment() and not dispatch_keys:
+            route_keys.add(GLOBAL_SURFACE_DELTA_ROUTE_KEY)
         for key in route_keys:
             refs.setdefault(key, []).append(delta_ref)
             if not delta.allows_demand_fulfillment():
@@ -583,10 +588,10 @@ def _surface_delta_descriptor_route_keys(descriptor: Any) -> tuple[str, ...]:
     return tuple(sorted(keys))
 
 
-def _surface_delta_route_keys(
+def _surface_delta_route_key_sets(
     delta: CapabilitySurfaceDelta,
     descriptor_keys_by_ref: Mapping[str, Sequence[str]],
-) -> tuple[str, ...]:
+) -> tuple[set[str], set[str]]:
     keys = {delta.surface_id}
     dispatch_keys: set[str] = set()
     if delta.surface_id.startswith("route."):
@@ -607,9 +612,7 @@ def _surface_delta_route_keys(
         join_ref(delta.observed_descriptor_ref)
     for evidence_ref in delta.evidence_refs:
         join_ref(evidence_ref)
-    if not delta.allows_demand_fulfillment() and not dispatch_keys:
-        keys.add(GLOBAL_SURFACE_DELTA_ROUTE_KEY)
-    return tuple(sorted(keys))
+    return keys, dispatch_keys
 
 
 def _surface_delta_dispatch_lookup_keys(keys: Sequence[str]) -> set[str]:
