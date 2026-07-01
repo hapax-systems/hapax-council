@@ -544,10 +544,15 @@ fi
 
 PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=()
 GATE_CLOSURE=()
+# Must stay a superset of hooks-doctor's CLOSURE_SIBLINGS (+ the impl):
+# deploy_canonical REFUSES an incomplete staged closure, so a missing sibling
+# here would make every drift redeploy fail (and, under set -e, kill the
+# whole post-merge deploy) until the drift resolved itself.
 GATE_CLOSURE_FILES=(
     hooks/scripts/cc-task-gate.impl.sh
     hooks/scripts/agent-role.sh
     hooks/scripts/escape-grant.sh
+    hooks/scripts/hapax_check_enable_latch.sh
     hooks/scripts/cc-task-gate-bootstrap.py
     hooks/scripts/hooks-doctor.sh
 )

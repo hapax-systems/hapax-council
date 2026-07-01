@@ -2078,7 +2078,7 @@ fi
 : "${HAPAX_CANONICAL_HOOKS:?}"
 mkdir -p "$HAPAX_CANONICAL_HOOKS"
 cp "$from/hooks/scripts/cc-task-gate.impl.sh" "$HAPAX_CANONICAL_HOOKS/cc-task-gate.sh"
-for sibling in agent-role.sh escape-grant.sh cc-task-gate-bootstrap.py hooks-doctor.sh; do
+for sibling in agent-role.sh escape-grant.sh hapax_check_enable_latch.sh cc-task-gate-bootstrap.py hooks-doctor.sh; do
     cp "$from/hooks/scripts/$sibling" "$HAPAX_CANONICAL_HOOKS/$sibling"
 done
 """
@@ -2091,6 +2091,7 @@ def _gate_closure_bodies() -> dict[str, str]:
         ),
         "hooks/scripts/agent-role.sh": "#!/usr/bin/env bash\necho agent-role\n",
         "hooks/scripts/escape-grant.sh": "#!/usr/bin/env bash\necho escape-grant\n",
+        "hooks/scripts/hapax_check_enable_latch.sh": ("#!/usr/bin/env bash\necho enable-latch\n"),
         "hooks/scripts/cc-task-gate-bootstrap.py": "print('bootstrap')\n",
         "hooks/scripts/hooks-doctor.sh": _fake_hooks_doctor(),
     }
@@ -2138,6 +2139,7 @@ def _seed_canonical_gate(repo: Path, canon: Path, *, stale: bool) -> None:
     for sibling in (
         "agent-role.sh",
         "escape-grant.sh",
+        "hapax_check_enable_latch.sh",
         "cc-task-gate-bootstrap.py",
         "hooks-doctor.sh",
     ):
@@ -2265,6 +2267,76 @@ def test_canonical_gate_deploy_failure_does_not_stamp_last_deployed_sha(
     assert record["deploy_groups"]["canonical_gate_closure"] == [
         "hooks/scripts/cc-task-gate.impl.sh"
     ]
+
+
+def test_no_files_path_gate_deploy_failure_does_not_stamp(tmp_path: Path) -> None:
+    """The zero-files-changed path must also refuse the stamp when the gate
+    redeploy fails (set -e propagates the bare reconcile call — lock it)."""
+    repo, _ = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    _git(repo, "commit", "--allow-empty", "-m", "empty merge")
+    sha = _git(repo, "rev-parse", "HEAD")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls, fail=True)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode != 0, (result.stdout, result.stderr)
+    assert not (tmp_path / "traces" / "last-deployed-sha").exists()
+    assert (canon / "cc-task-gate.sh").read_text(encoding="utf-8") == (
+        "#!/usr/bin/env bash\necho stale\n"
+    )
+
+
+def test_reconcile_stages_complete_closure_for_real_hooks_doctor(tmp_path: Path) -> None:
+    """Contract test against the REPOSITORY hooks-doctor: deploy_canonical
+    refuses an incomplete staged closure, so the script's GATE_CLOSURE_FILES
+    must stay a superset of hooks-doctor's CLOSURE_SIBLINGS. A fake doctor
+    with a shortened list would hide exactly that regression."""
+    real_doctor = (REPO_ROOT / "hooks" / "scripts" / "hooks-doctor.sh").read_text(encoding="utf-8")
+    bodies = _gate_closure_bodies()
+    bodies["hooks/scripts/hooks-doctor.sh"] = real_doctor
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    for relative, body in bodies.items():
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base with real-doctor gate closure")
+    (repo / "docs.md").write_text("docs only\n", encoding="utf-8")
+    _git(repo, "add", "docs.md")
+    _git(repo, "commit", "-m", "docs only")
+    sha = _git(repo, "rev-parse", "HEAD")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    deployed = (canon / "cc-task-gate.sh").read_text(encoding="utf-8")
+    assert "is_cognition_path" in deployed, "real hooks-doctor must accept the staged closure"
+    assert (canon / "hapax_check_enable_latch.sh").exists()
 
 
 def test_check_symlink_drift_ignores_legacy_alias_to_nonmatching_script(
