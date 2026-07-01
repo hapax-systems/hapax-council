@@ -910,6 +910,40 @@ def test_build_dispatch_request_populates_surface_delta_blockers_from_policy_sou
     assert any("test:pending-codex-delta" in reason for reason in decision.reason_codes)
 
 
+def test_malformed_surface_delta_policy_source_fails_closed_for_routes(
+    tmp_path: Path,
+) -> None:
+    surface_delta_path = tmp_path / "malformed-surface-deltas.json"
+    surface_delta_path.write_text("{not json", encoding="utf-8")
+
+    sources = load_dispatch_policy_sources(
+        registry_path=None,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        surface_delta_path=surface_delta_path,
+        now=NOW,
+    )
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        quota_ledger=sources.quota_ledger,
+        surface_delta_refs_by_route=sources.surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=sources.surface_delta_blockers_by_route,
+        now=NOW,
+    )
+
+    assert request.capability is not None
+    assert request.capability.surface_delta_blockers
+    decision = evaluate_dispatch_policy(request, now=NOW)
+    assert decision.action is DispatchAction.HOLD
+    assert "capability_surface_delta_pending" in decision.reason_codes
+    assert any("producer_file" in reason for reason in decision.reason_codes)
+
+
 def test_unsupported_routes_refuse() -> None:
     request = _request(
         route_id="codex.headless.unknown",

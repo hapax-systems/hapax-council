@@ -168,6 +168,7 @@
           "then": {
             "properties": {
               "prior_descriptor_ref": {"type": "null"},
+              "observed_descriptor_ref": {"type": "string", "minLength": 1},
               "freshness_state": {"const": "delta_pending"},
               "required_intake_action": {"const": "mint_intake_item"},
               "remediation_ref": {"type": "string", "minLength": 1}
@@ -192,6 +193,8 @@
           },
           "then": {
             "properties": {
+              "prior_descriptor_ref": {"type": "string", "minLength": 1},
+              "observed_descriptor_ref": {"type": "string", "minLength": 1},
               "freshness_state": {"const": "delta_pending"},
               "required_intake_action": {
                 "enum": ["update_descriptor", "mint_intake_item", "quarantine_surface"]
@@ -204,6 +207,8 @@
           "if": {"properties": {"delta_kind": {"const": "stale_determination"}}},
           "then": {
             "properties": {
+              "prior_descriptor_ref": {"type": "string", "minLength": 1},
+              "observed_descriptor_ref": {"type": "string", "minLength": 1},
               "freshness_state": {"const": "stale"},
               "required_intake_action": {"const": "refresh_receipt"},
               "remediation_ref": {"type": "string", "minLength": 1}
@@ -214,8 +219,12 @@
           "if": {"properties": {"delta_kind": {"const": "absent_determination"}}},
           "then": {
             "properties": {
+              "prior_descriptor_ref": {"type": "string", "minLength": 1},
               "observed_descriptor_ref": {"type": "null"},
               "freshness_state": {"const": "absent"},
+              "required_intake_action": {
+                "enum": ["mint_intake_item", "quarantine_surface"]
+              },
               "remediation_ref": {"type": "string", "minLength": 1}
             }
           }

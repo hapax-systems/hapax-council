@@ -15,6 +15,7 @@ from shared.capability_surface_delta import (
     SurfaceKind,
     build_surface_delta,
     detect_surface_deltas,
+    load_capability_surface_delta_file,
     load_capability_surface_delta_fixtures,
     render_capability_surface_delta_task,
     task_id_for_delta,
@@ -212,6 +213,63 @@ def test_bad_fixture_file_raises_typed_error(tmp_path) -> None:
 
     with pytest.raises(CapabilitySurfaceDeltaError):
         load_capability_surface_delta_fixtures(path)
+
+
+def test_live_producer_file_does_not_require_fixture_coverage_trio(tmp_path) -> None:
+    path = tmp_path / "producer.json"
+    path.write_text(
+        """
+{
+  "schema_version": 1,
+  "schema_ref": "schemas/capability-surface-delta.schema.json",
+  "generated_from": ["unit-test"],
+  "declared_at": "2026-07-01T04:30:00Z",
+  "descriptors": [
+    {
+      "descriptor_schema": 1,
+      "surface_id": "route.codex.headless.full",
+      "descriptor_ref": "platform-capability-registry:codex.headless.full",
+      "surface_kind": "model_route",
+      "authority_ceiling": "authoritative",
+      "observed_at": "2026-07-01T04:00:00Z",
+      "stale_after": "1h",
+      "evidence_refs": ["test:descriptor"],
+      "route_id": "codex.headless.full",
+      "resource_pools": ["subscription_quota"]
+    }
+  ],
+  "deltas": [
+    {
+      "delta_schema": 1,
+      "delta_id": "test:single-stale-codex",
+      "source": "unit-test",
+      "observed_at": "2026-07-01T04:30:00Z",
+      "detected_by": "unit-test",
+      "surface_id": "route.codex.headless.full",
+      "delta_kind": "stale_determination",
+      "prior_descriptor_ref": "platform-capability-registry:codex.headless.full",
+      "observed_descriptor_ref": "platform-capability-receipt:codex:expired",
+      "evidence_refs": ["test:expired"],
+      "authority_ceiling": "authoritative",
+      "affected_resource_pools": ["subscription_quota"],
+      "privacy_sensitive": true,
+      "public_egress": false,
+      "money_rail": false,
+      "freshness_state": "stale",
+      "required_intake_action": "refresh_receipt",
+      "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+      "summary": "single live producer row"
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    producer_file = load_capability_surface_delta_file(path)
+
+    assert producer_file.fixture_set_id is None
+    assert [delta.delta_id for delta in producer_file.deltas] == ["test:single-stale-codex"]
 
 
 def test_delta_task_render_preserves_governance_metadata() -> None:

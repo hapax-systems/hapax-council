@@ -82,3 +82,27 @@ def test_schema_rejects_descriptor_change_marked_fresh_without_action() -> None:
 
     with pytest.raises(jsonschema.ValidationError):
         _validator().validate(bad)
+
+
+def test_schema_rejects_descriptor_change_without_descriptor_refs() -> None:
+    fixtures = _json(FIXTURES)
+    bad = deepcopy(fixtures)
+    row = next(delta for delta in bad["deltas"] if delta["delta_kind"] == "authority_changed")
+    row["prior_descriptor_ref"] = None
+    row["observed_descriptor_ref"] = None
+
+    with pytest.raises(jsonschema.ValidationError):
+        _validator().validate(bad)
+
+
+def test_schema_rejects_absent_determination_without_intake_action() -> None:
+    fixtures = _json(FIXTURES)
+    bad = deepcopy(fixtures)
+    row = next(delta for delta in bad["deltas"] if delta["delta_kind"] == "stale_determination")
+    row["delta_kind"] = "absent_determination"
+    row["observed_descriptor_ref"] = None
+    row["freshness_state"] = "absent"
+    row["required_intake_action"] = "none"
+
+    with pytest.raises(jsonschema.ValidationError):
+        _validator().validate(bad)

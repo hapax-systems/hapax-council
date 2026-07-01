@@ -182,12 +182,20 @@ class CapabilitySurfaceDelta(StrictModel):
     @model_validator(mode="after")
     def _delta_contract_is_actionable(self) -> Self:
         if self.delta_kind is not DeltaKind.NEW_CAPABILITY and self.prior_descriptor_ref is None:
-            raise ValueError("non-new deltas require prior_descriptor_ref")
+            raise ValueError(
+                "non-new deltas require prior_descriptor_ref; next action: set it "
+                "to the registered descriptor/evidence ref that is being refreshed, "
+                "quarantined, or reconciled"
+            )
         if (
             self.delta_kind is not DeltaKind.ABSENT_DETERMINATION
             and self.observed_descriptor_ref is None
         ):
-            raise ValueError("non-absent deltas require observed_descriptor_ref")
+            raise ValueError(
+                "non-absent deltas require observed_descriptor_ref; next action: "
+                "set it to the observed descriptor or receipt ref, or use "
+                "absent_determination when no surface was observed"
+            )
         if self.delta_kind in {
             DeltaKind.NEW_CAPABILITY,
             DeltaKind.DESCRIPTOR_CHANGED,
@@ -203,27 +211,53 @@ class CapabilitySurfaceDelta(StrictModel):
                 RequiredIntakeAction.UPDATE_DESCRIPTOR,
                 RequiredIntakeAction.QUARANTINE_SURFACE,
             }:
-                raise ValueError("surface deltas require descriptor update or intake action")
+                raise ValueError(
+                    "surface deltas require descriptor update or intake action; "
+                    "next action: set required_intake_action to update_descriptor, "
+                    "mint_intake_item, or quarantine_surface"
+                )
             if self.freshness_state is not FreshnessState.DELTA_PENDING:
-                raise ValueError("surface deltas must be delta_pending until reconciled")
+                raise ValueError(
+                    "surface deltas must be delta_pending until reconciled; next "
+                    "action: keep freshness_state=delta_pending until the descriptor "
+                    "or intake remediation lands"
+                )
         if self.delta_kind is DeltaKind.STALE_DETERMINATION:
             if self.required_intake_action is not RequiredIntakeAction.REFRESH_RECEIPT:
-                raise ValueError("stale determinations require refresh_receipt")
+                raise ValueError(
+                    "stale determinations require refresh_receipt; next action: "
+                    "set required_intake_action=refresh_receipt and preserve the "
+                    "stale witness refs"
+                )
             if self.freshness_state is not FreshnessState.STALE:
-                raise ValueError("stale determinations require stale freshness_state")
+                raise ValueError(
+                    "stale determinations require stale freshness_state; next "
+                    "action: set freshness_state=stale until a fresh receipt exists"
+                )
         if self.delta_kind is DeltaKind.ABSENT_DETERMINATION:
             if self.required_intake_action not in {
                 RequiredIntakeAction.MINT_INTAKE_ITEM,
                 RequiredIntakeAction.QUARANTINE_SURFACE,
             }:
-                raise ValueError("absent determinations require intake or quarantine")
+                raise ValueError(
+                    "absent determinations require intake or quarantine; next "
+                    "action: set required_intake_action to mint_intake_item or "
+                    "quarantine_surface"
+                )
             if self.freshness_state is not FreshnessState.ABSENT:
-                raise ValueError("absent determinations require absent freshness_state")
+                raise ValueError(
+                    "absent determinations require absent freshness_state; next "
+                    "action: set freshness_state=absent until observation recovers"
+                )
         if (
             self.required_intake_action is not RequiredIntakeAction.NONE
             and not self.remediation_ref
         ):
-            raise ValueError("actionable deltas require remediation_ref")
+            raise ValueError(
+                "actionable deltas require remediation_ref; next action: link the "
+                "cc-task or receipt that will update, refresh, quarantine, or mint "
+                "the capability surface"
+            )
         return self
 
     def allows_demand_fulfillment(self) -> bool:
@@ -234,14 +268,18 @@ class CapabilitySurfaceDelta(StrictModel):
         )
 
 
-class CapabilitySurfaceDeltaFixtureSet(StrictModel):
+class CapabilitySurfaceDeltaFile(StrictModel):
     schema_version: Literal[1] = 1
-    fixture_set_id: str = Field(min_length=1)
+    fixture_set_id: str | None = Field(default=None, min_length=1)
     schema_ref: Literal["schemas/capability-surface-delta.schema.json"]
     generated_from: list[str] = Field(min_length=1)
     declared_at: datetime
     descriptors: list[CapabilitySurfaceDescriptor] = Field(min_length=1)
     deltas: list[CapabilitySurfaceDelta] = Field(min_length=1)
+
+
+class CapabilitySurfaceDeltaFixtureSet(CapabilitySurfaceDeltaFile):
+    fixture_set_id: str = Field(min_length=1)
 
     @model_validator(mode="after")
     def _fixtures_cover_required_cases(self) -> Self:
@@ -254,7 +292,9 @@ class CapabilitySurfaceDeltaFixtureSet(StrictModel):
         missing = required - kinds
         if missing:
             raise ValueError(
-                f"fixture deltas missing required cases: {sorted(m.value for m in missing)}"
+                "fixture deltas missing required cases; add fixture rows for "
+                f"{sorted(m.value for m in missing)} or load this file with "
+                "load_capability_surface_delta_file for live producer evidence"
             )
         return self
 
@@ -682,6 +722,16 @@ def load_capability_surface_delta_fixtures(
     except (OSError, json.JSONDecodeError, ValidationError, ValueError) as exc:
         raise CapabilitySurfaceDeltaError(
             f"invalid capability-surface delta fixtures: {exc}"
+        ) from exc
+
+
+def load_capability_surface_delta_file(path: Path) -> CapabilitySurfaceDeltaFile:
+    try:
+        return CapabilitySurfaceDeltaFile.model_validate(_load_json(path))
+    except (OSError, json.JSONDecodeError, ValidationError, ValueError) as exc:
+        raise CapabilitySurfaceDeltaError(
+            "invalid capability-surface delta producer file; repair JSON/schema "
+            f"or remove the configured producer path before routing can trust it: {exc}"
         ) from exc
 
 

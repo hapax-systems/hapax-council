@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError,
 from shared.capability_surface_delta import (
     CapabilitySurfaceDelta,
     CapabilitySurfaceDeltaError,
-    load_capability_surface_delta_fixtures,
+    load_capability_surface_delta_file,
 )
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
@@ -70,6 +70,7 @@ ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_DIRNAME = "route-authority"
 ROUTING_MODEL_VERSION = "capacity-dimensional-v1"
 CAPABILITY_SURFACE_DELTA_PATH_ENV = "HAPAX_CAPABILITY_SURFACE_DELTA_FILE"
+GLOBAL_SURFACE_DELTA_ROUTE_KEY = "__all__"
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
 UNKNOWN_OR_RISKY_PRIVACY_POSTURES = frozenset(
     {"provider_training_unknown", "public_risk", "unknown"}
@@ -453,12 +454,10 @@ def load_dispatch_policy_sources(
                 surface_delta_refs_by_route,
                 surface_delta_blockers_by_route,
             ) = _surface_delta_route_index(surface_delta_file)
-        except (CapabilitySurfaceDeltaError, OSError, ValueError):
-            # Surface deltas are a supplemental source. Malformed producer output
-            # must not make the pure policy loader crash; absence or invalidity is
-            # represented by no live blockers until a valid producer file lands.
-            surface_delta_refs_by_route = {}
-            surface_delta_blockers_by_route = {}
+        except (CapabilitySurfaceDeltaError, OSError, ValueError) as exc:
+            error_ref = _surface_delta_producer_error_ref(surface_delta_file, exc)
+            surface_delta_refs_by_route = {GLOBAL_SURFACE_DELTA_ROUTE_KEY: (error_ref,)}
+            surface_delta_blockers_by_route = {GLOBAL_SURFACE_DELTA_ROUTE_KEY: (error_ref,)}
 
     return DispatchPolicySources(
         registry=registry,
@@ -517,10 +516,10 @@ def _surface_delta_path_from_env() -> Path | None:
 def _surface_delta_route_index(
     path: Path,
 ) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
-    fixture_set = load_capability_surface_delta_fixtures(path)
+    producer_file = load_capability_surface_delta_file(path)
     refs: dict[str, list[str]] = {}
     blockers: dict[str, list[str]] = {}
-    for delta in fixture_set.deltas:
+    for delta in producer_file.deltas:
         delta_ref = _surface_delta_ref(delta)
         for key in _surface_delta_route_keys(delta):
             refs.setdefault(key, []).append(delta_ref)
@@ -529,6 +528,13 @@ def _surface_delta_route_index(
     return (
         {key: tuple(dict.fromkeys(values)) for key, values in refs.items()},
         {key: tuple(dict.fromkeys(values)) for key, values in blockers.items()},
+    )
+
+
+def _surface_delta_producer_error_ref(path: Path, exc: Exception) -> str:
+    digest = hashlib.sha256(f"{path}:{exc}".encode()).hexdigest()[:16]
+    return (
+        f"capability_surface_delta:unknown:producer_file:{path.name}:{digest}:invalid_or_unreadable"
     )
 
 
@@ -546,6 +552,17 @@ def _surface_delta_route_keys(delta: CapabilitySurfaceDelta) -> tuple[str, ...]:
     if delta.observed_descriptor_ref:
         keys.add(delta.observed_descriptor_ref)
     return tuple(sorted(keys))
+
+
+def _surface_delta_values_for_route(
+    mapping: Mapping[str, Sequence[str]] | None,
+    route_id: str,
+) -> tuple[str, ...]:
+    if not mapping:
+        return ()
+    route_values = tuple(mapping.get(route_id, ()))
+    global_values = tuple(mapping.get(GLOBAL_SURFACE_DELTA_ROUTE_KEY, ()))
+    return tuple(dict.fromkeys((*route_values, *global_values)))
 
 
 def build_dispatch_request(
@@ -2091,9 +2108,13 @@ def _capability_state(
         route,
         freshness.ok,
         freshness.errors,
-        surface_delta_refs=tuple((surface_delta_refs_by_route or {}).get(normalized_route_id, ())),
-        surface_delta_blockers=tuple(
-            (surface_delta_blockers_by_route or {}).get(normalized_route_id, ())
+        surface_delta_refs=_surface_delta_values_for_route(
+            surface_delta_refs_by_route,
+            normalized_route_id,
+        ),
+        surface_delta_blockers=_surface_delta_values_for_route(
+            surface_delta_blockers_by_route,
+            normalized_route_id,
         ),
     )
 
