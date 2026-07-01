@@ -238,7 +238,7 @@ def test_bad_fixture_file_raises_typed_error(tmp_path) -> None:
     path = tmp_path / "bad.json"
     path.write_text("[]", encoding="utf-8")
 
-    with pytest.raises(CapabilitySurfaceDeltaError):
+    with pytest.raises(CapabilitySurfaceDeltaError, match="next action: repair"):
         load_capability_surface_delta_fixtures(path)
 
 

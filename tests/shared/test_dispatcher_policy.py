@@ -1110,6 +1110,89 @@ def test_unjoined_blocking_surface_delta_fails_closed_globally(
     assert "capability_surface_delta_pending" in decision.reason_codes
 
 
+def test_plain_descriptor_ref_without_route_id_fails_closed_globally(
+    tmp_path: Path,
+) -> None:
+    surface_delta_path = tmp_path / "capability-surface-deltas.json"
+    surface_delta_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "schema_ref": "schemas/capability-surface-delta.schema.json",
+                "generated_from": ["unit-test"],
+                "declared_at": "2026-05-09T22:00:00Z",
+                "descriptors": [
+                    {
+                        "descriptor_schema": 1,
+                        "surface_id": "surface.publication_bus.weblog",
+                        "descriptor_ref": "publication-bus-weblog",
+                        "surface_kind": "publication_bus",
+                        "authority_ceiling": "frontier_review_required",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "stale_after": "1h",
+                        "evidence_refs": ["publication-bus-weblog-receipt"],
+                        "route_id": None,
+                        "resource_pools": ["public_egress"],
+                    }
+                ],
+                "deltas": [
+                    {
+                        "delta_schema": 1,
+                        "delta_id": "test:plain-ref-publication-stale",
+                        "source": "unit-test",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "detected_by": "unit-test",
+                        "surface_id": "surface.publication_bus.weblog",
+                        "delta_kind": "stale_determination",
+                        "prior_descriptor_ref": "publication-bus-weblog",
+                        "observed_descriptor_ref": "publication-bus-weblog-receipt",
+                        "evidence_refs": ["publication-bus-weblog-receipt"],
+                        "authority_ceiling": "frontier_review_required",
+                        "affected_resource_pools": ["public_egress"],
+                        "privacy_sensitive": True,
+                        "public_egress": True,
+                        "money_rail": False,
+                        "freshness_state": "stale",
+                        "required_intake_action": "refresh_receipt",
+                        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+                        "summary": "plain non-route descriptor ref cannot satisfy dispatch routing",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sources = load_dispatch_policy_sources(
+        registry_path=None,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        surface_delta_path=surface_delta_path,
+        now=NOW,
+    )
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        quota_ledger=sources.quota_ledger,
+        surface_delta_refs_by_route=sources.surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=sources.surface_delta_blockers_by_route,
+        now=NOW,
+    )
+
+    assert request.capability is not None
+    assert any(
+        "test:plain-ref-publication-stale" in blocker
+        for blocker in request.capability.surface_delta_blockers
+    )
+    decision = evaluate_dispatch_policy(request, now=NOW)
+    assert decision.action is DispatchAction.HOLD
+    assert "capability_surface_delta_pending" in decision.reason_codes
+
+
 def test_shared_descriptor_evidence_ref_blocks_all_joined_routes(
     tmp_path: Path,
 ) -> None:

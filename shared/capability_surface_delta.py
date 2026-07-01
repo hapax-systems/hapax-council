@@ -734,7 +734,8 @@ def load_capability_surface_delta_fixtures(
         return CapabilitySurfaceDeltaFixtureSet.model_validate(_load_json(path))
     except (OSError, json.JSONDecodeError, ValidationError, ValueError) as exc:
         raise CapabilitySurfaceDeltaError(
-            f"invalid capability-surface delta fixtures: {exc}"
+            "invalid capability-surface delta fixtures; next action: repair "
+            f"fixture JSON/schema before using this fixture set: {exc}"
         ) from exc
 
 
@@ -744,7 +745,8 @@ def load_capability_surface_delta_file(path: Path) -> CapabilitySurfaceDeltaFile
     except (OSError, json.JSONDecodeError, ValidationError, ValueError) as exc:
         raise CapabilitySurfaceDeltaError(
             "invalid capability-surface delta producer file; repair JSON/schema "
-            f"or remove the configured producer path before routing can trust it: {exc}"
+            "or remove the configured producer path before routing can trust it; "
+            f"next action: repair or unset the producer path: {exc}"
         ) from exc
 
 

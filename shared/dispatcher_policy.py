@@ -558,7 +558,7 @@ def _surface_delta_ref(delta: CapabilitySurfaceDelta) -> str:
 
 
 def _surface_delta_descriptor_route_keys(descriptor: Any) -> tuple[str, ...]:
-    keys = {descriptor.surface_id, descriptor.descriptor_ref}
+    keys = set()
     if descriptor.surface_id.startswith("route."):
         keys.add(normalize_route_id(descriptor.surface_id.removeprefix("route.")))
     if descriptor.route_id:
@@ -596,7 +596,7 @@ def _surface_delta_route_keys(
 
 
 def _surface_delta_dispatch_lookup_keys(keys: Sequence[str]) -> set[str]:
-    return {key for key in keys if ":" not in key and not key.startswith(("route.", "surface."))}
+    return set(keys)
 
 
 def _surface_delta_values_for_route(
