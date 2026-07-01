@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import Any, Final, Literal
 
-from pydantic import ConfigDict, Field, field_serializer, field_validator
+from pydantic import ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from shared.outbound_executor import (
     OutboundExecutionReceipt,
@@ -200,6 +200,33 @@ class OutboundLaneActReceipt(StrictModel):
     evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
     metadata: Mapping[str, Any] = Field(default_factory=lambda: MappingProxyType({}))
 
+    @field_validator("receipt_id", "lane_id", "action_id", "scoped_token_ref", mode="before")  # noqa: V105 - Pydantic reflection hook.
+    @classmethod
+    def _string_fields_are_nonblank(cls, value: Any, info: Any) -> str:
+        return _nonblank_string(info.field_name, value)
+
+    @field_validator("refusal_reason", mode="before")  # noqa: V105 - Pydantic reflection hook.
+    @classmethod
+    def _refusal_reason_is_nonblank_when_present(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        return _nonblank_string("refusal_reason", value)
+
+    @field_validator("rate_limit_remaining", mode="before")  # noqa: V105 - Pydantic reflection hook.
+    @classmethod
+    def _rate_limit_remaining_is_nonnegative_int(cls, value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                "rate_limit_remaining must be a non-negative integer; next action: "
+                "bind the remaining lane quota as an integer count"
+            )
+        if value < 0:
+            raise ValueError(
+                "rate_limit_remaining must be a non-negative integer; next action: "
+                "bind the remaining lane quota as an integer count"
+            )
+        return value
+
     @field_validator("metadata", mode="before")  # noqa: V105 - Pydantic reflection hook.
     @classmethod
     def _metadata_is_mapping(cls, value: Any) -> Mapping[str, Any]:
@@ -219,6 +246,20 @@ class OutboundLaneActReceipt(StrictModel):
     @field_serializer("metadata")  # noqa: V105 - Pydantic reflection hook.
     def _serialize_metadata(self, value: Mapping[str, Any]) -> dict[str, Any]:
         return _thaw_mapping(value)
+
+    @model_validator(mode="after")  # noqa: V105 - Pydantic reflection hook.
+    def _receipt_status_matches_reason(self) -> OutboundLaneActReceipt:
+        if self.status == "refused" and self.refusal_reason is None:
+            raise ValueError(
+                "refusal_reason is required when status is refused; next action: "
+                "record the fail-closed refusal reason"
+            )
+        if self.status == "admitted" and self.refusal_reason is not None:
+            raise ValueError(
+                "refusal_reason must be absent when status is admitted; next action: "
+                "clear refusal_reason for admitted receipts"
+            )
+        return self
 
 
 class BoundedOutboundLane:
@@ -446,7 +487,10 @@ class BoundedOutboundLane:
         return None
 
     def _rate_limit_remaining(self) -> int:
-        self._reset_expired_window()
+        if self._window_started_at is None:
+            return self.rate_limit.max_actions
+        if self._now_fn() - self._window_started_at >= self.rate_limit.window_seconds:
+            return self.rate_limit.max_actions
         return max(0, self.rate_limit.max_actions - self._used_in_window)
 
     def _receipt(

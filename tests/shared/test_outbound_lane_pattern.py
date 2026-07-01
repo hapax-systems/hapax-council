@@ -307,6 +307,30 @@ def test_request_and_receipt_payload_validators_reject_non_json_shapes(
             metadata={"bad": {"mutable-set"}},
         )
 
+    for receipt_kwargs in (
+        {"receipt_id": ""},
+        {"lane_id": " "},
+        {"action_id": ""},
+        {"scoped_token_ref": ""},
+        {"rate_limit_remaining": -1},
+        {"status": "refused", "refusal_reason": None},
+        {"status": "admitted", "refusal_reason": "unexpected"},
+    ):
+        kwargs = {
+            "receipt_id": "receipt:good",
+            "lane_id": "template:youtube",
+            "action_id": "receipt-action",
+            "status": "refused",
+            "refusal_reason": "test_refusal",
+            "scoped_token_ref": YOUTUBE_SCOPED_TOKEN_REF,
+            "rate_limit_remaining": 0,
+            "public_egress_authorized": True,
+            "money_movement_authorized": False,
+        }
+        kwargs.update(receipt_kwargs)
+        with pytest.raises(ValidationError, match="next action"):
+            OutboundLaneActReceipt(**kwargs)
+
 
 def test_public_egress_and_money_movement_are_separate_authorities(
     youtube_registry: AccountFederationRegistry,
@@ -439,8 +463,13 @@ def test_rate_limit_remaining_resets_after_window_for_refusal_receipts(
 
     first = lane.execute_act(_request(action_id="first"))
     now = 111.0
-    second = lane.execute_act(_request(action_id="wrong-scope", scope="youtube_live_chat_message"))
+    expired_refusal = lane.execute_act(
+        _request(action_id="wrong-scope", scope="youtube_live_chat_message")
+    )
+    second = lane.execute_act(_request(action_id="second"))
 
     assert first.rate_limit_remaining == 0
-    assert second.refusal_reason == "token_scope_missing"
-    assert second.rate_limit_remaining == 1
+    assert expired_refusal.refusal_reason == "token_scope_missing"
+    assert expired_refusal.rate_limit_remaining == 1
+    assert second.status == "admitted"
+    assert second.rate_limit_remaining == 0
