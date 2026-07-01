@@ -28,6 +28,7 @@ class M2FreezeRefusalReason(StrEnum):
     """Machine-readable reasons the M2 freeze artifact cannot authorize commit."""
 
     MISSING_ARTIFACT = "missing_artifact"
+    INVALID_ARTIFACT = "invalid_artifact"
     MISSING_ARTIFACT_ID = "missing_artifact_id"
     MISSING_BUDGET_ENVELOPE = "missing_budget_envelope"
     INVALID_BUDGET_ENVELOPE = "invalid_budget_envelope"
@@ -46,6 +47,7 @@ class M2FreezeRefusalReason(StrEnum):
 
 _NEXT_ACTIONS: Final[dict[M2FreezeRefusalReason, str]] = {
     M2FreezeRefusalReason.MISSING_ARTIFACT: ("attach the signed M2 freeze artifact before commit"),
+    M2FreezeRefusalReason.INVALID_ARTIFACT: "repair the signed M2 freeze artifact",
     M2FreezeRefusalReason.MISSING_ARTIFACT_ID: (
         "record the freeze artifact id so presence can be witnessed"
     ),
@@ -374,7 +376,7 @@ def _reason_from_value_error(exc: ValueError) -> M2FreezeRefusalReason:
         return M2FreezeRefusalReason.INVALID_LADDER
     if message.startswith("signed_at"):
         return M2FreezeRefusalReason.INVALID_SIGNED_AT
-    return M2FreezeRefusalReason.INVALID_LADDER
+    return M2FreezeRefusalReason.INVALID_ARTIFACT
 
 
 def _refused(

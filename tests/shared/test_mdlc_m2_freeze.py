@@ -71,6 +71,13 @@ def test_signed_freeze_artifact_records_envelope_ladder_hash_signer_and_time() -
     assert "signature:m2-freeze:test-disposition" in result.evidence_refs
 
 
+def test_freeze_verification_truthiness_is_not_allowed() -> None:
+    result = verify_m2_freeze_artifact(_artifact(), ruler_hash_commit=HASH)
+
+    with pytest.raises(TypeError, match="truthiness is undefined"):
+        bool(result)
+
+
 def test_require_success_returns_freeze_artifact() -> None:
     artifact = require_m2_freeze_artifact(_artifact(), ruler_hash_commit=HASH)
 
@@ -211,6 +218,28 @@ def test_invalid_evidence_refs_has_specific_refusal_reason() -> None:
 
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is M2FreezeRefusalReason.INVALID_EVIDENCE_REFS
+
+
+def test_unrecognized_artifact_value_error_has_generic_artifact_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_unrecognized_value_error(
+        cls: type[M2FreezeArtifact],
+        raw: object,
+    ) -> M2FreezeArtifact:
+        raise ValueError("unexpected artifact failure")
+
+    monkeypatch.setattr(
+        M2FreezeArtifact,
+        "from_mapping",
+        classmethod(raise_unrecognized_value_error),
+    )
+
+    result = verify_m2_freeze_artifact(_artifact(), ruler_hash_commit=HASH)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is M2FreezeRefusalReason.INVALID_ARTIFACT
+    assert result.next_action == "repair the signed M2 freeze artifact"
 
 
 def test_missing_ruler_hash_commit_refuses_before_m2_commit() -> None:
