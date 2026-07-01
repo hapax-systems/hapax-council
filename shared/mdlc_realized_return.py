@@ -120,6 +120,7 @@ class RealizedReturnRefusalReason(StrEnum):
     MISSING_EVENT_KIND = "missing_event_kind"
     MISSING_AMOUNT = "missing_amount"
     NON_POSITIVE_AMOUNT = "non_positive_amount"
+    MISSING_INBOUND_DIRECTION = "missing_inbound_direction"
     MISSING_OBSERVED_AT = "missing_observed_at"
     MISSING_RAIL_EVIDENCE = "missing_rail_evidence"
     INVALID_EVENT_SHAPE = "invalid_event_shape"
@@ -216,11 +217,12 @@ def realized_return_from_rail(
             event_kind=event_kind,
             detail=f"direction {direction!r} is outbound",
         )
-    if event_kind_key in DIRECTION_FILTERED_EVENT_KINDS and direction not in (
-        INBOUND_DIRECTION_VALUES | {None}
+    if (
+        event_kind_key in DIRECTION_FILTERED_EVENT_KINDS
+        and direction not in INBOUND_DIRECTION_VALUES
     ):
         return _refused(
-            RealizedReturnRefusalReason.OUTBOUND_EVENT,
+            RealizedReturnRefusalReason.MISSING_INBOUND_DIRECTION,
             event=event,
             source_receipt_ref=source_receipt_ref,
             durable_row_hash=durable_row_hash,
@@ -271,8 +273,19 @@ def realized_return_from_rail(
             detail="realized return must be positive before score folding",
         )
 
-    observed_at = _observed_at(event)
-    if observed_at is None:
+    observed_at_result = _observed_at_result(event)
+    if isinstance(observed_at_result, RealizedReturnRefusalReason):
+        return _refused(
+            observed_at_result,
+            event=event,
+            source_receipt_ref=source_receipt_ref,
+            durable_row_hash=durable_row_hash,
+            event_kind=event_kind,
+            amount_minor_units=amount_minor_units,
+            currency=currency,
+            detail="event timestamp is malformed",
+        )
+    if observed_at_result is None:
         return _refused(
             RealizedReturnRefusalReason.MISSING_OBSERVED_AT,
             event=event,
@@ -283,6 +296,7 @@ def realized_return_from_rail(
             currency=currency,
             detail="occurred_at, timestamp, or observed_at is required",
         )
+    observed_at = observed_at_result
 
     refs = _evidence_refs(
         event,
@@ -467,10 +481,20 @@ def _direction(event: Any) -> str | None:
 
 
 def _observed_at(event: Any) -> datetime | None:
+    result = _observed_at_result(event)
+    if isinstance(result, datetime):
+        return result
+    return None
+
+
+def _observed_at_result(event: Any) -> datetime | RealizedReturnRefusalReason | None:
     for name in ("occurred_at", "timestamp", "observed_at", "realized_at"):
         value = _field(event, name)
         if value is not None:
-            return _optional_datetime(value)
+            try:
+                return _optional_datetime(value)
+            except (TypeError, ValueError):
+                return RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
     return None
 
 

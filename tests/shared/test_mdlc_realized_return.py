@@ -19,6 +19,7 @@ from shared.mdlc_realized_return import (
     REFUND_REVERSAL_EVENT_KINDS,
     RealizedReturnRefusalReason,
     RealizedReturnStatus,
+    realized_return_from_durable_payment_event,
     realized_return_from_rail,
     realized_returns_from_durable_payment_events,
 )
@@ -56,6 +57,12 @@ def _accepted_event(event_kind: str, **overrides: object) -> dict[str, object]:
 def _durable_event(event_kind: str, **overrides: object) -> dict[str, object]:
     event = _accepted_event(event_kind, occurred_at=NOW.isoformat().replace("+00:00", "Z"))
     event.update(overrides)
+    return event
+
+
+def _directionless_event(event_kind: str) -> dict[str, object]:
+    event = _accepted_event(event_kind)
+    event.pop("direction", None)
     return event
 
 
@@ -173,6 +180,10 @@ def test_modern_treasury_created_refuses_as_non_settled_before_score_folding() -
             RealizedReturnRefusalReason.OUTBOUND_EVENT,
         ),
         (
+            _directionless_event("transaction.created"),
+            RealizedReturnRefusalReason.MISSING_INBOUND_DIRECTION,
+        ),
+        (
             _accepted_event("payment_intent_succeeded", provenance="projected"),
             RealizedReturnRefusalReason.PROJECTED_VALUE,
         ),
@@ -206,6 +217,18 @@ def test_missing_evidence_refuses_otherwise_valid_realized_kind() -> None:
     assert result.status is RealizedReturnStatus.REFUSED
     assert result.refusal_reason is RealizedReturnRefusalReason.MISSING_RAIL_EVIDENCE
     assert result.measurement is None
+
+
+def test_malformed_timestamp_returns_invalid_shape_refusal() -> None:
+    result = realized_return_from_rail(
+        _accepted_event("payment_intent_succeeded", occurred_at="not-a-date"),
+        source_receipt_ref="receipt://payment/test/bad-clock",
+    )
+
+    assert result.status is RealizedReturnStatus.REFUSED
+    assert result.refusal_reason is RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+    assert result.measurement is None
+    assert result.to_dict()["detail"] == "event timestamp is malformed"
 
 
 def test_refusal_result_carries_cctv_and_ratchet_context() -> None:
@@ -256,3 +279,39 @@ def test_reader_consumes_durable_stage0_payment_event_path(
     assert accepted.source_receipt_ref in results[0].evidence_refs
     assert results[1].refusal_reason is RealizedReturnRefusalReason.REFUND_OR_REVERSAL_EVENT
     assert f"durable:payment-event:{refused.row_hash}" in results[1].evidence_refs
+
+
+def test_missing_durable_payment_event_file_returns_empty_tuple(tmp_path: Path) -> None:
+    assert realized_returns_from_durable_payment_events(tmp_path / "missing.jsonl") == ()
+
+
+def test_durable_row_wrapper_refuses_non_payment_event_rows() -> None:
+    result = realized_return_from_durable_payment_event(
+        {
+            "stream_id": "chronicle",
+            "data_class": "financial_receipt",
+            "source_receipt_ref": "receipt://payment/wrong-stream",
+            "row_hash": "b" * 64,
+            "payload": _durable_event("payment_intent_succeeded"),
+        }
+    )
+
+    assert result.status is RealizedReturnStatus.REFUSED
+    assert result.refusal_reason is RealizedReturnRefusalReason.NOT_STAGE0_PAYMENT_EVENT
+    assert result.measurement is None
+
+
+def test_durable_row_wrapper_refuses_non_mapping_payload() -> None:
+    result = realized_return_from_durable_payment_event(
+        {
+            "stream_id": "payment-event",
+            "data_class": "financial_receipt",
+            "source_receipt_ref": "receipt://payment/bad-payload",
+            "row_hash": "c" * 64,
+            "payload": ["not", "a", "mapping"],
+        }
+    )
+
+    assert result.status is RealizedReturnStatus.REFUSED
+    assert result.refusal_reason is RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+    assert result.measurement is None
