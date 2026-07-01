@@ -193,6 +193,33 @@ def test_executor_configuration_rejects_invalid_types(
             registry=base_registry,
         )
 
+    with pytest.raises(TypeError, match="venue_allowlist"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist="external",  # type: ignore[arg-type]
+            notional_cap=100.0,
+            position_cap=500.0,
+            registry=base_registry,
+        )
+
+    with pytest.raises(TypeError, match="venue_allowlist entries"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist={"internal", 1},  # type: ignore[list-item]
+            notional_cap=100.0,
+            position_cap=500.0,
+            registry=base_registry,
+        )
+
+    with pytest.raises(ValueError, match="nonblank"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist={"internal", "   "},
+            notional_cap=100.0,
+            position_cap=500.0,
+            registry=base_registry,
+        )
+
     with pytest.raises(TypeError, match="registry"):
         OutboundExecutor(
             authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
@@ -593,6 +620,28 @@ def test_notional_cap_boundary_admits_equal_amount(
     assert receipt.current_position_after == 50.0
 
 
+def test_notional_cap_fractional_boundary_admits_close_float(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=0.3,
+        position_cap=1.0,
+        registry=base_registry,
+    )
+
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=0.1 + 0.2,
+    )
+
+    receipt = executor.execute(request)
+    assert receipt.status == "admitted"
+    assert receipt.current_position_after == pytest.approx(0.3)
+
+
 def test_position_cap_blocks(base_registry: AccountFederationRegistry) -> None:
     executor = OutboundExecutor(
         authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
@@ -659,6 +708,29 @@ def test_position_cap_boundary_admits_direct_cap_amount(
     receipt = executor.execute(request)
     assert receipt.status == "admitted"
     assert receipt.current_position_after == 150.0
+
+
+def test_position_cap_fractional_boundary_admits_close_total(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=1.0,
+        position_cap=0.3,
+        current_position=0.1,
+        registry=base_registry,
+    )
+
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=0.2,
+    )
+
+    receipt = executor.execute(request)
+    assert receipt.status == "admitted"
+    assert receipt.current_position_after == pytest.approx(0.3)
 
 
 def test_execute_position_admission_is_atomic(

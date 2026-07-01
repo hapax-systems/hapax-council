@@ -16,6 +16,8 @@ from shared.resource_capability import (
     StrictModel,
 )
 
+_CAP_COMPARISON_TOLERANCE: Final[float] = 1e-12
+
 
 def _provider_keys(provider: str) -> frozenset[str]:
     normalized = provider.strip().casefold().replace("-", "_").replace(" ", "_").replace(".", "_")
@@ -135,10 +137,23 @@ class OutboundExecutor:
                 "registry must be an AccountFederationRegistry; next action: load "
                 "the account federation registry before constructing the executor"
             )
+        if isinstance(venue_allowlist, str) or not isinstance(venue_allowlist, set | frozenset):
+            raise TypeError(
+                "venue_allowlist must be a set or frozenset of venue strings; "
+                "next action: supply the governed venue allowlist for this route"
+            )
         if not venue_allowlist:
             raise ValueError(
                 "venue_allowlist must name at least one allowed venue; next action: "
                 "supply the governed venue allowlist for this route"
+            )
+        if not all(isinstance(venue, str) for venue in venue_allowlist):
+            raise TypeError(
+                "venue_allowlist entries must be strings; next action: remove non-string venues"
+            )
+        if not all(venue.strip() for venue in venue_allowlist):
+            raise ValueError(
+                "venue_allowlist entries must be nonblank; next action: remove blank venues"
             )
         self.authority_ceiling = authority_ceiling
         self.venue_allowlist = frozenset(venue_allowlist)
@@ -242,7 +257,7 @@ class OutboundExecutor:
             )
 
         # 7. Notional Cap check
-        if request.amount > self.notional_cap:
+        if _exceeds_cap(request.amount, self.notional_cap):
             return _refuse(
                 "notional_cap_exceeded",
                 f"Outbound execution refused: request amount {request.amount} exceeds notional cap {self.notional_cap}",
@@ -250,10 +265,11 @@ class OutboundExecutor:
             )
 
         # 8. Position Cap check
-        if self.current_position + request.amount > self.position_cap:
+        position_after = self.current_position + request.amount
+        if _exceeds_cap(position_after, self.position_cap):
             return _refuse(
                 "position_cap_exceeded",
-                f"Outbound execution refused: position {self.current_position + request.amount} exceeds cap {self.position_cap}",
+                f"Outbound execution refused: position {position_after} exceeds cap {self.position_cap}",
                 "reduce the request or reset/raise the position cap through governance",
             )
 
@@ -324,6 +340,15 @@ def _finite_nonnegative_float(name: str, value: float) -> float:
             f"{name} must be finite and >= 0; next action: supply a bounded non-negative number"
         )
     return normalized
+
+
+def _exceeds_cap(value: float, cap: float) -> bool:
+    return value > cap and not math.isclose(
+        value,
+        cap,
+        rel_tol=_CAP_COMPARISON_TOLERANCE,
+        abs_tol=_CAP_COMPARISON_TOLERANCE,
+    )
 
 
 # This module is a governed contract for downstream lane adapters. Keep the
