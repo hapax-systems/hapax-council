@@ -24,6 +24,10 @@ _CORROBORATED_VERDICT: Final = "corroborated"
 _ACCEPTED_RAIL_STATUS: Final = "accepted"
 
 
+class _UnsupportedRailMeasurementShape(TypeError):
+    """Raised when an accepted rail row carries malformed measurement data."""
+
+
 class MonDLCBindingRefusalReason(StrEnum):
     """Machine-readable fail-closed binding refusal reasons."""
 
@@ -243,7 +247,16 @@ def _score_rail_results(
             native_refusal_reason=native_reason,
         )
 
-    measurement = _measurement_from_rail_results(accepted)
+    try:
+        measurement = _measurement_from_rail_results(accepted)
+    except _UnsupportedRailMeasurementShape as exc:
+        return _dark_result(
+            reason="unsupported_shape",
+            refusal_reason=MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE,
+            source_kind=source_kind,
+            detail=str(exc),
+            rail_results=rail_results,
+        )
     if measurement is None:
         return _dark_result(
             reason="missing_rail_evidence",
@@ -316,10 +329,7 @@ def _measurement_from_rail_results(rail_results: tuple[Any, ...]) -> Mapping[str
         )
         if not row_refs:
             continue
-        try:
-            values.append(float(value))
-        except (TypeError, ValueError):
-            continue
+        values.append(_numeric_rail_value(value))
         observed_values.append(observed_at)
         evidence_refs.extend(row_refs)
 
@@ -332,6 +342,14 @@ def _measurement_from_rail_results(rail_results: tuple[Any, ...]) -> Mapping[str
         "observed_at": max(observed_values),
         "evidence_refs": refs,
     }
+
+
+def _numeric_rail_value(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _UnsupportedRailMeasurementShape(
+            "accepted rail measurement value must be a non-boolean number"
+        )
+    return float(value)
 
 
 def _dark_result(

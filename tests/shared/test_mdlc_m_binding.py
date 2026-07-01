@@ -60,7 +60,7 @@ def _score_result(**measurement_overrides: object):
 def _rail_result(
     *,
     status: str = "accepted",
-    value: float | None = 12.5,
+    value: object | None = 12.5,
     observed_at: datetime | None = OBSERVED_AT,
     evidence_refs: tuple[str, ...] = ("rail:event:1",),
     refusal_reason: str | None = None,
@@ -245,6 +245,22 @@ def test_rail_result_sequence_scores_through_binding() -> None:
     assert result.score_result.measurement_value == 20.0
     assert result.evidence_refs == ("rail:event:1", "rail:event:2")
     assert len(result.rail_results) == 2
+
+
+def test_rail_result_sequence_rejects_boolean_measurement_value() -> None:
+    m_binding = _binding_module()
+
+    result = m_binding.bind_m_result(
+        _rail_result(value=True, evidence_refs=("rail:event:boolean",)),
+        _ladder(min_corroboration_count=1),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
+    assert "non-boolean number" in result.reason
+    assert result.rail_results == (_rail_result(value=True, evidence_refs=("rail:event:boolean",)),)
+    assert result.score_result is None
 
 
 def test_rail_result_sequence_ignores_values_without_observed_at() -> None:
