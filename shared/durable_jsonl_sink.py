@@ -516,6 +516,8 @@ def _rollback_partial_append(fd: int, start_offset: int) -> None:
         os.ftruncate(fd, start_offset)
         os.fsync(fd)
     except OSError:
+        # Keep the original append failure as the primary signal; later chain
+        # validation will fail closed if rollback could not remove partial data.
         pass
 
 

@@ -9,26 +9,17 @@ from typing import Any, cast
 import pytest
 
 import shared.durable_jsonl_sink as sink_mod
-from shared.durable_jsonl_sink import (
-    GENESIS_HASH,
-    DurableJsonlSink,
-    DurableSinkAppendError,
-    DurableSinkChainError,
-    DurableSinkPathError,
-    DurableSinkValueError,
-    validate_chain,
-)
 
 
-def _trusted_sink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DurableJsonlSink:
+def _trusted_sink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sink_mod.DurableJsonlSink:
     root = tmp_path / "durable"
     root.mkdir()
     monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "btrfs")
-    return DurableJsonlSink(root)
+    return sink_mod.DurableJsonlSink(root)
 
 
 def _codes(path: Path, *, stream_id: str = "payment-event") -> set[str]:
-    return {issue.code for issue in validate_chain(path, stream_id=stream_id).issues}
+    return {issue.code for issue in sink_mod.validate_chain(path, stream_id=stream_id).issues}
 
 
 def _json_line(row: dict[str, Any]) -> str:
@@ -55,7 +46,7 @@ def test_append_rows_include_required_chain_envelope(
         timestamp="2026-07-01T00:00:01Z",
     )
 
-    assert first.prior_hash == GENESIS_HASH
+    assert first.prior_hash == sink_mod.GENESIS_HASH
     assert second.prior_hash == first.row_hash
     path = sink.path_for_stream("payment-event")
     lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -76,28 +67,28 @@ def test_append_rows_include_required_chain_envelope(
         assert row["data_class"] == "financial_receipt"
         assert row["source_receipt_ref"].startswith("receipt://payment/")
 
-    validation = validate_chain(path, stream_id="payment-event")
+    validation = sink_mod.validate_chain(path, stream_id="payment-event")
     assert validation.valid is True
     assert validation.row_count == 2
     assert validation.tail_hash == second.row_hash
 
 
 def test_configured_root_must_already_exist(tmp_path: Path) -> None:
-    with pytest.raises(DurableSinkPathError, match="absent.*next action"):
-        DurableJsonlSink(tmp_path / "missing-root")
+    with pytest.raises(sink_mod.DurableSinkPathError, match="absent.*next action"):
+        sink_mod.DurableJsonlSink(tmp_path / "missing-root")
 
 
 def test_configured_root_must_be_absolute() -> None:
-    with pytest.raises(DurableSinkPathError, match="must be absolute.*next action"):
-        DurableJsonlSink("relative-root")
+    with pytest.raises(sink_mod.DurableSinkPathError, match="must be absolute.*next action"):
+        sink_mod.DurableJsonlSink("relative-root")
 
 
 def test_configured_root_must_be_directory(tmp_path: Path) -> None:
     root = tmp_path / "durable-file"
     root.write_text("not a directory", encoding="utf-8")
 
-    with pytest.raises(DurableSinkPathError, match="not a directory.*next action"):
-        DurableJsonlSink(root)
+    with pytest.raises(sink_mod.DurableSinkPathError, match="not a directory.*next action"):
+        sink_mod.DurableJsonlSink(root)
 
 
 def test_configured_root_refuses_unknown_filesystem(
@@ -107,8 +98,8 @@ def test_configured_root_refuses_unknown_filesystem(
     root.mkdir()
     monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: None)
 
-    with pytest.raises(DurableSinkPathError, match="filesystem type.*next action"):
-        DurableJsonlSink(root)
+    with pytest.raises(sink_mod.DurableSinkPathError, match="filesystem type.*next action"):
+        sink_mod.DurableJsonlSink(root)
 
 
 def test_configured_root_refuses_volatile_filesystem(
@@ -118,8 +109,10 @@ def test_configured_root_refuses_volatile_filesystem(
     root.mkdir()
     monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "tmpfs")
 
-    with pytest.raises(DurableSinkPathError, match="non-durable filesystem tmpfs.*next action"):
-        DurableJsonlSink(root)
+    with pytest.raises(
+        sink_mod.DurableSinkPathError, match="non-durable filesystem tmpfs.*next action"
+    ):
+        sink_mod.DurableJsonlSink(root)
 
 
 @pytest.mark.parametrize("fstype", ["devtmpfs", "proc", "sysfs", "devpts", "cgroup2"])
@@ -130,8 +123,10 @@ def test_configured_root_refuses_known_non_durable_filesystems(
     root.mkdir()
     monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: fstype)
 
-    with pytest.raises(DurableSinkPathError, match=f"non-durable filesystem {fstype}.*next action"):
-        DurableJsonlSink(root)
+    with pytest.raises(
+        sink_mod.DurableSinkPathError, match=f"non-durable filesystem {fstype}.*next action"
+    ):
+        sink_mod.DurableJsonlSink(root)
 
 
 def test_configured_root_refuses_world_writable_directory(
@@ -143,8 +138,8 @@ def test_configured_root_refuses_world_writable_directory(
     monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "btrfs")
 
     try:
-        with pytest.raises(DurableSinkPathError, match="world-writable.*next action"):
-            DurableJsonlSink(root)
+        with pytest.raises(sink_mod.DurableSinkPathError, match="world-writable.*next action"):
+            sink_mod.DurableJsonlSink(root)
     finally:
         root.chmod(0o700)
 
@@ -187,29 +182,29 @@ def test_mount_fstype_for_path_fails_closed_when_proc_mounts_unreadable(
 
 
 def test_make_row_rejects_invalid_stream_id_with_next_action() -> None:
-    with pytest.raises(DurableSinkValueError, match="stream_id.*next action"):
+    with pytest.raises(sink_mod.DurableSinkValueError, match="stream_id.*next action"):
         sink_mod.make_row(
             stream_id="../bad",
             data_class="financial_receipt",
             source_receipt_ref="receipt://payment/1",
             payload={"idx": 1},
-            prior_hash=GENESIS_HASH,
+            prior_hash=sink_mod.GENESIS_HASH,
         )
 
 
 def test_make_row_rejects_blank_required_text_with_next_action() -> None:
-    with pytest.raises(DurableSinkValueError, match="data_class.*next action"):
+    with pytest.raises(sink_mod.DurableSinkValueError, match="data_class.*next action"):
         sink_mod.make_row(
             stream_id="payment-event",
             data_class=" ",
             source_receipt_ref="receipt://payment/1",
             payload={"idx": 1},
-            prior_hash=GENESIS_HASH,
+            prior_hash=sink_mod.GENESIS_HASH,
         )
 
 
 def test_make_row_rejects_invalid_prior_hash_with_next_action() -> None:
-    with pytest.raises(DurableSinkValueError, match="prior_hash.*next action"):
+    with pytest.raises(sink_mod.DurableSinkValueError, match="prior_hash.*next action"):
         sink_mod.make_row(
             stream_id="payment-event",
             data_class="financial_receipt",
@@ -220,24 +215,28 @@ def test_make_row_rejects_invalid_prior_hash_with_next_action() -> None:
 
 
 def test_make_row_rejects_non_mapping_payload_with_next_action() -> None:
-    with pytest.raises(DurableSinkValueError, match="payload must be a mapping.*next action"):
+    with pytest.raises(
+        sink_mod.DurableSinkValueError, match="payload must be a mapping.*next action"
+    ):
         sink_mod.make_row(
             stream_id="payment-event",
             data_class="financial_receipt",
             source_receipt_ref="receipt://payment/1",
             payload=cast("Any", ["not", "a", "mapping"]),
-            prior_hash=GENESIS_HASH,
+            prior_hash=sink_mod.GENESIS_HASH,
         )
 
 
 def test_make_row_rejects_non_canonical_payload_with_next_action() -> None:
-    with pytest.raises(DurableSinkValueError, match="canonical JSON encodable.*next action"):
+    with pytest.raises(
+        sink_mod.DurableSinkValueError, match="canonical JSON encodable.*next action"
+    ):
         sink_mod.make_row(
             stream_id="payment-event",
             data_class="financial_receipt",
             source_receipt_ref="receipt://payment/1",
             payload={"bad": float("nan")},
-            prior_hash=GENESIS_HASH,
+            prior_hash=sink_mod.GENESIS_HASH,
         )
 
 
@@ -260,7 +259,7 @@ def test_chain_validation_catches_modified_rows(
     lines[1] = json.dumps(tampered, sort_keys=True, separators=(",", ":"))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    result = validate_chain(path, stream_id="chronicle")
+    result = sink_mod.validate_chain(path, stream_id="chronicle")
     assert result.valid is False
     assert "row_hash_mismatch" in {issue.code for issue in result.issues}
 
@@ -282,7 +281,7 @@ def test_append_refuses_existing_corrupt_stream_without_writing(
     original_corrupt_text = _json_line(tampered) + "\n"
     path.write_text(original_corrupt_text, encoding="utf-8")
 
-    with pytest.raises(DurableSinkChainError, match="next action"):
+    with pytest.raises(sink_mod.DurableSinkChainError, match="next action"):
         sink.append(
             stream_id="payment-event",
             data_class="financial_receipt",
@@ -334,7 +333,7 @@ def test_chain_validation_catches_missing_middle_and_tail_rows(
     assert "prior_hash_mismatch" in _codes(path)
 
     path.write_text("\n".join(lines[:2]) + "\n", encoding="utf-8")
-    result = validate_chain(
+    result = sink_mod.validate_chain(
         path,
         stream_id="payment-event",
         expected_tail_hash=rows[-1].row_hash,
@@ -350,7 +349,7 @@ def test_chain_validation_catches_malformed_rows(tmp_path: Path) -> None:
         data_class="financial_receipt",
         source_receipt_ref="receipt://payment/1",
         payload={"idx": 1},
-        prior_hash=GENESIS_HASH,
+        prior_hash=sink_mod.GENESIS_HASH,
         timestamp="2026-07-01T00:00:00Z",
     ).as_dict()
     missing_field = dict(valid)
@@ -385,7 +384,7 @@ def test_chain_validation_catches_malformed_rows(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    result = validate_chain(path, stream_id="payment-event")
+    result = sink_mod.validate_chain(path, stream_id="payment-event")
 
     assert result.valid is False
     assert {
@@ -419,13 +418,13 @@ def test_chain_validation_rejects_newline_truncated_tail_and_append_refuses(
     truncated_tail = _json_line(row.as_dict())
     path.write_text(truncated_tail, encoding="utf-8")
 
-    result = validate_chain(path, stream_id="payment-event")
+    result = sink_mod.validate_chain(path, stream_id="payment-event")
 
     assert result.valid is False
     assert result.row_count == 0
-    assert result.tail_hash == GENESIS_HASH
+    assert result.tail_hash == sink_mod.GENESIS_HASH
     assert {issue.code for issue in result.issues} == {"missing_newline"}
-    with pytest.raises(DurableSinkChainError, match="next action"):
+    with pytest.raises(sink_mod.DurableSinkChainError, match="next action"):
         sink.append(
             stream_id="payment-event",
             data_class="financial_receipt",
@@ -440,7 +439,7 @@ def test_validate_chain_rejects_non_file_stream_path(tmp_path: Path) -> None:
     path = tmp_path / "payment-event.jsonl"
     path.mkdir()
 
-    result = validate_chain(path, stream_id="payment-event")
+    result = sink_mod.validate_chain(path, stream_id="payment-event")
 
     assert result.valid is False
     assert result.issues[0].code == "not_file"
@@ -453,11 +452,11 @@ def test_validate_chain_rejects_symlink_stream_path(
     path = sink.path_for_stream("payment-event")
     path.symlink_to(tmp_path / "outside.jsonl")
 
-    result = validate_chain(path, stream_id="payment-event")
+    result = sink_mod.validate_chain(path, stream_id="payment-event")
 
     assert result.valid is False
     assert result.issues[0].code == "symlink_stream"
-    with pytest.raises(DurableSinkChainError, match="next action"):
+    with pytest.raises(sink_mod.DurableSinkChainError, match="next action"):
         sink.append(
             stream_id="payment-event",
             data_class="financial_receipt",
@@ -469,8 +468,8 @@ def test_validate_chain_rejects_symlink_stream_path(
 
 
 def test_validate_chain_rejects_invalid_stream_id_argument(tmp_path: Path) -> None:
-    with pytest.raises(DurableSinkValueError, match="stream_id.*next action"):
-        validate_chain(tmp_path / "unused.jsonl", stream_id="../bad")
+    with pytest.raises(sink_mod.DurableSinkValueError, match="stream_id.*next action"):
+        sink_mod.validate_chain(tmp_path / "unused.jsonl", stream_id="../bad")
 
 
 def test_validate_chain_reports_read_errors(
@@ -487,11 +486,11 @@ def test_validate_chain_reports_read_errors(
 
     monkeypatch.setattr(sink_mod.Path, "open", failing_open)
 
-    result = validate_chain(path, stream_id="payment-event")
+    result = sink_mod.validate_chain(path, stream_id="payment-event")
 
     assert result.valid is False
     assert {issue.code for issue in result.issues} == {"read_error"}
-    with pytest.raises(DurableSinkChainError, match="next action"):
+    with pytest.raises(sink_mod.DurableSinkChainError, match="next action"):
         result.raise_for_issues()
 
 
@@ -502,11 +501,11 @@ def test_append_refuses_non_utf8_stream_as_chain_error(
     path = sink.path_for_stream("payment-event")
     path.write_bytes(b"\xff\n")
 
-    result = validate_chain(path, stream_id="payment-event")
+    result = sink_mod.validate_chain(path, stream_id="payment-event")
 
     assert result.valid is False
     assert {issue.code for issue in result.issues} == {"decode_error"}
-    with pytest.raises(DurableSinkChainError, match="next action"):
+    with pytest.raises(sink_mod.DurableSinkChainError, match="next action"):
         sink.append(
             stream_id="payment-event",
             data_class="financial_receipt",
@@ -519,9 +518,9 @@ def test_append_refuses_non_utf8_stream_as_chain_error(
 def test_chain_validation_exception_includes_next_action(tmp_path: Path) -> None:
     path = tmp_path / "payment-event.jsonl"
     path.write_text("{not json\n", encoding="utf-8")
-    result = validate_chain(path, stream_id="payment-event")
+    result = sink_mod.validate_chain(path, stream_id="payment-event")
 
-    with pytest.raises(DurableSinkChainError, match="next action"):
+    with pytest.raises(sink_mod.DurableSinkChainError, match="next action"):
         result.raise_for_issues()
 
 
@@ -530,7 +529,7 @@ def test_path_for_stream_rejects_invalid_stream_id(
 ) -> None:
     sink = _trusted_sink(tmp_path, monkeypatch)
 
-    with pytest.raises(DurableSinkValueError, match="stream_id.*next action"):
+    with pytest.raises(sink_mod.DurableSinkValueError, match="stream_id.*next action"):
         sink.path_for_stream("../bad")
 
 
@@ -565,7 +564,7 @@ def test_partial_append_rolls_back_and_raises(
 
     monkeypatch.setattr(sink_mod.os, "write", flaky_write)
     monkeypatch.setattr(sink_mod.os, "ftruncate", recording_ftruncate)
-    with pytest.raises(DurableSinkAppendError):
+    with pytest.raises(sink_mod.DurableSinkAppendError):
         sink.append(
             stream_id="payment-event",
             data_class="financial_receipt",
@@ -576,7 +575,7 @@ def test_partial_append_rolls_back_and_raises(
 
     assert path.read_text(encoding="utf-8") == original
     assert truncations == [len(original.encode("utf-8"))]
-    assert validate_chain(path, stream_id="payment-event").valid is True
+    assert sink_mod.validate_chain(path, stream_id="payment-event").valid is True
 
 
 def test_zero_progress_append_rolls_back_and_raises(
@@ -595,7 +594,7 @@ def test_zero_progress_append_rolls_back_and_raises(
 
     monkeypatch.setattr(sink_mod.os, "write", lambda _fd, _data: 0)
 
-    with pytest.raises(DurableSinkAppendError) as exc_info:
+    with pytest.raises(sink_mod.DurableSinkAppendError) as exc_info:
         sink.append(
             stream_id="payment-event",
             data_class="financial_receipt",
@@ -605,7 +604,7 @@ def test_zero_progress_append_rolls_back_and_raises(
         )
 
     assert "storage write errors" in str(exc_info.value)
-    assert isinstance(exc_info.value.__cause__, DurableSinkAppendError)
+    assert isinstance(exc_info.value.__cause__, sink_mod.DurableSinkAppendError)
     assert "no progress" in str(exc_info.value.__cause__)
     assert path.read_text(encoding="utf-8") == original
 
@@ -623,7 +622,7 @@ def test_append_lock_open_failure_has_next_action(
 
     monkeypatch.setattr(sink_mod.os, "open", failing_lock_open)
 
-    with pytest.raises(DurableSinkAppendError, match="lock .*next action"):
+    with pytest.raises(sink_mod.DurableSinkAppendError, match="lock .*next action"):
         sink.append(
             stream_id="payment-event",
             data_class="financial_receipt",
@@ -646,7 +645,9 @@ def test_append_lock_acquire_failure_has_next_action(
 
     monkeypatch.setattr(sink_mod.fcntl, "flock", failing_flock)
 
-    with pytest.raises(DurableSinkAppendError, match="acquire durable sink lock.*next action"):
+    with pytest.raises(
+        sink_mod.DurableSinkAppendError, match="acquire durable sink lock.*next action"
+    ):
         sink.append(
             stream_id="payment-event",
             data_class="financial_receipt",
@@ -686,7 +687,9 @@ def test_append_lock_release_failure_has_next_action_after_commit(
     monkeypatch.setattr(sink_mod.os, "close", recording_close)
     monkeypatch.setattr(sink_mod.fcntl, "flock", failing_unlock)
 
-    with pytest.raises(DurableSinkAppendError, match="release durable sink lock.*next action"):
+    with pytest.raises(
+        sink_mod.DurableSinkAppendError, match="release durable sink lock.*next action"
+    ):
         sink.append(
             stream_id="payment-event",
             data_class="financial_receipt",
@@ -695,7 +698,9 @@ def test_append_lock_release_failure_has_next_action_after_commit(
             timestamp="2026-07-01T00:00:00Z",
         )
 
-    result = validate_chain(sink.path_for_stream("payment-event"), stream_id="payment-event")
+    result = sink_mod.validate_chain(
+        sink.path_for_stream("payment-event"), stream_id="payment-event"
+    )
     assert result.valid is True
     assert result.row_count == 1
     assert closed_lock_fds == lock_fds
@@ -714,7 +719,7 @@ def test_append_stream_open_failure_has_next_action(
 
     monkeypatch.setattr(sink_mod.os, "open", failing_stream_open)
 
-    with pytest.raises(DurableSinkAppendError, match="stream file .*next action"):
+    with pytest.raises(sink_mod.DurableSinkAppendError, match="stream file .*next action"):
         sink.append(
             stream_id="payment-event",
             data_class="financial_receipt",
@@ -749,7 +754,9 @@ def test_append_stream_close_failure_has_next_action(
     monkeypatch.setattr(sink_mod.os, "open", recording_open)
     monkeypatch.setattr(sink_mod.os, "close", failing_stream_close)
 
-    with pytest.raises(DurableSinkAppendError, match="close durable sink stream file.*next action"):
+    with pytest.raises(
+        sink_mod.DurableSinkAppendError, match="close durable sink stream file.*next action"
+    ):
         sink.append(
             stream_id="payment-event",
             data_class="financial_receipt",
@@ -792,7 +799,7 @@ def test_partial_append_raises_even_when_rollback_truncate_fails(
     monkeypatch.setattr(sink_mod.os, "write", flaky_write)
     monkeypatch.setattr(sink_mod.os, "ftruncate", failing_ftruncate)
 
-    with pytest.raises(DurableSinkAppendError, match="validate the stream chain"):
+    with pytest.raises(sink_mod.DurableSinkAppendError, match="validate the stream chain"):
         sink.append(
             stream_id="payment-event",
             data_class="financial_receipt",
@@ -802,7 +809,7 @@ def test_partial_append_raises_even_when_rollback_truncate_fails(
         )
 
     assert truncations == [len(original.encode("utf-8"))]
-    assert validate_chain(path, stream_id="payment-event").valid is False
+    assert sink_mod.validate_chain(path, stream_id="payment-event").valid is False
 
 
 def test_directory_fsync_success_opens_readonly_and_closes(
@@ -841,7 +848,9 @@ def test_directory_open_failure_has_next_action(
 
     monkeypatch.setattr(sink_mod.os, "open", failing_open)
 
-    with pytest.raises(DurableSinkAppendError, match="open durable sink directory.*next action"):
+    with pytest.raises(
+        sink_mod.DurableSinkAppendError, match="open durable sink directory.*next action"
+    ):
         sink_mod._fsync_directory(tmp_path)
 
 
@@ -858,7 +867,9 @@ def test_directory_close_failure_has_next_action(
     monkeypatch.setattr(sink_mod.os, "fsync", lambda _fd: None)
     monkeypatch.setattr(sink_mod.os, "close", failing_close)
 
-    with pytest.raises(DurableSinkAppendError, match="close durable sink directory.*next action"):
+    with pytest.raises(
+        sink_mod.DurableSinkAppendError, match="close durable sink directory.*next action"
+    ):
         sink_mod._fsync_directory(tmp_path)
 
 
@@ -881,7 +892,9 @@ def test_directory_fsync_failure_has_next_action(
     monkeypatch.setattr(sink_mod.os, "fsync", failing_fsync)
     monkeypatch.setattr(sink_mod.os, "close", recording_close)
 
-    with pytest.raises(DurableSinkAppendError, match="fsync durable sink directory.*next action"):
+    with pytest.raises(
+        sink_mod.DurableSinkAppendError, match="fsync durable sink directory.*next action"
+    ):
         sink_mod._fsync_directory(tmp_path)
 
     assert closed == [99]
