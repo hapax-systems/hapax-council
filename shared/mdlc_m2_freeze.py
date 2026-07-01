@@ -5,7 +5,8 @@ itself: artifact id, budget envelope, ladder, artifact ruler hash, signer,
 timestamp, and signature reference must be present. The artifact ruler hash is
 the authoritative frozen value; callers must pass the commit's carried ruler
 hash so verifier admission proves end-to-end equality. Boolean freeze flags are
-intentionally ignored.
+intentionally ignored, while budget-envelope publication/Flood routing fields
+are part of the signed M2 evidence contract.
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ class M2FreezeRefusalReason(StrEnum):
     MISSING_SIGNATURE_REF = "missing_signature_ref"
     INVALID_EVIDENCE_REFS = "invalid_evidence_refs"
     G2_TARGET_MISMATCH = "g2_target_mismatch"
+    PUBLISH_ONLY_WITHOUT_FLOOD_PLAN = "publish_only_without_flood_plan"
 
 
 _NEXT_ACTIONS: Final[dict[M2FreezeRefusalReason, str]] = {
@@ -85,6 +87,10 @@ _NEXT_ACTIONS: Final[dict[M2FreezeRefusalReason, str]] = {
     M2FreezeRefusalReason.G2_TARGET_MISMATCH: (
         "repair the M2 freeze artifact so its surface, venue, and instrument match the G2 target"
     ),
+    M2FreezeRefusalReason.PUBLISH_ONLY_WITHOUT_FLOOD_PLAN: (
+        "set budget_envelope.flood_plan or mark budget_envelope.non_public/"
+        "budget_envelope.no_audience for the publish-only M2 freeze artifact"
+    ),
 }
 
 
@@ -100,6 +106,10 @@ class M2BudgetEnvelope:
     surface: str = ""
     venue: str = ""
     instrument: str = ""
+    publish_only: bool = False
+    flood_plan: str = ""
+    non_public: bool = False
+    no_audience: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "authority_ref", _required_string(self.authority_ref))
@@ -118,6 +128,10 @@ class M2BudgetEnvelope:
         object.__setattr__(self, "surface", _optional_string(self.surface))
         object.__setattr__(self, "venue", _optional_string(self.venue))
         object.__setattr__(self, "instrument", _optional_string(self.instrument))
+        object.__setattr__(self, "publish_only", _optional_bool(self.publish_only))
+        object.__setattr__(self, "flood_plan", _optional_string(self.flood_plan))
+        object.__setattr__(self, "non_public", _optional_bool(self.non_public))
+        object.__setattr__(self, "no_audience", _optional_bool(self.no_audience))
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> M2BudgetEnvelope:
@@ -127,10 +141,14 @@ class M2BudgetEnvelope:
                 currency=_required_mapping_string(raw, "currency"),
                 max_notional=_non_negative_float(raw.get("max_notional"), field="max_notional"),
                 max_position=_non_negative_float(raw.get("max_position"), field="max_position"),
-                purpose=_optional_string(raw.get("purpose")),
-                surface=_optional_string(raw.get("surface")),
-                venue=_optional_string(raw.get("venue")),
-                instrument=_optional_string(raw.get("instrument")),
+                purpose=_optional_mapping_string(raw, "purpose"),
+                surface=_optional_mapping_string(raw, "surface"),
+                venue=_optional_mapping_string(raw, "venue"),
+                instrument=_optional_mapping_string(raw, "instrument"),
+                publish_only=_optional_bool(raw.get("publish_only")),
+                flood_plan=_optional_mapping_string(raw, "flood_plan"),
+                non_public=_optional_bool(raw.get("non_public")),
+                no_audience=_optional_bool(raw.get("no_audience")),
             )
         except _FreezeInputError:
             raise
@@ -149,6 +167,10 @@ class M2BudgetEnvelope:
             "surface": self.surface,
             "venue": self.venue,
             "instrument": self.instrument,
+            "publish_only": self.publish_only,
+            "flood_plan": self.flood_plan,
+            "non_public": self.non_public,
+            "no_audience": self.no_audience,
         }
 
 
@@ -332,6 +354,13 @@ def verify_m2_freeze_artifact(
     if commit != frozen_artifact.ruler_hash:
         return _refused(
             M2FreezeRefusalReason.RULER_HASH_MISMATCH,
+            artifact=frozen_artifact,
+            ruler_hash_commit=commit,
+            expected_ruler_hash=frozen_artifact.ruler_hash,
+        )
+    if _is_publish_only_without_flood_path(frozen_artifact.budget_envelope):
+        return _refused(
+            M2FreezeRefusalReason.PUBLISH_ONLY_WITHOUT_FLOOD_PLAN,
             artifact=frozen_artifact,
             ruler_hash_commit=commit,
             expected_ruler_hash=frozen_artifact.ruler_hash,
@@ -530,6 +559,14 @@ def _freeze_evidence_refs(artifact: M2FreezeArtifact) -> tuple[str, ...]:
     )
 
 
+def _is_publish_only_without_flood_path(envelope: M2BudgetEnvelope) -> bool:
+    if not envelope.publish_only:
+        return False
+    if envelope.flood_plan:
+        return False
+    return not (envelope.non_public or envelope.no_audience)
+
+
 def _required_mapping(raw: Mapping[str, Any], field: str) -> Mapping[str, Any]:
     value = raw.get(field)
     if not isinstance(value, Mapping):
@@ -620,6 +657,20 @@ def _optional_string(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("optional field must be a string")
     return value.strip()
+
+
+def _optional_mapping_string(raw: Mapping[str, Any], field: str) -> str:
+    if field not in raw:
+        return ""
+    return _optional_string(raw[field])
+
+
+def _optional_bool(value: Any) -> bool:
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ValueError("optional field must be a boolean")
+    return value
 
 
 def _finite_float(value: Any, *, field: str) -> float:
