@@ -119,9 +119,12 @@ async def run_fixes(report: HealthReport, yes: bool = False) -> int:
     if not admission.admitted:
         reason = admission.denial_summary()
         log.warning(
-            "Legacy health remediation admission denied route=%s reason=%s",
+            "Legacy health remediation admission denied route=%s reason=%s; "
+            "next_action=set %s and refresh route/resource/quota/runtime-actuation "
+            "receipts before enabling legacy runtime fixes",
             admission.route_id,
             reason,
+            BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
             extra={"background_capability": admission.metadata()},
         )
         print(

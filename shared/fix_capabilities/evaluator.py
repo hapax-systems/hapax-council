@@ -47,7 +47,7 @@ Be conservative. Only propose destructive actions when safe alternatives cannot 
 
 # ── Agent ────────────────────────────────────────────────────────────────────
 
-EVALUATOR_MODEL_ALIAS = "balanced"
+EVALUATOR_MODEL_ALIAS = "fast"
 EVALUATOR_ROUTE_ID_ENV = "HAPAX_FIX_EVALUATOR_ROUTE_ID"
 EVALUATOR_ROUTE_ID = "api.headless.provider_gateway"
 

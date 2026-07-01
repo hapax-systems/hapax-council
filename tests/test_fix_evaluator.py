@@ -70,7 +70,7 @@ def _admission(*, admitted: bool = True) -> BackgroundCapabilityAdmission:
     return BackgroundCapabilityAdmission(
         capability_name="health_monitor.fix_evaluator.llm",
         route_id="api.headless.provider_gateway",
-        model_alias="claude-sonnet",
+        model_alias="gemini-flash",
         admitted=admitted,
         denied_reason=None if admitted else "route_policy_denied",
         reason_codes=("policy_launch",) if admitted else ("provider_gateway_evidence_absent",),
@@ -243,7 +243,7 @@ async def test_default_admission_denial_skips_llm():
 
 
 def test_fix_evaluator_admission_uses_provider_gateway_route():
-    """The evaluator gate requests admission for the route backing balanced."""
+    """The evaluator gate requests admission for the route backing its model."""
     from shared.fix_capabilities.evaluator import admit_fix_evaluator
 
     with patch("shared.fix_capabilities.evaluator.admit_background_capability") as mock_admit:
@@ -253,6 +253,6 @@ def test_fix_evaluator_admission_uses_provider_gateway_route():
     assert admission.admitted is True
     kwargs = mock_admit.call_args.kwargs
     assert kwargs["route_id"] == "api.headless.provider_gateway"
-    assert kwargs["model_alias"] == "claude-sonnet"
+    assert kwargs["model_alias"] == "gemini-flash"
     assert kwargs["mutation_surface"] == "provider_spend"
     assert kwargs["quality_floor"] == "frontier_required"
