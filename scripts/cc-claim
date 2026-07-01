@@ -554,6 +554,38 @@ if claim_mode == "claim":
     text = re.sub(
         r"^claimed_at:.*$", f"claimed_at: {now}", text, count=1, flags=re.MULTILINE
     )
+    # A note authored without the full claim key set makes the re.sub stamps
+    # silent no-ops: the claim lands as `status: claimed` with claimed_at
+    # absent — exactly the cc-hygiene H1 ghost predicate — and H1 reverts the
+    # fresh claim out from under the live lane (2026-07-01 eta/ndcvb-phase1
+    # incident). Insert any key the substitution could not find, then verify
+    # the full stamp landed before the claim caches are written.
+    _required_stamp = {
+        "status": "claimed",
+        "assigned_to": role,
+        "claimed_at": now,
+    }
+    for _key, _value in _required_stamp.items():
+        if re.search(rf"^{_key}:", text, flags=re.MULTILINE):
+            continue
+        _fm_end = text.find("\n---", 4)
+        if _fm_end < 0:
+            break
+        text = f"{text[:_fm_end]}\n{_key}: {_value}{text[_fm_end:]}"
+    _unstamped = [
+        _key
+        for _key, _value in _required_stamp.items()
+        if not re.search(
+            rf"^{_key}:\s*{re.escape(str(_value))}\s*$", text, flags=re.MULTILINE
+        )
+    ]
+    if _unstamped:
+        print(
+            f"cc-claim: FATAL — claim stamp did not land for {_unstamped} in {path}; "
+            "refusing to write claim caches over a ghost-claimable note",
+            file=sys.stderr,
+        )
+        sys.exit(6)
     session_suffix = f", session={session_id}" if session_id else ""
     log_line = f"- {now} {role} claimed (cc-claim{session_suffix})\n"
     result_message = f"cc-claim: claimed task '{task_id}' for role '{role}'"

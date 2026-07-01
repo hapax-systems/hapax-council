@@ -355,7 +355,21 @@ task_is_terminal() {
   local note_assigned=""
   note_assigned="$(grep -oP '^assigned_to:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
   if [[ -n "$note_assigned" && "$note_assigned" != "$ROLE" ]]; then
-    return 0
+    # assigned_to mismatch. If OUR claim cache names exactly this task, the
+    # cache — which this launcher's own cc-claim just wrote — is stronger
+    # evidence of liveness than the note: a partially stamped claim can look
+    # unassigned for a moment and cc-hygiene H1 may revert it out from under
+    # a freshly launched lane (2026-07-01 eta/ndcvb-phase1: reverted 13s
+    # after claim, lane SIGTERMed while the worker was healthy). Treat that
+    # combination as INDETERMINATE and fall through to the PR-state check;
+    # a genuinely reassigned task goes terminal once our cache re-points or
+    # clears (cc-close), and closed/merged notes were already handled above.
+    if [[ "$claimed" == "$task" ]]; then
+      printf 'hapax-claude-headless[%s]: task_is_terminal: note assigned_to=%s != role=%s but %s claim cache names this task — treating as indeterminate (claim-stamp drift?)\n' \
+        "$$" "$note_assigned" "$ROLE" "$claim_source" >&2
+    else
+      return 0
+    fi
   fi
   # PR merged but the note not yet closed (the dead-lane window): stop now; the
   # merge-watcher closes the note shortly. Fail-open on any gh hiccup.

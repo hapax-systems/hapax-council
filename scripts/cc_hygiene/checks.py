@@ -43,6 +43,11 @@ WIP_LIMIT = 3
 OFFERED_STALE_DAYS = 14
 """§2.7: offered task older than this with no claim is stale-on-arrival."""
 
+GHOST_CLAIM_GRACE_MINUTES = 10
+"""§2.2 grace window: ghost-claimed notes modified within this window are
+skipped — a mid-claim partial stamp must not be reverted out from under a
+freshly launched lane (2026-07-01 eta/ndcvb-phase1 incident)."""
+
 REFUSAL_DORMANCY_DAYS = 7
 """§2.8: zero canonical refusal notes in this window is a dormancy signal."""
 
@@ -335,6 +340,14 @@ def check_ghost_claimed(
     """§2.2 — `status: claimed` AND (`assigned_to: unassigned` OR `claimed_at: null`).
 
     Severity: violation (definitional — `cc-claim` cannot produce this).
+
+    Grace window: a ghost whose note file changed within
+    ``GHOST_CLAIM_GRACE_MINUTES`` is skipped. A partially stamped claim
+    (target keys absent when cc-claim's substitutions ran) looks ghost for
+    the moments between the stamp and the sweep, and the H1 revert then
+    kills the freshly launched lane via the launcher's terminal check
+    (2026-07-01 eta/ndcvb-phase1 incident). A real ghost goes quiet and is
+    flagged on the first sweep after the window.
     """
     now = now or _now()
     events: list[HygieneEvent] = []
@@ -343,6 +356,12 @@ def check_ghost_claimed(
             continue
         ghost = note.assigned_to in (None, "unassigned") or note.claimed_at is None
         if not ghost:
+            continue
+        try:
+            mtime = datetime.fromtimestamp(Path(note.path).stat().st_mtime, tz=UTC)
+        except OSError:
+            mtime = None
+        if mtime is not None and now - mtime < timedelta(minutes=GHOST_CLAIM_GRACE_MINUTES):
             continue
         events.append(
             HygieneEvent(

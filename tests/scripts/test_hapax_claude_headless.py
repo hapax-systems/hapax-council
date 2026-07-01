@@ -868,3 +868,100 @@ def test_appendix_hop_threads_session_identity_end_to_end(tmp_path: Path) -> Non
     assert proof["role"] == "beta"
     assert proof["task_id"] == "task-x"
     assert proof["claim_materialized"] is True
+
+
+# ---------------------------------------------------------------------------
+# task_is_terminal: claim-stamp drift must not reap a fresh live lane.
+# 2026-07-01 eta/ndcvb-phase1 incident: cc-claim's note stamp landed partially
+# (claimed_at key absent in the authored note), cc-hygiene H1 reverted the
+# note to offered/unassigned 13s later, and the assigned-mismatch branch
+# returned terminal — SIGTERMing a healthy freshly-launched worker.
+# ---------------------------------------------------------------------------
+
+
+def _run_task_is_terminal(
+    tmp_path: Path,
+    *,
+    cache_task: str | None,
+    note_status: str,
+    note_assigned: str,
+) -> int:
+    """Extract task_is_terminal() from the launcher and drive it with fixtures.
+
+    Returns the bash exit code: 0 = terminal (lane reaped), 1 = live.
+    """
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    note = tmp_path / "note.md"
+    note.write_text(
+        f"---\nstatus: {note_status}\nassigned_to: {note_assigned}\n---\n",
+        encoding="utf-8",
+    )
+    claim_file = cache / "cc-active-task-eta"
+    if cache_task is not None:
+        claim_file.write_text(cache_task + "\n", encoding="utf-8")
+    text = SCRIPT.read_text(encoding="utf-8")
+    start = text.index("task_is_terminal()")
+    end = text.index("\n}\n", start) + 3
+    func = text[start:end]
+    harness = "\n".join(
+        [
+            "set -u",
+            f'HOME="{home}"',
+            'ROLE="eta"',
+            f'CLAIM_FILE="{claim_file}"',
+            f'find_active_note() {{ echo "{note}"; }}',
+            "gh() { return 1; }",
+            func,
+            'task_is_terminal "task-under-test"',
+        ]
+    )
+    result = subprocess.run(["bash", "-c", harness], text=True, capture_output=True, check=False)
+    assert result.returncode in (0, 1), result.stderr
+    return result.returncode
+
+
+def test_terminal_check_survives_claim_stamp_drift(tmp_path: Path) -> None:
+    """Matching claim cache + ghost-reverted note (offered/unassigned) = LIVE."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+    )
+    assert rc == 1
+
+
+def test_terminal_check_survives_foreign_assignee_with_matching_cache(
+    tmp_path: Path,
+) -> None:
+    """Matching cache is stronger than a drifted assigned_to — indeterminate."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="claimed",
+        note_assigned="some-other-role",
+    )
+    assert rc == 1
+
+
+def test_terminal_check_reaps_when_cache_repointed(tmp_path: Path) -> None:
+    """Cache naming a DIFFERENT task is the definitive moved-on signal."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="a-different-task",
+        note_status="claimed",
+        note_assigned="some-other-role",
+    )
+    assert rc == 0
+
+
+def test_terminal_check_reaps_done_note(tmp_path: Path) -> None:
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="done",
+        note_assigned="eta",
+    )
+    assert rc == 0

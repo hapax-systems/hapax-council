@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -621,3 +622,55 @@ def test_governed_build_task_allows_claim(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_claim_inserts_missing_claim_keys(tmp_path: Path) -> None:
+    """A note authored without claimed_at must still get a COMPLETE stamp.
+
+    The re.sub stamps were silent no-ops for absent keys: the claim landed as
+    `status: claimed` with claimed_at missing — exactly the cc-hygiene H1
+    ghost predicate — and H1 reverted the fresh claim out from under the live
+    lane (2026-07-01 eta/ndcvb-phase1 incident)."""
+    home = tmp_path / "home"
+    root = _task_root(home)
+    task_id = "cc-missing-keys"
+    path = root / "active" / f"{task_id}.md"
+    path.write_text(
+        textwrap.dedent(
+            f"""\
+            ---
+            type: cc-task
+            task_id: {task_id}
+            title: "{task_id}"
+            status: offered
+            assigned_to: unassigned
+            kind: build
+            authority_case: CASE-TEST-001
+            parent_spec: /tmp/isap-test.md
+            quality_floor: frontier_required
+            mutation_surface: source
+            authority_level: authoritative
+            route_metadata_schema: 1
+            depends_on: []
+            created_at: 2026-05-09T00:00:00Z
+            updated_at: 2026-05-09T00:00:00Z
+            ---
+
+            # {task_id}
+
+            ## Session log
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = _claim(home, task_id)
+
+    assert result.returncode == 0, result.stderr
+    text = path.read_text(encoding="utf-8")
+    frontmatter = text[: text.find("\n---", 4)]
+    assert "status: claimed" in frontmatter
+    assert "assigned_to: cx-test" in frontmatter
+    assert re.search(r"^claimed_at: \d{4}-\d{2}-\d{2}T", frontmatter, flags=re.MULTILINE), (
+        "claimed_at must be inserted when the authored note lacks the key:\n" + frontmatter
+    )
