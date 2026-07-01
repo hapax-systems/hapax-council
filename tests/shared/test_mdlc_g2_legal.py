@@ -429,7 +429,7 @@ def test_g2_missing_registry_file_fails_closed(tmp_path: Path) -> None:
     assert result.refusal_reason is G2LegalRefusalReason.REGISTRY_UNREADABLE
 
 
-def test_g2_unmapped_registry_reason_errors_clearly(
+def test_g2_unmapped_registry_reason_fails_closed_with_next_action(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     decision = G2GateDecision(
@@ -450,8 +450,12 @@ def test_g2_unmapped_registry_reason_errors_clearly(
         fake_evaluate_g2_commit_gate,
     )
 
-    with pytest.raises(ValueError, match="unmapped g2 gate decision reason"):
-        verify_g2_legal(TARGET, registry=_registry(), today=TODAY)
+    result = verify_g2_legal(TARGET, registry=_registry(), today=TODAY)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is G2LegalRefusalReason.UNMAPPED_DECISION_REASON
+    assert result.target == TARGET
+    assert result.next_action == ("update the MonDLC G2 reason-to-refusal mapping before M2 commit")
 
 
 def test_default_registry_integration_blocks_minnesota_trading_and_keeps_ndcvb_distinct() -> None:

@@ -44,6 +44,7 @@ class G2LegalRefusalReason(StrEnum):
     PARTIAL_NOT_COMMITTABLE = "partial_not_committable"
     LIT_AUTHORITY_NOT_COMMITTABLE = "lit_authority_not_committable"
     LIT_HAS_OPEN_QUESTIONS = "lit_has_open_questions"
+    UNMAPPED_DECISION_REASON = "unmapped_decision_reason"
 
 
 _G2_REASON_TO_REFUSAL: Final[dict[G2Reason, G2LegalRefusalReason]] = {
@@ -90,6 +91,9 @@ _NEXT_ACTIONS: Final[dict[G2LegalRefusalReason, str]] = {
     ),
     G2LegalRefusalReason.LIT_HAS_OPEN_QUESTIONS: (
         "resolve every open legal-posture question before M2 commit"
+    ),
+    G2LegalRefusalReason.UNMAPPED_DECISION_REASON: (
+        "update the MonDLC G2 reason-to-refusal mapping before M2 commit"
     ),
 }
 
@@ -275,7 +279,14 @@ def _admitted(decision: G2GateDecision) -> G2LegalVerification:
 def _refused_from_decision(decision: G2GateDecision) -> G2LegalVerification:
     refusal_reason = _G2_REASON_TO_REFUSAL.get(decision.reason)
     if refusal_reason is None:
-        raise ValueError(f"unmapped g2 gate decision reason: {decision.reason!r}")
+        return _refused(
+            G2LegalRefusalReason.UNMAPPED_DECISION_REASON,
+            detail=f"unmapped g2 gate decision reason: {decision.reason!r}",
+            target=decision.target,
+            row=decision.row,
+            advisory_row=decision.advisory_row,
+            stale=decision.stale,
+        )
     return _refused(
         refusal_reason,
         detail=decision.message,
