@@ -147,15 +147,25 @@ class TestPollOnce:
             }
         ]
         client = _make_client(_make_response(status_code=200, body=body))
-        receiver = LiberapayReceiver(credentials=("u", "p"), http_client=client)
+        sentinel_username = "pass-loaded-user-sentinel"
+        receiver = LiberapayReceiver(credentials=(sentinel_username, "p"), http_client=client)
 
         assert receiver.poll_once() == 1
+        client.get.assert_called_with(
+            f"/{sentinel_username}/public.json",
+            auth=(sentinel_username, "p"),
+            timeout=15.0,
+        )
 
         receipts = tail_resource_receipts(log_path=receipt_log)
         assert [receipt.operation.value for receipt in receipts] == [
             "external_api_poll",
             "payment_event_append",
         ]
+        assert sentinel_username not in receipts[0].model_dump_json()
+        assert (
+            "external_api:GET /{liberapay_username}/public.json" in receipts[0].resource_provenance
+        )
         events = tail_events(log_path=log_path)
         assert events[0].resource_receipt_ref == (
             f"money-rail-resource-receipt:liberapay:{receipts[1].receipt_id}"

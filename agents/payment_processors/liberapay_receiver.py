@@ -53,6 +53,7 @@ from shared.chronicle import ChronicleEvent, current_otel_ids, record
 log = logging.getLogger(__name__)
 
 LIBERAPAY_API_BASE = "https://liberapay.com"
+LIBERAPAY_PUBLIC_RECEIPT_ENDPOINT = "GET /{liberapay_username}/public.json"
 DEFAULT_POLL_INTERVAL_S = 300.0  # 5 minutes — Liberapay traffic is low-volume
 KYC_EUR_THRESHOLD = 10_000.0
 KYC_PROXIMITY_REFUSAL_FLOOR = 0.8
@@ -138,7 +139,7 @@ class LiberapayReceiver:
         if (
             record_external_api_poll_receipt(
                 rail="liberapay",
-                endpoint=f"GET {url}",
+                endpoint=LIBERAPAY_PUBLIC_RECEIPT_ENDPOINT,
                 downstream_action="httpx.Client.get",
             )
             is None
