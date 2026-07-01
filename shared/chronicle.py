@@ -47,6 +47,9 @@ STAGE0_SOURCES = frozenset(
         "public_speech_events",
     }
 )
+# Source names and event-type prefixes are complementary classifiers: some
+# producers have stable Stage0 source names, while generic emitters such as
+# engines classify durable rows through their event type.
 STAGE0_EVENT_TYPE_PREFIXES = ("apperception.", "gate.", "payment.", "speech.")
 
 
@@ -375,7 +378,7 @@ def _query_durable_chronicle(
         try:
             row = json.loads(raw)
             ev = ChronicleEvent.from_json(json.dumps(row["payload"]))
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        except (AttributeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             continue
         if _matches_filters(
             ev,
@@ -391,9 +394,8 @@ def _query_durable_chronicle(
             temporal_span_ref=temporal_span_ref,
         ):
             results.append(ev)
-            if len(results) >= limit:
-                break
-    return results
+    results.sort(key=lambda item: item.ts, reverse=True)
+    return results[:limit]
 
 
 def query(

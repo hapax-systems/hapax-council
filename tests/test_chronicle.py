@@ -772,8 +772,25 @@ class TestDurableSinkIntegration:
         import shared.chronicle as chronicle_mod
 
         chronicle_mod.CHRONICLE_FILE.unlink()
-        results = query(since=now - 60, source="gate_log")
+        results = query(since=0.0, source="gate_log", limit=1)
         assert [ev.event_id for ev in results] == [newer.event_id]
+
+    def test_query_skips_malformed_durable_payload(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shared.durable_jsonl_sink as sink_mod
+
+        durable_root, _chronicle_file = self._configure_durable_sink(tmp_path, monkeypatch)
+        stage0 = _make_event(source="gate_log", event_type="gate.allow", ts=time.time())
+        record(stage0)
+        durable_path = sink_mod.DurableJsonlSink(durable_root).path_for_stream("chronicle")
+        with durable_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"payload": []}) + "\n")
+
+        import shared.chronicle as chronicle_mod
+
+        chronicle_mod.CHRONICLE_FILE.unlink()
+        assert [ev.event_id for ev in query(since=0.0, source="gate_log")] == [stage0.event_id]
 
     def test_record_recreates_volatile_dir_after_reboot(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
