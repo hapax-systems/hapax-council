@@ -463,6 +463,27 @@ def test_local_worker_model_call_refuses_mismatched_served_leaf(tmp_path: Path) 
     assert "command-r-08-2024" in (admission.denied_reason or "")
 
 
+def test_local_worker_admits_registered_local_fast_alias_to_policy(tmp_path: Path) -> None:
+    admission = admit_background_capability(
+        capability_name="studio.director.llm",
+        route_id="local_tool.local.worker",
+        model_alias="local-fast",
+        task_fields=_runtime_task_fields(task_id="task-background-local-fast"),
+        mutation_surface="none",
+        quality_floor="deterministic_ok",
+        authority_level="support_only",
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is False
+    assert admission.policy_outcome is not None
+    assert admission.reason_codes != ("model_descriptor_mismatch",)
+    assert admission.model_descriptor["execution_descriptor"]["model_id"] == "command-r-08-2024"
+
+
 def test_background_admission_refuses_invalid_route_id(tmp_path: Path) -> None:
     admission = admit_background_capability(
         capability_name="studio.scene_classifier.llm",
