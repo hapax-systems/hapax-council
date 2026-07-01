@@ -64,6 +64,16 @@ def test_request_and_gate_dataclasses_serialize_stable_api_fragments() -> None:
         "detail": "fixture gate receipt",
     }
 
+    without_detail = NDCVBBatteryGate.from_mapping(
+        {
+            "gate_id": "counterfactual_probe",
+            "passed": True,
+            "confidence": 0.9,
+            "provenance": ["ndcvb:battery/counterfactual_probe"],
+        }
+    )
+    assert without_detail.to_api()["detail"] == ""
+
 
 def test_phase0_api_harness_exposes_detection_result_with_provenance_and_confidence() -> None:
     response = package_ndcvb_detection_result(
@@ -176,6 +186,16 @@ def test_battery_gate_ids_are_unique_and_have_provenance() -> None:
 
 
 def test_battery_gate_dataclass_constructor_enforces_public_contract() -> None:
+    assert (
+        NDCVBBatteryGate(
+            gate_id="stimulus_capture",
+            passed=True,
+            confidence=0.91,
+            provenance=("ndcvb:battery/stimulus_capture",),
+        ).detail
+        == ""
+    )
+
     with pytest.raises(NDCVBApiHarnessError, match="passed must be a boolean"):
         NDCVBBatteryGate(  # type: ignore[arg-type]
             gate_id="stimulus_capture",
@@ -202,7 +222,9 @@ def test_battery_gate_dataclass_constructor_enforces_public_contract() -> None:
 
 
 def test_forbidden_verdict_language_guard_remains_engine_owned() -> None:
-    with pytest.raises(ForbiddenAxisBVerdictError):
+    with pytest.raises(
+        NDCVBApiHarnessError, match="NDCVB verdict validation failed.*next_action="
+    ) as exc:
         package_ndcvb_detection_result(
             request=_request(),
             verdicts=[
@@ -215,6 +237,7 @@ def test_forbidden_verdict_language_guard_remains_engine_owned() -> None:
             ],
             battery_gates=_gates(),
         )
+    assert isinstance(exc.value.__cause__, ForbiddenAxisBVerdictError)
 
 
 def test_phase0_request_rejects_customer_data_or_raw_payload_fields() -> None:

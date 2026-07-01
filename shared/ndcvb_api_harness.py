@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
-from shared.segment_ndcvb_axis_b import evaluate_ndcvb_axis_b
+from shared.segment_ndcvb_axis_b import AxisBNDCVBError, evaluate_ndcvb_axis_b
 
 NDCVB_API_HARNESS_VERSION: Final = 1
 NDCVB_API_SCHEMA: Final = "hapax.ndcvb.phase0_detection_result.v1"
@@ -187,7 +187,7 @@ class NDCVBBatteryGate:
             "provenance",
             _provenance_tuple(self.provenance, field="provenance"),
         )
-        object.__setattr__(self, "detail", _optional_text(self.detail, "detail") or "")
+        object.__setattr__(self, "detail", _optional_detail(self.detail, "detail"))
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> NDCVBBatteryGate:
@@ -207,7 +207,7 @@ class NDCVBBatteryGate:
             )
         confidence = _unit_float(raw.get("confidence"), field="confidence")
         provenance = _provenance_tuple(raw.get("provenance"), field="provenance")
-        detail = _optional_text(raw.get("detail"), "detail") or ""
+        detail = _optional_detail(raw.get("detail"), "detail")
         return cls(
             gate_id=gate_id,
             passed=passed,
@@ -244,7 +244,12 @@ def package_ndcvb_detection_result(
     request_record = _coerce_request(request)
     _validate_verdict_inputs(verdicts)
     gate_records = _coerce_battery_gates(battery_gates)
-    engine_report = evaluate_ndcvb_axis_b(verdicts)
+    try:
+        engine_report = evaluate_ndcvb_axis_b(verdicts)
+    except AxisBNDCVBError as exc:
+        raise NDCVBApiHarnessError(
+            _with_next_action(f"NDCVB verdict validation failed: {exc}", _VERDICT_NEXT_ACTION)
+        ) from exc
     battery_report = _battery_report(gate_records)
     status = _status_for(engine_report=engine_report, battery_ok=battery_report["ok"])
     result_confidence = _result_confidence(engine_report)
@@ -489,6 +494,16 @@ def _optional_text(value: Any, field: str) -> str | None:
             _with_next_action(f"{field} must not be empty", _TEXT_NEXT_ACTION)
         )
     return text
+
+
+def _optional_detail(value: Any, field: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise NDCVBApiHarnessError(
+            _with_next_action(f"{field} must be a string", _TEXT_NEXT_ACTION)
+        )
+    return value.strip()
 
 
 def _unit_float(value: Any, *, field: str) -> float:
