@@ -157,6 +157,7 @@ class OutboundExecutor:
         position_cap: float,
         current_position: float = 0.0,
         kill_switch: bool | None = None,
+        public_gate_receipts: set[str] | frozenset[str] | None = None,
         registry: AccountFederationRegistry,
     ) -> None:
         if not isinstance(authority_ceiling, AuthorityCeiling):
@@ -198,6 +199,7 @@ class OutboundExecutor:
         self.position_cap = _finite_nonnegative_float("position_cap", position_cap)
         self.current_position = _finite_nonnegative_float("current_position", current_position)
         self.kill_switch = kill_switch
+        self.public_gate_receipts = _normalize_public_gate_receipts(public_gate_receipts)
         self.registry = registry
         self._position_lock = threading.RLock()
 
@@ -226,6 +228,8 @@ class OutboundExecutor:
                 evidence_refs=request.evidence_refs,
                 metadata={"next_action": next_action},
             )
+
+        admission_metadata: dict[str, Any] = {}
 
         # A no-claim ceiling refuses before route-specific checks can reveal state.
         if self.authority_ceiling is AuthorityCeiling.NO_CLAIM:
@@ -345,14 +349,18 @@ class OutboundExecutor:
                     "attach durable evidence_refs for the requested outbound action",
                 )
         elif self.authority_ceiling is AuthorityCeiling.PUBLIC_GATE_REQUIRED:
-            if not request.public_gate_passed or not _has_public_gate_evidence(
-                request.evidence_refs
-            ):
+            public_gate_evidence_ref = _bound_public_gate_evidence_ref(
+                request.evidence_refs,
+                self.public_gate_receipts,
+            )
+            if not request.public_gate_passed or public_gate_evidence_ref is None:
                 return _refuse(
                     "authority_ceiling_exceeded",
-                    "Outbound execution refused: PUBLIC_GATE_REQUIRED ceiling requires public gate evidence",
-                    "complete the public gate and attach its durable evidence_ref before retrying",
+                    "Outbound execution refused: PUBLIC_GATE_REQUIRED ceiling requires bound public gate evidence",
+                    "complete the public gate, bind its durable receipt to the executor, "
+                    "and attach that evidence_ref before retrying",
                 )
+            admission_metadata["public_gate_evidence_ref"] = public_gate_evidence_ref
 
         # Admitted!
         return OutboundExecutionReceipt(
@@ -365,6 +373,7 @@ class OutboundExecutor:
             current_position_before=self.current_position,
             current_position_after=position_after,
             evidence_refs=request.evidence_refs,
+            metadata=admission_metadata,
         )
 
     def execute(self, request: OutboundExecutionRequest) -> OutboundExecutionReceipt:
@@ -412,14 +421,55 @@ def _decimal(value: float) -> Decimal:
     return Decimal(str(value))
 
 
+def _normalize_public_gate_receipts(
+    public_gate_receipts: set[str] | frozenset[str] | None,
+) -> frozenset[str]:
+    if public_gate_receipts is None:
+        return frozenset()
+    if isinstance(public_gate_receipts, str) or not isinstance(
+        public_gate_receipts, set | frozenset
+    ):
+        raise TypeError(
+            "public_gate_receipts must be a set or frozenset of durable public-gate "
+            "evidence refs; next action: bind receipts produced by the public gate"
+        )
+    if not all(isinstance(ref, str) for ref in public_gate_receipts):
+        raise TypeError(
+            "public_gate_receipts entries must be strings; next action: remove "
+            "non-string public gate refs"
+        )
+    normalized = frozenset(ref.strip() for ref in public_gate_receipts)
+    if not all(normalized):
+        raise ValueError(
+            "public_gate_receipts entries must be nonblank; next action: remove blank refs"
+        )
+    if not all(_is_public_gate_evidence_ref(ref) for ref in normalized):
+        raise ValueError(
+            "public_gate_receipts entries must use public-gate evidence refs; next action: "
+            "bind refs with a public-gate receipt prefix"
+        )
+    return normalized
+
+
 def _has_durable_evidence(evidence_refs: list[str]) -> bool:
     return any(ref.strip() for ref in evidence_refs)
 
 
-def _has_public_gate_evidence(evidence_refs: list[str]) -> bool:
-    return any(
-        ref.strip().casefold().startswith(_PUBLIC_GATE_EVIDENCE_PREFIXES) for ref in evidence_refs
-    )
+def _is_public_gate_evidence_ref(ref: str) -> bool:
+    return ref.strip().casefold().startswith(_PUBLIC_GATE_EVIDENCE_PREFIXES)
+
+
+def _bound_public_gate_evidence_ref(
+    evidence_refs: list[str],
+    public_gate_receipts: frozenset[str],
+) -> str | None:
+    if not public_gate_receipts:
+        return None
+    for ref in evidence_refs:
+        normalized = ref.strip()
+        if normalized in public_gate_receipts and _is_public_gate_evidence_ref(normalized):
+            return normalized
+    return None
 
 
 # This module is a governed contract for downstream lane adapters. Keep the
@@ -433,4 +483,7 @@ _OUTBOUND_EXECUTOR_ENTRYPOINTS: Final = (
     OutboundExecutor,
     OutboundExecutor.validate_request,
     OutboundExecutor.require_execution,
+    _normalize_public_gate_receipts,
+    _is_public_gate_evidence_ref,
+    _bound_public_gate_evidence_ref,
 )

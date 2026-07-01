@@ -231,6 +231,50 @@ def test_executor_configuration_rejects_invalid_types(
             registry=base_registry,
         )
 
+    with pytest.raises(TypeError, match="public_gate_receipts"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.PUBLIC_GATE_REQUIRED,
+            venue_allowlist={"internal"},
+            notional_cap=100.0,
+            position_cap=500.0,
+            kill_switch=False,
+            public_gate_receipts="public-gate:receipt-1",  # type: ignore[arg-type]
+            registry=base_registry,
+        )
+
+    with pytest.raises(TypeError, match="public_gate_receipts entries"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.PUBLIC_GATE_REQUIRED,
+            venue_allowlist={"internal"},
+            notional_cap=100.0,
+            position_cap=500.0,
+            kill_switch=False,
+            public_gate_receipts={"public-gate:receipt-1", 1},  # type: ignore[list-item]
+            registry=base_registry,
+        )
+
+    with pytest.raises(ValueError, match="public_gate_receipts entries must be nonblank"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.PUBLIC_GATE_REQUIRED,
+            venue_allowlist={"internal"},
+            notional_cap=100.0,
+            position_cap=500.0,
+            kill_switch=False,
+            public_gate_receipts={"public-gate:receipt-1", "   "},
+            registry=base_registry,
+        )
+
+    with pytest.raises(ValueError, match="public-gate evidence refs"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.PUBLIC_GATE_REQUIRED,
+            venue_allowlist={"internal"},
+            notional_cap=100.0,
+            position_cap=500.0,
+            kill_switch=False,
+            public_gate_receipts={"evidence:audit-log-1"},
+            registry=base_registry,
+        )
+
     with pytest.raises(TypeError, match="kill_switch"):
         OutboundExecutor(
             authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
@@ -985,7 +1029,21 @@ def test_authority_ceilings(base_registry: AccountFederationRegistry) -> None:
         public_gate_passed=True,
         evidence_refs=["public-gate:receipt-1"],
     )
-    assert exec_public.execute(req_public).status == "admitted"
+    assert exec_public.execute(req_public).refusal_reason == "authority_ceiling_exceeded"
+
+    # Admitted only when the route independently binds the public-gate receipt.
+    exec_public_bound = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.PUBLIC_GATE_REQUIRED,
+        venue_allowlist={"internal"},
+        notional_cap=100.0,
+        position_cap=500.0,
+        kill_switch=False,
+        public_gate_receipts={"public-gate:receipt-1"},
+        registry=base_registry,
+    )
+    receipt = exec_public_bound.execute(req_public)
+    assert receipt.status == "admitted"
+    assert receipt.metadata["public_gate_evidence_ref"] == "public-gate:receipt-1"
 
 
 def test_internal_only_accepts_internal_venue_prefixes(
