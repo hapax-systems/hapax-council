@@ -89,6 +89,9 @@ from shared.capability_surface_delta import (
     CapabilitySurfaceDelta as _CapabilitySurfaceDelta,
 )
 from shared.capability_surface_delta import (
+    CapabilitySurfaceDeltaFixtureSet as _CapabilitySurfaceDeltaFixtureSet,
+)
+from shared.capability_surface_delta import (
     detect_surface_deltas as _detect_surface_deltas,
 )
 from shared.capability_surface_delta import (
@@ -653,6 +656,8 @@ build_privacy_egress_preflight
 # tests. The diff-only vulture pass does not count those call paths reliably.
 _CapabilitySurfaceDelta.allows_demand_fulfillment
 _CAPABILITY_SURFACE_DELTA_ENTRYPOINTS = (
+    _CapabilitySurfaceDelta._delta_contract_is_actionable,
+    _CapabilitySurfaceDeltaFixtureSet._fixtures_cover_required_cases,
     _detect_surface_deltas,
     _load_capability_surface_delta_fixtures,
     _write_capability_surface_delta_tasks,
