@@ -93,6 +93,24 @@ def test_executor_configuration_fails_closed(base_registry: AccountFederationReg
             registry=base_registry,
         )
 
+    with pytest.raises(ValueError, match="notional_cap must be finite"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist={"internal"},
+            notional_cap=float("nan"),
+            position_cap=500.0,
+            registry=base_registry,
+        )
+
+    with pytest.raises(ValueError, match="notional_cap must be finite"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist={"internal"},
+            notional_cap=float("inf"),
+            position_cap=500.0,
+            registry=base_registry,
+        )
+
     with pytest.raises(ValueError, match="position_cap"):
         OutboundExecutor(
             authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
@@ -101,6 +119,57 @@ def test_executor_configuration_fails_closed(base_registry: AccountFederationReg
             position_cap=-1.0,
             registry=base_registry,
         )
+
+    with pytest.raises(ValueError, match="current_position"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist={"internal"},
+            notional_cap=100.0,
+            position_cap=500.0,
+            current_position=-1.0,
+            registry=base_registry,
+        )
+
+
+def test_executor_configuration_rejects_invalid_types(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    with pytest.raises(TypeError, match="authority_ceiling"):
+        OutboundExecutor(
+            authority_ceiling="internal_only",  # type: ignore[arg-type]
+            venue_allowlist={"internal"},
+            notional_cap=100.0,
+            position_cap=500.0,
+            registry=base_registry,
+        )
+
+    with pytest.raises(TypeError, match="registry"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist={"internal"},
+            notional_cap=100.0,
+            position_cap=500.0,
+            registry="registry",  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(TypeError, match="position_cap"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist={"internal"},
+            notional_cap=100.0,
+            position_cap="500",  # type: ignore[arg-type]
+            registry=base_registry,
+        )
+
+
+def test_request_rejects_non_finite_amount() -> None:
+    for amount in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValidationError):
+            OutboundExecutionRequest(
+                scope="gmail_send_internal",
+                venue="internal",
+                amount=amount,
+            )
 
 
 def test_require_execution_success(base_registry: AccountFederationRegistry) -> None:
@@ -144,6 +213,28 @@ def test_require_execution_refused(base_registry: AccountFederationRegistry) -> 
         executor.require_execution(request)
 
 
+def test_validate_request_is_dry_run(base_registry: AccountFederationRegistry) -> None:
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=100.0,
+        position_cap=500.0,
+        current_position=50.0,
+        registry=base_registry,
+    )
+
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=10.0,
+    )
+
+    receipt = executor.validate_request(request)
+    assert receipt.status == "admitted"
+    assert receipt.current_position_after == 60.0
+    assert executor.current_position == 50.0
+
+
 def test_kill_switch_blocks(base_registry: AccountFederationRegistry) -> None:
     executor = OutboundExecutor(
         authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
@@ -163,7 +254,33 @@ def test_kill_switch_blocks(base_registry: AccountFederationRegistry) -> None:
     receipt = executor.execute(request)
     assert receipt.status == "refused"
     assert receipt.refusal_reason == "kill_switch_active"
+    assert "Next action:" in receipt.verdict
+    assert receipt.metadata["next_action"]
     assert executor.current_position == 0.0  # Position remains unchanged
+
+
+def test_no_claim_refuses_before_route_specific_checks(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    receive_only_registry = base_registry.model_copy(update={"provider": "stripe"})
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.NO_CLAIM,
+        venue_allowlist={"internal"},
+        notional_cap=1.0,
+        position_cap=1.0,
+        registry=receive_only_registry,
+    )
+
+    request = OutboundExecutionRequest(
+        scope="not_in_registry",
+        venue="internal",
+        amount=2.0,
+        use_default_token=True,
+    )
+
+    receipt = executor.execute(request)
+    assert receipt.refusal_reason == "authority_ceiling_exceeded"
+    assert "NO_CLAIM" in receipt.verdict
 
 
 def test_receive_only_rail_blocks(base_registry: AccountFederationRegistry) -> None:
@@ -248,6 +365,20 @@ def test_default_token_fallback_blocks(base_registry: AccountFederationRegistry)
     receipt_placeholder = executor_placeholder.execute(request_normal)
     assert receipt_placeholder.status == "refused"
     assert receipt_placeholder.refusal_reason == "default_token_fallback"
+
+    # Case C: Literal placeholder and empty values are also blocked.
+    for secret_value in ("placeholder", "   "):
+        placeholder_registry = base_registry.model_copy(update={"pass_or_secret_key": secret_value})
+        executor_placeholder = OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist={"internal"},
+            notional_cap=100.0,
+            position_cap=500.0,
+            registry=placeholder_registry,
+        )
+        receipt_placeholder = executor_placeholder.execute(request_normal)
+        assert receipt_placeholder.status == "refused"
+        assert receipt_placeholder.refusal_reason == "default_token_fallback"
 
 
 def test_forbidden_action_blocks(base_registry: AccountFederationRegistry) -> None:
@@ -396,6 +527,26 @@ def test_authority_ceilings(base_registry: AccountFederationRegistry) -> None:
     assert exec_public.execute(req_public).status == "admitted"
 
 
+def test_internal_only_accepts_internal_venue_prefixes(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal:logs", "private_internal_runner"},
+        notional_cap=100.0,
+        position_cap=500.0,
+        registry=base_registry,
+    )
+
+    for venue in ("internal:logs", "private_internal_runner"):
+        request = OutboundExecutionRequest(
+            scope="gmail_send_internal",
+            venue=venue,
+            amount=1.0,
+        )
+        assert executor.validate_request(request).status == "admitted"
+
+
 def test_receipt_to_dict(base_registry: AccountFederationRegistry) -> None:
     executor = OutboundExecutor(
         authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
@@ -414,3 +565,23 @@ def test_receipt_to_dict(base_registry: AccountFederationRegistry) -> None:
     assert receipt_dict["status"] == "admitted"
     assert receipt_dict["notional_cap"] == 100.0
     assert receipt_dict["position_cap"] == 500.0
+
+
+def test_request_to_dict() -> None:
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=10.0,
+        evidence_refs=["evidence:fixture"],
+    )
+
+    request_dict = request.to_dict()
+    assert request_dict == {
+        "scope": "gmail_send_internal",
+        "venue": "internal",
+        "amount": 10.0,
+        "use_default_token": False,
+        "evidence_refs": ["evidence:fixture"],
+        "public_gate_passed": False,
+        "payload": {},
+    }
