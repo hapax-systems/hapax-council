@@ -303,6 +303,34 @@ def test_bind_durable_payment_events_missing_reader_fails_closed(
     assert "next action:" in result.gate_result.reason
 
 
+@pytest.mark.parametrize("exc", [OSError("missing file"), ValueError("invalid jsonl")])
+def test_bind_durable_payment_events_invalid_stream_has_stream_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+    exc: Exception,
+) -> None:
+    m_binding = _binding_module()
+
+    def fake_reader(path: Path | str):
+        raise exc
+
+    monkeypatch.setattr(
+        m_binding,
+        "_load_rail_module",
+        lambda: SimpleNamespace(realized_returns_from_durable_payment_events=fake_reader),
+    )
+
+    result = m_binding.bind_durable_payment_events(
+        "/tmp/payment-events.jsonl",
+        _ladder(),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.INVALID_RAIL_EVENT_STREAM
+    assert "durable payment-event stream" in result.next_action
+    assert "shared.mdlc_realized_return" not in result.next_action
+
+
 def test_unsupported_shape_fails_closed() -> None:
     m_binding = _binding_module()
 
@@ -311,6 +339,32 @@ def test_unsupported_shape_fails_closed() -> None:
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
     assert "unsupported_shape" in result.reason
+    assert result.next_action
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [AttributeError("missing attribute"), KeyError("measurement")],
+)
+def test_scorer_shape_exceptions_fail_closed_as_unsupported_shape(
+    monkeypatch: pytest.MonkeyPatch,
+    exc: Exception,
+) -> None:
+    m_binding = _binding_module()
+
+    def fake_score(measurement: Any, ladder: Any, *, ruler_hash_commit: str):
+        raise exc
+
+    monkeypatch.setattr(
+        m_binding,
+        "_load_measure_module",
+        lambda: SimpleNamespace(score=fake_score),
+    )
+
+    result = m_binding.bind_m_result(_measurement(), _ladder(), ruler_hash_commit=HASH)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
     assert result.next_action
 
 

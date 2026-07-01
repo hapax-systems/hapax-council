@@ -29,6 +29,7 @@ class MonDLCBindingRefusalReason(StrEnum):
 
     MISSING_SCORER = "missing_scorer"
     MISSING_RAIL_READER = "missing_rail_reader"
+    INVALID_RAIL_EVENT_STREAM = "invalid_rail_event_stream"
     MISSING_RAIL_EVIDENCE = "missing_rail_evidence"
     MISSING_LADDER = "missing_ladder"
     RAIL_REFUSED = "rail_refused"
@@ -41,6 +42,9 @@ _NEXT_ACTIONS: Final[dict[MonDLCBindingRefusalReason, str]] = {
     ),
     MonDLCBindingRefusalReason.MISSING_RAIL_READER: (
         "install or restore shared.mdlc_realized_return before reading durable payment events"
+    ),
+    MonDLCBindingRefusalReason.INVALID_RAIL_EVENT_STREAM: (
+        "provide a readable durable payment-event stream before binding"
     ),
     MonDLCBindingRefusalReason.MISSING_RAIL_EVIDENCE: (
         "attach accepted realized inbound rail evidence with durable refs before binding"
@@ -151,10 +155,17 @@ def bind_durable_payment_events(
     try:
         rail_module = _load_rail_module()
         rail_results = rail_module.realized_returns_from_durable_payment_events(path)
-    except (AttributeError, ImportError, ModuleNotFoundError, OSError, ValueError) as exc:
+    except (AttributeError, ImportError, ModuleNotFoundError) as exc:
         return _dark_result(
             reason="missing_or_invalid_rail_reader",
             refusal_reason=MonDLCBindingRefusalReason.MISSING_RAIL_READER,
+            source_kind="durable_payment_events",
+            detail=str(exc),
+        )
+    except (OSError, ValueError) as exc:
+        return _dark_result(
+            reason="invalid_rail_event_stream",
+            refusal_reason=MonDLCBindingRefusalReason.INVALID_RAIL_EVENT_STREAM,
             source_kind="durable_payment_events",
             detail=str(exc),
         )
@@ -272,7 +283,7 @@ def _score_measurement(
         )
     try:
         score_result = score(measurement, ladder, ruler_hash_commit=ruler_hash_commit or "")
-    except (TypeError, ValueError) as exc:
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
         return _dark_result(
             reason="unsupported_shape",
             refusal_reason=MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE,
