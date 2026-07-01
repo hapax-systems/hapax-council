@@ -392,6 +392,38 @@ def test_chain_validation_catches_malformed_rows(tmp_path: Path) -> None:
     } <= {issue.code for issue in result.issues}
 
 
+def test_chain_validation_rejects_newline_truncated_tail_and_append_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    row = sink.append(
+        stream_id="payment-event",
+        data_class="financial_receipt",
+        source_receipt_ref="receipt://payment/1",
+        payload={"idx": 1},
+        timestamp="2026-07-01T00:00:00Z",
+    )
+    path = sink.path_for_stream("payment-event")
+    truncated_tail = _json_line(row.as_dict())
+    path.write_text(truncated_tail, encoding="utf-8")
+
+    result = validate_chain(path, stream_id="payment-event")
+
+    assert result.valid is False
+    assert result.row_count == 0
+    assert result.tail_hash == GENESIS_HASH
+    assert {issue.code for issue in result.issues} == {"missing_newline"}
+    with pytest.raises(DurableSinkChainError, match="next action"):
+        sink.append(
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/2",
+            payload={"idx": 2},
+            timestamp="2026-07-01T00:00:01Z",
+        )
+    assert path.read_text(encoding="utf-8") == truncated_tail
+
+
 def test_validate_chain_rejects_non_file_stream_path(tmp_path: Path) -> None:
     path = tmp_path / "payment-event.jsonl"
     path.mkdir()
@@ -621,6 +653,18 @@ def test_directory_fsync_success_opens_readonly_and_closes(
     assert opened == [(tmp_path, sink_mod.os.O_RDONLY)]
     assert fsynced == [99]
     assert closed == [99]
+
+
+def test_directory_open_failure_has_next_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing_open(_path: Any, _flags: int, _mode: int = 0o777) -> int:
+        raise PermissionError("simulated directory open failure")
+
+    monkeypatch.setattr(sink_mod.os, "open", failing_open)
+
+    with pytest.raises(DurableSinkAppendError, match="open durable sink directory.*next action"):
+        sink_mod._fsync_directory(tmp_path)
 
 
 def test_directory_fsync_failure_has_next_action(

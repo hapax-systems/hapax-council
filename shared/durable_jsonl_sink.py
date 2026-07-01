@@ -304,7 +304,16 @@ def validate_chain(
 
     with target.open("r", encoding="utf-8") as fh:
         for line_number, raw in enumerate(fh, 1):
-            line = raw.rstrip("\n")
+            if not raw.endswith("\n"):
+                issues.append(
+                    ChainIssue(
+                        line_number,
+                        "missing_newline",
+                        f"line {line_number}: row is missing terminating JSONL newline",
+                    )
+                )
+                continue
+            line = raw[:-1]
             if not line:
                 issues.append(
                     ChainIssue(line_number, "blank_line", f"line {line_number}: blank row")
@@ -398,7 +407,13 @@ def _rollback_partial_append(fd: int, start_offset: int) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
-    dir_fd = os.open(path, os.O_RDONLY)
+    try:
+        dir_fd = os.open(path, os.O_RDONLY)
+    except OSError as exc:
+        raise DurableSinkAppendError(
+            f"failed to open durable sink directory {path}; next action: verify the "
+            "durable root still exists and is readable"
+        ) from exc
     try:
         os.fsync(dir_fd)
     except OSError as exc:
