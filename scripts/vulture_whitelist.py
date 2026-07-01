@@ -4632,3 +4632,14 @@ _ = (
     probe_worktree,
     set_status,
 )
+
+# Stage0 durable sink phase 1 lands the append-only JSONL sink before the
+# chronicle/payment/public-speech consumers that will instantiate it in phases
+# 2-4. Tests exercise the sink now; downstream static call paths land in the
+# blocked follow-up phases, so keep the library entrypoint explicit.
+from shared.durable_jsonl_sink import DurableJsonlSink as _Stage0DurableJsonlSink  # noqa: E402
+
+_ = (
+    _Stage0DurableJsonlSink,
+    _Stage0DurableJsonlSink.path_for_stream,
+)
