@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Mint governed cc-task intake from capability_surface_delta rows."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.capability_surface_delta import (  # noqa: E402
+    CAPABILITY_SURFACE_DELTA_FIXTURES,
+    DEFAULT_CAPABILITY_SURFACE_DELTA_TASK_ROOT,
+    CapabilitySurfaceDeltaError,
+    detect_surface_deltas,
+    load_capability_surface_delta_fixtures,
+    write_capability_surface_delta_tasks,
+)
+
+
+def parse_utc(value: str) -> datetime:
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(raw)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def print_json(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--fixtures",
+        type=Path,
+        default=CAPABILITY_SURFACE_DELTA_FIXTURES,
+        help="Capability-surface delta fixture/producer JSON path",
+    )
+    parser.add_argument(
+        "--task-root",
+        type=Path,
+        default=DEFAULT_CAPABILITY_SURFACE_DELTA_TASK_ROOT,
+        help="hapax-cc-tasks root containing active/closed/refused",
+    )
+    parser.add_argument(
+        "--detect-from-descriptors",
+        action="store_true",
+        help="Compare fixture descriptors to themselves and any fixture deltas; primarily a smoke mode.",
+    )
+    parser.add_argument("--now", help="Override generation time as ISO-8601 UTC")
+    parser.add_argument("--apply", action="store_true", help="Write cc-task notes")
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    args = parser.parse_args(argv)
+
+    now = parse_utc(args.now) if args.now else datetime.now(UTC)
+    try:
+        fixtures = load_capability_surface_delta_fixtures(args.fixtures)
+        deltas = list(fixtures.deltas)
+        if args.detect_from_descriptors:
+            detected = detect_surface_deltas(
+                registered=fixtures.descriptors,
+                observed=fixtures.descriptors,
+                source="capability-surface-delta-intake:self-check",
+                detected_by="hapax-capability-surface-delta-intake",
+                remediation_ref=fixtures.generated_from[0],
+                now=now,
+            )
+            deltas.extend(detected)
+        result = write_capability_surface_delta_tasks(
+            deltas,
+            task_root=args.task_root,
+            generated_at=now,
+            apply=args.apply,
+        )
+    except CapabilitySurfaceDeltaError as exc:
+        result = {"ok": False, "error": str(exc)}
+    except OSError as exc:
+        result = {"ok": False, "error": str(exc)}
+
+    result = {"applied": args.apply, **result}
+    if args.json:
+        print_json(result)
+    else:
+        mode = "APPLY" if args.apply else "DRY-RUN"
+        print(
+            f"{mode}: loaded={result.get('loaded', 0)} "
+            f"written={len(result.get('written', []))} "
+            f"would_write={len(result.get('would_write', []))} "
+            f"skipped_existing={len(result.get('skipped_existing', []))} "
+            f"errors={len(result.get('errors', []))}"
+        )
+        if result.get("error"):
+            print(f"ERROR: {result['error']}", file=sys.stderr)
+    return 0 if result.get("ok") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

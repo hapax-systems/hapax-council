@@ -761,6 +761,30 @@ def test_stale_capability_data_holds() -> None:
     assert "capability_data_stale_or_unknown" in decision.reason_codes
 
 
+def test_pending_capability_surface_delta_holds_even_with_fresh_legacy_telemetry() -> None:
+    blocker = "capability_surface_delta:delta_pending:route.glmcp.review.direct"
+    request = _request(
+        route_id="glmcp.review.direct",
+        capability=_capability(
+            route_id="glmcp.review.direct",
+            freshness_ok=True,
+            freshness_errors=(),
+            surface_delta_refs=("cap-surface-delta:20260701T030000Z",),
+            surface_delta_blockers=(blocker,),
+        ),
+        quota=_quota(route_subscription_quota_state="fresh"),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.registry_freshness_green is False
+    assert decision.quota_freshness_green is False
+    assert decision.resource_freshness_green is False
+    assert "capability_surface_delta_pending" in decision.reason_codes
+    assert blocker in decision.reason_codes
+
+
 def test_unsupported_routes_refuse() -> None:
     request = _request(
         route_id="codex.headless.unknown",

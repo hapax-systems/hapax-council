@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hapax.local/schemas/capability-surface-delta.schema.json",
+  "title": "CapabilitySurfaceDeltaFixtures",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_set_id",
+    "schema_ref",
+    "generated_from",
+    "declared_at",
+    "descriptors",
+    "deltas"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "fixture_set_id": {"type": "string", "minLength": 1},
+    "schema_ref": {"type": "string", "const": "schemas/capability-surface-delta.schema.json"},
+    "generated_from": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "declared_at": {"type": "string", "format": "date-time"},
+    "descriptors": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/capability_surface_descriptor"},
+      "minItems": 1
+    },
+    "deltas": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/capability_surface_delta"},
+      "minItems": 1
+    }
+  },
+  "$defs": {
+    "surface_kind": {
+      "enum": [
+        "model_route",
+        "local_tool",
+        "mcp_tool",
+        "orchestrator",
+        "review_seat",
+        "cctv",
+        "publication_bus",
+        "money_rail",
+        "reins_projection"
+      ]
+    },
+    "authority_ceiling": {
+      "enum": ["authoritative", "frontier_review_required", "read_only", "support_only", "unknown"]
+    },
+    "freshness_state": {
+      "enum": ["fresh", "aging", "stale", "absent", "dark", "held", "delta_pending", "unknown"]
+    },
+    "delta_kind": {
+      "enum": [
+        "new_capability",
+        "descriptor_changed",
+        "authority_changed",
+        "resource_pool_changed",
+        "public_egress_changed",
+        "money_rail_changed",
+        "harness_boundary_changed",
+        "orchestration_child_changed",
+        "stale_determination",
+        "absent_determination"
+      ]
+    },
+    "required_intake_action": {
+      "enum": [
+        "none",
+        "update_descriptor",
+        "mint_intake_item",
+        "refresh_receipt",
+        "quarantine_surface",
+        "deprecate_surface"
+      ]
+    },
+    "capability_surface_descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "descriptor_schema",
+        "surface_id",
+        "descriptor_ref",
+        "surface_kind",
+        "authority_ceiling",
+        "observed_at",
+        "stale_after",
+        "evidence_refs"
+      ],
+      "properties": {
+        "descriptor_schema": {"type": "integer", "const": 1},
+        "surface_id": {"type": "string", "minLength": 1},
+        "descriptor_ref": {"type": "string", "minLength": 1},
+        "surface_kind": {"$ref": "#/$defs/surface_kind"},
+        "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "stale_after": {"type": "string", "pattern": "^[1-9][0-9]*[smhd]$"},
+        "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+        "route_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "supply_leaf_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "carrier_platform": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "model_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "provider_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "effort": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "context_window": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "resource_pools": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "tool_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "harness_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "orchestration_child_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "privacy_sensitive": {"type": "boolean"},
+        "public_egress": {"type": "boolean"},
+        "money_rail": {"type": "boolean"}
+      }
+    },
+    "capability_surface_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "delta_schema",
+        "delta_id",
+        "source",
+        "observed_at",
+        "detected_by",
+        "surface_id",
+        "delta_kind",
+        "prior_descriptor_ref",
+        "observed_descriptor_ref",
+        "evidence_refs",
+        "authority_ceiling",
+        "affected_resource_pools",
+        "privacy_sensitive",
+        "public_egress",
+        "money_rail",
+        "freshness_state",
+        "required_intake_action",
+        "remediation_ref",
+        "summary"
+      ],
+      "properties": {
+        "delta_schema": {"type": "integer", "const": 1},
+        "delta_id": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "detected_by": {"type": "string", "minLength": 1},
+        "surface_id": {"type": "string", "minLength": 1},
+        "delta_kind": {"$ref": "#/$defs/delta_kind"},
+        "prior_descriptor_ref": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "observed_descriptor_ref": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+        "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "affected_resource_pools": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "privacy_sensitive": {"type": "boolean"},
+        "public_egress": {"type": "boolean"},
+        "money_rail": {"type": "boolean"},
+        "freshness_state": {"$ref": "#/$defs/freshness_state"},
+        "required_intake_action": {"$ref": "#/$defs/required_intake_action"},
+        "remediation_ref": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "summary": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"delta_kind": {"const": "new_capability"}}},
+          "then": {
+            "properties": {
+              "prior_descriptor_ref": {"type": "null"},
+              "freshness_state": {"const": "delta_pending"},
+              "required_intake_action": {"const": "mint_intake_item"},
+              "remediation_ref": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"delta_kind": {"const": "stale_determination"}}},
+          "then": {
+            "properties": {
+              "freshness_state": {"const": "stale"},
+              "required_intake_action": {"const": "refresh_receipt"},
+              "remediation_ref": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"delta_kind": {"const": "absent_determination"}}},
+          "then": {
+            "properties": {
+              "observed_descriptor_ref": {"type": "null"},
+              "freshness_state": {"const": "absent"},
+              "remediation_ref": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      ]
+    }
+  }
+}

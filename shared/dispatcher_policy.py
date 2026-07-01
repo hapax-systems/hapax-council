@@ -138,6 +138,8 @@ class RouteCapabilityState(_PolicyModel):
     mutability: dict[str, bool] = Field(default_factory=dict)
     freshness_ok: bool = False
     freshness_errors: tuple[str, ...] = Field(default=())
+    surface_delta_refs: tuple[str, ...] = Field(default=())
+    surface_delta_blockers: tuple[str, ...] = Field(default=())
     telemetry_quota_source: str | None = None
     telemetry_resource_source: str | None = None
 
@@ -1958,7 +1960,9 @@ def _downstream_review_point(request: DispatchRequest, decision: RouteDecision) 
 
 def _candidate_freshness_state(request: DispatchRequest) -> str:
     capability = request.capability
-    if capability is not None and not capability.freshness_ok:
+    if capability is not None and (
+        not capability.freshness_ok or capability.surface_delta_blockers
+    ):
         return FreshnessState.STALE.value
     if request.supply_vector is None:
         return FreshnessState.MISSING.value
@@ -2187,11 +2191,18 @@ def _clog_state(action: DispatchAction, *, compatibility_degraded: bool) -> Clog
 
 def _registry_freshness_green(request: DispatchRequest) -> bool:
     capability = request.capability
-    return bool(capability is not None and capability.supported and capability.freshness_ok)
+    return bool(
+        capability is not None
+        and capability.supported
+        and capability.freshness_ok
+        and not capability.surface_delta_blockers
+    )
 
 
 def _quota_freshness_green(request: DispatchRequest) -> bool:
     capability = request.capability
+    if capability is not None and capability.surface_delta_blockers:
+        return False
     if _requires_route_specific_subscription_quota(request.route_id):
         if (
             capability is None
@@ -2221,7 +2232,7 @@ def _quota_freshness_green(request: DispatchRequest) -> bool:
 def _resource_freshness_green(request: DispatchRequest) -> bool:
     capability = request.capability
     quota = request.quota
-    if capability is None or not capability.freshness_ok:
+    if capability is None or not capability.freshness_ok or capability.surface_delta_blockers:
         return False
     if any("resource" in error for error in capability.freshness_errors):
         return False
@@ -2653,10 +2664,12 @@ def _unsupported_route_subscription_quota_reasons(
 
 
 def _freshness_hold_reasons(capability: RouteCapabilityState) -> tuple[str, ...]:
-    if capability.freshness_ok:
+    if capability.freshness_ok and not capability.surface_delta_blockers:
         return ()
     reasons = []
     errors = capability.freshness_errors
+    if capability.surface_delta_blockers:
+        reasons.append("capability_surface_delta_pending")
     if any("resource" in error for error in errors):
         reasons.append("resource_telemetry_stale_or_unknown")
     if any("quota" in error for error in errors):
@@ -2667,6 +2680,7 @@ def _freshness_hold_reasons(capability: RouteCapabilityState) -> tuple[str, ...]
         reasons.append("provider_docs_stale_or_unknown")
     if not reasons:
         reasons.append("capability_freshness_failed")
+    reasons.extend(capability.surface_delta_blockers)
     reasons.extend(errors)
     return tuple(reasons)
 
