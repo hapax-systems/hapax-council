@@ -27,6 +27,18 @@ YOUTUBE_SCOPED_TOKEN_REF: Final[str] = "pass:google/token-youtube-streaming"
 
 _GOVERNED_SECRET_REF_PREFIXES: Final[tuple[str, ...]] = ("pass:", "hapax-secrets:")
 
+__all__ = (
+    "YOUTUBE_PUBLIC_UPLOAD_SCOPE",
+    "YOUTUBE_PUBLIC_VENUE",
+    "YOUTUBE_SCOPED_TOKEN_REF",
+    "BoundedOutboundLane",
+    "OutboundLaneActReceipt",
+    "OutboundLaneActRequest",
+    "OutboundRateLimit",
+    "ScopedOutboundToken",
+    "build_youtube_public_upload_lane_template",
+)
+
 
 class ScopedOutboundToken(StrictModel):
     """Governed token reference plus the send scopes it may authorize."""
@@ -36,7 +48,7 @@ class ScopedOutboundToken(StrictModel):
     token_ref: str
     scopes: tuple[str, ...] = Field(min_length=1)
 
-    @field_validator("token_ref", mode="before")
+    @field_validator("token_ref", mode="before")  # noqa: V105 - Pydantic reflection hook.
     @classmethod
     def _token_ref_is_governed(cls, value: Any) -> str:
         token_ref = _nonblank_string("token_ref", value)
@@ -47,7 +59,7 @@ class ScopedOutboundToken(StrictModel):
             )
         return token_ref
 
-    @field_validator("scopes", mode="before")
+    @field_validator("scopes", mode="before")  # noqa: V105 - Pydantic reflection hook.
     @classmethod
     def _scopes_are_nonblank_strings(cls, value: Any) -> tuple[str, ...]:
         return _nonblank_string_tuple("scopes", value)
@@ -61,7 +73,7 @@ class OutboundRateLimit(StrictModel):
     max_actions: int
     window_seconds: float
 
-    @field_validator("max_actions", mode="before")
+    @field_validator("max_actions", mode="before")  # noqa: V105 - Pydantic reflection hook.
     @classmethod
     def _max_actions_is_positive_int(cls, value: Any) -> int:
         if isinstance(value, bool) or not isinstance(value, int):
@@ -76,7 +88,7 @@ class OutboundRateLimit(StrictModel):
             )
         return value
 
-    @field_validator("window_seconds", mode="before")
+    @field_validator("window_seconds", mode="before")  # noqa: V105 - Pydantic reflection hook.
     @classmethod
     def _window_seconds_is_positive_number(cls, value: Any) -> float:
         if isinstance(value, bool) or not isinstance(value, int | float):
@@ -108,12 +120,12 @@ class OutboundLaneActRequest(StrictModel):
     money_movement_requested: bool = False
     payload: Mapping[str, Any] = Field(default_factory=lambda: MappingProxyType({}))
 
-    @field_validator("action_id", "scope", "venue", mode="before")
+    @field_validator("action_id", "scope", "venue", mode="before")  # noqa: V105 - Pydantic reflection hook.
     @classmethod
     def _string_fields_are_nonblank(cls, value: Any, info: Any) -> str:
         return _nonblank_string(info.field_name, value)
 
-    @field_validator("amount", mode="before")
+    @field_validator("amount", mode="before")  # noqa: V105 - Pydantic reflection hook.
     @classmethod
     def _amount_is_finite_nonnegative(cls, value: Any) -> float:
         if isinstance(value, bool) or not isinstance(value, int | float):
@@ -129,7 +141,7 @@ class OutboundLaneActRequest(StrictModel):
             )
         return normalized
 
-    @field_validator(
+    @field_validator(  # noqa: V105 - Pydantic reflection hook.
         "public_gate_passed",
         "public_egress_requested",
         "money_movement_requested",
@@ -144,12 +156,12 @@ class OutboundLaneActRequest(StrictModel):
             )
         return value
 
-    @field_validator("evidence_refs", mode="before")
+    @field_validator("evidence_refs", mode="before")  # noqa: V105 - Pydantic reflection hook.
     @classmethod
     def _evidence_refs_are_nonblank_strings(cls, value: Any) -> tuple[str, ...]:
         return _nonblank_string_tuple("evidence_refs", value, allow_empty=True)
 
-    @field_validator("payload", mode="before")
+    @field_validator("payload", mode="before")  # noqa: V105 - Pydantic reflection hook.
     @classmethod
     def _payload_is_mapping(cls, value: Any) -> Mapping[str, Any]:
         if value is None or not isinstance(value, Mapping):
@@ -160,12 +172,12 @@ class OutboundLaneActRequest(StrictModel):
         _validate_string_keys("payload", value)
         return value
 
-    @field_validator("payload", mode="after")
+    @field_validator("payload", mode="after")  # noqa: V105 - Pydantic reflection hook.
     @classmethod
     def _payload_is_immutable(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
         return _freeze_mapping("payload", value)
 
-    @field_serializer("payload")
+    @field_serializer("payload")  # noqa: V105 - Pydantic reflection hook.
     def _serialize_payload(self, value: Mapping[str, Any]) -> dict[str, Any]:
         return _thaw_mapping(value)
 
@@ -188,7 +200,7 @@ class OutboundLaneActReceipt(StrictModel):
     evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
     metadata: Mapping[str, Any] = Field(default_factory=lambda: MappingProxyType({}))
 
-    @field_validator("metadata", mode="before")
+    @field_validator("metadata", mode="before")  # noqa: V105 - Pydantic reflection hook.
     @classmethod
     def _metadata_is_mapping(cls, value: Any) -> Mapping[str, Any]:
         if value is None or not isinstance(value, Mapping):
@@ -199,12 +211,12 @@ class OutboundLaneActReceipt(StrictModel):
         _validate_string_keys("metadata", value)
         return value
 
-    @field_validator("metadata", mode="after")
+    @field_validator("metadata", mode="after")  # noqa: V105 - Pydantic reflection hook.
     @classmethod
     def _metadata_is_immutable(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
         return _freeze_mapping("metadata", value)
 
-    @field_serializer("metadata")
+    @field_serializer("metadata")  # noqa: V105 - Pydantic reflection hook.
     def _serialize_metadata(self, value: Mapping[str, Any]) -> dict[str, Any]:
         return _thaw_mapping(value)
 
@@ -315,7 +327,7 @@ class BoundedOutboundLane:
     def current_position(self) -> float:
         return self._executor.current_position
 
-    def execute_act(self, request: OutboundLaneActRequest) -> OutboundLaneActReceipt:
+    def execute_act(self, request: OutboundLaneActRequest) -> OutboundLaneActReceipt:  # noqa: V105
         """Validate one lane act and return a durable per-act receipt shape."""
         if not isinstance(request, OutboundLaneActRequest):
             raise TypeError(
@@ -581,28 +593,3 @@ def _thaw_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_thaw_value(nested_value) for nested_value in value]
     return value
-
-
-_OUTBOUND_LANE_PATTERN_ENTRYPOINTS: Final = (
-    ScopedOutboundToken,
-    ScopedOutboundToken._token_ref_is_governed,
-    ScopedOutboundToken._scopes_are_nonblank_strings,
-    OutboundRateLimit,
-    OutboundRateLimit._max_actions_is_positive_int,
-    OutboundRateLimit._window_seconds_is_positive_number,
-    OutboundLaneActRequest,
-    OutboundLaneActRequest._string_fields_are_nonblank,
-    OutboundLaneActRequest._amount_is_finite_nonnegative,
-    OutboundLaneActRequest._bool_fields_are_explicit,
-    OutboundLaneActRequest._evidence_refs_are_nonblank_strings,
-    OutboundLaneActRequest._payload_is_mapping,
-    OutboundLaneActRequest._payload_is_immutable,
-    OutboundLaneActRequest._serialize_payload,
-    OutboundLaneActReceipt,
-    OutboundLaneActReceipt._metadata_is_mapping,
-    OutboundLaneActReceipt._metadata_is_immutable,
-    OutboundLaneActReceipt._serialize_metadata,
-    BoundedOutboundLane,
-    BoundedOutboundLane.execute_act,
-    build_youtube_public_upload_lane_template,
-)
