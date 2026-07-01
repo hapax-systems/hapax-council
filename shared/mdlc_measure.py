@@ -90,9 +90,15 @@ class MonDLCMeasurement:
 
     def __post_init__(self) -> None:
         if self.value is not None and isinstance(self.value, bool):
-            raise TypeError("MonDLCMeasurement.value must be numeric or None")
+            raise TypeError(
+                "MonDLCMeasurement.value must be numeric or None; attach a witnessed numeric "
+                "realized return"
+            )
         if self.value is not None and not isinstance(self.value, (int, float)):
-            raise TypeError("MonDLCMeasurement.value must be numeric or None")
+            raise TypeError(
+                "MonDLCMeasurement.value must be numeric or None; attach a witnessed numeric "
+                "realized return"
+            )
         object.__setattr__(
             self,
             "value",
@@ -516,7 +522,14 @@ def _coerce_refs(value: Any) -> tuple[str, ...]:
 def _string_tuple(value: Sequence[str]) -> tuple[str, ...]:
     if isinstance(value, str):
         raise TypeError("evidence refs must be a string sequence; attach durable evidence ids")
-    return tuple(str(item).strip() for item in value if str(item).strip())
+    refs: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise TypeError("evidence refs must be a string sequence; attach durable evidence ids")
+        ref = item.strip()
+        if ref:
+            refs.append(ref)
+    return tuple(refs)
 
 
 __all__ = [

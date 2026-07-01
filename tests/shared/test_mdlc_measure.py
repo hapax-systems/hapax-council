@@ -171,6 +171,7 @@ def test_uncorroborated_measurement_is_undetermined_not_success() -> None:
     assert _by_gate(result, MonDLCGateName.RULER_HASH).status is GateStatus.LIT
     assert _by_gate(result, MonDLCGateName.OBSERVED_EVIDENCE).status is GateStatus.LIT
     assert _by_gate(result, MonDLCGateName.FRESHNESS).status is GateStatus.LIT
+    assert result.gate_result.evidence_refs == ("rail:event:1",)
 
 
 def test_counted_corroboration_witnesses_are_preserved_in_result_evidence() -> None:
@@ -368,7 +369,7 @@ def test_ladder_validation_refuses_invalid_rulers(kwargs: dict[str, object], mat
 
 @pytest.mark.parametrize("bad_value", (True, "12.5"))
 def test_measurement_validation_rejects_non_numeric_values(bad_value: object) -> None:
-    with pytest.raises(TypeError, match="value must be numeric or None"):
+    with pytest.raises(TypeError, match="attach a witnessed numeric realized return"):
         MonDLCMeasurement(value=bad_value)  # type: ignore[arg-type]
 
 
@@ -380,6 +381,17 @@ def test_direct_measurement_rejects_plain_string_evidence_refs(field: str) -> No
             provenance="realized",
             observed_at=NOW,
             **{field: "rail:event:1"},
+        )
+
+
+@pytest.mark.parametrize("field", ("evidence_refs", "corroborated_by"))
+def test_direct_measurement_rejects_non_string_evidence_ref_items(field: str) -> None:
+    with pytest.raises(TypeError, match="evidence refs must be a string sequence"):
+        MonDLCMeasurement(
+            value=1.0,
+            provenance="realized",
+            observed_at=NOW,
+            **{field: ("rail:event:1", 2)},
         )
 
 
