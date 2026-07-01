@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
+from shared import capability_adapter_protocol as adapter_protocol
 from shared.capability_adapter_protocol import (
     AntigravAdapter,
     AuthorityViolation,
@@ -25,9 +27,39 @@ from shared.failure_classification import (
     FailureCode,
     failure_code_for_zai,
 )
-from shared.platform_capability_registry import Platform
+from shared.platform_capability_registry import (
+    REQUIRED_ROUTE_IDS,
+    Platform,
+    load_platform_capability_registry,
+)
 
 _MOD = "shared.capability_adapter_protocol"
+
+
+def _mentions_hkp_model(text: str) -> bool:
+    lowered = text.lower()
+    normalized = "".join(char if char.isalnum() else "_" for char in lowered)
+    compact = "".join(char for char in lowered if char.isalnum())
+    return (
+        "hkp" in lowered
+        or "hkp" in compact
+        or "knowledge_projection" in normalized
+        or "knowledgeprojection" in compact
+    )
+
+
+def _concrete_adapter_classes() -> tuple[type[CapabilityAdapter], ...]:
+    classes: list[type[CapabilityAdapter]] = []
+    for name in adapter_protocol.__all__:
+        value = getattr(adapter_protocol, name)
+        if (
+            isinstance(value, type)
+            and issubclass(value, CapabilityAdapter)
+            and value is not CapabilityAdapter
+            and hasattr(value, "PLATFORM")
+        ):
+            classes.append(value)
+    return tuple(classes)
 
 
 def _decision(
@@ -140,6 +172,48 @@ def test_platform_classvars_are_pinned() -> None:
     assert BudgetAuthorityAdapter.PLATFORM is Platform.API
     assert ReviewSeatAdapter.PLATFORM is Platform.GLMCP
     assert AntigravAdapter.PLATFORM is Platform.ANTIGRAV
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "hkp",
+        "h-k-p",
+        "h_k_p",
+        "H.K.P",
+        "knowledge_projection",
+        "knowledge-projection",
+        "KnowledgeProjectionAdapter",
+    ],
+)
+def test_hkp_model_matcher_catches_known_alias_shapes(text: str) -> None:
+    assert _mentions_hkp_model(text)
+
+
+def test_hkp_outside_model() -> None:
+    registry = load_platform_capability_registry()
+    route_ids = set(REQUIRED_ROUTE_IDS) | set(registry.route_map())
+
+    assert all(not _mentions_hkp_model(route_id) for route_id in route_ids)
+    assert all(
+        not _mentions_hkp_model(platform.name) and not _mentions_hkp_model(platform.value)
+        for platform in Platform
+    )
+
+    concrete_adapters = _concrete_adapter_classes()
+    adapter_names = set(adapter_protocol.__all__) | {cls.__name__ for cls in concrete_adapters}
+    adapter_platforms = {cls.PLATFORM.value for cls in concrete_adapters}
+
+    assert set(concrete_adapters) == {
+        AntigravAdapter,
+        BudgetAuthorityAdapter,
+        ClaudeAdapter,
+        CodexAdapter,
+        ReviewSeatAdapter,
+    }
+    assert all(not _mentions_hkp_model(name) for name in adapter_names)
+    assert all(not _mentions_hkp_model(platform) for platform in adapter_platforms)
+    assert not _mentions_hkp_model(inspect.getsource(adapter_protocol))
 
 
 # --- criterion 5: launch() FIRST asserts authority, else AuthorityViolation --------------------
