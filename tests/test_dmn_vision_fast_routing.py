@@ -15,8 +15,12 @@ Pinned invariants:
 from __future__ import annotations
 
 import inspect
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from shared.config import MODELS
+from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
 
 
 def test_vision_fast_alias_resolves_to_gemini_flash() -> None:
@@ -56,3 +60,32 @@ def test_dmn_multimodal_call_passes_media_resolution_low() -> None:
     # the completion budget).
     assert "budget_tokens" in src
     assert '"type": "disabled"' in src
+
+
+@pytest.mark.asyncio
+async def test_dmn_multimodal_refuses_provider_without_admission() -> None:
+    """DMN vision spend must be admitted before constructing a provider client."""
+    from agents.dmn import ollama as ollama_mod
+
+    denied = BackgroundCapabilityAdmission(
+        capability_name="dmn.multimodal_vision.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        admitted=False,
+        denied_reason="provider_model_descriptor_mismatch",
+        reason_codes=("provider_model_descriptor_mismatch",),
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )
+    with (
+        patch("agents.dmn.ollama.admit_background_capability", return_value=denied),
+        patch(
+            "agents.dmn.ollama._tabby_think", new_callable=AsyncMock, return_value="fallback"
+        ) as mock_fallback,
+        patch("openai.AsyncOpenAI") as mock_client_cls,
+    ):
+        result = await ollama_mod._gemini_multimodal("prompt", "system", "ZmFrZQ==")
+
+    assert result == "fallback"
+    mock_fallback.assert_awaited_once_with("prompt", "system")
+    mock_client_cls.assert_not_called()

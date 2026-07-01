@@ -19,6 +19,12 @@ import time
 from contextlib import nullcontext
 from pathlib import Path
 
+from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+    BackgroundCapabilityAdmission,
+    admit_background_capability,
+)
+
 try:
     from agents.telemetry.llm_call_span import llm_call_span
 except ImportError:  # telemetry optional
@@ -29,6 +35,9 @@ log = logging.getLogger("vision_observer")
 FRAME_PATH = Path("/dev/shm/hapax-visual/frame.jpg")
 IMAGINATION_PATH = Path("/dev/shm/hapax-dmn/imagination-current.json")
 OUTPUT_DIR = Path("/dev/shm/hapax-vision")
+VISION_MODEL = "gemini-flash"
+VISION_ROUTE_ID_ENV = "HAPAX_VISION_OBSERVER_ROUTE_ID"
+VISION_ROUTE_ID = "api.headless.provider_gateway"
 
 SYSTEM_PROMPT = (
     "You are observing a visual display surface. Describe what you see "
@@ -38,8 +47,29 @@ SYSTEM_PROMPT = (
 )
 
 
+def _admit_vision_observer(model_alias: str = VISION_MODEL) -> BackgroundCapabilityAdmission:
+    return admit_background_capability(
+        capability_name="vision_observer.surface_description.llm",
+        route_id=os.environ.get(VISION_ROUTE_ID_ENV, VISION_ROUTE_ID),
+        model_alias=model_alias,
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )
+
+
 async def _call_vision_model(frame_b64: str, narrative: str) -> str:
     """Call gemini-flash via LiteLLM to describe the visual surface."""
+    admission = _admit_vision_observer(VISION_MODEL)
+    if not admission.admitted:
+        log.warning(
+            "Vision observer admission denied route=%s reason=%s; next_action=set %s "
+            "and refresh route/resource/quota receipts before provider vision use",
+            admission.route_id,
+            admission.denial_summary(),
+            BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+        )
+        return ""
+
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(
@@ -52,13 +82,13 @@ async def _call_vision_model(frame_b64: str, narrative: str) -> str:
     if narrative:
         user_content.append({"type": "text", "text": f"The system intended to show: {narrative}"})
     metrics_ctx = (
-        llm_call_span(model="gemini-flash", route="vision-observer")
+        llm_call_span(model=VISION_MODEL, route="vision-observer")
         if llm_call_span is not None
         else nullcontext(None)
     )
     with metrics_ctx:
         resp = await client.chat.completions.create(
-            model="gemini-flash",
+            model=VISION_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},

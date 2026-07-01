@@ -12,9 +12,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import nullcontext
 
 import httpx
+
+from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+    BackgroundCapabilityAdmission,
+    admit_background_capability,
+)
 
 try:
     from agents.telemetry.llm_call_span import llm_call_span
@@ -25,6 +32,8 @@ log = logging.getLogger("dmn.ollama")
 
 TABBY_CHAT_URL = "http://localhost:5000/v1/chat/completions"
 DMN_MODEL = "Qwen3.5-9B-exl3-5.00bpw"
+DMN_MULTIMODAL_ROUTE_ID_ENV = "HAPAX_DMN_MULTIMODAL_ROUTE_ID"
+DMN_MULTIMODAL_ROUTE_ID = "api.headless.provider_gateway"
 
 SENSORY_SYSTEM = (
     "You are a continuous situation monitor. Report WHAT is happening in one sentence. "
@@ -174,8 +183,6 @@ def _extract_litellm_response_cost(resp: object) -> float | None:
 
 async def _gemini_multimodal(prompt: str, system: str, frame_b64: str) -> str:
     """Multimodal evaluative call via gemini-flash — sees the visual surface directly."""
-    import os
-
     # cc-task jr-gemini-3-flash-vision-router-update: route DMN per-tick
     # vision through `vision-fast` (= gemini-3-flash-preview) with
     # `media_resolution="low"` for the price-performance leader on 10fps
@@ -184,6 +191,17 @@ async def _gemini_multimodal(prompt: str, system: str, frame_b64: str) -> str:
     from shared.config import MODELS
 
     vision_model = MODELS["vision-fast"]
+    admission = _admit_dmn_multimodal(vision_model)
+    if not admission.admitted:
+        log.warning(
+            "DMN multimodal admission denied route=%s reason=%s; next_action=set %s "
+            "and refresh route/resource/quota receipts before provider vision use",
+            admission.route_id,
+            admission.denial_summary(),
+            BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+        )
+        return await _tabby_think(prompt, system)
+
     metrics_ctx = (
         llm_call_span(model=vision_model, route="dmn-multimodal")
         if llm_call_span is not None
@@ -227,6 +245,16 @@ async def _gemini_multimodal(prompt: str, system: str, frame_b64: str) -> str:
     except Exception as exc:
         log.warning("Gemini multimodal failed (%s), falling back to text-only", exc)
         return await _tabby_think(prompt, system)
+
+
+def _admit_dmn_multimodal(model_alias: str) -> BackgroundCapabilityAdmission:
+    return admit_background_capability(
+        capability_name="dmn.multimodal_vision.llm",
+        route_id=os.environ.get(DMN_MULTIMODAL_ROUTE_ID_ENV, DMN_MULTIMODAL_ROUTE_ID),
+        model_alias=model_alias,
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )
 
 
 def start_thinking(key: str, prompt: str, system: str, *, frame_b64: str = "") -> None:
