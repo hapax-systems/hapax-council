@@ -61,7 +61,7 @@ CONSOLIDATION_SYSTEM = (
 
 
 async def _tabby_fast(prompt: str, system: str) -> str:
-    """Fast path via TabbyAPI (OpenAI-compatible). Falls back to Ollama."""
+    """Fast path via TabbyAPI (OpenAI-compatible). Skips when admission denies."""
     admission = _admit_dmn_local("sensory")
     if not admission.admitted:
         log.warning(
@@ -111,7 +111,7 @@ async def _tabby_fast(prompt: str, system: str) -> str:
 
 
 async def _tabby_think(prompt: str, system: str) -> str:
-    """Thinking path via TabbyAPI (with reasoning enabled). Falls back to Ollama."""
+    """Thinking path via TabbyAPI (with reasoning enabled). Skips when admission denies."""
     admission = _admit_dmn_local("thinking")
     if not admission.admitted:
         log.warning(

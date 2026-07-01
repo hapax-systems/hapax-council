@@ -623,6 +623,16 @@ def _model_binding_blocker(
     model_fingerprint = getattr(descriptor, "model_fingerprint", None)
     if model_fingerprint is not None:
         allowed.add(str(model_fingerprint).strip())
+    allowed.discard("")
+    if requested in allowed:
+        return None
+    if mutation_surface != "provider_spend":
+        return (
+            "model_descriptor_mismatch:"
+            f"route={route_id} requested_model={requested} "
+            f"route_models={','.join(sorted(allowed)) or 'none'}",
+            "model_descriptor_mismatch",
+        )
     for alias in getattr(route, "provider_model_aliases", ()):
         alias_keys = {str(alias.alias).strip(), str(alias.model_id).strip()}
         if requested in alias_keys:
@@ -636,16 +646,6 @@ def _model_binding_blocker(
                     "provider_alias_paid_provider_mismatch",
                 )
             return None
-    allowed.discard("")
-    if requested in allowed:
-        return None
-    if mutation_surface != "provider_spend":
-        return (
-            "model_descriptor_mismatch:"
-            f"route={route_id} requested_model={requested} "
-            f"route_models={','.join(sorted(allowed)) or 'none'}",
-            "model_descriptor_mismatch",
-        )
     return (
         "provider_model_descriptor_mismatch:"
         f"route={route_id} requested_model={requested} "

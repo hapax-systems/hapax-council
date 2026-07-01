@@ -117,6 +117,31 @@ async def test_dmn_local_thinking_refuses_without_admission() -> None:
     mock_post.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_dmn_local_fast_refuses_without_admission() -> None:
+    """Denied local sensory admission must not call TabbyAPI."""
+    from agents.dmn import ollama as ollama_mod
+
+    denied = BackgroundCapabilityAdmission(
+        capability_name="dmn.local_sensory.llm",
+        route_id="local_tool.local.worker",
+        model_alias="Qwen3.5-9B-exl3-5.00bpw",
+        admitted=False,
+        denied_reason="model_descriptor_mismatch",
+        reason_codes=("model_descriptor_mismatch",),
+        mutation_surface="none",
+        quality_floor="deterministic_ok",
+    )
+    with (
+        patch("agents.dmn.ollama._admit_dmn_local", return_value=denied),
+        patch("agents.dmn.ollama.httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post,
+    ):
+        result = await ollama_mod._tabby_fast("prompt", "system")
+
+    assert result == ""
+    mock_post.assert_not_called()
+
+
 def test_dmn_local_admission_refuses_mismatched_served_leaf(tmp_path, monkeypatch) -> None:
     """The real DMN local gate must not admit Qwen against the Command-R local route."""
     from agents.dmn import ollama as ollama_mod
