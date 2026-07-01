@@ -1345,6 +1345,21 @@ def _prior_unresolved_criticals(dossier_path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _dossier_has_route_admission_hold(dossier: Mapping[str, Any]) -> bool:
+    for review in dossier.get("reviewers") or []:
+        if not isinstance(review, Mapping):
+            continue
+        admissions = review.get("route_admissions")
+        if not isinstance(admissions, list):
+            continue
+        if str(review.get("verdict") or "") == "reviewer-route-unavailable" and admissions:
+            return True
+        for admission in admissions:
+            if isinstance(admission, Mapping) and admission.get("admitted") is not True:
+                return True
+    return False
+
+
 def render_prior_file_excerpts(
     prior_criticals: list[dict[str, Any]],
     *,
@@ -1718,7 +1733,9 @@ def review_pr(
                 registry=registry,
             )
             if blockers:
-                if str(existing.get("review_team_verdict") or "").lower() == "blocked":
+                if str(
+                    existing.get("review_team_verdict") or ""
+                ).lower() == "blocked" or _dossier_has_route_admission_hold(existing):
                     side_effects = {}
                     if apply:
                         side_effects = replay_dossier_side_effects(
