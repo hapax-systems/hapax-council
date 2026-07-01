@@ -9,6 +9,7 @@ offer surface.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -21,6 +22,7 @@ NDCVB_API_SCHEMA: Final = "hapax.ndcvb.phase0_detection_result.v1"
 NDCVB_PRODUCT_SURFACE_ID: Final = "ndcvb-b2b-api-phase0-harness"
 NDCVB_PHASE: Final = "phase0_packaging_only"
 NDCVB_REQUIRED_BATTERY_GATE_COUNT: Final = 4
+_REFERENCE_RE: Final = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s]+$")
 
 _REQUEST_KEYS: Final = frozenset(
     {
@@ -89,6 +91,9 @@ _BATTERY_NEXT_ACTION: Final = (
     "do not pass raw payload, customer, tenant, or user data"
 )
 _TEXT_NEXT_ACTION: Final = "next_action=provide a non-empty string reference value"
+_REF_NEXT_ACTION: Final = (
+    "next_action=provide a URI-like reference such as vault:..., ndcvb:..., or local:..."
+)
 
 
 class NDCVBApiStatus(StrEnum):
@@ -119,9 +124,17 @@ class NDCVBPackagingRequest:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "request_id", _required_text(self.request_id, "request_id"))
-        object.__setattr__(self, "artifact_ref", _required_text(self.artifact_ref, "artifact_ref"))
-        object.__setattr__(self, "evidence_ref", _required_text(self.evidence_ref, "evidence_ref"))
-        object.__setattr__(self, "run_ref", _optional_text(self.run_ref, "run_ref"))
+        object.__setattr__(
+            self,
+            "artifact_ref",
+            _required_reference(self.artifact_ref, "artifact_ref"),
+        )
+        object.__setattr__(
+            self,
+            "evidence_ref",
+            _required_reference(self.evidence_ref, "evidence_ref"),
+        )
+        object.__setattr__(self, "run_ref", _optional_reference(self.run_ref, "run_ref"))
         object.__setattr__(
             self,
             "purpose",
@@ -293,7 +306,6 @@ def package_ndcvb_detection_result(
             if engine_report["dissociated_veto_required"] is True
             else "phase0_schema_only",
         },
-        "engine_report": engine_report,
     }
 
 
@@ -333,6 +345,7 @@ def _validate_verdict_inputs(verdicts: Sequence[Mapping[str, Any] | str]) -> Non
             next_action=_VERDICT_NEXT_ACTION,
             label="NDCVB verdict",
         )
+        _optional_reference(verdict.get("source"), "source")
 
 
 def _validate_mapping_keys(
@@ -496,6 +509,27 @@ def _optional_text(value: Any, field: str) -> str | None:
     return text
 
 
+def _required_reference(value: Any, field: str) -> str:
+    text = _required_text(value, field)
+    _assert_reference(text, field)
+    return text
+
+
+def _optional_reference(value: Any, field: str) -> str | None:
+    text = _optional_text(value, field)
+    if text is None:
+        return None
+    _assert_reference(text, field)
+    return text
+
+
+def _assert_reference(text: str, field: str) -> None:
+    if not _REFERENCE_RE.match(text):
+        raise NDCVBApiHarnessError(
+            _with_next_action(f"{field} must be a URI-like reference", _REF_NEXT_ACTION)
+        )
+
+
 def _optional_detail(value: Any, field: str) -> str:
     if value is None:
         return ""
@@ -533,7 +567,7 @@ def _provenance_tuple(value: Any, *, field: str) -> tuple[str, ...]:
                 _BATTERY_NEXT_ACTION,
             )
         )
-    items = tuple(_required_text(item, field) for item in value)
+    items = tuple(_required_reference(item, field) for item in value)
     if not items:
         raise NDCVBApiHarnessError(
             _with_next_action(

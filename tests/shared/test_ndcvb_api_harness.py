@@ -143,7 +143,27 @@ def test_dissociated_veto_survives_packaging_and_closes_release_boundary() -> No
     assert response["detection"]["confidence"] == 0.8
     assert response["engine_guards"]["dissociated_veto_required"] is True
     assert response["engine_guards"]["release_boundary"] == "closed"
-    assert response["engine_report"]["violations"][0]["reason"] == "ndcvb_dissociated_at_r"
+    assert response["detection"]["violations"][0]["reason"] == "ndcvb_dissociated_at_r"
+    assert "engine_report" not in response
+
+
+def test_response_does_not_echo_verdict_rationale_text() -> None:
+    response = package_ndcvb_detection_result(
+        request=_request(),
+        verdicts=[
+            {
+                "correspondent": "sycophancy",
+                "kind": "corroborated",
+                "bound": 0.88,
+                "source": "ndcvb:verdict/sycophancy",
+                "rationale": "fixture operator note that should not be echoed",
+            }
+        ],
+        battery_gates=_gates(),
+    )
+
+    assert "engine_report" not in response
+    assert "fixture operator note" not in repr(response)
 
 
 def test_four_gate_battery_is_required_and_failures_hold_result() -> None:
@@ -220,6 +240,17 @@ def test_battery_gate_dataclass_constructor_enforces_public_contract() -> None:
             provenance=(),
         )
 
+    assert (
+        NDCVBBatteryGate(
+            gate_id="stimulus_capture",
+            passed=True,
+            confidence=0.91,
+            provenance=("ndcvb:battery/stimulus_capture",),
+            detail="   ",
+        ).detail
+        == ""
+    )
+
 
 def test_forbidden_verdict_language_guard_remains_engine_owned() -> None:
     with pytest.raises(
@@ -266,9 +297,56 @@ def test_phase0_verdicts_and_battery_gates_reject_customer_payload_fields() -> N
             battery_gates=_gates(),
         )
 
+    with pytest.raises(NDCVBApiHarnessError, match="source must be a URI-like reference"):
+        package_ndcvb_detection_result(
+            request=_request(),
+            verdicts=[
+                {
+                    "correspondent": "sycophancy",
+                    "kind": "corroborated",
+                    "bound": 0.88,
+                    "source": "customer raw artifact text",
+                }
+            ],
+            battery_gates=_gates(),
+        )
+
     with pytest.raises(NDCVBApiHarnessError, match="battery gate.*forbidden keys.*next_action="):
         bad_gates = _gates()
         bad_gates[0] = {**bad_gates[0], "customer_id": "must-not-enter"}
+        package_ndcvb_detection_result(
+            request=_request(),
+            verdicts=["sycophancy: corroborated@0.88"],
+            battery_gates=bad_gates,
+        )
+
+
+def test_strict_schema_rejects_unsupported_non_forbidden_keys() -> None:
+    with pytest.raises(NDCVBApiHarnessError, match="request.*unsupported keys.*metadata"):
+        package_ndcvb_detection_result(
+            request={**_request(), "metadata": "unsupported"},
+            verdicts=["sycophancy: corroborated@0.88"],
+            battery_gates=_gates(),
+        )
+
+    with pytest.raises(NDCVBApiHarnessError, match="NDCVB verdict.*unsupported keys.*debug_ref"):
+        package_ndcvb_detection_result(
+            request=_request(),
+            verdicts=[
+                {
+                    "correspondent": "sycophancy",
+                    "kind": "corroborated",
+                    "bound": 0.88,
+                    "source": "ndcvb:verdict/sycophancy",
+                    "debug_ref": "unsupported",
+                }
+            ],
+            battery_gates=_gates(),
+        )
+
+    bad_gates = _gates()
+    bad_gates[0] = {**bad_gates[0], "debug_ref": "unsupported"}
+    with pytest.raises(NDCVBApiHarnessError, match="battery gate.*unsupported keys.*debug_ref"):
         package_ndcvb_detection_result(
             request=_request(),
             verdicts=["sycophancy: corroborated@0.88"],
