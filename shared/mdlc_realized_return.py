@@ -372,7 +372,11 @@ def realized_return_from_rail(
 def realized_return_from_durable_payment_event(
     row: DurableSinkRow | Mapping[str, Any],
 ) -> RealizedReturnRailResult:
-    """Read one Stage0 durable ``payment-event`` row."""
+    """Refuse direct row reads that have not passed stream-chain validation.
+
+    Use :func:`realized_returns_from_durable_payment_events` for the chain-validated
+    Stage0 stream path that can produce accepted measurements.
+    """
 
     return _realized_return_from_durable_payment_event(
         row,

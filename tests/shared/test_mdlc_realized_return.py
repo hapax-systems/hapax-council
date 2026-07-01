@@ -361,6 +361,26 @@ def test_open_collective_transaction_debit_direction_refuses_outbound() -> None:
             },
             realized_return_mod.RealizedReturnRefusalReason.MISSING_EVENT_KIND,
         ),
+        (
+            {
+                key: value
+                for key, value in _accepted_event("payment_intent_succeeded").items()
+                if key not in {"amount_currency_cents", "amount_usd_cents", "amount_sats"}
+            },
+            realized_return_mod.RealizedReturnRefusalReason.MISSING_AMOUNT,
+        ),
+        (
+            _accepted_event("payment_intent_succeeded", amount_currency_cents=0),
+            realized_return_mod.RealizedReturnRefusalReason.NON_POSITIVE_AMOUNT,
+        ),
+        (
+            {
+                key: value
+                for key, value in _accepted_event("payment_intent_succeeded").items()
+                if key not in {"occurred_at", "timestamp", "observed_at", "realized_at"}
+            },
+            realized_return_mod.RealizedReturnRefusalReason.MISSING_OBSERVED_AT,
+        ),
     ),
 )
 def test_refusal_events_do_not_produce_measurements(
