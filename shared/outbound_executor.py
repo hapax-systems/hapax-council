@@ -4,7 +4,7 @@ import math
 import uuid
 from typing import Any, Final
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from shared.resource_capability import (
     AccountFederationRegistry,
@@ -16,6 +16,7 @@ RECEIVE_ONLY_PROVIDERS: Final[frozenset[str]] = frozenset(
     {
         "buy_me_a_coffee",
         "github_sponsors",
+        "ko_fi",
         "kofi",
         "liberapay",
         "mercury",
@@ -33,11 +34,19 @@ RECEIVE_ONLY_PROVIDERS: Final[frozenset[str]] = frozenset(
 class OutboundExecutionRequest(StrictModel):
     scope: str
     venue: str
-    amount: float = Field(ge=0.0, allow_inf_nan=False)
+    amount: float
     use_default_token: bool = False
     evidence_refs: list[str] = Field(default_factory=list)
     public_gate_passed: bool = False
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def _amount_is_finite_nonnegative(cls, value: Any) -> float:
+        try:
+            return _finite_nonnegative_float("amount", value)
+        except TypeError as exc:
+            raise ValueError(str(exc)) from exc
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
@@ -141,7 +150,7 @@ class OutboundExecutor:
             )
 
         # 2. Receive-only rail check
-        provider_key = self.registry.provider.strip().casefold()
+        provider_key = _provider_key(self.registry.provider)
         if provider_key in RECEIVE_ONLY_PROVIDERS:
             return _refuse(
                 "receive_only_rail",
@@ -274,7 +283,15 @@ def _finite_nonnegative_float(name: str, value: float) -> float:
     return normalized
 
 
+def _provider_key(provider: str) -> str:
+    return provider.strip().casefold().replace("-", "_").replace(" ", "_")
+
+
 # This module is a governed contract for downstream lane adapters. Keep the
-# dynamic entrypoints visible to the diff-only unused-callable gate until those
-# adapters land.
-_OUTBOUND_EXECUTOR_ENTRYPOINTS: Final = (OutboundExecutor, OutboundExecutor.require_execution)
+# dynamic entrypoints and Pydantic validators visible to the diff-only
+# unused-callable gate until those adapters land.
+_OUTBOUND_EXECUTOR_ENTRYPOINTS: Final = (
+    OutboundExecutionRequest._amount_is_finite_nonnegative,
+    OutboundExecutor,
+    OutboundExecutor.require_execution,
+)

@@ -163,8 +163,8 @@ def test_executor_configuration_rejects_invalid_types(
 
 
 def test_request_rejects_non_finite_amount() -> None:
-    for amount in (float("nan"), float("inf"), float("-inf")):
-        with pytest.raises(ValidationError):
+    for amount in (float("nan"), float("inf"), float("-inf"), -1.0):
+        with pytest.raises(ValidationError, match="next action"):
             OutboundExecutionRequest(
                 scope="gmail_send_internal",
                 venue="internal",
@@ -284,8 +284,32 @@ def test_no_claim_refuses_before_route_specific_checks(
 
 
 def test_receive_only_rail_blocks(base_registry: AccountFederationRegistry) -> None:
-    # Modify registry provider to a receive-only rail
     receive_only_registry = base_registry.model_copy(update={"provider": "stripe"})
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=100.0,
+        position_cap=500.0,
+        registry=receive_only_registry,
+    )
+
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=10.0,
+    )
+
+    receipt = executor.execute(request)
+    assert receipt.status == "refused"
+    assert receipt.refusal_reason == "receive_only_rail"
+
+
+@pytest.mark.parametrize("provider", ("ko_fi", "Ko-fi", "kofi"))
+def test_ko_fi_receive_only_aliases_block(
+    base_registry: AccountFederationRegistry,
+    provider: str,
+) -> None:
+    receive_only_registry = base_registry.model_copy(update={"provider": provider})
     executor = OutboundExecutor(
         authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
         venue_allowlist={"internal"},
@@ -442,6 +466,28 @@ def test_notional_cap_blocks(base_registry: AccountFederationRegistry) -> None:
     receipt = executor.execute(request)
     assert receipt.status == "refused"
     assert receipt.refusal_reason == "notional_cap_exceeded"
+
+
+def test_notional_cap_boundary_admits_equal_amount(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=50.0,
+        position_cap=500.0,
+        registry=base_registry,
+    )
+
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=50.0,
+    )
+
+    receipt = executor.execute(request)
+    assert receipt.status == "admitted"
+    assert receipt.current_position_after == 50.0
 
 
 def test_position_cap_blocks(base_registry: AccountFederationRegistry) -> None:
