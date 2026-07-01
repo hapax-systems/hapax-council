@@ -64,19 +64,31 @@ class OutboundRateLimit(StrictModel):
     @classmethod
     def _max_actions_is_positive_int(cls, value: Any) -> int:
         if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError("max_actions must be a positive integer")
+            raise ValueError(
+                "max_actions must be a positive integer; next action: bind "
+                "a lane rate limit with at least one action per window"
+            )
         if value <= 0:
-            raise ValueError("max_actions must be a positive integer")
+            raise ValueError(
+                "max_actions must be a positive integer; next action: bind "
+                "a lane rate limit with at least one action per window"
+            )
         return value
 
     @field_validator("window_seconds", mode="before")
     @classmethod
     def _window_seconds_is_positive_number(cls, value: Any) -> float:
         if isinstance(value, bool) or not isinstance(value, int | float):
-            raise ValueError("window_seconds must be a positive finite number")
+            raise ValueError(
+                "window_seconds must be a positive finite number; next action: "
+                "bind the duration of the governed rate-limit window"
+            )
         normalized = float(value)
         if not math.isfinite(normalized) or normalized <= 0:
-            raise ValueError("window_seconds must be a positive finite number")
+            raise ValueError(
+                "window_seconds must be a positive finite number; next action: "
+                "bind the duration of the governed rate-limit window"
+            )
         return normalized
 
 
@@ -104,10 +116,16 @@ class OutboundLaneActRequest(StrictModel):
     @classmethod
     def _amount_is_finite_nonnegative(cls, value: Any) -> float:
         if isinstance(value, bool) or not isinstance(value, int | float):
-            raise ValueError("amount must be a finite non-negative number")
+            raise ValueError(
+                "amount must be a finite non-negative number; next action: "
+                "use 0.0 for public-egress-only lanes"
+            )
         normalized = float(value)
         if not math.isfinite(normalized) or normalized < 0:
-            raise ValueError("amount must be a finite non-negative number")
+            raise ValueError(
+                "amount must be a finite non-negative number; next action: "
+                "use 0.0 for public-egress-only lanes"
+            )
         return normalized
 
     @field_validator(
@@ -119,7 +137,10 @@ class OutboundLaneActRequest(StrictModel):
     @classmethod
     def _bool_fields_are_explicit(cls, value: Any, info: Any) -> bool:
         if not isinstance(value, bool):
-            raise ValueError(f"{info.field_name} must be an explicit bool")
+            raise ValueError(
+                f"{info.field_name} must be an explicit bool; next action: "
+                "bind the boolean authority decision without coercion"
+            )
         return value
 
     @field_validator("evidence_refs", mode="before")
@@ -131,7 +152,10 @@ class OutboundLaneActRequest(StrictModel):
     @classmethod
     def _payload_is_mapping(cls, value: Any) -> Mapping[str, Any]:
         if value is None or not isinstance(value, Mapping):
-            raise ValueError("payload must be a mapping with string keys")
+            raise ValueError(
+                "payload must be a mapping with string keys; next action: "
+                "attach a durable JSON-object payload"
+            )
         _validate_string_keys("payload", value)
         return value
 
@@ -167,7 +191,10 @@ class OutboundLaneActReceipt(StrictModel):
     @classmethod
     def _metadata_is_mapping(cls, value: Any) -> Mapping[str, Any]:
         if value is None or not isinstance(value, Mapping):
-            raise ValueError("metadata must be a mapping with string keys")
+            raise ValueError(
+                "metadata must be a mapping with string keys; next action: "
+                "attach durable JSON-object receipt metadata"
+            )
         _validate_string_keys("metadata", value)
         return value
 
@@ -219,10 +246,21 @@ class BoundedOutboundLane:
                 "the lane's governed kill-switch state"
             )
         if not isinstance(public_egress_authorized, bool):
-            raise TypeError("public_egress_authorized must be an explicit bool")
+            raise TypeError(
+                "public_egress_authorized must be an explicit bool; next action: "
+                "bind the public-egress authority decision without coercion"
+            )
         if not isinstance(money_movement_authorized, bool):
-            raise TypeError("money_movement_authorized must be an explicit bool")
-        if registry.pass_or_secret_key != scoped_token.token_ref:
+            raise TypeError(
+                "money_movement_authorized must be an explicit bool; next action: "
+                "bind the money-movement authority decision without coercion"
+            )
+        registry_secret_ref = (
+            registry.pass_or_secret_key.strip()
+            if isinstance(registry.pass_or_secret_key, str)
+            else ""
+        )
+        if registry_secret_ref != scoped_token.token_ref:
             raise ValueError(
                 "scoped_token.token_ref must match registry.pass_or_secret_key; "
                 "next action: load the route-specific scoped token registry"
@@ -279,7 +317,10 @@ class BoundedOutboundLane:
     def execute_act(self, request: OutboundLaneActRequest) -> OutboundLaneActReceipt:
         """Validate one lane act and return a durable per-act receipt shape."""
         if not isinstance(request, OutboundLaneActRequest):
-            raise TypeError("request must be an OutboundLaneActRequest")
+            raise TypeError(
+                "request must be an OutboundLaneActRequest; next action: validate "
+                "the lane act before execution"
+            )
 
         with self._lock:
             if request.scope not in self._scoped_token.scopes:
@@ -335,7 +376,11 @@ class BoundedOutboundLane:
                     status="refused",
                     refusal_reason="rate_limit_exceeded",
                     outbound_receipt=dry_run_receipt,
-                    metadata=rate_limited,
+                    metadata=rate_limited
+                    | {
+                        "outbound_execute_reached": False,
+                        "provider_execution_wired": False,
+                    },
                 )
 
             final_receipt = self._executor.execute(outbound_request)
@@ -357,7 +402,7 @@ class BoundedOutboundLane:
                 },
             )
 
-    def _consume_rate_limit_slot(self) -> dict[str, Any] | None:
+    def _reset_expired_window(self) -> None:
         now = self._now_fn()
         if (
             self._window_started_at is None
@@ -366,6 +411,8 @@ class BoundedOutboundLane:
             self._window_started_at = now
             self._used_in_window = 0
 
+    def _consume_rate_limit_slot(self) -> dict[str, Any] | None:
+        self._reset_expired_window()
         if self._used_in_window >= self.rate_limit.max_actions:
             return {
                 "next_action": "wait for the lane rate-limit window or raise the limit through governance",
@@ -377,6 +424,7 @@ class BoundedOutboundLane:
         return None
 
     def _rate_limit_remaining(self) -> int:
+        self._reset_expired_window()
         return max(0, self.rate_limit.max_actions - self._used_in_window)
 
     def _receipt(
@@ -439,7 +487,9 @@ def build_youtube_public_upload_lane_template(
 
 def _nonblank_string(name: str, value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{name} must be a nonblank string")
+        raise ValueError(
+            f"{name} must be a nonblank string; next action: bind a stable governed identifier"
+        )
     return value.strip()
 
 
@@ -452,12 +502,21 @@ def _nonblank_string_tuple(
     if value is None:
         if allow_empty:
             return ()
-        raise ValueError(f"{name} must be a list or tuple of strings")
+        raise ValueError(
+            f"{name} must be a list or tuple of strings; next action: bind "
+            "explicit governed scope/evidence strings"
+        )
     if isinstance(value, str) or not isinstance(value, list | tuple | set | frozenset):
-        raise ValueError(f"{name} must be a list or tuple of strings")
+        raise ValueError(
+            f"{name} must be a list or tuple of strings; next action: bind "
+            "explicit governed scope/evidence strings"
+        )
     normalized = tuple(_nonblank_string(f"{name} entries", item) for item in value)
     if not normalized and not allow_empty:
-        raise ValueError(f"{name} must contain at least one scope")
+        raise ValueError(
+            f"{name} must contain at least one scope; next action: bind the "
+            "route-specific send scope"
+        )
     return normalized
 
 
@@ -474,7 +533,10 @@ def _is_governed_secret_ref(ref: str) -> bool:
 def _validate_string_keys(name: str, value: Mapping[Any, Any]) -> None:
     for key, nested_value in value.items():
         if not isinstance(key, str) or not key.strip():
-            raise ValueError(f"{name} keys must be nonblank strings")
+            raise ValueError(
+                f"{name} keys must be nonblank strings; next action: "
+                "replace blank or non-string keys with stable JSON object keys"
+            )
         if isinstance(nested_value, Mapping):
             _validate_string_keys(name, nested_value)
 
@@ -498,8 +560,14 @@ def _freeze_value(name: str, value: Any) -> Any:
     if isinstance(value, float):
         if math.isfinite(value):
             return value
-        raise ValueError(f"{name} values must be finite JSON-compatible scalars")
-    raise ValueError(f"{name} values must be JSON-compatible immutable evidence")
+        raise ValueError(
+            f"{name} values must be finite JSON-compatible scalars; next action: "
+            "replace non-finite values with string, number, bool, null, list, or object evidence"
+        )
+    raise ValueError(
+        f"{name} values must be JSON-compatible immutable evidence; next action: "
+        "replace mutable or non-JSON values with string, number, bool, null, list, or object evidence"
+    )
 
 
 def _thaw_mapping(value: Mapping[str, Any]) -> dict[str, Any]:

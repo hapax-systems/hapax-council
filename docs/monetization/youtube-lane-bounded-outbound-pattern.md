@@ -7,11 +7,18 @@ Status: implementation template only. This document does not authorize or wire a
 The YouTube public-egress lane uses the bounded outbound executor through `shared.outbound_lane_pattern`. A valid act must satisfy all of these gates before any provider adapter can be wired later:
 
 - Scoped token: the account federation registry must point at `pass:google/token-youtube-streaming`, and the lane token must cover `youtube_video_insert`.
-- Rate limit: the lane must bind a fixed-window `OutboundRateLimit`; a second act beyond the window produces a refusal receipt.
+- Rate limit: the lane must bind a fixed-window `OutboundRateLimit`; a second act beyond the window produces a refusal receipt. The template limiter is intentionally in-memory. Durable restart-surviving rate limits are future adapter evidence, not a claim made by this PR.
 - Per-act receipt: every admitted or refused act returns an `OutboundLaneActReceipt`.
 - Kill switch: the lane constructor requires an explicit kill-switch boolean and passes it to `OutboundExecutor`.
 - Public gate: the template uses `AuthorityCeiling.PUBLIC_GATE_REQUIRED`, so public egress needs a bound `public-gate:` receipt.
 - Money separation: the template sets `money_movement_authorized=False` and refuses any positive amount or money-movement request before the outbound executor is reached.
+
+Recheck:
+
+```bash
+uv run pytest tests/shared/test_outbound_lane_pattern.py -q
+uv run pytest tests/shared/test_outbound_lane_pattern.py -q -k 'rate_limit or scoped_token or kill_switch or money_movement or public_egress'
+```
 
 ## Non-Authority
 

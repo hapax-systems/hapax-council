@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from shared.outbound_lane_pattern import (
     YOUTUBE_PUBLIC_UPLOAD_SCOPE,
     YOUTUBE_PUBLIC_VENUE,
     YOUTUBE_SCOPED_TOKEN_REF,
     BoundedOutboundLane,
+    OutboundLaneActReceipt,
     OutboundLaneActRequest,
     OutboundRateLimit,
     ScopedOutboundToken,
@@ -90,6 +92,7 @@ def test_youtube_template_admits_with_scoped_token_rate_limit_receipt_and_kill_s
 
 def test_youtube_template_rate_limit_blocks_second_action_with_per_act_receipt(
     youtube_registry: AccountFederationRegistry,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     lane = build_youtube_public_upload_lane_template(
         registry=youtube_registry,
@@ -101,6 +104,11 @@ def test_youtube_template_rate_limit_blocks_second_action_with_per_act_receipt(
     )
 
     first = lane.execute_act(_request(action_id="youtube-act-1"))
+
+    def _fail_execute(_: object) -> object:
+        raise AssertionError("final OutboundExecutor.execute must not run when rate-limited")
+
+    monkeypatch.setattr(lane._executor, "execute", _fail_execute)  # noqa: SLF001
     second = lane.execute_act(_request(action_id="youtube-act-2"))
 
     assert first.status == "admitted"
@@ -110,6 +118,8 @@ def test_youtube_template_rate_limit_blocks_second_action_with_per_act_receipt(
     assert second.outbound_receipt is not None
     assert second.outbound_receipt.status == "admitted"
     assert second.metadata["max_actions"] == 1
+    assert second.metadata["outbound_execute_reached"] is False
+    assert second.metadata["provider_execution_wired"] is False
 
 
 def test_lane_constructor_requires_scoped_token_rate_limit_and_explicit_kill_switch(
@@ -191,6 +201,83 @@ def test_scoped_token_must_match_registry_and_cover_send_scope(
     assert receipt.outbound_receipt is None
 
 
+def test_constructor_rejects_token_scopes_outside_registry(
+    youtube_registry: AccountFederationRegistry,
+) -> None:
+    with pytest.raises(ValueError, match="registry.send_scopes"):
+        BoundedOutboundLane(
+            lane_id="template:youtube",
+            registry=youtube_registry,
+            authority_ceiling=AuthorityCeiling.PUBLIC_GATE_REQUIRED,
+            venue_allowlist={YOUTUBE_PUBLIC_VENUE},
+            notional_cap=0.0,
+            position_cap=0.0,
+            scoped_token=ScopedOutboundToken(
+                token_ref=YOUTUBE_SCOPED_TOKEN_REF,
+                scopes=(YOUTUBE_PUBLIC_UPLOAD_SCOPE, "youtube_live_chat_message"),
+            ),
+            rate_limit=OutboundRateLimit(max_actions=1, window_seconds=60),
+            kill_switch=False,
+            public_gate_receipts={"public-gate:youtube-template-1"},
+            public_egress_authorized=True,
+            money_movement_authorized=False,
+        )
+
+
+def test_registry_token_ref_is_stripped_before_match(
+    youtube_registry: AccountFederationRegistry,
+) -> None:
+    padded_registry = youtube_registry.model_copy(
+        update={"pass_or_secret_key": f"  {YOUTUBE_SCOPED_TOKEN_REF}  "}
+    )
+
+    lane = build_youtube_public_upload_lane_template(
+        registry=padded_registry,
+        public_gate_receipts={"public-gate:youtube-template-1"},
+        max_actions=1,
+        window_seconds=60,
+        kill_switch=False,
+    )
+
+    assert lane.execute_act(_request()).status == "admitted"
+
+
+def test_secret_ref_and_rate_limit_validation_errors_include_next_actions() -> None:
+    with pytest.raises(ValidationError, match="next action"):
+        ScopedOutboundToken(token_ref="google/token-youtube-streaming", scopes=("x",))
+
+    for kwargs in (
+        {"max_actions": 0, "window_seconds": 60},
+        {"max_actions": 1, "window_seconds": 0},
+    ):
+        with pytest.raises(ValidationError, match="next action"):
+            OutboundRateLimit(**kwargs)
+
+
+def test_request_and_receipt_payload_validators_reject_non_json_shapes() -> None:
+    with pytest.raises(ValidationError, match="next action"):
+        OutboundLaneActRequest(
+            action_id="bad-payload",
+            scope=YOUTUBE_PUBLIC_UPLOAD_SCOPE,
+            venue=YOUTUBE_PUBLIC_VENUE,
+            payload={"bad": {"mutable-set"}},
+        )
+
+    with pytest.raises(ValidationError, match="next action"):
+        OutboundLaneActReceipt(
+            receipt_id="receipt:bad",
+            lane_id="template:youtube",
+            action_id="bad-metadata",
+            status="refused",
+            refusal_reason="test",
+            scoped_token_ref=YOUTUBE_SCOPED_TOKEN_REF,
+            rate_limit_remaining=0,
+            public_egress_authorized=True,
+            money_movement_authorized=False,
+            metadata={"bad": {"mutable-set"}},
+        )
+
+
 def test_public_egress_and_money_movement_are_separate_authorities(
     youtube_registry: AccountFederationRegistry,
 ) -> None:
@@ -215,6 +302,34 @@ def test_public_egress_and_money_movement_are_separate_authorities(
     assert money_attempt.status == "refused"
     assert money_attempt.refusal_reason == "money_movement_not_authorized"
     assert money_attempt.outbound_receipt is None
+
+
+def test_public_egress_request_refuses_when_public_authority_absent(
+    youtube_registry: AccountFederationRegistry,
+) -> None:
+    lane = BoundedOutboundLane(
+        lane_id="template:youtube",
+        registry=youtube_registry,
+        authority_ceiling=AuthorityCeiling.PUBLIC_GATE_REQUIRED,
+        venue_allowlist={YOUTUBE_PUBLIC_VENUE},
+        notional_cap=0.0,
+        position_cap=0.0,
+        scoped_token=ScopedOutboundToken(
+            token_ref=YOUTUBE_SCOPED_TOKEN_REF,
+            scopes=(YOUTUBE_PUBLIC_UPLOAD_SCOPE,),
+        ),
+        rate_limit=OutboundRateLimit(max_actions=1, window_seconds=60),
+        kill_switch=False,
+        public_gate_receipts={"public-gate:youtube-template-1"},
+        public_egress_authorized=False,
+        money_movement_authorized=False,
+    )
+
+    receipt = lane.execute_act(_request())
+
+    assert receipt.status == "refused"
+    assert receipt.refusal_reason == "public_egress_not_authorized"
+    assert receipt.outbound_receipt is None
 
 
 def test_youtube_public_egress_requires_public_gate_receipt(
@@ -260,3 +375,29 @@ def test_youtube_kill_switch_blocks_with_per_act_receipt(
     assert receipt.outbound_receipt is not None
     assert receipt.outbound_receipt.refusal_reason == "kill_switch_active"
     assert receipt.rate_limit_remaining == 1
+
+
+def test_rate_limit_remaining_resets_after_window_for_refusal_receipts(
+    youtube_registry: AccountFederationRegistry,
+) -> None:
+    now = 100.0
+
+    def _now() -> float:
+        return now
+
+    lane = build_youtube_public_upload_lane_template(
+        registry=youtube_registry,
+        public_gate_receipts={"public-gate:youtube-template-1"},
+        max_actions=1,
+        window_seconds=10,
+        kill_switch=False,
+        now_fn=_now,
+    )
+
+    first = lane.execute_act(_request(action_id="first"))
+    now = 111.0
+    second = lane.execute_act(_request(action_id="wrong-scope", scope="youtube_live_chat_message"))
+
+    assert first.rate_limit_remaining == 0
+    assert second.refusal_reason == "token_scope_missing"
+    assert second.rate_limit_remaining == 1
