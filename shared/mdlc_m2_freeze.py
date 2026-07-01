@@ -473,23 +473,31 @@ def _ladder_from_mapping(raw: Mapping[str, Any]) -> MonDLCLadder:
         return MonDLCLadder(
             ruler_hash=_required_string(raw.get("ruler_hash")),
             min_corroboration_count=_finite_int(
-                raw.get("min_corroboration_count", raw.get("min_N", 2)),
+                _required_ladder_value(raw, "min_corroboration_count"),
                 field="min_corroboration_count",
             ),
             freshness_ttl_seconds=_finite_int(
-                raw.get("freshness_ttl_seconds", raw.get("freshness_ttl_s", 86_400)),
+                _required_ladder_value(raw, "freshness_ttl_seconds"),
                 field="freshness_ttl_seconds",
             ),
             as_of=_optional_datetime(raw.get("as_of")),
             positive_threshold=_finite_float(
-                raw.get("positive_threshold", 0.0), field="positive_threshold"
+                _required_ladder_value(raw, "positive_threshold"), field="positive_threshold"
             ),
             negative_threshold=_finite_float(
-                raw.get("negative_threshold", -1.0), field="negative_threshold"
+                _required_ladder_value(raw, "negative_threshold"), field="negative_threshold"
             ),
         )
+    except _FreezeInputError:
+        raise
     except (TypeError, ValueError) as exc:
         raise _FreezeInputError(M2FreezeRefusalReason.INVALID_LADDER, str(exc)) from exc
+
+
+def _required_ladder_value(raw: Mapping[str, Any], field: str) -> Any:
+    if field not in raw:
+        raise _FreezeInputError(M2FreezeRefusalReason.INVALID_LADDER, f"ladder.{field} is required")
+    return raw[field]
 
 
 def _required_string(value: Any) -> str:

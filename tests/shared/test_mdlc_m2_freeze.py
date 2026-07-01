@@ -157,6 +157,42 @@ def test_invalid_ladder_refuses_with_ladder_reason() -> None:
     assert result.next_action == "repair the frozen ruler ladder before commit"
 
 
+@pytest.mark.parametrize(
+    "missing_field",
+    (
+        "min_corroboration_count",
+        "freshness_ttl_seconds",
+        "positive_threshold",
+        "negative_threshold",
+    ),
+)
+def test_freeze_ladder_must_record_canonical_fields(missing_field: str) -> None:
+    ladder = dict(_artifact()["ladder"])
+    ladder.pop(missing_field)
+
+    result = verify_m2_freeze_artifact(_artifact(ladder=ladder), ruler_hash_commit=HASH)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is M2FreezeRefusalReason.INVALID_LADDER
+
+
+def test_freeze_ladder_does_not_accept_measurement_alias_defaults() -> None:
+    artifact = _artifact(
+        ladder={
+            "ruler_hash": HASH,
+            "min_N": 2,
+            "freshness_ttl_s": 3600,
+            "positive_threshold": 0.0,
+            "negative_threshold": -50.0,
+        }
+    )
+
+    result = verify_m2_freeze_artifact(artifact, ruler_hash_commit=HASH)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is M2FreezeRefusalReason.INVALID_LADDER
+
+
 def test_invalid_signed_at_refuses_with_timestamp_reason() -> None:
     result = verify_m2_freeze_artifact(
         _artifact(signed_at="not-a-timestamp"),
