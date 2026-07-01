@@ -147,6 +147,17 @@ class RealizedReturnRailResult:
     source_class: str = "payment_event"
     detail: str = "no detail supplied; reject row and inspect refusal_reason"
 
+    def __post_init__(self) -> None:
+        if self.status is not RealizedReturnStatus.REFUSED:
+            return
+        detail = self.detail.strip() or "refused rail event"
+        if "next action:" not in detail.casefold():
+            detail = (
+                f"{detail}; next action: do not score this event; preserve refusal_reason "
+                "for ratchet-ledger/CCTV reconciliation"
+            )
+        object.__setattr__(self, "detail", detail)
+
     @property
     def ok(self) -> bool:
         return self.status is RealizedReturnStatus.ACCEPTED
@@ -344,12 +355,62 @@ def realized_return_from_durable_payment_event(
 ) -> RealizedReturnRailResult:
     """Read one Stage0 durable ``payment-event`` row."""
 
+    return _realized_return_from_durable_payment_event(
+        row,
+        validated_stream=isinstance(row, DurableSinkRow),
+    )
+
+
+def _realized_return_from_durable_payment_event(
+    row: DurableSinkRow | Mapping[str, Any],
+    *,
+    validated_stream: bool,
+) -> RealizedReturnRailResult:
+    if isinstance(row, Mapping) and not validated_stream:
+        return RealizedReturnRailResult(
+            status=RealizedReturnStatus.REFUSED,
+            measurement=None,
+            refusal_reason=RealizedReturnRefusalReason.NOT_STAGE0_PAYMENT_EVENT,
+            event_kind=None,
+            amount_minor_units=None,
+            currency=None,
+            observed_at=None,
+            evidence_refs=_string_tuple(
+                (_row_field(row, "source_receipt_ref"), _row_field(row, "row_hash"))
+            ),
+            detail=(
+                "mapping durable rows must be read through "
+                "realized_returns_from_durable_payment_events() so chain validation runs"
+            ),
+        )
+
     stream_id = _row_field(row, "stream_id")
     data_class = _row_field(row, "data_class")
     payload = _row_field(row, "payload")
     source_receipt_ref = _row_field(row, "source_receipt_ref")
+    schema_version = _row_field(row, "schema_version")
+    timestamp = _row_field(row, "timestamp")
+    prior_hash = _row_field(row, "prior_hash")
     row_hash = _row_field(row, "row_hash")
 
+    if (
+        schema_version != 1
+        or _optional_datetime_or_none(timestamp) is None
+        or not _nonempty_text(source_receipt_ref)
+        or not _is_sha256(prior_hash)
+        or not _is_sha256(row_hash)
+    ):
+        return RealizedReturnRailResult(
+            status=RealizedReturnStatus.REFUSED,
+            measurement=None,
+            refusal_reason=RealizedReturnRefusalReason.NOT_STAGE0_PAYMENT_EVENT,
+            event_kind=None,
+            amount_minor_units=None,
+            currency=None,
+            observed_at=None,
+            evidence_refs=_string_tuple((source_receipt_ref, row_hash)),
+            detail="durable row is missing the complete Stage0 chain envelope",
+        )
     if stream_id != PAYMENT_EVENT_STREAM_ID or data_class != PAYMENT_EVENT_DATA_CLASS:
         return RealizedReturnRailResult(
             status=RealizedReturnStatus.REFUSED,
@@ -414,7 +475,7 @@ def realized_returns_from_durable_payment_events(
                     )
                 )
                 continue
-            results.append(realized_return_from_durable_payment_event(row))
+            results.append(_realized_return_from_durable_payment_event(row, validated_stream=True))
     return tuple(results)
 
 
@@ -633,6 +694,13 @@ def _optional_datetime(value: Any) -> datetime | None:
     return None
 
 
+def _optional_datetime_or_none(value: Any) -> datetime | None:
+    try:
+        return _optional_datetime(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _ensure_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
@@ -651,6 +719,18 @@ def _coerce_refs(value: Any) -> tuple[str, ...]:
     if isinstance(value, Sequence):
         return _string_tuple(value)
     return ()
+
+
+def _nonempty_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
 
 
 def _string_tuple(value: Sequence[Any]) -> tuple[str, ...]:

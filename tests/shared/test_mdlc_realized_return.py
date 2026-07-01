@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import shared.durable_jsonl_sink as sink_mod
+import shared.mdlc_realized_return as realized_return_mod
 from shared.capdlc_lifecycle import GateStatus
 from shared.mdlc_measure import MonDLCLadder, MonDLCVerdict, score
 from shared.mdlc_realized_return import (
@@ -235,7 +236,8 @@ def test_malformed_timestamp_returns_invalid_shape_refusal() -> None:
     assert result.status is RealizedReturnStatus.REFUSED
     assert result.refusal_reason is RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
     assert result.measurement is None
-    assert result.to_dict()["detail"] == "event timestamp is malformed"
+    assert result.to_dict()["detail"].startswith("event timestamp is malformed")
+    assert "next action:" in result.to_dict()["detail"]
 
 
 @pytest.mark.parametrize(
@@ -279,6 +281,7 @@ def test_refusal_result_carries_cctv_and_ratchet_context() -> None:
     assert payload["refusal_reason"] == "refund_or_reversal_event"
     assert payload["event_kind"] == "payment_refunded"
     assert payload["source_class"] == "payment_event"
+    assert "next action:" in payload["detail"]
     assert "receipt://payment/test/refund" in payload["evidence_refs"]
     with pytest.raises(TypeError, match="truthiness is undefined"):
         bool(result)
@@ -317,19 +320,42 @@ def test_reader_consumes_durable_stage0_payment_event_path(
     assert f"durable:payment-event:{refused.row_hash}" in results[1].evidence_refs
 
 
+def test_durable_row_wrapper_accepts_sink_returned_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    row = sink.append(
+        stream_id="payment-event",
+        data_class="financial_receipt",
+        source_receipt_ref="receipt://payment/stripe/accepted/payment_intent_succeeded",
+        payload=_durable_event("payment_intent_succeeded"),
+        timestamp=NOW.isoformat().replace("+00:00", "Z"),
+    )
+
+    result = realized_return_from_durable_payment_event(row)
+
+    assert result.status is RealizedReturnStatus.ACCEPTED
+    assert result.measurement is not None
+    assert f"durable:payment-event:{row.row_hash}" in result.evidence_refs
+
+
 def test_missing_durable_payment_event_file_returns_empty_tuple(tmp_path: Path) -> None:
     assert realized_returns_from_durable_payment_events(tmp_path / "missing.jsonl") == ()
 
 
 def test_durable_row_wrapper_refuses_non_payment_event_rows() -> None:
     result = realized_return_from_durable_payment_event(
-        {
-            "stream_id": "chronicle",
-            "data_class": "financial_receipt",
-            "source_receipt_ref": "receipt://payment/wrong-stream",
-            "row_hash": "b" * 64,
-            "payload": _durable_event("payment_intent_succeeded"),
-        }
+        sink_mod.DurableSinkRow(
+            schema_version=sink_mod.SCHEMA_VERSION,
+            timestamp=NOW.isoformat().replace("+00:00", "Z"),
+            stream_id="chronicle",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/wrong-stream",
+            prior_hash=sink_mod.GENESIS_HASH,
+            row_hash="b" * 64,
+            payload=_durable_event("payment_intent_succeeded"),
+        )
     )
 
     assert result.status is RealizedReturnStatus.REFUSED
@@ -339,15 +365,57 @@ def test_durable_row_wrapper_refuses_non_payment_event_rows() -> None:
 
 def test_durable_row_wrapper_refuses_non_mapping_payload() -> None:
     result = realized_return_from_durable_payment_event(
-        {
-            "stream_id": "payment-event",
-            "data_class": "financial_receipt",
-            "source_receipt_ref": "receipt://payment/bad-payload",
-            "row_hash": "c" * 64,
-            "payload": ["not", "a", "mapping"],
-        }
+        sink_mod.DurableSinkRow(
+            schema_version=sink_mod.SCHEMA_VERSION,
+            timestamp=NOW.isoformat().replace("+00:00", "Z"),
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/bad-payload",
+            prior_hash=sink_mod.GENESIS_HASH,
+            row_hash="c" * 64,
+            payload=["not", "a", "mapping"],  # type: ignore[arg-type]
+        )
     )
 
     assert result.status is RealizedReturnStatus.REFUSED
     assert result.refusal_reason is RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
     assert result.measurement is None
+
+
+def test_durable_row_wrapper_refuses_unvalidated_mapping_even_with_valid_payload() -> None:
+    result = realized_return_from_durable_payment_event(
+        {
+            "stream_id": "payment-event",
+            "data_class": "financial_receipt",
+            "source_receipt_ref": "receipt://payment/self-declared",
+            "row_hash": "d" * 64,
+            "payload": _durable_event("payment_intent_succeeded"),
+        }
+    )
+
+    assert result.status is RealizedReturnStatus.REFUSED
+    assert result.refusal_reason is RealizedReturnRefusalReason.NOT_STAGE0_PAYMENT_EVENT
+    assert result.measurement is None
+
+
+def test_durable_stream_reader_refuses_non_mapping_jsonl_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _NoIssues:
+        def raise_for_issues(self) -> None:
+            return None
+
+    path = tmp_path / "payment-event.jsonl"
+    path.write_text("[]\n", encoding="utf-8")
+    monkeypatch.setattr(
+        realized_return_mod,
+        "validate_chain",
+        lambda *_args, **_kwargs: _NoIssues(),
+    )
+
+    results = realized_returns_from_durable_payment_events(path)
+
+    assert len(results) == 1
+    assert results[0].status is RealizedReturnStatus.REFUSED
+    assert results[0].refusal_reason is RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
