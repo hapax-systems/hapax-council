@@ -889,14 +889,21 @@ def _run_task_is_terminal(
     cache_age_s: int = 0,
     note_pr: int | None = None,
     gh_state: str = "",
+    legacy_cache: bool = False,
 ) -> int:
     """Extract task_is_terminal() from the launcher and drive it with fixtures.
 
     Returns the bash exit code: 0 = terminal (lane reaped), 1 = live.
+
+    ``cache_age_s`` ages the claim EPOCH recorded in the ``cc-claim-epoch-*``
+    sidecar while the claim file's mtime stays fresh — deliberately
+    simulating the cc-task-gate lease-keep-alive ``touch`` that makes mtime
+    useless as a claim-age witness. ``legacy_cache`` writes no sidecar (the
+    mtime fallback path), aged via utime instead.
     """
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
-    cache.mkdir(parents=True)
+    cache.mkdir(parents=True, exist_ok=True)
     note = tmp_path / "note.md"
     pr_line = f"pr: {note_pr}\n" if note_pr is not None else ""
     note.write_text(
@@ -904,11 +911,17 @@ def _run_task_is_terminal(
         encoding="utf-8",
     )
     claim_file = cache / "cc-active-task-eta"
+    sidecar = cache / "cc-claim-epoch-eta"
+    sidecar.unlink(missing_ok=True)
     if cache_task is not None:
         claim_file.write_text(cache_task + "\n", encoding="utf-8")
-        if cache_age_s:
-            aged = time.time() - cache_age_s
-            os.utime(claim_file, (aged, aged))
+        if legacy_cache:
+            if cache_age_s:
+                aged = time.time() - cache_age_s
+                os.utime(claim_file, (aged, aged))
+        else:
+            epoch = int(time.time()) - cache_age_s
+            sidecar.write_text(f"{epoch}\n", encoding="utf-8")
     text = SCRIPT.read_text(encoding="utf-8")
     start = text.index("task_is_terminal()")
     end = text.index("\n}\n", start) + 3
@@ -959,9 +972,13 @@ def test_terminal_check_reaps_reassignment_even_with_fresh_cache(
     assert rc == 0
 
 
-def test_terminal_check_reaps_long_unassigned_with_stale_cache(tmp_path: Path) -> None:
-    """The H1-revert indeterminate shape is freshness-bounded: a lane sitting
-    on a long-unassigned task should have re-claimed — reap it."""
+def test_terminal_check_reaps_long_unassigned_despite_gate_heartbeat(
+    tmp_path: Path,
+) -> None:
+    """The H1-revert indeterminate shape is bounded by the claim EPOCH in the
+    cache content — the harness keeps mtime fresh (the gate's lease
+    keep-alive touch), so this proves the bound is heartbeat-immune: a lane
+    sitting on a long-unassigned task reaps even while it keeps writing."""
     rc = _run_task_is_terminal(
         tmp_path,
         cache_task="task-under-test",
@@ -970,6 +987,27 @@ def test_terminal_check_reaps_long_unassigned_with_stale_cache(tmp_path: Path) -
         cache_age_s=3600,
     )
     assert rc == 0
+
+
+def test_terminal_check_legacy_cache_falls_back_to_mtime(tmp_path: Path) -> None:
+    """Pre-epoch single-line caches keep working via the mtime fallback."""
+    live = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        legacy_cache=True,
+    )
+    assert live == 1
+    reaped = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        cache_age_s=3600,
+        legacy_cache=True,
+    )
+    assert reaped == 0
 
 
 def test_terminal_check_reaps_when_cache_repointed(tmp_path: Path) -> None:

@@ -619,14 +619,25 @@ PYEOF
 
 # Write the claim file(s) the gate + consumers read.
 mkdir -p "$HOME/.cache/hapax"
+# The `cc-claim-epoch-*` SIDECAR records the claim time out-of-band: several
+# consumers read the claim file's FULL content as the task id, so the id file
+# must stay single-line — and the gate touches the claim file as a lease
+# keep-alive before its checks, so its mtime cannot witness claim age.
+# task_is_terminal reads the sidecar for a heartbeat-immune freshness source
+# (H1-ghost-revert indeterminate shape); a missing sidecar falls back to
+# mtime. The distinct prefix keeps sidecars out of every `cc-active-task-*`
+# glob (sweeps, terminal checks) so an epoch can never masquerade as a claim.
+claim_epoch="$(date +%s)"
 # Legacy role-keyed file: read by cc-close, session-context, the coordinator, the
 # coordination TUI, and other consumers outside this task's scope. Always written.
 echo "$task_id" > "$legacy_claim_file"
+echo "$claim_epoch" > "${legacy_claim_file/cc-active-task/cc-claim-epoch}"
 if [[ -n "$session_claim_file" ]]; then
   # Session-keyed lease (FM-2): the gate reads this FIRST so two same-role
   # sessions never collide on the shared legacy file. Same task id; the filename
   # carries the session identity.
   echo "$task_id" > "$session_claim_file"
+  echo "$claim_epoch" > "${session_claim_file/cc-active-task/cc-claim-epoch}"
   echo "cc-claim: wrote $session_claim_file (+ legacy cc-active-task-$role)"
 else
   echo "cc-claim: wrote ~/.cache/hapax/cc-active-task-$role"

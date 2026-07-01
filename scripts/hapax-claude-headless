@@ -375,15 +375,28 @@ task_is_terminal() {
     if [[ "$note_assigned" != "unassigned" ]]; then
       return 0
     fi
-    local _stamp_grace="${HAPAX_CLAIM_STAMP_GRACE_S:-900}" _cache_mtime=0 _cache_age=-1
+    # Freshness must be HEARTBEAT-IMMUNE: the gate touches the claim file
+    # before its checks (lease keep-alive), so mtime is refreshed even by a
+    # lane whose writes the gate then blocks. Prefer the claim epoch cc-claim
+    # records in the `cc-claim-epoch-*` sidecar (a distinct prefix, outside
+    # every cc-active-task-* glob and never touched by the gate); fall back
+    # to mtime only for legacy caches written before the sidecar existed.
+    local _stamp_grace="${HAPAX_CLAIM_STAMP_GRACE_S:-900}" _cache_age=-1
+    local _claim_epoch="" _cache_mtime=0 _epoch_file=""
     if [[ "$claimed" == "$task" && -n "$claim_file_used" ]]; then
-      _cache_mtime="$(stat -c %Y "$claim_file_used" 2>/dev/null || echo 0)"
-      if (( _cache_mtime > 0 )); then
-        _cache_age=$(( $(date +%s) - _cache_mtime ))
+      _epoch_file="${claim_file_used/cc-active-task/cc-claim-epoch}"
+      _claim_epoch="$(head -n1 "$_epoch_file" 2>/dev/null | tr -d '[:space:]' || true)"
+      if [[ "$_claim_epoch" =~ ^[0-9]+$ ]]; then
+        _cache_age=$(( $(date +%s) - _claim_epoch ))
+      else
+        _cache_mtime="$(stat -c %Y "$claim_file_used" 2>/dev/null || echo 0)"
+        if (( _cache_mtime > 0 )); then
+          _cache_age=$(( $(date +%s) - _cache_mtime ))
+        fi
       fi
     fi
     if [[ "$claimed" == "$task" ]] && (( _cache_age >= 0 && _cache_age <= _stamp_grace )); then
-      printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but fresh %s claim cache (age=%ss) names this task — treating as indeterminate (H1 ghost-revert shape)\n' \
+      printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but fresh %s claim cache (claim age=%ss) names this task — treating as indeterminate (H1 ghost-revert shape)\n' \
         "$$" "$claim_source" "$_cache_age" >&2
     else
       return 0
