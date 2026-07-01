@@ -15,8 +15,9 @@ CASE-ROUTING-OPERATIONALIZATION-20260609):
 Registry: ``config/review-lenses/registry.yaml``. Dossiers live beside the
 cc-task note as ``<task_id>.review-dossier.yaml`` (same pattern as acceptance
 receipts). Emergency bypass: ``HAPAX_REVIEW_TEAM_GATE_OFF=1`` disables only
-the admission blockers; the dispatcher killswitch is
-``HAPAX_REVIEW_TEAM_DISPATCH_OFF=1``.
+post-dossier admission blockers; it does not authorize dispatcher/provider
+invocation when route, quota, resource, or authority admission is missing. The
+dispatcher killswitch is ``HAPAX_REVIEW_TEAM_DISPATCH_OFF=1``.
 """
 
 from __future__ import annotations
@@ -1753,7 +1754,8 @@ def review_team_verdict_blockers(
     files are supplied, the recorded team class and lens set must match the
     same surface-derived scope used by the dispatcher.
     ``HAPAX_REVIEW_TEAM_GATE_OFF=1`` is the documented emergency bypass for
-    admission only; durable receipt minting must use
+    post-dossier admission only; it is not a dispatch-time/provider-use bypass.
+    Durable receipt minting must use
     :func:`review_dossier_validity_blockers` instead.
     """
 

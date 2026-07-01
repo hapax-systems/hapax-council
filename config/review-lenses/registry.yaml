@@ -115,8 +115,9 @@ families:
     # rerun dispatch; admission enforces the same FAMILY_OUTAGE_TTL_S expiry.
     # Recheck witness: python -c 'import json,pathlib; p=pathlib.Path.home()/".cache/hapax/review-team/family-outage.json"; print(json.loads(p.read_text()).get("glm"))'
     # Broad emergency stops remain HAPAX_REVIEW_TEAM_DISPATCH_OFF=1
-    # (stop writing dossiers) and HAPAX_REVIEW_TEAM_GATE_OFF=1 (admission
-    # bypass only under operator/governance authority).
+    # (stop writing dossiers) and HAPAX_REVIEW_TEAM_GATE_OFF=1 (post-dossier
+    # admission bypass only). Neither variable authorizes provider invocation
+    # when route, quota, resource, or authority admission is held.
     reviewer_command: ["scripts/hapax-glmcp-reviewer"]
     timeout_seconds: 1200
 
