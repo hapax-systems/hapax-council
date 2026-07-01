@@ -41,6 +41,7 @@ from agents.operator_awareness.state import (
     write_state_atomic,
 )
 from agents.payment_processors.event_log import event_window_sha256, tail_events
+from agents.payment_processors.monetization_aggregator import build_monetization_block_from_events
 from agents.payment_processors.resource_receipts import (
     commit_prepared_resource_receipt,
     prepare_awareness_write_resource_receipt,
@@ -131,13 +132,14 @@ class AwarenessRunner:
 
     def run_once(self) -> str:
         """Build state + write atomically; return the result label."""
+        events = tail_events(log_path=self._aggregator.monetization_log_path)
+        monetization_block = build_monetization_block_from_events(events)
         try:
-            state = self._aggregator.collect()
+            state = self._aggregator.collect(monetization_block=monetization_block)
         except Exception:  # noqa: BLE001
             log.exception("aggregator.collect() raised; recording failure")
             self.writes_total.labels(result="aggregator_error").inc()
             return "aggregator_error"
-        events = tail_events(log_path=self._aggregator.monetization_log_path)
         _receipt_ref, receipt = prepare_awareness_write_resource_receipt(
             state_path=self._state_path,
             source_log_path=self._aggregator.monetization_log_path,

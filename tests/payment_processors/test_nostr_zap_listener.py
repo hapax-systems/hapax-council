@@ -227,9 +227,17 @@ class TestNostrZapListener:
             npub_hex="abcd" * 16,
             websocket_factory=_websocket_should_not_open,
         )
+        sleep_calls: list[float] = []
+
+        async def _stop_after_backoff(delay: float):
+            sleep_calls.append(delay)
+            listener.stop()
+
+        monkeypatch.setattr(listener, "_backoff_sleep", _stop_after_backoff)
 
         await listener._consume_relay("wss://relay.example")  # noqa: SLF001
         assert websocket_calls == []
+        assert sleep_calls == [nostr_mod.DEFAULT_BACKOFF_S]
 
     @pytest.mark.asyncio
     async def test_consume_relay_records_subscription_resource_receipt(self, tmp_path, monkeypatch):

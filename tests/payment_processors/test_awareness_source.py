@@ -11,7 +11,7 @@ from agents.operator_awareness.runner import AwarenessRunner
 from agents.operator_awareness.sources.monetization import (
     collect_monetization_block,
 )
-from agents.operator_awareness.state import PaymentEvent, write_state_atomic
+from agents.operator_awareness.state import AwarenessState, PaymentEvent, write_state_atomic
 from agents.payment_processors.event_log import append_event
 from agents.payment_processors.resource_receipts import tail_resource_receipts
 
@@ -111,6 +111,46 @@ class TestAwarenessRunnerReceiptGate:
             ref.startswith("payment_event_window_sha256:")
             for ref in receipts[0].resource_provenance
         )
+
+    def test_run_once_uses_same_monetization_window_for_state_and_receipt(
+        self, tmp_path, monkeypatch
+    ):
+        import agents.payment_processors.resource_receipts as resource_receipts
+
+        receipt_log = tmp_path / "resource-receipts.jsonl"
+        monkeypatch.setattr(
+            resource_receipts,
+            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+            receipt_log,
+        )
+        log_path = tmp_path / "events.jsonl"
+        state_path = tmp_path / "state.json"
+        append_event(_make("L1", sats=21), log_path=log_path)
+
+        class _FakeAggregator:
+            monetization_log_path = log_path
+            captured_state_block = None
+
+            def collect(self, *, monetization_block):
+                self.captured_state_block = monetization_block
+                return AwarenessState(
+                    timestamp=datetime.now(UTC),
+                    monetization=monetization_block,
+                )
+
+        aggregator = _FakeAggregator()
+        runner = AwarenessRunner(
+            aggregator=aggregator,  # type: ignore[arg-type]
+            state_path=state_path,
+            registry=CollectorRegistry(),
+        )
+
+        assert runner.run_once() == "ok"
+        assert aggregator.captured_state_block is not None
+        assert aggregator.captured_state_block.lightning_receipts_count == 1
+        assert aggregator.captured_state_block.total_sats_received == 21
+        receipt = tail_resource_receipts(log_path=receipt_log)[0]
+        assert "receipt_count:1" in receipt.resource_provenance
 
     def test_run_once_fails_closed_when_resource_receipt_missing(self, tmp_path, monkeypatch):
         import agents.operator_awareness.runner as runner_mod

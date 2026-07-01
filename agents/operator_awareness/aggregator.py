@@ -58,6 +58,7 @@ from agents.operator_awareness.state import (
     HealthBlock,
     MailBlock,
     MailOperationalAlertKind,
+    MonetizationBlock,
     OperationalAlertsBlock,
     PublishingBlock,
     RefusalEvent,
@@ -705,7 +706,7 @@ class Aggregator:
         self._egress_resolver = egress_resolver
         self._clock = clock or (lambda: datetime.now(UTC))
 
-    def collect(self) -> AwarenessState:
+    def collect(self, *, monetization_block: MonetizationBlock | None = None) -> AwarenessState:
         """Build one AwarenessState by pulling each wired source.
 
         Wires source helpers: refusals_recent, health_system,
@@ -726,7 +727,9 @@ class Aggregator:
                 self._chronicle_events_path,
                 egress_resolver=self._egress_resolver,
             ),
-            monetization=collect_monetization_block(self._monetization_log_path),
+            monetization=monetization_block
+            if monetization_block is not None
+            else collect_monetization_block(self._monetization_log_path),
             daimonion_voice=collect_daimonion_block(self._stimmung_state_path),
             time_sprint=collect_sprint_block(self._sprint_state_path),
             hardware_fleet=collect_fleet_block(self._pi_noir_dir),

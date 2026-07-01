@@ -66,10 +66,12 @@ def build_monetization_block(
     re-reads don't double-count. Empty log → default block (zeros).
     """
     events = tail_events(log_path=log_path)
-    return _block_from_events(events, public=public)
+    return build_monetization_block_from_events(events, public=public)
 
 
-def _block_from_events(events: list[PaymentEvent], *, public: bool = False) -> MonetizationBlock:
+def build_monetization_block_from_events(
+    events: list[PaymentEvent], *, public: bool = False
+) -> MonetizationBlock:
     """Build the awareness block from an already-captured event window."""
 
     seen_ids: set[tuple[str, str]] = set()
@@ -181,7 +183,7 @@ class MonetizationAggregator:
                 "and receipt log permissions"
             )
             return False
-        block = _block_from_events(events)
+        block = build_monetization_block_from_events(events)
         from datetime import UTC, datetime
 
         state = AwarenessState(
@@ -229,4 +231,5 @@ __all__ = [
     "DEFAULT_AGGREGATE_TICK_S",
     "MonetizationAggregator",
     "build_monetization_block",
+    "build_monetization_block_from_events",
 ]

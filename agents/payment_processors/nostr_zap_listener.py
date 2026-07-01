@@ -155,7 +155,9 @@ class NostrZapListener:
                 is None
             ):
                 zap_relay_errors_total.labels(kind="resource_receipt").inc()
-                return
+                await self._backoff_sleep(backoff)
+                backoff = min(DEFAULT_BACKOFF_MAX_S, backoff * 2.0)
+                continue
             try:
                 ws = await self._open_websocket(relay_url)
             except Exception as e:  # noqa: BLE001
