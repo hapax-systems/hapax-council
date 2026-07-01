@@ -199,12 +199,38 @@ def test_actionable_delta_requires_remediation_ref() -> None:
         "observed_descriptor_ref": "catalog:new",
         "evidence_refs": ["catalog:new"],
         "authority_ceiling": "frontier_review_required",
+        "affected_resource_pools": [],
+        "privacy_sensitive": True,
+        "public_egress": False,
+        "money_rail": False,
         "freshness_state": "delta_pending",
         "required_intake_action": "mint_intake_item",
         "summary": "missing remediation",
     }
 
     with pytest.raises(ValueError, match="actionable deltas require remediation_ref"):
+        CapabilitySurfaceDelta.model_validate(payload)
+
+
+def test_delta_requires_explicit_governance_flags() -> None:
+    payload = {
+        "delta_id": "bad",
+        "source": "unit-test",
+        "observed_at": NOW,
+        "detected_by": "test",
+        "surface_id": "route.new",
+        "delta_kind": "new_capability",
+        "prior_descriptor_ref": None,
+        "observed_descriptor_ref": "catalog:new",
+        "evidence_refs": ["catalog:new"],
+        "authority_ceiling": "frontier_review_required",
+        "freshness_state": "delta_pending",
+        "required_intake_action": "mint_intake_item",
+        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+        "summary": "missing governance flags",
+    }
+
+    with pytest.raises(ValueError, match="affected_resource_pools"):
         CapabilitySurfaceDelta.model_validate(payload)
 
 

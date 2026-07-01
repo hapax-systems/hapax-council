@@ -1,9 +1,10 @@
 """Capability-surface delta contracts.
 
-This module is inert by design. It does not probe providers, launch routes, or
-write intake files. It defines the typed evidence rows that an SDLC-owned
-detector can emit when observed capability supply differs from registered
-descriptors, or when a determination has gone stale.
+This module is inert by design. It does not probe providers or launch routes.
+It defines the typed evidence rows that an SDLC-owned detector can emit when
+observed capability supply differs from registered descriptors, or when a
+determination has gone stale. Its intake writer is deterministic and inert until
+explicitly invoked by the governed CLI.
 """
 
 from __future__ import annotations
@@ -170,10 +171,10 @@ class CapabilitySurfaceDelta(StrictModel):
     observed_descriptor_ref: str | None = None
     evidence_refs: list[str] = Field(min_length=1)
     authority_ceiling: AuthorityCeiling
-    affected_resource_pools: list[str] = Field(default_factory=list)
-    privacy_sensitive: bool = False
-    public_egress: bool = False
-    money_rail: bool = False
+    affected_resource_pools: list[str]
+    privacy_sensitive: bool
+    public_egress: bool
+    money_rail: bool
     freshness_state: FreshnessState
     required_intake_action: RequiredIntakeAction
     remediation_ref: str | None = None

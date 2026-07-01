@@ -978,7 +978,7 @@ def test_surface_delta_policy_source_indexes_descriptor_route_ids(
                         "detected_by": "unit-test",
                         "surface_id": "surface.codex.cluster",
                         "delta_kind": "stale_determination",
-                        "prior_descriptor_ref": "platform-capability-registry:codex.headless.full",
+                        "prior_descriptor_ref": "legacy-descriptor:codex-cluster",
                         "observed_descriptor_ref": "platform-capability-receipt:codex:expired",
                         "evidence_refs": ["test:expired-codex-receipt"],
                         "authority_ceiling": "authoritative",
