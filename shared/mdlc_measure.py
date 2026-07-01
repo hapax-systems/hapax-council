@@ -122,6 +122,7 @@ class MonDLCScoreResult:
     corroboration_count: int
     evidence_refs: tuple[str, ...] = ()
     refusal_reason: str | None = None
+    next_action: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, GateStatus):
@@ -147,6 +148,7 @@ class MonDLCScoreResult:
             "ok": self.ok,
             "reason": self.reason,
             "refusal_reason": self.refusal_reason,
+            "next_action": self.next_action,
             "ruler_hash_commit": self.ruler_hash_commit,
             "expected_ruler_hash": self.expected_ruler_hash,
             "measurement_value": self.measurement_value,
@@ -309,6 +311,7 @@ def _result(
         corroboration_count=corroboration_count,
         evidence_refs=() if measurement is None else measurement.evidence_refs,
         refusal_reason=refusal_reason,
+        next_action=_next_action_for_reason(reason),
     )
 
 
@@ -422,6 +425,26 @@ def _corroboration_count(measurement: MonDLCMeasurement | None) -> int:
         return 0
     refs = {*measurement.evidence_refs, *measurement.corroborated_by}
     return len(refs)
+
+
+def _next_action_for_reason(reason: str) -> str | None:
+    actions = {
+        "corroborated_realized_return": None,
+        "negative_realized_return": "Review the loss evidence before any ratchet or release action.",
+        "realized_return_below_lit_threshold": (
+            "Collect more realized-return evidence or keep the measurement undetermined."
+        ),
+        "ruler_hash_missing": "Supply the frozen ruler_hash_commit from the ladder artifact.",
+        "ruler_hash_mismatch": "Refuse commit and re-run against the matching frozen ruler hash.",
+        "measurement_missing": "Attach a witnessed realized-return measurement before scoring.",
+        "projected_measurement": "Replace projected or forecast value with witnessed inbound evidence.",
+        "unwitnessed_measurement": "Use realized, witnessed, inbound_rail, or settled provenance.",
+        "measurement_timestamp_missing": "Attach the observed_at timestamp for the witnessed event.",
+        "measurement_from_future": "Refuse future-dated evidence and re-read the source clock.",
+        "measurement_stale": "Refresh the measurement from a current witnessed source.",
+        "insufficient_corroboration": "Add independent evidence refs until min_corroboration_count is met.",
+    }
+    return actions.get(reason)
 
 
 def _first_present(mapping: Mapping[str, Any], *keys: str) -> Any:

@@ -11,6 +11,7 @@ from shared.capdlc_lifecycle import GateStatus
 from shared.mdlc_measure import (
     MonDLCGateName,
     MonDLCLadder,
+    MonDLCMeasurement,
     MonDLCScoreResult,
     MonDLCVerdict,
     score,
@@ -114,6 +115,45 @@ def test_stale_measurement_is_dark() -> None:
     assert gate.status is GateStatus.DARK
 
 
+def test_measurement_without_timestamp_is_dark() -> None:
+    result = score(_measurement(observed_at=None), _ladder(), ruler_hash_commit=HASH)
+
+    assert result.status is GateStatus.DARK
+    assert result.verdict is MonDLCVerdict.DARK
+    assert result.refusal_reason == "measurement_timestamp_missing"
+    assert result.next_action == "Attach the observed_at timestamp for the witnessed event."
+
+
+def test_future_measurement_is_dark() -> None:
+    result = score(
+        _measurement(observed_at=NOW + timedelta(seconds=1)), _ladder(), ruler_hash_commit=HASH
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.verdict is MonDLCVerdict.DARK
+    assert result.refusal_reason == "measurement_from_future"
+
+
+def test_exact_freshness_ttl_boundary_is_lit() -> None:
+    result = score(
+        _measurement(observed_at=NOW - timedelta(seconds=3600)),
+        _ladder(freshness_ttl_seconds=3600),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.LIT
+    assert _by_gate(result, MonDLCGateName.FRESHNESS).status is GateStatus.LIT
+
+
+def test_unwitnessed_provenance_is_dark() -> None:
+    result = score(_measurement(provenance="operator_estimate"), _ladder(), ruler_hash_commit=HASH)
+
+    assert result.status is GateStatus.DARK
+    assert result.verdict is MonDLCVerdict.DARK
+    assert result.refusal_reason == "unwitnessed_measurement"
+    assert result.next_action == "Use realized, witnessed, inbound_rail, or settled provenance."
+
+
 def test_uncorroborated_measurement_is_undetermined_not_success() -> None:
     result = score(
         _measurement(evidence_refs=("rail:event:1",)),
@@ -128,6 +168,22 @@ def test_uncorroborated_measurement_is_undetermined_not_success() -> None:
     assert result.reason == "insufficient_corroboration"
     gate = _by_gate(result, MonDLCGateName.CORROBORATION)
     assert gate.status is GateStatus.PARTIAL
+
+
+def test_realized_return_between_thresholds_is_undetermined() -> None:
+    result = score(
+        _measurement(measurement=0.0),
+        _ladder(negative_threshold=-50.0, positive_threshold=10.0),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.PARTIAL
+    assert result.verdict is MonDLCVerdict.UNDETERMINED
+    assert result.reason == "realized_return_below_lit_threshold"
+    assert (
+        result.next_action
+        == "Collect more realized-return evidence or keep the measurement undetermined."
+    )
 
 
 @pytest.mark.parametrize(
@@ -206,6 +262,7 @@ def test_to_dict_exposes_gate_contract_without_python_identities() -> None:
     assert payload["status"] == "lit"
     assert payload["verdict"] == "corroborated"
     assert payload["ok"] is True
+    assert payload["next_action"] is None
     assert payload["gates"] == [
         {"name": "ruler_hash", "status": "lit", "reason": "ruler_hash_matched"},
         {
@@ -220,6 +277,44 @@ def test_to_dict_exposes_gate_contract_without_python_identities() -> None:
             "reason": "corroboration_threshold_met",
         },
     ]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    (
+        ({"ruler_hash": ""}, "ruler_hash is required"),
+        ({"min_corroboration_count": 0}, "min_corroboration_count must be >= 1"),
+        ({"freshness_ttl_seconds": -1}, "freshness_ttl_seconds must be >= 0"),
+        (
+            {"negative_threshold": 2.0, "positive_threshold": 1.0},
+            "negative_threshold must be <= positive_threshold",
+        ),
+    ),
+)
+def test_ladder_validation_refuses_invalid_rulers(kwargs: dict[str, object], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        _ladder(**kwargs)
+
+
+@pytest.mark.parametrize("bad_value", (True, "12.5"))
+def test_measurement_validation_rejects_non_numeric_values(bad_value: object) -> None:
+    with pytest.raises(TypeError, match="value must be numeric or None"):
+        MonDLCMeasurement(value=bad_value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("measurement", "ladder", "match"),
+    (
+        (object(), _ladder(), "measurement must be"),
+        (_measurement(), object(), "ladder must be"),
+        (_measurement(evidence_refs=object()), _ladder(), "evidence refs must be"),
+    ),
+)
+def test_score_rejects_unsupported_input_shapes(
+    measurement: object, ladder: object, match: str
+) -> None:
+    with pytest.raises(TypeError, match=match):
+        score(measurement, ladder, ruler_hash_commit=HASH)  # type: ignore[arg-type]
 
 
 def test_public_exports_are_stable() -> None:
