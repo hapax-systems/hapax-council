@@ -42,6 +42,7 @@ _PUBLIC_GATE_EVIDENCE_PREFIXES: Final[tuple[str, ...]] = (
     "public_gate:",
     "receipt:public-gate:",
 )
+_GOVERNED_SECRET_REF_PREFIXES: Final[tuple[str, ...]] = ("pass:", "hapax-secrets:")
 _MAX_EXACT_FLOAT_INT: Final[int] = 2**53
 _SOURCE_RECEIVE_ONLY_PROVIDERS: Final[frozenset[str]] = frozenset(
     {rail.value for rail in SupportRail}
@@ -259,23 +260,82 @@ class OutboundExecutor:
                 "kill_switch must be an explicit bool; next action: bind the governed "
                 "kill switch state before constructing the executor"
             )
-        self.authority_ceiling = authority_ceiling
-        self.venue_allowlist = frozenset(venue_allowlist)
-        self.notional_cap = _finite_nonnegative_float("notional_cap", notional_cap)
-        self.position_cap = _finite_nonnegative_float("position_cap", position_cap)
-        self.current_position = _finite_nonnegative_float("current_position", current_position)
-        self.kill_switch = kill_switch
-        self.public_gate_receipts = _normalize_public_gate_receipts(public_gate_receipts)
-        self.registry = registry
-        self.send_scopes = _normalize_scope_collection(
+        self._authority_ceiling = authority_ceiling
+        self._venue_allowlist = frozenset(venue_allowlist)
+        self._notional_cap = _finite_nonnegative_float("notional_cap", notional_cap)
+        self._position_cap = _finite_nonnegative_float("position_cap", position_cap)
+        self._current_position = _finite_nonnegative_float("current_position", current_position)
+        self._kill_switch = kill_switch
+        self._public_gate_receipts = _normalize_public_gate_receipts(public_gate_receipts)
+        self._registry = registry.model_copy(deep=True)
+        self._provider = _nonblank_string("registry.provider", registry.provider)
+        self._no_fallback_to_default_token = registry.no_fallback_to_default_token is True
+        self._pass_or_secret_key = (
+            registry.pass_or_secret_key.strip()
+            if isinstance(registry.pass_or_secret_key, str)
+            else ""
+        )
+        self._send_scopes = _normalize_scope_collection(
             "registry.send_scopes",
             registry.send_scopes,
         )
-        self.forbidden_actions = _normalize_scope_collection(
+        self._forbidden_actions = _normalize_scope_collection(
             "registry.forbidden_actions",
             registry.forbidden_actions,
         )
         self._position_lock = threading.RLock()
+
+    @property
+    def authority_ceiling(self) -> AuthorityCeiling:
+        return self._authority_ceiling
+
+    @property
+    def venue_allowlist(self) -> frozenset[str]:
+        return self._venue_allowlist
+
+    @property
+    def notional_cap(self) -> float:
+        return self._notional_cap
+
+    @property
+    def position_cap(self) -> float:
+        return self._position_cap
+
+    @property
+    def current_position(self) -> float:
+        return self._current_position
+
+    @property
+    def kill_switch(self) -> bool:
+        return self._kill_switch
+
+    @property
+    def public_gate_receipts(self) -> frozenset[str]:
+        return self._public_gate_receipts
+
+    @property
+    def registry(self) -> AccountFederationRegistry:
+        return self._registry.model_copy(deep=True)
+
+    @property
+    def provider(self) -> str:
+        return self._provider
+
+    @property
+    def no_fallback_to_default_token(self) -> bool:
+        return self._no_fallback_to_default_token
+
+    @property
+    def pass_or_secret_key(self) -> str:
+        return self._pass_or_secret_key
+
+    @property
+    def send_scopes(self) -> frozenset[str]:
+        return self._send_scopes
+
+    @property
+    def forbidden_actions(self) -> frozenset[str]:
+        return self._forbidden_actions
 
     def validate_request(self, request: OutboundExecutionRequest) -> OutboundExecutionReceipt:
         """Dry-run validate an execution request without mutating the position."""
@@ -323,11 +383,11 @@ class OutboundExecutor:
             )
 
         # 2. Receive-only rail check
-        provider_keys = _provider_keys(self.registry.provider)
+        provider_keys = _provider_keys(self.provider)
         if provider_keys & RECEIVE_ONLY_PROVIDERS:
             return _refuse(
                 "receive_only_rail",
-                f"Outbound execution refused: provider {self.registry.provider} is a receive-only rail",
+                f"Outbound execution refused: provider {self.provider} is a receive-only rail",
                 "switch to a send-authorized registry entry; do not repurpose receive-only rails",
             )
 
@@ -357,17 +417,16 @@ class OutboundExecutor:
                 "Outbound execution refused: default token fallback requested",
                 "bind an explicit governed token reference and retry without default fallback",
             )
-        if self.registry.no_fallback_to_default_token is not True:
+        if not self.no_fallback_to_default_token:
             return _refuse(
                 "default_token_fallback",
                 "Outbound execution refused: registry does not enforce no_fallback_to_default_token",
                 "set no_fallback_to_default_token to true before enabling outbound execution",
             )
-        key_val = self.registry.pass_or_secret_key.strip()
-        if not key_val or key_val.startswith("pass:placeholder") or key_val == "placeholder":
+        if not _is_governed_secret_ref(self.pass_or_secret_key):
             return _refuse(
                 "default_token_fallback",
-                "Outbound execution refused: no fallback allowed and secret key is a placeholder or empty",
+                "Outbound execution refused: no fallback allowed and secret key is not a governed reference",
                 "replace the placeholder with a governed pass or secret reference",
             )
 
@@ -456,7 +515,7 @@ class OutboundExecutor:
         with self._position_lock:
             receipt = self._validate_request_locked(request)
             if receipt.status == "admitted":
-                self.current_position = receipt.current_position_after
+                self._current_position = receipt.current_position_after
             return receipt
 
     def require_execution(self, request: OutboundExecutionRequest) -> OutboundExecutionReceipt:
@@ -646,6 +705,16 @@ def _is_public_gate_evidence_ref(ref: str) -> bool:
     return ref.strip().casefold().startswith(_PUBLIC_GATE_EVIDENCE_PREFIXES)
 
 
+def _is_governed_secret_ref(ref: str) -> bool:
+    normalized = ref.strip()
+    if not normalized or normalized == "placeholder" or normalized.startswith("pass:placeholder"):
+        return False
+    return any(
+        normalized.startswith(prefix) and bool(normalized.removeprefix(prefix).strip())
+        for prefix in _GOVERNED_SECRET_REF_PREFIXES
+    )
+
+
 def _bound_public_gate_evidence_ref(
     evidence_refs: Sequence[str],
     public_gate_receipts: frozenset[str],
@@ -681,5 +750,6 @@ _OUTBOUND_EXECUTOR_ENTRYPOINTS: Final = (
     OutboundExecutor.require_execution,
     _normalize_public_gate_receipts,
     _is_public_gate_evidence_ref,
+    _is_governed_secret_ref,
     _bound_public_gate_evidence_ref,
 )

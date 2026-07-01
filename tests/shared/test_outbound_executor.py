@@ -618,6 +618,32 @@ def test_receive_only_rail_blocks(base_registry: AccountFederationRegistry) -> N
     _assert_receive_only_provider_refused(base_registry, "stripe")
 
 
+def test_receive_only_provider_is_snapshotted_at_construction(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    receive_only_registry = base_registry.model_copy(update={"provider": "stripe"})
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=100.0,
+        position_cap=500.0,
+        kill_switch=False,
+        registry=receive_only_registry,
+    )
+    receive_only_registry.provider = "gmail"
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=10.0,
+    )
+
+    receipt = executor.execute(request)
+
+    assert receipt.status == "refused"
+    assert receipt.refusal_reason == "receive_only_rail"
+    assert executor.current_position == 0.0
+
+
 @pytest.mark.parametrize(
     "provider",
     (
@@ -801,8 +827,8 @@ def test_default_token_fallback_blocks(base_registry: AccountFederationRegistry)
     assert receipt_placeholder.status == "refused"
     assert receipt_placeholder.refusal_reason == "default_token_fallback"
 
-    # Case C: Literal placeholder and empty values are also blocked.
-    for secret_value in ("placeholder", "   "):
+    # Case C: Literal placeholder, empty, plaintext, and default token values are also blocked.
+    for secret_value in ("placeholder", "   ", "default", "plaintext-token", "sk-live-fixture"):
         placeholder_registry = base_registry.model_copy(update={"pass_or_secret_key": secret_value})
         executor_placeholder = OutboundExecutor(
             authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
@@ -986,6 +1012,70 @@ def test_position_cap_blocks(base_registry: AccountFederationRegistry) -> None:
     receipt = executor.execute(request)
     assert receipt.status == "refused"
     assert receipt.refusal_reason == "position_cap_exceeded"
+
+
+def test_current_position_is_read_only_after_construction(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=100.0,
+        position_cap=100.0,
+        current_position=90.0,
+        kill_switch=False,
+        registry=base_registry,
+    )
+
+    with pytest.raises(AttributeError):
+        executor.current_position = -100.0  # type: ignore[misc]
+
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=20.0,
+    )
+    receipt = executor.execute(request)
+
+    assert receipt.status == "refused"
+    assert receipt.refusal_reason == "position_cap_exceeded"
+    assert executor.current_position == 90.0
+
+
+def test_executor_gate_configuration_is_read_only(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=100.0,
+        position_cap=100.0,
+        current_position=90.0,
+        kill_switch=False,
+        registry=base_registry,
+    )
+
+    for attribute, value in (
+        ("authority_ceiling", AuthorityCeiling.PUBLIC_GATE_REQUIRED),
+        ("venue_allowlist", {"internal", "external"}),
+        ("notional_cap", 10_000.0),
+        ("position_cap", 10_000.0),
+        ("kill_switch", True),
+        ("send_scopes", frozenset({"forged_scope"})),
+    ):
+        with pytest.raises(AttributeError):
+            setattr(executor, attribute, value)
+
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=20.0,
+    )
+    receipt = executor.execute(request)
+
+    assert receipt.status == "refused"
+    assert receipt.refusal_reason == "position_cap_exceeded"
+    assert executor.current_position == 90.0
 
 
 def test_position_cap_boundary_admits_equal_total(
