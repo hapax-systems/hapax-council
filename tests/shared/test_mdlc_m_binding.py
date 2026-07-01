@@ -149,6 +149,17 @@ def test_measurement_binding_delegates_to_scorer(monkeypatch: pytest.MonkeyPatch
     assert result.ok is True
 
 
+def test_measurement_binding_propagates_native_scorer_next_action() -> None:
+    m_binding = _binding_module()
+
+    result = m_binding.bind_m_result(_measurement(), _ladder(), ruler_hash_commit="")
+
+    assert result.status is GateStatus.DARK
+    assert result.score_result.next_action
+    assert result.next_action == result.score_result.next_action
+    assert "ruler_hash_commit" in result.next_action
+
+
 def test_missing_scorer_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     m_binding = _binding_module()
     monkeypatch.setattr(
@@ -395,6 +406,31 @@ def test_bind_durable_payment_events_generator_iteration_error_fails_closed(
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.INVALID_RAIL_EVENT_STREAM
     assert "invalid event after first row" in result.reason
+
+
+def test_bind_durable_payment_events_runtime_chain_error_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    m_binding = _binding_module()
+
+    def fake_reader(path: Path | str):
+        raise RuntimeError("durable sink chain validation failed")
+
+    monkeypatch.setattr(
+        m_binding,
+        "_load_rail_module",
+        lambda: SimpleNamespace(realized_returns_from_durable_payment_events=fake_reader),
+    )
+
+    result = m_binding.bind_durable_payment_events(
+        "/tmp/payment-events.jsonl",
+        _ladder(),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.INVALID_RAIL_EVENT_STREAM
+    assert "durable sink chain validation failed" in result.reason
 
 
 def test_unsupported_shape_fails_closed() -> None:

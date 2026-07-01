@@ -162,7 +162,7 @@ def bind_durable_payment_events(
             source_kind="durable_payment_events",
             detail=str(exc),
         )
-    except (OSError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         return _dark_result(
             reason="invalid_rail_event_stream",
             refusal_reason=MonDLCBindingRefusalReason.INVALID_RAIL_EVENT_STREAM,
@@ -187,6 +187,7 @@ def _lift_score_result(
     verdict = score_result.verdict
     reason = str(getattr(score_result, "reason", "") or "")
     refusal = str(getattr(score_result, "refusal_reason", "") or "") or None
+    next_action = str(getattr(score_result, "next_action", "") or "") or None
     evidence_refs = _string_tuple(getattr(score_result, "evidence_refs", ()))
     return MonDLCBindingResult(
         binding=MONDLC_M_BINDING_NAME,
@@ -203,6 +204,7 @@ def _lift_score_result(
         source_kind=source_kind,
         scorer=str(getattr(score_result, "scorer", "") or "") or None,
         scorer_version=getattr(score_result, "scorer_version", None),
+        next_action=next_action,
     )
 
 
