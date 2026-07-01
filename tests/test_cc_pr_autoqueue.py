@@ -1711,6 +1711,10 @@ def _governance_mitigation_checks() -> list[dict[str, Any]]:
     ]
 
 
+def _public_claim_mitigation_checks() -> list[dict[str, Any]]:
+    return _governance_mitigation_checks()
+
+
 def test_summarize_checks_keeps_admission_context_ignored_until_written_by_autoqueue() -> None:
     summary = autoqueue.summarize_checks(
         [
@@ -1917,6 +1921,177 @@ def test_governance_mitigation_ignores_forged_quorum_check_without_dossier(
         "release_auto_arm_ineligible:needs_mitigation:governance_sensitive:review-team-quorum"
     ]
     assert not any(call[:4] == ["gh", "pr", "merge", "755"] for call in runner.calls)
+
+
+def test_public_claim_mitigation_ignores_bare_review_check_without_dossier(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-public-claim-bare-review",
+        status="pr_open",
+        pr=756,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "public_claim_sensitive": True,
+            },
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(756, checks=_public_claim_mitigation_checks())]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    assert "stage: S7_RELEASE" not in current
+    decision = next(d for d in report["decisions"] if d["pr"] == 756)
+    assert decision["action"] == "blocked"
+    assert decision["reasons"] == [
+        "release_auto_arm_ineligible:needs_mitigation:public_claim_sensitive:review-team-quorum"
+    ]
+    assert not any(call[:4] == ["gh", "pr", "merge", "756"] for call in runner.calls)
+
+
+def test_public_claim_mitigation_ignores_forged_quorum_check_without_dossier(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-public-claim-forged-quorum",
+        status="pr_open",
+        pr=757,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "public_claim_sensitive": True,
+            },
+        },
+    )
+    checks = [*_public_claim_mitigation_checks(), _check(autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE)]
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(757, checks=checks)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    assert "stage: S7_RELEASE" not in current
+    parsed = autoqueue._parse_pr(_pr(757, checks=checks))
+    assert parsed is not None
+    assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE not in parsed.check_summary.verified_passed
+    decision = next(d for d in report["decisions"] if d["pr"] == 757)
+    assert decision["action"] == "blocked"
+    assert decision["reasons"] == [
+        "release_auto_arm_ineligible:needs_mitigation:public_claim_sensitive:review-team-quorum"
+    ]
+    assert not any(call[:4] == ["gh", "pr", "merge", "757"] for call in runner.calls)
+
+
+def test_auto_arms_public_claim_sensitive_source_task_with_verified_mitigation_evidence(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-public-claim-evidenced",
+        status="pr_open",
+        pr=758,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {
+                "public_claim_sensitive": True,
+            },
+        },
+    )
+    _write_governance_review_dossier(vault, "stranded-public-claim-evidenced", 758)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(758, checks=_public_claim_mitigation_checks())]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    armed = note.read_text(encoding="utf-8")
+    assert "release_authorized: true" in armed
+    assert "release_authorized_head_sha: sha-758" in armed
+    assert "release_authorized_head_ref: feat/758" in armed
+    assert "stage: S7_RELEASE" in armed
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "758",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-758",
+    ] in runner.calls
+    decision = next(d for d in report["decisions"] if d["pr"] == 758)
+    assert decision["action"] == "queue"
+    assert decision["auto_arm"] is True
+
+
+def test_public_claim_mitigation_does_not_auto_arm_public_mutation_surface(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="stranded-public-surface",
+        status="pr_open",
+        pr=759,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "mutation_surface": "public",
+            "risk_flags": {
+                "public_claim_sensitive": True,
+            },
+        },
+    )
+    _write_governance_review_dossier(vault, "stranded-public-surface", 759)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(759, checks=_public_claim_mitigation_checks())]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: false" in current
+    decision = next(d for d in report["decisions"] if d["pr"] == 759)
+    assert decision["action"] == "blocked"
+    assert decision["reasons"] == ["release_auto_arm_ineligible:mutation_surface:public"]
+    assert not any(call[:4] == ["gh", "pr", "merge", "759"] for call in runner.calls)
 
 
 def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(

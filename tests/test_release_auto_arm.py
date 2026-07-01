@@ -416,14 +416,37 @@ def test_governance_sensitive_still_fails_closed_without_verified_checks() -> No
     assert assessment.blockers == ("risk_flag:governance_sensitive",)
 
 
-def test_undefined_sensitivity_class_fails_closed_under_evidence_gating() -> None:
-    # A sensitive class with no mitigation gate defined yet fails
-    # CLOSED even with checks present — the model never silently releases something
-    # it cannot mitigate; the resolution is to DEFINE its gate, never to hand-arm.
+def test_public_claim_sensitive_held_when_mitigation_evidence_missing() -> None:
     fm = _eligible_frontmatter(risk_flags={"public_claim_sensitive": True})
     assessment = assess_release_auto_arm(fm, verified_checks={"secrets-scan", "test", "review"})
     assert not assessment.eligible
-    assert "unmitigable_risk_flag:public_claim_sensitive" in assessment.blockers
+    assert assessment.blockers == (
+        "needs_mitigation:public_claim_sensitive:authority-case-check",
+        "needs_mitigation:public_claim_sensitive:review-team-quorum",
+    )
+
+
+def test_public_claim_sensitive_auto_arms_when_mitigation_evidence_present() -> None:
+    fm = _eligible_frontmatter(risk_flags={"public_claim_sensitive": True})
+    verified_checks = set(RELEASE_MITIGATION_CHECKS["public_claim_sensitive"])
+
+    assessment = assess_release_auto_arm(fm, verified_checks=verified_checks)
+
+    assert assessment.eligible
+    assert assessment.blockers == ()
+
+
+def test_public_claim_mitigation_does_not_grant_public_surface_release() -> None:
+    fm = _eligible_frontmatter(
+        risk_flags={"public_claim_sensitive": True},
+        mutation_surface="public",
+    )
+    verified_checks = set(RELEASE_MITIGATION_CHECKS["public_claim_sensitive"])
+
+    assessment = assess_release_auto_arm(fm, verified_checks=verified_checks)
+
+    assert not assessment.eligible
+    assert "mutation_surface:public" in assessment.blockers
 
 
 def test_nonsensitive_task_stays_eligible_with_verified_checks() -> None:
