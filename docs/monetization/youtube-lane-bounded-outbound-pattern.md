@@ -18,6 +18,8 @@ Recheck:
 ```bash
 uv run pytest tests/shared/test_outbound_lane_pattern.py -q
 uv run pytest tests/shared/test_outbound_lane_pattern.py -q -k 'rate_limit or scoped_token or kill_switch or money_movement or public_egress'
+uv run ruff check shared/outbound_lane_pattern.py tests/shared/test_outbound_lane_pattern.py
+uv run ruff format --check shared/outbound_lane_pattern.py tests/shared/test_outbound_lane_pattern.py
 ```
 
 ## Non-Authority

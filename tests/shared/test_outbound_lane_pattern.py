@@ -254,7 +254,36 @@ def test_secret_ref_and_rate_limit_validation_errors_include_next_actions() -> N
             OutboundRateLimit(**kwargs)
 
 
-def test_request_and_receipt_payload_validators_reject_non_json_shapes() -> None:
+def test_request_and_receipt_payload_validators_reject_non_json_shapes(
+    youtube_registry: AccountFederationRegistry,
+) -> None:
+    for request_kwargs in (
+        {"amount": -1.0},
+        {"amount": float("nan")},
+        {"public_gate_passed": "yes"},
+        {"public_egress_requested": 1},
+        {"money_movement_requested": "false"},
+        {"evidence_refs": [""]},
+        {"evidence_refs": "public-gate:youtube-template-1"},
+    ):
+        with pytest.raises(ValidationError, match="next action"):
+            OutboundLaneActRequest(
+                action_id="bad-request",
+                scope=YOUTUBE_PUBLIC_UPLOAD_SCOPE,
+                venue=YOUTUBE_PUBLIC_VENUE,
+                **request_kwargs,
+            )
+
+    lane = build_youtube_public_upload_lane_template(
+        registry=youtube_registry,
+        public_gate_receipts={"public-gate:youtube-template-1"},
+        max_actions=1,
+        window_seconds=60,
+        kill_switch=False,
+    )
+    with pytest.raises(TypeError, match="next action"):
+        lane.execute_act("not-a-request")  # type: ignore[arg-type]
+
     with pytest.raises(ValidationError, match="next action"):
         OutboundLaneActRequest(
             action_id="bad-payload",

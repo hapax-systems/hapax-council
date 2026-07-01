@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
@@ -275,7 +276,7 @@ class BoundedOutboundLane:
         self._rate_limit = rate_limit
         self._public_egress_authorized = public_egress_authorized
         self._money_movement_authorized = money_movement_authorized
-        self._now_fn = now_fn or __import__("time").monotonic
+        self._now_fn = now_fn or time.monotonic
         self._window_started_at: float | None = None
         self._used_in_window = 0
         self._lock = threading.RLock()
