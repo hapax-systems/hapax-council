@@ -97,6 +97,11 @@ checklist: {}
 GLMCP_ZAI_CODE_RE = re.compile(r"\bzai_error_code=(?P<code>\d{4})\b")
 GLMCP_ERROR_CLASS_RE = re.compile(r"\berror_class=(?P<value>[a-z0-9_+-]+)\b")
 GLMCP_ACTION_RE = re.compile(r"\baction=(?P<value>[a-z0-9_+-]+)\b")
+ROUTE_HOLD_RECOVERY_HINT = (
+    "Same-head route-admission holds are preserved to avoid duplicate ledger/comment churn. "
+    "After repairing route, quota, resource, or task metadata evidence, rerun review dispatch "
+    "with --force to replace the held dossier; do not bypass the pre-provider route gate."
+)
 SEND_SCRIPTS = {
     "claude": "hapax-claude-send",
     "codex": "hapax-codex-send",
@@ -1130,7 +1135,7 @@ def dispatch_reviews(
                 "route_admissions": [],
                 "raw_reply_excerpt": "reviewer route admission missing before provider use; "
                 "next action: refresh route, quota, and resource receipts or repair task "
-                "route metadata before rerunning review dispatch",
+                "route metadata before rerunning review dispatch. " + ROUTE_HOLD_RECOVERY_HINT,
             }
         admission_blockers = [
             reason
@@ -1162,7 +1167,7 @@ def dispatch_reviews(
                 "raw_reply_excerpt": "reviewer route admission blocked before provider use: "
                 + ", ".join(reasons)
                 + "; next action: refresh route, quota, and resource receipts or repair "
-                "task route metadata before rerunning review dispatch",
+                "task route metadata before rerunning review dispatch. " + ROUTE_HOLD_RECOVERY_HINT,
             }
         process_failed = False
         process_output = ""
@@ -1733,9 +1738,11 @@ def review_pr(
                 registry=registry,
             )
             if blockers:
-                if str(
-                    existing.get("review_team_verdict") or ""
-                ).lower() == "blocked" or _dossier_has_route_admission_hold(existing):
+                route_hold = _dossier_has_route_admission_hold(existing)
+                if (
+                    str(existing.get("review_team_verdict") or "").lower() == "blocked"
+                    or route_hold
+                ):
                     side_effects = {}
                     if apply:
                         side_effects = replay_dossier_side_effects(
@@ -1759,6 +1766,11 @@ def review_pr(
                             "review_team_verdict": existing.get("review_team_verdict"),
                             "blocked_reasons": list(blockers),
                             "side_effects": side_effects,
+                            **(
+                                {"route_hold_recovery": ROUTE_HOLD_RECOVERY_HINT}
+                                if route_hold
+                                else {}
+                            ),
                         }
                     )
                     continue
@@ -1798,6 +1810,11 @@ def review_pr(
                     "dossier_path": only["dossier_path"],
                     "review_team_verdict": only["review_team_verdict"],
                     "side_effects": only["side_effects"],
+                    **(
+                        {"route_hold_recovery": only["route_hold_recovery"]}
+                        if only.get("route_hold_recovery")
+                        else {}
+                    ),
                 }
             return {
                 "status": "multi_skipped_blocked" if has_blocked else "multi_skipped_fresh",

@@ -305,6 +305,134 @@ def test_probe_glmcp_review_admission_writes_error_receipt_on_process_failure(
     assert receipt_calls == [["observe-error", "--provider-code", "1308"]]
 
 
+def test_probe_glmcp_review_admission_reports_missing_family() -> None:
+    registry = {
+        "families": [
+            {
+                "family": "codex",
+                "route_id": "codex.headless.full",
+                "reviewer_command": ["codex", "exec", "--sandbox", "read-only", "-"],
+                "timeout_seconds": 30,
+            }
+        ]
+    }
+
+    result = dispatch.probe_glmcp_review_admission(
+        registry,
+        now=datetime.fromisoformat("2026-07-01T01:40:00+00:00"),
+        probe_runner=lambda _family_cfg: (_ for _ in ()).throw(AssertionError("not called")),
+    )
+
+    assert result.attempted is False
+    assert result.receipt_written is False
+    assert result.status == "glmcp_review_family_not_configured"
+
+
+def test_probe_glmcp_review_admission_reports_probe_runner_exception() -> None:
+    registry = {
+        "families": [
+            {
+                "family": "glm",
+                "route_id": "glmcp.review.direct",
+                "reviewer_command": ["scripts/hapax-glmcp-reviewer"],
+                "timeout_seconds": 30,
+            }
+        ]
+    }
+
+    def probe_runner(_family_cfg: dict[str, Any]) -> subprocess.CompletedProcess[str]:
+        raise RuntimeError("probe transport failed")
+
+    result = dispatch.probe_glmcp_review_admission(
+        registry,
+        now=datetime.fromisoformat("2026-07-01T01:40:00+00:00"),
+        probe_runner=probe_runner,
+    )
+
+    assert result.attempted is True
+    assert result.receipt_written is False
+    assert result.status == "probe_failed"
+    assert result.error == "probe transport failed"
+
+
+def test_probe_glmcp_review_admission_reports_success_receipt_write_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = {
+        "families": [
+            {
+                "family": "glm",
+                "route_id": "glmcp.review.direct",
+                "reviewer_command": ["scripts/hapax-glmcp-reviewer"],
+                "timeout_seconds": 30,
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        dispatch,
+        "_run_glmcp_admission_receipt",
+        lambda _args: (False, "", "receipt dir unavailable"),
+    )
+
+    def probe_runner(_family_cfg: dict[str, Any]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            ["scripts/hapax-glmcp-reviewer"],
+            0,
+            stdout="```yaml\nverdict: accept\nfindings: []\nchecklist: {}\n```\n",
+            stderr="",
+        )
+
+    result = dispatch.probe_glmcp_review_admission(
+        registry,
+        now=datetime.fromisoformat("2026-07-01T01:40:00+00:00"),
+        probe_runner=probe_runner,
+    )
+
+    assert result.attempted is True
+    assert result.receipt_written is False
+    assert result.status == "admission_receipt_write_failed"
+    assert result.error == "receipt dir unavailable"
+
+
+def test_probe_glmcp_review_admission_reports_hold_receipt_write_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = {
+        "families": [
+            {
+                "family": "glm",
+                "route_id": "glmcp.review.direct",
+                "reviewer_command": ["scripts/hapax-glmcp-reviewer"],
+                "timeout_seconds": 30,
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        dispatch,
+        "_run_glmcp_admission_receipt",
+        lambda _args: (False, "", "receipt dir unavailable"),
+    )
+
+    def probe_runner(_family_cfg: dict[str, Any]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            ["scripts/hapax-glmcp-reviewer"],
+            1,
+            stdout="",
+            stderr="hapax-glmcp-reviewer: api error: HTTP 503; error_class=provider_error",
+        )
+
+    result = dispatch.probe_glmcp_review_admission(
+        registry,
+        now=datetime.fromisoformat("2026-07-01T01:40:00+00:00"),
+        probe_runner=probe_runner,
+    )
+
+    assert result.attempted is True
+    assert result.receipt_written is False
+    assert result.status == "hold_receipt_write_failed"
+    assert result.error == "receipt dir unavailable"
+
+
 BLOCK_REPLY = """```yaml
 verdict: block
 findings:
@@ -1223,6 +1351,7 @@ checklist:
 
         assert result["status"] == "skipped_blocked"
         assert result["review_team_verdict"] == "no-quorum"
+        assert "--force" in result["route_hold_recovery"]
         assert reviewers.invocations == []
 
     def test_multi_task_pr_writes_each_task_dossier(self, tmp_path: Path) -> None:
