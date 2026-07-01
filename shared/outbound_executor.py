@@ -4,7 +4,7 @@ import math
 import threading
 import uuid
 from decimal import Decimal
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from pydantic import Field, field_validator
 
@@ -27,6 +27,11 @@ def _provider_alias_keys(providers: frozenset[str]) -> frozenset[str]:
     return frozenset(key for provider in providers for key in _provider_keys(provider))
 
 
+_PUBLIC_GATE_EVIDENCE_PREFIXES: Final[tuple[str, ...]] = (
+    "public-gate:",
+    "public_gate:",
+    "receipt:public-gate:",
+)
 _SOURCE_RECEIVE_ONLY_PROVIDERS: Final[frozenset[str]] = frozenset(
     {rail.value for rail in SupportRail}
     | {rail.value for rail in LicenseReceiveOnlyRail if rail is not LicenseReceiveOnlyRail.NO_RAIL}
@@ -83,13 +88,41 @@ class OutboundExecutionRequest(StrictModel):
         except TypeError as exc:
             raise ValueError(str(exc)) from exc
 
+    @field_validator("public_gate_passed", mode="before")
+    @classmethod
+    def _public_gate_passed_is_explicit_bool(cls, value: Any) -> bool:
+        if not isinstance(value, bool):
+            raise ValueError(
+                "public_gate_passed must be an explicit bool; next action: bind "
+                "only a governed public gate receipt result"
+            )
+        return value
+
+    @field_validator("evidence_refs", mode="before")
+    @classmethod
+    def _evidence_refs_are_nonblank_strings(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        if not isinstance(value, list):
+            raise ValueError(
+                "evidence_refs must be a list of strings; next action: attach "
+                "durable evidence reference strings"
+            )
+        for ref in value:
+            if not isinstance(ref, str) or not ref.strip():
+                raise ValueError(
+                    "evidence_refs must contain only nonblank strings; next action: "
+                    "attach durable evidence reference strings"
+                )
+        return value
+
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
 
 
 class OutboundExecutionReceipt(StrictModel):
     receipt_id: str
-    status: str  # "admitted" or "refused"
+    status: Literal["admitted", "refused"]
     request: OutboundExecutionRequest
     verdict: str
     refusal_reason: str | None = None
@@ -305,18 +338,20 @@ class OutboundExecutor:
                     "use an internal venue or raise the authority ceiling through governance",
                 )
         elif self.authority_ceiling is AuthorityCeiling.EVIDENCE_BOUND:
-            if not request.evidence_refs:
+            if not _has_durable_evidence(request.evidence_refs):
                 return _refuse(
                     "authority_ceiling_exceeded",
                     "Outbound execution refused: EVIDENCE_BOUND ceiling requires evidence_refs",
                     "attach durable evidence_refs for the requested outbound action",
                 )
         elif self.authority_ceiling is AuthorityCeiling.PUBLIC_GATE_REQUIRED:
-            if not request.public_gate_passed:
+            if not request.public_gate_passed or not _has_public_gate_evidence(
+                request.evidence_refs
+            ):
                 return _refuse(
                     "authority_ceiling_exceeded",
-                    "Outbound execution refused: PUBLIC_GATE_REQUIRED ceiling requires public_gate_passed",
-                    "complete the public gate and set public_gate_passed only from that receipt",
+                    "Outbound execution refused: PUBLIC_GATE_REQUIRED ceiling requires public gate evidence",
+                    "complete the public gate and attach its durable evidence_ref before retrying",
                 )
 
         # Admitted!
@@ -377,12 +412,24 @@ def _decimal(value: float) -> Decimal:
     return Decimal(str(value))
 
 
+def _has_durable_evidence(evidence_refs: list[str]) -> bool:
+    return any(ref.strip() for ref in evidence_refs)
+
+
+def _has_public_gate_evidence(evidence_refs: list[str]) -> bool:
+    return any(
+        ref.strip().casefold().startswith(_PUBLIC_GATE_EVIDENCE_PREFIXES) for ref in evidence_refs
+    )
+
+
 # This module is a governed contract for downstream lane adapters. Keep the
 # dynamic entrypoints and Pydantic validators visible to the diff-only
 # unused-callable gate until those adapters land.
 _OUTBOUND_EXECUTOR_ENTRYPOINTS: Final = (
     OutboundExecutionRefusal,
     OutboundExecutionRequest._amount_is_finite_nonnegative,
+    OutboundExecutionRequest._public_gate_passed_is_explicit_bool,
+    OutboundExecutionRequest._evidence_refs_are_nonblank_strings,
     OutboundExecutor,
     OutboundExecutor.require_execution,
 )

@@ -291,6 +291,27 @@ def test_request_rejects_non_numeric_amount() -> None:
             )
 
 
+def test_request_rejects_forged_public_gate_flag() -> None:
+    for public_gate_passed in ("yes", 1):
+        with pytest.raises(ValidationError, match="public_gate_passed"):
+            OutboundExecutionRequest(
+                scope="gmail_send_internal",
+                venue="internal",
+                amount=1.0,
+                public_gate_passed=public_gate_passed,
+            )
+
+
+def test_request_rejects_blank_evidence_refs() -> None:
+    with pytest.raises(ValidationError, match="evidence_refs"):
+        OutboundExecutionRequest(
+            scope="gmail_send_internal",
+            venue="internal",
+            amount=1.0,
+            evidence_refs=[""],
+        )
+
+
 def test_require_execution_success(base_registry: AccountFederationRegistry) -> None:
     executor = OutboundExecutor(
         authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
@@ -945,12 +966,24 @@ def test_authority_ceilings(base_registry: AccountFederationRegistry) -> None:
         registry=base_registry,
     )
     assert exec_public.execute(req).refusal_reason == "authority_ceiling_exceeded"
-    # Admitted when public_gate_passed=True
+    req_public_without_gate_evidence = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=10.0,
+        public_gate_passed=True,
+        evidence_refs=["evidence:audit-log-1"],
+    )
+    assert (
+        exec_public.execute(req_public_without_gate_evidence).refusal_reason
+        == "authority_ceiling_exceeded"
+    )
+    # Admitted when public_gate_passed=True and public-gate evidence is attached.
     req_public = OutboundExecutionRequest(
         scope="gmail_send_internal",
         venue="internal",
         amount=10.0,
         public_gate_passed=True,
+        evidence_refs=["public-gate:receipt-1"],
     )
     assert exec_public.execute(req_public).status == "admitted"
 
