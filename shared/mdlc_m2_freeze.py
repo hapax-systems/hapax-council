@@ -103,15 +103,22 @@ class M2BudgetEnvelope:
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> M2BudgetEnvelope:
-        return cls(
-            authority_ref=_required_mapping_string(raw, "authority_ref"),
-            currency=_required_mapping_string(raw, "currency"),
-            max_notional=_non_negative_float(raw.get("max_notional"), field="max_notional"),
-            max_position=_non_negative_float(raw.get("max_position"), field="max_position"),
-            purpose=_optional_string(raw.get("purpose")),
-            venue=_optional_string(raw.get("venue")),
-            instrument=_optional_string(raw.get("instrument")),
-        )
+        try:
+            return cls(
+                authority_ref=_required_mapping_string(raw, "authority_ref"),
+                currency=_required_mapping_string(raw, "currency"),
+                max_notional=_non_negative_float(raw.get("max_notional"), field="max_notional"),
+                max_position=_non_negative_float(raw.get("max_position"), field="max_position"),
+                purpose=_optional_string(raw.get("purpose")),
+                venue=_optional_string(raw.get("venue")),
+                instrument=_optional_string(raw.get("instrument")),
+            )
+        except _FreezeInputError:
+            raise
+        except (TypeError, ValueError) as exc:
+            raise _FreezeInputError(
+                M2FreezeRefusalReason.INVALID_BUDGET_ENVELOPE, str(exc)
+            ) from exc
 
     def to_dict(self) -> dict[str, Any]:
         return {

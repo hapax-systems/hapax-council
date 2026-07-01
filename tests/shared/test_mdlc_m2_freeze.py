@@ -8,11 +8,14 @@ import pytest
 
 from shared.capdlc_lifecycle import GateStatus
 from shared.mdlc_m2_freeze import (
+    M2BudgetEnvelope,
+    M2FreezeArtifact,
     M2FreezeRefusal,
     M2FreezeRefusalReason,
     require_m2_freeze_artifact,
     verify_m2_freeze_artifact,
 )
+from shared.mdlc_measure import MonDLCLadder
 
 NOW = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
 HASH = "6bcb5cb7dd30967d20e78d79cb0a470b615f324475bc280062ce5c94e9d14f36"
@@ -68,6 +71,21 @@ def test_signed_freeze_artifact_records_envelope_ladder_hash_signer_and_time() -
     assert "signature:m2-freeze:test-disposition" in result.evidence_refs
 
 
+def test_require_success_returns_freeze_artifact() -> None:
+    artifact = require_m2_freeze_artifact(_artifact(), ruler_hash_commit=HASH)
+
+    assert artifact.artifact_id == "m2-freeze:test-disposition"
+    assert artifact.ruler_hash == HASH
+    assert artifact.ladder.ruler_hash == HASH
+
+
+def test_missing_freeze_artifact_refuses() -> None:
+    result = verify_m2_freeze_artifact(None, ruler_hash_commit=HASH)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is M2FreezeRefusalReason.MISSING_ARTIFACT
+
+
 def test_boolean_freeze_flag_without_artifact_never_counts_as_presence() -> None:
     result = verify_m2_freeze_artifact(
         {"freeze_lock_fired": True, "ruler_hash": HASH},
@@ -78,6 +96,75 @@ def test_boolean_freeze_flag_without_artifact_never_counts_as_presence() -> None
     assert result.ok is False
     assert result.gate_result.verdict is None
     assert result.refusal_reason is M2FreezeRefusalReason.MISSING_ARTIFACT_ID
+
+
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    (
+        ("artifact_id", M2FreezeRefusalReason.MISSING_ARTIFACT_ID),
+        ("ruler_hash", M2FreezeRefusalReason.MISSING_RULER_HASH),
+    ),
+)
+def test_artifact_identity_fields_are_required(field: str, reason: M2FreezeRefusalReason) -> None:
+    artifact = _artifact()
+    artifact.pop(field)
+
+    result = verify_m2_freeze_artifact(artifact, ruler_hash_commit=HASH)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is reason
+
+
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    (
+        ("budget_envelope", M2FreezeRefusalReason.MISSING_BUDGET_ENVELOPE),
+        ("ladder", M2FreezeRefusalReason.MISSING_LADDER),
+    ),
+)
+def test_required_mapping_fields_are_required(field: str, reason: M2FreezeRefusalReason) -> None:
+    artifact = _artifact()
+    artifact.pop(field)
+
+    result = verify_m2_freeze_artifact(artifact, ruler_hash_commit=HASH)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is reason
+
+
+def test_invalid_budget_envelope_is_not_reported_as_ladder_failure() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget["max_notional"] = -1.0
+
+    result = verify_m2_freeze_artifact(
+        _artifact(budget_envelope=budget),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is M2FreezeRefusalReason.INVALID_BUDGET_ENVELOPE
+    assert result.next_action == "repair the budget envelope fields before commit"
+
+
+def test_invalid_ladder_refuses_with_ladder_reason() -> None:
+    ladder = dict(_artifact()["ladder"])
+    ladder["min_corroboration_count"] = 0
+
+    result = verify_m2_freeze_artifact(_artifact(ladder=ladder), ruler_hash_commit=HASH)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is M2FreezeRefusalReason.INVALID_LADDER
+    assert result.next_action == "repair the frozen ruler ladder before commit"
+
+
+def test_invalid_signed_at_refuses_with_timestamp_reason() -> None:
+    result = verify_m2_freeze_artifact(
+        _artifact(signed_at="not-a-timestamp"),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is M2FreezeRefusalReason.INVALID_SIGNED_AT
 
 
 def test_missing_ruler_hash_commit_refuses_before_m2_commit() -> None:
@@ -135,3 +222,42 @@ def test_signature_fields_are_required(field: str, reason: M2FreezeRefusalReason
 
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is reason
+
+
+def test_freeze_artifact_requires_typed_budget_envelope_and_ladder() -> None:
+    budget = M2BudgetEnvelope(
+        authority_ref="authority:CASE-SDLC-REFORM-001",
+        currency="USD",
+        max_notional=250.0,
+        max_position=1.0,
+    )
+    ladder = MonDLCLadder(
+        ruler_hash=HASH,
+        min_corroboration_count=2,
+        freshness_ttl_seconds=3600,
+        as_of=NOW,
+        positive_threshold=0.0,
+        negative_threshold=-50.0,
+    )
+
+    with pytest.raises(TypeError, match="budget_envelope"):
+        M2FreezeArtifact(
+            artifact_id="m2-freeze:test-disposition",
+            budget_envelope=object(),  # type: ignore[arg-type]
+            ladder=ladder,
+            ruler_hash=HASH,
+            signer="operator:hapax",
+            signed_at=NOW,
+            signature_ref="signature:m2-freeze:test-disposition",
+        )
+
+    with pytest.raises(TypeError, match="ladder"):
+        M2FreezeArtifact(
+            artifact_id="m2-freeze:test-disposition",
+            budget_envelope=budget,
+            ladder=object(),  # type: ignore[arg-type]
+            ruler_hash=HASH,
+            signer="operator:hapax",
+            signed_at=NOW,
+            signature_ref="signature:m2-freeze:test-disposition",
+        )
