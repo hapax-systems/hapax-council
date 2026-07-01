@@ -517,20 +517,23 @@ def _surface_delta_route_index(
     path: Path,
 ) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
     producer_file = load_capability_surface_delta_file(path)
-    descriptor_keys_by_ref: dict[str, tuple[str, ...]] = {}
+    descriptor_keys_by_ref: dict[str, set[str]] = {}
     for descriptor in producer_file.descriptors:
-        keys = _surface_delta_descriptor_route_keys(descriptor)
+        keys = set(_surface_delta_descriptor_route_keys(descriptor))
         for descriptor_ref in {
             descriptor.descriptor_ref,
             descriptor.surface_id,
             *descriptor.evidence_refs,
         }:
-            descriptor_keys_by_ref[descriptor_ref] = keys
+            descriptor_keys_by_ref.setdefault(descriptor_ref, set()).update(keys)
+    descriptor_keys_by_ref_frozen = {
+        key: tuple(sorted(values)) for key, values in descriptor_keys_by_ref.items()
+    }
     refs: dict[str, list[str]] = {}
     blockers: dict[str, list[str]] = {}
     for delta in producer_file.deltas:
         delta_ref = _surface_delta_ref(delta)
-        for key in _surface_delta_route_keys(delta, descriptor_keys_by_ref):
+        for key in _surface_delta_route_keys(delta, descriptor_keys_by_ref_frozen):
             refs.setdefault(key, []).append(delta_ref)
             if not delta.allows_demand_fulfillment():
                 blockers.setdefault(key, []).append(delta_ref)
