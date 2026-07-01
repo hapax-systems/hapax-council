@@ -24,6 +24,9 @@ from shared.stripe_payment_link_receive_only_rail import (
 from shared.stripe_payment_link_receive_only_rail import (
     PaymentEventKind as StripePaymentEventKind,
 )
+from shared.stripe_payment_link_receive_only_rail import (
+    StripePaymentLinkRailReceiver,
+)
 
 NOW = datetime(2026, 7, 1, 6, 0, tzinfo=UTC)
 RAW_SHA = "a" * 64
@@ -40,6 +43,14 @@ def _accepted_event(event_kind: str, **overrides: object) -> dict[str, object]:
     }
     if event_kind in realized_return_mod.DIRECTION_FILTERED_EVENT_KINDS:
         event["direction"] = "credit"
+    if event_kind == "checkout_session_completed":
+        event.update(
+            {
+                "mode": "payment",
+                "payment_status": "paid",
+                "payment_intent": "pi_test_checkout",
+            }
+        )
     event.update(overrides)
     return event
 
@@ -68,6 +79,37 @@ def _open_collective_transaction_payload(
             "fromCollective": {"slug": "alice"},
             "transaction": {"amount": {"value": value, "currency": currency}},
         },
+    }
+
+
+def _stripe_checkout_session_payload(
+    *,
+    mode: str | None = None,
+    payment_status: str | None = None,
+    payment_intent: str | None = None,
+    subscription: str | None = None,
+) -> dict[str, object]:
+    session: dict[str, object] = {
+        "id": "cs_test_mondlc",
+        "object": "checkout.session",
+        "customer": "cus_TestCheckout",
+        "amount_total": 5000,
+        "amount_subtotal": 5000,
+        "currency": "usd",
+    }
+    if mode is not None:
+        session["mode"] = mode
+    if payment_status is not None:
+        session["payment_status"] = payment_status
+    if payment_intent is not None:
+        session["payment_intent"] = payment_intent
+    if subscription is not None:
+        session["subscription"] = subscription
+    return {
+        "id": "evt_test_checkout",
+        "type": "checkout.session.completed",
+        "created": 1_745_000_010,
+        "data": {"object": session},
     }
 
 
@@ -152,6 +194,65 @@ def test_stripe_payment_intent_measurement_scores_lit_with_two_witness_refs() ->
     assert rail_result.currency == "USD"
     assert scored.status is GateStatus.LIT
     assert scored.verdict is MonDLCVerdict.CORROBORATED
+
+
+def test_stripe_checkout_session_from_receiver_refuses_without_paid_one_time_witness() -> None:
+    event = StripePaymentLinkRailReceiver().ingest_webhook(
+        _stripe_checkout_session_payload(),
+        signature=None,
+    )
+
+    result = realized_return_mod.realized_return_from_rail(
+        event,
+        source_receipt_ref="receipt://payment/stripe/checkout-session-completed",
+    )
+
+    assert result.status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert (
+        result.refusal_reason
+        is realized_return_mod.RealizedReturnRefusalReason.NON_SETTLED_INBOUND_EVENT
+    )
+    assert result.measurement is None
+
+
+def test_stripe_checkout_session_paid_one_time_witness_can_measure() -> None:
+    result = realized_return_mod.realized_return_from_rail(
+        _accepted_event(
+            "checkout_session_completed",
+            mode="payment",
+            payment_status="paid",
+            payment_intent="pi_test_checkout",
+        ),
+        source_receipt_ref="receipt://payment/stripe/checkout-session-paid",
+    )
+
+    assert result.status is realized_return_mod.RealizedReturnStatus.ACCEPTED
+    assert result.measurement is not None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"mode": "setup", "payment_status": "paid", "payment_intent": "pi_test_checkout"},
+        {"mode": "subscription", "payment_status": "paid", "subscription": "sub_test"},
+        {"mode": "payment", "payment_status": "unpaid", "payment_intent": "pi_test_checkout"},
+        {"mode": "payment", "payment_status": "paid", "payment_intent": None},
+    ),
+)
+def test_stripe_checkout_session_non_receipt_modes_refuse(
+    overrides: dict[str, object],
+) -> None:
+    result = realized_return_mod.realized_return_from_rail(
+        _accepted_event("checkout_session_completed", **overrides),
+        source_receipt_ref="receipt://payment/stripe/checkout-session-refusal",
+    )
+
+    assert result.status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert (
+        result.refusal_reason
+        is realized_return_mod.RealizedReturnRefusalReason.NON_SETTLED_INBOUND_EVENT
+    )
+    assert result.measurement is None
 
 
 def test_modern_treasury_created_refuses_as_non_settled_before_score_folding() -> None:

@@ -103,6 +103,9 @@ PROJECTED_PROVENANCE_VALUES: Final[frozenset[str]] = frozenset(
 )
 INBOUND_DIRECTION_VALUES: Final[frozenset[str]] = frozenset({"credit", "incoming", "inbound"})
 OUTBOUND_DIRECTION_VALUES: Final[frozenset[str]] = frozenset({"debit", "outgoing", "outbound"})
+CHECKOUT_SESSION_EVENT_KINDS: Final[frozenset[str]] = frozenset({"checkout_session_completed"})
+CHECKOUT_ONE_TIME_MODES: Final[frozenset[str]] = frozenset({"payment"})
+CHECKOUT_PAID_STATUSES: Final[frozenset[str]] = frozenset({"paid"})
 
 
 class RealizedReturnStatus(StrEnum):
@@ -259,6 +262,18 @@ def realized_return_from_rail(
             durable_row_hash=durable_row_hash,
             event_kind=event_kind,
             detail=f"event kind {event_kind!r} is not a realized inbound return",
+        )
+    if event_kind_key in CHECKOUT_SESSION_EVENT_KINDS and not _paid_one_time_checkout(event):
+        return _refused(
+            RealizedReturnRefusalReason.NON_SETTLED_INBOUND_EVENT,
+            event=event,
+            source_receipt_ref=source_receipt_ref,
+            durable_row_hash=durable_row_hash,
+            event_kind=event_kind,
+            detail=(
+                "checkout session completed lacks a paid one-time payment_intent witness "
+                "or carries subscription/setup/unpaid state"
+            ),
         )
     if event_kind_key not in REALIZED_INBOUND_EVENT_KINDS:
         return _refused(
@@ -506,6 +521,21 @@ def _refusal_reason_for_event_kind(
     if event_kind in NON_SETTLED_INBOUND_EVENT_KINDS:
         return RealizedReturnRefusalReason.NON_SETTLED_INBOUND_EVENT
     return None
+
+
+def _paid_one_time_checkout(event: Any) -> bool:
+    mode = _normalize_text(_field(event, "mode"))
+    payment_status = _normalize_text(_field(event, "payment_status"))
+    payment_intent = _field(event, "payment_intent")
+    subscription = _field(event, "subscription")
+    return (
+        mode is not None
+        and mode.casefold() in CHECKOUT_ONE_TIME_MODES
+        and payment_status is not None
+        and payment_status.casefold() in CHECKOUT_PAID_STATUSES
+        and _nonempty_text(payment_intent)
+        and not _nonempty_text(subscription)
+    )
 
 
 def _refused(
