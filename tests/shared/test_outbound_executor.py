@@ -304,8 +304,23 @@ def test_receive_only_rail_blocks(base_registry: AccountFederationRegistry) -> N
     assert receipt.refusal_reason == "receive_only_rail"
 
 
-@pytest.mark.parametrize("provider", ("ko_fi", "Ko-fi", "kofi"))
-def test_ko_fi_receive_only_aliases_block(
+@pytest.mark.parametrize(
+    "provider",
+    (
+        "ko_fi",
+        "Ko-fi",
+        "kofi",
+        "omg.lol Pay",
+        "BMaC",
+        "BuyMeACoffee",
+        "Open Collective",
+        "Stripe Payment Link",
+        "GitHub Sponsors",
+        "Treasury Prime",
+        "Modern Treasury",
+    ),
+)
+def test_receive_only_provider_aliases_block(
     base_registry: AccountFederationRegistry,
     provider: str,
 ) -> None:
@@ -403,6 +418,19 @@ def test_default_token_fallback_blocks(base_registry: AccountFederationRegistry)
         receipt_placeholder = executor_placeholder.execute(request_normal)
         assert receipt_placeholder.status == "refused"
         assert receipt_placeholder.refusal_reason == "default_token_fallback"
+
+    # Case D: malformed registries that disable the no-fallback contract are refused.
+    unsafe_registry = base_registry.model_copy(update={"no_fallback_to_default_token": False})
+    executor_unsafe = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=100.0,
+        position_cap=500.0,
+        registry=unsafe_registry,
+    )
+    receipt_unsafe = executor_unsafe.execute(request_normal)
+    assert receipt_unsafe.status == "refused"
+    assert receipt_unsafe.refusal_reason == "default_token_fallback"
 
 
 def test_forbidden_action_blocks(base_registry: AccountFederationRegistry) -> None:

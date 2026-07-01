@@ -15,18 +15,26 @@ from shared.resource_capability import (
 RECEIVE_ONLY_PROVIDERS: Final[frozenset[str]] = frozenset(
     {
         "buy_me_a_coffee",
+        "buymeacoffee",
+        "bmac",
         "github_sponsors",
+        "githubsponsors",
         "ko_fi",
         "kofi",
         "liberapay",
         "mercury",
         "modern_treasury",
+        "moderntreasury",
         "omg_lol_pay",
+        "omglolpay",
         "open_collective",
+        "opencollective",
         "patreon",
         "stripe_payment_link",
+        "stripepaymentlink",
         "stripe",
         "treasury_prime",
+        "treasuryprime",
     }
 )
 
@@ -150,8 +158,8 @@ class OutboundExecutor:
             )
 
         # 2. Receive-only rail check
-        provider_key = _provider_key(self.registry.provider)
-        if provider_key in RECEIVE_ONLY_PROVIDERS:
+        provider_keys = _provider_keys(self.registry.provider)
+        if provider_keys & RECEIVE_ONLY_PROVIDERS:
             return _refuse(
                 "receive_only_rail",
                 f"Outbound execution refused: provider {self.registry.provider} is a receive-only rail",
@@ -173,15 +181,19 @@ class OutboundExecutor:
                 "Outbound execution refused: default token fallback requested",
                 "bind an explicit governed token reference and retry without default fallback",
             )
-        if self.registry.no_fallback_to_default_token:
-            # Check secret/key value
-            key_val = self.registry.pass_or_secret_key.strip()
-            if not key_val or key_val.startswith("pass:placeholder") or key_val == "placeholder":
-                return _refuse(
-                    "default_token_fallback",
-                    "Outbound execution refused: no fallback allowed and secret key is a placeholder or empty",
-                    "replace the placeholder with a governed pass or secret reference",
-                )
+        if self.registry.no_fallback_to_default_token is not True:
+            return _refuse(
+                "default_token_fallback",
+                "Outbound execution refused: registry does not enforce no_fallback_to_default_token",
+                "set no_fallback_to_default_token to true before enabling outbound execution",
+            )
+        key_val = self.registry.pass_or_secret_key.strip()
+        if not key_val or key_val.startswith("pass:placeholder") or key_val == "placeholder":
+            return _refuse(
+                "default_token_fallback",
+                "Outbound execution refused: no fallback allowed and secret key is a placeholder or empty",
+                "replace the placeholder with a governed pass or secret reference",
+            )
 
         # 5. Forbidden Action check
         if request.scope in self.registry.forbidden_actions:
@@ -283,8 +295,9 @@ def _finite_nonnegative_float(name: str, value: float) -> float:
     return normalized
 
 
-def _provider_key(provider: str) -> str:
-    return provider.strip().casefold().replace("-", "_").replace(" ", "_")
+def _provider_keys(provider: str) -> frozenset[str]:
+    normalized = provider.strip().casefold().replace("-", "_").replace(" ", "_").replace(".", "_")
+    return frozenset({normalized.strip("_"), "".join(ch for ch in normalized if ch.isalnum())})
 
 
 # This module is a governed contract for downstream lane adapters. Keep the
