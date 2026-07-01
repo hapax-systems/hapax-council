@@ -523,6 +523,7 @@ class TestReviewSeatAdmissionContract:
         assert fields["risk_flags"] == top_level_risk_flags
         assert fields["verification_surface"] == top_level_verification
         assert fields["context_shape"] == frontmatter["context_shape"]
+        assert "route_metadata" not in fields
 
     def test_missing_review_family_route_id_blocks_admission(self, tmp_path: Path) -> None:
         note = _write_task(_make_vault(tmp_path))

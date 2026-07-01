@@ -1105,6 +1105,69 @@ class TestVerdictBlockers:
 
         assert "review_dossier_route_current_demand_vector_unavailable:codex-1" in blockers
 
+    def test_current_demand_vector_prefers_empty_top_level_metadata_over_nested(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["route_admission_required"] = True
+        ledger_path = tmp_path / "route-decisions.jsonl"
+        monkeypatch.setattr(rt, "ROUTE_DECISION_LEDGER_PATH", ledger_path)
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        frontmatter = self._full_route_frontmatter()
+        frontmatter["risk_flags"] = {}
+        frontmatter["context_shape"] = {}
+        frontmatter["verification_surface"] = {}
+        frontmatter["route_constraints"] = {}
+        frontmatter["route_metadata"] = {
+            "risk_flags": {"public_claim_sensitive": True},
+            "context_shape": {"codebase_locality": "stale-nested"},
+            "verification_surface": {"deterministic_tests": ["stale nested command"]},
+            "route_constraints": {"must_use": ["stale-nested-route"]},
+        }
+        review_seat_fields = dict(frontmatter)
+        review_seat_fields["__task_note_path"] = str(note)
+        review_seat_fields["quality_floor"] = "frontier_review_required"
+        review_seat_fields["authority_level"] = "support_non_authoritative"
+        review_seat_fields["mutation_surface"] = "none"
+        review_seat_fields["mutation_scope_refs"] = []
+        review_seat_fields["review_requirement"] = rt.REVIEW_SEAT_REVIEW_REQUIREMENT
+        review_seat_fields.pop("route_metadata", None)
+        demand = build_demand_vector(
+            review_seat_fields,
+            note_path=str(note),
+            preserve_route_envelope_hold=True,
+        )
+        current_ref = {
+            "artifact_path": demand.work_item.note_path or demand.work_item.task_id,
+            "freshness_state": FreshnessState.FRESH.value,
+            "hash": demand.work_item.frontmatter_hash,
+        }
+        route_ids = {
+            "codex-1": "codex.headless.full",
+            "gemini-1": "antigrav.interactive.full",
+            "claude-1": "claude.headless.full",
+        }
+        admissions = []
+        for review in dossier["reviewers"]:
+            admission = _route_admission(review["id"], route_ids[review["id"]])
+            admission["route_policy_demand_vector_ref"] = current_ref
+            admissions.append(admission)
+            review["route_admissions"] = [admission]
+        _write_route_decision_ledger(ledger_path, admissions)
+        note.write_text(
+            "---\n" + yaml.safe_dump(frontmatter, sort_keys=False) + "---\n",
+            encoding="utf-8",
+        )
+
+        blockers = rt.review_team_verdict_blockers(frontmatter, note, pr_head_sha="a" * 40)
+
+        assert not any(blocker.endswith(":current_demand_vector_ref") for blocker in blockers)
+        assert not any(
+            blocker.startswith("review_dossier_route_current_demand_vector_unavailable:")
+            for blocker in blockers
+        )
+
     def test_route_admission_required_blocks_launch_not_allowed(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:

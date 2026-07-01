@@ -850,6 +850,7 @@ def _review_seat_task_fields(
     )
     fields["route_constraints"] = _route_metadata_value(frontmatter, "route_constraints") or {}
     fields["review_requirement"] = REVIEW_SEAT_REVIEW_REQUIREMENT
+    fields.pop("route_metadata", None)
     return fields
 
 
