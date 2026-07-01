@@ -253,6 +253,28 @@ def admit_background_capability(
             receipt_dir=receipt_dir,
             now=now,
         )
+        model_blocker = _provider_model_binding_blocker(
+            sources.registry,
+            route_id=normalized_route_id,
+            model_alias=model_alias,
+            mutation_surface=mutation_surface,
+        )
+        if model_blocker is not None:
+            reason, code = model_blocker
+            return _denied(
+                capability_name=capability_name,
+                route_id=normalized_route_id,
+                model_alias=model_alias,
+                denied_reason=reason,
+                reason_codes=(code,),
+                task_id=task_id,
+                authority_case=authority_case,
+                parent_spec=_string_field(invocation_fields, "parent_spec"),
+                mutation_surface=mutation_surface,
+                quality_floor=quality_floor or _string_field(invocation_fields, "quality_floor"),
+                authority_level=authority_level
+                or _string_field(invocation_fields, "authority_level"),
+            )
         request = build_dispatch_request(
             task_id=task_id,
             lane=lane or os.environ.get(BACKGROUND_CAPABILITY_LANE_ENV, "background"),
@@ -520,6 +542,45 @@ def _model_descriptor(registry: Any, route_id: str) -> dict[str, object]:
         "execution_descriptor": descriptor,
         "selected_descriptor_leaf": route_id,
     }
+
+
+def _provider_model_binding_blocker(
+    registry: Any,
+    *,
+    route_id: str,
+    model_alias: str | None,
+    mutation_surface: str,
+) -> tuple[str, str] | None:
+    if mutation_surface != "provider_spend" or model_alias is None:
+        return None
+    requested = model_alias.strip()
+    if not requested:
+        return None
+    if registry is None:
+        return (
+            f"provider_model_binding_unverifiable:route={route_id} model={requested}",
+            "provider_model_binding_unverifiable",
+        )
+    route = registry.route_map().get(normalize_route_id(route_id))
+    if route is None:
+        return None
+    descriptor = route.execution_descriptor
+    allowed = {
+        str(route.model_or_engine or "").strip(),
+        str(descriptor.model_id).strip(),
+    }
+    model_fingerprint = getattr(descriptor, "model_fingerprint", None)
+    if model_fingerprint is not None:
+        allowed.add(str(model_fingerprint).strip())
+    allowed.discard("")
+    if requested in allowed:
+        return None
+    return (
+        "provider_model_descriptor_mismatch:"
+        f"route={route_id} requested_model={requested} "
+        f"route_models={','.join(sorted(allowed)) or 'none'}",
+        "provider_model_descriptor_mismatch",
+    )
 
 
 __all__ = [

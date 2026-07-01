@@ -363,6 +363,36 @@ def _admitted_digest_admission() -> BackgroundCapabilityAdmission:
     )
 
 
+def test_digest_admission_spec_classifies_local_and_provider_models():
+    """Digest model selection must drive the admission surface before policy reads."""
+    from agents.digest import _digest_admission_spec
+
+    assert _digest_admission_spec("local-fast") == (
+        "local_tool.local.worker",
+        "none",
+        "deterministic_ok",
+    )
+    assert _digest_admission_spec("gemini-flash") == (
+        "api.headless.provider_gateway",
+        "provider_spend",
+        "frontier_required",
+    )
+
+
+def test_digest_admission_refuses_configured_route_model_mismatch(monkeypatch):
+    """A configured route cannot override the route implied by the selected model."""
+    from agents.digest import DIGEST_LLM_ROUTE_ID_ENV, _admit_digest_synthesis
+
+    monkeypatch.setenv(DIGEST_LLM_ROUTE_ID_ENV, "local_tool.local.worker")
+    fake_model = MagicMock(model_name="gemini-flash")
+    with patch("agents.digest.digest_agent", MagicMock(model=fake_model)):
+        admission = _admit_digest_synthesis()
+
+    assert admission.admitted is False
+    assert admission.reason_codes == ("digest_route_model_mismatch",)
+    assert "expected_route=api.headless.provider_gateway" in (admission.denied_reason or "")
+
+
 @pytest.mark.asyncio
 @patch("agents.digest.collect_recent_documents")
 @patch("agents.digest.collect_collection_stats")

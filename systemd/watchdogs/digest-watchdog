@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Content digest generator — saves to profiles/ + vault and sends notification
-cd /home/hapax/projects/hapax-council
+SOURCE_ROOT="${HAPAX_SOURCE_ACTIVATION_WORKTREE:-/home/hapax/.cache/hapax/source-activation/worktree}"
+cd "$SOURCE_ROOT"
 
 # Load credentials from pass store (systemd sets PASSWORD_STORE_DIR + GNUPGHOME)
 export LITELLM_API_KEY=$(pass show litellm/master-key 2>/dev/null || echo "changeme")
@@ -30,4 +31,4 @@ if new_docs > 0:
 " 2>/dev/null || true
 
 # Append to history
-echo "$REPORT" >> /home/hapax/projects/hapax-council/profiles/digest-history.jsonl 2>/dev/null || true
+echo "$REPORT" >> "$SOURCE_ROOT/profiles/digest-history.jsonl" 2>/dev/null || true

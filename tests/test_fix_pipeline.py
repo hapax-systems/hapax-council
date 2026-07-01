@@ -121,7 +121,7 @@ _PATCH_BASE = "shared.fix_capabilities.pipeline"
 def _admission(*, admitted: bool = True) -> BackgroundCapabilityAdmission:
     return BackgroundCapabilityAdmission(
         capability_name="health_monitor.fix.mock.restart",
-        route_id="local_tool.local.worker",
+        route_id="codex.headless.full",
         admitted=admitted,
         denied_reason=None if admitted else "route_policy_denied",
         reason_codes=("policy_launch",) if admitted else ("runtime_actuation_receipt_absent",),
@@ -185,7 +185,7 @@ async def test_safe_proposal_executes():
     assert outcome.execution_result.success is True
     assert outcome.notified is False
     assert outcome.admission is not None
-    assert outcome.admission["route_id"] == "local_tool.local.worker"
+    assert outcome.admission["route_id"] == "codex.headless.full"
 
 
 @pytest.mark.asyncio
@@ -402,6 +402,20 @@ async def test_deterministic_docker_compose_up_runs_when_lock_expired(tmp_path, 
         timeout=30.0,
         cwd=os.path.expanduser("~/llm-stack"),
     )
+
+
+def test_runtime_fix_admission_has_no_inference_route_default(monkeypatch):
+    """Runtime mutation must name an actuator route; no local-inference fallback."""
+    from shared.fix_capabilities.pipeline import _admit_runtime_fix_execution
+
+    monkeypatch.delenv("HAPAX_FIX_PIPELINE_ROUTE_ID", raising=False)
+
+    admission = _admit_runtime_fix_execution("docker", "restart_container")
+
+    assert admission.admitted is False
+    assert admission.route_id == "unconfigured"
+    assert admission.reason_codes == ("runtime_route_unconfigured",)
+    assert "HAPAX_FIX_PIPELINE_ROUTE_ID" in (admission.denied_reason or "")
 
 
 @pytest.mark.asyncio

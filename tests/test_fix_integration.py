@@ -57,7 +57,7 @@ class TestEndToEnd:
         cap = get_capability_for_group("gpu")
         admission = BackgroundCapabilityAdmission(
             capability_name="health_monitor.fix.ollama.stop_model",
-            route_id="local_tool.local.worker",
+            route_id="codex.headless.full",
             admitted=True,
             reason_codes=("policy_launch",),
             task_id="task-x",

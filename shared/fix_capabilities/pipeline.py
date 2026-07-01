@@ -34,7 +34,7 @@ from shared.notify import send_notification
 log = logging.getLogger(__name__)
 
 FIX_PIPELINE_ROUTE_ID_ENV = "HAPAX_FIX_PIPELINE_ROUTE_ID"
-FIX_PIPELINE_ROUTE_ID = "local_tool.local.worker"
+FIX_PIPELINE_ROUTE_ID = ""
 
 # ── Deterministic fallback ──────────────────────────────────────────────────
 
@@ -274,9 +274,20 @@ def _admit_runtime_fix_execution(
     capability_name: str,
     action_name: str,
 ) -> BackgroundCapabilityAdmission:
+    route_id = os.environ.get(FIX_PIPELINE_ROUTE_ID_ENV, FIX_PIPELINE_ROUTE_ID).strip()
+    if not route_id:
+        return BackgroundCapabilityAdmission(
+            capability_name=f"health_monitor.fix.{capability_name}.{action_name}",
+            route_id="unconfigured",
+            admitted=False,
+            denied_reason=f"runtime_route_unconfigured:{FIX_PIPELINE_ROUTE_ID_ENV}",
+            reason_codes=("runtime_route_unconfigured",),
+            mutation_surface="runtime",
+            quality_floor="deterministic_ok",
+        )
     return admit_background_capability(
         capability_name=f"health_monitor.fix.{capability_name}.{action_name}",
-        route_id=os.environ.get(FIX_PIPELINE_ROUTE_ID_ENV, FIX_PIPELINE_ROUTE_ID),
+        route_id=route_id,
         mutation_surface="runtime",
         quality_floor="deterministic_ok",
     )

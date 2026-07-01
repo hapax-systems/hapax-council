@@ -184,7 +184,7 @@ def test_background_model_call_refuses_without_platform_receipt(tmp_path: Path) 
     admission = admit_background_capability(
         capability_name="studio.scene_classifier.llm",
         route_id="api.headless.provider_gateway",
-        model_alias="gemini-flash",
+        model_alias="gemini-3.1-pro-preview",
         task_fields=_provider_task_fields(),
         mutation_surface="provider_spend",
         quality_floor="frontier_required",
@@ -207,7 +207,7 @@ def test_background_model_call_refuses_when_task_surface_does_not_authorize_prov
     admission = admit_background_capability(
         capability_name="studio.scene_classifier.llm",
         route_id="api.headless.provider_gateway",
-        model_alias="gemini-flash",
+        model_alias="gemini-3.1-pro-preview",
         task_fields=_source_only_task_fields(),
         mutation_surface="provider_spend",
         quality_floor="frontier_required",
@@ -268,13 +268,13 @@ def test_background_model_call_cannot_raise_task_quality_floor(tmp_path: Path) -
     assert "declared=deterministic_ok" in (admission.denied_reason or "")
 
 
-def test_background_model_call_admits_with_platform_and_budget_receipts(tmp_path: Path) -> None:
+def test_background_model_call_admits_when_model_matches_route_descriptor(tmp_path: Path) -> None:
     _write_provider_gateway_receipt(tmp_path)
 
     admission = admit_background_capability(
         capability_name="studio.scene_classifier.llm",
         route_id="api.headless.provider_gateway",
-        model_alias="gemini-flash",
+        model_alias="gemini-3.1-pro-preview",
         task_fields=_provider_task_fields(),
         mutation_surface="provider_spend",
         quality_floor="frontier_required",
@@ -294,7 +294,35 @@ def test_background_model_call_admits_with_platform_and_budget_receipts(tmp_path
     )
 
 
-def test_fix_evaluator_model_call_admits_provider_gateway_route(tmp_path: Path) -> None:
+def test_provider_model_call_refuses_when_model_does_not_match_route_descriptor(
+    tmp_path: Path,
+) -> None:
+    _write_provider_gateway_receipt(tmp_path)
+
+    admission = admit_background_capability(
+        capability_name="studio.scene_classifier.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        task_fields=_provider_task_fields(),
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        authority_level="authoritative",
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is False
+    assert admission.policy_outcome is None
+    assert admission.route_id == "api.headless.provider_gateway"
+    assert admission.reason_codes == ("provider_model_descriptor_mismatch",)
+    assert "requested_model=gemini-flash" in (admission.denied_reason or "")
+
+
+def test_fix_evaluator_model_call_refuses_provider_gateway_model_mismatch(
+    tmp_path: Path,
+) -> None:
     _write_provider_gateway_receipt(tmp_path)
 
     admission = admit_background_capability(
@@ -311,14 +339,15 @@ def test_fix_evaluator_model_call_admits_provider_gateway_route(tmp_path: Path) 
         write_receipt=False,
     )
 
-    assert admission.admitted is True
-    assert admission.policy_outcome == "launch"
-    assert admission.route_id == "api.headless.provider_gateway"
-    assert admission.mutation_surface == "provider_spend"
-    assert admission.model_alias == "claude-sonnet"
+    assert admission.admitted is False
+    assert admission.policy_outcome is None
+    assert admission.reason_codes == ("provider_model_descriptor_mismatch",)
+    assert "requested_model=claude-sonnet" in (admission.denied_reason or "")
 
 
-def test_director_provider_model_call_admits_provider_gateway_route(tmp_path: Path) -> None:
+def test_director_provider_model_call_refuses_provider_gateway_model_mismatch(
+    tmp_path: Path,
+) -> None:
     _write_provider_gateway_receipt(tmp_path)
 
     admission = admit_background_capability(
@@ -334,10 +363,11 @@ def test_director_provider_model_call_admits_provider_gateway_route(tmp_path: Pa
         write_receipt=False,
     )
 
-    assert admission.admitted is True
-    assert admission.policy_outcome == "launch"
+    assert admission.admitted is False
+    assert admission.policy_outcome is None
     assert admission.route_id == "api.headless.provider_gateway"
     assert admission.model_alias == "claude-sonnet"
+    assert admission.reason_codes == ("provider_model_descriptor_mismatch",)
 
 
 def test_local_worker_runtime_fix_refuses_through_real_policy(tmp_path: Path) -> None:
@@ -385,7 +415,7 @@ def test_background_admission_refuses_absent_task_note(monkeypatch, tmp_path: Pa
     admission = admit_background_capability(
         capability_name="studio.scene_classifier.llm",
         route_id="api.headless.provider_gateway",
-        model_alias="gemini-flash",
+        model_alias="gemini-3.1-pro-preview",
         mutation_surface="provider_spend",
         quality_floor="frontier_required",
         receipt_dir=tmp_path,
@@ -451,7 +481,7 @@ def test_background_admission_denies_when_route_decision_receipt_write_fails(
         admission = admit_background_capability(
             capability_name="studio.scene_classifier.llm",
             route_id="api.headless.provider_gateway",
-            model_alias="gemini-flash",
+            model_alias="gemini-3.1-pro-preview",
             task_fields=_provider_task_fields(),
             mutation_surface="provider_spend",
             quality_floor="frontier_required",
