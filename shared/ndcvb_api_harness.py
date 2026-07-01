@@ -293,7 +293,7 @@ def package_ndcvb_detection_result(
             "confidence": result_confidence,
             "confidence_basis": _confidence_basis(engine_report),
             "provenance": provenance,
-            "violations": list(engine_report.get("violations", [])),
+            "violations": _public_violations(engine_report.get("violations", [])),
         },
         "battery": battery_report,
         "engine_guards": {
@@ -463,6 +463,28 @@ def _confidence_basis(engine_report: Mapping[str, Any]) -> str:
     if engine_report.get("score_0_100") is not None:
         return "ndcvb_score_0_100"
     return "unavailable_below_floor"
+
+
+def _public_violations(raw_violations: object) -> list[dict[str, Any]]:
+    if isinstance(raw_violations, (str, bytes)) or not isinstance(raw_violations, Sequence):
+        return []
+    public: list[dict[str, Any]] = []
+    for violation in raw_violations:
+        if not isinstance(violation, Mapping):
+            continue
+        item: dict[str, Any] = {}
+        reason = violation.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            item["reason"] = reason.strip()
+        bound = violation.get("bound")
+        if isinstance(bound, (int, float)) and not isinstance(bound, bool) and math.isfinite(bound):
+            item["bound"] = round(float(bound), 3)
+        correspondents = violation.get("correspondents")
+        if isinstance(correspondents, Sequence) and not isinstance(correspondents, (str, bytes)):
+            item["correspondent_count"] = len(correspondents)
+        if item:
+            public.append(item)
+    return public
 
 
 def _overall_provenance(

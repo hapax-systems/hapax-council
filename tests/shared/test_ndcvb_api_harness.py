@@ -166,6 +166,29 @@ def test_response_does_not_echo_verdict_rationale_text() -> None:
     assert "fixture operator note" not in repr(response)
 
 
+def test_response_does_not_echo_violation_correspondent_text() -> None:
+    response = package_ndcvb_detection_result(
+        request=_request(),
+        verdicts=[
+            {
+                "correspondent": "customer raw artifact text",
+                "kind": "dissociated",
+                "bound": 0.8,
+            }
+        ],
+        battery_gates=_gates(),
+    )
+
+    assert response["status"] == "refused_no_release"
+    assert response["detection"]["violations"] == [
+        {
+            "reason": "ndcvb_dissociated_at_r",
+            "correspondent_count": 1,
+        }
+    ]
+    assert "customer raw artifact text" not in repr(response)
+
+
 def test_four_gate_battery_is_required_and_failures_hold_result() -> None:
     with pytest.raises(NDCVBApiHarnessError, match="exactly 4 battery gates"):
         package_ndcvb_detection_result(
