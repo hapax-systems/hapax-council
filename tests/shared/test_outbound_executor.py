@@ -759,6 +759,24 @@ def test_malformed_registry_send_scopes_fail_closed(
         )
 
 
+def test_empty_registry_forbidden_actions_fail_closed(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    malformed_registry = base_registry.model_copy(
+        update={"send_scopes": ["forward"], "forbidden_actions": []}
+    )
+
+    with pytest.raises(ValueError, match="registry.forbidden_actions"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist={"internal"},
+            notional_cap=100.0,
+            position_cap=500.0,
+            kill_switch=False,
+            registry=malformed_registry,
+        )
+
+
 def test_padded_global_forbidden_scope_refuses(
     base_registry: AccountFederationRegistry,
 ) -> None:

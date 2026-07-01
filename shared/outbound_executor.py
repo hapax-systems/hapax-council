@@ -282,6 +282,7 @@ class OutboundExecutor:
         self._forbidden_actions = _normalize_scope_collection(
             "registry.forbidden_actions",
             registry.forbidden_actions,
+            allow_empty=False,
         )
         self._position_lock = threading.RLock()
 
@@ -557,13 +558,24 @@ def _nonblank_string(name: str, value: Any) -> str:
     return value.strip()
 
 
-def _normalize_scope_collection(name: str, values: Any) -> frozenset[str]:
+def _normalize_scope_collection(
+    name: str,
+    values: Any,
+    *,
+    allow_empty: bool = True,
+) -> frozenset[str]:
     if isinstance(values, str) or not isinstance(values, list | tuple | set | frozenset):
         raise TypeError(
             f"{name} must be a list, tuple, or set of scope strings; next action: "
             "load a validated account federation registry"
         )
-    return frozenset(_nonblank_string(f"{name} entries", value) for value in values)
+    normalized = frozenset(_nonblank_string(f"{name} entries", value) for value in values)
+    if not normalized and not allow_empty:
+        raise ValueError(
+            f"{name} must contain at least one entry; next action: load a validated "
+            "account federation registry"
+        )
+    return normalized
 
 
 def _snapshot_request(request: OutboundExecutionRequest) -> OutboundExecutionRequest:
