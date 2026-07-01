@@ -141,12 +141,12 @@ class M2BudgetEnvelope:
                 currency=_required_mapping_string(raw, "currency"),
                 max_notional=_non_negative_float(raw.get("max_notional"), field="max_notional"),
                 max_position=_non_negative_float(raw.get("max_position"), field="max_position"),
-                purpose=_optional_string(raw.get("purpose")),
-                surface=_optional_string(raw.get("surface")),
-                venue=_optional_string(raw.get("venue")),
-                instrument=_optional_string(raw.get("instrument")),
+                purpose=_optional_mapping_string(raw, "purpose"),
+                surface=_optional_mapping_string(raw, "surface"),
+                venue=_optional_mapping_string(raw, "venue"),
+                instrument=_optional_mapping_string(raw, "instrument"),
                 publish_only=_optional_bool(raw.get("publish_only")),
-                flood_plan=_optional_string(raw.get("flood_plan")),
+                flood_plan=_optional_mapping_string(raw, "flood_plan"),
                 non_public=_optional_bool(raw.get("non_public")),
                 no_audience=_optional_bool(raw.get("no_audience")),
             )
@@ -657,6 +657,12 @@ def _optional_string(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("optional field must be a string")
     return value.strip()
+
+
+def _optional_mapping_string(raw: Mapping[str, Any], field: str) -> str:
+    if field not in raw:
+        return ""
+    return _optional_string(raw[field])
 
 
 def _optional_bool(value: Any) -> bool:

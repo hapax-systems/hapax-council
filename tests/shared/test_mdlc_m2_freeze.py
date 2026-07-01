@@ -324,6 +324,9 @@ def test_legacy_budget_without_flood_fields_loads_private_default() -> None:
     assert envelope.no_audience is False
     assert artifact.budget_envelope.flood_plan == ""
 
+    budget["flood_plan"] = None
+    assert M2BudgetEnvelope.from_mapping(budget).flood_plan == ""
+
 
 def test_flood_envelope_fields_are_serialized() -> None:
     budget = dict(_artifact()["budget_envelope"])
