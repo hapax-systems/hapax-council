@@ -276,7 +276,7 @@ class OutboundExecutor:
             )
 
         # 8. Position Cap check
-        position_after = self.current_position + request.amount
+        position_after = _position_after(self.current_position, request.amount)
         if _position_exceeds_cap(self.current_position, request.amount, self.position_cap):
             return _refuse(
                 "position_cap_exceeded",
@@ -289,6 +289,7 @@ class OutboundExecutor:
             if not (
                 request.venue == "internal"
                 or request.venue.startswith("internal:")
+                # Legacy private runner prefix; still requires exact allowlist membership above.
                 or request.venue.startswith("private_internal")
             ):
                 return _refuse(
@@ -320,7 +321,7 @@ class OutboundExecutor:
             notional_cap=self.notional_cap,
             position_cap=self.position_cap,
             current_position_before=self.current_position,
-            current_position_after=self.current_position + request.amount,
+            current_position_after=position_after,
             evidence_refs=request.evidence_refs,
         )
 
@@ -354,11 +355,23 @@ def _finite_nonnegative_float(name: str, value: float) -> float:
 
 
 def _exceeds_cap(value: float, cap: float) -> bool:
-    return Decimal(str(value)) > Decimal(str(cap))
+    return _decimal(value) > _decimal(cap)
 
 
 def _position_exceeds_cap(current_position: float, amount: float, cap: float) -> bool:
-    return Decimal(str(current_position)) + Decimal(str(amount)) > Decimal(str(cap))
+    return _position_after_decimal(current_position, amount) > _decimal(cap)
+
+
+def _position_after(current_position: float, amount: float) -> float:
+    return float(_position_after_decimal(current_position, amount))
+
+
+def _position_after_decimal(current_position: float, amount: float) -> Decimal:
+    return _decimal(current_position) + _decimal(amount)
+
+
+def _decimal(value: float) -> Decimal:
+    return Decimal(str(value))
 
 
 # This module is a governed contract for downstream lane adapters. Keep the

@@ -780,7 +780,17 @@ def test_position_cap_fractional_boundary_admits_close_total(
 
     receipt = executor.execute(request)
     assert receipt.status == "admitted"
-    assert receipt.current_position_after == pytest.approx(0.3)
+    assert receipt.current_position_after == 0.3
+    assert executor.current_position == 0.3
+
+    follow_up = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=0.0,
+    )
+    follow_up_receipt = executor.execute(follow_up)
+    assert follow_up_receipt.status == "admitted"
+    assert follow_up_receipt.current_position_after == 0.3
 
 
 def test_position_cap_just_over_fractional_boundary_refuses(
