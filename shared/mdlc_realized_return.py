@@ -357,7 +357,7 @@ def realized_return_from_durable_payment_event(
 
     return _realized_return_from_durable_payment_event(
         row,
-        validated_stream=isinstance(row, DurableSinkRow),
+        validated_stream=False,
     )
 
 
@@ -366,7 +366,7 @@ def _realized_return_from_durable_payment_event(
     *,
     validated_stream: bool,
 ) -> RealizedReturnRailResult:
-    if isinstance(row, Mapping) and not validated_stream:
+    if not validated_stream:
         return RealizedReturnRailResult(
             status=RealizedReturnStatus.REFUSED,
             measurement=None,
@@ -379,7 +379,7 @@ def _realized_return_from_durable_payment_event(
                 (_row_field(row, "source_receipt_ref"), _row_field(row, "row_hash"))
             ),
             detail=(
-                "mapping durable rows must be read through "
+                "durable rows must be read through "
                 "realized_returns_from_durable_payment_events() so chain validation runs"
             ),
         )

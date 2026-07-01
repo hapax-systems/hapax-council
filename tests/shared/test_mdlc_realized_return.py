@@ -287,6 +287,46 @@ def test_refusal_result_carries_cctv_and_ratchet_context() -> None:
         bool(result)
 
 
+@pytest.mark.parametrize(
+    ("event", "reason"),
+    (
+        (
+            _accepted_event("processor_fee_charged"),
+            RealizedReturnRefusalReason.FEE_EVENT,
+        ),
+        (
+            _accepted_event("customer_subscription_created"),
+            RealizedReturnRefusalReason.MEMBERSHIP_LIFECYCLE_EVENT,
+        ),
+        (
+            _accepted_event("transaction.updated", direction="incoming"),
+            RealizedReturnRefusalReason.AMBIGUOUS_BANK_TRANSACTION_EVENT,
+        ),
+        (
+            _accepted_event("payment_intent_succeeded", amount_currency_cents="bad"),
+            RealizedReturnRefusalReason.INVALID_EVENT_SHAPE,
+        ),
+    ),
+)
+def test_refusal_to_dict_shape_is_stable_across_reason_classes(
+    event: dict[str, object],
+    reason: RealizedReturnRefusalReason,
+) -> None:
+    result = realized_return_from_rail(
+        event,
+        source_receipt_ref="receipt://payment/test/refusal-context",
+    )
+
+    payload = result.to_dict()
+
+    assert payload["status"] == "refused"
+    assert payload["refusal_reason"] == reason.value
+    assert payload["source_class"] == "payment_event"
+    assert payload["measurement"] is None
+    assert "receipt://payment/test/refusal-context" in payload["evidence_refs"]
+    assert "next action:" in payload["detail"]
+
+
 def test_reader_consumes_durable_stage0_payment_event_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -320,7 +360,7 @@ def test_reader_consumes_durable_stage0_payment_event_path(
     assert f"durable:payment-event:{refused.row_hash}" in results[1].evidence_refs
 
 
-def test_durable_row_wrapper_accepts_sink_returned_row(
+def test_durable_row_wrapper_refuses_direct_sink_row_without_stream_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -335,9 +375,10 @@ def test_durable_row_wrapper_accepts_sink_returned_row(
 
     result = realized_return_from_durable_payment_event(row)
 
-    assert result.status is RealizedReturnStatus.ACCEPTED
-    assert result.measurement is not None
-    assert f"durable:payment-event:{row.row_hash}" in result.evidence_refs
+    assert result.status is RealizedReturnStatus.REFUSED
+    assert result.refusal_reason is RealizedReturnRefusalReason.NOT_STAGE0_PAYMENT_EVENT
+    assert result.measurement is None
+    assert "durable rows must be read through" in result.detail
 
 
 def test_missing_durable_payment_event_file_returns_empty_tuple(tmp_path: Path) -> None:
@@ -378,7 +419,7 @@ def test_durable_row_wrapper_refuses_non_mapping_payload() -> None:
     )
 
     assert result.status is RealizedReturnStatus.REFUSED
-    assert result.refusal_reason is RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+    assert result.refusal_reason is RealizedReturnRefusalReason.NOT_STAGE0_PAYMENT_EVENT
     assert result.measurement is None
 
 
