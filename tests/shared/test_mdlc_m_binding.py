@@ -153,6 +153,32 @@ def test_malformed_native_score_result_shape_fails_closed(
     assert result.next_action
 
 
+def test_contradictory_native_score_result_gate_fails_closed() -> None:
+    m_binding = _binding_module()
+    native_shape = SimpleNamespace(
+        scorer="mdlc_measure",
+        scorer_version=1,
+        status=GateStatus.LIT,
+        verdict=SimpleNamespace(value="corroborated"),
+        gate_result=GateResult(
+            status=GateStatus.DARK,
+            verdict=None,
+            reason="contradictory_gate",
+            evidence_refs=("rail:event:stub",),
+        ),
+        reason="corroborated_realized_return",
+        evidence_refs=("rail:event:stub",),
+        refusal_reason=None,
+    )
+
+    result = m_binding.bind_m_result(native_shape)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
+    assert "gate status does not match" in result.reason
+    assert result.score_result is None
+
+
 def test_measurement_binding_delegates_to_scorer(monkeypatch: pytest.MonkeyPatch) -> None:
     m_binding = _binding_module()
     calls: list[tuple[Any, Any, str]] = []

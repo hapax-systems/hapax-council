@@ -23,7 +23,15 @@ from shared.capdlc_lifecycle import GateResult, GateStatus
 MONDLC_M_BINDING_NAME: Final = "mdlc_m_binding"
 MONDLC_M_BINDING_VERSION: Final = 1
 _CORROBORATED_VERDICT: Final = "corroborated"
+_DARK_VERDICT: Final = "dark"
+_NEGATIVE_VERDICT: Final = "negative"
+_UNDETERMINED_VERDICT: Final = "undetermined"
 _ACCEPTED_RAIL_STATUS: Final = "accepted"
+_EXPECTED_VERDICTS_BY_STATUS: Final[dict[GateStatus, frozenset[str]]] = {
+    GateStatus.DARK: frozenset({_DARK_VERDICT}),
+    GateStatus.PARTIAL: frozenset({_UNDETERMINED_VERDICT}),
+    GateStatus.LIT: frozenset({_CORROBORATED_VERDICT, _NEGATIVE_VERDICT}),
+}
 
 
 class _UnsupportedRailMeasurementShape(TypeError):
@@ -199,6 +207,8 @@ def _lift_score_result(
     status = score_result.status
     gate_result = score_result.gate_result
     verdict = score_result.verdict
+    verdict_value = _value(verdict)
+    _validate_native_score_result(status=status, verdict=verdict_value, gate_result=gate_result)
     reason = str(getattr(score_result, "reason", "") or "")
     refusal = str(getattr(score_result, "refusal_reason", "") or "") or None
     next_action = str(getattr(score_result, "next_action", "") or "") or None
@@ -207,7 +217,7 @@ def _lift_score_result(
         binding=MONDLC_M_BINDING_NAME,
         binding_version=MONDLC_M_BINDING_VERSION,
         status=status,
-        verdict=_value(verdict),
+        verdict=verdict_value,
         gate_result=gate_result,
         reason=reason,
         refusal_reason=None,
@@ -220,6 +230,28 @@ def _lift_score_result(
         scorer_version=getattr(score_result, "scorer_version", None),
         next_action=next_action,
     )
+
+
+def _validate_native_score_result(
+    *,
+    status: Any,
+    verdict: str,
+    gate_result: Any,
+) -> None:
+    if not isinstance(status, GateStatus):
+        raise TypeError("native score_result.status must be a GateStatus identity")
+    if not isinstance(gate_result, GateResult):
+        raise TypeError("native score_result.gate_result must be a GateResult identity")
+    expected_verdicts = _EXPECTED_VERDICTS_BY_STATUS[status]
+    if verdict not in expected_verdicts:
+        raise ValueError("native score_result verdict does not match status")
+    if gate_result.status is not status:
+        raise ValueError("native score_result gate status does not match status")
+    expected_gate_verdict: bool | None = None
+    if status is GateStatus.LIT:
+        expected_gate_verdict = verdict == _CORROBORATED_VERDICT
+    if gate_result.verdict is not expected_gate_verdict:
+        raise ValueError("native score_result gate verdict does not match verdict")
 
 
 def _score_rail_results(
