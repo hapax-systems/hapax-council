@@ -159,3 +159,21 @@ def test_cli_accepts_live_producer_file_without_fixture_set_id(tmp_path: Path) -
     assert 'capability_surface_delta_id: "test:single-live-producer-delta"' in written
     assert 'capability_surface_id: "route.codex.headless.full"' in written
     assert 'required_intake_action: "refresh_receipt"' in written
+
+
+def test_cli_bad_now_reports_next_action(tmp_path: Path) -> None:
+    result = _run(
+        "--fixtures",
+        str(FIXTURES),
+        "--task-root",
+        str(tmp_path),
+        "--now",
+        "not-a-timestamp",
+        "--json",
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert "invalid --now value" in payload["error"]
+    assert "next action: pass an ISO-8601 UTC timestamp" in payload["error"]

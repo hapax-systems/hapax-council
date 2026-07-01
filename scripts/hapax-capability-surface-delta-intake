@@ -62,8 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
     args = parser.parse_args(argv)
 
-    now = parse_utc(args.now) if args.now else datetime.now(UTC)
     try:
+        now = parse_utc(args.now) if args.now else datetime.now(UTC)
         producer_file = load_capability_surface_delta_file(args.fixtures)
         deltas = list(producer_file.deltas)
         if args.detect_from_descriptors:
@@ -84,6 +84,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     except CapabilitySurfaceDeltaError as exc:
         result = {"ok": False, "error": str(exc)}
+    except ValueError as exc:
+        result = {
+            "ok": False,
+            "error": f"invalid --now value: {exc}; next action: pass an ISO-8601 UTC timestamp",
+        }
     except OSError as exc:
         result = {"ok": False, "error": str(exc)}
 

@@ -16,7 +16,10 @@
       "authority_ceiling": "read_only",
       "observed_at": "2026-07-01T04:00:00Z",
       "stale_after": "30m",
-      "evidence_refs": ["platform-capability-receipt:glmcp:fixture"],
+      "evidence_refs": [
+        "platform-capability-receipt:glmcp:fixture",
+        "platform-capability-receipt:glmcp:expired"
+      ],
       "route_id": "glmcp.review.direct",
       "supply_leaf_id": "z_ai-glm-5.review.direct",
       "carrier_platform": "glmcp",
@@ -61,9 +64,9 @@
       "source": "fixture",
       "observed_at": "2026-07-01T04:20:00Z",
       "detected_by": "capability-surface-delta-fixture",
-      "surface_id": "route.glmcp.review.direct",
+      "surface_id": "surface.glmcp.receipt-check",
       "delta_kind": "stale_determination",
-      "prior_descriptor_ref": "platform-capability-registry:glmcp.review.direct",
+      "prior_descriptor_ref": "platform-capability-receipt:glmcp:previous",
       "observed_descriptor_ref": "platform-capability-receipt:glmcp:expired",
       "evidence_refs": ["platform-capability-receipt:glmcp:expired"],
       "authority_ceiling": "read_only",

@@ -520,7 +520,11 @@ def _surface_delta_route_index(
     descriptor_keys_by_ref: dict[str, tuple[str, ...]] = {}
     for descriptor in producer_file.descriptors:
         keys = _surface_delta_descriptor_route_keys(descriptor)
-        for descriptor_ref in {descriptor.descriptor_ref, descriptor.surface_id}:
+        for descriptor_ref in {
+            descriptor.descriptor_ref,
+            descriptor.surface_id,
+            *descriptor.evidence_refs,
+        }:
             descriptor_keys_by_ref[descriptor_ref] = keys
     refs: dict[str, list[str]] = {}
     blockers: dict[str, list[str]] = {}

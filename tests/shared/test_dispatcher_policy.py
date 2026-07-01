@@ -964,7 +964,7 @@ def test_surface_delta_policy_source_indexes_descriptor_route_ids(
                         "authority_ceiling": "authoritative",
                         "observed_at": "2026-05-09T22:00:00Z",
                         "stale_after": "1h",
-                        "evidence_refs": ["test:descriptor"],
+                        "evidence_refs": ["platform-capability-receipt:codex:expired"],
                         "route_id": "codex.headless.full",
                         "resource_pools": ["subscription_quota"],
                     }
@@ -976,7 +976,7 @@ def test_surface_delta_policy_source_indexes_descriptor_route_ids(
                         "source": "unit-test",
                         "observed_at": "2026-05-09T22:00:00Z",
                         "detected_by": "unit-test",
-                        "surface_id": "surface.codex.cluster",
+                        "surface_id": "surface.codex.receipt-check",
                         "delta_kind": "stale_determination",
                         "prior_descriptor_ref": "legacy-descriptor:codex-cluster",
                         "observed_descriptor_ref": "platform-capability-receipt:codex:expired",
