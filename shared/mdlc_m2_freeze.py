@@ -12,12 +12,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from math import isfinite
+from pathlib import Path
 from typing import Any, Final
 
 from shared.capdlc_lifecycle import GateResult, GateStatus
+from shared.legal_posture_registry import G2GateInput, LegalPostureRegistry, LegalPostureRow
+from shared.mdlc_g2_legal import require_g2_legal
 from shared.mdlc_measure import MonDLCLadder
 
 MONDLC_M2_FREEZE_NAME: Final = "mdlc_m2_freeze"
@@ -90,6 +93,7 @@ class M2BudgetEnvelope:
     max_notional: float
     max_position: float
     purpose: str = ""
+    surface: str = ""
     venue: str = ""
     instrument: str = ""
 
@@ -107,6 +111,7 @@ class M2BudgetEnvelope:
             _non_negative_float(self.max_position, field="max_position"),
         )
         object.__setattr__(self, "purpose", _optional_string(self.purpose))
+        object.__setattr__(self, "surface", _optional_string(self.surface))
         object.__setattr__(self, "venue", _optional_string(self.venue))
         object.__setattr__(self, "instrument", _optional_string(self.instrument))
 
@@ -119,6 +124,7 @@ class M2BudgetEnvelope:
                 max_notional=_non_negative_float(raw.get("max_notional"), field="max_notional"),
                 max_position=_non_negative_float(raw.get("max_position"), field="max_position"),
                 purpose=_optional_string(raw.get("purpose")),
+                surface=_optional_string(raw.get("surface")),
                 venue=_optional_string(raw.get("venue")),
                 instrument=_optional_string(raw.get("instrument")),
             )
@@ -136,6 +142,7 @@ class M2BudgetEnvelope:
             "max_notional": self.max_notional,
             "max_position": self.max_position,
             "purpose": self.purpose,
+            "surface": self.surface,
             "venue": self.venue,
             "instrument": self.instrument,
         }
@@ -261,6 +268,20 @@ class M2FreezeVerification:
         }
 
 
+@dataclass(frozen=True)
+class M2CommitAdmission:
+    """Commit-ready M2 admission after freeze and G2 legal gates both pass."""
+
+    freeze_artifact: M2FreezeArtifact
+    legal_row: LegalPostureRow
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.freeze_artifact, M2FreezeArtifact):
+            raise TypeError("freeze_artifact must be an M2FreezeArtifact")
+        if not isinstance(self.legal_row, LegalPostureRow):
+            raise TypeError("legal_row must be a LegalPostureRow")
+
+
 class M2FreezeRefusal(RuntimeError):
     """Raised when a caller requires M2 freeze admission and verification blocks."""
 
@@ -344,6 +365,44 @@ def require_m2_freeze_artifact(
     if verification.status is not GateStatus.LIT or verification.artifact is None:
         raise M2FreezeRefusal(verification)
     return verification.artifact
+
+
+def require_m2_commit_admission(
+    artifact: M2FreezeArtifact | Mapping[str, Any] | None,
+    *,
+    ruler_hash_commit: str | None,
+    g2_target: G2GateInput | Mapping[str, Any] | None = None,
+    registry: LegalPostureRegistry | None = None,
+    registry_path: Path | str | None = None,
+    today: date | None = None,
+) -> M2CommitAdmission:
+    """Require M2 freeze presence and an exact fresh signed LIT G2 row."""
+
+    freeze_artifact = require_m2_freeze_artifact(
+        artifact,
+        ruler_hash_commit=ruler_hash_commit,
+    )
+    legal_row = require_g2_legal(
+        _commit_g2_target(g2_target, freeze_artifact),
+        registry=registry,
+        registry_path=registry_path,
+        today=today,
+    )
+    return M2CommitAdmission(freeze_artifact=freeze_artifact, legal_row=legal_row)
+
+
+def _commit_g2_target(
+    target: G2GateInput | Mapping[str, Any] | None,
+    artifact: M2FreezeArtifact,
+) -> G2GateInput | Mapping[str, Any]:
+    if target is not None:
+        return target
+    envelope = artifact.budget_envelope
+    return G2GateInput(
+        surface=envelope.surface,
+        venue=envelope.venue,
+        instrument=envelope.instrument,
+    )
 
 
 def _coerce_artifact(value: M2FreezeArtifact | Mapping[str, Any]) -> M2FreezeArtifact:
@@ -585,10 +644,12 @@ __all__ = [
     "MONDLC_M2_FREEZE_NAME",
     "MONDLC_M2_FREEZE_VERSION",
     "M2BudgetEnvelope",
+    "M2CommitAdmission",
     "M2FreezeArtifact",
     "M2FreezeRefusal",
     "M2FreezeRefusalReason",
     "M2FreezeVerification",
+    "require_m2_commit_admission",
     "require_m2_freeze_artifact",
     "verify_m2_freeze_artifact",
 ]
