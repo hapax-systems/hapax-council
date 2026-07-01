@@ -192,7 +192,13 @@ def append_resource_receipt(
                 fh.write(line)
                 fh.flush()
         except OSError:
-            log.warning("money-rail resource receipt append failed at %s", target, exc_info=True)
+            log.warning(
+                "money-rail resource receipt append failed at %s; check %s, /dev/shm "
+                "availability, and receipt log permissions",
+                target,
+                MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+                exc_info=True,
+            )
             return False
     return True
 
@@ -217,7 +223,13 @@ def tail_resource_receipts(
                 except (ValidationError, ValueError, TypeError):
                     log.debug("malformed money-rail resource receipt skipped")
     except OSError:
-        log.warning("money-rail resource receipt read failed at %s", target, exc_info=True)
+        log.warning(
+            "money-rail resource receipt read failed at %s; check %s, /dev/shm availability, "
+            "and receipt log permissions",
+            target,
+            MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            exc_info=True,
+        )
         return []
     return list(tail)
 
@@ -252,8 +264,14 @@ def load_resource_receipt(
                 if receipt.rail == rail and receipt.receipt_id == receipt_id:
                     return receipt
     except OSError:
-        log.warning("money-rail resource receipt read failed at %s", target, exc_info=True)
-    return None
+        log.warning(
+            "money-rail resource receipt read failed at %s; check %s, /dev/shm availability, "
+            "and receipt log permissions",
+            target,
+            MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+            exc_info=True,
+        )
+        return None
 
 
 def resource_receipt_matches(
@@ -388,6 +406,51 @@ def commit_prepared_resource_receipt(
     return _append_and_ref(receipt, log_path=log_path)
 
 
+def retract_prepared_resource_receipt(
+    receipt: MoneyRailResourceReceipt,
+    *,
+    log_path: Path | None = None,
+) -> bool:
+    """Best-effort rollback for a just-prepared receipt when its event append fails."""
+
+    target = log_path if log_path is not None else default_receipt_log_path()
+    with _lock:
+        try:
+            if not target.exists():
+                return True
+            kept: list[str] = []
+            removed = False
+            with target.open("r", encoding="utf-8") as fh:
+                for raw in fh:
+                    text = raw.rstrip("\n")
+                    try:
+                        parsed = MoneyRailResourceReceipt.model_validate_json(text)
+                    except (ValidationError, ValueError, TypeError):
+                        kept.append(raw)
+                        continue
+                    if parsed.receipt_id == receipt.receipt_id:
+                        removed = True
+                        continue
+                    kept.append(raw)
+            if not removed:
+                return True
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            with tmp.open("w", encoding="utf-8") as fh:
+                fh.writelines(kept)
+                fh.flush()
+            tmp.replace(target)
+            return True
+        except OSError:
+            log.warning(
+                "money-rail resource receipt rollback failed at %s; check %s, /dev/shm "
+                "availability, and receipt log permissions",
+                target,
+                MONEY_RAIL_RESOURCE_RECEIPT_LOG_ENV,
+                exc_info=True,
+            )
+            return False
+
+
 def record_awareness_write_resource_receipt(
     *,
     state_path: Path,
@@ -397,6 +460,24 @@ def record_awareness_write_resource_receipt(
     route_source: str = "agents.payment_processors.monetization_aggregator",
     log_path: Path | None = None,
 ) -> str | None:
+    _ref, receipt = prepare_awareness_write_resource_receipt(
+        state_path=state_path,
+        source_log_path=source_log_path,
+        receipt_count=receipt_count,
+        source_window_sha256=source_window_sha256,
+        route_source=route_source,
+    )
+    return _append_and_ref(receipt, log_path=log_path)
+
+
+def prepare_awareness_write_resource_receipt(
+    *,
+    state_path: Path,
+    source_log_path: Path,
+    receipt_count: int,
+    source_window_sha256: str | None = None,
+    route_source: str = "agents.payment_processors.monetization_aggregator",
+) -> tuple[str, MoneyRailResourceReceipt]:
     provenance = [
         f"awareness_state_path:{state_path}",
         f"payment_event_log:{source_log_path}",
@@ -415,7 +496,7 @@ def record_awareness_write_resource_receipt(
         ),
         resource_provenance=provenance,
     )
-    return _append_and_ref(receipt, log_path=log_path)
+    return receipt_reference(receipt), receipt
 
 
 def _append_and_ref(
@@ -508,7 +589,9 @@ __all__ = [
     "record_ingress_resource_receipt",
     "record_payment_event_resource_receipt",
     "prepare_payment_event_resource_receipt",
+    "prepare_awareness_write_resource_receipt",
     "commit_prepared_resource_receipt",
+    "retract_prepared_resource_receipt",
     "require_resource_receipt",
     "resource_receipt_exists",
     "resource_receipt_matches",

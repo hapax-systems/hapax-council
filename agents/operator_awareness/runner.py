@@ -41,7 +41,11 @@ from agents.operator_awareness.state import (
     write_state_atomic,
 )
 from agents.payment_processors.event_log import event_window_sha256, tail_events
-from agents.payment_processors.resource_receipts import record_awareness_write_resource_receipt
+from agents.payment_processors.resource_receipts import (
+    commit_prepared_resource_receipt,
+    prepare_awareness_write_resource_receipt,
+    retract_prepared_resource_receipt,
+)
 
 # sd_notify integration — lazy load so unit tests + non-systemd hosts
 # don't pay the import cost or fail when sdnotify is absent. Cached
@@ -133,14 +137,14 @@ class AwarenessRunner:
             self.writes_total.labels(result="aggregator_error").inc()
             return "aggregator_error"
         events = tail_events(log_path=self._aggregator.monetization_log_path)
-        receipt_ref = record_awareness_write_resource_receipt(
+        _receipt_ref, receipt = prepare_awareness_write_resource_receipt(
             state_path=self._state_path,
             source_log_path=self._aggregator.monetization_log_path,
             receipt_count=len(events),
             source_window_sha256=event_window_sha256(events),
             route_source="agents.operator_awareness.runner",
         )
-        if receipt_ref is None:
+        if commit_prepared_resource_receipt(receipt) is None:
             log.warning(
                 "awareness runner write blocked: money-rail resource receipt missing; "
                 "check HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH, /dev/shm availability, "
@@ -149,6 +153,8 @@ class AwarenessRunner:
             self.writes_total.labels(result="resource_receipt_error").inc()
             return "resource_receipt_error"
         ok = write_state_atomic(state, self._state_path)
+        if not ok:
+            retract_prepared_resource_receipt(receipt)
         result = "ok" if ok else "error"
         self.writes_total.labels(result=result).inc()
         return result

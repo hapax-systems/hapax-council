@@ -151,9 +151,7 @@ class TestNostrZapListener:
             f"money-rail-resource-receipt:nostr_zap:{receipts[0].receipt_id}"
         )
 
-    def test_missing_event_resource_receipt_blocks_chronicle_and_seen_mark(
-        self, tmp_path, monkeypatch
-    ):
+    def test_missing_event_resource_receipt_blocks_event_append(self, tmp_path, monkeypatch):
         import agents.payment_processors.event_log as ev_log
         import agents.payment_processors.nostr_zap_listener as nostr_mod
 
@@ -176,9 +174,7 @@ class TestNostrZapListener:
 
         from agents.payment_processors.event_log import tail_events
 
-        events = tail_events(log_path=log_path)
-        assert len(events) == 1
-        assert events[0].resource_receipt_ref.startswith("money-rail-resource-receipt:nostr_zap:")
+        assert tail_events(log_path=log_path) == []
         assert "abcdef" not in listener._seen_event_ids  # noqa: SLF001
 
     def test_failed_event_append_does_not_record_payment_event_receipt(self, tmp_path, monkeypatch):

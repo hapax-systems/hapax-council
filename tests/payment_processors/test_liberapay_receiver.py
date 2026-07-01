@@ -175,7 +175,7 @@ class TestPollOnce:
         assert receiver.poll_once() == 0
         client.get.assert_not_called()
 
-    def test_missing_event_resource_receipt_blocks_chronicle_and_emit(self, tmp_path, monkeypatch):
+    def test_missing_event_resource_receipt_blocks_event_append(self, tmp_path, monkeypatch):
         log_path = tmp_path / "events.jsonl"
         import agents.payment_processors.event_log as ev_log
         import agents.payment_processors.liberapay_receiver as liberapay_mod
@@ -197,9 +197,7 @@ class TestPollOnce:
         receiver = LiberapayReceiver(credentials=("u", "p"), http_client=client)
 
         assert receiver.poll_once() == 0
-        events = tail_events(log_path=log_path)
-        assert len(events) == 1
-        assert events[0].resource_receipt_ref.startswith("money-rail-resource-receipt:liberapay:")
+        assert tail_events(log_path=log_path) == []
 
     def test_failed_event_append_does_not_record_payment_event_receipt(self, tmp_path, monkeypatch):
         log_path = tmp_path / "events.jsonl"

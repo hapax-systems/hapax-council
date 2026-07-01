@@ -147,8 +147,8 @@ class TestAwarenessWriteReceipts:
 
         monkeypatch.setattr(
             aggregator_mod,
-            "record_awareness_write_resource_receipt",
-            lambda **_kwargs: None,
+            "commit_prepared_resource_receipt",
+            lambda _receipt, **_kwargs: None,
         )
         log_path = tmp_path / "events.jsonl"
         state_path = tmp_path / "state.json"
@@ -164,3 +164,30 @@ class TestAwarenessWriteReceipts:
 
         assert aggregator.flush_awareness_block() is False
         assert not state_path.exists()
+
+    def test_flush_retracts_receipt_when_state_write_fails(self, tmp_path, monkeypatch):
+        import agents.payment_processors.monetization_aggregator as aggregator_mod
+        import agents.payment_processors.resource_receipts as resource_receipts
+
+        receipt_log = tmp_path / "resource-receipts.jsonl"
+        monkeypatch.setattr(
+            resource_receipts,
+            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+            receipt_log,
+        )
+        monkeypatch.setattr(aggregator_mod, "write_state_atomic", lambda *_args, **_kwargs: False)
+        log_path = tmp_path / "events.jsonl"
+        state_path = tmp_path / "state.json"
+        append_event(_make("lightning", ext="L1", sats=42), log_path=log_path)
+        aggregator = MonetizationAggregator(
+            lightning=MagicMock(),
+            nostr=MagicMock(),
+            liberapay=MagicMock(),
+            state_path=state_path,
+            log_path=log_path,
+            aggregate_tick_s=5.0,
+        )
+
+        assert aggregator.flush_awareness_block() is False
+        assert not state_path.exists()
+        assert tail_resource_receipts(log_path=receipt_log) == []

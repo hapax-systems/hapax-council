@@ -44,7 +44,9 @@ from agents.payment_processors.liberapay_receiver import LiberapayReceiver
 from agents.payment_processors.lightning_receiver import LightningReceiver
 from agents.payment_processors.nostr_zap_listener import NostrZapListener
 from agents.payment_processors.resource_receipts import (
-    record_awareness_write_resource_receipt,
+    commit_prepared_resource_receipt,
+    prepare_awareness_write_resource_receipt,
+    retract_prepared_resource_receipt,
 )
 
 log = logging.getLogger(__name__)
@@ -164,13 +166,13 @@ class MonetizationAggregator:
         ``run_aggregate_loop``; can also be invoked from tests.
         """
         events = tail_events(log_path=self._log_path)
-        receipt_ref = record_awareness_write_resource_receipt(
+        _receipt_ref, receipt = prepare_awareness_write_resource_receipt(
             state_path=self._state_path,
             source_log_path=self._log_path,
             receipt_count=len(events),
             source_window_sha256=event_window_sha256(events),
         )
-        if receipt_ref is None:
+        if commit_prepared_resource_receipt(receipt) is None:
             log.warning(
                 "monetization awareness write blocked: resource receipt missing; "
                 "check HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH, /dev/shm availability, "
@@ -184,7 +186,10 @@ class MonetizationAggregator:
             timestamp=datetime.now(UTC),
             monetization=block,
         )
-        return write_state_atomic(state, self._state_path)
+        ok = write_state_atomic(state, self._state_path)
+        if not ok:
+            retract_prepared_resource_receipt(receipt)
+        return ok
 
     def run_aggregate_loop(self) -> None:
         """30s tick: rebuild the block + flush to /dev/shm."""

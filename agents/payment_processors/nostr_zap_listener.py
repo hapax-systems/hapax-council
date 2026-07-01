@@ -44,6 +44,7 @@ from agents.payment_processors.resource_receipts import (
     commit_prepared_resource_receipt,
     prepare_payment_event_resource_receipt,
     record_external_api_poll_receipt,
+    retract_prepared_resource_receipt,
 )
 from agents.payment_processors.secrets import load_nostr_npub
 from shared.chronicle import ChronicleEvent, current_otel_ids, record
@@ -218,12 +219,13 @@ class NostrZapListener:
             event_kind="zap_receipt",
             downstream_action="payment_event_log.append_event",
         )
-        payment_event = payment_event.model_copy(update={"resource_receipt_ref": receipt_ref})
-        if not append_event(payment_event):
-            zap_relay_errors_total.labels(kind="payment_event_append").inc()
-            return
         if commit_prepared_resource_receipt(receipt) is None:
             zap_relay_errors_total.labels(kind="resource_receipt").inc()
+            return
+        payment_event = payment_event.model_copy(update={"resource_receipt_ref": receipt_ref})
+        if not append_event(payment_event):
+            retract_prepared_resource_receipt(receipt)
+            zap_relay_errors_total.labels(kind="payment_event_append").inc()
             return
         _record_chronicle(payment_event)
         zap_receipts_total.labels(rail="nostr_zap").inc()

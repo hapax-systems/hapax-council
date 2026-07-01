@@ -117,8 +117,8 @@ class TestAwarenessRunnerReceiptGate:
 
         monkeypatch.setattr(
             runner_mod,
-            "record_awareness_write_resource_receipt",
-            lambda **_kwargs: None,
+            "commit_prepared_resource_receipt",
+            lambda _receipt, **_kwargs: None,
         )
         log_path = tmp_path / "events.jsonl"
         state_path = tmp_path / "state.json"
@@ -136,3 +136,32 @@ class TestAwarenessRunnerReceiptGate:
 
         assert runner.run_once() == "resource_receipt_error"
         assert not state_path.exists()
+
+    def test_run_once_retracts_receipt_when_state_write_fails(self, tmp_path, monkeypatch):
+        import agents.operator_awareness.runner as runner_mod
+        import agents.payment_processors.resource_receipts as resource_receipts
+
+        receipt_log = tmp_path / "resource-receipts.jsonl"
+        monkeypatch.setattr(
+            resource_receipts,
+            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+            receipt_log,
+        )
+        monkeypatch.setattr(runner_mod, "write_state_atomic", lambda *_args, **_kwargs: False)
+        log_path = tmp_path / "events.jsonl"
+        state_path = tmp_path / "state.json"
+        append_event(_make("L1", sats=21), log_path=log_path)
+        runner = AwarenessRunner(
+            aggregator=Aggregator(
+                refusals_log_path=tmp_path / "refusals.jsonl",
+                infra_snapshot_path=tmp_path / "infra.json",
+                chronicle_events_path=tmp_path / "chronicle.jsonl",
+                monetization_log_path=log_path,
+            ),
+            state_path=state_path,
+            registry=CollectorRegistry(),
+        )
+
+        assert runner.run_once() == "error"
+        assert not state_path.exists()
+        assert tail_resource_receipts(log_path=receipt_log) == []
