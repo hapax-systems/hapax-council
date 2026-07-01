@@ -401,6 +401,57 @@ def test_request_is_immutable_after_validation() -> None:
     assert request.to_dict()["payload"] == {"nested": {"refs": ["evidence:original"]}}
 
 
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"ids": {"mutable-set-leaf"}},
+        {"blob": bytearray(b"mutable-bytearray-leaf")},
+        {"score": float("nan")},
+    ),
+)
+def test_request_rejects_mutable_or_non_json_payload_values(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="payload values"):
+        OutboundExecutionRequest(
+            scope="gmail_send_internal",
+            venue="internal",
+            amount=1.0,
+            payload=payload,
+        )
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        {"ids": {"mutable-set-leaf"}},
+        {"blob": bytearray(b"mutable-bytearray-leaf")},
+        {"score": float("nan")},
+    ),
+)
+def test_receipt_rejects_mutable_or_non_json_metadata_values(
+    metadata: dict[str, object],
+) -> None:
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=1.0,
+    )
+
+    with pytest.raises(ValidationError, match="metadata values"):
+        OutboundExecutionReceipt(
+            receipt_id="receipt:test",
+            status="refused",
+            request=request,
+            verdict="test refusal",
+            notional_cap=100.0,
+            position_cap=500.0,
+            current_position_before=0.0,
+            current_position_after=0.0,
+            metadata=metadata,
+        )
+
+
 def test_request_rejects_blank_evidence_refs() -> None:
     with pytest.raises(ValidationError, match="evidence_refs"):
         OutboundExecutionRequest(

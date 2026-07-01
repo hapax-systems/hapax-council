@@ -509,7 +509,22 @@ def _freeze_value(name: str, value: Any) -> Any:
         return _freeze_mapping(name, value)
     if isinstance(value, list | tuple):
         return tuple(_freeze_value(name, nested_value) for nested_value in value)
-    return value
+    if isinstance(value, bool | str) or value is None:
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        raise ValueError(
+            f"{name} values must be finite JSON-compatible scalars; next action: "
+            "replace non-finite values with durable string, number, bool, or null evidence"
+        )
+    raise ValueError(
+        f"{name} values must be JSON-compatible immutable evidence; next action: "
+        "replace mutable or non-JSON values with durable string, number, bool, null, "
+        "list, or object evidence"
+    )
 
 
 def _thaw_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
