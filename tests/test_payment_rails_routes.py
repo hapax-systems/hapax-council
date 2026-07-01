@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -125,6 +126,122 @@ def refusal_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     monkeypatch.setattr(writer_mod, "DEFAULT_LOG_PATH", log_path)
     return log_path.parent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "rail", "receiver_name", "headers", "payload"),
+    [
+        (
+            "/api/payment-rails/open-collective",
+            "open-collective",
+            "OpenCollectiveRailReceiver",
+            {"X-Open-Collective-Activity-Id": "oc-receipt-first"},
+            {"type": "order.processed", "data": {"id": "oc-receipt-first"}},
+        ),
+        (
+            "/api/payment-rails/stripe-payment-link",
+            "stripe-payment-link",
+            "StripePaymentLinkRailReceiver",
+            {},
+            {"id": "evt_receipt_first", "type": "payment_intent.succeeded"},
+        ),
+        (
+            "/api/payment-rails/ko-fi",
+            "ko-fi",
+            "KoFiRailReceiver",
+            {},
+            {
+                "type": "Donation",
+                "message_type": "Donation",
+                "kofi_transaction_id": "kofi-receipt-first",
+            },
+        ),
+        (
+            "/api/payment-rails/patreon",
+            "patreon",
+            "PatreonRailReceiver",
+            {
+                "X-Patreon-Event": "members:pledge:create",
+                "X-Patreon-Webhook-Id": "patreon-receipt-first",
+            },
+            {"data": {"id": "member-receipt-first"}, "type": "member"},
+        ),
+        (
+            "/api/payment-rails/buy-me-a-coffee",
+            "buy-me-a-coffee",
+            "BuyMeACoffeeRailReceiver",
+            {},
+            {"type": "supporter.created", "event_id": "bmac-receipt-first"},
+        ),
+        (
+            "/api/payment-rails/mercury",
+            "mercury",
+            "MercuryRailReceiver",
+            {},
+            {"type": "transaction.created", "data": {"id": "mercury-receipt-first"}},
+        ),
+        (
+            "/api/payment-rails/modern-treasury",
+            "modern-treasury",
+            "ModernTreasuryRailReceiver",
+            {},
+            {
+                "event": "incoming_payment_detail.created",
+                "data": {"id": "mt-receipt-first"},
+            },
+        ),
+        (
+            "/api/payment-rails/treasury-prime",
+            "treasury-prime",
+            "TreasuryPrimeRailReceiver",
+            {},
+            {"event": "incoming_ach.create", "data": {"id": "tp-receipt-first"}},
+        ),
+    ],
+)
+async def test_all_webhook_routes_use_private_receipt_first_idempotency(
+    path: str,
+    rail: str,
+    receiver_name: str,
+    headers: dict[str, str],
+    payload: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import logos.api.routes.payment_rails as mod
+
+    calls: list[dict[str, object]] = []
+
+    class _DuplicateReceiver:
+        def __init__(self, *, idempotency_store: object) -> None:
+            self.idempotency_store = idempotency_store
+
+        def ingest_webhook(self, *_args, **_kwargs):
+            return None
+
+    def _receipt_first_store(_request, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(resource_receipt_ref=f"private-receipt-ref:{rail}")
+
+    monkeypatch.setattr(mod, receiver_name, _DuplicateReceiver)
+    monkeypatch.setattr(mod, "_receipt_first_idempotency_store", _receipt_first_store)
+    monkeypatch.setattr(mod, "_get_idempotency_store", lambda _rail: object())
+
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            path,
+            content=raw,
+            headers={"Content-Type": "application/json", **headers},
+        )
+
+    assert response.status_code == 200, response.text
+    assert calls and calls[0]["rail"] == rail
+    assert calls[0]["raw_body"] == raw
+    body = response.json()
+    assert body["status"] == "duplicate"
+    assert "resource_receipt_ref" not in body
 
 
 # ---------------------------------------------------------------------------

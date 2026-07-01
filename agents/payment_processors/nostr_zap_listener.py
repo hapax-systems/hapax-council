@@ -141,18 +141,18 @@ class NostrZapListener:
         Reconnects with exponential backoff on any disconnect. Stops
         when ``stop()`` is called.
         """
-        if (
-            record_external_api_poll_receipt(
-                rail="nostr_zap",
-                endpoint=f"SUBSCRIBE {relay_url}",
-                downstream_action="websockets.connect",
-            )
-            is None
-        ):
-            zap_relay_errors_total.labels(kind="resource_receipt").inc()
-            return
         backoff = DEFAULT_BACKOFF_S
         while not self._stop_evt.is_set():
+            if (
+                record_external_api_poll_receipt(
+                    rail="nostr_zap",
+                    endpoint=f"SUBSCRIBE {relay_url}",
+                    downstream_action="websockets.connect",
+                )
+                is None
+            ):
+                zap_relay_errors_total.labels(kind="resource_receipt").inc()
+                return
             try:
                 ws = await self._open_websocket(relay_url)
             except Exception as e:  # noqa: BLE001

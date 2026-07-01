@@ -232,6 +232,61 @@ class TestNostrZapListener:
         assert [receipt.operation.value for receipt in receipts] == ["external_api_poll"]
         assert receipts[0].rail == "nostr_zap"
 
+    @pytest.mark.asyncio
+    async def test_reconnect_records_fresh_subscription_resource_receipt(
+        self, tmp_path, monkeypatch
+    ):
+        import agents.payment_processors.resource_receipts as resource_receipts
+
+        receipt_log = tmp_path / "resource-receipts.jsonl"
+        monkeypatch.setattr(
+            resource_receipts,
+            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+            receipt_log,
+        )
+
+        class _DisconnectingWebSocket:
+            def __init__(self, listener: NostrZapListener) -> None:
+                self._listener = listener
+
+            async def send(self, _message: str) -> None:
+                return None
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                self._listener.stop()
+                raise RuntimeError("relay dropped connection")
+
+            async def close(self) -> None:
+                return None
+
+        calls = {"count": 0}
+
+        async def _open(_relay_url: str):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise RuntimeError("transient connect failure")
+            return _DisconnectingWebSocket(listener)
+
+        async def _no_sleep(_seconds: float) -> None:
+            return None
+
+        listener = NostrZapListener(npub_hex="abcd" * 16, websocket_factory=_open)
+        monkeypatch.setattr(listener, "_backoff_sleep", _no_sleep)
+
+        await listener._consume_relay("wss://relay.example")  # noqa: SLF001
+
+        from agents.payment_processors.resource_receipts import tail_resource_receipts
+
+        receipts = tail_resource_receipts(log_path=receipt_log)
+        assert [receipt.operation.value for receipt in receipts] == [
+            "external_api_poll",
+            "external_api_poll",
+        ]
+        assert calls["count"] == 2
+
     def test_handle_relay_message_dedupes(self, tmp_path, monkeypatch):
         import agents.payment_processors.event_log as ev_log
 
