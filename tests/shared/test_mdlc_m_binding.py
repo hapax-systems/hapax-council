@@ -239,6 +239,53 @@ def test_malformed_native_score_result_gate_refs_fail_closed(
     assert result.score_result is None
 
 
+def test_native_lit_score_result_without_evidence_fails_closed() -> None:
+    m_binding = _binding_module()
+    native_shape = SimpleNamespace(
+        scorer="mdlc_measure",
+        scorer_version=1,
+        status=GateStatus.LIT,
+        verdict=SimpleNamespace(value="corroborated"),
+        gate_result=GateResult(
+            status=GateStatus.LIT,
+            verdict=True,
+            reason="corroborated_realized_return",
+            evidence_refs=(),
+        ),
+        reason="corroborated_realized_return",
+        evidence_refs=(),
+        refusal_reason=None,
+    )
+
+    result = m_binding.bind_m_result(native_shape)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
+    assert "LIT evidence refs are required" in result.reason
+    assert result.score_result is None
+
+
+def test_binding_result_rejects_malformed_direct_evidence_refs() -> None:
+    m_binding = _binding_module()
+
+    with pytest.raises(TypeError, match="evidence refs must be a string sequence"):
+        m_binding.MonDLCBindingResult(
+            binding=m_binding.MONDLC_M_BINDING_NAME,
+            binding_version=m_binding.MONDLC_M_BINDING_VERSION,
+            status=GateStatus.LIT,
+            verdict="corroborated",
+            gate_result=GateResult(
+                status=GateStatus.LIT,
+                verdict=True,
+                reason="corroborated_realized_return",
+                evidence_refs=("rail:event:stub",),
+            ),
+            reason="corroborated_realized_return",
+            refusal_reason=None,
+            evidence_refs=("rail:event:stub", object()),
+        )
+
+
 def test_measurement_binding_delegates_to_scorer(monkeypatch: pytest.MonkeyPatch) -> None:
     m_binding = _binding_module()
     calls: list[tuple[Any, Any, str]] = []

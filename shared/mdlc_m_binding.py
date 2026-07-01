@@ -102,7 +102,7 @@ class MonDLCBindingResult:
             raise TypeError("MonDLCBindingResult.status must be a GateStatus identity")
         if not isinstance(self.gate_result, GateResult):
             raise TypeError("MonDLCBindingResult.gate_result must be a GateResult identity")
-        object.__setattr__(self, "evidence_refs", _string_tuple(self.evidence_refs))
+        object.__setattr__(self, "evidence_refs", _strict_native_ref_tuple(self.evidence_refs))
         object.__setattr__(self, "rail_results", tuple(self.rail_results))
 
     @property
@@ -259,6 +259,8 @@ def _validate_native_score_result(
     if gate_result.verdict is not expected_gate_verdict:
         raise ValueError("native score_result gate verdict does not match verdict")
     gate_evidence_refs = _strict_native_ref_tuple(gate_result.evidence_refs)
+    if status is GateStatus.LIT and not evidence_refs:
+        raise ValueError("native score_result LIT evidence refs are required")
     if gate_evidence_refs != evidence_refs:
         raise ValueError("native score_result evidence refs do not match gate result")
 
@@ -549,20 +551,6 @@ def _value(value: Any) -> str:
     if hasattr(value, "value"):
         return str(value.value)
     return str(value)
-
-
-def _string_tuple(value: Any) -> tuple[str, ...]:
-    if value is None:
-        return ()
-    if isinstance(value, str):
-        return (value.strip(),) if value.strip() else ()
-    if not isinstance(value, Sequence):
-        return ()
-    refs: list[str] = []
-    for item in value:
-        if isinstance(item, str) and item.strip():
-            refs.append(item.strip())
-    return tuple(refs)
 
 
 def _load_measure_module() -> ModuleType:
