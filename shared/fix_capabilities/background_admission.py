@@ -285,7 +285,7 @@ def admit_background_capability(
             receipt_dir=receipt_dir,
             now=now,
         )
-        model_blocker = _provider_model_binding_blocker(
+        model_blocker = _model_binding_blocker(
             sources.registry,
             route_id=normalized_route_id,
             model_alias=model_alias,
@@ -595,14 +595,14 @@ def _model_descriptor(registry: Any, route_id: str) -> dict[str, object]:
     }
 
 
-def _provider_model_binding_blocker(
+def _model_binding_blocker(
     registry: Any,
     *,
     route_id: str,
     model_alias: str | None,
     mutation_surface: str,
 ) -> tuple[str, str] | None:
-    if mutation_surface != "provider_spend" or model_alias is None:
+    if model_alias is None:
         return None
     requested = model_alias.strip()
     if not requested:
@@ -639,6 +639,13 @@ def _provider_model_binding_blocker(
     allowed.discard("")
     if requested in allowed:
         return None
+    if mutation_surface != "provider_spend":
+        return (
+            "model_descriptor_mismatch:"
+            f"route={route_id} requested_model={requested} "
+            f"route_models={','.join(sorted(allowed)) or 'none'}",
+            "model_descriptor_mismatch",
+        )
     return (
         "provider_model_descriptor_mismatch:"
         f"route={route_id} requested_model={requested} "
