@@ -180,6 +180,14 @@ def test_invalid_optional_counterparty_id_refuses_with_counterparty_reason() -> 
     assert result.refusal_reason is G1CounterpartyRefusalReason.INVALID_COUNTERPARTY
 
 
+def test_native_counterparty_constructor_rejects_invalid_counterparty_id() -> None:
+    with pytest.raises(ValueError, match="optional field"):
+        MonDLCCounterparty(
+            counterparty_class=MonDLCCounterpartyClass.INSTITUTION,
+            counterparty_id=123,  # type: ignore[arg-type]
+        )
+
+
 def test_invalid_evidence_refs_has_specific_refusal_reason() -> None:
     result = verify_g1_counterparty(_counterparty(evidence_refs="not-a-sequence"))
 
@@ -213,6 +221,25 @@ def test_missing_evidence_refs_are_optional() -> None:
     assert result.evidence_refs == (
         "counterparty-class:institution",
         "counterparty:no-refs",
+    )
+
+
+def test_auto_counterparty_evidence_refs_are_deduplicated() -> None:
+    result = verify_g1_counterparty(
+        _counterparty(
+            counterparty_class="institution",
+            evidence_refs=(
+                "counterparty-class:institution",
+                "counterparty:test-market-maker",
+                "counterparty-registry:test-market-maker",
+            ),
+        )
+    )
+
+    assert result.evidence_refs == (
+        "counterparty-class:institution",
+        "counterparty:test-market-maker",
+        "counterparty-registry:test-market-maker",
     )
 
 
