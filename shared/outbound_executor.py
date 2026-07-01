@@ -7,6 +7,7 @@ from typing import Any, Final
 from pydantic import Field, field_validator
 
 from shared.resource_capability import (
+    FORBIDDEN_PROVIDER_WRITE_SCOPES,
     AccountFederationRegistry,
     AuthorityCeiling,
     StrictModel,
@@ -174,7 +175,18 @@ class OutboundExecutor:
                 "add a governed send_scope to the registry or choose an already authorized scope",
             )
 
-        # 4. Default token fallback check
+        # 4. Forbidden Action check
+        if (
+            request.scope in FORBIDDEN_PROVIDER_WRITE_SCOPES
+            or request.scope in self.registry.forbidden_actions
+        ):
+            return _refuse(
+                "forbidden_action",
+                f"Outbound execution refused: scope {request.scope} is a forbidden action",
+                "remove the forbidden action or route through a new governed authority case",
+            )
+
+        # 5. Default token fallback check
         if request.use_default_token:
             return _refuse(
                 "default_token_fallback",
@@ -193,14 +205,6 @@ class OutboundExecutor:
                 "default_token_fallback",
                 "Outbound execution refused: no fallback allowed and secret key is a placeholder or empty",
                 "replace the placeholder with a governed pass or secret reference",
-            )
-
-        # 5. Forbidden Action check
-        if request.scope in self.registry.forbidden_actions:
-            return _refuse(
-                "forbidden_action",
-                f"Outbound execution refused: scope {request.scope} is a forbidden action",
-                "remove the forbidden action or route through a new governed authority case",
             )
 
         # 6. Venue Allowlist check

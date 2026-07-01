@@ -456,6 +456,26 @@ def test_forbidden_action_blocks(base_registry: AccountFederationRegistry) -> No
     assert receipt.refusal_reason == "forbidden_action"
 
 
+def test_global_forbidden_write_scope_blocks(base_registry: AccountFederationRegistry) -> None:
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=100.0,
+        position_cap=500.0,
+        registry=base_registry,
+    )
+
+    request = OutboundExecutionRequest(
+        scope="gmail_send_outside_expected_correspondence",
+        venue="internal",
+        amount=10.0,
+    )
+
+    receipt = executor.execute(request)
+    assert receipt.status == "refused"
+    assert receipt.refusal_reason == "forbidden_action"
+
+
 def test_venue_allowlist_blocks(base_registry: AccountFederationRegistry) -> None:
     executor = OutboundExecutor(
         authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
