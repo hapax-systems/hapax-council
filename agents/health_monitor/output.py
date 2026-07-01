@@ -10,11 +10,18 @@ import os
 import tempfile
 from collections import Counter
 
+from shared.fix_capabilities.background_admission import (
+    BackgroundCapabilityAdmission,
+    admit_background_capability,
+)
+
 from .constants import PROFILES_DIR
 from .models import HealthReport, Status
 from .utils import run_cmd
 
 log = logging.getLogger("agents.health_monitor")
+LEGACY_FIX_ROUTE_ID_ENV = "HAPAX_HEALTH_MONITOR_LEGACY_FIX_ROUTE_ID"
+LEGACY_FIX_ROUTE_ID = "local_tool.local.worker"
 
 # ── Formatters ───────────────────────────────────────────────────────────────
 
@@ -107,6 +114,18 @@ async def run_fixes(report: HealthReport, yes: bool = False) -> int:
             print("Aborted.")
             return 0
 
+    admission = _admit_legacy_runtime_fixes()
+    if not admission.admitted:
+        reason = admission.denial_summary()
+        log.warning(
+            "Legacy health remediation admission denied route=%s reason=%s",
+            admission.route_id,
+            reason,
+            extra={"background_capability": admission.metadata()},
+        )
+        print(f"Runtime remediation held by capability admission: {reason}")
+        return 0
+
     try:
         from agents._service_graph import remediation_order
 
@@ -132,6 +151,15 @@ async def run_fixes(report: HealthReport, yes: bool = False) -> int:
         count += 1
 
     return count
+
+
+def _admit_legacy_runtime_fixes() -> BackgroundCapabilityAdmission:
+    return admit_background_capability(
+        capability_name="health_monitor.legacy_remediation_shell",
+        route_id=os.environ.get(LEGACY_FIX_ROUTE_ID_ENV, LEGACY_FIX_ROUTE_ID),
+        mutation_surface="runtime",
+        quality_floor="deterministic_ok",
+    )
 
 
 async def run_fixes_v2(report: HealthReport, mode: str = "apply") -> int:

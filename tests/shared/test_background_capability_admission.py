@@ -322,7 +322,7 @@ def test_provider_model_call_admits_declared_gateway_alias(
     assert aliases["gemini-flash"]["model_id"] == "gemini-3.1-pro-preview"
 
 
-def test_fix_evaluator_model_call_admits_declared_gateway_alias(
+def test_fix_evaluator_model_call_refuses_alias_with_mismatched_paid_provider(
     tmp_path: Path,
 ) -> None:
     _write_provider_gateway_receipt(tmp_path)
@@ -341,12 +341,11 @@ def test_fix_evaluator_model_call_admits_declared_gateway_alias(
         write_receipt=False,
     )
 
-    assert admission.admitted is True
-    assert admission.policy_outcome == "launch"
-    aliases = {
-        alias["alias"]: alias for alias in admission.model_descriptor["provider_model_aliases"]
-    }
-    assert aliases["claude-sonnet"]["model_id"] == "claude-sonnet-4-6"
+    assert admission.admitted is False
+    assert admission.policy_outcome is None
+    assert admission.reason_codes == ("provider_alias_paid_provider_mismatch",)
+    assert "alias_provider=anthropic" in (admission.denied_reason or "")
+    assert "route_paid_provider=google" in (admission.denied_reason or "")
 
 
 def test_director_provider_model_call_refuses_undeclared_provider_gateway_model(

@@ -590,8 +590,18 @@ def _provider_model_binding_blocker(
     if model_fingerprint is not None:
         allowed.add(str(model_fingerprint).strip())
     for alias in getattr(route, "provider_model_aliases", ()):
-        allowed.add(str(alias.alias).strip())
-        allowed.add(str(alias.model_id).strip())
+        alias_keys = {str(alias.alias).strip(), str(alias.model_id).strip()}
+        if requested in alias_keys:
+            route_provider = str(getattr(route, "paid_provider", "") or "").strip()
+            alias_provider = str(alias.provider).strip()
+            if route_provider and alias_provider and alias_provider != route_provider:
+                return (
+                    "provider_alias_paid_provider_mismatch:"
+                    f"route={route_id} requested_model={requested} "
+                    f"alias_provider={alias_provider} route_paid_provider={route_provider}",
+                    "provider_alias_paid_provider_mismatch",
+                )
+            return None
     allowed.discard("")
     if requested in allowed:
         return None
