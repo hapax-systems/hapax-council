@@ -41,8 +41,9 @@ from agents.operator_awareness.state import PaymentEvent
 from agents.payment_processors.event_log import append_event
 from agents.payment_processors.refusal_annex import emit_rail_refusal
 from agents.payment_processors.resource_receipts import (
+    commit_prepared_resource_receipt,
+    prepare_payment_event_resource_receipt,
     record_external_api_poll_receipt,
-    record_payment_event_resource_receipt,
 )
 from agents.payment_processors.secrets import load_liberapay_credentials
 from shared.chronicle import ChronicleEvent, current_otel_ids, record
@@ -190,17 +191,19 @@ class LiberapayReceiver:
             event = _liberapay_payin_to_event(raw, payin_id)
             if event is None:
                 continue
-            receipt_ref = record_payment_event_resource_receipt(
+            receipt_ref, receipt = prepare_payment_event_resource_receipt(
                 rail="liberapay",
                 external_id=payin_id,
                 event_kind="completed_payin",
                 downstream_action="payment_event_log.append_event",
             )
-            if receipt_ref is None:
+            event = event.model_copy(update={"resource_receipt_ref": receipt_ref})
+            if not append_event(event):
+                liberapay_poll_errors_total.labels(kind="payment_event_append").inc()
+                continue
+            if commit_prepared_resource_receipt(receipt) is None:
                 liberapay_poll_errors_total.labels(kind="resource_receipt").inc()
                 continue
-            event = event.model_copy(update={"resource_receipt_ref": receipt_ref})
-            append_event(event)
             _record_chronicle(event)
             liberapay_receipts_total.inc()
             self._seen_ids.add(payin_id)

@@ -342,6 +342,29 @@ def record_payment_event_resource_receipt(
     downstream_action: str,
     log_path: Path | None = None,
 ) -> str | None:
+    _ref, receipt = prepare_payment_event_resource_receipt(
+        rail=rail,
+        external_id=external_id,
+        event_kind=event_kind,
+        downstream_action=downstream_action,
+    )
+    return _append_and_ref(receipt, log_path=log_path)
+
+
+def prepare_payment_event_resource_receipt(
+    *,
+    rail: str,
+    external_id: str | None,
+    event_kind: str,
+    downstream_action: str,
+) -> tuple[str, MoneyRailResourceReceipt]:
+    """Build a payment-event receipt ref before committing the receipt.
+
+    Receive rails use this to write the payment event with its future receipt
+    ref first, then commit the receipt only after the event append succeeds.
+    That prevents payment-event receipts from outliving failed event-log writes.
+    """
+
     receipt = build_resource_receipt(
         rail=rail,
         operation=MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
@@ -354,6 +377,14 @@ def record_payment_event_resource_receipt(
         ),
         resource_provenance=("resource:payment_event_log",),
     )
+    return receipt_reference(receipt), receipt
+
+
+def commit_prepared_resource_receipt(
+    receipt: MoneyRailResourceReceipt,
+    *,
+    log_path: Path | None = None,
+) -> str | None:
     return _append_and_ref(receipt, log_path=log_path)
 
 
@@ -476,6 +507,8 @@ __all__ = [
     "record_external_api_poll_receipt",
     "record_ingress_resource_receipt",
     "record_payment_event_resource_receipt",
+    "prepare_payment_event_resource_receipt",
+    "commit_prepared_resource_receipt",
     "require_resource_receipt",
     "resource_receipt_exists",
     "resource_receipt_matches",
