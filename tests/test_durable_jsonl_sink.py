@@ -13,6 +13,7 @@ from shared.durable_jsonl_sink import (
     GENESIS_HASH,
     DurableJsonlSink,
     DurableSinkAppendError,
+    DurableSinkChainError,
     DurableSinkPathError,
     DurableSinkValueError,
     validate_chain,
@@ -377,6 +378,15 @@ def test_validate_chain_rejects_invalid_stream_id_argument(tmp_path: Path) -> No
         validate_chain(tmp_path / "unused.jsonl", stream_id="../bad")
 
 
+def test_chain_validation_exception_includes_next_action(tmp_path: Path) -> None:
+    path = tmp_path / "payment-event.jsonl"
+    path.write_text("{not json\n", encoding="utf-8")
+    result = validate_chain(path, stream_id="payment-event")
+
+    with pytest.raises(DurableSinkChainError, match="next action"):
+        result.raise_for_issues()
+
+
 def test_path_for_stream_rejects_invalid_stream_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -429,3 +439,103 @@ def test_partial_append_rolls_back_and_raises(
     assert path.read_text(encoding="utf-8") == original
     assert truncations == [len(original.encode("utf-8"))]
     assert validate_chain(path, stream_id="payment-event").valid is True
+
+
+def test_zero_progress_append_rolls_back_and_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    sink.append(
+        stream_id="payment-event",
+        data_class="financial_receipt",
+        source_receipt_ref="receipt://payment/1",
+        payload={"idx": 1},
+        timestamp="2026-07-01T00:00:00Z",
+    )
+    path = sink.path_for_stream("payment-event")
+    original = path.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(sink_mod.os, "write", lambda _fd, _data: 0)
+
+    with pytest.raises(DurableSinkAppendError) as exc_info:
+        sink.append(
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/2",
+            payload={"idx": 2},
+            timestamp="2026-07-01T00:00:01Z",
+        )
+
+    assert "storage write errors" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, DurableSinkAppendError)
+    assert "no progress" in str(exc_info.value.__cause__)
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_partial_append_raises_even_when_rollback_truncate_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    sink.append(
+        stream_id="payment-event",
+        data_class="financial_receipt",
+        source_receipt_ref="receipt://payment/1",
+        payload={"idx": 1},
+        timestamp="2026-07-01T00:00:00Z",
+    )
+    path = sink.path_for_stream("payment-event")
+    original = path.read_text(encoding="utf-8")
+    real_write = sink_mod.os.write
+    calls = 0
+    truncations: list[int] = []
+
+    def flaky_write(fd: int, data: bytes | memoryview) -> int:
+        nonlocal calls
+        if calls == 0:
+            calls += 1
+            return real_write(fd, data[: max(1, len(data) // 2)])
+        raise OSError("simulated device write failure")
+
+    def failing_ftruncate(_fd: int, length: int) -> None:
+        truncations.append(length)
+        raise OSError("simulated rollback failure")
+
+    monkeypatch.setattr(sink_mod.os, "write", flaky_write)
+    monkeypatch.setattr(sink_mod.os, "ftruncate", failing_ftruncate)
+
+    with pytest.raises(DurableSinkAppendError, match="validate the stream chain"):
+        sink.append(
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/2",
+            payload={"idx": 2},
+            timestamp="2026-07-01T00:00:01Z",
+        )
+
+    assert truncations == [len(original.encode("utf-8"))]
+    assert validate_chain(path, stream_id="payment-event").valid is False
+
+
+def test_directory_fsync_failure_has_next_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closed: list[int] = []
+
+    def fake_open(_path: Any, _flags: int, _mode: int = 0o777) -> int:
+        return 99
+
+    def failing_fsync(fd: int) -> None:
+        assert fd == 99
+        raise OSError("simulated fsync failure")
+
+    def recording_close(fd: int) -> None:
+        closed.append(fd)
+
+    monkeypatch.setattr(sink_mod.os, "open", fake_open)
+    monkeypatch.setattr(sink_mod.os, "fsync", failing_fsync)
+    monkeypatch.setattr(sink_mod.os, "close", recording_close)
+
+    with pytest.raises(DurableSinkAppendError, match="fsync durable sink directory.*next action"):
+        sink_mod._fsync_directory(tmp_path)
+
+    assert closed == [99]

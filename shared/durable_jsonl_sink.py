@@ -45,7 +45,11 @@ class DurableSinkChainError(RuntimeError):
     def __init__(self, result: ChainValidationResult) -> None:
         self.result = result
         detail = "; ".join(issue.message for issue in result.issues)
-        super().__init__(detail or "durable sink chain validation failed")
+        message = detail or "durable sink chain validation failed"
+        super().__init__(
+            f"{message}; next action: stop consuming this stream, compare it with "
+            "the last trusted tail anchor, and repair or quarantine the corrupt file"
+        )
 
 
 @dataclass(frozen=True)
@@ -185,6 +189,9 @@ class DurableJsonlSink:
         lock_fd = os.open(_lock_path(target), os.O_WRONLY | os.O_CREAT, 0o600)
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            # Phase 1 intentionally revalidates the whole stream before each
+            # append. Later Stage0 consumers can add persisted tail anchors;
+            # until then, trusting fresh on-disk evidence is the safer tradeoff.
             validation = validate_chain(target, stream_id=stream_id)
             validation.raise_for_issues()
             row = make_row(
