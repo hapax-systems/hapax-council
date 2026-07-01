@@ -12,6 +12,7 @@ from shared.chronicle import (
     RETENTION_S,
     ChronicleEvent,
     current_otel_ids,
+    is_stage0_event,
     query,
     record,
     trim,
@@ -665,3 +666,106 @@ class TestLegacyJsonlMixedFile:
         modern_only = query(since=0.0, aperture_ref="aperture.live", path=p)
         assert len(modern_only) == 1
         assert modern_only[0].source == "modern"
+
+
+class TestDurableSinkIntegration:
+    """Stage0 chronicle rows are mirrored to the durable sink before shm."""
+
+    def _configure_durable_sink(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[Path, Path]:
+        import shared.durable_jsonl_sink as sink_mod
+
+        durable_root = tmp_path / "durable"
+        durable_root.mkdir()
+        monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(durable_root))
+        monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "btrfs")
+
+        chronicle_file = tmp_path / "shm" / "events.jsonl"
+        monkeypatch.setattr("shared.chronicle.CHRONICLE_FILE", chronicle_file)
+        return durable_root, chronicle_file
+
+    def test_is_stage0_event(self) -> None:
+        assert is_stage0_event(_make_event(source="gate_log"))
+        assert is_stage0_event(_make_event(source="narration_triad"))
+        assert is_stage0_event(_make_event(source="payment_processors.lightning"))
+        assert is_stage0_event(_make_event(source="engine", event_type="payment.received"))
+        assert is_stage0_event(_make_event(source="engine", event_type="gate.allow"))
+        assert not is_stage0_event(_make_event(source="engine", event_type="rule.matched"))
+
+    def test_record_writes_durable_before_volatile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shared.durable_jsonl_sink as sink_mod
+
+        durable_root, chronicle_file = self._configure_durable_sink(tmp_path, monkeypatch)
+        stage0 = _make_event(source="gate_log", event_type="gate.allow")
+        record(stage0)
+
+        sink = sink_mod.DurableJsonlSink(durable_root)
+        durable_path = sink.path_for_stream("chronicle")
+        validation = sink_mod.validate_chain(durable_path, stream_id="chronicle")
+        assert validation.valid is True
+        assert validation.row_count == 1
+        assert chronicle_file.exists()
+
+        non_stage0 = _make_event(source="engine", event_type="rule.matched")
+        record(non_stage0)
+        assert sink_mod.validate_chain(durable_path, stream_id="chronicle").row_count == 1
+
+    def test_missing_durable_root_refuses_before_volatile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shared.durable_jsonl_sink as sink_mod
+
+        missing_root = tmp_path / "missing-durable-root"
+        monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(missing_root))
+        chronicle_file = tmp_path / "shm" / "events.jsonl"
+        monkeypatch.setattr("shared.chronicle.CHRONICLE_FILE", chronicle_file)
+
+        with pytest.raises(sink_mod.DurableSinkPathError):
+            record(_make_event(source="gate_log", event_type="gate.allow"))
+        assert not chronicle_file.exists()
+
+    def test_query_reads_durable_after_volatile_reboot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._configure_durable_sink(tmp_path, monkeypatch)
+        stage0 = _make_event(source="gate_log", event_type="gate.allow", ts=time.time())
+        record(stage0)
+
+        assert [ev.event_id for ev in query(since=0.0)] == [stage0.event_id]
+
+        import shared.chronicle as chronicle_mod
+
+        chronicle_mod.CHRONICLE_FILE.unlink()
+        assert [ev.event_id for ev in query(since=0.0)] == [stage0.event_id]
+
+    def test_trim_leaves_durable_rows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._configure_durable_sink(tmp_path, monkeypatch)
+        old_stage0 = _make_event(
+            source="gate_log",
+            event_type="gate.allow",
+            ts=time.time() - 24 * 3600,
+        )
+        record(old_stage0)
+
+        import shared.chronicle as chronicle_mod
+
+        trim(retention_s=RETENTION_S)
+        assert chronicle_mod.CHRONICLE_FILE.read_text(encoding="utf-8") == ""
+        assert [ev.event_id for ev in query(since=0.0)] == [old_stage0.event_id]
+
+    def test_custom_path_stays_volatile_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shared.durable_jsonl_sink as sink_mod
+
+        durable_root, _chronicle_file = self._configure_durable_sink(tmp_path, monkeypatch)
+        custom_path = tmp_path / "custom_events.jsonl"
+        record(_make_event(source="gate_log", event_type="gate.allow"), path=custom_path)
+
+        assert custom_path.exists()
+        assert not sink_mod.DurableJsonlSink(durable_root).path_for_stream("chronicle").exists()
