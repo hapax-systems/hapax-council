@@ -890,6 +890,7 @@ def _admit_director_llm():
         capability_name="studio.director.llm",
         route_id=configured_route,
         model_alias=_resolved_director_model(DIRECTOR_MODEL),
+        request_model_alias=_request_director_model(DIRECTOR_MODEL),
         mutation_surface=mutation_surface,
         quality_floor=quality_floor,
     )
@@ -4419,7 +4420,10 @@ class DirectorLoop:
                 BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
             )
             return ""
-        request_model = _request_director_model(DIRECTOR_MODEL)
+        # Bind the alias frozen at admission — never re-resolve post-admission.
+        request_model = str(
+            admission.request_model_alias or _request_director_model(DIRECTOR_MODEL)
+        )
 
         content: list[dict] = []
         # Only forward images when the configured route is known multimodal.

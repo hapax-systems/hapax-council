@@ -438,8 +438,9 @@ def _default_llm_fn(prompt: str) -> str:
     litellm_url = "http://localhost:4000/v1/chat/completions"
     try:
         model_alias = os.environ.get(STRUCTURAL_MODEL_ENV, "local-fast")
-        request_model = _request_structural_model(model_alias)
         admission = _admit_structural_llm(model_alias)
+        # Bind the alias frozen at admission — never re-resolve post-admission.
+        request_model = str(admission.request_model_alias or _request_structural_model(model_alias))
         if not admission.admitted:
             log.warning(
                 "Structural director admission denied route=%s reason=%s; "
@@ -519,6 +520,7 @@ def _admit_structural_llm(model_alias: str) -> BackgroundCapabilityAdmission:
         capability_name="studio.structural_director.llm",
         route_id=configured_route,
         model_alias=resolved_model,
+        request_model_alias=_request_structural_model(model_alias),
         mutation_surface=mutation_surface,
         quality_floor=quality_floor,
     )

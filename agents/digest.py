@@ -209,15 +209,20 @@ def _get_digest_agent(admission: BackgroundCapabilityAdmission) -> Agent:
     if not admission.admitted:
         raise RuntimeError("digest agent construction requires admitted capability")
     global _digest_agent, _digest_agent_model_id
-    selected = _selected_digest_model_id()
+    # Bind the alias FROZEN AT ADMISSION — never a re-resolved (stimmung/env
+    # mutable) value — and verify it still normalizes to the admitted
+    # served-leaf identity. The residual LiteLLM-side alias-remap window is
+    # bounded by the fail-closed alias-evidence freshness check at admission
+    # and closed live by the post-call witness (litellm-post-call-witness task).
+    request_alias = str(admission.request_model_alias or admission.model_alias or "")
     admitted_identity = str(admission.model_alias or "")
-    if _digest_admission_model_id(selected) != admitted_identity:
+    if not request_alias or _digest_admission_model_id(request_alias) != admitted_identity:
         raise RuntimeError(
-            f"digest_model_admission_mismatch:selected={selected} admitted={admitted_identity}"
+            f"digest_model_admission_mismatch:request={request_alias} admitted={admitted_identity}"
         )
-    if _digest_agent is None or _digest_agent_model_id != selected:
+    if _digest_agent is None or _digest_agent_model_id != request_alias:
         agent = Agent(
-            get_model(selected),
+            get_model(request_alias),
             system_prompt=get_system_prompt_fragment("digest") + "\n\n" + SYSTEM_PROMPT,
             output_type=Digest,
         )
@@ -226,7 +231,7 @@ def _get_digest_agent(admission: BackgroundCapabilityAdmission) -> Agent:
         for _tool_fn in get_axiom_tools():
             agent.tool(_tool_fn)
         _digest_agent = agent
-        _digest_agent_model_id = selected
+        _digest_agent_model_id = request_alias
     return _digest_agent
 
 
@@ -346,6 +351,7 @@ def _admit_digest_synthesis() -> BackgroundCapabilityAdmission:
         capability_name="agents.digest.synthesis",
         route_id=configured_route,
         model_alias=admission_model_id,
+        request_model_alias=model_id,
         mutation_surface=mutation_surface,
         quality_floor=quality_floor,
     )

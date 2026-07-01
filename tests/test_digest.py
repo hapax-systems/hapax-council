@@ -438,18 +438,59 @@ def test_digest_denied_admission_construction_raises():
 
 
 def test_digest_admission_model_mismatch_fails_closed():
-    """If adaptive selection shifted after admission, construction refuses to
-    bind a model other than the admitted one (admit-A/bind-B TOCTOU)."""
+    """Construction refuses to bind when the admission's frozen request alias
+    no longer normalizes to the admitted served-leaf identity (admit-A/bind-B)."""
     from agents.digest import _get_digest_agent
 
+    mismatched = BackgroundCapabilityAdmission(
+        capability_name="agents.digest.synthesis",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        request_model_alias="some-other-model",
+        admitted=True,
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )
     with (
-        patch("agents.digest._selected_digest_model_id", return_value="some-other-model"),
         patch("agents.digest.get_model") as mock_get_model,
         pytest.raises(RuntimeError, match="digest_model_admission_mismatch"),
     ):
-        _get_digest_agent(_admitted_digest_admission())
+        _get_digest_agent(mismatched)
 
     mock_get_model.assert_not_called()
+
+
+def test_digest_agent_binds_the_admission_frozen_alias():
+    """Construction binds get_model(admission.request_model_alias) verbatim —
+    never a re-resolved (stimmung/env mutable) alias — after verifying it still
+    normalizes to the admitted served-leaf identity."""
+    import agents.digest as digest_module
+    from agents.digest import _get_digest_agent
+
+    admission = BackgroundCapabilityAdmission(
+        capability_name="agents.digest.synthesis",
+        route_id="local_tool.local.worker",
+        model_alias="command-r-08-2024",
+        request_model_alias="local-fast",
+        admitted=True,
+        mutation_surface="none",
+        quality_floor="deterministic_ok",
+    )
+    with (
+        patch("agents.digest.get_model") as mock_get_model,
+        patch("agents.digest.Agent") as mock_agent_cls,
+        patch("agents.digest.get_context_tools", return_value=[]),
+        patch("agents.digest.get_axiom_tools", return_value=[]),
+        patch("agents.digest._selected_digest_model_id") as mock_selected,
+    ):
+        agent = _get_digest_agent(admission)
+
+    assert agent is mock_agent_cls.return_value
+    mock_get_model.assert_called_once_with("local-fast")
+    mock_selected.assert_not_called()  # no post-admission re-resolution
+    # reset the module cache so other tests construct fresh
+    digest_module._digest_agent = None
+    digest_module._digest_agent_model_id = None
 
 
 def test_digest_module_import_binds_no_model():

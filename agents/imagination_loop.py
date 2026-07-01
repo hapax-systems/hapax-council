@@ -324,8 +324,14 @@ class ImaginationLoop:
 
             from agents._config import get_model
 
+            # Bind the alias frozen at admission — never re-resolve here.
             self._agent = Agent(
-                get_model(_request_imagination_model(IMAGINATION_MODEL)),
+                get_model(
+                    str(
+                        admission.request_model_alias
+                        or _request_imagination_model(IMAGINATION_MODEL)
+                    )
+                ),
                 output_type=ImaginationFragment,
                 system_prompt=IMAGINATION_SYSTEM_PROMPT,
             )
@@ -347,8 +353,14 @@ class ImaginationLoop:
 
             from agents._config import get_model
 
+            # Bind the alias frozen at admission — never re-resolve here.
             self._text_agent = Agent(
-                get_model(_request_imagination_model(IMAGINATION_MODEL)),
+                get_model(
+                    str(
+                        admission.request_model_alias
+                        or _request_imagination_model(IMAGINATION_MODEL)
+                    )
+                ),
                 system_prompt=IMAGINATION_SYSTEM_PROMPT,
             )
         return self._text_agent
@@ -546,6 +558,7 @@ def _admit_imagination_llm() -> BackgroundCapabilityAdmission:
         capability_name="imagination.loop.llm",
         route_id=configured_route,
         model_alias=resolved_model,
+        request_model_alias=_request_imagination_model(IMAGINATION_MODEL),
         mutation_surface=mutation_surface,
         quality_floor=quality_floor,
     )

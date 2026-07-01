@@ -65,6 +65,11 @@ class BackgroundCapabilityAdmission:
     capability_name: str
     route_id: str
     model_alias: str | None = None
+    # The exact request-time model name callers may bind (e.g. a LiteLLM alias
+    # like "local-fast"), frozen at admission so no call site re-resolves a
+    # mutable alias between admission and construction. model_alias remains the
+    # admitted served-leaf identity the evidence was checked against.
+    request_model_alias: str | None = None
     admitted: bool = False
     denied_reason: str | None = None
     reason_codes: tuple[str, ...] = ()
@@ -126,6 +131,7 @@ def admit_background_capability(
     capability_name: str,
     route_id: str,
     model_alias: str | None = None,
+    request_model_alias: str | None = None,
     task_note_path: Path | str | None = None,
     task_fields: Mapping[str, Any] | None = None,
     lane: str | None = None,
@@ -358,6 +364,7 @@ def admit_background_capability(
         capability_name=capability_name,
         route_id=normalized_route_id,
         model_alias=model_alias,
+        request_model_alias=request_model_alias or model_alias,
         admitted=decision.action is DispatchAction.LAUNCH and decision.launch_allowed,
         denied_reason=None
         if decision.action is DispatchAction.LAUNCH and decision.launch_allowed
