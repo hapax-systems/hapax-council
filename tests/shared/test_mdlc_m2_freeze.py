@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
 from shared.capdlc_lifecycle import GateStatus
+from shared.legal_posture_registry import LegalPostureRegistry
+from shared.mdlc_g2_legal import G2LegalRefusal, G2LegalRefusalReason
 from shared.mdlc_m2_freeze import (
     M2BudgetEnvelope,
     M2FreezeArtifact,
     M2FreezeRefusal,
     M2FreezeRefusalReason,
+    require_m2_commit_admission,
     require_m2_freeze_artifact,
     verify_m2_freeze_artifact,
 )
@@ -30,6 +33,7 @@ def _artifact(**overrides: object) -> dict[str, object]:
             "max_notional": 250.0,
             "max_position": 1.0,
             "purpose": "test disposition freeze",
+            "surface": "prediction_market",
             "venue": "test-venue",
             "instrument": "test-instrument",
         },
@@ -51,6 +55,37 @@ def _artifact(**overrides: object) -> dict[str, object]:
     return data
 
 
+def _legal_registry(*rows: dict[str, object]) -> LegalPostureRegistry:
+    return LegalPostureRegistry.from_mapping(
+        {
+            "schema_version": "1.0.0",
+            "schema_doc": "docs/monetization/legal-posture-registry-schema.md",
+            "rows": list(rows),
+        }
+    )
+
+
+def _legal_row(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "surface": "prediction_market",
+        "venue": "test-venue",
+        "instrument": "test-instrument",
+        "g2_verdict": "LIT",
+        "citation": "test legal citation",
+        "authority_basis": "legal_opinion",
+        "review_date": "2026-07-01",
+        "freshness_ttl_days": 90,
+        "operator_signed": True,
+        "operator_sign_date": "2026-07-01",
+        "notes": "fixture row",
+        "open_questions": [],
+        "blocks_surfaces": [],
+        "source_task": "20260628-registry-phase7-mdlc-g2-gate-wire",
+    }
+    row.update(overrides)
+    return row
+
+
 def test_signed_freeze_artifact_records_envelope_ladder_hash_signer_and_time() -> None:
     result = verify_m2_freeze_artifact(_artifact(), ruler_hash_commit=HASH)
 
@@ -64,6 +99,7 @@ def test_signed_freeze_artifact_records_envelope_ladder_hash_signer_and_time() -
     assert result.artifact is not None
     assert result.artifact.budget_envelope.currency == "USD"
     assert result.artifact.budget_envelope.max_notional == 250.0
+    assert result.artifact.budget_envelope.surface == "prediction_market"
     assert result.artifact.ladder.ruler_hash == HASH
     assert result.artifact.signer == "operator:hapax"
     assert result.artifact.signed_at == NOW
@@ -84,6 +120,110 @@ def test_require_success_returns_freeze_artifact() -> None:
     assert artifact.artifact_id == "m2-freeze:test-disposition"
     assert artifact.ruler_hash == HASH
     assert artifact.ladder.ruler_hash == HASH
+
+
+def test_require_m2_commit_admission_requires_g2_lit_before_commit() -> None:
+    with pytest.raises(G2LegalRefusal) as exc:
+        require_m2_commit_admission(
+            _artifact(),
+            ruler_hash_commit=HASH,
+            registry=_legal_registry(),
+            today=date(2026, 7, 1),
+        )
+
+    assert exc.value.verification.refusal_reason is G2LegalRefusalReason.NO_EXACT_ROW
+    assert exc.value.verification.target is not None
+    assert exc.value.verification.target.key == (
+        "prediction_market",
+        "test-venue",
+        "test-instrument",
+    )
+
+
+def test_require_m2_commit_admission_propagates_missing_freeze_refusal() -> None:
+    with pytest.raises(M2FreezeRefusal) as exc:
+        require_m2_commit_admission(
+            None,
+            ruler_hash_commit=HASH,
+            registry=_legal_registry(_legal_row()),
+            today=date(2026, 7, 1),
+        )
+
+    assert exc.value.verification.refusal_reason is M2FreezeRefusalReason.MISSING_ARTIFACT
+
+
+def test_require_m2_commit_admission_returns_freeze_and_legal_row() -> None:
+    admission = require_m2_commit_admission(
+        _artifact(),
+        ruler_hash_commit=HASH,
+        registry=_legal_registry(_legal_row()),
+        today=date(2026, 7, 1),
+    )
+
+    assert admission.freeze_artifact.artifact_id == "m2-freeze:test-disposition"
+    assert admission.legal_row.key == (
+        "prediction_market",
+        "test-venue",
+        "test-instrument",
+    )
+
+
+def test_require_m2_commit_admission_rejects_g2_target_override() -> None:
+    with pytest.raises(M2FreezeRefusal) as exc:
+        require_m2_commit_admission(
+            _artifact(),
+            ruler_hash_commit=HASH,
+            g2_target={
+                "surface": "bug_bounty",
+                "venue": "hackerone",
+                "instrument": "universal_jailbreak_bounty",
+            },
+            registry=_legal_registry(
+                _legal_row(
+                    surface="bug_bounty",
+                    venue="hackerone",
+                    instrument="universal_jailbreak_bounty",
+                )
+            ),
+            today=date(2026, 7, 1),
+        )
+
+    assert exc.value.verification.refusal_reason is M2FreezeRefusalReason.G2_TARGET_MISMATCH
+    assert "differs from the signed freeze envelope" in exc.value.verification.reason
+
+
+def test_require_m2_commit_admission_refuses_when_freeze_cannot_supply_g2_target() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget.pop("surface")
+
+    with pytest.raises(G2LegalRefusal) as exc:
+        require_m2_commit_admission(
+            _artifact(budget_envelope=budget),
+            ruler_hash_commit=HASH,
+            registry=_legal_registry(_legal_row()),
+            today=date(2026, 7, 1),
+        )
+
+    assert exc.value.verification.refusal_reason is G2LegalRefusalReason.INVALID_TARGET
+
+
+def test_require_m2_commit_admission_refuses_legacy_typed_freeze_without_surface() -> None:
+    legacy = _artifact()
+    budget = dict(legacy["budget_envelope"])
+    budget.pop("surface")
+    legacy["budget_envelope"] = budget
+    artifact = M2FreezeArtifact.from_mapping(legacy)
+
+    assert artifact.budget_envelope.surface == ""
+    with pytest.raises(G2LegalRefusal) as exc:
+        require_m2_commit_admission(
+            artifact,
+            ruler_hash_commit=HASH,
+            registry=_legal_registry(_legal_row()),
+            today=date(2026, 7, 1),
+        )
+
+    assert exc.value.verification.refusal_reason is G2LegalRefusalReason.INVALID_TARGET
 
 
 def test_missing_freeze_artifact_refuses() -> None:

@@ -161,9 +161,14 @@ There is no `HAPAX_G2_OFF` env var. There is no bypass. The gate reads the regis
 
 This phase defines the reusable g2 commit predicate and refusal API. Production
 commit-path integration is governed by follow-on task
-`20260628-mdlccore-phase2-g2-legal-venue-gate-reads-registry`, which MUST call
-`require_g2_commit_admitted()` before persisting any monetization or arbitrage
-disposition.
+`20260628-mdlccore-phase2-g2-legal-venue-gate-reads-registry`, which wires
+`shared.mdlc_m2_freeze.require_m2_commit_admission()` as the M2 commit boundary.
+That helper must prove the signed freeze artifact and then require an exact fresh
+operator-signed LIT G2 row before any monetization or arbitrage disposition is
+treated as commit-ready. Lower-level callers that are not using the M2 freeze
+helper MUST still call `shared.legal_posture_registry.require_g2_commit_admitted()`
+or the MonDLC-native `shared.mdlc_g2_legal.require_g2_legal()` before persisting
+a disposition.
 
 Once wired by that follow-on task, the g2 gate fires at:
 - **Disposition commit time** — before any monetization or arbitrage disposition is persisted.
