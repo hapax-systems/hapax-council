@@ -93,6 +93,7 @@ OUTBOUND_EVENT_KINDS: Final[frozenset[str]] = frozenset({"expense_paid"})
 DIRECTION_FILTERED_EVENT_KINDS: Final[frozenset[str]] = frozenset(
     {
         "collective_transaction_created",
+        "incoming_ach.create",
         "transaction.create",
         "transaction.created",
         "transaction.updated",

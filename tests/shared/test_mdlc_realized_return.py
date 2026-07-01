@@ -27,6 +27,7 @@ from shared.stripe_payment_link_receive_only_rail import (
 from shared.stripe_payment_link_receive_only_rail import (
     StripePaymentLinkRailReceiver,
 )
+from shared.treasury_prime_receive_only_rail import TreasuryPrimeRailReceiver
 
 NOW = datetime(2026, 7, 1, 6, 0, tzinfo=UTC)
 RAW_SHA = "a" * 64
@@ -113,6 +114,23 @@ def _stripe_checkout_session_payload(
     }
 
 
+def _treasury_prime_ach_payload(
+    *,
+    amount: object = 10000,
+    currency: str = "USD",
+) -> dict[str, object]:
+    return {
+        "event": "incoming_ach.create",
+        "data": {
+            "id": "tp-incoming-ach-mondlc",
+            "amount": amount,
+            "currency": currency,
+            "originating_party_name": "Acme Foundation",
+            "created_at": NOW.isoformat().replace("+00:00", "Z"),
+        },
+    }
+
+
 def _receipt(event_kind: str) -> str:
     return f"receipt://payment/test/{event_kind.replace('/', '_')}"
 
@@ -139,6 +157,7 @@ def test_event_kind_contract_is_explicit_and_disjoint() -> None:
     assert "incoming_payment_detail.created" in realized_return_mod.NON_SETTLED_INBOUND_EVENT_KINDS
     assert "payment_refunded" in realized_return_mod.REFUND_REVERSAL_EVENT_KINDS
     assert "collective_transaction_created" in realized_return_mod.DIRECTION_FILTERED_EVENT_KINDS
+    assert "incoming_ach.create" in realized_return_mod.DIRECTION_FILTERED_EVENT_KINDS
     assert "transaction.updated" in realized_return_mod.AMBIGUOUS_BANK_TRANSACTION_EVENT_KINDS
 
 
@@ -275,6 +294,46 @@ def test_modern_treasury_created_refuses_as_non_settled_before_score_folding() -
         result.refusal_reason
         is realized_return_mod.RealizedReturnRefusalReason.NON_SETTLED_INBOUND_EVENT
     )
+    assert result.measurement is None
+
+
+def test_treasury_prime_incoming_ach_requires_direction_witness() -> None:
+    event = TreasuryPrimeRailReceiver().ingest_webhook(
+        _treasury_prime_ach_payload(amount=-5000),
+        signature=None,
+    )
+
+    result = realized_return_mod.realized_return_from_rail(
+        event,
+        source_receipt_ref="receipt://payment/treasury-prime/incoming-ach",
+    )
+
+    assert result.status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert (
+        result.refusal_reason
+        is realized_return_mod.RealizedReturnRefusalReason.MISSING_INBOUND_DIRECTION
+    )
+    assert result.measurement is None
+
+
+def test_treasury_prime_incoming_ach_credit_direction_can_measure() -> None:
+    result = realized_return_mod.realized_return_from_rail(
+        _accepted_event("incoming_ach.create", direction="credit"),
+        source_receipt_ref="receipt://payment/treasury-prime/incoming-ach-credit",
+    )
+
+    assert result.status is realized_return_mod.RealizedReturnStatus.ACCEPTED
+    assert result.measurement is not None
+
+
+def test_treasury_prime_incoming_ach_debit_direction_refuses_outbound() -> None:
+    result = realized_return_mod.realized_return_from_rail(
+        _accepted_event("incoming_ach.create", direction="debit"),
+        source_receipt_ref="receipt://payment/treasury-prime/incoming-ach-debit",
+    )
+
+    assert result.status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert result.refusal_reason is realized_return_mod.RealizedReturnRefusalReason.OUTBOUND_EVENT
     assert result.measurement is None
 
 
