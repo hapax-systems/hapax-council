@@ -41,6 +41,7 @@ class M2FreezeRefusalReason(StrEnum):
     MISSING_SIGNED_AT = "missing_signed_at"
     INVALID_SIGNED_AT = "invalid_signed_at"
     MISSING_SIGNATURE_REF = "missing_signature_ref"
+    INVALID_EVIDENCE_REFS = "invalid_evidence_refs"
 
 
 _NEXT_ACTIONS: Final[dict[M2FreezeRefusalReason, str]] = {
@@ -71,6 +72,9 @@ _NEXT_ACTIONS: Final[dict[M2FreezeRefusalReason, str]] = {
     M2FreezeRefusalReason.INVALID_SIGNED_AT: "record signed_at as a valid timestamp",
     M2FreezeRefusalReason.MISSING_SIGNATURE_REF: (
         "record the durable signature reference for the freeze artifact"
+    ),
+    M2FreezeRefusalReason.INVALID_EVIDENCE_REFS: (
+        "record evidence_refs as a sequence of non-empty strings"
     ),
 }
 
@@ -176,7 +180,7 @@ class M2FreezeArtifact:
             signer=_required_mapping_string(raw, "signer"),
             signed_at=_required_mapping_datetime(raw, "signed_at"),
             signature_ref=_required_mapping_string(raw, "signature_ref"),
-            evidence_refs=_coerce_refs(raw.get("evidence_refs")),
+            evidence_refs=_evidence_refs_from_mapping(raw),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -393,7 +397,7 @@ def _refused(
             status=GateStatus.DARK,
             verdict=None,
             reason=message,
-            evidence_refs=(),
+            evidence_refs=evidence_refs,
         ),
         reason=message,
         refusal_reason=reason,
@@ -455,6 +459,13 @@ def _required_mapping_datetime(raw: Mapping[str, Any], field: str) -> datetime:
         return _coerce_datetime(value)
     except (TypeError, ValueError) as exc:
         raise _FreezeInputError(M2FreezeRefusalReason.INVALID_SIGNED_AT, str(exc)) from exc
+
+
+def _evidence_refs_from_mapping(raw: Mapping[str, Any]) -> tuple[str, ...]:
+    try:
+        return _coerce_refs(raw.get("evidence_refs"))
+    except TypeError as exc:
+        raise _FreezeInputError(M2FreezeRefusalReason.INVALID_EVIDENCE_REFS, str(exc)) from exc
 
 
 def _ladder_from_mapping(raw: Mapping[str, Any]) -> MonDLCLadder:

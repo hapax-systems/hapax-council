@@ -167,6 +167,16 @@ def test_invalid_signed_at_refuses_with_timestamp_reason() -> None:
     assert result.refusal_reason is M2FreezeRefusalReason.INVALID_SIGNED_AT
 
 
+def test_invalid_evidence_refs_has_specific_refusal_reason() -> None:
+    result = verify_m2_freeze_artifact(
+        _artifact(evidence_refs="not-a-sequence"),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is M2FreezeRefusalReason.INVALID_EVIDENCE_REFS
+
+
 def test_missing_ruler_hash_commit_refuses_before_m2_commit() -> None:
     result = verify_m2_freeze_artifact(_artifact(), ruler_hash_commit=None)
 
@@ -191,6 +201,8 @@ def test_mismatched_ruler_hash_refuses_and_require_raises() -> None:
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is M2FreezeRefusalReason.RULER_HASH_MISMATCH
     assert result.expected_ruler_hash == HASH
+    assert "m2-freeze:m2-freeze:test-disposition" in result.gate_result.evidence_refs
+    assert "signature:m2-freeze:test-disposition" in result.gate_result.evidence_refs
 
     with pytest.raises(M2FreezeRefusal) as exc:
         require_m2_freeze_artifact(_artifact(), ruler_hash_commit="different")
