@@ -64,10 +64,10 @@ def test_dmn_multimodal_call_passes_media_resolution_low() -> None:
 
 @pytest.mark.asyncio
 async def test_dmn_multimodal_refuses_provider_without_admission() -> None:
-    """DMN vision spend must be admitted before constructing a provider client."""
+    """DMN vision spend denial must not construct a provider client."""
     from agents.dmn import ollama as ollama_mod
 
-    denied = BackgroundCapabilityAdmission(
+    provider_denied = BackgroundCapabilityAdmission(
         capability_name="dmn.multimodal_vision.llm",
         route_id="api.headless.provider_gateway",
         model_alias="gemini-flash",
@@ -78,14 +78,36 @@ async def test_dmn_multimodal_refuses_provider_without_admission() -> None:
         quality_floor="frontier_required",
     )
     with (
-        patch("agents.dmn.ollama.admit_background_capability", return_value=denied),
-        patch(
-            "agents.dmn.ollama._tabby_think", new_callable=AsyncMock, return_value="fallback"
-        ) as mock_fallback,
+        patch("agents.dmn.ollama._admit_dmn_multimodal", return_value=provider_denied),
+        patch("agents.dmn.ollama._tabby_think", new_callable=AsyncMock, return_value=""),
         patch("openai.AsyncOpenAI") as mock_client_cls,
     ):
         result = await ollama_mod._gemini_multimodal("prompt", "system", "ZmFrZQ==")
 
-    assert result == "fallback"
-    mock_fallback.assert_awaited_once_with("prompt", "system")
+    assert result == ""
     mock_client_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dmn_local_thinking_refuses_without_admission() -> None:
+    """Denied local capability admission must not call TabbyAPI."""
+    from agents.dmn import ollama as ollama_mod
+
+    denied = BackgroundCapabilityAdmission(
+        capability_name="dmn.local_thinking.llm",
+        route_id="local_tool.local.worker",
+        model_alias="Qwen3.5-9B-exl3-5.00bpw",
+        admitted=False,
+        denied_reason="task_note_absent",
+        reason_codes=("task_note_absent",),
+        mutation_surface="none",
+        quality_floor="deterministic_ok",
+    )
+    with (
+        patch("agents.dmn.ollama._admit_dmn_local", return_value=denied),
+        patch("agents.dmn.ollama.httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post,
+    ):
+        result = await ollama_mod._tabby_think("prompt", "system")
+
+    assert result == ""
+    mock_post.assert_not_called()

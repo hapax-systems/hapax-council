@@ -32,6 +32,8 @@ log = logging.getLogger("dmn.ollama")
 
 TABBY_CHAT_URL = "http://localhost:5000/v1/chat/completions"
 DMN_MODEL = "Qwen3.5-9B-exl3-5.00bpw"
+DMN_LOCAL_ROUTE_ID_ENV = "HAPAX_DMN_LOCAL_ROUTE_ID"
+DMN_LOCAL_ROUTE_ID = "local_tool.local.worker"
 DMN_MULTIMODAL_ROUTE_ID_ENV = "HAPAX_DMN_MULTIMODAL_ROUTE_ID"
 DMN_MULTIMODAL_ROUTE_ID = "api.headless.provider_gateway"
 
@@ -60,6 +62,17 @@ CONSOLIDATION_SYSTEM = (
 
 async def _tabby_fast(prompt: str, system: str) -> str:
     """Fast path via TabbyAPI (OpenAI-compatible). Falls back to Ollama."""
+    admission = _admit_dmn_local("sensory")
+    if not admission.admitted:
+        log.warning(
+            "DMN local sensory admission denied route=%s reason=%s; next_action=set %s "
+            "and refresh local capability/resource receipts before local model use",
+            admission.route_id,
+            admission.denial_summary(),
+            BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+        )
+        return ""
+
     metrics_ctx = (
         llm_call_span(model=DMN_MODEL, route="dmn-sensory")
         if llm_call_span is not None
@@ -99,6 +112,17 @@ async def _tabby_fast(prompt: str, system: str) -> str:
 
 async def _tabby_think(prompt: str, system: str) -> str:
     """Thinking path via TabbyAPI (with reasoning enabled). Falls back to Ollama."""
+    admission = _admit_dmn_local("thinking")
+    if not admission.admitted:
+        log.warning(
+            "DMN local thinking admission denied route=%s reason=%s; next_action=set %s "
+            "and refresh local capability/resource receipts before local model use",
+            admission.route_id,
+            admission.denial_summary(),
+            BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+        )
+        return ""
+
     metrics_ctx = (
         llm_call_span(model=DMN_MODEL, route="dmn-thinking")
         if llm_call_span is not None
@@ -254,6 +278,16 @@ def _admit_dmn_multimodal(model_alias: str) -> BackgroundCapabilityAdmission:
         model_alias=model_alias,
         mutation_surface="provider_spend",
         quality_floor="frontier_required",
+    )
+
+
+def _admit_dmn_local(call_class: str) -> BackgroundCapabilityAdmission:
+    return admit_background_capability(
+        capability_name=f"dmn.local_{call_class}.llm",
+        route_id=os.environ.get(DMN_LOCAL_ROUTE_ID_ENV, DMN_LOCAL_ROUTE_ID),
+        model_alias=DMN_MODEL,
+        mutation_surface="none",
+        quality_floor="deterministic_ok",
     )
 
 
