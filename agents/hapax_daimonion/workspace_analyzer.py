@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Callable
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -15,6 +16,11 @@ from agents.hapax_daimonion.screen_models import (
     Issue,
     WorkspaceAnalysis,
 )
+from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+    BackgroundCapabilityAdmission,
+    admit_background_capability,
+)
 
 try:
     from agents.telemetry.llm_call_span import llm_call_span
@@ -24,6 +30,8 @@ except ImportError:  # telemetry optional
 log = logging.getLogger(__name__)
 
 DEFAULT_CONTEXT_PATH = Path.home() / ".local" / "share" / "hapax-daimonion" / "screen_context.md"
+WORKSPACE_ANALYZER_ROUTE_ID = "api.headless.provider_gateway"
+WORKSPACE_ANALYZER_ROUTE_ID_ENV = "HAPAX_DAIMONION_WORKSPACE_ANALYZER_ROUTE_ID"
 
 _BASE_PROMPT = """\
 You are a workspace awareness system for a single-operator music production studio
@@ -69,9 +77,11 @@ class WorkspaceAnalyzer:
         self,
         model: str = "gemini-flash",
         context_path: str | Path = DEFAULT_CONTEXT_PATH,
+        admission_gate: Callable[[], BackgroundCapabilityAdmission] | None = None,
     ) -> None:
         self.model = model
         self._system_prompt = self._build_prompt(Path(context_path))
+        self._admission_gate = admission_gate or (lambda: _admit_workspace_analyzer(self.model))
         self._client: AsyncOpenAI | None = None
 
     def _build_prompt(self, context_path: Path) -> str:
@@ -180,6 +190,17 @@ class WorkspaceAnalyzer:
         hardware_b64: str | None,
         extra_context: str | None,
     ) -> WorkspaceAnalysis | None:
+        admission = self._admission_gate()
+        if not admission.admitted:
+            log.warning(
+                "workspace_analyzer: capability admission denied for route=%s reason=%s; "
+                "next_action=set %s and refresh route/resource/quota receipts",
+                admission.route_id,
+                admission.denial_summary(),
+                BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+            )
+            return None
+
         client = self._get_client()
         messages = self._build_messages(
             screen_b64,
@@ -189,7 +210,7 @@ class WorkspaceAnalyzer:
         )
 
         metrics_ctx = (
-            llm_call_span(model=self.model, route="workspace-analyzer")
+            llm_call_span(model=self.model, route=admission.route_id)
             if llm_call_span is not None
             else nullcontext(None)
         )
@@ -231,3 +252,13 @@ class WorkspaceAnalyzer:
             gear_state=gear_state,
             workspace_change=data.get("workspace_change", False),
         )
+
+
+def _admit_workspace_analyzer(model: str) -> BackgroundCapabilityAdmission:
+    return admit_background_capability(
+        capability_name="hapax_daimonion.workspace_analyzer.vision",
+        route_id=os.environ.get(WORKSPACE_ANALYZER_ROUTE_ID_ENV, WORKSPACE_ANALYZER_ROUTE_ID),
+        model_alias=model,
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )

@@ -5,11 +5,28 @@ import pytest
 
 from agents.hapax_daimonion.screen_analyzer import ScreenAnalyzer
 from agents.hapax_daimonion.screen_models import ScreenAnalysis
+from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
+
+
+def _admission(*, admitted: bool = True) -> BackgroundCapabilityAdmission:
+    return BackgroundCapabilityAdmission(
+        capability_name="hapax_daimonion.screen_analyzer.vision",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        admitted=admitted,
+        denied_reason=None if admitted else "provider_gateway_evidence_absent",
+        reason_codes=("policy_launch",) if admitted else ("provider_gateway_evidence_absent",),
+        task_id="task-x",
+        authority_case="CASE-CAPACITY-ROUTING-001",
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        route_decision_id="rd-test",
+    )
 
 
 @pytest.mark.asyncio
 async def test_analyzer_returns_screen_analysis():
-    analyzer = ScreenAnalyzer(model="gemini-flash")
+    analyzer = ScreenAnalyzer(model="gemini-flash", admission_gate=lambda: _admission())
 
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
@@ -39,7 +56,7 @@ async def test_analyzer_returns_screen_analysis():
 
 @pytest.mark.asyncio
 async def test_analyzer_returns_none_on_failure():
-    analyzer = ScreenAnalyzer(model="gemini-flash")
+    analyzer = ScreenAnalyzer(model="gemini-flash", admission_gate=lambda: _admission())
 
     with patch("agents.hapax_daimonion.screen_analyzer.AsyncOpenAI") as mock_client_cls:
         mock_client = MagicMock()
@@ -49,6 +66,19 @@ async def test_analyzer_returns_none_on_failure():
         result = await analyzer.analyze("base64data==")
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_analyzer_denies_before_openai_client():
+    analyzer = ScreenAnalyzer(
+        model="gemini-flash", admission_gate=lambda: _admission(admitted=False)
+    )
+
+    with patch("agents.hapax_daimonion.screen_analyzer.AsyncOpenAI") as mock_client_cls:
+        result = await analyzer.analyze("base64data==")
+
+    assert result is None
+    mock_client_cls.assert_not_called()
 
 
 def test_analyzer_loads_static_context(tmp_path):
