@@ -319,12 +319,15 @@ def test_forbidden_verdict_language_guard_remains_engine_owned() -> None:
 
 def test_phase0_request_rejects_customer_data_or_raw_payload_fields() -> None:
     for forbidden_key in ("customer_id", "prompt", "raw_payload"):
-        with pytest.raises(NDCVBApiHarnessError, match="accepts refs only.*next_action="):
+        with pytest.raises(
+            NDCVBApiHarnessError, match=r"accepts refs only.*forbidden request keys \(count=1\)"
+        ) as exc:
             package_ndcvb_detection_result(
                 request={**_request(), forbidden_key: "must-not-enter"},
                 verdicts=["sycophancy: corroborated@0.88"],
                 battery_gates=_gates(),
             )
+        assert forbidden_key not in str(exc.value)
 
 
 def test_phase0_request_rejects_caller_supplied_purpose_text() -> None:
@@ -374,7 +377,9 @@ def test_phase0_battery_rejects_raw_gate_id_without_echo() -> None:
 
 
 def test_phase0_verdicts_and_battery_gates_reject_customer_payload_fields() -> None:
-    with pytest.raises(NDCVBApiHarnessError, match="NDCVB verdict.*forbidden keys.*next_action="):
+    with pytest.raises(
+        NDCVBApiHarnessError, match=r"NDCVB verdict.*forbidden keys \(count=1\)"
+    ) as exc:
         package_ndcvb_detection_result(
             request=_request(),
             verdicts=[
@@ -388,6 +393,7 @@ def test_phase0_verdicts_and_battery_gates_reject_customer_payload_fields() -> N
             ],
             battery_gates=_gates(),
         )
+    assert "raw_payload" not in str(exc.value)
 
     with pytest.raises(NDCVBApiHarnessError, match="source must be a URI-like reference"):
         package_ndcvb_detection_result(
@@ -403,14 +409,17 @@ def test_phase0_verdicts_and_battery_gates_reject_customer_payload_fields() -> N
             battery_gates=_gates(),
         )
 
-    with pytest.raises(NDCVBApiHarnessError, match="battery gate.*forbidden keys.*next_action="):
-        bad_gates = _gates()
-        bad_gates[0] = {**bad_gates[0], "customer_id": "must-not-enter"}
+    bad_gates = _gates()
+    bad_gates[0] = {**bad_gates[0], "customer_id": "must-not-enter"}
+    with pytest.raises(
+        NDCVBApiHarnessError, match=r"battery gate.*forbidden keys \(count=1\)"
+    ) as exc:
         package_ndcvb_detection_result(
             request=_request(),
             verdicts=["sycophancy: corroborated@0.88"],
             battery_gates=bad_gates,
         )
+    assert "customer_id" not in str(exc.value)
 
 
 def test_strict_schema_rejects_unsupported_non_forbidden_keys() -> None:
@@ -454,6 +463,34 @@ def test_unsupported_key_errors_do_not_echo_raw_field_names() -> None:
             request={**_request(), raw_field: "unsupported"},
             verdicts=["sycophancy: corroborated@0.88"],
             battery_gates=_gates(),
+        )
+
+    assert raw_field not in str(exc.value)
+
+    with pytest.raises(NDCVBApiHarnessError, match=r"unsupported keys \(count=1\)") as exc:
+        package_ndcvb_detection_result(
+            request=_request(),
+            verdicts=[
+                {
+                    "correspondent": "sycophancy",
+                    "kind": "corroborated",
+                    "bound": 0.88,
+                    "source": "ndcvb:verdict/sycophancy",
+                    raw_field: "unsupported",
+                }
+            ],
+            battery_gates=_gates(),
+        )
+
+    assert raw_field not in str(exc.value)
+
+    bad_gates = _gates()
+    bad_gates[0] = {**bad_gates[0], raw_field: "unsupported"}
+    with pytest.raises(NDCVBApiHarnessError, match=r"unsupported keys \(count=1\)") as exc:
+        package_ndcvb_detection_result(
+            request=_request(),
+            verdicts=["sycophancy: corroborated@0.88"],
+            battery_gates=bad_gates,
         )
 
     assert raw_field not in str(exc.value)

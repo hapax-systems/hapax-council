@@ -378,12 +378,10 @@ def _validate_mapping_keys(
     forbidden = sorted(string_keys & _FORBIDDEN_REQUEST_KEYS)
     if forbidden:
         if label == "phase-0 harness request":
-            message = "phase-0 harness accepts refs only; forbidden request keys: " + ", ".join(
-                forbidden
-            )
+            message = f"phase-0 harness accepts refs only; forbidden request keys (count={len(forbidden)})"
         else:
-            message = f"{label} accepts declared fields only; forbidden keys: " + ", ".join(
-                forbidden
+            message = (
+                f"{label} accepts declared fields only; forbidden keys (count={len(forbidden)})"
             )
         raise NDCVBApiHarnessError(_with_next_action(message, next_action))
     unknown = sorted(string_keys - allowed_keys)
