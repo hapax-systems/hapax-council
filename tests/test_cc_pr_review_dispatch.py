@@ -1890,12 +1890,19 @@ class TestFamilyOutageDegradation:
         return state, ledger
 
     @staticmethod
-    def _structured_outage(now: str, verdict: str = "quota-wall") -> dict[str, Any]:
-        return {
+    def _structured_outage(
+        now: str,
+        verdict: str = "quota-wall",
+        route_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        outage = {
             "observed_at": now,
             "outage_started_at": now,
             "outage_verdicts": [verdict],
         }
+        if route_ids is not None:
+            outage["route_ids"] = route_ids
+        return outage
 
     def test_wall_on_stderr_classifies_as_quota_wall(
         self, monkeypatch: Any, tmp_path: Path
@@ -2409,7 +2416,17 @@ class TestFamilyOutageDegradation:
 
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
-        state.write_text(json.dumps({"claude": self._structured_outage(now)}), encoding="utf-8")
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": self._structured_outage(
+                        now,
+                        route_ids=["claude.headless.full"],
+                    )
+                }
+            ),
+            encoding="utf-8",
+        )
         result, _, _, note = _review(
             tmp_path,
             now_iso=now,
@@ -2456,7 +2473,17 @@ class TestFamilyOutageDegradation:
     ) -> None:
         state, _ = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
-        state.write_text(json.dumps({"gemini": self._structured_outage(now)}), encoding="utf-8")
+        state.write_text(
+            json.dumps(
+                {
+                    "gemini": self._structured_outage(
+                        now,
+                        route_ids=["antigrav.interactive.full"],
+                    )
+                }
+            ),
+            encoding="utf-8",
+        )
 
         result, _, reviewers, _ = _review(
             tmp_path,
@@ -2470,12 +2497,63 @@ class TestFamilyOutageDegradation:
         assert "gemini" not in {family for _, family, _ in reviewers.invocations}
         assert "degraded_family_outage:gemini" in result["plan"]["constitution_notes"]
 
+    def test_unscoped_structured_outage_yields_to_current_route_admission(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-12T21:00:00+00:00"
+        state.write_text(json.dumps({"gemini": self._structured_outage(now)}), encoding="utf-8")
+
+        result, _, reviewers, _ = _review(
+            tmp_path,
+            now_iso=now,
+            task_kwargs={"risk_tier": "T1"},
+            gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
+        )
+
+        seated = {r["family"] for r in result["dossier"]["reviewers"]}
+        assert "gemini" in seated
+        assert "gemini" in {family for _, family, _ in reviewers.invocations}
+        assert "degraded_family_outage:gemini" not in result["plan"]["constitution_notes"]
+
+    def test_cross_route_structured_outage_yields_to_current_route_admission(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-12T21:00:00+00:00"
+        state.write_text(
+            json.dumps({"gemini": self._structured_outage(now, route_ids=["other.route.full"])}),
+            encoding="utf-8",
+        )
+
+        result, _, reviewers, _ = _review(
+            tmp_path,
+            now_iso=now,
+            task_kwargs={"risk_tier": "T1"},
+            gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
+        )
+
+        seated = {r["family"] for r in result["dossier"]["reviewers"]}
+        assert "gemini" in seated
+        assert "gemini" in {family for _, family, _ in reviewers.invocations}
+        assert "degraded_family_outage:gemini" not in result["plan"]["constitution_notes"]
+
     def test_degraded_review_floor_accept_writes_receipt_against_dispatcher_witness(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
-        state.write_text(json.dumps({"claude": self._structured_outage(now)}), encoding="utf-8")
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": self._structured_outage(
+                        now,
+                        route_ids=["claude.headless.full"],
+                    )
+                }
+            ),
+            encoding="utf-8",
+        )
         real_update = dispatch.update_family_outage
 
         def racing_update(
@@ -2516,7 +2594,17 @@ class TestFamilyOutageDegradation:
     ) -> None:
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
-        state.write_text(json.dumps({"claude": self._structured_outage(now)}), encoding="utf-8")
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": self._structured_outage(
+                        now,
+                        route_ids=["claude.headless.full"],
+                    )
+                }
+            ),
+            encoding="utf-8",
+        )
         kwargs = {
             "now_iso": now,
             "task_kwargs": {"risk_tier": "T1"},
@@ -2538,7 +2626,17 @@ class TestFamilyOutageDegradation:
     ) -> None:
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
-        state.write_text(json.dumps({"claude": self._structured_outage(now)}), encoding="utf-8")
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": self._structured_outage(
+                        now,
+                        route_ids=["claude.headless.full"],
+                    )
+                }
+            ),
+            encoding="utf-8",
+        )
         calls: list[int] = []
         real_flock = dispatch.fcntl.flock
 

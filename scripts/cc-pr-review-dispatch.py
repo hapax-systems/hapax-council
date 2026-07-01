@@ -250,12 +250,26 @@ def _outage_entry_verdicts(entry: Any) -> frozenset[str]:
     return frozenset()
 
 
-def _outage_entry_is_legacy_or_unscoped(entry: Any) -> bool:
+def _outage_entry_route_ids(entry: Any) -> frozenset[str]:
+    if not isinstance(entry, Mapping):
+        return frozenset()
+    raw = entry.get("route_ids")
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(str(item) for item in raw if str(item).strip())
+
+
+def _outage_entry_is_legacy_or_unscoped(entry: Any, *, route_id: str | None = None) -> bool:
     if isinstance(entry, str):
         return True
     if not isinstance(entry, Mapping):
         return True
-    return not _outage_entry_verdicts(entry)
+    if not _outage_entry_verdicts(entry):
+        return True
+    route_ids = _outage_entry_route_ids(entry)
+    if not route_ids:
+        return True
+    return bool(route_id) and route_id not in route_ids
 
 
 def _admit_review_family_for_current_tasks(
@@ -311,7 +325,10 @@ def filter_outage_witness_for_current_routes(
         family_cfg = family_cfgs.get(family)
         if (
             family_cfg is not None
-            and _outage_entry_is_legacy_or_unscoped(entry)
+            and _outage_entry_is_legacy_or_unscoped(
+                entry,
+                route_id=str(family_cfg.get("route_id") or "").strip() or None,
+            )
             and all(
                 _route_admission_is_current(admission)
                 for admission in _admit_review_family_for_current_tasks(
