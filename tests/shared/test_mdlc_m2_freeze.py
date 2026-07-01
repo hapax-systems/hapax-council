@@ -207,6 +207,25 @@ def test_require_m2_commit_admission_refuses_when_freeze_cannot_supply_g2_target
     assert exc.value.verification.refusal_reason is G2LegalRefusalReason.INVALID_TARGET
 
 
+def test_require_m2_commit_admission_refuses_legacy_typed_freeze_without_surface() -> None:
+    legacy = _artifact()
+    budget = dict(legacy["budget_envelope"])
+    budget.pop("surface")
+    legacy["budget_envelope"] = budget
+    artifact = M2FreezeArtifact.from_mapping(legacy)
+
+    assert artifact.budget_envelope.surface == ""
+    with pytest.raises(G2LegalRefusal) as exc:
+        require_m2_commit_admission(
+            artifact,
+            ruler_hash_commit=HASH,
+            registry=_legal_registry(_legal_row()),
+            today=date(2026, 7, 1),
+        )
+
+    assert exc.value.verification.refusal_reason is G2LegalRefusalReason.INVALID_TARGET
+
+
 def test_missing_freeze_artifact_refuses() -> None:
     result = verify_m2_freeze_artifact(None, ruler_hash_commit=HASH)
 
