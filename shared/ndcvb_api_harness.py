@@ -54,6 +54,15 @@ _FORBIDDEN_REQUEST_KEYS: Final = frozenset(
         "user_id",
     }
 )
+_REQUEST_NEXT_ACTION: Final = (
+    "next_action=send only request_id, artifact_ref, evidence_ref, optional run_ref, "
+    "and optional purpose; do not pass raw payload, customer, tenant, or user data"
+)
+_BATTERY_NEXT_ACTION: Final = (
+    "next_action=provide exactly four gate mappings with unique gate_id, boolean "
+    "passed, confidence in [0.0, 1.0], and non-empty provenance refs"
+)
+_TEXT_NEXT_ACTION: Final = "next_action=provide a non-empty string reference value"
 
 
 class NDCVBApiStatus(StrEnum):
@@ -89,16 +98,28 @@ class NDCVBPackagingRequest:
         raw_keys = set(raw)
         non_string_keys = [key for key in raw_keys if not isinstance(key, str)]
         if non_string_keys:
-            raise NDCVBApiHarnessError("phase-0 harness request keys must be strings")
+            raise NDCVBApiHarnessError(
+                _with_next_action(
+                    "phase-0 harness request keys must be strings",
+                    _REQUEST_NEXT_ACTION,
+                )
+            )
         forbidden = sorted(raw_keys & _FORBIDDEN_REQUEST_KEYS)
         if forbidden:
             raise NDCVBApiHarnessError(
-                "phase-0 harness accepts refs only; forbidden request keys: " + ", ".join(forbidden)
+                _with_next_action(
+                    "phase-0 harness accepts refs only; forbidden request keys: "
+                    + ", ".join(forbidden),
+                    _REQUEST_NEXT_ACTION,
+                )
             )
         unknown = sorted(raw_keys - _REQUEST_KEYS)
         if unknown:
             raise NDCVBApiHarnessError(
-                "phase-0 harness request has unsupported keys: " + ", ".join(unknown)
+                _with_next_action(
+                    "phase-0 harness request has unsupported keys: " + ", ".join(unknown),
+                    _REQUEST_NEXT_ACTION,
+                )
             )
         return cls(
             request_id=_required_text(raw.get("request_id"), "request_id"),
@@ -140,7 +161,9 @@ class NDCVBBatteryGate:
         gate_id = _required_text(raw.get("gate_id"), "gate_id")
         passed = raw.get("passed")
         if not isinstance(passed, bool):
-            raise NDCVBApiHarnessError("battery gate passed must be a boolean")
+            raise NDCVBApiHarnessError(
+                _with_next_action("battery gate passed must be a boolean", _BATTERY_NEXT_ACTION)
+            )
         confidence = _unit_float(raw.get("confidence"), field="confidence")
         provenance = _provenance_tuple(raw.get("provenance"), field="provenance")
         detail = _optional_text(raw.get("detail"), "detail") or ""
@@ -233,7 +256,12 @@ def _coerce_request(
     if isinstance(request, NDCVBPackagingRequest):
         return request
     if not isinstance(request, Mapping):
-        raise NDCVBApiHarnessError("request must be a mapping or NDCVBPackagingRequest")
+        raise NDCVBApiHarnessError(
+            _with_next_action(
+                "request must be a mapping or NDCVBPackagingRequest",
+                _REQUEST_NEXT_ACTION,
+            )
+        )
     return NDCVBPackagingRequest.from_mapping(request)
 
 
@@ -241,26 +269,41 @@ def _coerce_battery_gates(
     battery_gates: Sequence[NDCVBBatteryGate | Mapping[str, Any]],
 ) -> tuple[NDCVBBatteryGate, ...]:
     if isinstance(battery_gates, (str, bytes)) or not isinstance(battery_gates, Sequence):
-        raise NDCVBApiHarnessError("battery_gates must be a sequence")
+        raise NDCVBApiHarnessError(
+            _with_next_action("battery_gates must be a sequence", _BATTERY_NEXT_ACTION)
+        )
     gates = tuple(
         gate if isinstance(gate, NDCVBBatteryGate) else _coerce_battery_gate(gate)
         for gate in battery_gates
     )
     if len(gates) != NDCVB_REQUIRED_BATTERY_GATE_COUNT:
         raise NDCVBApiHarnessError(
-            "phase-0 NDCVB packaging requires exactly "
-            f"{NDCVB_REQUIRED_BATTERY_GATE_COUNT} battery gates"
+            _with_next_action(
+                "phase-0 NDCVB packaging requires exactly "
+                f"{NDCVB_REQUIRED_BATTERY_GATE_COUNT} battery gates",
+                _BATTERY_NEXT_ACTION,
+            )
         )
     gate_ids = [gate.gate_id for gate in gates]
     duplicate_ids = sorted({gate_id for gate_id in gate_ids if gate_ids.count(gate_id) > 1})
     if duplicate_ids:
-        raise NDCVBApiHarnessError("battery gate ids must be unique: " + ", ".join(duplicate_ids))
+        raise NDCVBApiHarnessError(
+            _with_next_action(
+                "battery gate ids must be unique: " + ", ".join(duplicate_ids),
+                _BATTERY_NEXT_ACTION,
+            )
+        )
     return gates
 
 
 def _coerce_battery_gate(gate: object) -> NDCVBBatteryGate:
     if not isinstance(gate, Mapping):
-        raise NDCVBApiHarnessError("battery gate must be a mapping or NDCVBBatteryGate")
+        raise NDCVBApiHarnessError(
+            _with_next_action(
+                "battery gate must be a mapping or NDCVBBatteryGate",
+                _BATTERY_NEXT_ACTION,
+            )
+        )
     return NDCVBBatteryGate.from_mapping(gate)
 
 
@@ -331,7 +374,7 @@ def _overall_provenance(
 def _required_text(value: Any, field: str) -> str:
     text = _optional_text(value, field)
     if text is None:
-        raise NDCVBApiHarnessError(f"{field} is required")
+        raise NDCVBApiHarnessError(_with_next_action(f"{field} is required", _TEXT_NEXT_ACTION))
     return text
 
 
@@ -339,29 +382,57 @@ def _optional_text(value: Any, field: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise NDCVBApiHarnessError(f"{field} must be a string")
+        raise NDCVBApiHarnessError(
+            _with_next_action(f"{field} must be a string", _TEXT_NEXT_ACTION)
+        )
     text = value.strip()
     if not text:
-        raise NDCVBApiHarnessError(f"{field} must not be empty")
+        raise NDCVBApiHarnessError(
+            _with_next_action(f"{field} must not be empty", _TEXT_NEXT_ACTION)
+        )
     return text
 
 
 def _unit_float(value: Any, *, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise NDCVBApiHarnessError(f"{field} must be a number in [0.0, 1.0]")
+        raise NDCVBApiHarnessError(
+            _with_next_action(
+                f"{field} must be a number in [0.0, 1.0]",
+                _BATTERY_NEXT_ACTION,
+            )
+        )
     number = float(value)
     if not math.isfinite(number) or number < 0.0 or number > 1.0:
-        raise NDCVBApiHarnessError(f"{field} must be a number in [0.0, 1.0]")
+        raise NDCVBApiHarnessError(
+            _with_next_action(
+                f"{field} must be a number in [0.0, 1.0]",
+                _BATTERY_NEXT_ACTION,
+            )
+        )
     return number
 
 
 def _provenance_tuple(value: Any, *, field: str) -> tuple[str, ...]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
-        raise NDCVBApiHarnessError(f"{field} must be a non-empty string sequence")
+        raise NDCVBApiHarnessError(
+            _with_next_action(
+                f"{field} must be a non-empty string sequence",
+                _BATTERY_NEXT_ACTION,
+            )
+        )
     items = tuple(_required_text(item, field) for item in value)
     if not items:
-        raise NDCVBApiHarnessError(f"{field} must be a non-empty string sequence")
+        raise NDCVBApiHarnessError(
+            _with_next_action(
+                f"{field} must be a non-empty string sequence",
+                _BATTERY_NEXT_ACTION,
+            )
+        )
     return items
+
+
+def _with_next_action(message: str, next_action: str) -> str:
+    return f"{message}; {next_action}"
 
 
 __all__ = [

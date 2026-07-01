@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import pytest
 
+import shared.ndcvb_api_harness as harness
 from shared.ndcvb_api_harness import (
     NDCVB_API_SCHEMA,
     NDCVB_PRODUCT_SURFACE_ID,
     NDCVB_REQUIRED_BATTERY_GATE_COUNT,
     NDCVBApiHarnessError,
+    NDCVBBatteryGate,
+    NDCVBPackagingRequest,
     package_ndcvb_detection_result,
 )
 from shared.segment_ndcvb_axis_b import ForbiddenAxisBVerdictError
@@ -38,6 +41,28 @@ def _gates(*, failed: str | None = None) -> list[dict[str, object]]:
         }
         for index, gate_id in enumerate(gate_ids)
     ]
+
+
+def test_request_and_gate_dataclasses_serialize_stable_api_fragments() -> None:
+    request = NDCVBPackagingRequest.from_mapping(_request())
+    assert request.to_api() == {
+        "request_id": "ndcvb-api-req-001",
+        "artifact_ref": "vault:segment-prep/prog-001.json",
+        "evidence_ref": "ndcvb:run/prog-001",
+        "run_ref": "local:ndcvb-phase0-packaging-fixture",
+        "purpose": "operator_internal_phase0_packaging",
+        "raw_payload_persisted": False,
+        "customer_data_path_enabled": False,
+    }
+
+    gate = NDCVBBatteryGate.from_mapping(_gates()[0])
+    assert gate.to_api() == {
+        "gate_id": "stimulus_capture",
+        "passed": True,
+        "confidence": 0.91,
+        "provenance": ["ndcvb:battery/stimulus_capture"],
+        "detail": "fixture gate receipt",
+    }
 
 
 def test_phase0_api_harness_exposes_detection_result_with_provenance_and_confidence() -> None:
@@ -168,7 +193,7 @@ def test_forbidden_verdict_language_guard_remains_engine_owned() -> None:
 
 def test_phase0_request_rejects_customer_data_or_raw_payload_fields() -> None:
     for forbidden_key in ("customer_id", "prompt", "raw_payload"):
-        with pytest.raises(NDCVBApiHarnessError, match="accepts refs only"):
+        with pytest.raises(NDCVBApiHarnessError, match="accepts refs only.*next_action="):
             package_ndcvb_detection_result(
                 request={**_request(), forbidden_key: "must-not-enter"},
                 verdicts=["sycophancy: corroborated@0.88"],
@@ -177,18 +202,61 @@ def test_phase0_request_rejects_customer_data_or_raw_payload_fields() -> None:
 
 
 def test_phase0_request_and_battery_shapes_fail_with_harness_errors() -> None:
-    with pytest.raises(NDCVBApiHarnessError, match="request keys must be strings"):
+    with pytest.raises(NDCVBApiHarnessError, match="request keys must be strings; next_action="):
         package_ndcvb_detection_result(
             request={**_request(), 3: "non-string-key"},
             verdicts=["sycophancy: corroborated@0.88"],
             battery_gates=_gates(),
         )
 
+    with pytest.raises(NDCVBApiHarnessError, match="request must be a mapping.*next_action="):
+        package_ndcvb_detection_result(
+            request=object(),  # type: ignore[arg-type]
+            verdicts=["sycophancy: corroborated@0.88"],
+            battery_gates=_gates(),
+        )
+
+    with pytest.raises(
+        NDCVBApiHarnessError, match="battery_gates must be a sequence.*next_action="
+    ):
+        package_ndcvb_detection_result(
+            request=_request(),
+            verdicts=["sycophancy: corroborated@0.88"],
+            battery_gates="not-gates",  # type: ignore[arg-type]
+        )
+
     bad_gates = _gates()
     bad_gates[0] = "not-a-gate"  # type: ignore[assignment]
-    with pytest.raises(NDCVBApiHarnessError, match="battery gate must be a mapping"):
+    with pytest.raises(NDCVBApiHarnessError, match="battery gate must be a mapping.*next_action="):
         package_ndcvb_detection_result(
             request=_request(),
             verdicts=["sycophancy: corroborated@0.88"],
             battery_gates=bad_gates,  # type: ignore[arg-type]
         )
+
+
+def test_unavailable_engine_confidence_is_explicit_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_evaluate(_verdicts: object) -> dict[str, object]:
+        return {
+            "kind": "undetermined",
+            "verdict": "UNDETERMINED",
+            "ok": False,
+            "violations": [],
+            "scorer": "axis_b_ndcvb_integration_honesty",
+            "scorer_version": 1,
+            "dissociated_veto_required": False,
+            "floor_gate": {"ok": False},
+            "correspondent_scores": [],
+        }
+
+    monkeypatch.setattr(harness, "evaluate_ndcvb_axis_b", fake_evaluate)
+
+    response = package_ndcvb_detection_result(
+        request=_request(),
+        verdicts=["sycophancy: UNDETERMINED"],
+        battery_gates=_gates(),
+    )
+
+    assert response["status"] == "hold"
+    assert response["detection"]["confidence"] is None
+    assert response["detection"]["confidence_basis"] == "unavailable_below_floor"
