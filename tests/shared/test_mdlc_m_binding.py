@@ -160,6 +160,9 @@ def test_missing_scorer_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.MISSING_SCORER
     assert result.gate_result.verdict is None
+    assert result.next_action
+    assert "next action:" in result.reason
+    assert result.to_dict()["next_action"] == result.next_action
 
 
 def test_accepted_rail_result_without_evidence_fails_closed() -> None:
@@ -174,6 +177,27 @@ def test_accepted_rail_result_without_evidence_fails_closed() -> None:
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.MISSING_RAIL_EVIDENCE
     assert result.score_result is None
+    assert result.next_action
+
+
+def test_measurement_without_ladder_fails_closed() -> None:
+    m_binding = _binding_module()
+
+    result = m_binding.bind_m_result(_measurement(), None, ruler_hash_commit=HASH)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.MISSING_LADDER
+    assert result.next_action
+
+
+def test_rail_result_without_ladder_fails_closed() -> None:
+    m_binding = _binding_module()
+
+    result = m_binding.bind_m_result(_rail_result(), None, ruler_hash_commit=HASH)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.MISSING_LADDER
+    assert result.next_action
 
 
 def test_refused_rail_result_fails_closed_with_native_reason() -> None:
@@ -188,6 +212,7 @@ def test_refused_rail_result_fails_closed_with_native_reason() -> None:
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.RAIL_REFUSED
     assert result.native_refusal_reason == "refund_or_reversal_event"
+    assert result.next_action
 
 
 def test_rail_result_sequence_scores_through_binding() -> None:
@@ -209,6 +234,64 @@ def test_rail_result_sequence_scores_through_binding() -> None:
     assert len(result.rail_results) == 2
 
 
+def test_bind_durable_payment_events_scores_lazy_reader_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    m_binding = _binding_module()
+    rail_results = (
+        _rail_result(value=12.5, evidence_refs=("rail:event:1",)),
+        _rail_result(value=7.5, evidence_refs=("rail:event:2",)),
+    )
+    calls: list[Path | str] = []
+
+    def fake_reader(path: Path | str):
+        calls.append(path)
+        return rail_results
+
+    monkeypatch.setattr(
+        m_binding,
+        "_load_rail_module",
+        lambda: SimpleNamespace(realized_returns_from_durable_payment_events=fake_reader),
+    )
+
+    result = m_binding.bind_durable_payment_events(
+        "/tmp/payment-events.jsonl",
+        _ladder(min_corroboration_count=2),
+        ruler_hash_commit=HASH,
+    )
+
+    assert calls == ["/tmp/payment-events.jsonl"]
+    assert result.status is GateStatus.LIT
+    assert result.verdict == "corroborated"
+    assert result.source_kind == "durable_payment_events"
+    assert result.rail_results == rail_results
+    assert result.score_result.measurement_value == 20.0
+    assert result.evidence_refs == ("rail:event:1", "rail:event:2")
+
+
+def test_bind_durable_payment_events_missing_reader_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    m_binding = _binding_module()
+    monkeypatch.setattr(
+        m_binding,
+        "_load_rail_module",
+        lambda: (_ for _ in ()).throw(ModuleNotFoundError("shared.mdlc_realized_return")),
+    )
+
+    result = m_binding.bind_durable_payment_events(
+        "/tmp/payment-events.jsonl",
+        _ladder(),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.MISSING_RAIL_READER
+    assert result.source_kind == "durable_payment_events"
+    assert result.next_action
+    assert "next action:" in result.gate_result.reason
+
+
 def test_unsupported_shape_fails_closed() -> None:
     m_binding = _binding_module()
 
@@ -217,6 +300,7 @@ def test_unsupported_shape_fails_closed() -> None:
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
     assert "unsupported_shape" in result.reason
+    assert result.next_action
 
 
 def test_result_truthiness_is_forbidden() -> None:

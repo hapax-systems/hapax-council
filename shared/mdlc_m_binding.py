@@ -35,6 +35,29 @@ class MonDLCBindingRefusalReason(StrEnum):
     UNSUPPORTED_SHAPE = "unsupported_shape"
 
 
+_NEXT_ACTIONS: Final[dict[MonDLCBindingRefusalReason, str]] = {
+    MonDLCBindingRefusalReason.MISSING_SCORER: (
+        "install or restore shared.mdlc_measure before scoring MonDLC evidence"
+    ),
+    MonDLCBindingRefusalReason.MISSING_RAIL_READER: (
+        "install or restore shared.mdlc_realized_return before reading durable payment events"
+    ),
+    MonDLCBindingRefusalReason.MISSING_RAIL_EVIDENCE: (
+        "attach accepted realized inbound rail evidence with durable refs before binding"
+    ),
+    MonDLCBindingRefusalReason.MISSING_LADDER: (
+        "supply the frozen MonDLC ruler ladder before binding measurement evidence"
+    ),
+    MonDLCBindingRefusalReason.RAIL_REFUSED: (
+        "preserve the native rail refusal reason and do not score the refused event"
+    ),
+    MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE: (
+        "pass a native MonDLCScoreResult, rail result sequence, measurement mapping, "
+        "or durable payment-event path"
+    ),
+}
+
+
 @dataclass(frozen=True)
 class MonDLCBindingResult:
     """Canonical binding result for M-instrument consumers."""
@@ -54,6 +77,7 @@ class MonDLCBindingResult:
     source_kind: str = ""
     scorer: str | None = None
     scorer_version: int | None = None
+    next_action: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, GateStatus):
@@ -80,6 +104,7 @@ class MonDLCBindingResult:
             "reason": self.reason,
             "refusal_reason": None if self.refusal_reason is None else self.refusal_reason.value,
             "native_refusal_reason": self.native_refusal_reason,
+            "next_action": self.next_action,
             "evidence_refs": list(self.evidence_refs),
             "source_kind": self.source_kind,
             "scorer": self.scorer,
@@ -141,7 +166,11 @@ def bind_durable_payment_events(
     )
 
 
-def _lift_score_result(score_result: Any) -> MonDLCBindingResult:
+def _lift_score_result(
+    score_result: Any,
+    *,
+    source_kind: str = "score_result",
+) -> MonDLCBindingResult:
     status = score_result.status
     gate_result = score_result.gate_result
     verdict = score_result.verdict
@@ -160,7 +189,7 @@ def _lift_score_result(score_result: Any) -> MonDLCBindingResult:
         native_verdict=verdict,
         score_result=score_result,
         native_refusal_reason=refusal,
-        source_kind="score_result",
+        source_kind=source_kind,
         scorer=str(getattr(score_result, "scorer", "") or "") or None,
         scorer_version=getattr(score_result, "scorer_version", None),
     )
@@ -250,7 +279,7 @@ def _score_measurement(
             source_kind=source_kind,
             detail=str(exc),
         )
-    return _lift_score_result(score_result)
+    return _lift_score_result(score_result, source_kind=source_kind)
 
 
 def _measurement_from_rail_results(rail_results: tuple[Any, ...]) -> Mapping[str, Any] | None:
@@ -295,7 +324,9 @@ def _dark_result(
     rail_results: tuple[Any, ...] = (),
     native_refusal_reason: str | None = None,
 ) -> MonDLCBindingResult:
+    next_action = _NEXT_ACTIONS[refusal_reason]
     message = reason if not detail else f"{reason}: {detail}"
+    message = f"{message}; next action: {next_action}"
     return MonDLCBindingResult(
         binding=MONDLC_M_BINDING_NAME,
         binding_version=MONDLC_M_BINDING_VERSION,
@@ -312,6 +343,7 @@ def _dark_result(
         source_kind=source_kind,
         rail_results=rail_results,
         native_refusal_reason=native_refusal_reason,
+        next_action=next_action,
     )
 
 
@@ -335,6 +367,7 @@ def _with_rail_results(
         source_kind=result.source_kind,
         scorer=result.scorer,
         scorer_version=result.scorer_version,
+        next_action=result.next_action,
     )
 
 
