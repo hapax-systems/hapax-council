@@ -8,8 +8,15 @@ from typing import Any
 
 import pytest
 
+from shared import mdlc_g2_legal
 from shared.capdlc_lifecycle import GateResult, GateStatus
-from shared.legal_posture_registry import G2GateInput, LegalPostureRegistry
+from shared.legal_posture_registry import (
+    G2CommitStatus,
+    G2GateDecision,
+    G2GateInput,
+    G2Reason,
+    LegalPostureRegistry,
+)
 from shared.mdlc_g2_legal import (
     MONDLC_G2_LEGAL_NAME,
     MONDLC_G2_LEGAL_VERSION,
@@ -106,8 +113,19 @@ def test_g2_invalid_gate_input_instance_refuses_before_commit() -> None:
 
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is G2LegalRefusalReason.INVALID_TARGET
-    assert result.target.surface == " "
+    assert result.target is None
     assert result.row is None
+
+
+def test_g2_gate_input_instance_is_trimmed_before_matching() -> None:
+    result = verify_g2_legal(
+        G2GateInput(f" {TARGET.surface} ", f"{TARGET.venue}\n", TARGET.instrument),
+        registry=_registry(_row(verdict="LIT", operator_signed=True)),
+        today=TODAY,
+    )
+
+    assert result.status is GateStatus.LIT
+    assert result.target == TARGET
 
 
 def test_g2_verification_truthiness_is_not_allowed() -> None:
@@ -411,7 +429,33 @@ def test_g2_missing_registry_file_fails_closed(tmp_path: Path) -> None:
     assert result.refusal_reason is G2LegalRefusalReason.REGISTRY_UNREADABLE
 
 
-def test_default_registry_blocks_minnesota_trading_and_keeps_ndcvb_distinct() -> None:
+def test_g2_unmapped_registry_reason_errors_clearly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decision = G2GateDecision(
+        status=G2CommitStatus.BLOCK,
+        reason=G2Reason.FRESH_LIT,
+        target=TARGET,
+    )
+
+    def fake_evaluate_g2_commit_gate(
+        *_args: object,
+        **_kwargs: object,
+    ) -> G2GateDecision:
+        return decision
+
+    monkeypatch.setattr(
+        mdlc_g2_legal,
+        "evaluate_g2_commit_gate",
+        fake_evaluate_g2_commit_gate,
+    )
+
+    with pytest.raises(ValueError, match="unmapped g2 gate decision reason"):
+        verify_g2_legal(TARGET, registry=_registry(), today=TODAY)
+
+
+def test_default_registry_integration_blocks_minnesota_trading_and_keeps_ndcvb_distinct() -> None:
+    # Intentional production-registry pin for the MonDLC legal posture rows.
     trading = verify_g2_legal(
         G2GateInput(
             "prediction_market",

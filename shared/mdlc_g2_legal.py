@@ -218,7 +218,11 @@ def require_g2_legal(
 
 def _coerce_target(value: G2GateInput | Mapping[str, Any]) -> G2GateInput:
     if isinstance(value, G2GateInput):
-        return value
+        return G2GateInput(
+            surface=_target_value(value.surface, "surface"),
+            venue=_target_value(value.venue, "venue"),
+            instrument=_target_value(value.instrument, "instrument"),
+        )
     if not isinstance(value, Mapping):
         raise _G2InputError(
             G2LegalRefusalReason.INVALID_TARGET,
@@ -232,7 +236,10 @@ def _coerce_target(value: G2GateInput | Mapping[str, Any]) -> G2GateInput:
 
 
 def _target_field(raw: Mapping[str, Any], field: str) -> str:
-    value = raw.get(field)
+    return _target_value(raw.get(field), field)
+
+
+def _target_value(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise _G2InputError(
             G2LegalRefusalReason.INVALID_TARGET,
@@ -266,7 +273,9 @@ def _admitted(decision: G2GateDecision) -> G2LegalVerification:
 
 
 def _refused_from_decision(decision: G2GateDecision) -> G2LegalVerification:
-    refusal_reason = _G2_REASON_TO_REFUSAL[decision.reason]
+    refusal_reason = _G2_REASON_TO_REFUSAL.get(decision.reason)
+    if refusal_reason is None:
+        raise ValueError(f"unmapped g2 gate decision reason: {decision.reason!r}")
     return _refused(
         refusal_reason,
         detail=decision.message,
