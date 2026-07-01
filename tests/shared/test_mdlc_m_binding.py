@@ -61,7 +61,7 @@ def _rail_result(
     *,
     status: str = "accepted",
     value: object | None = 12.5,
-    observed_at: datetime | None = OBSERVED_AT,
+    observed_at: object | None = OBSERVED_AT,
     evidence_refs: tuple[str, ...] = ("rail:event:1",),
     refusal_reason: str | None = None,
 ):
@@ -292,6 +292,28 @@ def test_rail_result_sequence_rejects_non_finite_measurement_value(value: float)
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
     assert "must be finite" in result.reason
+    assert result.score_result is None
+
+
+def test_rail_result_sequence_rejects_malformed_observed_at() -> None:
+    m_binding = _binding_module()
+
+    result = m_binding.bind_m_result(
+        (
+            _rail_result(value=12.5, evidence_refs=("rail:event:valid",)),
+            _rail_result(
+                value=7.5,
+                observed_at="2026-07-01T08:55:00Z",
+                evidence_refs=("rail:event:string-timestamp",),
+            ),
+        ),
+        _ladder(min_corroboration_count=1),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
+    assert "observed_at must be a datetime" in result.reason
     assert result.score_result is None
 
 

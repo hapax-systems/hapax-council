@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from importlib import import_module
 from math import isfinite
@@ -323,6 +324,7 @@ def _measurement_from_rail_results(rail_results: tuple[Any, ...]) -> Mapping[str
         observed_at = getattr(measurement, "observed_at", None)
         if observed_at is None:
             continue
+        observed_at = _rail_observed_at(observed_at)
         row_refs = (
             _string_tuple(getattr(measurement, "evidence_refs", ()))
             + _string_tuple(getattr(measurement, "corroborated_by", ()))
@@ -354,6 +356,16 @@ def _numeric_rail_value(value: Any) -> float:
     if not isfinite(numeric_value):
         raise _UnsupportedRailMeasurementShape("accepted rail measurement value must be finite")
     return numeric_value
+
+
+def _rail_observed_at(value: Any) -> datetime:
+    if not isinstance(value, datetime):
+        raise _UnsupportedRailMeasurementShape(
+            "accepted rail measurement observed_at must be a datetime"
+        )
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _dark_result(
