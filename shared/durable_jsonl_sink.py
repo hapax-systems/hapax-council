@@ -21,7 +21,7 @@ from typing import Any, Final
 
 SCHEMA_VERSION: Final = 1
 GENESIS_HASH: Final = "0" * 64
-VOLATILE_FS_TYPES: Final[frozenset[str]] = frozenset({"tmpfs", "ramfs"})
+VOLATILE_FS_TYPES: Final[frozenset[str]] = frozenset({"tmpfs", "ramfs", "devtmpfs"})
 DEFAULT_ROOT_ENV: Final = "HAPAX_DURABLE_SINK_ROOT"
 _STREAM_ID_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
@@ -117,8 +117,9 @@ def assert_durable_root(root: Path | str) -> Path:
     """Resolve and validate the configured durable sink root.
 
     The root must already exist, be a directory, and live on a filesystem that
-    is not reported as tmpfs/ramfs. We fail closed when the mount type cannot be
-    determined because a reboot-survival sink cannot assume persistence.
+    is not reported as tmpfs/ramfs/devtmpfs. We fail closed when the mount type
+    cannot be determined because a reboot-survival sink cannot assume
+    persistence.
     """
 
     candidate = Path(root).expanduser()
@@ -302,54 +303,71 @@ def validate_chain(
         issues.append(ChainIssue(None, "not_file", f"durable sink path is not a file: {target}"))
         return ChainValidationResult(False, 0, GENESIS_HASH, tuple(issues))
 
-    with target.open("r", encoding="utf-8") as fh:
-        for line_number, raw in enumerate(fh, 1):
-            if not raw.endswith("\n"):
-                issues.append(
-                    ChainIssue(
-                        line_number,
-                        "missing_newline",
-                        f"line {line_number}: row is missing terminating JSONL newline",
+    try:
+        with target.open("r", encoding="utf-8") as fh:
+            for line_number, raw in enumerate(fh, 1):
+                if not raw.endswith("\n"):
+                    issues.append(
+                        ChainIssue(
+                            line_number,
+                            "missing_newline",
+                            f"line {line_number}: row is missing terminating JSONL newline",
+                        )
                     )
-                )
-                continue
-            line = raw[:-1]
-            if not line:
-                issues.append(
-                    ChainIssue(line_number, "blank_line", f"line {line_number}: blank row")
-                )
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                issues.append(
-                    ChainIssue(
-                        line_number,
-                        "invalid_json",
-                        f"line {line_number}: invalid JSON: {exc.msg}",
+                    continue
+                line = raw[:-1]
+                if not line:
+                    issues.append(
+                        ChainIssue(line_number, "blank_line", f"line {line_number}: blank row")
                     )
-                )
-                continue
-            if not isinstance(row, dict):
-                issues.append(
-                    ChainIssue(
-                        line_number,
-                        "not_object",
-                        f"line {line_number}: row must be a JSON object",
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    issues.append(
+                        ChainIssue(
+                            line_number,
+                            "invalid_json",
+                            f"line {line_number}: invalid JSON: {exc.msg}",
+                        )
                     )
-                )
-                continue
+                    continue
+                if not isinstance(row, dict):
+                    issues.append(
+                        ChainIssue(
+                            line_number,
+                            "not_object",
+                            f"line {line_number}: row must be a JSON object",
+                        )
+                    )
+                    continue
 
-            row_count += 1
-            claimed_hash = _validate_row(
-                row=row,
-                line_number=line_number,
-                expected_prior=expected_prior,
-                expected_stream_id=stream_id,
-                issues=issues,
+                row_count += 1
+                claimed_hash = _validate_row(
+                    row=row,
+                    line_number=line_number,
+                    expected_prior=expected_prior,
+                    expected_stream_id=stream_id,
+                    issues=issues,
+                )
+                if claimed_hash is not None:
+                    expected_prior = claimed_hash
+    except UnicodeDecodeError as exc:
+        issues.append(
+            ChainIssue(
+                None,
+                "decode_error",
+                f"durable sink stream is not valid UTF-8: {exc.reason}",
             )
-            if claimed_hash is not None:
-                expected_prior = claimed_hash
+        )
+    except OSError as exc:
+        issues.append(
+            ChainIssue(
+                None,
+                "read_error",
+                f"failed to read durable sink stream {target}: {exc}",
+            )
+        )
 
     return _result_with_expectation_checks(
         issues=issues,

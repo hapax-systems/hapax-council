@@ -122,6 +122,15 @@ def test_configured_root_refuses_volatile_filesystem(
         DurableJsonlSink(root)
 
 
+def test_configured_root_refuses_devtmpfs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "durable"
+    root.mkdir()
+    monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "devtmpfs")
+
+    with pytest.raises(DurableSinkPathError, match="volatile filesystem devtmpfs.*next action"):
+        DurableJsonlSink(root)
+
+
 def test_configured_root_refuses_world_writable_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -437,6 +446,49 @@ def test_validate_chain_rejects_non_file_stream_path(tmp_path: Path) -> None:
 def test_validate_chain_rejects_invalid_stream_id_argument(tmp_path: Path) -> None:
     with pytest.raises(DurableSinkValueError, match="stream_id.*next action"):
         validate_chain(tmp_path / "unused.jsonl", stream_id="../bad")
+
+
+def test_validate_chain_reports_read_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "payment-event.jsonl"
+    path.write_text("", encoding="utf-8")
+    real_open = Path.open
+
+    def failing_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self == path:
+            raise OSError("simulated read failure")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(sink_mod.Path, "open", failing_open)
+
+    result = validate_chain(path, stream_id="payment-event")
+
+    assert result.valid is False
+    assert {issue.code for issue in result.issues} == {"read_error"}
+    with pytest.raises(DurableSinkChainError, match="next action"):
+        result.raise_for_issues()
+
+
+def test_append_refuses_non_utf8_stream_as_chain_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    path = sink.path_for_stream("payment-event")
+    path.write_bytes(b"\xff\n")
+
+    result = validate_chain(path, stream_id="payment-event")
+
+    assert result.valid is False
+    assert {issue.code for issue in result.issues} == {"decode_error"}
+    with pytest.raises(DurableSinkChainError, match="next action"):
+        sink.append(
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/1",
+            payload={"idx": 1},
+            timestamp="2026-07-01T00:00:00Z",
+        )
 
 
 def test_chain_validation_exception_includes_next_action(tmp_path: Path) -> None:
