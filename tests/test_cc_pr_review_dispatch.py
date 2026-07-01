@@ -177,6 +177,134 @@ def _admitted_route_admission(
     }
 
 
+def test_glmcp_quota_hold_requests_admission_probe() -> None:
+    registry = {
+        "families": [
+            {
+                "family": "glm",
+                "route_id": "glmcp.review.direct",
+                "reviewer_command": ["scripts/hapax-glmcp-reviewer"],
+                "timeout_seconds": 30,
+            }
+        ]
+    }
+    admissions = {
+        "glm-1": [
+            {
+                **_admitted_route_admission(),
+                "admitted": False,
+                "blocked_reasons": [
+                    "subscription_route_quota_not_fresh",
+                    "route_subscription_quota_state:unknown",
+                ],
+            }
+        ]
+    }
+
+    assert dispatch._should_probe_glmcp_admission(admissions, registry=registry)
+
+
+def test_probe_glmcp_review_admission_writes_short_lived_success_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = {
+        "families": [
+            {
+                "family": "glm",
+                "route_id": "glmcp.review.direct",
+                "reviewer_command": ["scripts/hapax-glmcp-reviewer"],
+                "timeout_seconds": 30,
+            }
+        ]
+    }
+    receipt_calls: list[list[str]] = []
+
+    def fake_receipt(args: list[str]) -> tuple[bool, str, str]:
+        receipt_calls.append(args)
+        return True, "/tmp/glmcp-quota-admission-review-seat.yaml", ""
+
+    monkeypatch.setattr(dispatch, "_run_glmcp_admission_receipt", fake_receipt)
+
+    def probe_runner(_family_cfg: dict[str, Any]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            ["scripts/hapax-glmcp-reviewer"],
+            0,
+            stdout="```yaml\nverdict: accept\nfindings: []\nchecklist: {}\n```\n",
+            stderr="",
+        )
+
+    result = dispatch.probe_glmcp_review_admission(
+        registry,
+        now=datetime.fromisoformat("2026-07-01T01:40:00+00:00"),
+        probe_runner=probe_runner,
+    )
+
+    assert result.receipt_written is True
+    assert result.status == "admitted"
+    assert result.evidence_ref == "review-seat-glmcp-probe-20260701t014000z"
+    assert receipt_calls == [
+        [
+            "--receipt-name",
+            "glmcp-quota-admission-review-seat-20260701t014000z.yaml",
+            "observe-success",
+            "--evidence-ref",
+            "review-seat-glmcp-probe-20260701t014000z",
+            "--supported-tool",
+            "hapax-glmcp-reviewer",
+            "--endpoint",
+            "https://api.z.ai/api/coding/paas/v4",
+            "--model",
+            "glm-5",
+            "--stale-after-seconds",
+            str(dispatch.GLMCP_ADMISSION_TTL_SECONDS),
+        ]
+    ]
+
+
+def test_probe_glmcp_review_admission_writes_error_receipt_on_process_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = {
+        "families": [
+            {
+                "family": "glm",
+                "route_id": "glmcp.review.direct",
+                "reviewer_command": ["scripts/hapax-glmcp-reviewer"],
+                "timeout_seconds": 30,
+            }
+        ]
+    }
+    receipt_calls: list[list[str]] = []
+
+    def fake_receipt(args: list[str]) -> tuple[bool, str, str]:
+        receipt_calls.append(args)
+        return True, "/tmp/cx-glmcp-quota-wall.yaml", ""
+
+    monkeypatch.setattr(dispatch, "_run_glmcp_admission_receipt", fake_receipt)
+
+    def probe_runner(_family_cfg: dict[str, Any]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            ["scripts/hapax-glmcp-reviewer"],
+            1,
+            stdout="",
+            stderr=(
+                "hapax-glmcp-reviewer: api error: HTTP 429; "
+                "zai_error_code=1308; error_class=quota_exhausted; "
+                "action=hold_until_reset"
+            ),
+        )
+
+    result = dispatch.probe_glmcp_review_admission(
+        registry,
+        now=datetime.fromisoformat("2026-07-01T01:40:00+00:00"),
+        probe_runner=probe_runner,
+    )
+
+    assert result.receipt_written is True
+    assert result.status == "hold_receipt_written"
+    assert receipt_calls == [["observe-error", "--provider-code", "1308"]]
+
+
 BLOCK_REPLY = """```yaml
 verdict: block
 findings:

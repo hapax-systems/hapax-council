@@ -82,6 +82,21 @@ TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 MAX_DIFF_CHARS = 80_000
 MAX_TASK_NOTE_CHARS = 60_000
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
+GLMCP_REVIEW_ROUTE_ID = "glmcp.review.direct"
+GLMCP_REVIEWER_COMMAND = ("scripts/hapax-glmcp-reviewer",)
+GLMCP_ADMISSION_TTL_SECONDS = 900
+GLMCP_ADMISSION_PROBE_TIMEOUT_SECONDS = 120
+GLMCP_ADMISSION_PROBE_PROMPT = """Return exactly this YAML fence and no prose:
+
+```yaml
+verdict: accept
+findings: []
+checklist: {}
+```
+"""
+GLMCP_ZAI_CODE_RE = re.compile(r"\bzai_error_code=(?P<code>\d{4})\b")
+GLMCP_ERROR_CLASS_RE = re.compile(r"\berror_class=(?P<value>[a-z0-9_+-]+)\b")
+GLMCP_ACTION_RE = re.compile(r"\baction=(?P<value>[a-z0-9_+-]+)\b")
 SEND_SCRIPTS = {
     "claude": "hapax-claude-send",
     "codex": "hapax-codex-send",
@@ -612,6 +627,211 @@ def default_reviewer_runner(seat: review_team.Seat, family_cfg: dict[str, Any], 
             proc.stderr.strip(), returncode=proc.returncode, stdout=proc.stdout
         )
     return proc.stdout
+
+
+@dataclass(frozen=True)
+class GlmcpAdmissionProbeResult:
+    attempted: bool
+    receipt_written: bool
+    status: str
+    evidence_ref: str | None = None
+    receipt_path: str | None = None
+    error: str | None = None
+
+
+def _is_glmcp_review_family(family_cfg: Mapping[str, Any]) -> bool:
+    command = tuple(str(part) for part in family_cfg.get("reviewer_command") or ())
+    return (
+        str(family_cfg.get("route_id") or "").strip() == GLMCP_REVIEW_ROUTE_ID
+        and command == GLMCP_REVIEWER_COMMAND
+    )
+
+
+def _admission_has_glmcp_quota_hold(admission: Mapping[str, Any]) -> bool:
+    if str(admission.get("route_id") or "").strip() != GLMCP_REVIEW_ROUTE_ID:
+        return False
+    reasons = [str(reason) for reason in admission.get("blocked_reasons") or ()]
+    refs = [str(ref) for ref in admission.get("route_policy_quota_evidence_refs") or ()]
+    return any(
+        "subscription_route_quota_not_fresh" in item
+        or "route_subscription_quota_state:unknown" in item
+        or "route_subscription_quota_state:stale" in item
+        or "quota-admission:absent" in item
+        or "quota-snapshot:glmcp.review.direct:missing" in item
+        for item in [*reasons, *refs]
+    )
+
+
+def _should_probe_glmcp_admission(
+    seat_admissions: Mapping[str, list[dict[str, Any]]],
+    *,
+    registry: Mapping[str, Any],
+) -> bool:
+    family_cfgs = {entry["family"]: entry for entry in registry["families"]}
+    for admissions in seat_admissions.values():
+        for admission in admissions:
+            if not _admission_has_glmcp_quota_hold(admission):
+                continue
+            family_cfg = family_cfgs.get(str(admission.get("family") or ""))
+            if isinstance(family_cfg, Mapping) and _is_glmcp_review_family(family_cfg):
+                return True
+    return False
+
+
+def _safe_glmcp_probe_error(stderr: str, stdout: str) -> str:
+    text = "\n".join(part for part in (stderr, stdout) if part).strip()
+    return truncate_context(text, limit=MAX_REVIEW_REPLY_EXCERPT_CHARS)
+
+
+def _run_glmcp_admission_receipt(args: list[str]) -> tuple[bool, str, str]:
+    proc = subprocess.run(
+        [str(SCRIPTS_DIR / "hapax-glmcp-quota-admission"), "--json", *args],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    path = None
+    try:
+        payload = json.loads(proc.stdout or "{}")
+        path = payload.get("path")
+    except json.JSONDecodeError:
+        path = None
+    return proc.returncode == 0, str(path or ""), (proc.stderr or proc.stdout).strip()
+
+
+def _write_glmcp_probe_error_receipt(stderr: str) -> tuple[bool, str, str]:
+    provider_code = None
+    match = GLMCP_ZAI_CODE_RE.search(stderr)
+    if match:
+        provider_code = match.group("code")
+    args = ["observe-error"]
+    if provider_code:
+        args.extend(["--provider-code", provider_code])
+    else:
+        error_class = "unknown"
+        action = "manual_hold_no_quota_admission"
+        class_match = GLMCP_ERROR_CLASS_RE.search(stderr)
+        action_match = GLMCP_ACTION_RE.search(stderr)
+        if class_match:
+            error_class = class_match.group("value")
+        if action_match:
+            action = action_match.group("value")
+        args.extend(["--failure-class", error_class, "--action", action])
+    return _run_glmcp_admission_receipt(args)
+
+
+def default_glmcp_admission_probe_runner(
+    family_cfg: Mapping[str, Any],
+) -> subprocess.CompletedProcess[str]:
+    timeout = min(
+        int(family_cfg.get("timeout_seconds", GLMCP_ADMISSION_PROBE_TIMEOUT_SECONDS)),
+        GLMCP_ADMISSION_PROBE_TIMEOUT_SECONDS,
+    )
+    return subprocess.run(
+        [str(part) for part in family_cfg["reviewer_command"]],
+        input=GLMCP_ADMISSION_PROBE_PROMPT,
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def probe_glmcp_review_admission(
+    registry: Mapping[str, Any],
+    *,
+    now: datetime,
+    probe_runner: Any = None,
+) -> GlmcpAdmissionProbeResult:
+    """Create a fresh GLMCP quota receipt from a real supported-tool probe.
+
+    This is deliberately narrower than general route admission: it only handles
+    the receipt-bounded GLMCP review route, never converts config checks into
+    quota availability, and records provider failure as a hold/quota-wall
+    receipt instead of admitting the route.
+    """
+
+    family_cfg = next(
+        (entry for entry in registry["families"] if _is_glmcp_review_family(entry)),
+        None,
+    )
+    if family_cfg is None:
+        return GlmcpAdmissionProbeResult(
+            attempted=False,
+            receipt_written=False,
+            status="glmcp_review_family_not_configured",
+        )
+    probe_runner = probe_runner or default_glmcp_admission_probe_runner
+    try:
+        proc = probe_runner(family_cfg)
+    except Exception as exc:  # noqa: BLE001 - probe failure must not crash review dispatch.
+        return GlmcpAdmissionProbeResult(
+            attempted=True,
+            receipt_written=False,
+            status="probe_failed",
+            error=str(exc),
+        )
+
+    if proc.returncode == 0 and str(proc.stdout or "").strip():
+        stamp = now.strftime("%Y%m%dt%H%M%Sz").lower()
+        evidence_ref = f"review-seat-glmcp-probe-{stamp}"
+        ok, path, err = _run_glmcp_admission_receipt(
+            [
+                "--receipt-name",
+                f"glmcp-quota-admission-review-seat-{stamp}.yaml",
+                "observe-success",
+                "--evidence-ref",
+                evidence_ref,
+                "--supported-tool",
+                "hapax-glmcp-reviewer",
+                "--endpoint",
+                "https://api.z.ai/api/coding/paas/v4",
+                "--model",
+                "glm-5",
+                "--stale-after-seconds",
+                str(GLMCP_ADMISSION_TTL_SECONDS),
+            ]
+        )
+        return GlmcpAdmissionProbeResult(
+            attempted=True,
+            receipt_written=ok,
+            status="admitted" if ok else "admission_receipt_write_failed",
+            evidence_ref=evidence_ref,
+            receipt_path=path or None,
+            error=err or None,
+        )
+
+    diagnostic = _safe_glmcp_probe_error(str(proc.stderr or ""), str(proc.stdout or ""))
+    ok, path, err = _write_glmcp_probe_error_receipt(diagnostic)
+    return GlmcpAdmissionProbeResult(
+        attempted=True,
+        receipt_written=ok,
+        status="hold_receipt_written" if ok else "hold_receipt_write_failed",
+        receipt_path=path or None,
+        error=err or diagnostic or None,
+    )
+
+
+def refresh_quota_telemetry_for_probe() -> bool:
+    proc = subprocess.run(
+        [str(SCRIPTS_DIR / "hapax-quota-telemetry-writer"), "--json"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=180,
+    )
+    if proc.returncode != 0:
+        LOG.warning(
+            "GLMCP admission probe telemetry refresh failed rc=%d: %s",
+            proc.returncode,
+            (proc.stderr or proc.stdout).strip()[:400],
+        )
+        return False
+    return True
 
 
 def _route_metadata_value(frontmatter: Mapping[str, Any], key: str) -> Any:
@@ -1430,6 +1650,7 @@ def review_pr(
     now_iso: str | None = None,
     policy_sources: DispatchPolicySources | None = None,
     route_decision_ledger_dir: Path | None = None,
+    admission_probe_runner: Any = None,
 ) -> dict[str, Any]:
     """Constitute (and with ``apply``, dispatch) the review team for one PR."""
 
@@ -1648,6 +1869,24 @@ def review_pr(
         route_decision_ledger_dir=route_decision_ledger_dir,
         now=admission_now,
     )
+    admission_probe_result: GlmcpAdmissionProbeResult | None = None
+    if _should_probe_glmcp_admission(seat_admissions, registry=registry):
+        admission_probe_result = probe_glmcp_review_admission(
+            registry,
+            now=admission_now,
+            probe_runner=admission_probe_runner,
+        )
+        if admission_probe_result.receipt_written:
+            refresh_quota_telemetry_for_probe()
+            policy_sources = load_dispatch_policy_sources(now=admission_now)
+            seat_admissions = build_review_seat_admissions(
+                constitution=constitution,
+                registry=registry,
+                keyed_matches=keyed_matches,
+                policy_sources=policy_sources,
+                route_decision_ledger_dir=route_decision_ledger_dir,
+                now=admission_now,
+            )
     reviews = dispatch_reviews(
         constitution,
         prompts,
@@ -1655,6 +1894,18 @@ def review_pr(
         reviewer_runner,
         seat_admissions=seat_admissions,
     )
+    if admission_probe_result is not None:
+        probe_payload = {
+            "attempted": admission_probe_result.attempted,
+            "receipt_written": admission_probe_result.receipt_written,
+            "status": admission_probe_result.status,
+            "evidence_ref": admission_probe_result.evidence_ref,
+            "receipt_path": admission_probe_result.receipt_path,
+            "error": admission_probe_result.error,
+        }
+        for review in reviews:
+            if str(review.get("route_id") or "") == GLMCP_REVIEW_ROUTE_ID:
+                review["route_admission_probe"] = probe_payload
     update_family_outage(reviews, now_iso)
     results: list[dict[str, Any]] = []
     comment_bodies: list[str] = []
