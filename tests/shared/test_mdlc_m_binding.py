@@ -62,7 +62,7 @@ def _rail_result(
     status: str = "accepted",
     value: object | None = 12.5,
     observed_at: object | None = OBSERVED_AT,
-    evidence_refs: tuple[str, ...] = ("rail:event:1",),
+    evidence_refs: tuple[object, ...] = ("rail:event:1",),
     refusal_reason: str | None = None,
 ):
     measurement = None
@@ -409,6 +409,21 @@ def test_rail_result_sequence_rejects_malformed_observed_at() -> None:
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
     assert "observed_at must be a datetime" in result.reason
+    assert result.score_result is None
+
+
+def test_rail_result_sequence_rejects_malformed_evidence_refs() -> None:
+    m_binding = _binding_module()
+
+    result = m_binding.bind_m_result(
+        _rail_result(evidence_refs=("rail:event:1", object())),
+        _ladder(min_corroboration_count=1),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
+    assert "evidence refs must be a string sequence" in result.reason
     assert result.score_result is None
 
 

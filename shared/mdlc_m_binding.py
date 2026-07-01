@@ -366,9 +366,9 @@ def _measurement_from_rail_results(rail_results: tuple[Any, ...]) -> Mapping[str
             continue
         observed_at = _rail_observed_at(observed_at)
         row_refs = (
-            _string_tuple(getattr(measurement, "evidence_refs", ()))
-            + _string_tuple(getattr(measurement, "corroborated_by", ()))
-            + _string_tuple(getattr(result, "evidence_refs", ()))
+            _strict_rail_ref_tuple(getattr(measurement, "evidence_refs", ()))
+            + _strict_rail_ref_tuple(getattr(measurement, "corroborated_by", ()))
+            + _strict_rail_ref_tuple(getattr(result, "evidence_refs", ()))
         )
         if not row_refs:
             continue
@@ -406,6 +406,26 @@ def _rail_observed_at(value: Any) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _strict_rail_ref_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value.strip(),) if value.strip() else ()
+    if not isinstance(value, Sequence):
+        raise _UnsupportedRailMeasurementShape(
+            "accepted rail evidence refs must be a string sequence"
+        )
+    refs: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise _UnsupportedRailMeasurementShape(
+                "accepted rail evidence refs must be a string sequence"
+            )
+        if item.strip():
+            refs.append(item.strip())
+    return tuple(refs)
 
 
 def _dark_result(
