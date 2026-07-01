@@ -344,7 +344,11 @@ class BoundedOutboundLane:
                     metadata={"next_action": "bind a scoped token that covers this send scope"},
                 )
 
-            if request.public_egress_requested and not self.public_egress_authorized:
+            public_egress_requires_authority = (
+                self._executor.authority_ceiling is AuthorityCeiling.PUBLIC_GATE_REQUIRED
+                or request.public_egress_requested
+            )
+            if public_egress_requires_authority and not self.public_egress_authorized:
                 return self._receipt(
                     request,
                     status="refused",
@@ -449,6 +453,8 @@ class BoundedOutboundLane:
         outbound_receipt: OutboundExecutionReceipt | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> OutboundLaneActReceipt:
+        receipt_metadata = dict(metadata or {})
+        receipt_metadata["provider_execution_wired"] = False
         return OutboundLaneActReceipt(
             receipt_id=f"outbound-lane-receipt-{uuid.uuid4()}",
             lane_id=self.lane_id,
@@ -461,7 +467,7 @@ class BoundedOutboundLane:
             money_movement_authorized=self.money_movement_authorized,
             outbound_receipt=outbound_receipt,
             evidence_refs=request.evidence_refs,
-            metadata=metadata or {},
+            metadata=receipt_metadata,
         )
 
 

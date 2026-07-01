@@ -359,6 +359,19 @@ def test_public_egress_request_refuses_when_public_authority_absent(
     assert receipt.status == "refused"
     assert receipt.refusal_reason == "public_egress_not_authorized"
     assert receipt.outbound_receipt is None
+    assert receipt.metadata["provider_execution_wired"] is False
+
+    cleared_flag_receipt = lane.execute_act(
+        _request(
+            action_id="public-egress-cleared-flag",
+            public_egress_requested=False,
+        )
+    )
+
+    assert cleared_flag_receipt.status == "refused"
+    assert cleared_flag_receipt.refusal_reason == "public_egress_not_authorized"
+    assert cleared_flag_receipt.outbound_receipt is None
+    assert cleared_flag_receipt.metadata["provider_execution_wired"] is False
 
 
 def test_youtube_public_egress_requires_public_gate_receipt(

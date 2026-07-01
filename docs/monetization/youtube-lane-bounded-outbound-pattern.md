@@ -17,7 +17,8 @@ Recheck:
 
 ```bash
 uv run pytest tests/shared/test_outbound_lane_pattern.py -q
-uv run pytest tests/shared/test_outbound_lane_pattern.py -q -k 'rate_limit or scoped_token or kill_switch or money_movement or public_egress'
+git diff --name-only origin/main...HEAD | sort
+! git diff --name-only origin/main...HEAD | rg -q '^(agents/auto_clip/platform_dispatch\.py|shared/google_auth\.py|scripts/youtube-auth\.py|.*\.service$)'
 uv run ruff check shared/outbound_lane_pattern.py tests/shared/test_outbound_lane_pattern.py
 uv run ruff format --check shared/outbound_lane_pattern.py tests/shared/test_outbound_lane_pattern.py
 ```
