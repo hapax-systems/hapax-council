@@ -517,11 +517,16 @@ def _surface_delta_route_index(
     path: Path,
 ) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
     producer_file = load_capability_surface_delta_file(path)
+    descriptor_keys_by_ref: dict[str, tuple[str, ...]] = {}
+    for descriptor in producer_file.descriptors:
+        keys = _surface_delta_descriptor_route_keys(descriptor)
+        for descriptor_ref in {descriptor.descriptor_ref, descriptor.surface_id}:
+            descriptor_keys_by_ref[descriptor_ref] = keys
     refs: dict[str, list[str]] = {}
     blockers: dict[str, list[str]] = {}
     for delta in producer_file.deltas:
         delta_ref = _surface_delta_ref(delta)
-        for key in _surface_delta_route_keys(delta):
+        for key in _surface_delta_route_keys(delta, descriptor_keys_by_ref):
             refs.setdefault(key, []).append(delta_ref)
             if not delta.allows_demand_fulfillment():
                 blockers.setdefault(key, []).append(delta_ref)
@@ -545,12 +550,29 @@ def _surface_delta_ref(delta: CapabilitySurfaceDelta) -> str:
     )
 
 
-def _surface_delta_route_keys(delta: CapabilitySurfaceDelta) -> tuple[str, ...]:
+def _surface_delta_descriptor_route_keys(descriptor: Any) -> tuple[str, ...]:
+    keys = {descriptor.surface_id, descriptor.descriptor_ref}
+    if descriptor.surface_id.startswith("route."):
+        keys.add(normalize_route_id(descriptor.surface_id.removeprefix("route.")))
+    if descriptor.route_id:
+        keys.add(normalize_route_id(descriptor.route_id))
+    return tuple(sorted(keys))
+
+
+def _surface_delta_route_keys(
+    delta: CapabilitySurfaceDelta,
+    descriptor_keys_by_ref: Mapping[str, Sequence[str]],
+) -> tuple[str, ...]:
     keys = {delta.surface_id}
     if delta.surface_id.startswith("route."):
         keys.add(normalize_route_id(delta.surface_id.removeprefix("route.")))
+    keys.update(descriptor_keys_by_ref.get(delta.surface_id, ()))
+    if delta.prior_descriptor_ref:
+        keys.add(delta.prior_descriptor_ref)
+        keys.update(descriptor_keys_by_ref.get(delta.prior_descriptor_ref, ()))
     if delta.observed_descriptor_ref:
         keys.add(delta.observed_descriptor_ref)
+        keys.update(descriptor_keys_by_ref.get(delta.observed_descriptor_ref, ()))
     return tuple(sorted(keys))
 
 
