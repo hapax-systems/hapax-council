@@ -390,7 +390,7 @@ def _validate_mapping_keys(
     if unknown:
         raise NDCVBApiHarnessError(
             _with_next_action(
-                f"{label} has unsupported keys: " + ", ".join(unknown),
+                f"{label} has unsupported keys (count={len(unknown)})",
                 next_action,
             )
         )

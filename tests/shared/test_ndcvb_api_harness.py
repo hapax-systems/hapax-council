@@ -414,14 +414,14 @@ def test_phase0_verdicts_and_battery_gates_reject_customer_payload_fields() -> N
 
 
 def test_strict_schema_rejects_unsupported_non_forbidden_keys() -> None:
-    with pytest.raises(NDCVBApiHarnessError, match="request.*unsupported keys.*metadata"):
+    with pytest.raises(NDCVBApiHarnessError, match=r"request.*unsupported keys \(count=1\)"):
         package_ndcvb_detection_result(
             request={**_request(), "metadata": "unsupported"},
             verdicts=["sycophancy: corroborated@0.88"],
             battery_gates=_gates(),
         )
 
-    with pytest.raises(NDCVBApiHarnessError, match="NDCVB verdict.*unsupported keys.*debug_ref"):
+    with pytest.raises(NDCVBApiHarnessError, match=r"NDCVB verdict.*unsupported keys \(count=1\)"):
         package_ndcvb_detection_result(
             request=_request(),
             verdicts=[
@@ -438,12 +438,25 @@ def test_strict_schema_rejects_unsupported_non_forbidden_keys() -> None:
 
     bad_gates = _gates()
     bad_gates[0] = {**bad_gates[0], "debug_ref": "unsupported"}
-    with pytest.raises(NDCVBApiHarnessError, match="battery gate.*unsupported keys.*debug_ref"):
+    with pytest.raises(NDCVBApiHarnessError, match=r"battery gate.*unsupported keys \(count=1\)"):
         package_ndcvb_detection_result(
             request=_request(),
             verdicts=["sycophancy: corroborated@0.88"],
             battery_gates=bad_gates,
         )
+
+
+def test_unsupported_key_errors_do_not_echo_raw_field_names() -> None:
+    raw_field = "raw customer field should not be emitted"
+
+    with pytest.raises(NDCVBApiHarnessError, match=r"unsupported keys \(count=1\)") as exc:
+        package_ndcvb_detection_result(
+            request={**_request(), raw_field: "unsupported"},
+            verdicts=["sycophancy: corroborated@0.88"],
+            battery_gates=_gates(),
+        )
+
+    assert raw_field not in str(exc.value)
 
 
 def test_phase0_request_and_battery_shapes_fail_with_harness_errors() -> None:
