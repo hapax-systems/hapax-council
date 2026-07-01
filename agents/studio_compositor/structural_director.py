@@ -437,6 +437,7 @@ def _default_llm_fn(prompt: str) -> str:
     litellm_url = "http://localhost:4000/v1/chat/completions"
     try:
         model_alias = os.environ.get(STRUCTURAL_MODEL_ENV, "local-fast")
+        request_model = _resolved_structural_model(model_alias)
         admission = _admit_structural_llm(model_alias)
         if not admission.admitted:
             log.warning(
@@ -462,7 +463,7 @@ def _default_llm_fn(prompt: str) -> str:
             key = ""
         body = json.dumps(
             {
-                "model": model_alias,
+                "model": request_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 320,
                 "temperature": 0.7,
@@ -476,7 +477,7 @@ def _default_llm_fn(prompt: str) -> str:
         started = time.time()
         # Publish LLM-in-flight marker so the ThinkingIndicator Cairo source
         # pulses while the structural tier is mid-call.
-        with _LLMInFlight(tier="structural", model=model_alias):
+        with _LLMInFlight(tier="structural", model=request_model):
             with urllib.request.urlopen(req, timeout=90) as resp:
                 data = json.loads(resp.read())
     finally:

@@ -603,15 +603,6 @@
             "shared/config.py:MODELS.vision-fast",
             "docs/research/2026-04-15-litellm-config-drift-audit.md:gemini-flash"
           ]
-        },
-        {
-          "alias": "claude-sonnet",
-          "model_id": "claude-sonnet-4-6",
-          "provider": "anthropic",
-          "evidence_refs": [
-            "shared/config.py:MODELS.balanced",
-            "docs/research/2026-04-15-litellm-config-drift-audit.md:claude-sonnet"
-          ]
         }
       ],
       "paid_provider": "google",

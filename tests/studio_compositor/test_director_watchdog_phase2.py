@@ -16,6 +16,7 @@ integration is exercised by the existing director_loop integration suite.
 
 from __future__ import annotations
 
+import json
 import time
 from unittest.mock import patch
 
@@ -163,6 +164,7 @@ class TestSingleFlightLock:
             b'"usage":{"prompt_tokens":1,"completion_tokens":2}}'
         )
         with (
+            patch.object(dl_mod, "DIRECTOR_MODEL", "fast"),
             patch.object(dl_mod, "_admit_director_llm", return_value=_admission()),
             patch.object(dl_mod.urllib.request, "urlopen", return_value=response) as mock_urlopen,
         ):
@@ -170,6 +172,10 @@ class TestSingleFlightLock:
 
         assert result == "ambient response"
         mock_urlopen.assert_called_once()
+        request = mock_urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode())
+        assert payload["model"] == "gemini-flash"
+        assert payload["model"] != "fast"
 
     def test_lock_released_on_inner_exception(self) -> None:
         director = _make_director()

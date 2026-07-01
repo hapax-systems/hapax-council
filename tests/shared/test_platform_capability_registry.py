@@ -277,8 +277,7 @@ def test_provider_gateway_route_is_explicit_fail_closed_paid_runtime_surface() -
     aliases = {entry.alias: entry for entry in route.provider_model_aliases}
     assert aliases["gemini-flash"].model_id.value == "gemini-3.1-pro-preview"
     assert aliases["gemini-flash"].provider == "google"
-    assert aliases["claude-sonnet"].model_id.value == "claude-sonnet-4-6"
-    assert aliases["claude-sonnet"].provider == "anthropic"
+    assert "claude-sonnet" not in aliases
     assert route.mutability.source is False
     assert route.mutability.runtime is True
     assert route.mutability.provider_spend is True

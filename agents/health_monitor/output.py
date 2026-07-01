@@ -11,6 +11,7 @@ import tempfile
 from collections import Counter
 
 from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
     BackgroundCapabilityAdmission,
     admit_background_capability,
 )
@@ -123,7 +124,12 @@ async def run_fixes(report: HealthReport, yes: bool = False) -> int:
             reason,
             extra={"background_capability": admission.metadata()},
         )
-        print(f"Runtime remediation held by capability admission: {reason}")
+        print(
+            "Runtime remediation held by capability admission: "
+            f"{reason}. Next action: set {BACKGROUND_CAPABILITY_TASK_NOTE_ENV} "
+            "and refresh route/resource/quota/runtime-actuation receipts before "
+            "enabling legacy runtime fixes."
+        )
         return 0
 
     try:

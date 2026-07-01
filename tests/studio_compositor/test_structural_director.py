@@ -12,6 +12,20 @@ from shared.action_receipt import ActionReceipt, ActionReceiptStatus
 from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
 
 
+class _FakeResponse:
+    def __init__(self, content: bytes) -> None:
+        self._content = content
+
+    def __enter__(self) -> _FakeResponse:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._content
+
+
 @pytest.fixture(autouse=True)
 def _redirect_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(sd, "_STRUCTURAL_INTENT_PATH", tmp_path / "intent.json")
@@ -148,6 +162,32 @@ class TestDefaultLlmBackpressure:
         mock_urlopen.assert_not_called()
         assert dl_mod._DIRECTOR_LLM_LOCK.acquire(blocking=False)
         dl_mod._DIRECTOR_LLM_LOCK.release()
+
+    def test_default_llm_sends_resolved_provider_gateway_model(self, monkeypatch):
+        monkeypatch.setenv(sd.STRUCTURAL_MODEL_ENV, "fast")
+        monkeypatch.setattr(
+            sd,
+            "_admit_structural_llm",
+            lambda _model: BackgroundCapabilityAdmission(
+                capability_name="studio.structural_director.llm",
+                route_id="api.headless.provider_gateway",
+                model_alias="gemini-flash",
+                admitted=True,
+                mutation_surface="provider_spend",
+                quality_floor="frontier_required",
+            ),
+        )
+        response = _FakeResponse(b'{"choices":[{"message":{"content":"ok"}}]}')
+        with patch("subprocess.run") as mock_pass:
+            mock_pass.return_value.stdout = "test-key\n"
+            with patch("urllib.request.urlopen", return_value=response) as mock_urlopen:
+                assert sd._default_llm_fn("prompt") == "ok"
+
+        mock_urlopen.assert_called_once()
+        request = mock_urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode())
+        assert payload["model"] == "gemini-flash"
+        assert payload["model"] != "fast"
 
     def test_structural_route_model_mismatch_denies_without_policy_call(self, monkeypatch):
         monkeypatch.setenv("HAPAX_STRUCTURAL_LLM_ROUTE_ID", "local_tool.local.worker")

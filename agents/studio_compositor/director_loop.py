@@ -4412,6 +4412,7 @@ class DirectorLoop:
                 BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
             )
             return ""
+        request_model = _resolved_director_model(DIRECTOR_MODEL)
 
         content: list[dict] = []
         # Only forward images when the configured route is known multimodal.
@@ -4459,7 +4460,7 @@ class DirectorLoop:
         # not the cap raised.
         body = json.dumps(
             {
-                "model": DIRECTOR_MODEL,
+                "model": request_model,
                 "messages": messages,
                 "max_tokens": 512,
                 "temperature": 0.7,
@@ -4511,7 +4512,7 @@ class DirectorLoop:
             llm_call_span = None  # type: ignore[assignment]
 
         metrics_ctx = (
-            llm_call_span(model=DIRECTOR_MODEL, route=admission.route_id)
+            llm_call_span(model=request_model, route=admission.route_id)
             if llm_call_span is not None
             else nullcontext(None)
         )
@@ -4520,7 +4521,7 @@ class DirectorLoop:
             with (
                 span_ctx as span,
                 metrics_ctx as metrics_span,
-                _LLMInFlight(tier="narrative", model=DIRECTOR_MODEL),
+                _LLMInFlight(tier="narrative", model=request_model),
             ):
                 req = urllib.request.Request(
                     LITELLM_URL,
@@ -4630,7 +4631,7 @@ class DirectorLoop:
                         # not the cap raised.
                         reroll_body = json.dumps(
                             {
-                                "model": DIRECTOR_MODEL,
+                                "model": request_model,
                                 "messages": reroll_messages,
                                 "max_tokens": 512,
                                 "temperature": 0.7,
