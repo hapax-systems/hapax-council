@@ -79,12 +79,13 @@ async def test_dmn_multimodal_refuses_provider_without_admission() -> None:
     )
     with (
         patch("agents.dmn.ollama._admit_dmn_multimodal", return_value=provider_denied),
-        patch("agents.dmn.ollama._tabby_think", new_callable=AsyncMock, return_value=""),
+        patch("agents.dmn.ollama._tabby_think", new_callable=AsyncMock) as mock_fallback,
         patch("openai.AsyncOpenAI") as mock_client_cls,
     ):
         result = await ollama_mod._gemini_multimodal("prompt", "system", "ZmFrZQ==")
 
     assert result == ""
+    mock_fallback.assert_not_called()
     mock_client_cls.assert_not_called()
 
 

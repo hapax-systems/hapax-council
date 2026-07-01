@@ -450,6 +450,30 @@ def test_background_admission_refuses_task_note_without_task_id(tmp_path: Path) 
     assert admission.denied_reason == "task_id_absent"
 
 
+def test_background_admission_refuses_provider_spend_without_parent_spec(
+    tmp_path: Path,
+) -> None:
+    fields = _provider_task_fields()
+    fields.pop("parent_spec")
+
+    admission = admit_background_capability(
+        capability_name="studio.scene_classifier.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-3.1-pro-preview",
+        task_fields=fields,
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is False
+    assert admission.denied_reason == "parent_spec_absent"
+    assert admission.reason_codes == ("parent_spec_absent",)
+
+
 def test_background_admission_refuses_unreadable_task_note(tmp_path: Path) -> None:
     admission = admit_background_capability(
         capability_name="studio.scene_classifier.llm",

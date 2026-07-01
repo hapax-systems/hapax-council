@@ -224,7 +224,7 @@ async def _gemini_multimodal(prompt: str, system: str, frame_b64: str) -> str:
             admission.denial_summary(),
             BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
         )
-        return await _tabby_think(prompt, system)
+        return ""
 
     metrics_ctx = (
         llm_call_span(model=vision_model, route="dmn-multimodal")

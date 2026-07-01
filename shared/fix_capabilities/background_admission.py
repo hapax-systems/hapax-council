@@ -216,6 +216,20 @@ def admit_background_capability(
             quality_floor=quality_floor,
             authority_level=authority_level,
         )
+    parent_spec = _string_field(fields, "parent_spec")
+    if not parent_spec:
+        return _denied(
+            capability_name=capability_name,
+            route_id=normalized_route_id,
+            model_alias=model_alias,
+            denied_reason="parent_spec_absent",
+            reason_codes=("parent_spec_absent",),
+            task_id=task_id,
+            authority_case=authority_case,
+            mutation_surface=mutation_surface,
+            quality_floor=quality_floor or _string_field(fields, "quality_floor"),
+            authority_level=authority_level or _string_field(fields, "authority_level"),
+        )
 
     authority_blocker = _invocation_authority_blocker(
         fields,
