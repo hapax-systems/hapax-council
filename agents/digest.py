@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from agents._config import MODELS, PROFILES_DIR, get_model_adaptive, get_qdrant
+from agents._config import MODELS, PROFILES_DIR, get_model, get_qdrant
 from agents._operator import get_system_prompt_fragment
 from shared.fix_capabilities.background_admission import (
     BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
@@ -182,28 +182,52 @@ GUIDELINES:
 Call lookup_constraints() for additional operator constraints.
 """
 
-digest_agent = Agent(
-    get_model_adaptive("fast"),
-    system_prompt=get_system_prompt_fragment("digest") + "\n\n" + SYSTEM_PROMPT,
-    output_type=Digest,
-)
-
+DIGEST_MODEL_ALIAS = "fast"
 DIGEST_LLM_ROUTE_ID_ENV = "HAPAX_DIGEST_LLM_ROUTE_ID"
 DIGEST_LOCAL_MODEL_IDS: frozenset[str] = frozenset(
     {"local-fast", "appendix-fast", "local-research-instruct", "command-r-08-2024"}
 )
 
-# Register on-demand operator context tools
+from agents._axiom_tools import get_axiom_tools
 from agents._context_tools import get_context_tools
 
-for _tool_fn in get_context_tools():
-    digest_agent.tool(_tool_fn)
+# Lazily constructed by _get_digest_agent() — module import must bind no model
+# descriptor, and a denied admission must never reach get_model() (no-escape predicate).
+_digest_agent: Agent | None = None
+_digest_agent_model_id: str | None = None
 
-# Register axiom compliance tools
-from agents._axiom_tools import get_axiom_tools
 
-for _tool_fn in get_axiom_tools():
-    digest_agent.tool(_tool_fn)
+def _get_digest_agent(admission: BackgroundCapabilityAdmission) -> Agent:
+    """Construct (once per selected model) the digest agent for an ADMITTED capability.
+
+    Raises RuntimeError for a non-admitted admission. Construction is pinned to
+    the admitted identity: if the stimmung-adaptive selection shifted between
+    admission and construction such that the current selection no longer maps
+    to the admitted served-leaf identity, fail closed instead of binding an
+    unadmitted model (closes the admit-A/bind-B TOCTOU).
+    """
+    if not admission.admitted:
+        raise RuntimeError("digest agent construction requires admitted capability")
+    global _digest_agent, _digest_agent_model_id
+    selected = _selected_digest_model_id()
+    admitted_identity = str(admission.model_alias or "")
+    if _digest_admission_model_id(selected) != admitted_identity:
+        raise RuntimeError(
+            f"digest_model_admission_mismatch:selected={selected} admitted={admitted_identity}"
+        )
+    if _digest_agent is None or _digest_agent_model_id != selected:
+        agent = Agent(
+            get_model(selected),
+            system_prompt=get_system_prompt_fragment("digest") + "\n\n" + SYSTEM_PROMPT,
+            output_type=Digest,
+        )
+        for _tool_fn in get_context_tools():
+            agent.tool(_tool_fn)
+        for _tool_fn in get_axiom_tools():
+            agent.tool(_tool_fn)
+        _digest_agent = agent
+        _digest_agent_model_id = selected
+    return _digest_agent
 
 
 async def generate_digest(hours: int = 24) -> Digest:
@@ -279,7 +303,7 @@ The lookback window is {hours} hours."""
                 extra={"background_capability": admission.metadata()},
             )
             raise RuntimeError(f"digest_synthesis_admission_denied:{admission.denial_summary()}")
-        result = await digest_agent.run(prompt)
+        result = await _get_digest_agent(admission).run(prompt)
         digest = result.output
     except Exception as e:
         log.error("LLM synthesis failed: %s", e)
@@ -328,11 +352,16 @@ def _admit_digest_synthesis() -> BackgroundCapabilityAdmission:
 
 
 def _selected_digest_model_id() -> str:
-    model = getattr(digest_agent, "model", None) or getattr(digest_agent, "_model", None)
-    model_name = getattr(model, "model_name", None)
-    if isinstance(model_name, str) and model_name.strip():
-        return model_name.strip()
-    return MODELS.get("fast", "fast")
+    """Resolve the digest model id WITHOUT constructing an agent.
+
+    Admission must be computable with no agent in existence — resolution goes
+    through the same stimmung-adaptive selection get_model_adaptive() uses
+    (shared.config.resolve_model_alias_adaptive), then the MODELS alias table.
+    """
+    from shared.config import resolve_model_alias_adaptive
+
+    alias = resolve_model_alias_adaptive(DIGEST_MODEL_ALIAS)
+    return MODELS.get(alias, alias)
 
 
 def _digest_admission_spec(model_id: str) -> tuple[str, str, str]:

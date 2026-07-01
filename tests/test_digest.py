@@ -380,12 +380,16 @@ def test_digest_admission_spec_classifies_local_and_provider_models():
 
 
 def test_digest_admission_refuses_configured_route_model_mismatch(monkeypatch):
-    """A configured route cannot override the route implied by the selected model."""
+    """A configured route cannot override the route implied by the selected model.
+
+    The selected model is resolved through the agent-free selector seam (no
+    pre-instantiated agent to patch — admission must be computable with no
+    agent in existence).
+    """
     from agents.digest import DIGEST_LLM_ROUTE_ID_ENV, _admit_digest_synthesis
 
     monkeypatch.setenv(DIGEST_LLM_ROUTE_ID_ENV, "local_tool.local.worker")
-    fake_model = MagicMock(model_name="gemini-flash")
-    with patch("agents.digest.digest_agent", MagicMock(model=fake_model)):
+    with patch("agents.digest._selected_digest_model_id", return_value="gemini-flash"):
         admission = _admit_digest_synthesis()
 
     assert admission.admitted is False
@@ -393,15 +397,94 @@ def test_digest_admission_refuses_configured_route_model_mismatch(monkeypatch):
     assert "expected_route=api.headless.provider_gateway" in (admission.denied_reason or "")
 
 
+def test_selected_digest_model_id_resolves_without_agent():
+    """Model selection goes through the adaptive resolver + MODELS, agent-free."""
+    from agents.digest import _selected_digest_model_id
+
+    with (
+        patch("shared.config.resolve_model_alias_adaptive", return_value="fast") as mock_resolve,
+        patch("agents.digest.MODELS", {"fast": "gemini-flash"}),
+        patch("agents.digest.Agent") as mock_agent_cls,
+    ):
+        assert _selected_digest_model_id() == "gemini-flash"
+
+    mock_resolve.assert_called_once()
+    mock_agent_cls.assert_not_called()
+
+
+def test_digest_denied_admission_construction_raises():
+    """_get_digest_agent refuses to bind a model for a denied admission."""
+    from agents.digest import _get_digest_agent
+
+    denied = BackgroundCapabilityAdmission(
+        capability_name="agents.digest.synthesis",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        admitted=False,
+        denied_reason="task_note_absent",
+        reason_codes=("task_note_absent",),
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )
+    with (
+        patch("agents.digest.get_model") as mock_get_model,
+        patch("agents.digest.Agent") as mock_agent_cls,
+        pytest.raises(RuntimeError, match="requires admitted capability"),
+    ):
+        _get_digest_agent(denied)
+
+    mock_get_model.assert_not_called()
+    mock_agent_cls.assert_not_called()
+
+
+def test_digest_admission_model_mismatch_fails_closed():
+    """If adaptive selection shifted after admission, construction refuses to
+    bind a model other than the admitted one (admit-A/bind-B TOCTOU)."""
+    from agents.digest import _get_digest_agent
+
+    with (
+        patch("agents.digest._selected_digest_model_id", return_value="some-other-model"),
+        patch("agents.digest.get_model") as mock_get_model,
+        pytest.raises(RuntimeError, match="digest_model_admission_mismatch"),
+    ):
+        _get_digest_agent(_admitted_digest_admission())
+
+    mock_get_model.assert_not_called()
+
+
+def test_digest_module_import_binds_no_model():
+    """Import purity: importing agents.digest constructs no Agent/model.
+
+    Regression for the review-blocking finding — the module previously bound a
+    model descriptor (and registered tools) at import, before any admission.
+    """
+    import importlib
+
+    import agents.digest as digest_module
+
+    with (
+        patch("pydantic_ai.Agent") as mock_agent_cls,
+        patch("shared.config.get_model") as mock_get_model,
+        patch("shared.config.get_model_adaptive") as mock_adaptive,
+    ):
+        reloaded = importlib.reload(digest_module)
+        assert reloaded._digest_agent is None
+        mock_agent_cls.assert_not_called()
+        mock_get_model.assert_not_called()
+        mock_adaptive.assert_not_called()
+    importlib.reload(digest_module)
+
+
 @pytest.mark.asyncio
 @patch("agents.digest.collect_recent_documents")
 @patch("agents.digest.collect_collection_stats")
-@patch("agents.digest.digest_agent")
+@patch("agents.digest._get_digest_agent")
 async def test_generate_digest_pipeline(
-    mock_agent,
+    mock_get_agent,
     mock_stats,
     mock_docs,
 ):
+    mock_agent = mock_get_agent.return_value  # the factory's constructed agent
     """End-to-end pipeline test with all I/O mocked."""
     from agents.digest import generate_digest
 
@@ -428,12 +511,13 @@ async def test_generate_digest_pipeline(
 @pytest.mark.asyncio
 @patch("agents.digest.collect_recent_documents")
 @patch("agents.digest.collect_collection_stats")
-@patch("agents.digest.digest_agent")
+@patch("agents.digest._get_digest_agent")
 async def test_generate_digest_empty_results(
-    mock_agent,
+    mock_get_agent,
     mock_stats,
     mock_docs,
 ):
+    mock_agent = mock_get_agent.return_value  # the factory's constructed agent
     """Pipeline handles no new content gracefully."""
     from agents.digest import generate_digest
 
@@ -453,12 +537,13 @@ async def test_generate_digest_empty_results(
 @pytest.mark.asyncio
 @patch("agents.digest.collect_recent_documents")
 @patch("agents.digest.collect_collection_stats")
-@patch("agents.digest.digest_agent")
+@patch("agents.digest._get_digest_agent")
 async def test_generate_digest_llm_failure_graceful(
-    mock_agent,
+    mock_get_agent,
     mock_stats,
     mock_docs,
 ):
+    mock_agent = mock_get_agent.return_value  # the factory's constructed agent
     """Pipeline handles LLM failure gracefully."""
     from agents.digest import generate_digest
 
@@ -475,12 +560,13 @@ async def test_generate_digest_llm_failure_graceful(
 @pytest.mark.asyncio
 @patch("agents.digest.collect_recent_documents")
 @patch("agents.digest.collect_collection_stats")
-@patch("agents.digest.digest_agent")
+@patch("agents.digest._get_digest_agent")
 async def test_generate_digest_admission_denial_skips_llm(
-    mock_agent,
+    mock_get_agent,
     mock_stats,
     mock_docs,
 ):
+    mock_agent = mock_get_agent.return_value  # the factory's constructed agent
     """Capability denial should degrade without invoking the digest agent."""
     from agents.digest import generate_digest
 
@@ -509,12 +595,13 @@ async def test_generate_digest_admission_denial_skips_llm(
 @pytest.mark.asyncio
 @patch("agents.digest.collect_recent_documents")
 @patch("agents.digest.collect_collection_stats")
-@patch("agents.digest.digest_agent")
+@patch("agents.digest._get_digest_agent")
 async def test_generate_digest_prompt_includes_collection_stats(
-    mock_agent,
+    mock_get_agent,
     mock_stats,
     mock_docs,
 ):
+    mock_agent = mock_get_agent.return_value  # the factory's constructed agent
     """Pipeline includes collection size stats in prompt."""
     from agents.digest import generate_digest
 

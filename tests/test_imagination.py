@@ -947,6 +947,45 @@ class TestTickFenceStripFallback:
         assert frag is None
         assemble.assert_not_called()
 
+    def test_denied_admission_agent_construction_raises(self, tmp_path) -> None:
+        """_get_agent/_get_text_agent refuse to construct for a denied admission.
+
+        The construction path itself is the no-escape boundary — a denied route
+        must never bind a model descriptor, independent of whether callers
+        remember to check first.
+        """
+        import unittest.mock
+
+        import pytest
+
+        from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
+
+        loop = ImaginationLoop(
+            current_path=tmp_path / "current.json",
+            stream_path=tmp_path / "stream.jsonl",
+            visual_observation_path=tmp_path / "obs.txt",
+        )
+        denied = BackgroundCapabilityAdmission(
+            capability_name="imagination.loop.llm",
+            route_id="local_tool.local.worker",
+            model_alias="command-r-08-2024",
+            admitted=False,
+            denied_reason="task_note_absent",
+            reason_codes=("task_note_absent",),
+            mutation_surface="none",
+            quality_floor="deterministic_ok",
+        )
+
+        with unittest.mock.patch("agents._config.get_model") as mock_get_model:
+            with pytest.raises(RuntimeError, match="requires admitted capability"):
+                loop._get_agent(denied)
+            with pytest.raises(RuntimeError, match="requires admitted capability"):
+                loop._get_text_agent(denied)
+
+        mock_get_model.assert_not_called()
+        assert loop._agent is None
+        assert getattr(loop, "_text_agent", None) is None
+
     def test_imagination_reasoning_alias_resolves_to_registered_local_leaf(self) -> None:
         """The reasoning selector must bind to the registry local served leaf before admission."""
         import unittest.mock

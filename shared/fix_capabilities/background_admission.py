@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -687,9 +687,16 @@ def _provider_alias_freshness_blocker(
         observed_at = observed_at.replace(tzinfo=comparison_now.tzinfo)
     elif observed_at.tzinfo is not None and comparison_now.tzinfo is None:
         comparison_now = comparison_now.replace(tzinfo=observed_at.tzinfo)
+    # Future-dated evidence is not yet a valid observation: fail closed rather than
+    # fresh (same +1min skew tolerance as platform_capability_registry._timestamp_errors).
+    if observed_at > comparison_now + timedelta(minutes=1):
+        return (
+            "provider_alias_evidence_future_dated:"
+            f"alias={alias_name or 'unknown'} observed_at={observed_at.isoformat()} "
+            f"now={comparison_now.isoformat()}",
+            "provider_alias_evidence_future_dated",
+        )
     age = comparison_now - observed_at
-    if age.total_seconds() < 0:
-        return None
     if age > ttl:
         return (
             "provider_alias_evidence_stale:"

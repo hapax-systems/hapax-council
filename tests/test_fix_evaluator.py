@@ -1,10 +1,14 @@
 """Tests for shared.fix_capabilities.evaluator — LLM evaluator agent.
 
-No LLM calls; the pydantic-ai agent is fully mocked.
+No LLM calls; the pydantic-ai agent factory is fully mocked. Tests patch the
+_get_evaluator_agent factory (never a pre-instantiated module agent) so the
+no-escape invariant — no model binding at import or on a denied route — stays
+observable.
 """
 
 from __future__ import annotations
 
+import importlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -82,6 +86,17 @@ def _admission(*, admitted: bool = True) -> BackgroundCapabilityAdmission:
     )
 
 
+def _patch_evaluator_agent(**run_kwargs):
+    """Patch the lazy agent factory; returns (patcher, run AsyncMock)."""
+    mock_agent = MagicMock()
+    mock_agent.run = AsyncMock(**run_kwargs)
+    patcher = patch(
+        "shared.fix_capabilities.evaluator._get_evaluator_agent",
+        return_value=mock_agent,
+    )
+    return patcher, mock_agent.run
+
+
 # ── Tests ────────────────────────────────────────────────────────────────────
 
 
@@ -94,11 +109,8 @@ async def test_returns_fix_proposal():
     mock_result = MagicMock()
     mock_result.output = proposal
 
-    with patch(
-        "shared.fix_capabilities.evaluator._evaluator_agent.run",
-        new_callable=AsyncMock,
-        return_value=mock_result,
-    ):
+    patcher, _run = _patch_evaluator_agent(return_value=mock_result)
+    with patcher:
         result = await evaluate_check(
             _make_check(),
             _make_probe(),
@@ -116,11 +128,8 @@ async def test_returns_none_on_llm_error():
     """Mock agent.run raises Exception -> returns None."""
     from shared.fix_capabilities.evaluator import evaluate_check
 
-    with patch(
-        "shared.fix_capabilities.evaluator._evaluator_agent.run",
-        new_callable=AsyncMock,
-        side_effect=Exception("LLM timeout"),
-    ):
+    patcher, _run = _patch_evaluator_agent(side_effect=Exception("LLM timeout"))
+    with patcher:
         result = await evaluate_check(
             _make_check(),
             _make_probe(),
@@ -138,10 +147,8 @@ async def test_returns_none_for_healthy_check():
 
     healthy = _make_check(status=Status.HEALTHY, message="all good")
 
-    with patch(
-        "shared.fix_capabilities.evaluator._evaluator_agent.run",
-        new_callable=AsyncMock,
-    ) as mock_run:
+    patcher, mock_run = _patch_evaluator_agent()
+    with patcher:
         result = await evaluate_check(healthy, _make_probe(), _make_actions())
 
     assert result is None
@@ -162,11 +169,8 @@ async def test_returns_none_for_no_action():
     mock_result = MagicMock()
     mock_result.output = no_action_proposal
 
-    with patch(
-        "shared.fix_capabilities.evaluator._evaluator_agent.run",
-        new_callable=AsyncMock,
-        return_value=mock_result,
-    ):
+    patcher, _run = _patch_evaluator_agent(return_value=mock_result)
+    with patcher:
         result = await evaluate_check(
             _make_check(),
             _make_probe(),
@@ -182,10 +186,8 @@ async def test_returns_none_when_no_actions():
     """Empty actions list -> returns None without calling LLM."""
     from shared.fix_capabilities.evaluator import evaluate_check
 
-    with patch(
-        "shared.fix_capabilities.evaluator._evaluator_agent.run",
-        new_callable=AsyncMock,
-    ) as mock_run:
+    patcher, mock_run = _patch_evaluator_agent()
+    with patcher:
         result = await evaluate_check(_make_check(), _make_probe(), [])
 
     assert result is None
@@ -203,11 +205,8 @@ async def test_prompt_includes_check_context():
 
     check = _make_check(name="docker_litellm", message="container not running")
 
-    with patch(
-        "shared.fix_capabilities.evaluator._evaluator_agent.run",
-        new_callable=AsyncMock,
-        return_value=mock_result,
-    ) as mock_run:
+    patcher, mock_run = _patch_evaluator_agent(return_value=mock_result)
+    with patcher:
         await evaluate_check(
             check,
             _make_probe(),
@@ -223,7 +222,11 @@ async def test_prompt_includes_check_context():
 
 @pytest.mark.asyncio
 async def test_default_admission_denial_skips_llm():
-    """The public evaluator API fails closed by default before model use."""
+    """The public evaluator API fails closed by default before ANY model binding.
+
+    Denial must be proven at the construction layer, not by patching an
+    already-instantiated agent: get_model and Agent must never be called.
+    """
     from shared.fix_capabilities.evaluator import evaluate_check
 
     with (
@@ -231,15 +234,50 @@ async def test_default_admission_denial_skips_llm():
             "shared.fix_capabilities.evaluator.admit_fix_evaluator",
             return_value=_admission(admitted=False),
         ),
-        patch(
-            "shared.fix_capabilities.evaluator._evaluator_agent.run",
-            new_callable=AsyncMock,
-        ) as mock_run,
+        patch("shared.fix_capabilities.evaluator.get_model") as mock_get_model,
+        patch("shared.fix_capabilities.evaluator.Agent") as mock_agent_cls,
     ):
         result = await evaluate_check(_make_check(), _make_probe(), _make_actions())
 
     assert result is None
-    mock_run.assert_not_called()
+    mock_get_model.assert_not_called()
+    mock_agent_cls.assert_not_called()
+
+
+def test_denied_admission_construction_raises():
+    """_get_evaluator_agent refuses to bind a model for a denied admission."""
+    from shared.fix_capabilities import evaluator
+
+    with (
+        patch("shared.fix_capabilities.evaluator.get_model") as mock_get_model,
+        patch("shared.fix_capabilities.evaluator.Agent") as mock_agent_cls,
+        pytest.raises(RuntimeError, match="requires admitted capability"),
+    ):
+        evaluator._get_evaluator_agent(_admission(admitted=False))
+
+    mock_get_model.assert_not_called()
+    mock_agent_cls.assert_not_called()
+
+
+def test_module_import_binds_no_model():
+    """Import purity: importing the evaluator module constructs no Agent/model.
+
+    Regression for the review-blocking finding — the module previously bound a
+    LiteLLM-backed model descriptor at import, before any admission.
+    """
+    import shared.fix_capabilities.evaluator as evaluator_module
+
+    with (
+        patch("pydantic_ai.Agent") as mock_agent_cls,
+        patch("shared.config.get_model") as mock_get_model,
+    ):
+        reloaded = importlib.reload(evaluator_module)
+        assert reloaded._evaluator_agent is None
+        mock_agent_cls.assert_not_called()
+        mock_get_model.assert_not_called()
+    # Restore a clean module state for other tests (reload under patch left the
+    # module's Agent/get_model names bound to the real symbols again).
+    importlib.reload(evaluator_module)
 
 
 def test_fix_evaluator_admission_uses_provider_gateway_route():

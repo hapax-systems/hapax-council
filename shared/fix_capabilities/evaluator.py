@@ -51,11 +51,28 @@ EVALUATOR_MODEL_ALIAS = "fast"
 EVALUATOR_ROUTE_ID_ENV = "HAPAX_FIX_EVALUATOR_ROUTE_ID"
 EVALUATOR_ROUTE_ID = "api.headless.provider_gateway"
 
-_evaluator_agent = Agent(
-    model=get_model(EVALUATOR_MODEL_ALIAS),
-    output_type=FixProposal,
-    system_prompt=_SYSTEM_PROMPT,
-)
+# Lazily constructed by _get_evaluator_agent() — module import must bind no model
+# descriptor, and a denied admission must never reach get_model() (no-escape predicate).
+_evaluator_agent: Agent | None = None
+
+
+def _get_evaluator_agent(admission: BackgroundCapabilityAdmission) -> Agent:
+    """Construct (once) and return the evaluator agent for an ADMITTED capability.
+
+    Raises RuntimeError when called with a non-admitted admission: agent
+    construction binds the LiteLLM-backed model descriptor, which is exactly the
+    resource a denied route must never bind.
+    """
+    if not admission.admitted:
+        raise RuntimeError("fix evaluator agent construction requires admitted capability")
+    global _evaluator_agent
+    if _evaluator_agent is None:
+        _evaluator_agent = Agent(
+            model=get_model(EVALUATOR_MODEL_ALIAS),
+            output_type=FixProposal,
+            system_prompt=_SYSTEM_PROMPT,
+        )
+    return _evaluator_agent
 
 
 def admit_fix_evaluator() -> BackgroundCapabilityAdmission:
@@ -149,7 +166,8 @@ async def evaluate_check(
 
     try:
         prompt = _build_prompt(check, probe, actions)
-        result = await _evaluator_agent.run(prompt)
+        agent = _get_evaluator_agent(admission)
+        result = await agent.run(prompt)
         proposal = result.output
 
         if proposal.action_name == "no_action":

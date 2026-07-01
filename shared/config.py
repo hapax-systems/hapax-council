@@ -243,13 +243,14 @@ def _local_capacity_backpressure_active(raw: dict) -> bool:
         return _LOCAL_CAPACITY_BACKPRESSURE_ACTIVE
 
 
-def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
-    """Stimmung-aware model selection — downgrades when system is stressed.
+def resolve_model_alias_adaptive(alias: str = "balanced") -> str:
+    """Resolve the stimmung-adaptive alias WITHOUT constructing a model.
 
-    Reads live stimmung from /dev/shm. When cost pressure or resource pressure
-    is high, routes to cheaper/local models instead of the requested tier.
-    Fresh local_capacity_pressure protects the local-fast sink when local
-    inference itself is saturated.
+    This is the selection half of get_model_adaptive(): callers that must know
+    the model identity before they are admitted to bind it (capability
+    admission) resolve here, admit the resolved identity, then construct via
+    get_model(resolved) — so the admitted model and the bound model are
+    provably the same.
 
     Downgrade rules:
     - llm_cost_pressure > 0.6: balanced→fast, fast stays fast
@@ -270,9 +271,9 @@ def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
         if stance == "critical":
             if local_backpressure:
                 _log.debug("Stimmung critical + local capacity pressure → routing to fast")
-                return get_model("fast")
+                return "fast"
             _log.debug("Stimmung critical → routing to local-fast")
-            return get_model("local-fast")
+            return "local-fast"
 
         if resource > 0.7:
             local_sink = "fast" if local_backpressure else "local-fast"
@@ -298,7 +299,7 @@ def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
                     alias,
                     downgraded[alias],
                 )
-                return get_model(downgraded[alias])
+                return downgraded[alias]
 
         if cost > 0.6:
             downgraded = {
@@ -311,12 +312,24 @@ def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
                 _log.debug(
                     "Cost pressure %.2f → %s downgraded to %s", cost, alias, downgraded[alias]
                 )
-                return get_model(downgraded[alias])
+                return downgraded[alias]
 
     except Exception:
         pass  # stimmung unavailable → use requested model
 
-    return get_model(alias)
+    return alias
+
+
+def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
+    """Stimmung-aware model selection — downgrades when system is stressed.
+
+    Reads live stimmung from /dev/shm. When cost pressure or resource pressure
+    is high, routes to cheaper/local models instead of the requested tier.
+    Fresh local_capacity_pressure protects the local-fast sink when local
+    inference itself is saturated. Selection logic lives in
+    resolve_model_alias_adaptive().
+    """
+    return get_model(resolve_model_alias_adaptive(alias))
 
 
 @functools.lru_cache(maxsize=1)
