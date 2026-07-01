@@ -88,8 +88,8 @@ def _refs(*, money: bool = True, no_perk: bool = True) -> dict[str, bool]:
 def _verified_resource_receipt_refs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         readiness_module,
-        "resource_receipt_exists",
-        lambda _ref: True,
+        "resource_receipt_matches",
+        lambda _ref, **_kwargs: True,
     )
 
 
@@ -199,8 +199,8 @@ def test_unverified_resource_receipt_holds_public_support_copy(
 ) -> None:
     monkeypatch.setattr(
         readiness_module,
-        "resource_receipt_exists",
-        lambda _ref: False,
+        "resource_receipt_matches",
+        lambda _ref, **_kwargs: False,
     )
 
     decision = evaluate_support_copy_readiness(
@@ -212,6 +212,33 @@ def test_unverified_resource_receipt_holds_public_support_copy(
     assert decision.state == "monetization-held"
     assert decision.public_copy_allowed is False
     assert "money_rail_resource_receipt_unverified" in decision.blockers
+
+
+def test_support_copy_receipt_verification_requires_payment_event_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def _matches(ref: str, **kwargs: object) -> bool:
+        calls.append({"ref": ref, **kwargs})
+        return True
+
+    monkeypatch.setattr(readiness_module, "resource_receipt_matches", _matches)
+
+    decision = evaluate_support_copy_readiness(
+        _registry(),
+        _ledger(ALL_DIMS, resource_receipt=True),
+        readiness_refs=_refs(),
+    )
+
+    assert decision.state == "public-safe"
+    assert calls == [
+        {
+            "ref": "money-rail-resource-receipt:liberapay:mrr-test",
+            "rail": "liberapay",
+            "operation": readiness_module.MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+        }
+    ]
 
 
 def test_readme_and_package_cannot_invite_support_before_public_safe() -> None:

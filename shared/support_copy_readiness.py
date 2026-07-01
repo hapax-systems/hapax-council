@@ -13,7 +13,10 @@ from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agents.payment_processors.resource_receipts import resource_receipt_exists
+from agents.payment_processors.resource_receipts import (
+    MoneyRailReceiptOperation,
+    resource_receipt_matches,
+)
 from shared.conversion_target_readiness import GateDimension, TargetFamilyId
 from shared.monetization_readiness_ledger import MonetizationReadinessLedger
 from shared.support_surface_registry import SupportSurfaceRegistry, public_prompt_allowed
@@ -332,7 +335,9 @@ def evaluate_support_copy_readiness(
             evidence_refs=entry.evidence_refs,
             registry=registry,
         )
-    unverified_receipt_refs = tuple(ref for ref in receipt_refs if not resource_receipt_exists(ref))
+    unverified_receipt_refs = tuple(
+        ref for ref in receipt_refs if not _payment_event_receipt_matches_ref(ref)
+    )
     if unverified_receipt_refs:
         return _decision(
             state="monetization-held",
@@ -429,3 +434,15 @@ def _consumer_state(
 
 def _resource_receipt_refs(refs: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(ref for ref in refs if ref.startswith(MONEY_RAIL_RESOURCE_RECEIPT_REF_PREFIX))
+
+
+def _payment_event_receipt_matches_ref(ref: str) -> bool:
+    try:
+        _prefix, rail, _receipt_id = ref.split(":", 2)
+    except ValueError:
+        return False
+    return resource_receipt_matches(
+        ref,
+        rail=rail,
+        operation=MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+    )
