@@ -530,10 +530,19 @@ def write_capability_surface_delta_tasks(
     errors: list[str] = []
     active_root = task_root / "active"
     for delta in deltas:
-        path = active_root / task_filename_for_delta(delta)
-        if path.exists():
-            skipped_existing.append(str(path))
+        filename = task_filename_for_delta(delta)
+        existing_path = next(
+            (
+                task_root / state / filename
+                for state in ("active", "closed", "refused")
+                if (task_root / state / filename).exists()
+            ),
+            None,
+        )
+        if existing_path is not None:
+            skipped_existing.append(str(existing_path))
             continue
+        path = active_root / filename
         rendered = render_capability_surface_delta_task(delta, generated_at=generated_at)
         if not apply:
             would_write.append(str(path))
@@ -545,7 +554,10 @@ def write_capability_surface_delta_tasks(
             tmp.replace(path)
             written.append(str(path))
         except OSError as exc:
-            errors.append(f"{path}: {exc}")
+            errors.append(
+                f"{path}: {exc}; next action: repair task-root permissions or "
+                "filesystem availability, then rerun this intake command"
+            )
     return {
         "ok": not errors,
         "loaded": len(deltas),

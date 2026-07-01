@@ -18,6 +18,7 @@ from shared.capability_surface_delta import (
     load_capability_surface_delta_file,
     load_capability_surface_delta_fixtures,
     render_capability_surface_delta_task,
+    task_filename_for_delta,
     task_id_for_delta,
     write_capability_surface_delta_tasks,
 )
@@ -317,3 +318,25 @@ def test_delta_task_writer_dry_run_and_apply_are_idempotent(tmp_path) -> None:
     assert again["ok"] is True
     assert again["written"] == []
     assert again["skipped_existing"] == [str(written)]
+
+
+def test_delta_task_writer_does_not_remint_closed_or_refused_tasks(tmp_path) -> None:
+    deltas = load_capability_surface_delta_fixtures().deltas[:2]
+    closed = tmp_path / "closed" / task_filename_for_delta(deltas[0])
+    refused = tmp_path / "refused" / task_filename_for_delta(deltas[1])
+    closed.parent.mkdir(parents=True)
+    refused.parent.mkdir(parents=True)
+    closed.write_text("closed task\n", encoding="utf-8")
+    refused.write_text("refused task\n", encoding="utf-8")
+
+    result = write_capability_surface_delta_tasks(
+        deltas,
+        task_root=tmp_path,
+        generated_at=NOW,
+        apply=True,
+    )
+
+    assert result["ok"] is True
+    assert result["written"] == []
+    assert result["skipped_existing"] == [str(closed), str(refused)]
+    assert not (tmp_path / "active").exists()
