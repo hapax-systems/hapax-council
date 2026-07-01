@@ -186,7 +186,14 @@ class DurableJsonlSink:
 
         root = assert_durable_root(self.root)
         target = root / _stream_filename(stream_id)
-        lock_fd = os.open(_lock_path(target), os.O_WRONLY | os.O_CREAT, 0o600)
+        lock_path = _lock_path(target)
+        try:
+            lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600)
+        except OSError as exc:
+            raise DurableSinkAppendError(
+                f"failed to open durable sink lock {lock_path}; next action: verify "
+                "the durable root still exists and is writable"
+            ) from exc
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             # Phase 1 intentionally revalidates the whole stream before each
@@ -346,9 +353,15 @@ def validate_chain(
 
 def _append_row_locked(target: Path, row: DurableSinkRow) -> None:
     blob = (_canonical_json(row.as_dict()) + "\n").encode("utf-8")
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    start_offset = os.lseek(fd, 0, os.SEEK_END)
     try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    except OSError as exc:
+        raise DurableSinkAppendError(
+            f"failed to open durable sink stream file {target}; next action: verify "
+            "the durable root still exists and is writable"
+        ) from exc
+    try:
+        start_offset = os.lseek(fd, 0, os.SEEK_END)
         try:
             _write_all(fd, blob)
             os.fsync(fd)

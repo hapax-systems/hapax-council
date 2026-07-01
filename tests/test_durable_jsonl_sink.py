@@ -253,6 +253,35 @@ def test_chain_validation_catches_modified_rows(
     assert "row_hash_mismatch" in {issue.code for issue in result.issues}
 
 
+def test_append_refuses_existing_corrupt_stream_without_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    row = sink.append(
+        stream_id="payment-event",
+        data_class="financial_receipt",
+        source_receipt_ref="receipt://payment/1",
+        payload={"idx": 1},
+        timestamp="2026-07-01T00:00:00Z",
+    )
+    path = sink.path_for_stream("payment-event")
+    tampered = row.as_dict()
+    tampered["payload"] = {"idx": 999}
+    original_corrupt_text = _json_line(tampered) + "\n"
+    path.write_text(original_corrupt_text, encoding="utf-8")
+
+    with pytest.raises(DurableSinkChainError, match="next action"):
+        sink.append(
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/2",
+            payload={"idx": 2},
+            timestamp="2026-07-01T00:00:01Z",
+        )
+
+    assert path.read_text(encoding="utf-8") == original_corrupt_text
+
+
 def test_chain_validation_catches_reordered_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -472,6 +501,56 @@ def test_zero_progress_append_rolls_back_and_raises(
     assert path.read_text(encoding="utf-8") == original
 
 
+def test_append_lock_open_failure_has_next_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    real_open = sink_mod.os.open
+
+    def failing_lock_open(path: Any, flags: int, mode: int = 0o777) -> int:
+        if str(path).endswith(".lock"):
+            raise PermissionError("simulated lock open failure")
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(sink_mod.os, "open", failing_lock_open)
+
+    with pytest.raises(DurableSinkAppendError, match="lock .*next action"):
+        sink.append(
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/1",
+            payload={"idx": 1},
+            timestamp="2026-07-01T00:00:00Z",
+        )
+
+    assert not sink.path_for_stream("payment-event").exists()
+
+
+def test_append_stream_open_failure_has_next_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    real_open = sink_mod.os.open
+
+    def failing_stream_open(path: Any, flags: int, mode: int = 0o777) -> int:
+        if Path(path).name == "payment-event.jsonl":
+            raise PermissionError("simulated stream open failure")
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(sink_mod.os, "open", failing_stream_open)
+
+    with pytest.raises(DurableSinkAppendError, match="stream file .*next action"):
+        sink.append(
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/1",
+            payload={"idx": 1},
+            timestamp="2026-07-01T00:00:00Z",
+        )
+
+    assert not sink.path_for_stream("payment-event").exists()
+
+
 def test_partial_append_raises_even_when_rollback_truncate_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -514,6 +593,34 @@ def test_partial_append_raises_even_when_rollback_truncate_fails(
 
     assert truncations == [len(original.encode("utf-8"))]
     assert validate_chain(path, stream_id="payment-event").valid is False
+
+
+def test_directory_fsync_success_opens_readonly_and_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[tuple[Path, int]] = []
+    fsynced: list[int] = []
+    closed: list[int] = []
+
+    def fake_open(path: Any, flags: int, _mode: int = 0o777) -> int:
+        opened.append((Path(path), flags))
+        return 99
+
+    def recording_fsync(fd: int) -> None:
+        fsynced.append(fd)
+
+    def recording_close(fd: int) -> None:
+        closed.append(fd)
+
+    monkeypatch.setattr(sink_mod.os, "open", fake_open)
+    monkeypatch.setattr(sink_mod.os, "fsync", recording_fsync)
+    monkeypatch.setattr(sink_mod.os, "close", recording_close)
+
+    sink_mod._fsync_directory(tmp_path)
+
+    assert opened == [(tmp_path, sink_mod.os.O_RDONLY)]
+    assert fsynced == [99]
+    assert closed == [99]
 
 
 def test_directory_fsync_failure_has_next_action(
