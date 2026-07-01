@@ -8,9 +8,11 @@ import pytest
 
 from agents.payment_processors.resource_receipts import (
     MoneyRailReceiptOperation,
+    MoneyRailResourceReceiptError,
     append_resource_receipt,
     build_resource_receipt,
     receipt_reference,
+    record_payment_event_resource_receipt,
     require_resource_receipt,
     resource_receipt_exists,
     tail_resource_receipts,
@@ -57,8 +59,32 @@ def test_require_resource_receipt_fails_closed_when_missing(tmp_path) -> None:
     ref = receipt_reference(receipt)
 
     assert resource_receipt_exists(ref, log_path=tmp_path / "missing.jsonl") is False
-    with pytest.raises(Exception, match="missing money-rail resource receipt"):
+    with pytest.raises(MoneyRailResourceReceiptError, match="missing money-rail resource receipt"):
         require_resource_receipt(ref, log_path=tmp_path / "missing.jsonl")
+
+
+def test_payment_event_receipt_ref_is_idempotent_for_same_event(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+
+    first = record_payment_event_resource_receipt(
+        rail="lightning",
+        external_id="invoice-1",
+        event_kind="settled",
+        downstream_action="lightning.poll_once",
+        log_path=log_path,
+    )
+    second = record_payment_event_resource_receipt(
+        rail="lightning",
+        external_id="invoice-1",
+        event_kind="settled",
+        downstream_action="lightning.poll_once",
+        log_path=log_path,
+    )
+
+    assert second == first
+    rows = tail_resource_receipts(log_path=log_path)
+    assert len(rows) == 1
+    assert receipt_reference(rows[0]) == first
 
 
 def test_resource_receipt_exists_scans_beyond_tail_window(tmp_path) -> None:

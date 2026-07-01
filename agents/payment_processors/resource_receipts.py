@@ -395,8 +395,11 @@ def _receipt_id(
     raw_payload_sha256: str | None,
     created_at: datetime,
 ) -> str:
-    if operation is MoneyRailReceiptOperation.INGRESS:
-        basis = f"ingress:{rail}:{external_id_sha256 or raw_payload_sha256}:{route_path}"
+    if operation in {
+        MoneyRailReceiptOperation.INGRESS,
+        MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+    }:
+        basis = f"{operation.value}:{rail}:{external_id_sha256 or raw_payload_sha256}:{route_path}"
     else:
         basis = (
             f"{operation.value}:{rail}:{external_id_sha256 or raw_payload_sha256}:"
