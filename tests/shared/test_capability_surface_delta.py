@@ -631,15 +631,12 @@ def test_delta_task_writer_dry_run_and_apply_are_idempotent(tmp_path) -> None:
     assert again["skipped_existing"] == [str(written)]
 
 
-def test_delta_task_writer_updates_changed_active_task(tmp_path) -> None:
+def test_delta_task_writer_does_not_overwrite_existing_active_task(tmp_path) -> None:
     delta = load_capability_surface_delta_fixtures().deltas[0]
     active = tmp_path / "active" / task_filename_for_delta(delta)
     active.parent.mkdir(parents=True)
-    stale_rendered = render_capability_surface_delta_task(delta, generated_at=NOW).replace(
-        f'capability_freshness_state: "{delta.freshness_state.value}"',
-        'capability_freshness_state: "stale-local-test"',
-    )
-    active.write_text(stale_rendered, encoding="utf-8")
+    existing = "operator-edited active task\n"
+    active.write_text(existing, encoding="utf-8")
 
     dry = write_capability_surface_delta_tasks(
         [delta],
@@ -647,8 +644,10 @@ def test_delta_task_writer_updates_changed_active_task(tmp_path) -> None:
         generated_at=NOW.replace(hour=5),
         apply=False,
     )
-    assert dry["would_update"] == [str(active)]
-    assert "stale-local-test" in active.read_text(encoding="utf-8")
+    assert dry["would_write"] == []
+    assert dry["would_update"] == []
+    assert dry["skipped_existing"] == [str(active)]
+    assert active.read_text(encoding="utf-8") == existing
 
     applied = write_capability_surface_delta_tasks(
         [delta],
@@ -658,11 +657,9 @@ def test_delta_task_writer_updates_changed_active_task(tmp_path) -> None:
     )
 
     assert applied["written"] == []
-    assert applied["updated"] == [str(active)]
-    updated_text = active.read_text(encoding="utf-8")
-    assert f'capability_surface_delta_id: "{delta.delta_id}"' in updated_text
-    assert "stale-local-test" not in updated_text
-    assert 'created_at: "2026-07-01T04:30:00Z"' in updated_text
+    assert applied["updated"] == []
+    assert applied["skipped_existing"] == [str(active)]
+    assert active.read_text(encoding="utf-8") == existing
 
 
 def test_delta_task_writer_does_not_overwrite_claimed_active_task(tmp_path) -> None:
