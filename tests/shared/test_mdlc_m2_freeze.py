@@ -293,6 +293,42 @@ def test_invalid_budget_envelope_is_not_reported_as_ladder_failure() -> None:
     assert result.next_action == "repair the budget envelope fields before commit"
 
 
+def test_publish_only_without_flood_plan_refuses_at_m2() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget["publish_only"] = True
+
+    result = verify_m2_freeze_artifact(
+        _artifact(budget_envelope=budget),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is M2FreezeRefusalReason.PUBLISH_ONLY_WITHOUT_FLOOD_PLAN
+    assert (
+        result.next_action
+        == "supply a flood_plan or mark a non_public/no_audience exemption for the publish-only "
+        "M2 freeze artifact"
+    )
+
+
+@pytest.mark.parametrize("exemption", ("flood_plan", "non_public", "no_audience"))
+def test_publish_only_requires_flood_plan_or_no_audience_exemption(exemption: str) -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget["publish_only"] = True
+    if exemption == "flood_plan":
+        budget["flood_plan"] = "flood-plan:public-audience-generation"
+    else:
+        budget[exemption] = True
+
+    result = verify_m2_freeze_artifact(
+        _artifact(budget_envelope=budget),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.LIT
+    assert result.refusal_reason is None
+
+
 def test_invalid_ladder_refuses_with_ladder_reason() -> None:
     ladder = dict(_artifact()["ladder"])
     ladder["min_corroboration_count"] = 0
