@@ -279,7 +279,12 @@ def _refused(
 def _counterparty_evidence_refs(counterparty: MonDLCCounterparty) -> tuple[str, ...]:
     refs = [f"counterparty-class:{counterparty.counterparty_class.value}"]
     if counterparty.counterparty_id:
-        refs.append(f"counterparty:{counterparty.counterparty_id}")
+        counterparty_ref = (
+            counterparty.counterparty_id
+            if counterparty.counterparty_id.startswith("counterparty:")
+            else f"counterparty:{counterparty.counterparty_id}"
+        )
+        refs.append(counterparty_ref)
     refs.extend(counterparty.evidence_refs)
     return tuple(dict.fromkeys(refs))
 

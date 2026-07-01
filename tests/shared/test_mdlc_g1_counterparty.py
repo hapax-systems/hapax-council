@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from shared.capdlc_lifecycle import GateStatus
+from shared.capdlc_lifecycle import GateResult, GateStatus
 from shared.mdlc_g1_counterparty import (
     ELIGIBLE_COUNTERPARTY_CLASSES,
     ArbitrageRefusal,
     G1CounterpartyRefusalReason,
+    G1CounterpartyVerification,
     MonDLCCounterparty,
     MonDLCCounterpartyClass,
     require_g1_counterparty,
@@ -50,7 +51,7 @@ def test_allowed_counterparty_classes_are_lit(counterparty_class: str) -> None:
     assert result.refusal_reason is None
     assert result.counterparty_class == counterparty_class
     assert f"counterparty-class:{counterparty_class}" in result.evidence_refs
-    assert "counterparty:counterparty:test-market-maker" in result.evidence_refs
+    assert "counterparty:test-market-maker" in result.evidence_refs
 
 
 def test_lit_result_to_dict_preserves_gate_contract() -> None:
@@ -83,6 +84,17 @@ def test_counterparty_to_dict_preserves_normalized_fields() -> None:
         "counterparty_id": "counterparty:abc",
         "evidence_refs": ["counterparty-registry:test-market-maker"],
     }
+
+
+def test_native_counterparty_constructor_coerces_string_class() -> None:
+    counterparty = MonDLCCounterparty(
+        counterparty_class=" Market ",  # type: ignore[arg-type]
+        counterparty_id="market-maker-1",
+    )
+
+    assert counterparty.counterparty_class is MonDLCCounterpartyClass.MARKET
+    result = verify_g1_counterparty(counterparty)
+    assert "counterparty:market-maker-1" in result.evidence_refs
 
 
 def test_native_counterparty_class_is_accepted() -> None:
@@ -169,6 +181,28 @@ def test_invalid_evidence_refs_has_specific_refusal_reason() -> None:
     assert result.refusal_reason is G1CounterpartyRefusalReason.INVALID_EVIDENCE_REFS
 
 
+def test_invalid_evidence_ref_item_has_specific_refusal_reason() -> None:
+    result = verify_g1_counterparty(_counterparty(evidence_refs=("valid-ref", 123)))
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is G1CounterpartyRefusalReason.INVALID_EVIDENCE_REFS
+
+
+def test_missing_evidence_refs_are_optional() -> None:
+    payload = {
+        "counterparty_id": "counterparty:no-refs",
+        "counterparty_class": "institution",
+    }
+
+    result = verify_g1_counterparty(payload)
+
+    assert result.status is GateStatus.LIT
+    assert result.evidence_refs == (
+        "counterparty-class:institution",
+        "counterparty:no-refs",
+    )
+
+
 def test_dark_result_to_dict_preserves_refusal_contract() -> None:
     result = verify_g1_counterparty(_counterparty(counterparty_class="retail"))
 
@@ -182,6 +216,42 @@ def test_dark_result_to_dict_preserves_refusal_contract() -> None:
     assert data["evidence_refs"] == []
     assert data["gate_result"]["status"] == "dark"
     assert data["gate_result"]["verdict"] is None
+
+
+def test_verification_constructor_rejects_invalid_status_type() -> None:
+    with pytest.raises(TypeError, match="status"):
+        G1CounterpartyVerification(
+            validator="mdlc_g1_counterparty",
+            validator_version=1,
+            status="lit",  # type: ignore[arg-type]
+            gate_result=GateResult(status=GateStatus.LIT, verdict=True, reason="ok"),
+            reason="ok",
+            refusal_reason=None,
+        )
+
+
+def test_verification_constructor_rejects_invalid_gate_result_type() -> None:
+    with pytest.raises(TypeError, match="gate_result"):
+        G1CounterpartyVerification(
+            validator="mdlc_g1_counterparty",
+            validator_version=1,
+            status=GateStatus.LIT,
+            gate_result=object(),  # type: ignore[arg-type]
+            reason="ok",
+            refusal_reason=None,
+        )
+
+
+def test_verification_constructor_rejects_invalid_refusal_reason_type() -> None:
+    with pytest.raises(TypeError, match="refusal_reason"):
+        G1CounterpartyVerification(
+            validator="mdlc_g1_counterparty",
+            validator_version=1,
+            status=GateStatus.DARK,
+            gate_result=GateResult(status=GateStatus.DARK, verdict=None, reason="blocked"),
+            reason="blocked",
+            refusal_reason="blocked",  # type: ignore[arg-type]
+        )
 
 
 def test_g1_does_not_decide_g2_venue_or_instrument_legality() -> None:
