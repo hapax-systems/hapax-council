@@ -23,6 +23,7 @@ data only. There is no method that initiates payment.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import threading
 from collections import defaultdict
@@ -62,6 +63,12 @@ def build_monetization_block(
     re-reads don't double-count. Empty log → default block (zeros).
     """
     events = tail_events(log_path=log_path)
+    return _block_from_events(events, public=public)
+
+
+def _block_from_events(events: list[PaymentEvent], *, public: bool = False) -> MonetizationBlock:
+    """Build the awareness block from an already-captured event window."""
+
     seen_ids: set[tuple[str, str]] = set()
     counts: dict[str, int] = defaultdict(int)
     total_sats = 0
@@ -93,6 +100,14 @@ def build_monetization_block(
         total_sats_received=total_sats,
         total_eur_received=round(total_eur, 2),
     )
+
+
+def _event_window_sha256(events: list[PaymentEvent]) -> str:
+    digest = hashlib.sha256()
+    for event in events:
+        digest.update(event.model_dump_json().encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 class MonetizationAggregator:
@@ -156,11 +171,12 @@ class MonetizationAggregator:
         Returns True iff the write succeeded. Called periodically by
         ``run_aggregate_loop``; can also be invoked from tests.
         """
-        receipt_count = len(tail_events(log_path=self._log_path))
+        events = tail_events(log_path=self._log_path)
         receipt_ref = record_awareness_write_resource_receipt(
             state_path=self._state_path,
             source_log_path=self._log_path,
-            receipt_count=receipt_count,
+            receipt_count=len(events),
+            source_window_sha256=_event_window_sha256(events),
         )
         if receipt_ref is None:
             log.warning(
@@ -169,7 +185,7 @@ class MonetizationAggregator:
                 "and receipt log permissions"
             )
             return False
-        block = build_monetization_block(log_path=self._log_path)
+        block = _block_from_events(events)
         from datetime import UTC, datetime
 
         state = AwarenessState(

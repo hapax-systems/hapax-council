@@ -133,6 +133,10 @@ class TestAwarenessWriteReceipts:
         assert len(receipts) == 1
         assert receipts[0].operation.value == "awareness_state_write"
         assert receipts[0].spend_authority_granted is False
+        assert any(
+            ref.startswith("payment_event_window_sha256:")
+            for ref in receipts[0].resource_provenance
+        )
 
     def test_flush_fails_closed_when_resource_receipt_missing(self, tmp_path, monkeypatch):
         import agents.payment_processors.monetization_aggregator as aggregator_mod

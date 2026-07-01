@@ -71,8 +71,8 @@ def _readiness(safe: bool = True) -> MonetizationReadinessGate:
 def _verified_resource_receipt_refs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         normalizer_module,
-        "resource_receipt_exists",
-        lambda _ref: True,
+        "resource_receipt_matches",
+        lambda _ref, **_kwargs: True,
     )
 
 
@@ -239,8 +239,8 @@ def test_public_emit_refused_when_resource_receipt_ref_unverified(
     rail = Rail.LIBERAPAY
     monkeypatch.setattr(
         normalizer_module,
-        "resource_receipt_exists",
-        lambda _ref: False,
+        "resource_receipt_matches",
+        lambda _ref, **_kwargs: False,
     )
 
     decision = evaluate_public_emit(
@@ -255,6 +255,40 @@ def test_public_emit_refused_when_resource_receipt_ref_unverified(
 
     assert decision.verdict is NormalizerVerdict.REFUSED_MISSING_RESOURCE_RECEIPT
     assert decision.emission is None
+
+
+def test_public_emit_receipt_matcher_receives_rail_operation_and_receipt_id(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    rail = Rail.LIBERAPAY
+    calls: list[dict[str, object]] = []
+
+    def _matches(ref: str, **kwargs: object) -> bool:
+        calls.append({"ref": ref, **kwargs})
+        return True
+
+    monkeypatch.setattr(normalizer_module, "resource_receipt_matches", _matches)
+
+    receipt = _receipt(rail=rail, receipt_id_suffix="match")
+    decision = evaluate_public_emit(
+        rail,
+        (receipt,),
+        surface_approval=_approval(rail),
+        readiness=_readiness(safe=True),
+        window_start=datetime(2026, 5, 2, 11, 0, tzinfo=UTC),
+        window_end=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+        captured_at=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+    )
+
+    assert decision.verdict is NormalizerVerdict.EMITTED
+    assert calls == [
+        {
+            "ref": receipt.resource_receipt_ref,
+            "rail": "liberapay",
+            "operation": normalizer_module.MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+            "external_id": receipt.receipt_id,
+        }
+    ]
 
 
 def test_public_emit_refused_when_no_receipts():

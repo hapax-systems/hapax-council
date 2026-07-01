@@ -15,6 +15,7 @@ from agents.payment_processors.resource_receipts import (
     record_payment_event_resource_receipt,
     require_resource_receipt,
     resource_receipt_exists,
+    resource_receipt_matches,
     tail_resource_receipts,
 )
 
@@ -85,6 +86,40 @@ def test_payment_event_receipt_ref_is_idempotent_for_same_event(tmp_path) -> Non
     rows = tail_resource_receipts(log_path=log_path)
     assert len(rows) == 1
     assert receipt_reference(rows[0]) == first
+
+
+def test_resource_receipt_matches_rail_operation_and_external_id(tmp_path) -> None:
+    log_path = tmp_path / "resource-receipts.jsonl"
+    ref = record_payment_event_resource_receipt(
+        rail="liberapay",
+        external_id="r-liberapay-001",
+        event_kind="payin_succeeded",
+        downstream_action="liberapay.poll_once",
+        log_path=log_path,
+    )
+
+    assert ref is not None
+    assert resource_receipt_matches(
+        ref,
+        rail="liberapay",
+        operation=MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+        external_id="r-liberapay-001",
+        log_path=log_path,
+    )
+    assert not resource_receipt_matches(
+        ref,
+        rail="lightning",
+        operation=MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+        external_id="r-liberapay-001",
+        log_path=log_path,
+    )
+    assert not resource_receipt_matches(
+        ref,
+        rail="liberapay",
+        operation=MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+        external_id="different-receipt",
+        log_path=log_path,
+    )
 
 
 def test_resource_receipt_exists_scans_beyond_tail_window(tmp_path) -> None:

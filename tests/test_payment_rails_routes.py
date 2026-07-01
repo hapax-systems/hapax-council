@@ -244,6 +244,40 @@ async def test_all_webhook_routes_use_private_receipt_first_idempotency(
     assert "resource_receipt_ref" not in body
 
 
+def test_receipt_first_store_refuses_seen_state_mutation_when_receipt_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import logos.api.routes.payment_rails as mod
+
+    calls: list[str] = []
+
+    class _Store:
+        def record_or_skip(self, _event_id: str, *, first_seen_at=None) -> bool:
+            calls.append("record_or_skip")
+            return True
+
+        def has_seen(self, _event_id: str) -> bool:
+            return False
+
+    def _missing_receipt(**_kwargs) -> str:
+        calls.append("receipt")
+        raise RuntimeError("missing governed receipt")
+
+    monkeypatch.setattr(mod, "require_ingress_resource_receipt", _missing_receipt)
+    store = mod._ReceiptFirstIdempotencyStore(  # noqa: SLF001
+        _Store(),
+        rail="liberapay",
+        route_path="/api/payment-rails/liberapay",
+        raw_payload_sha256="a" * 64,
+        event_kind="payin_succeeded",
+    )
+
+    with pytest.raises(RuntimeError, match="missing governed receipt"):
+        store.record_or_skip("lp-receipt-first")
+
+    assert calls == ["receipt"]
+
+
 # ---------------------------------------------------------------------------
 # Happy paths
 # ---------------------------------------------------------------------------

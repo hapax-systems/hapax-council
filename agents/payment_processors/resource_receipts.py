@@ -223,15 +223,21 @@ def tail_resource_receipts(
 
 
 def resource_receipt_exists(ref: str, *, log_path: Path | None = None) -> bool:
+    return load_resource_receipt(ref, log_path=log_path) is not None
+
+
+def load_resource_receipt(
+    ref: str, *, log_path: Path | None = None
+) -> MoneyRailResourceReceipt | None:
     try:
         _prefix, rail, receipt_id = ref.split(":", 2)
     except ValueError:
-        return False
+        return None
     if _prefix != RECEIPT_REF_PREFIX.rstrip(":"):
-        return False
+        return None
     target = log_path if log_path is not None else default_receipt_log_path()
     if not target.exists():
-        return False
+        return None
     try:
         with target.open("r", encoding="utf-8") as fh:
             for raw in fh:
@@ -244,10 +250,30 @@ def resource_receipt_exists(ref: str, *, log_path: Path | None = None) -> bool:
                     log.debug("malformed money-rail resource receipt skipped")
                     continue
                 if receipt.rail == rail and receipt.receipt_id == receipt_id:
-                    return True
+                    return receipt
     except OSError:
         log.warning("money-rail resource receipt read failed at %s", target, exc_info=True)
-    return False
+    return None
+
+
+def resource_receipt_matches(
+    ref: str,
+    *,
+    rail: str,
+    operation: MoneyRailReceiptOperation,
+    external_id: str | None = None,
+    log_path: Path | None = None,
+) -> bool:
+    """Return True only when ``ref`` points at the expected receipt provenance."""
+
+    receipt = load_resource_receipt(ref, log_path=log_path)
+    if receipt is None:
+        return False
+    if receipt.rail != rail or receipt.operation is not operation:
+        return False
+    if external_id is None:
+        return True
+    return receipt.external_id_sha256 == _sha256_text(external_id)
 
 
 def require_resource_receipt(ref: str, *, log_path: Path | None = None) -> None:
@@ -336,8 +362,16 @@ def record_awareness_write_resource_receipt(
     state_path: Path,
     source_log_path: Path,
     receipt_count: int,
+    source_window_sha256: str | None = None,
     log_path: Path | None = None,
 ) -> str | None:
+    provenance = [
+        f"awareness_state_path:{state_path}",
+        f"payment_event_log:{source_log_path}",
+        f"receipt_count:{receipt_count}",
+    ]
+    if source_window_sha256:
+        provenance.append(f"payment_event_window_sha256:{source_window_sha256}")
     receipt = build_resource_receipt(
         rail="awareness",
         operation=MoneyRailReceiptOperation.AWARENESS_STATE_WRITE,
@@ -347,11 +381,7 @@ def record_awareness_write_resource_receipt(
             "route:agents.payment_processors.monetization_aggregator",
             f"authority_case:{AUTHORITY_CASE}",
         ),
-        resource_provenance=(
-            f"awareness_state_path:{state_path}",
-            f"payment_event_log:{source_log_path}",
-            f"receipt_count:{receipt_count}",
-        ),
+        resource_provenance=provenance,
     )
     return _append_and_ref(receipt, log_path=log_path)
 
@@ -438,6 +468,7 @@ __all__ = [
     "append_resource_receipt",
     "build_resource_receipt",
     "default_receipt_log_path",
+    "load_resource_receipt",
     "receipt_ref_from_id",
     "receipt_reference",
     "record_awareness_write_resource_receipt",
@@ -446,6 +477,7 @@ __all__ = [
     "record_payment_event_resource_receipt",
     "require_resource_receipt",
     "resource_receipt_exists",
+    "resource_receipt_matches",
     "resource_receipt_ref_present",
     "resource_receipt_refs",
     "tail_resource_receipts",

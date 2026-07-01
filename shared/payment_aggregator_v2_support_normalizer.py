@@ -27,7 +27,10 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agents.payment_processors.resource_receipts import resource_receipt_exists
+from agents.payment_processors.resource_receipts import (
+    MoneyRailReceiptOperation,
+    resource_receipt_matches,
+)
 
 MONEY_RAIL_RESOURCE_RECEIPT_REF_PREFIX = "money-rail-resource-receipt:"
 
@@ -72,6 +75,14 @@ _RAIL_DEFAULT_CURRENCY: dict[Rail, CurrencyUnit] = {
     Rail.LIBERAPAY: CurrencyUnit.EUR,
     Rail.KOFI_GUARDED: CurrencyUnit.USD,
     Rail.YOUTUBE_FAN_FUNDING: CurrencyUnit.USD,
+}
+
+_RESOURCE_RECEIPT_RAIL_BY_SUPPORT_RAIL: dict[Rail, str] = {
+    Rail.LIGHTNING: "lightning",
+    Rail.NOSTR_ZAP: "nostr_zap",
+    Rail.LIBERAPAY: "liberapay",
+    Rail.KOFI_GUARDED: "ko-fi",
+    Rail.YOUTUBE_FAN_FUNDING: "youtube_fan_funding",
 }
 
 
@@ -247,7 +258,13 @@ def evaluate_public_emit(
     missing_resource_receipts = tuple(
         r.receipt_id
         for r in public_receipts
-        if not r.resource_receipt_ref or not resource_receipt_exists(r.resource_receipt_ref)
+        if not r.resource_receipt_ref
+        or not resource_receipt_matches(
+            r.resource_receipt_ref,
+            rail=_RESOURCE_RECEIPT_RAIL_BY_SUPPORT_RAIL[r.rail],
+            operation=MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+            external_id=r.receipt_id,
+        )
     )
     if missing_resource_receipts:
         return PublicEmitDecision(
