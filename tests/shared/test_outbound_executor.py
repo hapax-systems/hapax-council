@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from agents.payment_processors.usdc_receiver import RAIL_LABEL as X402_USDC_RAIL_LABEL
 from shared.license_request_price_class_router import ReceiveOnlyRail as LicenseReceiveOnlyRail
 from shared.outbound_executor import (
-    RECEIVE_ONLY_PROVIDERS,
     OutboundExecutionRefusal,
     OutboundExecutionRequest,
     OutboundExecutor,
@@ -26,6 +27,12 @@ _SOURCE_RECEIVE_ONLY_INVENTORY_PROVIDERS = tuple(
             if rail is not LicenseReceiveOnlyRail.NO_RAIL
         }
         | {X402_USDC_RAIL_LABEL, "usdc"}
+    )
+)
+_SHARED_RECEIVE_ONLY_RAIL_MODULE_PROVIDERS = tuple(
+    sorted(
+        path.name.removesuffix("_receive_only_rail.py")
+        for path in (Path(__file__).resolve().parents[2] / "shared").glob("*_receive_only_rail.py")
     )
 )
 
@@ -360,6 +367,14 @@ def test_receive_only_source_inventory_blocks_provider_with_send_scope(
     _assert_receive_only_provider_refused(base_registry, provider)
 
 
+@pytest.mark.parametrize("provider", _SHARED_RECEIVE_ONLY_RAIL_MODULE_PROVIDERS)
+def test_shared_receive_only_rail_module_inventory_blocks_provider_with_send_scope(
+    base_registry: AccountFederationRegistry,
+    provider: str,
+) -> None:
+    _assert_receive_only_provider_refused(base_registry, provider)
+
+
 @pytest.mark.parametrize(
     "provider",
     (
@@ -373,14 +388,6 @@ def test_receive_only_source_inventory_blocks_provider_with_send_scope(
     ),
 )
 def test_receive_only_payment_processor_aliases_block(
-    base_registry: AccountFederationRegistry,
-    provider: str,
-) -> None:
-    _assert_receive_only_provider_refused(base_registry, provider)
-
-
-@pytest.mark.parametrize("provider", tuple(sorted(RECEIVE_ONLY_PROVIDERS)))
-def test_receive_only_denylist_entries_block(
     base_registry: AccountFederationRegistry,
     provider: str,
 ) -> None:

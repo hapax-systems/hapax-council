@@ -49,6 +49,7 @@ _LEGACY_RECEIVE_ONLY_PROVIDER_ALIASES: Final[frozenset[str]] = frozenset(
         "modern_treasury",
         "omg_lol_pay",
         "open_collective",
+        "patreon",
         "stripe",
         "stripe_payment_link",
         "treasury_prime",
