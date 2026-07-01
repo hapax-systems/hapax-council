@@ -15,6 +15,17 @@ from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import UserContent
 
 from .aggregation import AxisAggregate, aggregate_scores, should_shortcircuit
+from .capability_admission import (
+    CapabilityAdmissionReceipt,
+    capability_admission_event_scope,
+    capability_receipt_refs,
+    member_capability_admission,
+    record_capability_admission,
+    require_member_admission,
+    route_resource_admission_state,
+    tool_call_log_label,
+    unique_capability_admissions,
+)
 from .members import (
     ToolLevel,
     build_member,
@@ -86,7 +97,7 @@ async def _call_member(
     *,
     output_type: Any | None = None,
     usage_limits: UsageLimits | None = None,
-) -> tuple[Any, list[str]]:
+) -> tuple[Any, list[str], str]:
     """Run a member, bounded and (optionally) under a structured output contract.
 
     ``usage_limits`` caps tool iterations + requests (the runaway fix);
@@ -99,14 +110,17 @@ async def _call_member(
         run_kwargs["output_type"] = output_type
     if usage_limits is not None:
         run_kwargs["usage_limits"] = usage_limits
+    admission = member_capability_admission(member)
+    record_capability_admission(admission)
+    require_member_admission(member)
     result = await asyncio.wait_for(member.run(prompt, **run_kwargs), timeout=_MEMBER_TIMEOUT_S)
     tool_calls: list[str] = []
     served_model = ""
     try:
         for msg in result.all_messages():
-            # ModelResponse messages carry the model that ACTUALLY answered; capture the last so a
-            # gateway fail-over (e.g. balanced->gemini-pro on a credit cap) is visible to the
-            # family-diversity quorum instead of being miscounted as the requested alias's family.
+            # ModelResponse messages carry the model that ACTUALLY answered. CCTV requests disable
+            # LiteLLM fallbacks before invocation, so a served-model mismatch is an anomaly witness
+            # rather than an accepted routing path.
             model_name = getattr(msg, "model_name", None)
             if model_name:
                 served_model = str(model_name)
@@ -116,11 +130,11 @@ async def _call_member(
                 if kind == "tool-call":
                     name = getattr(part, "tool_name", "?")
                     args = str(getattr(part, "args", ""))[:200]
-                    tool_calls.append(f"{name}({args})")
+                    tool_calls.append(f"{tool_call_log_label(str(name))}({args})")
                 elif kind == "tool-return":
                     name = getattr(part, "tool_name", "?")
                     content = str(getattr(part, "content", ""))[:200]
-                    tool_calls.append(f"{name} → {content}")
+                    tool_calls.append(f"{tool_call_log_label(str(name))} → {content}")
     except Exception:
         pass
     return result.output, tool_calls, served_model
@@ -142,6 +156,7 @@ async def run_phase1(
     """
 
     async def _run_one(alias: str, seed: int) -> PhaseOneResult | None:
+        score_admission: CapabilityAdmissionReceipt | None = None
         try:
             if not rubric.requires_research:
                 # JUDGMENT rubric (coherence, narrative_quality): the object of
@@ -224,6 +239,7 @@ async def run_phase1(
                 output_type=NativeOutput(build_phase1_model(rubric)),
                 usage_limits=_SCORE_LIMITS,
             )
+            score_admission = member_capability_admission(score_member)
         except Exception as e:
             # Full detail (which may include a request URL or auth header from
             # an upstream LiteLLM error) goes only to the server log, where
@@ -266,6 +282,12 @@ async def run_phase1(
             research_findings=phase1_output.research_findings,
             tool_calls_log=tool_calls + score_tools,
             served_model=served_model,
+            capability_id=score_admission.capability_id if score_admission else "",
+            route_id=score_admission.route_id if score_admission else "",
+            capability_admission_action=(
+                score_admission.admission_action if score_admission else ""
+            ),
+            capability_receipt_refs=score_admission.receipt_refs if score_admission else (),
         )
 
     results_or_none = await asyncio.gather(
@@ -341,6 +363,19 @@ def _fold_overall(agg: dict[str, AxisAggregate]) -> ConvergenceStatus:
     return ConvergenceStatus.CONVERGED
 
 
+def _capability_admission_receipt_fields(
+    admissions: list[CapabilityAdmissionReceipt],
+) -> dict[str, object]:
+    unique = unique_capability_admissions(tuple(admissions))
+    return {
+        "capability_admissions": [admission.model_dump(mode="json") for admission in unique],
+        "route_resource_admission": route_resource_admission_state(unique),
+        "capability_receipt_refs": list(capability_receipt_refs(unique)),
+        "capability_admission_source": "member_call_gate",
+        "capability_admission_call_count": len(admissions),
+    }
+
+
 async def deliberate(
     inp: CouncilInput,
     mode: CouncilMode,
@@ -362,6 +397,18 @@ async def _deliberate(
     mode: CouncilMode,
     rubric: Rubric,
     config: CouncilConfig,
+) -> CouncilVerdict:
+    capability_admission_events: list[CapabilityAdmissionReceipt] = []
+    with capability_admission_event_scope(capability_admission_events):
+        return await _deliberate_inner(inp, mode, rubric, config, capability_admission_events)
+
+
+async def _deliberate_inner(
+    inp: CouncilInput,
+    mode: CouncilMode,
+    rubric: Rubric,
+    config: CouncilConfig,
+    capability_admission_events: list[CapabilityAdmissionReceipt],
 ) -> CouncilVerdict:
     if not inp.source_context:
         from agents.deliberative_council.source_context import populate_source_context
@@ -412,6 +459,7 @@ async def _deliberate(
                 "council_health": health_payload,
                 "failed_members": failed_members_payload,
                 "cache_policy": cache_policy,
+                **_capability_admission_receipt_fields(capability_admission_events),
             },
         )
 
@@ -435,6 +483,7 @@ async def _deliberate(
                 "ruler_substituted": (health_payload.get("served_substitutions") or 0) > 0,
                 "failed_members": failed_members_payload,
                 "cache_policy": cache_policy,
+                **_capability_admission_receipt_fields(capability_admission_events),
                 "phases_completed": [1],
                 "phase1_transcript": [
                     {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results
@@ -481,6 +530,7 @@ async def _deliberate(
             "ruler_substituted": (health_payload.get("served_substitutions") or 0) > 0,
             "failed_members": failed_members_payload,
             "cache_policy": cache_policy,
+            **_capability_admission_receipt_fields(capability_admission_events),
             "phases_completed": [1, 2, 3, 4, 5],
             "phase1_transcript": [
                 {"model": r.model_alias, "tool_calls": r.tool_calls_log} for r in phase1_results
@@ -727,6 +777,7 @@ async def _run_phase4(
         try:
             member = build_member(original.model_alias)
             raw, _, _ = await _call_member(member, prompt)
+            revision_admission = member_capability_admission(member)
             text = raw.strip()
             if "```json" in text:
                 text = text.split("```json", 1)[1].split("```", 1)[0].strip()
@@ -737,6 +788,14 @@ async def _run_phase4(
             if revised_scores:
                 return PhaseOneResult(
                     model_alias=original.model_alias,
+                    capability_id=(revision_admission.capability_id if revision_admission else ""),
+                    route_id=revision_admission.route_id if revision_admission else "",
+                    capability_admission_action=(
+                        revision_admission.admission_action if revision_admission else ""
+                    ),
+                    capability_receipt_refs=(
+                        revision_admission.receipt_refs if revision_admission else ()
+                    ),
                     scores=revised_scores,
                     rationale=data.get("revision_rationale", original.rationale),
                     research_findings=original.research_findings,

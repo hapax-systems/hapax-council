@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic_ai.messages import CachePoint, UserPromptPart
 
+from agents.deliberative_council.capability_admission import (
+    MODEL_CAPABILITIES,
+    CapabilityAdmissionReceipt,
+)
 from agents.deliberative_council.members import (
     MODEL_TOOL_LEVELS,
     CCTVLiteLLMChatModel,
@@ -13,6 +19,7 @@ from agents.deliberative_council.members import (
     build_member,
     cache_control_ttl_for_alias,
     cache_policy_for_alias,
+    model_route_for_alias,
     model_settings_for_alias,
     normalize_model_alias,
 )
@@ -27,6 +34,27 @@ from agents.deliberative_council.tools import (
     vault_read,
     web_verify,
 )
+from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
+
+
+def _tool_admission(
+    tool_name: str,
+    *,
+    admitted: bool = True,
+    reason_codes: tuple[str, ...] = ("test_admitted",),
+) -> CapabilityAdmissionReceipt:
+    return CapabilityAdmissionReceipt(
+        receipt_id=f"cctv-test-{tool_name}",
+        receipt_ref=f"cctv-capability-admission:cctv-test-{tool_name}",
+        capability_id=f"cctv.tool.{tool_name}",
+        route_id=f"test.route.{tool_name}",
+        provider="test-provider",
+        capacity_pool="api_paid_spend",
+        admission_action="admitted" if admitted else "refused",
+        admitted=admitted,
+        reason_codes=reason_codes,
+        receipt_refs=(f"cctv-capability-admission:cctv-test-{tool_name}",),
+    )
 
 
 class TestReadSource:
@@ -83,12 +111,17 @@ class TestWebVerify:
         mock_agent = MagicMock()
         mock_agent.run = AsyncMock(return_value=mock_result)
         with (
+            patch(
+                "agents.deliberative_council.tools.admit_tool",
+                return_value=_tool_admission("web_verify"),
+            ),
             patch("pydantic_ai.Agent", return_value=mock_agent),
             patch("shared.config.get_model") as mock_get_model,
         ):
             result = await web_verify(None, "test claim")
             mock_get_model.assert_called_once_with("web-research")
             assert "Verified" in result
+            assert "capability_id=cctv.tool.web_verify" in result
 
     @pytest.mark.asyncio
     async def test_times_out_gracefully(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -108,6 +141,10 @@ class TestWebVerify:
         mock_agent = MagicMock()
         mock_agent.run = _hang
         with (
+            patch(
+                "agents.deliberative_council.tools.admit_tool",
+                return_value=_tool_admission("web_verify"),
+            ),
             patch("pydantic_ai.Agent", return_value=mock_agent),
             patch("shared.config.get_model"),
         ):
@@ -124,18 +161,91 @@ class TestQdrantLookup:
         mock_client = MagicMock()
         mock_client.search.return_value = [mock_result]
         with (
+            patch(
+                "agents.deliberative_council.tools.admit_tool",
+                return_value=_tool_admission("qdrant_lookup"),
+            ),
             patch("shared.config.embed", return_value=[0.1] * 768),
             patch("qdrant_client.QdrantClient", return_value=mock_client),
         ):
             result = await qdrant_lookup(None, "test query")
             assert "0.85" in result
             assert "relevant content" in result
+            assert "capability_id=cctv.tool.qdrant_lookup" in result
 
     @pytest.mark.asyncio
     async def test_error_graceful(self) -> None:
-        with patch("shared.config.embed", side_effect=ConnectionError("down")):
+        with (
+            patch(
+                "agents.deliberative_council.tools.admit_tool",
+                return_value=_tool_admission("qdrant_lookup"),
+            ),
+            patch("shared.config.embed", side_effect=ConnectionError("down")),
+        ):
             result = await qdrant_lookup(None, "test")
             assert "error" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_refuses_with_real_local_resource_admission(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+        payload["local_resource_state"] = "red"
+        ledger = tmp_path / "quota-spend-ledger.json"
+        ledger.write_text(json.dumps(payload), encoding="utf-8")
+        monkeypatch.setenv("HAPAX_CCTV_QUOTA_SPEND_LEDGER", str(ledger))
+        monkeypatch.setenv("HAPAX_CCTV_CAPABILITY_ADMISSION_NOW", "2026-06-01T00:10:00Z")
+
+        with patch("shared.config.embed") as embed:
+            result = await qdrant_lookup(None, "test")
+
+        embed.assert_not_called()
+        assert "capability_id=cctv.tool.qdrant_lookup" in result
+        assert "action=refused" in result
+        assert "next_action=refresh local resource snapshot" in result
+
+    @pytest.mark.asyncio
+    async def test_web_verify_refuses_without_admission(self) -> None:
+        refused = _tool_admission(
+            "web_verify",
+            admitted=False,
+            reason_codes=("no_matching_transitionbudget",),
+        )
+        with (
+            patch("agents.deliberative_council.tools.admit_tool", return_value=refused),
+            patch("pydantic_ai.Agent") as agent_cls,
+        ):
+            result = await web_verify(None, "test claim")
+
+        agent_cls.assert_not_called()
+        assert "action=refused" in result
+        assert "refused before external research provider invocation" in result
+
+    @pytest.mark.asyncio
+    async def test_web_verify_disables_litellm_fallbacks(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _FakeAgent:
+            def __init__(self, model: str, **kwargs: object) -> None:
+                captured["model"] = model
+                captured.update(kwargs)
+
+            async def run(self, _prompt: str):
+                return SimpleNamespace(output="external evidence")
+
+        with (
+            patch(
+                "agents.deliberative_council.tools.admit_tool",
+                return_value=_tool_admission("web_verify"),
+            ),
+            patch("pydantic_ai.Agent", _FakeAgent),
+            patch("shared.config.get_model", return_value="litellm_proxy/web-research"),
+        ):
+            result = await web_verify(None, "test claim")
+
+        assert "external evidence" in result
+        assert captured["model"] == "litellm_proxy/web-research"
+        assert captured["model_settings"] == {"extra_body": {"disable_fallbacks": True}}
 
 
 class TestVaultRead:
@@ -158,6 +268,21 @@ class TestBuildMember:
     def test_full_tool_level(self) -> None:
         agent = build_member("opus", ToolLevel.FULL)
         assert agent is not None
+        assert agent.model_settings["extra_body"] == {"disable_fallbacks": True}
+        assert agent._cctv_capability_admission.capability_id == "cctv.model.opus"
+        assert agent._cctv_capability_admission.receipt_ref.startswith("cctv-capability-admission:")
+        assert agent._cctv_route_id == model_route_for_alias("opus")
+        assert agent._cctv_capability_admission.route_id == agent._cctv_route_id
+
+    @pytest.mark.parametrize("model_alias", sorted(MODEL_TOOL_LEVELS))
+    def test_admission_route_matches_invoked_litellm_route(self, model_alias: str) -> None:
+        agent = build_member(model_alias, ToolLevel.NONE)
+        assert agent._cctv_route_id == model_route_for_alias(model_alias)
+        assert agent._cctv_capability_admission.route_id == agent._cctv_route_id
+
+    @pytest.mark.parametrize("model_alias", sorted(MODEL_CAPABILITIES))
+    def test_descriptor_route_matches_invoked_litellm_route(self, model_alias: str) -> None:
+        assert MODEL_CAPABILITIES[model_alias].route_id == model_route_for_alias(model_alias)
 
     def test_restricted_tool_level(self) -> None:
         agent = build_member("local-fast", ToolLevel.RESTRICTED)
@@ -201,6 +326,10 @@ class TestBuildMember:
         assert cache_control_ttl_for_alias("opus") is None
         assert cache_policy_for_alias("opus")["cache_control"] is False
         assert cache_policy_for_alias("opus")["cache_control_ttl_setting"] is None
+        assert model_settings_for_alias("opus") == {"extra_body": {"disable_fallbacks": True}}
+
+    def test_member_model_settings_disable_litellm_fallbacks(self) -> None:
+        assert model_settings_for_alias("opus")["extra_body"] == {"disable_fallbacks": True}
 
     def test_openai_cache_settings_only_for_openai_family(
         self, monkeypatch: pytest.MonkeyPatch
@@ -213,10 +342,11 @@ class TestBuildMember:
         settings = model_settings_for_alias("openai-reviewer")
 
         assert settings == {
+            "extra_body": {"disable_fallbacks": True},
             "openai_prompt_cache_key": "cctv-deliberative-council:openai-reviewer",
             "openai_prompt_cache_retention": "24h",
         }
-        assert model_settings_for_alias("opus") == {}
+        assert model_settings_for_alias("opus") == {"extra_body": {"disable_fallbacks": True}}
 
     @pytest.mark.asyncio
     async def test_litellm_model_maps_cache_point_to_previous_text_block(self) -> None:

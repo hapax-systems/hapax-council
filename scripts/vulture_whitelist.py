@@ -85,6 +85,21 @@ from shared.capability_outcome import (
 from shared.capability_outcome import (
     PublicClaimEvidence as CapabilityPublicClaimEvidence,
 )
+from shared.capability_surface_delta import (
+    CapabilitySurfaceDelta as _CapabilitySurfaceDelta,
+)
+from shared.capability_surface_delta import (
+    CapabilitySurfaceDeltaFixtureSet as _CapabilitySurfaceDeltaFixtureSet,
+)
+from shared.capability_surface_delta import (
+    detect_surface_deltas as _detect_surface_deltas,
+)
+from shared.capability_surface_delta import (
+    load_capability_surface_delta_fixtures as _load_capability_surface_delta_fixtures,
+)
+from shared.capability_surface_delta import (
+    write_capability_surface_delta_tasks as _write_capability_surface_delta_tasks,
+)
 from shared.conative_impingement import (
     ActionTendencyImpingement as _LivestreamRoleActionTendencyImpingement,
 )
@@ -636,6 +651,18 @@ validate_provider_registry
 validate_eval_suite
 build_eval_artifact
 build_privacy_egress_preflight
+
+# Capability-surface delta intake is called by the extensionless
+# `scripts/hapax-capability-surface-delta-intake` CLI and by governed fixture
+# tests. The diff-only vulture pass does not count those call paths reliably.
+_CapabilitySurfaceDelta.allows_demand_fulfillment
+_CAPABILITY_SURFACE_DELTA_ENTRYPOINTS = (
+    _CapabilitySurfaceDelta._delta_contract_is_actionable,
+    _CapabilitySurfaceDeltaFixtureSet._fixtures_cover_required_cases,
+    _detect_surface_deltas,
+    _load_capability_surface_delta_fixtures,
+    _write_capability_surface_delta_tasks,
+)
 
 # Trend/current-event gate helpers are the deterministic public API for the
 # content-candidate-discovery daemon and public adapters. This contract lands
@@ -4636,4 +4663,15 @@ _ = (
     mtime_age_seconds,
     probe_worktree,
     set_status,
+)
+
+# Stage0 durable sink phase 1 lands the append-only JSONL sink before the
+# chronicle/payment/public-speech consumers that will instantiate it in phases
+# 2-4. Tests exercise the sink now; downstream static call paths land in the
+# blocked follow-up phases, so keep the library entrypoint explicit.
+from shared.durable_jsonl_sink import DurableJsonlSink as _Stage0DurableJsonlSink  # noqa: E402
+
+_ = (
+    _Stage0DurableJsonlSink,
+    _Stage0DurableJsonlSink.path_for_stream,
 )

@@ -41,7 +41,8 @@ import sys
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC as DATETIME_UTC
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,7 @@ RELAY_DIR = (
     if os.environ.get("HAPAX_RELAY_DIR")
     else Path.home() / ".cache" / "hapax" / "relay"
 )
+ASSIGNMENT_FILE = RELAY_DIR / "rte-assignment.yaml"
 PLANNING_FEED_PATH = (
     Path(os.environ["HAPAX_PLANNING_FEED_STATE"])
     if os.environ.get("HAPAX_PLANNING_FEED_STATE")
@@ -168,6 +170,70 @@ def read_tick(path: Path) -> dict[str, Any]:
     except OSError:
         return {}
     return parse_yaml_minimal(text)
+
+
+def read_assignment() -> dict[str, Any]:
+    """Read current RTE assignment metadata.
+
+    Missing assignments are observe-only so legacy tick logs remain readable.
+    Present-but-expired or invariant-violating assignments fail closed to
+    ``unknown`` in ``evaluate`` because the active train then lacks a valid RTE.
+    """
+
+    if not ASSIGNMENT_FILE.exists():
+        return {"status": "missing", "path": str(ASSIGNMENT_FILE)}
+    parsed = read_tick(ASSIGNMENT_FILE)
+    rte = str(parsed.get("rte") or "").strip()
+    originator = str(parsed.get("originator") or "").strip()
+    assigned_at_raw = str(parsed.get("assigned_at") or "").strip()
+    expires_at_raw = str(parsed.get("expires_at") or "").strip()
+    assigned_at = parse_optional_utc(assigned_at_raw)
+    expires_at = parse_optional_utc(expires_at_raw)
+    protocol_exception = str(parsed.get("protocol_exception") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    now_dt = parse_optional_utc(
+        os.environ.get("HAPAX_RTE_NOW") or os.environ.get("HAPAX_CAPACITY_ROUTING_NOW")
+    ) or datetime.fromtimestamp(time.time(), DATETIME_UTC)
+    status = "active"
+    reasons: list[str] = []
+    if not rte:
+        status = "invalid"
+        reasons.append("assignment is missing rte")
+    if rte and originator and rte == originator:
+        status = "invalid"
+        reasons.append("RTE equals originator")
+    if assigned_at is None:
+        status = "invalid"
+        reasons.append("assignment has invalid assigned_at")
+    if expires_at is None:
+        status = "invalid"
+        reasons.append("assignment has invalid expires_at")
+    if rte.startswith("vbe-") and not protocol_exception:
+        status = "invalid"
+        reasons.append("Vibe burst lane requires protocol_exception")
+    if (
+        rte in {"antigrav", "gemini"} or rte.startswith("antigrav-") or rte.startswith("gemini-")
+    ) and not protocol_exception:
+        status = "invalid"
+        reasons.append("restricted RTE lane requires protocol_exception")
+    if expires_at is not None and expires_at <= now_dt:
+        status = "expired"
+        reasons.append("assignment expired")
+    return {
+        "status": status,
+        "path": str(ASSIGNMENT_FILE),
+        "rte": rte or None,
+        "originator": originator or None,
+        "assigned_at": assigned_at_raw or None,
+        "expires_at": expires_at_raw or None,
+        "algorithm": parsed.get("algorithm"),
+        "protocol_exception": protocol_exception,
+        "reasons": reasons,
+    }
 
 
 def _env_path(name: str, default: Path) -> Path:
@@ -296,6 +362,7 @@ def execute_requested_mq_maintenance(*, retry: bool, escalate: bool) -> dict[str
 def evaluate() -> dict[str, Any]:
     """Read latest tick, derive current authority state."""
     capacity_routing = collect_capacity_routing_dashboard()
+    assignment = read_assignment()
     latest = find_latest_tick()
     now = time.time()
     if latest is None:
@@ -304,13 +371,15 @@ def evaluate() -> dict[str, Any]:
             "status": "unknown",
             "reasons": ["no RTE tick log found in ~/.cache/hapax/relay/"],
             "tick_age_s": None,
+            "tick_fresh": False,
             "tick_path": None,
+            "assignment": assignment,
             "capacity_routing": capacity_routing,
             "relay_mq": relay_mq,
         }
     tick_mtime = latest.stat().st_mtime
     tick_age_s = now - tick_mtime
-    relay_mq = collect_relay_mq_health(datetime.fromtimestamp(tick_mtime, UTC))
+    relay_mq = collect_relay_mq_health(datetime.fromtimestamp(tick_mtime, DATETIME_UTC))
     parsed = read_tick(latest)
 
     # Status: prefer team_load.status if embedded, else fall back to a
@@ -325,6 +394,22 @@ def evaluate() -> dict[str, Any]:
         if status in ("red", "ops-distress"):
             reasons.append(f"RTE tick at {latest.name} reports team-load status={status}")
 
+    if assignment.get("status") in {"expired", "invalid"}:
+        assignment_reasons = assignment.get("reasons")
+        reason = ", ".join(assignment_reasons) if isinstance(assignment_reasons, list) else ""
+        return {
+            "status": "unknown",
+            "reasons": [f"RTE assignment {assignment.get('status')}: {reason}".strip()],
+            "tick_age_s": tick_age_s,
+            "tick_fresh": tick_age_s <= STALE_AFTER_S,
+            "tick_path": str(latest),
+            "tick_summary": parsed.get("summary", ""),
+            "rte": parsed.get("rte", assignment.get("rte", "unknown")),
+            "assignment": assignment,
+            "capacity_routing": capacity_routing,
+            "relay_mq": relay_mq,
+        }
+
     # Stale-tick gate: if no tick in last 10 min, treat as unknown/yellow
     if tick_age_s > STALE_AFTER_S:
         return {
@@ -333,8 +418,11 @@ def evaluate() -> dict[str, Any]:
                 f"latest RTE tick is {tick_age_s:.0f}s stale (>{STALE_AFTER_S:.0f}s threshold)"
             ],
             "tick_age_s": tick_age_s,
+            "tick_fresh": False,
             "tick_path": str(latest),
             "tick_summary": parsed.get("summary", ""),
+            "rte": parsed.get("rte", assignment.get("rte", "unknown")),
+            "assignment": assignment,
             "capacity_routing": capacity_routing,
             "relay_mq": relay_mq,
         }
@@ -346,9 +434,11 @@ def evaluate() -> dict[str, Any]:
         "status": status,
         "reasons": reasons,
         "tick_age_s": tick_age_s,
+        "tick_fresh": True,
         "tick_path": str(latest),
         "tick_summary": parsed.get("summary", ""),
-        "rte": parsed.get("rte", "unknown"),
+        "rte": parsed.get("rte", assignment.get("rte", "unknown")),
+        "assignment": assignment,
         "capacity_routing": capacity_routing,
         "relay_mq": relay_mq,
     }

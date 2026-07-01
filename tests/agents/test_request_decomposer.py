@@ -882,6 +882,14 @@ status: accepted_for_planning
 
 
 class TestRequestDecomposeScan:
+    def _admitted_cctv_frontmatter(self, receipt: str = "receipt://REQ-test") -> dict[str, object]:
+        return {
+            "cctv_intake_receipt": receipt,
+            "cctv_intake_verdict": "ready_to_plan",
+            "cctv_route_resource_admission": "admitted",
+            "cctv_capability_receipts": ["cctv-capability-admission:test-member"],
+        }
+
     def _request_data(self, tmp_path: Path, frontmatter: dict[str, object]) -> dict[str, object]:
         request_path = tmp_path / "REQ-test.md"
         return {
@@ -1006,8 +1014,7 @@ parent_request: {request}
             tmp_path,
             {
                 "status": "accepted_for_planning",
-                "cctv_intake_receipt": "receipt://REQ-test",
-                "cctv_intake_verdict": "ready_to_plan",
+                **self._admitted_cctv_frontmatter(),
                 "planning_case": "CASE-TEST-001",
             },
         )
@@ -1045,7 +1052,7 @@ parent_request: {request}
             script._decomposition_admission_blockers(request_data)
         )
 
-    def test_decomposition_admission_blocks_missing_authority_case(self, tmp_path):
+    def test_decomposition_admission_blocks_missing_route_resource_state(self, tmp_path):
         script = _load_request_decompose_module()
         request_data = self._request_data(
             tmp_path,
@@ -1053,6 +1060,62 @@ parent_request: {request}
                 "status": "accepted_for_planning",
                 "cctv_intake_receipt": "receipt://REQ-test",
                 "cctv_intake_verdict": "ready_to_plan",
+                "planning_case": "CASE-TEST-001",
+            },
+        )
+
+        assert "missing_cctv_route_resource_admission" in (
+            script._decomposition_admission_blockers(request_data)
+        )
+
+    @pytest.mark.parametrize("route_state", ["refused", "partial_admitted"])
+    def test_decomposition_admission_blocks_non_admitted_route_resource_state(
+        self, tmp_path, route_state: str
+    ):
+        script = _load_request_decompose_module()
+        request_data = self._request_data(
+            tmp_path,
+            {
+                "status": "accepted_for_planning",
+                **self._admitted_cctv_frontmatter(),
+                "cctv_route_resource_admission": route_state,
+                "planning_case": "CASE-TEST-001",
+            },
+        )
+
+        assert f"cctv_route_resource_not_admitted:{route_state}" in (
+            script._decomposition_admission_blockers(request_data)
+        )
+
+    @pytest.mark.parametrize(
+        "empty_receipts",
+        [[], "[]", '"[]"', "[null]", "[unassigned]", "['null']", '["unassigned"]'],
+    )
+    def test_decomposition_admission_blocks_admitted_route_without_receipts(
+        self, tmp_path, empty_receipts: object
+    ):
+        script = _load_request_decompose_module()
+        request_data = self._request_data(
+            tmp_path,
+            {
+                "status": "accepted_for_planning",
+                **self._admitted_cctv_frontmatter(),
+                "cctv_capability_receipts": empty_receipts,
+                "planning_case": "CASE-TEST-001",
+            },
+        )
+
+        assert "missing_cctv_capability_receipts" in (
+            script._decomposition_admission_blockers(request_data)
+        )
+
+    def test_decomposition_admission_blocks_missing_authority_case(self, tmp_path):
+        script = _load_request_decompose_module()
+        request_data = self._request_data(
+            tmp_path,
+            {
+                "status": "accepted_for_planning",
+                **self._admitted_cctv_frontmatter(),
             },
         )
 
@@ -1687,6 +1750,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-002-admitted
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-002-admitted
 ---
 
 # Request
@@ -1701,6 +1767,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-003-admitted
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-003-admitted
 ---
 
 # Request
@@ -1758,6 +1827,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-001-admitted
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-001-admitted
 ---
 
 # Request
@@ -1784,6 +1856,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-003-admitted
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-003-admitted
 ---
 
 # Request
@@ -2009,6 +2084,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-llm
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-llm
 ---
 
 # Request
@@ -2048,6 +2126,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-conflict
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-conflict
 ---
 
 # Request
@@ -2147,6 +2228,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-single-llm
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-single-llm
 ---
 
 # Request
@@ -2179,6 +2263,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-single-conflict
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-single-conflict
 ---
 
 # Request
