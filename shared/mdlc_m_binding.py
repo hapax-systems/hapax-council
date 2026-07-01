@@ -142,7 +142,15 @@ def bind_m_result(
     """
 
     if _is_score_result(source):
-        return _lift_score_result(source)
+        try:
+            return _lift_score_result(source)
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            return _dark_result(
+                reason="unsupported_shape",
+                refusal_reason=MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE,
+                source_kind="score_result",
+                detail=str(exc),
+            )
     if _is_rail_result(source):
         return _score_rail_results((source,), ladder, ruler_hash_commit=ruler_hash_commit)
     if _is_result_sequence(source):
