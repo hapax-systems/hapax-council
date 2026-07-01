@@ -19,6 +19,7 @@ deduplication happens at read time keyed by ``(rail, external_id)``.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import threading
@@ -116,10 +117,21 @@ def tail_events(
     return list(tail)
 
 
+def event_window_sha256(events: list[PaymentEvent]) -> str:
+    """Hash the exact payment-event window that backs an awareness write."""
+
+    digest = hashlib.sha256()
+    for event in events:
+        digest.update(event.model_dump_json().encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 __all__ = [
     "DEFAULT_PAYMENT_LOG_PATH",
     "DEFAULT_TAIL_LIMIT",
     "append_event",
+    "event_window_sha256",
     "payment_events_appended_total",
     "tail_events",
 ]

@@ -23,7 +23,6 @@ data only. There is no method that initiates payment.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import threading
 from collections import defaultdict
@@ -38,6 +37,7 @@ from agents.operator_awareness.state import (
 )
 from agents.payment_processors.event_log import (
     DEFAULT_PAYMENT_LOG_PATH,
+    event_window_sha256,
     tail_events,
 )
 from agents.payment_processors.liberapay_receiver import LiberapayReceiver
@@ -100,14 +100,6 @@ def _block_from_events(events: list[PaymentEvent], *, public: bool = False) -> M
         total_sats_received=total_sats,
         total_eur_received=round(total_eur, 2),
     )
-
-
-def _event_window_sha256(events: list[PaymentEvent]) -> str:
-    digest = hashlib.sha256()
-    for event in events:
-        digest.update(event.model_dump_json().encode("utf-8"))
-        digest.update(b"\n")
-    return digest.hexdigest()
 
 
 class MonetizationAggregator:
@@ -176,7 +168,7 @@ class MonetizationAggregator:
             state_path=self._state_path,
             source_log_path=self._log_path,
             receipt_count=len(events),
-            source_window_sha256=_event_window_sha256(events),
+            source_window_sha256=event_window_sha256(events),
         )
         if receipt_ref is None:
             log.warning(

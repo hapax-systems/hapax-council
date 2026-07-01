@@ -736,6 +736,12 @@ class Aggregator:
             studio=collect_studio_block(self._l12_scene_flag_path),
         )
 
+    @property
+    def monetization_log_path(self) -> Path:
+        """Payment-event log used for the monetization block in ``collect``."""
+
+        return self._monetization_log_path
+
 
 __all__ = [
     "DEFAULT_CHRONICLE_EVENTS",
