@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import threading
 import uuid
 from typing import Any, Final
 
@@ -146,6 +147,7 @@ class OutboundExecutor:
         self.current_position = _finite_nonnegative_float("current_position", current_position)
         self.kill_switch = kill_switch
         self.registry = registry
+        self._position_lock = threading.Lock()
 
     def validate_request(self, request: OutboundExecutionRequest) -> OutboundExecutionReceipt:
         """Dry-run validate an execution request without mutating the position."""
@@ -297,10 +299,11 @@ class OutboundExecutor:
 
     def execute(self, request: OutboundExecutionRequest) -> OutboundExecutionReceipt:
         """Validate request and, if admitted, mutate executor's current position."""
-        receipt = self.validate_request(request)
-        if receipt.status == "admitted":
-            self.current_position = receipt.current_position_after
-        return receipt
+        with self._position_lock:
+            receipt = self.validate_request(request)
+            if receipt.status == "admitted":
+                self.current_position = receipt.current_position_after
+            return receipt
 
     def require_execution(self, request: OutboundExecutionRequest) -> OutboundExecutionReceipt:
         """Execute request, raising OutboundExecutionRefusal if blocked."""

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -8,6 +10,7 @@ from pydantic import ValidationError
 from agents.payment_processors.usdc_receiver import RAIL_LABEL as X402_USDC_RAIL_LABEL
 from shared.license_request_price_class_router import ReceiveOnlyRail as LicenseReceiveOnlyRail
 from shared.outbound_executor import (
+    OutboundExecutionReceipt,
     OutboundExecutionRefusal,
     OutboundExecutionRequest,
     OutboundExecutor,
@@ -656,6 +659,42 @@ def test_position_cap_boundary_admits_direct_cap_amount(
     receipt = executor.execute(request)
     assert receipt.status == "admitted"
     assert receipt.current_position_after == 150.0
+
+
+def test_execute_position_admission_is_atomic(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    class SlowAdmitExecutor(OutboundExecutor):
+        def validate_request(
+            self,
+            request: OutboundExecutionRequest,
+        ) -> OutboundExecutionReceipt:
+            receipt = super().validate_request(request)
+            if receipt.status == "admitted":
+                time.sleep(0.05)
+            return receipt
+
+    executor = SlowAdmitExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=1.0,
+        position_cap=1.0,
+        registry=base_registry,
+    )
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=1.0,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        receipts = list(pool.map(executor.execute, (request, request)))
+
+    assert [receipt.status for receipt in receipts].count("admitted") == 1
+    refused = [receipt for receipt in receipts if receipt.status == "refused"]
+    assert len(refused) == 1
+    assert refused[0].refusal_reason == "position_cap_exceeded"
+    assert executor.current_position == 1.0
 
 
 def test_authority_ceilings(base_registry: AccountFederationRegistry) -> None:
