@@ -378,9 +378,9 @@ def prepare_payment_event_resource_receipt(
 ) -> tuple[str, MoneyRailResourceReceipt]:
     """Build a payment-event receipt ref before committing the receipt.
 
-    Receive rails use this to write the payment event with its future receipt
-    ref first, then commit the receipt only after the event append succeeds.
-    That prevents payment-event receipts from outliving failed event-log writes.
+    Receive rails use this to commit a durable receipt before writing the event
+    with that ref, then retract the prepared receipt if the event append fails.
+    That prevents either side from surviving as successful evidence alone.
     """
 
     receipt = build_resource_receipt(
