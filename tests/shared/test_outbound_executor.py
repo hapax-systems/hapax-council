@@ -733,6 +733,32 @@ def test_malformed_registry_send_scopes_fail_closed(
         )
 
 
+def test_padded_global_forbidden_scope_refuses(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    padded_forbidden_scope = " gmail_send_outside_expected_correspondence "
+    malformed_registry = base_registry.model_copy(update={"send_scopes": [padded_forbidden_scope]})
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=100.0,
+        position_cap=500.0,
+        kill_switch=False,
+        registry=malformed_registry,
+    )
+    request = OutboundExecutionRequest(
+        scope=padded_forbidden_scope,
+        venue="internal",
+        amount=10.0,
+    )
+
+    receipt = executor.execute(request)
+
+    assert receipt.status == "refused"
+    assert receipt.refusal_reason == "forbidden_action"
+    assert executor.current_position == 0.0
+
+
 def test_default_token_fallback_blocks(base_registry: AccountFederationRegistry) -> None:
     executor = OutboundExecutor(
         authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,

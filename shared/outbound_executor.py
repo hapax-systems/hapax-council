@@ -495,7 +495,7 @@ def _nonblank_string(name: str, value: Any) -> str:
         raise ValueError(
             f"{name} must be a nonblank string; next action: bind a governed nonblank value"
         )
-    return value
+    return value.strip()
 
 
 def _normalize_scope_collection(name: str, values: Any) -> frozenset[str]:
