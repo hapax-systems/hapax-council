@@ -845,3 +845,132 @@ def test_task_demand_rejects_out_of_vocab_execution_axis_demand() -> None:
         build_demand_vector(_demand_frontmatter(effort_demand="galaxy"))
     with pytest.raises((ValidationError, ValueError)):
         build_demand_vector(_demand_frontmatter(context_mode_demand="hypercontext"))
+
+
+class TestDeriveCriticality:
+    """The objective two-driver criticality scale = max(GNARL, CONCEPTUAL).
+
+    GNARL reuses the already-derived TaskDemand signals (complexity / locality /
+    mutation). CONCEPTUAL is the risk_flag floor today (upgraded to a
+    CriticalityVector fused from the consolidated epistemic layers later).
+    max-not-sum: a request cannot argue "small diff" to offset a conceptual
+    surface, nor "just docs" to offset a cross-repo gnarl.
+    """
+
+    def test_widget_docs_low_complexity_no_risk_is_minimal(self) -> None:
+        from shared.route_metadata_schema import (
+            CodebaseLocality,
+            MutationSurface,
+            RiskFlags,
+            _derive_criticality,
+        )
+
+        assert (
+            _derive_criticality(
+                complexity=1,
+                locality=CodebaseLocality.NONE,
+                mutation=MutationSurface.VAULT_DOCS,
+                risk=RiskFlags(),
+            )
+            == 1
+        )
+
+    @pytest.mark.parametrize(
+        "flag", ["governance_sensitive", "privacy_or_secret_sensitive", "public_claim_sensitive"]
+    )
+    def test_conceptual_floor_is_critical_regardless_of_gnarl(self, flag: str) -> None:
+        # max-not-sum anti-gaming: a tiny, module-local, no-blast-radius diff that
+        # touches a governance/privacy/public-claim surface IS critical.
+        from shared.route_metadata_schema import (
+            CodebaseLocality,
+            RiskFlags,
+            _derive_criticality,
+        )
+
+        risk = RiskFlags(**{flag: True})
+        assert (
+            _derive_criticality(
+                complexity=1,
+                locality=CodebaseLocality.NONE,
+                mutation=None,
+                risk=risk,
+            )
+            == 5
+        )
+
+    def test_cross_repo_gnarl_is_critical(self) -> None:
+        from shared.route_metadata_schema import (
+            CodebaseLocality,
+            MutationSurface,
+            RiskFlags,
+            _derive_criticality,
+        )
+
+        assert (
+            _derive_criticality(
+                complexity=2,
+                locality=CodebaseLocality.CROSS_REPO,
+                mutation=MutationSurface.SOURCE,
+                risk=RiskFlags(),
+            )
+            == 5
+        )
+
+    def test_runtime_and_provider_spend_surfaces_are_critical(self) -> None:
+        from shared.route_metadata_schema import (
+            CodebaseLocality,
+            MutationSurface,
+            RiskFlags,
+            _derive_criticality,
+        )
+
+        for surface in (MutationSurface.RUNTIME, MutationSurface.PROVIDER_SPEND):
+            assert (
+                _derive_criticality(
+                    complexity=2,
+                    locality=CodebaseLocality.MODULE,
+                    mutation=surface,
+                    risk=RiskFlags(),
+                )
+                == 5
+            )
+
+    def test_high_complexity_module_is_heavy(self) -> None:
+        from shared.route_metadata_schema import (
+            CodebaseLocality,
+            MutationSurface,
+            RiskFlags,
+            _derive_criticality,
+        )
+
+        assert (
+            _derive_criticality(
+                complexity=4,
+                locality=CodebaseLocality.MODULE,
+                mutation=MutationSurface.SOURCE,
+                risk=RiskFlags(),
+            )
+            == 4
+        )
+
+    def test_module_source_is_standard(self) -> None:
+        # A module-local SOURCE change: in the real wiring SOURCE floors
+        # complexity at >=3, so a routine source edit is STANDARD (3) — not
+        # widget, not critical. The diff/surface signals decide, never the
+        # self-attested risk_tier.
+        from shared.route_metadata_schema import (
+            CodebaseLocality,
+            MutationSurface,
+            RiskFlags,
+            _derive_criticality,
+        )
+
+        assert (
+            _derive_criticality(
+                complexity=3,
+                locality=CodebaseLocality.MODULE,
+                mutation=MutationSurface.SOURCE,
+                risk=RiskFlags(),
+            )
+            == 3
+        )
