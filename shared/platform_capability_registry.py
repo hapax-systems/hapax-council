@@ -311,6 +311,15 @@ class ExecutionDescriptor(StrictModel):
     quantization: Quantization = Quantization.NONE
 
 
+class ProviderModelAlias(StrictModel):
+    """A concrete provider-gateway alias that a route is allowed to spend through."""
+
+    alias: str
+    model_id: ModelId
+    provider: str
+    evidence_refs: list[str] = Field(min_length=1)
+
+
 class DescriptorVariant(StrictModel):
     """A materially-different (model, effort, context, …) leaf of a route, carried sparsely:
     a variant exists only where a knob change crosses an authority/quality/quota boundary or
@@ -577,6 +586,7 @@ class PlatformCapabilityRoute(StrictModel):
     blocked_reasons: list[str] = Field(default_factory=list)
     model_or_engine: str | None
     execution_descriptor: ExecutionDescriptor
+    provider_model_aliases: list[ProviderModelAlias] = Field(default_factory=list)
     descriptor_variants: list[DescriptorVariant] = Field(default_factory=list)
     paid_provider: str | None = None
     paid_profile: str | None = None
@@ -653,6 +663,16 @@ class PlatformCapabilityRoute(StrictModel):
             CapacityPool.BOOTSTRAP_BUDGET,
         }:
             raise ValueError("provider-spend mutation requires a paid or bootstrap capacity pool")
+
+        if self.provider_model_aliases:
+            if not self.mutability.provider_spend:
+                raise ValueError("provider model aliases require provider_spend mutability")
+            aliases = [entry.alias for entry in self.provider_model_aliases]
+            duplicates = sorted({alias for alias in aliases if aliases.count(alias) > 1})
+            if duplicates:
+                raise ValueError(
+                    f"duplicate provider model aliases on {self.route_id}: {duplicates}"
+                )
 
         if (
             self.authority_ceiling is AuthorityCeiling.AUTHORITATIVE

@@ -554,6 +554,9 @@ def _model_descriptor(registry: Any, route_id: str) -> dict[str, object]:
     return {
         "route_model_or_engine": route.model_or_engine,
         "execution_descriptor": descriptor,
+        "provider_model_aliases": [
+            alias.model_dump(mode="json") for alias in getattr(route, "provider_model_aliases", ())
+        ],
         "selected_descriptor_leaf": route_id,
     }
 
@@ -586,6 +589,9 @@ def _provider_model_binding_blocker(
     model_fingerprint = getattr(descriptor, "model_fingerprint", None)
     if model_fingerprint is not None:
         allowed.add(str(model_fingerprint).strip())
+    for alias in getattr(route, "provider_model_aliases", ()):
+        allowed.add(str(alias.alias).strip())
+        allowed.add(str(alias.model_id).strip())
     allowed.discard("")
     if requested in allowed:
         return None

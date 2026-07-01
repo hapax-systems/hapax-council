@@ -294,7 +294,7 @@ def test_background_model_call_admits_when_model_matches_route_descriptor(tmp_pa
     )
 
 
-def test_provider_model_call_refuses_when_model_does_not_match_route_descriptor(
+def test_provider_model_call_admits_declared_gateway_alias(
     tmp_path: Path,
 ) -> None:
     _write_provider_gateway_receipt(tmp_path)
@@ -313,14 +313,16 @@ def test_provider_model_call_refuses_when_model_does_not_match_route_descriptor(
         write_receipt=False,
     )
 
-    assert admission.admitted is False
-    assert admission.policy_outcome is None
+    assert admission.admitted is True
+    assert admission.policy_outcome == "launch"
     assert admission.route_id == "api.headless.provider_gateway"
-    assert admission.reason_codes == ("provider_model_descriptor_mismatch",)
-    assert "requested_model=gemini-flash" in (admission.denied_reason or "")
+    aliases = {
+        alias["alias"]: alias for alias in admission.model_descriptor["provider_model_aliases"]
+    }
+    assert aliases["gemini-flash"]["model_id"] == "gemini-3.1-pro-preview"
 
 
-def test_fix_evaluator_model_call_refuses_provider_gateway_model_mismatch(
+def test_fix_evaluator_model_call_admits_declared_gateway_alias(
     tmp_path: Path,
 ) -> None:
     _write_provider_gateway_receipt(tmp_path)
@@ -339,13 +341,15 @@ def test_fix_evaluator_model_call_refuses_provider_gateway_model_mismatch(
         write_receipt=False,
     )
 
-    assert admission.admitted is False
-    assert admission.policy_outcome is None
-    assert admission.reason_codes == ("provider_model_descriptor_mismatch",)
-    assert "requested_model=claude-sonnet" in (admission.denied_reason or "")
+    assert admission.admitted is True
+    assert admission.policy_outcome == "launch"
+    aliases = {
+        alias["alias"]: alias for alias in admission.model_descriptor["provider_model_aliases"]
+    }
+    assert aliases["claude-sonnet"]["model_id"] == "claude-sonnet-4-6"
 
 
-def test_director_provider_model_call_refuses_provider_gateway_model_mismatch(
+def test_director_provider_model_call_refuses_undeclared_provider_gateway_model(
     tmp_path: Path,
 ) -> None:
     _write_provider_gateway_receipt(tmp_path)
@@ -353,7 +357,7 @@ def test_director_provider_model_call_refuses_provider_gateway_model_mismatch(
     admission = admit_background_capability(
         capability_name="studio.director.llm",
         route_id="api.headless.provider_gateway",
-        model_alias="claude-sonnet",
+        model_alias="unregistered-provider-model",
         task_fields=_provider_task_fields(),
         mutation_surface="provider_spend",
         quality_floor="frontier_required",
@@ -366,7 +370,7 @@ def test_director_provider_model_call_refuses_provider_gateway_model_mismatch(
     assert admission.admitted is False
     assert admission.policy_outcome is None
     assert admission.route_id == "api.headless.provider_gateway"
-    assert admission.model_alias == "claude-sonnet"
+    assert admission.model_alias == "unregistered-provider-model"
     assert admission.reason_codes == ("provider_model_descriptor_mismatch",)
 
 

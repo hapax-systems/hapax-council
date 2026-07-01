@@ -78,6 +78,9 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
     }
     assert "paid_provider" in route["properties"]
     assert "paid_profile" in route["properties"]
+    assert "provider_model_aliases" in route["properties"]
+    provider_alias = schema["$defs"]["provider_model_alias"]
+    assert set(provider_alias["required"]) == {"alias", "model_id", "provider", "evidence_refs"}
     assert set(schema["$defs"]["authority_ceiling"]["enum"]) == {
         "authoritative",
         "frontier_review_required",
