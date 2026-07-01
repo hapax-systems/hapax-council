@@ -1,12 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hapax.local/schemas/capability-surface-delta.schema.json",
-  "title": "CapabilitySurfaceDeltaFixtures",
+  "title": "CapabilitySurfaceDeltaFile",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
-    "fixture_set_id",
     "schema_ref",
     "generated_from",
     "declared_at",
@@ -15,7 +14,7 @@
   ],
   "properties": {
     "schema_version": {"type": "integer", "const": 1},
-    "fixture_set_id": {"type": "string", "minLength": 1},
+    "fixture_set_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
     "schema_ref": {"type": "string", "const": "schemas/capability-surface-delta.schema.json"},
     "generated_from": {
       "type": "array",

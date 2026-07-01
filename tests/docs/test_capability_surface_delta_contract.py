@@ -32,6 +32,16 @@ def test_capability_surface_delta_schema_validates_fixtures() -> None:
     assert fixtures["schema_ref"] == "schemas/capability-surface-delta.schema.json"
 
 
+def test_schema_accepts_live_producer_without_fixture_set_id() -> None:
+    producer = _json(FIXTURES)
+    producer.pop("fixture_set_id")
+    producer["deltas"] = [
+        delta for delta in producer["deltas"] if delta["delta_kind"] == "stale_determination"
+    ]
+
+    _validator().validate(producer)
+
+
 def test_schema_pins_delta_kind_freshness_and_action_vocabularies() -> None:
     defs = _json(SCHEMA)["$defs"]
 
