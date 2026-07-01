@@ -212,7 +212,7 @@ def _lift_score_result(
     reason = str(getattr(score_result, "reason", "") or "")
     refusal = str(getattr(score_result, "refusal_reason", "") or "") or None
     next_action = str(getattr(score_result, "next_action", "") or "") or None
-    evidence_refs = _string_tuple(getattr(score_result, "evidence_refs", ()))
+    evidence_refs = _strict_native_ref_tuple(getattr(score_result, "evidence_refs", ()))
     return MonDLCBindingResult(
         binding=MONDLC_M_BINDING_NAME,
         binding_version=MONDLC_M_BINDING_VERSION,
@@ -423,6 +423,22 @@ def _strict_rail_ref_tuple(value: Any) -> tuple[str, ...]:
             raise _UnsupportedRailMeasurementShape(
                 "accepted rail evidence refs must be a string sequence"
             )
+        if item.strip():
+            refs.append(item.strip())
+    return tuple(refs)
+
+
+def _strict_native_ref_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value.strip(),) if value.strip() else ()
+    if not isinstance(value, Sequence):
+        raise TypeError("native score_result evidence refs must be a string sequence")
+    refs: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise TypeError("native score_result evidence refs must be a string sequence")
         if item.strip():
             refs.append(item.strip())
     return tuple(refs)
