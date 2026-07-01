@@ -44,6 +44,7 @@ from agents.payment_processors.resource_receipts import (
     commit_prepared_resource_receipt,
     prepare_payment_event_resource_receipt,
     record_external_api_poll_receipt,
+    resource_receipt_exists,
     retract_prepared_resource_receipt,
 )
 from agents.payment_processors.secrets import load_alby_token
@@ -196,12 +197,14 @@ class LightningReceiver:
                 event_kind="settled_invoice",
                 downstream_action="payment_event_log.append_event",
             )
+            receipt_preexisting = resource_receipt_exists(receipt_ref)
             if commit_prepared_resource_receipt(receipt) is None:
                 lightning_poll_errors_total.labels(kind="resource_receipt").inc()
                 continue
             event = event.model_copy(update={"resource_receipt_ref": receipt_ref})
             if not append_event(event):
-                retract_prepared_resource_receipt(receipt)
+                if not receipt_preexisting:
+                    retract_prepared_resource_receipt(receipt)
                 lightning_poll_errors_total.labels(kind="payment_event_append").inc()
                 continue
             _record_chronicle(event)

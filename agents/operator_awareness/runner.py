@@ -44,6 +44,7 @@ from agents.payment_processors.event_log import event_window_sha256, tail_events
 from agents.payment_processors.resource_receipts import (
     commit_prepared_resource_receipt,
     prepare_awareness_write_resource_receipt,
+    resource_receipt_exists,
     retract_prepared_resource_receipt,
 )
 
@@ -144,6 +145,7 @@ class AwarenessRunner:
             source_window_sha256=event_window_sha256(events),
             route_source="agents.operator_awareness.runner",
         )
+        receipt_preexisting = resource_receipt_exists(_receipt_ref)
         if commit_prepared_resource_receipt(receipt) is None:
             log.warning(
                 "awareness runner write blocked: money-rail resource receipt missing; "
@@ -153,7 +155,7 @@ class AwarenessRunner:
             self.writes_total.labels(result="resource_receipt_error").inc()
             return "resource_receipt_error"
         ok = write_state_atomic(state, self._state_path)
-        if not ok:
+        if not ok and not receipt_preexisting:
             retract_prepared_resource_receipt(receipt)
         result = "ok" if ok else "error"
         self.writes_total.labels(result=result).inc()
