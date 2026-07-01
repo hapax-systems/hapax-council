@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib import import_module
+from math import isfinite
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Final
@@ -349,7 +350,10 @@ def _numeric_rail_value(value: Any) -> float:
         raise _UnsupportedRailMeasurementShape(
             "accepted rail measurement value must be a non-boolean number"
         )
-    return float(value)
+    numeric_value = float(value)
+    if not isfinite(numeric_value):
+        raise _UnsupportedRailMeasurementShape("accepted rail measurement value must be finite")
+    return numeric_value
 
 
 def _dark_result(

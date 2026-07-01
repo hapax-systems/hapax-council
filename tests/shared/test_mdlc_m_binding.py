@@ -263,6 +263,22 @@ def test_rail_result_sequence_rejects_boolean_measurement_value() -> None:
     assert result.score_result is None
 
 
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_rail_result_sequence_rejects_non_finite_measurement_value(value: float) -> None:
+    m_binding = _binding_module()
+
+    result = m_binding.bind_m_result(
+        _rail_result(value=value, evidence_refs=("rail:event:non-finite",)),
+        _ladder(min_corroboration_count=1),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
+    assert "must be finite" in result.reason
+    assert result.score_result is None
+
+
 def test_rail_result_sequence_ignores_values_without_observed_at() -> None:
     m_binding = _binding_module()
 
