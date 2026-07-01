@@ -16,6 +16,8 @@ from typing import Any
 
 import yaml
 
+from shared.route_metadata_schema import FreshnessState, build_demand_vector
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LENS_DIR = REPO_ROOT / "config" / "review-lenses"
 REGISTRY_PATH = LENS_DIR / "registry.yaml"
@@ -429,6 +431,29 @@ def _route_admission(
     task_id: str = "task-x",
     admitted: bool = True,
 ) -> dict:
+    demand = build_demand_vector(
+        {
+            "task_id": task_id,
+            "authority_case": "CASE-TEST",
+            "parent_spec": "docs/spec.md",
+            "route_metadata_schema": 1,
+            "quality_floor": "frontier_review_required",
+            "authority_level": "support_non_authoritative",
+            "mutation_surface": "none",
+            "mutation_scope_refs": [],
+            "risk_flags": {},
+            "context_shape": {},
+            "verification_surface": {},
+            "route_constraints": {},
+            "review_requirement": {
+                "support_artifact_allowed": True,
+                "independent_review_required": True,
+                "authoritative_acceptor_profile": "frontier_full",
+            },
+        },
+        note_path=task_id,
+        preserve_route_envelope_hold=True,
+    )
     return {
         "route_admission_schema": 1,
         "seat_id": reviewer_id,
@@ -458,8 +483,8 @@ def _route_admission(
         "route_policy_authority_case": "CASE-TEST",
         "route_policy_demand_vector_ref": {
             "artifact_path": task_id,
-            "freshness_state": "fresh",
-            "hash": f"frontmatter-hash-{task_id}",
+            "freshness_state": FreshnessState.FRESH.value,
+            "hash": demand.work_item.frontmatter_hash,
         },
         "admitted": admitted,
         "blocked_reasons": [] if admitted else ["quota_stale"],
@@ -720,6 +745,26 @@ class TestVerdictBlockers:
             "task_id": task_id,
             "authority_case": "CASE-TEST",
             "parent_spec": "docs/spec.md",
+        }
+
+    def _full_route_frontmatter(self, task_id: str = "task-x") -> dict:
+        return {
+            "task_id": task_id,
+            "authority_case": "CASE-TEST",
+            "parent_spec": "docs/spec.md",
+            "route_metadata_schema": 1,
+            "quality_floor": "frontier_review_required",
+            "authority_level": "support_non_authoritative",
+            "mutation_surface": "none",
+            "mutation_scope_refs": [],
+            "risk_flags": {"governance_sensitive": True},
+            "context_shape": {},
+            "verification_surface": {"deterministic_tests": ["pytest"]},
+            "review_requirement": {
+                "support_artifact_allowed": True,
+                "independent_review_required": True,
+                "authoritative_acceptor_profile": "frontier_full",
+            },
         }
 
     def _good_dossier(self, rt) -> dict:
@@ -999,6 +1044,37 @@ class TestVerdictBlockers:
         assert any(
             blocker.startswith("review_dossier_route_decision_mismatch:codex-1:")
             and blocker.endswith(":demand_vector_ref")
+            for blocker in blockers
+        )
+
+    def test_route_admission_required_blocks_stale_current_demand_vector(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["route_admission_required"] = True
+        ledger_path = tmp_path / "route-decisions.jsonl"
+        monkeypatch.setattr(rt, "ROUTE_DECISION_LEDGER_PATH", ledger_path)
+        route_ids = {
+            "codex-1": "codex.headless.full",
+            "gemini-1": "antigrav.interactive.full",
+            "claude-1": "claude.headless.full",
+        }
+        admissions = []
+        for review in dossier["reviewers"]:
+            admission = _route_admission(review["id"], route_ids[review["id"]])
+            admissions.append(admission)
+            review["route_admissions"] = [admission]
+        _write_route_decision_ledger(ledger_path, admissions)
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        blockers = rt.review_team_verdict_blockers(
+            self._full_route_frontmatter(), note, pr_head_sha="a" * 40
+        )
+
+        assert any(
+            blocker.startswith("review_dossier_route_decision_mismatch:codex-1:")
+            and blocker.endswith(":current_demand_vector_ref")
             for blocker in blockers
         )
 

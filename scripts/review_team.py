@@ -55,6 +55,7 @@ from shared.failure_classification import (  # noqa: E402
     FailureCode,
     FailureReceipt,
 )
+from shared.route_metadata_schema import FreshnessState, build_demand_vector  # noqa: E402
 
 DEFAULT_REGISTRY_PATH = REPO_ROOT / "config" / "review-lenses" / "registry.yaml"
 LENS_DIR = REPO_ROOT / "config" / "review-lenses"
@@ -178,6 +179,11 @@ _STRUCTURED_PROVIDER_OUTAGE_ACTIONS = STRUCTURED_PROVIDER_OUTAGE_ACTIONS
 #: cannot self-certify a degradation (round-4 review finding).
 FAMILY_OUTAGE_STATE = Path.home() / ".cache" / "hapax" / "review-team" / "family-outage.json"
 FAMILY_OUTAGE_TTL_S = 2 * 3600
+REVIEW_SEAT_REVIEW_REQUIREMENT = {
+    "support_artifact_allowed": True,
+    "independent_review_required": True,
+    "authoritative_acceptor_profile": "frontier_full",
+}
 
 
 def _structured_zai_error_match_state(
@@ -1322,6 +1328,7 @@ def _route_decision_ledger_blockers(
     *,
     reviewer_id: str,
     prefix: str,
+    current_demand_ref: Mapping[str, Any] | None = None,
 ) -> list[str]:
     decision_id = str(admission.get("route_decision_id") or "").strip()
     if not decision_id:
@@ -1376,7 +1383,66 @@ def _route_decision_ledger_blockers(
     record_demand_ref = _string_mapping(record.get("demand_vector_ref"))
     if not admission_demand_ref or record_demand_ref != admission_demand_ref:
         blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:demand_vector_ref")
+    current_demand = _string_mapping(current_demand_ref)
+    if current_demand and (
+        record_demand_ref.get("hash") != current_demand.get("hash")
+        or record_demand_ref.get("freshness_state") != current_demand.get("freshness_state")
+    ):
+        blockers.append(
+            f"review_dossier_route_decision_mismatch:{prefix}:current_demand_vector_ref"
+        )
     return blockers
+
+
+def _current_route_demand_vector_ref(
+    frontmatter: Mapping[str, Any] | None,
+    *,
+    note_path: Path | None,
+    task_id: str,
+) -> dict[str, str] | None:
+    if not isinstance(frontmatter, Mapping):
+        return None
+    nested = frontmatter.get("route_metadata")
+    nested_metadata = nested if isinstance(nested, Mapping) else {}
+    review_seat_fields = dict(frontmatter)
+    review_seat_fields["task_id"] = task_id
+    if note_path is not None:
+        review_seat_fields["__task_note_path"] = str(note_path)
+    review_seat_fields["route_metadata_schema"] = (
+        frontmatter.get("route_metadata_schema")
+        or nested_metadata.get("route_metadata_schema")
+        or 1
+    )
+    review_seat_fields["quality_floor"] = "frontier_review_required"
+    review_seat_fields["authority_level"] = "support_non_authoritative"
+    review_seat_fields["mutation_surface"] = "none"
+    review_seat_fields["mutation_scope_refs"] = []
+    review_seat_fields["risk_flags"] = (
+        frontmatter.get("risk_flags") or nested_metadata.get("risk_flags") or {}
+    )
+    review_seat_fields["context_shape"] = (
+        frontmatter.get("context_shape") or nested_metadata.get("context_shape") or {}
+    )
+    review_seat_fields["verification_surface"] = (
+        frontmatter.get("verification_surface") or nested_metadata.get("verification_surface") or {}
+    )
+    review_seat_fields["route_constraints"] = (
+        frontmatter.get("route_constraints") or nested_metadata.get("route_constraints") or {}
+    )
+    review_seat_fields["review_requirement"] = REVIEW_SEAT_REVIEW_REQUIREMENT
+    try:
+        demand = build_demand_vector(
+            review_seat_fields,
+            note_path=str(note_path) if note_path is not None else None,
+            preserve_route_envelope_hold=True,
+        )
+    except ValueError:
+        return None
+    return {
+        "artifact_path": demand.work_item.note_path or demand.work_item.task_id,
+        "hash": demand.work_item.frontmatter_hash,
+        "freshness_state": FreshnessState.FRESH.value,
+    }
 
 
 def _route_admission_blockers(
@@ -1385,6 +1451,7 @@ def _route_admission_blockers(
     task_id: str,
     registry: Mapping[str, Any],
     frontmatter: Mapping[str, Any] | None = None,
+    note_path: Path | None = None,
 ) -> list[str]:
     reviewer_id = str(review.get("id") or "missing")
     reviewer_family = str(review.get("family") or "missing")
@@ -1412,6 +1479,11 @@ def _route_admission_blockers(
         return [f"review_dossier_route_admission_task_missing:{reviewer_id}:{task_id}"]
 
     blockers: list[str] = []
+    current_demand_ref = _current_route_demand_vector_ref(
+        frontmatter,
+        note_path=note_path,
+        task_id=task_id,
+    )
     if not expected_route_id:
         blockers.append(f"review_dossier_route_registry_missing:{reviewer_id}:{reviewer_family}")
     for admission in matching:
@@ -1475,7 +1547,12 @@ def _route_admission_blockers(
         if not str(admission.get("route_decision_id") or "").strip():
             blockers.append(f"review_dossier_route_decision_missing:{prefix}")
         blockers.extend(
-            _route_decision_ledger_blockers(admission, reviewer_id=reviewer_id, prefix=prefix)
+            _route_decision_ledger_blockers(
+                admission,
+                reviewer_id=reviewer_id,
+                prefix=prefix,
+                current_demand_ref=current_demand_ref,
+            )
         )
     return blockers
 
@@ -1506,6 +1583,7 @@ def _dossier_validity_blockers(
     *,
     pr_head_sha: str | None,
     registry: Mapping[str, Any],
+    note_path: Path | None = None,
     frontmatter: Mapping[str, Any] | None = None,
     expected_task_id: str | None = None,
     pr_number: int | None = None,
@@ -1699,6 +1777,7 @@ def _dossier_validity_blockers(
                     task_id=task_id,
                     registry=registry,
                     frontmatter=frontmatter,
+                    note_path=note_path,
                 )
             )
 
@@ -1822,6 +1901,7 @@ def review_dossier_validity_blockers(
         loaded,
         pr_head_sha=pr_head_sha,
         registry=registry,
+        note_path=note_path,
         frontmatter=frontmatter,
         expected_task_id=task_id,
         pr_number=pr_number,

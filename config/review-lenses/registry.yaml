@@ -111,8 +111,12 @@ families:
     # ~/.cache/hapax/review-team/family-outage.json, normally written when the
     # seat returns quota-wall/provider-outage. For a hard GLM adapter/pass/
     # provider failure outside those classifiers, open a governed incident
-    # note, seed {"glm": "<current ISO timestamp>"} in that witness file, and
-    # rerun dispatch; admission enforces the same FAMILY_OUTAGE_TTL_S expiry.
+    # note, seed {"glm": {"observed_at": "<current ISO timestamp>",
+    # "outage_started_at": "<current ISO timestamp>", "outage_verdicts":
+    # ["provider-outage"], "route_ids": ["glmcp.review.direct"]}} in that
+    # witness file, and rerun dispatch; admission enforces the same
+    # FAMILY_OUTAGE_TTL_S expiry. String timestamps are legacy/unscoped
+    # compatibility entries and may yield to fresh route admission.
     # Recheck witness: python -c 'import json,pathlib; p=pathlib.Path.home()/".cache/hapax/review-team/family-outage.json"; print(json.loads(p.read_text()).get("glm"))'
     # Broad emergency stops remain HAPAX_REVIEW_TEAM_DISPATCH_OFF=1
     # (stop writing dossiers) and HAPAX_REVIEW_TEAM_GATE_OFF=1 (post-dossier
