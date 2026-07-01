@@ -652,9 +652,11 @@ build_privacy_egress_preflight
 # `scripts/hapax-capability-surface-delta-intake` CLI and by governed fixture
 # tests. The diff-only vulture pass does not count those call paths reliably.
 _CapabilitySurfaceDelta.allows_demand_fulfillment
-_detect_surface_deltas
-_load_capability_surface_delta_fixtures
-_write_capability_surface_delta_tasks
+_CAPABILITY_SURFACE_DELTA_ENTRYPOINTS = (
+    _detect_surface_deltas,
+    _load_capability_surface_delta_fixtures,
+    _write_capability_surface_delta_tasks,
+)
 
 # Trend/current-event gate helpers are the deterministic public API for the
 # content-candidate-discovery daemon and public adapters. This contract lands

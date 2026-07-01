@@ -771,10 +771,3 @@ def load_capability_surface_delta_file(path: Path) -> CapabilitySurfaceDeltaFile
             "or remove the configured producer path before routing can trust it; "
             f"next action: repair or unset the producer path: {exc}"
         ) from exc
-
-
-_PYDANTIC_DYNAMIC_ENTRYPOINTS = (
-    CapabilitySurfaceDescriptor._duration_is_valid,
-    CapabilitySurfaceDelta._delta_contract_is_actionable,
-    CapabilitySurfaceDeltaFixtureSet._fixtures_cover_required_cases,
-)
