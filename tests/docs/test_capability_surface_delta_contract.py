@@ -70,3 +70,15 @@ def test_schema_rejects_actionable_delta_without_remediation_ref() -> None:
 
     with pytest.raises(jsonschema.ValidationError):
         _validator().validate(bad)
+
+
+def test_schema_rejects_descriptor_change_marked_fresh_without_action() -> None:
+    fixtures = _json(FIXTURES)
+    bad = deepcopy(fixtures)
+    row = next(delta for delta in bad["deltas"] if delta["delta_kind"] == "authority_changed")
+    row["freshness_state"] = "fresh"
+    row["required_intake_action"] = "none"
+    row["remediation_ref"] = None
+
+    with pytest.raises(jsonschema.ValidationError):
+        _validator().validate(bad)

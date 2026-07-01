@@ -20,6 +20,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
+from shared.capability_surface_delta import (
+    CapabilitySurfaceDelta,
+    CapabilitySurfaceDeltaError,
+    load_capability_surface_delta_fixtures,
+)
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -64,6 +69,7 @@ DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_DIRNAME = "route-authority"
 ROUTING_MODEL_VERSION = "capacity-dimensional-v1"
+CAPABILITY_SURFACE_DELTA_PATH_ENV = "HAPAX_CAPABILITY_SURFACE_DELTA_FILE"
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
 UNKNOWN_OR_RISKY_PRIVACY_POSTURES = frozenset(
     {"provider_training_unknown", "public_risk", "unknown"}
@@ -376,6 +382,8 @@ class DispatchPolicySources(_PolicyModel):
     quota_ledger_source: str | None = None
     quota_live_error: str | None = None
     route_authority_receipts: tuple[RouteAuthorityReceipt, ...] = Field(default=())
+    surface_delta_refs_by_route: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    surface_delta_blockers_by_route: dict[str, tuple[str, ...]] = Field(default_factory=dict)
 
 
 def now_utc() -> datetime:
@@ -387,6 +395,7 @@ def load_dispatch_policy_sources(
     registry_path: Path | None = None,
     quota_ledger_path: Path | None = None,
     receipt_dir: Path | None = None,
+    surface_delta_path: Path | None = None,
     now: datetime | None = None,
 ) -> DispatchPolicySources:
     """Load inert policy sources, turning failures into request evidence."""
@@ -398,6 +407,8 @@ def load_dispatch_policy_sources(
     quota_ledger_source: str | None = None
     quota_live_error: str | None = None
     route_authority_receipts: tuple[RouteAuthorityReceipt, ...] = ()
+    surface_delta_refs_by_route: dict[str, tuple[str, ...]] = {}
+    surface_delta_blockers_by_route: dict[str, tuple[str, ...]] = {}
 
     try:
         effective_receipt_dir = receipt_dir or _receipt_dir_from_env()
@@ -435,6 +446,20 @@ def load_dispatch_policy_sources(
         quota_ledger = None
         quota_error = str(exc)
 
+    surface_delta_file = surface_delta_path or _surface_delta_path_from_env()
+    if surface_delta_file is not None:
+        try:
+            (
+                surface_delta_refs_by_route,
+                surface_delta_blockers_by_route,
+            ) = _surface_delta_route_index(surface_delta_file)
+        except (CapabilitySurfaceDeltaError, OSError, ValueError):
+            # Surface deltas are a supplemental source. Malformed producer output
+            # must not make the pure policy loader crash; absence or invalidity is
+            # represented by no live blockers until a valid producer file lands.
+            surface_delta_refs_by_route = {}
+            surface_delta_blockers_by_route = {}
+
     return DispatchPolicySources(
         registry=registry,
         registry_error=registry_error,
@@ -443,6 +468,8 @@ def load_dispatch_policy_sources(
         quota_ledger_source=quota_ledger_source,
         quota_live_error=quota_live_error,
         route_authority_receipts=route_authority_receipts,
+        surface_delta_refs_by_route=surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=surface_delta_blockers_by_route,
     )
 
 
@@ -478,6 +505,49 @@ def _receipt_dir_from_env() -> Path | None:
     return Path(configured).expanduser()
 
 
+def _surface_delta_path_from_env() -> Path | None:
+    configured = os.environ.get(CAPABILITY_SURFACE_DELTA_PATH_ENV)
+    if configured is None:
+        return None
+    if configured.strip() in {"", "0", "none", "None", "false", "False"}:
+        return None
+    return Path(configured).expanduser()
+
+
+def _surface_delta_route_index(
+    path: Path,
+) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
+    fixture_set = load_capability_surface_delta_fixtures(path)
+    refs: dict[str, list[str]] = {}
+    blockers: dict[str, list[str]] = {}
+    for delta in fixture_set.deltas:
+        delta_ref = _surface_delta_ref(delta)
+        for key in _surface_delta_route_keys(delta):
+            refs.setdefault(key, []).append(delta_ref)
+            if not delta.allows_demand_fulfillment():
+                blockers.setdefault(key, []).append(delta_ref)
+    return (
+        {key: tuple(dict.fromkeys(values)) for key, values in refs.items()},
+        {key: tuple(dict.fromkeys(values)) for key, values in blockers.items()},
+    )
+
+
+def _surface_delta_ref(delta: CapabilitySurfaceDelta) -> str:
+    return (
+        f"capability_surface_delta:{delta.freshness_state.value}:"
+        f"{delta.surface_id}:{delta.delta_id}"
+    )
+
+
+def _surface_delta_route_keys(delta: CapabilitySurfaceDelta) -> tuple[str, ...]:
+    keys = {delta.surface_id}
+    if delta.surface_id.startswith("route."):
+        keys.add(normalize_route_id(delta.surface_id.removeprefix("route.")))
+    if delta.observed_descriptor_ref:
+        keys.add(delta.observed_descriptor_ref)
+    return tuple(sorted(keys))
+
+
 def build_dispatch_request(
     *,
     task_id: str,
@@ -491,6 +561,8 @@ def build_dispatch_request(
     quota_ledger: QuotaSpendLedger | None = None,
     quota_error: str | None = None,
     route_authority_receipts: Sequence[RouteAuthorityReceipt] = (),
+    surface_delta_refs_by_route: Mapping[str, Sequence[str]] | None = None,
+    surface_delta_blockers_by_route: Mapping[str, Sequence[str]] | None = None,
     rollback_mode: bool = False,
     legacy_route_supported: bool = False,
     legacy_route_mutable: bool = False,
@@ -500,7 +572,14 @@ def build_dispatch_request(
 
     route_id = _route_id(platform, mode, profile)
     metadata = assess_route_metadata(task_fields)
-    capability = _capability_state(registry, route_id, registry_error, now=now)
+    capability = _capability_state(
+        registry,
+        route_id,
+        registry_error,
+        now=now,
+        surface_delta_refs_by_route=surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=surface_delta_blockers_by_route,
+    )
     route = registry.route_map().get(normalize_route_id(route_id)) if registry is not None else None
     try:
         demand_vector = build_demand_vector(
@@ -1993,6 +2072,8 @@ def _capability_state(
     registry_error: str | None,
     *,
     now: datetime | None,
+    surface_delta_refs_by_route: Mapping[str, Sequence[str]] | None = None,
+    surface_delta_blockers_by_route: Mapping[str, Sequence[str]] | None = None,
 ) -> RouteCapabilityState | None:
     if registry is None:
         return None
@@ -2005,13 +2086,25 @@ def _capability_state(
             freshness_errors=(f"unsupported route: {normalize_route_id(route_id)}",),
         )
     freshness = check_registry_freshness(registry, route_ids=[route_id], now=now).routes[0]
-    return _route_capability_state(route, freshness.ok, freshness.errors)
+    normalized_route_id = normalize_route_id(route_id)
+    return _route_capability_state(
+        route,
+        freshness.ok,
+        freshness.errors,
+        surface_delta_refs=tuple((surface_delta_refs_by_route or {}).get(normalized_route_id, ())),
+        surface_delta_blockers=tuple(
+            (surface_delta_blockers_by_route or {}).get(normalized_route_id, ())
+        ),
+    )
 
 
 def _route_capability_state(
     route: PlatformCapabilityRoute,
     freshness_ok: bool,
     freshness_errors: tuple[str, ...],
+    *,
+    surface_delta_refs: tuple[str, ...] = (),
+    surface_delta_blockers: tuple[str, ...] = (),
 ) -> RouteCapabilityState:
     return RouteCapabilityState(
         route_id=route.route_id,
@@ -2035,6 +2128,8 @@ def _route_capability_state(
         mutability=route.mutability.model_dump(mode="json"),
         freshness_ok=freshness_ok,
         freshness_errors=freshness_errors,
+        surface_delta_refs=surface_delta_refs,
+        surface_delta_blockers=surface_delta_blockers,
         telemetry_quota_source=route.telemetry.quota_source.value,
         telemetry_resource_source=route.telemetry.resource_source.value,
     )

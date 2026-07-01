@@ -25,9 +25,13 @@ DEFAULT_CAPABILITY_SURFACE_DELTA_TASK_ROOT = (
     Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 )
 DEFAULT_PARENT_REQUEST = "REQ-20260629-purview-intake-consolidation"
-DEFAULT_PARENT_SPEC = (
-    "/home/hapax/Documents/Personal/30-areas/hapax/"
-    "capability-demand-shape-routing-research-2026-06-30.md"
+DEFAULT_PARENT_SPEC = str(
+    Path.home()
+    / "Documents"
+    / "Personal"
+    / "30-areas"
+    / "hapax"
+    / "capability-demand-shape-routing-research-2026-06-30.md"
 )
 DEFAULT_AUTHORITY_CASE = "CASE-CAPACITY-ROUTING-001"
 DEFAULT_DISCOVERY_TASK = (

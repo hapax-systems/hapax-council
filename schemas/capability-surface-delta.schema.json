@@ -175,6 +175,32 @@
           }
         },
         {
+          "if": {
+            "properties": {
+              "delta_kind": {
+                "enum": [
+                  "descriptor_changed",
+                  "authority_changed",
+                  "resource_pool_changed",
+                  "public_egress_changed",
+                  "money_rail_changed",
+                  "harness_boundary_changed",
+                  "orchestration_child_changed"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "freshness_state": {"const": "delta_pending"},
+              "required_intake_action": {
+                "enum": ["update_descriptor", "mint_intake_item", "quarantine_surface"]
+              },
+              "remediation_ref": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        {
           "if": {"properties": {"delta_kind": {"const": "stale_determination"}}},
           "then": {
             "properties": {

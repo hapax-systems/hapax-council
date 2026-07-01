@@ -762,11 +762,11 @@ def test_stale_capability_data_holds() -> None:
 
 
 def test_pending_capability_surface_delta_holds_even_with_fresh_legacy_telemetry() -> None:
-    blocker = "capability_surface_delta:delta_pending:route.glmcp.review.direct"
+    blocker = "capability_surface_delta:delta_pending:route.codex.headless.full"
     request = _request(
-        route_id="glmcp.review.direct",
+        route_id="codex.headless.full",
         capability=_capability(
-            route_id="glmcp.review.direct",
+            route_id="codex.headless.full",
             freshness_ok=True,
             freshness_errors=(),
             surface_delta_refs=("cap-surface-delta:20260701T030000Z",),
@@ -783,6 +783,131 @@ def test_pending_capability_surface_delta_holds_even_with_fresh_legacy_telemetry
     assert decision.resource_freshness_green is False
     assert "capability_surface_delta_pending" in decision.reason_codes
     assert blocker in decision.reason_codes
+
+
+def test_build_dispatch_request_populates_surface_delta_blockers_from_policy_sources(
+    tmp_path: Path,
+) -> None:
+    surface_delta_path = tmp_path / "capability-surface-deltas.json"
+    surface_delta_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "fixture_set_id": "policy-source-delta-test",
+                "schema_ref": "schemas/capability-surface-delta.schema.json",
+                "generated_from": ["unit-test"],
+                "declared_at": "2026-05-09T22:00:00Z",
+                "descriptors": [
+                    {
+                        "descriptor_schema": 1,
+                        "surface_id": "route.codex.headless.full",
+                        "descriptor_ref": "platform-capability-registry:codex.headless.full",
+                        "surface_kind": "review_seat",
+                        "authority_ceiling": "read_only",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "stale_after": "1h",
+                        "evidence_refs": ["test:descriptor"],
+                        "route_id": "codex.headless.full",
+                        "resource_pools": ["subscription_quota"],
+                    }
+                ],
+                "deltas": [
+                    {
+                        "delta_schema": 1,
+                        "delta_id": "test:pending-codex-delta",
+                        "source": "unit-test",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "detected_by": "unit-test",
+                        "surface_id": "route.codex.headless.full",
+                        "delta_kind": "stale_determination",
+                        "prior_descriptor_ref": "platform-capability-registry:codex.headless.full",
+                        "observed_descriptor_ref": "platform-capability-receipt:codex:expired",
+                        "evidence_refs": ["test:expired-codex-receipt"],
+                        "authority_ceiling": "read_only",
+                        "affected_resource_pools": ["subscription_quota"],
+                        "privacy_sensitive": True,
+                        "public_egress": False,
+                        "money_rail": False,
+                        "freshness_state": "stale",
+                        "required_intake_action": "refresh_receipt",
+                        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+                        "summary": "test stale codex determination",
+                    },
+                    {
+                        "delta_schema": 1,
+                        "delta_id": "test:new-openrouter",
+                        "source": "unit-test",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "detected_by": "unit-test",
+                        "surface_id": "route.openrouter.test",
+                        "delta_kind": "new_capability",
+                        "prior_descriptor_ref": None,
+                        "observed_descriptor_ref": "provider-catalog:openrouter:test",
+                        "evidence_refs": ["test:openrouter"],
+                        "authority_ceiling": "frontier_review_required",
+                        "affected_resource_pools": ["api_paid_spend"],
+                        "privacy_sensitive": True,
+                        "public_egress": False,
+                        "money_rail": True,
+                        "freshness_state": "delta_pending",
+                        "required_intake_action": "mint_intake_item",
+                        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+                        "summary": "test new capability",
+                    },
+                    {
+                        "delta_schema": 1,
+                        "delta_id": "test:authority-change-publication",
+                        "source": "unit-test",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "detected_by": "unit-test",
+                        "surface_id": "surface.publication_bus.weblog",
+                        "delta_kind": "authority_changed",
+                        "prior_descriptor_ref": "publication-bus:weblog:read-only",
+                        "observed_descriptor_ref": "publication-bus:weblog:publish-capable",
+                        "evidence_refs": ["test:publication"],
+                        "authority_ceiling": "frontier_review_required",
+                        "affected_resource_pools": ["public_egress"],
+                        "privacy_sensitive": True,
+                        "public_egress": True,
+                        "money_rail": False,
+                        "freshness_state": "delta_pending",
+                        "required_intake_action": "update_descriptor",
+                        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+                        "summary": "test authority change",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    sources = load_dispatch_policy_sources(
+        registry_path=None,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        surface_delta_path=surface_delta_path,
+        now=NOW,
+    )
+
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        quota_ledger=sources.quota_ledger,
+        surface_delta_refs_by_route=sources.surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=sources.surface_delta_blockers_by_route,
+        now=NOW,
+    )
+
+    assert request.capability is not None
+    assert request.capability.surface_delta_refs
+    assert request.capability.surface_delta_blockers
+    decision = evaluate_dispatch_policy(request, now=NOW)
+    assert decision.action is DispatchAction.HOLD
+    assert "capability_surface_delta_pending" in decision.reason_codes
+    assert any("test:pending-codex-delta" in reason for reason in decision.reason_codes)
 
 
 def test_unsupported_routes_refuse() -> None:
