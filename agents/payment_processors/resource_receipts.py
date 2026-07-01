@@ -363,6 +363,7 @@ def record_awareness_write_resource_receipt(
     source_log_path: Path,
     receipt_count: int,
     source_window_sha256: str | None = None,
+    route_source: str = "agents.payment_processors.monetization_aggregator",
     log_path: Path | None = None,
 ) -> str | None:
     provenance = [
@@ -378,7 +379,7 @@ def record_awareness_write_resource_receipt(
         external_id=f"{state_path}:{datetime.now(UTC).isoformat()}",
         downstream_action="operator_awareness.write_state_atomic",
         route_provenance=(
-            "route:agents.payment_processors.monetization_aggregator",
+            f"route:{route_source}",
             f"authority_case:{AUTHORITY_CASE}",
         ),
         resource_provenance=provenance,

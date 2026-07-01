@@ -106,6 +106,7 @@ class TestAwarenessRunnerReceiptGate:
         receipts = tail_resource_receipts(log_path=receipt_log)
         assert len(receipts) == 1
         assert receipts[0].operation.value == "awareness_state_write"
+        assert "route:agents.operator_awareness.runner" in receipts[0].route_provenance
         assert any(
             ref.startswith("payment_event_window_sha256:")
             for ref in receipts[0].resource_provenance

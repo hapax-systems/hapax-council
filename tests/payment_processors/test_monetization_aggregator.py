@@ -132,6 +132,10 @@ class TestAwarenessWriteReceipts:
         receipts = tail_resource_receipts(log_path=receipt_log)
         assert len(receipts) == 1
         assert receipts[0].operation.value == "awareness_state_write"
+        assert (
+            "route:agents.payment_processors.monetization_aggregator"
+            in receipts[0].route_provenance
+        )
         assert receipts[0].spend_authority_granted is False
         assert any(
             ref.startswith("payment_event_window_sha256:")

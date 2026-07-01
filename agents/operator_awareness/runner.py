@@ -138,6 +138,7 @@ class AwarenessRunner:
             source_log_path=self._aggregator.monetization_log_path,
             receipt_count=len(events),
             source_window_sha256=event_window_sha256(events),
+            route_source="agents.operator_awareness.runner",
         )
         if receipt_ref is None:
             log.warning(
