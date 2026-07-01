@@ -4679,3 +4679,19 @@ _ = (
     _Stage0DurableJsonlSink,
     _Stage0DurableJsonlSink.path_for_stream,
 )
+
+# Dispatch launch redemption substrate. The coord/governor service and wrapper
+# cutover consume these entrypoints dynamically; this slice lands the pure core
+# and socket server first so static vulture cannot see production callsites yet.
+# cc-task-dispatch-launch-redemption-service-20260701.
+from shared.governance.dispatch_redemption import (  # noqa: E402
+    DispatchLaunchRedemptionAuthority as _DispatchLaunchRedemptionAuthority,
+)
+from shared.governance.dispatch_redemption import (
+    DispatchLaunchRedemptionServer as _DispatchLaunchRedemptionServer,
+)
+
+_ = (
+    _DispatchLaunchRedemptionAuthority.mint,
+    _DispatchLaunchRedemptionServer.serve_once,
+)
