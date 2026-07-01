@@ -31,6 +31,7 @@ import logging
 import os
 import signal as _signal
 import threading
+from pathlib import Path
 from typing import Any
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter
@@ -40,7 +41,11 @@ from agents.operator_awareness.state import (
     DEFAULT_STATE_PATH,
     write_state_atomic,
 )
-from agents.payment_processors.event_log import event_window_sha256, tail_events
+from agents.payment_processors.event_log import (
+    DEFAULT_PAYMENT_LOG_PATH,
+    event_window_sha256,
+    tail_events,
+)
 from agents.payment_processors.monetization_aggregator import build_monetization_block_from_events
 from agents.payment_processors.resource_receipts import (
     commit_prepared_resource_receipt,
@@ -132,7 +137,10 @@ class AwarenessRunner:
 
     def run_once(self) -> str:
         """Build state + write atomically; return the result label."""
-        events = tail_events(log_path=self._aggregator.monetization_log_path)
+        monetization_log_path = self._aggregator.monetization_log_path
+        if not isinstance(monetization_log_path, Path):
+            monetization_log_path = DEFAULT_PAYMENT_LOG_PATH
+        events = tail_events(log_path=monetization_log_path)
         monetization_block = build_monetization_block_from_events(events)
         try:
             state = self._aggregator.collect(monetization_block=monetization_block)
@@ -142,7 +150,7 @@ class AwarenessRunner:
             return "aggregator_error"
         _receipt_ref, receipt = prepare_awareness_write_resource_receipt(
             state_path=self._state_path,
-            source_log_path=self._aggregator.monetization_log_path,
+            source_log_path=monetization_log_path,
             receipt_count=len(events),
             source_window_sha256=event_window_sha256(events),
             route_source="agents.operator_awareness.runner",

@@ -19,12 +19,20 @@ def _now() -> datetime:
 
 class TestRunOnce:
     def test_writes_state_to_path(self, tmp_path):
+        from agents.payment_processors import resource_receipts
+
         state = AwarenessState(timestamp=_now())
         agg = mock.Mock(spec=Aggregator)
         agg.collect.return_value = state
-        out = tmp_path / "state.json"
-        runner = AwarenessRunner(aggregator=agg, state_path=out, registry=CollectorRegistry())
-        result = runner.run_once()
+        agg.monetization_log_path = tmp_path / "events.jsonl"
+        with mock.patch.object(
+            resource_receipts,
+            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+            tmp_path / "resource-receipts.jsonl",
+        ):
+            out = tmp_path / "state.json"
+            runner = AwarenessRunner(aggregator=agg, state_path=out, registry=CollectorRegistry())
+            result = runner.run_once()
         assert result == "ok"
         assert out.exists()
         loaded = json.loads(out.read_text(encoding="utf-8"))
@@ -34,6 +42,7 @@ class TestRunOnce:
     def test_aggregator_exception_yields_label(self, tmp_path):
         agg = mock.Mock(spec=Aggregator)
         agg.collect.side_effect = RuntimeError("boom")
+        agg.monetization_log_path = tmp_path / "events.jsonl"
         out = tmp_path / "state.json"
         runner = AwarenessRunner(aggregator=agg, state_path=out, registry=CollectorRegistry())
         result = runner.run_once()
@@ -42,21 +51,24 @@ class TestRunOnce:
         assert runner.writes_total.labels(result="aggregator_error")._value.get() == 1.0
 
     def test_write_failure_yields_error_label(self, tmp_path, monkeypatch):
+        from agents.operator_awareness import runner as runner_mod
+        from agents.payment_processors import resource_receipts
+
         state = AwarenessState(timestamp=_now())
         agg = mock.Mock(spec=Aggregator)
         agg.collect.return_value = state
+        agg.monetization_log_path = tmp_path / "events.jsonl"
+        monkeypatch.setattr(
+            resource_receipts,
+            "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+            tmp_path / "resource-receipts.jsonl",
+        )
         runner = AwarenessRunner(
             aggregator=agg,
             state_path=tmp_path / "blocked" / "state.json",
             registry=CollectorRegistry(),
         )
-        # Force write_state_atomic to fail by making the parent unwritable.
-        from pathlib import Path as _Path
-
-        def _fail_mkdir(*_a, **_k):
-            raise OSError("read-only")
-
-        monkeypatch.setattr(_Path, "mkdir", _fail_mkdir)
+        monkeypatch.setattr(runner_mod, "write_state_atomic", lambda *_args, **_kwargs: False)
         result = runner.run_once()
         assert result == "error"
         assert runner.writes_total.labels(result="error")._value.get() == 1.0
