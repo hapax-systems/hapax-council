@@ -299,9 +299,10 @@ task_is_terminal() {
   local task="$1"
   [[ -n "$task" ]] || return 1   # no task binding -> legacy always-on behavior
 
-  local claimed="" claim_source="primary"
+  local claimed="" claim_source="primary" claim_file_used=""
   if [[ -s "$CLAIM_FILE" ]]; then
     claimed="$(head -n1 "$CLAIM_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
+    claim_file_used="$CLAIM_FILE"
   fi
 
   # If primary cache is missing or empty, try session-keyed claim files.
@@ -321,6 +322,7 @@ task_is_terminal() {
     if [[ -n "$session_claim" && -s "$session_claim" ]]; then
       claimed="$(head -n1 "$session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
       claim_source="session-keyed:$(basename "$session_claim")"
+      claim_file_used="$session_claim"
     fi
   fi
 
@@ -355,7 +357,57 @@ task_is_terminal() {
   local note_assigned=""
   note_assigned="$(grep -oP '^assigned_to:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
   if [[ -n "$note_assigned" && "$note_assigned" != "$ROLE" ]]; then
-    return 0
+    # assigned_to mismatch. Discriminate by the SHAPE of the mismatch, not by
+    # cache mtime — the gate touches the claim cache before any check (lease
+    # keep-alive), so a reassigned old lane attempting gated writes would
+    # keep its own cache "fresh" forever and an mtime bound cannot reap it.
+    #
+    # - assigned_to names ANOTHER ROLE: a genuine (re)claim by a live
+    #   claimant — DEFINITIVE terminal, regardless of our cache. Two lanes
+    #   must never own one task.
+    # - assigned_to is 'unassigned' while OUR claim cache names exactly this
+    #   task: that is the cc-hygiene H1 ghost-revert shape (a revert always
+    #   leaves offered/unassigned/claimed_at:null; 2026-07-01 eta/ndcvb-phase1:
+    #   reverted 13s after claim, healthy worker SIGTERMed). INDETERMINATE —
+    #   fall through to the PR-state check — but only while the cache is
+    #   fresh (HAPAX_CLAIM_STAMP_GRACE_S, default 900s): a lane sitting on a
+    #   long-unassigned task should have re-claimed; reap it.
+    if [[ "$note_assigned" != "unassigned" ]]; then
+      return 0
+    fi
+    # Freshness must be HEARTBEAT-IMMUNE: the gate touches the claim file
+    # before its checks (lease keep-alive), so mtime is refreshed even by a
+    # lane whose writes the gate then blocks — mtime can NEVER witness claim
+    # age here, so there is deliberately no mtime fallback. The claim epoch
+    # comes from the `cc-claim-epoch-*` sidecar (distinct prefix: outside
+    # every cc-active-task-* glob, never gate-touched), and only counts when
+    # its recorded task id matches this claim — a stale sidecar left by an
+    # earlier claim cannot age a fresh materialized cache. Both cc-claim and
+    # the remote-exec claim materializer write the sidecar; a matching cache
+    # with NO valid sidecar is a non-conforming writer and reaps.
+    local _stamp_grace="${HAPAX_CLAIM_STAMP_GRACE_S:-900}" _cache_age=-1
+    local _epoch_line="" _claim_epoch="" _epoch_task="" _epoch_file="" _claim_base=""
+    if [[ "$claimed" == "$task" && -n "$claim_file_used" ]]; then
+      # Basename-anchored derivation: substring substitution on the FULL path
+      # would rewrite the first `cc-active-task` occurrence anywhere (e.g. in
+      # a parent directory name) and read a nonexistent sidecar, falsely
+      # reaping a fresh lane.
+      _claim_base="$(basename "$claim_file_used")"
+      _epoch_file="$(dirname "$claim_file_used")/cc-claim-epoch-${_claim_base#cc-active-task-}"
+      _epoch_line="$(head -n1 "$_epoch_file" 2>/dev/null || true)"
+      _claim_epoch="${_epoch_line%% *}"
+      _epoch_task="${_epoch_line#* }"
+      _epoch_task="$(printf '%s' "$_epoch_task" | tr -d '[:space:]')"
+      if [[ "$_claim_epoch" =~ ^[0-9]+$ && "$_epoch_task" == "$task" ]]; then
+        _cache_age=$(( $(date +%s) - _claim_epoch ))
+      fi
+    fi
+    if [[ "$claimed" == "$task" ]] && (( _cache_age >= 0 && _cache_age <= _stamp_grace )); then
+      printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but fresh %s claim cache (claim age=%ss) names this task — treating as indeterminate (H1 ghost-revert shape)\n' \
+        "$$" "$claim_source" "$_cache_age" >&2
+    else
+      return 0
+    fi
   fi
   # PR merged but the note not yet closed (the dead-lane window): stop now; the
   # merge-watcher closes the note shortly. Fail-open on any gh hiccup.
@@ -479,6 +531,14 @@ try:
         os.makedirs(cache,exist_ok=True)
         open(os.path.join(cache,"session-role-"+sid),"w",encoding="utf-8").write(role+"\n")
         if task:
+            import time as _time
+            epoch_line=str(int(_time.time()))+" "+task+"\n"
+            # Task-bound epoch sidecars are written BEFORE the caches they
+            # vouch for: task_is_terminal trusts a sidecar only when it names
+            # this task and has NO mtime fallback, so a matching cache must
+            # never be visible without its sidecar.
+            open(os.path.join(cache,"cc-claim-epoch-"+role),"w",encoding="utf-8").write(epoch_line)
+            open(os.path.join(cache,"cc-claim-epoch-"+role+"-"+sid),"w",encoding="utf-8").write(epoch_line)
             open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
             open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
             materialized=True
