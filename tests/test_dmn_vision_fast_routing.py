@@ -20,7 +20,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from shared.config import MODELS
-from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
+from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+    BackgroundCapabilityAdmission,
+)
 
 
 def test_vision_fast_alias_resolves_to_gemini_flash() -> None:
@@ -112,3 +115,33 @@ async def test_dmn_local_thinking_refuses_without_admission() -> None:
 
     assert result == ""
     mock_post.assert_not_called()
+
+
+def test_dmn_local_admission_refuses_mismatched_served_leaf(tmp_path, monkeypatch) -> None:
+    """The real DMN local gate must not admit Qwen against the Command-R local route."""
+    from agents.dmn import ollama as ollama_mod
+
+    task_note = tmp_path / "cc-task-dmn-local.md"
+    task_note.write_text(
+        """---
+task_id: task-dmn-local
+status: claimed
+assigned_to: background
+authority_case: CASE-CAPACITY-ROUTING-001
+parent_spec: spec.md
+quality_floor: deterministic_ok
+authority_level: support_only
+mutation_surface: none
+risk_flags: {}
+---
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(BACKGROUND_CAPABILITY_TASK_NOTE_ENV, str(task_note))
+
+    admission = ollama_mod._admit_dmn_local("sensory")
+
+    assert admission.admitted is False
+    assert admission.reason_codes == ("model_descriptor_mismatch",)
+    assert "requested_model=Qwen3.5-9B-exl3-5.00bpw" in (admission.denied_reason or "")
+    assert "command-r-08-2024" in (admission.denied_reason or "")
