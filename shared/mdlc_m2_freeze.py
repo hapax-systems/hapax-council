@@ -88,8 +88,8 @@ _NEXT_ACTIONS: Final[dict[M2FreezeRefusalReason, str]] = {
         "repair the M2 freeze artifact so its surface, venue, and instrument match the G2 target"
     ),
     M2FreezeRefusalReason.PUBLISH_ONLY_WITHOUT_FLOOD_PLAN: (
-        "supply a flood_plan or mark a non_public/no_audience exemption for the publish-only "
-        "M2 freeze artifact"
+        "set budget_envelope.flood_plan or mark budget_envelope.non_public/"
+        "budget_envelope.no_audience for the publish-only M2 freeze artifact"
     ),
 }
 

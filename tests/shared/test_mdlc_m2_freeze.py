@@ -305,10 +305,24 @@ def test_publish_only_without_flood_plan_refuses_at_m2() -> None:
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is M2FreezeRefusalReason.PUBLISH_ONLY_WITHOUT_FLOOD_PLAN
     assert (
-        result.next_action
-        == "supply a flood_plan or mark a non_public/no_audience exemption for the publish-only "
-        "M2 freeze artifact"
+        result.next_action == "set budget_envelope.flood_plan or mark budget_envelope.non_public/"
+        "budget_envelope.no_audience for the publish-only M2 freeze artifact"
     )
+
+
+def test_legacy_budget_without_flood_fields_loads_private_default() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    for field in ("publish_only", "flood_plan", "non_public", "no_audience"):
+        budget.pop(field, None)
+
+    envelope = M2BudgetEnvelope.from_mapping(budget)
+    artifact = M2FreezeArtifact.from_mapping(_artifact(budget_envelope=budget))
+
+    assert envelope.publish_only is False
+    assert envelope.flood_plan == ""
+    assert envelope.non_public is False
+    assert envelope.no_audience is False
+    assert artifact.budget_envelope.flood_plan == ""
 
 
 def test_flood_envelope_fields_are_serialized() -> None:
@@ -385,6 +399,19 @@ def test_publish_only_requires_flood_plan_or_no_audience_exemption(exemption: st
         budget["flood_plan"] = "flood-plan:public-audience-generation"
     else:
         budget[exemption] = True
+
+    result = verify_m2_freeze_artifact(
+        _artifact(budget_envelope=budget),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.LIT
+    assert result.refusal_reason is None
+
+
+def test_publish_only_all_private_exemptions_pass() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget.update({"publish_only": True, "non_public": True, "no_audience": True})
 
     result = verify_m2_freeze_artifact(
         _artifact(budget_envelope=budget),
