@@ -105,7 +105,7 @@ class MonDLCScoreResult:
     """Guarded scorer output.
 
     ``bool(result)`` is deliberately undefined so callers cannot accidentally
-    collapse DARK/PARTIAL/LIT into Python truthiness.
+    collapse the ``(GateStatus, MonDLCVerdict)`` pair into Python truthiness.
     """
 
     scorer: str
@@ -291,6 +291,7 @@ def _result(
     gate_result_verdict: bool | None = None
     if status is GateStatus.LIT:
         gate_result_verdict = verdict is MonDLCVerdict.CORROBORATED
+    evidence_refs = _combined_evidence_refs(measurement)
     return MonDLCScoreResult(
         scorer=MDLC_MEASURE_SCORER_NAME,
         scorer_version=MDLC_MEASURE_SCORER_VERSION,
@@ -300,7 +301,7 @@ def _result(
             status=status,
             verdict=gate_result_verdict,
             reason=reason,
-            evidence_refs=() if measurement is None else measurement.evidence_refs,
+            evidence_refs=evidence_refs,
         ),
         gates=gates,
         reason=reason,
@@ -309,7 +310,7 @@ def _result(
         measurement_value=None if measurement is None else measurement.value,
         min_corroboration_count=ladder.min_corroboration_count,
         corroboration_count=corroboration_count,
-        evidence_refs=() if measurement is None else measurement.evidence_refs,
+        evidence_refs=evidence_refs,
         refusal_reason=refusal_reason,
         next_action=_next_action_for_reason(reason),
     )
@@ -319,7 +320,7 @@ def _coerce_ladder(value: MonDLCLadder | Mapping[str, Any]) -> MonDLCLadder:
     if isinstance(value, MonDLCLadder):
         return value
     if not isinstance(value, Mapping):
-        raise TypeError("ladder must be a MonDLCLadder or mapping")
+        raise TypeError("ladder must be a MonDLCLadder or mapping; pass the frozen ruler ladder")
     as_of = _optional_datetime(value.get("as_of"))
     return MonDLCLadder(
         ruler_hash=_required_str(value.get("ruler_hash"), field="ruler_hash"),
@@ -341,7 +342,10 @@ def _coerce_measurement(
     if isinstance(value, MonDLCMeasurement):
         return value
     if not isinstance(value, Mapping):
-        raise TypeError("measurement must be a MonDLCMeasurement, mapping, or None")
+        raise TypeError(
+            "measurement must be a MonDLCMeasurement, mapping, or None; "
+            "pass a witnessed realized-return measurement"
+        )
     raw_value = _first_present(value, "measurement", "value", "realized_return")
     measurement_value = None if raw_value is None else _numeric(raw_value, field="measurement")
     return MonDLCMeasurement(
@@ -423,8 +427,13 @@ def _corroboration_gate(count: int, minimum: int) -> MonDLCGate:
 def _corroboration_count(measurement: MonDLCMeasurement | None) -> int:
     if measurement is None:
         return 0
-    refs = {*measurement.evidence_refs, *measurement.corroborated_by}
-    return len(refs)
+    return len(_combined_evidence_refs(measurement))
+
+
+def _combined_evidence_refs(measurement: MonDLCMeasurement | None) -> tuple[str, ...]:
+    if measurement is None:
+        return ()
+    return tuple(dict.fromkeys((*measurement.evidence_refs, *measurement.corroborated_by)))
 
 
 def _next_action_for_reason(reason: str) -> str | None:
@@ -456,13 +465,13 @@ def _first_present(mapping: Mapping[str, Any], *keys: str) -> Any:
 
 def _numeric(value: Any, *, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise TypeError(f"{field} must be numeric")
+        raise TypeError(f"{field} must be numeric; attach a witnessed numeric realized return")
     return float(value)
 
 
 def _required_str(value: Any, *, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{field} is required")
+        raise ValueError(f"{field} is required; supply the frozen ruler hash")
     return value.strip()
 
 
@@ -494,7 +503,7 @@ def _coerce_refs(value: Any) -> tuple[str, ...]:
         return (value,) if value.strip() else ()
     if isinstance(value, Sequence):
         return _string_tuple(value)
-    raise TypeError("evidence refs must be a string sequence")
+    raise TypeError("evidence refs must be a string sequence; attach durable evidence ids")
 
 
 def _string_tuple(value: Sequence[str]) -> tuple[str, ...]:

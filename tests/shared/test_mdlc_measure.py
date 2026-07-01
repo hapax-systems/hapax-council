@@ -168,6 +168,41 @@ def test_uncorroborated_measurement_is_undetermined_not_success() -> None:
     assert result.reason == "insufficient_corroboration"
     gate = _by_gate(result, MonDLCGateName.CORROBORATION)
     assert gate.status is GateStatus.PARTIAL
+    assert _by_gate(result, MonDLCGateName.RULER_HASH).status is GateStatus.LIT
+    assert _by_gate(result, MonDLCGateName.OBSERVED_EVIDENCE).status is GateStatus.LIT
+    assert _by_gate(result, MonDLCGateName.FRESHNESS).status is GateStatus.LIT
+
+
+def test_counted_corroboration_witnesses_are_preserved_in_result_evidence() -> None:
+    result = score(
+        _measurement(
+            evidence_refs=("rail:event:1",),
+            corroborated_by=("ledger:receipt:1",),
+        ),
+        _ladder(min_corroboration_count=2),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.LIT
+    assert result.verdict is MonDLCVerdict.CORROBORATED
+    assert result.corroboration_count == 2
+    assert result.evidence_refs == ("rail:event:1", "ledger:receipt:1")
+    assert result.gate_result.evidence_refs == ("rail:event:1", "ledger:receipt:1")
+
+
+def test_corroboration_witnesses_deduplicate_across_ref_sources() -> None:
+    result = score(
+        _measurement(
+            evidence_refs=("rail:event:1", "ledger:receipt:1"),
+            corroborated_by=("ledger:receipt:1",),
+        ),
+        _ladder(min_corroboration_count=2),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.LIT
+    assert result.corroboration_count == 2
+    assert result.evidence_refs == ("rail:event:1", "ledger:receipt:1")
 
 
 def test_realized_return_between_thresholds_is_undetermined() -> None:
