@@ -564,8 +564,6 @@ def _paid_one_time_checkout(event: Any) -> bool:
 
 
 def _source_amount_sign_result(event: Any) -> RealizedReturnRefusalReason | None:
-    if _direction(event) in INBOUND_DIRECTION_VALUES:
-        return None
     raw_sign = _text_field(event, "source_amount_sign", "amount_sign", "raw_amount_sign")
     if raw_sign is not None:
         sign = raw_sign.casefold()
@@ -576,17 +574,20 @@ def _source_amount_sign_result(event: Any) -> RealizedReturnRefusalReason | None
         return RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
 
     raw_amount = _field(event, "source_amount", "raw_amount", "signed_amount")
-    if raw_amount is None:
-        return RealizedReturnRefusalReason.MISSING_SOURCE_AMOUNT_SIGN
-    try:
-        signed = Decimal(str(raw_amount))
-    except (InvalidOperation, ValueError):
-        return RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
-    if not signed.is_finite():
-        return RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
-    if signed < 0:
-        return RealizedReturnRefusalReason.REFUND_OR_REVERSAL_EVENT
-    return None
+    if raw_amount is not None:
+        try:
+            signed = Decimal(str(raw_amount))
+        except (InvalidOperation, ValueError):
+            return RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+        if not signed.is_finite():
+            return RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+        if signed < 0:
+            return RealizedReturnRefusalReason.REFUND_OR_REVERSAL_EVENT
+        return None
+
+    if _direction(event) in INBOUND_DIRECTION_VALUES:
+        return None
+    return RealizedReturnRefusalReason.MISSING_SOURCE_AMOUNT_SIGN
 
 
 def _refused(

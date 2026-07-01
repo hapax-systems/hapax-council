@@ -455,7 +455,24 @@ def test_open_collective_transaction_debit_direction_refuses_outbound() -> None:
         ),
         (
             _accepted_event(
+                "incoming_ach.create",
+                direction="credit",
+                source_amount_sign="negative",
+            ),
+            realized_return_mod.RealizedReturnRefusalReason.REFUND_OR_REVERSAL_EVENT,
+        ),
+        (
+            _accepted_event(
                 "payment_intent_succeeded",
+                source_amount_sign=None,
+                signed_amount=-2500,
+            ),
+            realized_return_mod.RealizedReturnRefusalReason.REFUND_OR_REVERSAL_EVENT,
+        ),
+        (
+            _accepted_event(
+                "incoming_ach.create",
+                direction="credit",
                 source_amount_sign=None,
                 signed_amount=-2500,
             ),
