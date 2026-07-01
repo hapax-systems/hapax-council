@@ -1844,6 +1844,14 @@ class TestFamilyOutageDegradation:
         monkeypatch.setattr(dispatch, "DEGRADED_MERGES_LEDGER", ledger)
         return state, ledger
 
+    @staticmethod
+    def _structured_outage(now: str, verdict: str = "quota-wall") -> dict[str, Any]:
+        return {
+            "observed_at": now,
+            "outage_started_at": now,
+            "outage_verdicts": [verdict],
+        }
+
     def test_wall_on_stderr_classifies_as_quota_wall(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
@@ -2258,6 +2266,8 @@ class TestFamilyOutageDegradation:
             "glm": {
                 "observed_at": "2026-06-12T21:00:00+00:00",
                 "outage_started_at": "2026-06-12T21:00:00+00:00",
+                "outage_verdicts": ["provider-outage"],
+                "route_ids": [],
             }
         }
 
@@ -2354,7 +2364,7 @@ class TestFamilyOutageDegradation:
 
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
-        state.write_text(json.dumps({"claude": now}), encoding="utf-8")
+        state.write_text(json.dumps({"claude": self._structured_outage(now)}), encoding="utf-8")
         result, _, _, note = _review(
             tmp_path,
             now_iso=now,
@@ -2377,12 +2387,50 @@ class TestFamilyOutageDegradation:
         assert entries[0]["degraded_family_outage"] == ["claude"]
         assert entries[0]["degraded_family_outage_witness"] == {"claude": now}
 
+    def test_legacy_unscoped_outage_yields_to_current_route_admission(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-12T21:00:00+00:00"
+        state.write_text(json.dumps({"gemini": now}), encoding="utf-8")
+
+        result, _, reviewers, _ = _review(
+            tmp_path,
+            now_iso=now,
+            task_kwargs={"risk_tier": "T1"},
+            gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
+        )
+
+        seated = {r["family"] for r in result["dossier"]["reviewers"]}
+        assert "gemini" in seated
+        assert "gemini" in {family for _, family, _ in reviewers.invocations}
+        assert "degraded_family_outage:gemini" not in result["plan"]["constitution_notes"]
+
+    def test_structured_outage_still_degrades_even_when_route_admits(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-12T21:00:00+00:00"
+        state.write_text(json.dumps({"gemini": self._structured_outage(now)}), encoding="utf-8")
+
+        result, _, reviewers, _ = _review(
+            tmp_path,
+            now_iso=now,
+            task_kwargs={"risk_tier": "T1"},
+            gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
+        )
+
+        seated = {r["family"] for r in result["dossier"]["reviewers"]}
+        assert "gemini" not in seated
+        assert "gemini" not in {family for _, family, _ in reviewers.invocations}
+        assert "degraded_family_outage:gemini" in result["plan"]["constitution_notes"]
+
     def test_degraded_review_floor_accept_writes_receipt_against_dispatcher_witness(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
-        state.write_text(json.dumps({"claude": now}), encoding="utf-8")
+        state.write_text(json.dumps({"claude": self._structured_outage(now)}), encoding="utf-8")
         real_update = dispatch.update_family_outage
 
         def racing_update(
@@ -2423,7 +2471,7 @@ class TestFamilyOutageDegradation:
     ) -> None:
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
-        state.write_text(json.dumps({"claude": now}), encoding="utf-8")
+        state.write_text(json.dumps({"claude": self._structured_outage(now)}), encoding="utf-8")
         kwargs = {
             "now_iso": now,
             "task_kwargs": {"risk_tier": "T1"},
@@ -2445,7 +2493,7 @@ class TestFamilyOutageDegradation:
     ) -> None:
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
-        state.write_text(json.dumps({"claude": now}), encoding="utf-8")
+        state.write_text(json.dumps({"claude": self._structured_outage(now)}), encoding="utf-8")
         calls: list[int] = []
         real_flock = dispatch.fcntl.flock
 

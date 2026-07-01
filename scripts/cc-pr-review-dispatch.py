@@ -185,6 +185,20 @@ def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> 
     return out
 
 
+def load_family_outage_entries(now_iso: str, state_path: Path | None = None) -> dict[str, Any]:
+    """TTL-live raw outage witness entries by family."""
+
+    state_path = state_path or FAMILY_OUTAGE_STATE
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(state, dict):
+        return {}
+    live = load_family_outage_witness(now_iso, state_path)
+    return {family: state[family] for family in live if family in state}
+
+
 def send_session_for_lane(lane: str) -> str:
     """Normalize task lane labels to the concrete sender session name."""
 
@@ -225,6 +239,101 @@ def _review_is_family_outage_signal(review: Mapping[str, Any]) -> bool:
     )
 
 
+def _outage_entry_verdicts(entry: Any) -> frozenset[str]:
+    if isinstance(entry, Mapping):
+        raw = entry.get("outage_verdicts")
+        if isinstance(raw, list):
+            return frozenset(str(item) for item in raw if str(item).strip())
+        raw = entry.get("outage_verdict")
+        if raw is not None:
+            return frozenset({str(raw)})
+    return frozenset()
+
+
+def _outage_entry_is_legacy_or_unscoped(entry: Any) -> bool:
+    if isinstance(entry, str):
+        return True
+    if not isinstance(entry, Mapping):
+        return True
+    return not _outage_entry_verdicts(entry)
+
+
+def _admit_review_family_for_current_tasks(
+    *,
+    family: str,
+    family_cfg: Mapping[str, Any],
+    keyed_matches: list[tuple[Path, dict[str, Any], str]],
+    policy_sources: DispatchPolicySources,
+    route_decision_ledger_dir: Path | None,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    seat = review_team.Seat(id=f"outage-recheck-{family}", family=family)
+    return [
+        _admit_review_seat_for_task(
+            seat=seat,
+            family_cfg=family_cfg,
+            task_id=task_id,
+            note_path=note_path,
+            frontmatter=frontmatter,
+            policy_sources=policy_sources,
+            route_decision_ledger_dir=route_decision_ledger_dir,
+            now=now,
+            record_route_decision=False,
+        )
+        for note_path, frontmatter, task_id in keyed_matches
+    ]
+
+
+def filter_outage_witness_for_current_routes(
+    outage_entries: Mapping[str, Any],
+    *,
+    registry: Mapping[str, Any],
+    keyed_matches: list[tuple[Path, dict[str, Any], str]],
+    policy_sources: DispatchPolicySources,
+    route_decision_ledger_dir: Path | None,
+    now: datetime,
+) -> dict[str, str]:
+    """Drop stale legacy outage entries contradicted by current route admission.
+
+    Structured quota/provider outage evidence remains load-bearing for the TTL:
+    route admission can be green while the provider is still quota-walled. Legacy
+    and unscoped entries, however, are not strong enough to suppress a family
+    once the current concrete reviewer route has fresh route/quota/resource
+    admission for all linked tasks.
+    """
+
+    out: dict[str, str] = {}
+    family_cfgs = {str(entry.get("family")): entry for entry in registry["families"]}
+    for family, entry in outage_entries.items():
+        observed_at = _witness_observed_at(entry)
+        if observed_at is None:
+            continue
+        family_cfg = family_cfgs.get(family)
+        if (
+            family_cfg is not None
+            and _outage_entry_is_legacy_or_unscoped(entry)
+            and all(
+                _route_admission_is_current(admission)
+                for admission in _admit_review_family_for_current_tasks(
+                    family=family,
+                    family_cfg=family_cfg,
+                    keyed_matches=keyed_matches,
+                    policy_sources=policy_sources,
+                    route_decision_ledger_dir=route_decision_ledger_dir,
+                    now=now,
+                )
+            )
+        ):
+            LOG.warning(
+                "family outage witness for %s ignored: legacy/unscoped entry contradicted "
+                "by current route admission",
+                family,
+            )
+            continue
+        out[family] = observed_at
+    return out
+
+
 def update_family_outage(
     reviews: list[dict[str, Any]],
     now_iso: str,
@@ -260,7 +369,19 @@ def update_family_outage(
                     # outage began) and only advance observed_at. Legacy str entries seed
                     # started == the old timestamp; a brand-new outage seeds started == now.
                     started = _outage_started_at(state.get(family), now_iso)
-                    state[family] = {"observed_at": now_iso, "outage_started_at": started}
+                    route_ids = sorted(
+                        {
+                            str(r.get("route_id") or "")
+                            for r in family_reviews
+                            if str(r.get("route_id") or "").strip()
+                        }
+                    )
+                    state[family] = {
+                        "observed_at": now_iso,
+                        "outage_started_at": started,
+                        "outage_verdicts": sorted(set(verdicts)),
+                        "route_ids": route_ids,
+                    }
                 elif any(v in available_verdicts for v in verdicts):
                     state.pop(family, None)
             with tempfile.NamedTemporaryFile(
@@ -1572,7 +1693,18 @@ def review_pr(
         "",
     )
     writer_family = review_team.writer_family_for_lane(assigned_lane, registry)
-    outage_witness = load_family_outage_witness(now_iso)
+    admission_now = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+    if admission_now.tzinfo is None:
+        admission_now = admission_now.replace(tzinfo=UTC)
+    loaded_policy_sources = policy_sources or load_dispatch_policy_sources(now=admission_now)
+    outage_witness = filter_outage_witness_for_current_routes(
+        load_family_outage_entries(now_iso),
+        registry=registry,
+        keyed_matches=keyed_matches,
+        policy_sources=loaded_policy_sources,
+        route_decision_ledger_dir=route_decision_ledger_dir,
+        now=admission_now,
+    )
     outage_families = frozenset(outage_witness)
     if outage_families:
         LOG.warning(
@@ -1594,10 +1726,7 @@ def review_pr(
         "constitution_notes": list(constitution.notes),
     }
 
-    admission_now = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
-    if admission_now.tzinfo is None:
-        admission_now = admission_now.replace(tzinfo=UTC)
-    computed_policy_sources: DispatchPolicySources | None = None
+    computed_policy_sources: DispatchPolicySources | None = loaded_policy_sources
     computed_seat_admissions: dict[str, list[dict[str, Any]]] | None = None
 
     def compute_current_seat_admissions(
@@ -1608,7 +1737,10 @@ def review_pr(
         nonlocal computed_seat_admissions
         if record_route_decisions and computed_seat_admissions is not None:
             return computed_seat_admissions
-        computed_policy_sources = policy_sources or load_dispatch_policy_sources(now=admission_now)
+        if computed_policy_sources is None:
+            computed_policy_sources = policy_sources or load_dispatch_policy_sources(
+                now=admission_now
+            )
         seat_admissions = build_review_seat_admissions(
             constitution=constitution,
             registry=registry,
