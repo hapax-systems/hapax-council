@@ -56,21 +56,49 @@ def _receive_only_files(repo_root: Path = REPO_ROOT) -> list[Path]:
     return files
 
 
-def _imported_modules(file: Path) -> set[str]:
+def _module_name(file: Path, repo_root: Path = REPO_ROOT) -> str:
+    parts = list(file.resolve().relative_to(repo_root).with_suffix("").parts)
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def _imported_modules(file: Path, repo_root: Path = REPO_ROOT) -> set[str]:
+    """Every module name an import statement in ``file`` can bind.
+
+    Covers ``import a.b``, ``from a.b import c`` (both ``a.b`` and ``a.b.c`` —
+    ``from shared import outbound_executor`` imports the submodule even though
+    ``node.module`` is only ``shared``), and relative forms
+    (``from . import x`` / ``from ..pkg import y``) resolved against the
+    file's package path so package-internal violations cannot hide.
+    """
     tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
+    try:
+        pkg_parts = list(file.resolve().relative_to(repo_root).parent.parts)
+    except ValueError:
+        pkg_parts = []
     modules: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            modules.add(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0:
+                base = node.module or ""
+            else:
+                anchor = pkg_parts[: max(0, len(pkg_parts) - node.level + 1)]
+                base = ".".join([*anchor, node.module]) if node.module else ".".join(anchor)
+            if base:
+                modules.add(base)
+            modules.update(f"{base}.{alias.name}" if base else alias.name for alias in node.names)
     return modules
 
 
-def _bounded_outbound_imports(files: list[Path]) -> list[tuple[Path, str]]:
+def _bounded_outbound_imports(
+    files: list[Path], repo_root: Path = REPO_ROOT
+) -> list[tuple[Path, str]]:
     findings: list[tuple[Path, str]] = []
     for file in files:
-        for module in sorted(_imported_modules(file)):
+        for module in sorted(_imported_modules(file, repo_root)):
             if module in BOUNDED_OUTBOUND_MODULES or any(
                 module.startswith(f"{name}.") for name in BOUNDED_OUTBOUND_MODULES
             ):
@@ -106,33 +134,74 @@ def test_no_receive_only_surface_imports_bounded_outbound() -> None:
 def test_scanner_detects_from_import(tmp_path: Path) -> None:
     bad_file = tmp_path / "bad_rail.py"
     bad_file.write_text("from shared.outbound_executor import OutboundExecutor\n")
-    assert _bounded_outbound_imports([bad_file]) == [(bad_file, "shared.outbound_executor")]
+    findings = _bounded_outbound_imports([bad_file], repo_root=tmp_path)
+    assert (bad_file, "shared.outbound_executor") in findings
 
 
 def test_scanner_detects_plain_import(tmp_path: Path) -> None:
     bad_file = tmp_path / "bad_rail.py"
     bad_file.write_text("import shared.outbound_lane_pattern\n")
-    assert _bounded_outbound_imports([bad_file]) == [(bad_file, "shared.outbound_lane_pattern")]
+    findings = _bounded_outbound_imports([bad_file], repo_root=tmp_path)
+    assert findings == [(bad_file, "shared.outbound_lane_pattern")]
+
+
+def test_scanner_detects_package_level_from_import(tmp_path: Path) -> None:
+    """`from shared import outbound_executor` binds the guarded submodule."""
+    bad_file = tmp_path / "bad_rail.py"
+    bad_file.write_text("from shared import outbound_executor\n")
+    findings = _bounded_outbound_imports([bad_file], repo_root=tmp_path)
+    assert (bad_file, "shared.outbound_executor") in findings
+
+
+def test_scanner_detects_aliased_package_level_from_import(tmp_path: Path) -> None:
+    bad_file = tmp_path / "bad_rail.py"
+    bad_file.write_text("from shared import outbound_lane_pattern as lane\n")
+    findings = _bounded_outbound_imports([bad_file], repo_root=tmp_path)
+    assert (bad_file, "shared.outbound_lane_pattern") in findings
+
+
+def test_scanner_detects_relative_sibling_import(tmp_path: Path) -> None:
+    """A rail inside shared/ using `from . import outbound_executor`."""
+    pkg = tmp_path / "shared"
+    pkg.mkdir()
+    bad_file = pkg / "bad_receive_only_rail.py"
+    bad_file.write_text("from . import outbound_executor\n")
+    findings = _bounded_outbound_imports([bad_file], repo_root=tmp_path)
+    assert (bad_file, "shared.outbound_executor") in findings
+
+
+def test_scanner_detects_relative_parent_import(tmp_path: Path) -> None:
+    """`from ..outbound_executor import X` from a nested receive-only package."""
+    pkg = tmp_path / "shared" / "rails"
+    pkg.mkdir(parents=True)
+    bad_file = pkg / "bad_rail.py"
+    bad_file.write_text("from ..outbound_executor import OutboundExecutor\n")
+    findings = _bounded_outbound_imports([bad_file], repo_root=tmp_path)
+    assert (bad_file, "shared.outbound_executor") in findings
 
 
 def test_scanner_detects_submodule_from_import(tmp_path: Path) -> None:
     bad_file = tmp_path / "bad_rail.py"
     bad_file.write_text("from shared.outbound_executor import receipts\n")
-    findings = _bounded_outbound_imports([bad_file])
-    assert findings == [(bad_file, "shared.outbound_executor")]
+    findings = _bounded_outbound_imports([bad_file], repo_root=tmp_path)
+    assert (bad_file, "shared.outbound_executor") in findings
 
 
 def test_receive_only_import_closure_excludes_bounded_outbound() -> None:
-    """Transitive proof: a clean interpreter importing every receive-only
-    entrypoint must not pull the bounded-outbound modules into sys.modules."""
+    """Transitive proof: a clean interpreter importing EVERY receive-only
+    module (not just package roots — packages do not auto-import their
+    submodules) must not pull the bounded-outbound modules into sys.modules."""
+    modules = sorted({_module_name(p) for p in _receive_only_files()})
+    assert len(modules) >= 10, f"module inventory collapsed: {modules}"
     probe = (
-        "import sys\n"
-        "import agents.payment_processors\n"
-        "import agents.publication_bus\n"
-        "import logos.api.routes.payment_rails\n"
+        "import importlib, sys\n"
+        f"modules = {modules!r}\n"
+        "for name in modules:\n"
+        "    importlib.import_module(name)\n"
         "guarded = {'shared.outbound_executor', 'shared.outbound_lane_pattern'}\n"
         "leaked = sorted(m for m in sys.modules if m in guarded)\n"
-        "print('PROBE_RAN leaked=' + (','.join(leaked) or 'none'))\n"
+        "print('PROBE_RAN imported=%d leaked=%s'\n"
+        "      % (len(modules), ','.join(leaked) or 'none'))\n"
         "sys.exit(1 if leaked else 0)\n"
     )
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
@@ -142,11 +211,12 @@ def test_receive_only_import_closure_excludes_bounded_outbound() -> None:
         env=env,
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=300,
         check=False,
     )
     assert "PROBE_RAN" in result.stdout, (
-        f"import-closure probe did not run to completion:\n"
+        f"import-closure probe did not run to completion (a receive-only module "
+        f"failed to import — the witness is void, not vacuously green):\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
     assert result.returncode == 0, (
