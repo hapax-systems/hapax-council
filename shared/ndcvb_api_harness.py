@@ -290,7 +290,7 @@ def package_ndcvb_detection_result(
         )
     battery_report = _battery_report(gate_records)
     status = _status_for(engine_report=engine_report, battery_ok=battery_report["ok"])
-    result_confidence = _result_confidence(engine_report)
+    result_confidence, confidence_basis = _confidence_and_basis(engine_report)
     provenance = _overall_provenance(
         request_record=request_record,
         engine_report=engine_report,
@@ -316,7 +316,7 @@ def package_ndcvb_detection_result(
             "verdict": engine_report["verdict"],
             "ok": engine_report["ok"] is True,
             "confidence": result_confidence,
-            "confidence_basis": _confidence_basis(engine_report),
+            "confidence_basis": confidence_basis,
             "provenance": provenance,
             "violations": _public_violations(engine_report.get("violations", [])),
         },
@@ -470,22 +470,20 @@ def _status_for(*, engine_report: Mapping[str, Any], battery_ok: bool) -> NDCVBA
     return NDCVBApiStatus.CLEAR
 
 
-def _result_confidence(engine_report: Mapping[str, Any]) -> float | None:
-    sensitivity_bound = engine_report.get("sensitivity_bound")
-    if isinstance(sensitivity_bound, (int, float)) and not isinstance(sensitivity_bound, bool):
-        return round(float(sensitivity_bound), 3)
-    score_0_100 = engine_report.get("score_0_100")
-    if isinstance(score_0_100, (int, float)) and not isinstance(score_0_100, bool):
-        return round(float(score_0_100) / 100.0, 3)
+def _confidence_and_basis(engine_report: Mapping[str, Any]) -> tuple[float | None, str]:
+    sensitivity_bound = _finite_number(engine_report.get("sensitivity_bound"))
+    if sensitivity_bound is not None:
+        return round(sensitivity_bound, 3), "ndcvb_sensitivity_bound"
+    score_0_100 = _finite_number(engine_report.get("score_0_100"))
+    if score_0_100 is not None:
+        return round(score_0_100 / 100.0, 3), "ndcvb_score_0_100"
+    return None, "unavailable_below_floor"
+
+
+def _finite_number(value: object) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return float(value)
     return None
-
-
-def _confidence_basis(engine_report: Mapping[str, Any]) -> str:
-    if engine_report.get("sensitivity_bound") is not None:
-        return "ndcvb_sensitivity_bound"
-    if engine_report.get("score_0_100") is not None:
-        return "ndcvb_score_0_100"
-    return "unavailable_below_floor"
 
 
 def _public_violations(raw_violations: object) -> list[dict[str, Any]]:

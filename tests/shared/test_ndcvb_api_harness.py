@@ -4,7 +4,6 @@ import traceback
 
 import pytest
 
-import shared.ndcvb_api_harness as harness
 from shared.ndcvb_api_harness import (
     NDCVB_API_SCHEMA,
     NDCVB_PRODUCT_SURFACE_ID,
@@ -551,7 +550,7 @@ def test_unavailable_engine_confidence_is_explicit_hold(monkeypatch: pytest.Monk
             "correspondent_scores": [],
         }
 
-    monkeypatch.setattr(harness, "evaluate_ndcvb_axis_b", fake_evaluate)
+    monkeypatch.setattr("shared.ndcvb_api_harness.evaluate_ndcvb_axis_b", fake_evaluate)
 
     response = package_ndcvb_detection_result(
         request=_request(),
@@ -579,7 +578,7 @@ def test_score_based_zero_confidence_is_explicit(monkeypatch: pytest.MonkeyPatch
             "correspondent_scores": [],
         }
 
-    monkeypatch.setattr(harness, "evaluate_ndcvb_axis_b", fake_evaluate)
+    monkeypatch.setattr("shared.ndcvb_api_harness.evaluate_ndcvb_axis_b", fake_evaluate)
 
     response = package_ndcvb_detection_result(
         request=_request(),
@@ -590,3 +589,65 @@ def test_score_based_zero_confidence_is_explicit(monkeypatch: pytest.MonkeyPatch
     assert response["status"] == "clear"
     assert response["detection"]["confidence"] == 0.0
     assert response["detection"]["confidence_basis"] == "ndcvb_score_0_100"
+
+
+def test_invalid_sensitivity_confidence_falls_through_to_score_basis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_evaluate(_verdicts: object) -> dict[str, object]:
+        return {
+            "kind": "corroborated",
+            "verdict": "corroborated@0.42",
+            "ok": True,
+            "sensitivity_bound": float("inf"),
+            "score_0_100": 42,
+            "violations": [],
+            "scorer": "axis_b_ndcvb_integration_honesty",
+            "scorer_version": 1,
+            "dissociated_veto_required": False,
+            "floor_gate": {"ok": True},
+            "correspondent_scores": [],
+        }
+
+    monkeypatch.setattr("shared.ndcvb_api_harness.evaluate_ndcvb_axis_b", fake_evaluate)
+
+    response = package_ndcvb_detection_result(
+        request=_request(),
+        verdicts=["sycophancy: corroborated@0.42"],
+        battery_gates=_gates(),
+    )
+
+    assert response["status"] == "clear"
+    assert response["detection"]["confidence"] == 0.42
+    assert response["detection"]["confidence_basis"] == "ndcvb_score_0_100"
+
+
+def test_non_numeric_confidence_sources_are_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_evaluate(_verdicts: object) -> dict[str, object]:
+        return {
+            "kind": "undetermined",
+            "verdict": "UNDETERMINED",
+            "ok": False,
+            "sensitivity_bound": "0.91",
+            "score_0_100": float("nan"),
+            "violations": [],
+            "scorer": "axis_b_ndcvb_integration_honesty",
+            "scorer_version": 1,
+            "dissociated_veto_required": False,
+            "floor_gate": {"ok": False},
+            "correspondent_scores": [],
+        }
+
+    monkeypatch.setattr("shared.ndcvb_api_harness.evaluate_ndcvb_axis_b", fake_evaluate)
+
+    response = package_ndcvb_detection_result(
+        request=_request(),
+        verdicts=["sycophancy: UNDETERMINED"],
+        battery_gates=_gates(),
+    )
+
+    assert response["status"] == "hold"
+    assert response["detection"]["confidence"] is None
+    assert response["detection"]["confidence_basis"] == "unavailable_below_floor"
