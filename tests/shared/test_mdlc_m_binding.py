@@ -234,6 +234,17 @@ def test_rail_result_sequence_scores_through_binding() -> None:
     assert len(result.rail_results) == 2
 
 
+def test_empty_rail_result_sequence_fails_closed_as_missing_evidence() -> None:
+    m_binding = _binding_module()
+
+    result = m_binding.bind_m_result([], _ladder(), ruler_hash_commit=HASH)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.MISSING_RAIL_EVIDENCE
+    assert result.rail_results == ()
+    assert result.next_action
+
+
 def test_bind_durable_payment_events_scores_lazy_reader_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
