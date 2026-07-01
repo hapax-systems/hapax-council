@@ -49,6 +49,7 @@ NON_DURABLE_FS_TYPES: Final[frozenset[str]] = frozenset(
     }
 )
 DEFAULT_ROOT_ENV: Final = "HAPAX_DURABLE_SINK_ROOT"
+NOFOLLOW_FLAG: Final = getattr(os, "O_NOFOLLOW", 0)
 _STREAM_ID_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 
@@ -215,7 +216,7 @@ class DurableJsonlSink:
         target = root / _stream_filename(stream_id)
         lock_path = _lock_path(target)
         try:
-            lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600)
+            lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | NOFOLLOW_FLAG, 0o600)
         except OSError as exc:
             raise DurableSinkAppendError(
                 f"failed to open durable sink lock {lock_path}; next action: verify "
@@ -354,6 +355,15 @@ def validate_chain(
         stream_id = _required_text(stream_id, "stream_id")
         _stream_filename(stream_id)
 
+    if target.is_symlink():
+        issues.append(
+            ChainIssue(
+                None,
+                "symlink_stream",
+                f"durable sink stream path must not be a symlink: {target}",
+            )
+        )
+        return ChainValidationResult(False, 0, GENESIS_HASH, tuple(issues))
     if not target.exists():
         result = _result_with_expectation_checks(
             issues=issues,
@@ -445,25 +455,46 @@ def validate_chain(
 def _append_row_locked(target: Path, row: DurableSinkRow) -> None:
     blob = (_canonical_json(row.as_dict()) + "\n").encode("utf-8")
     try:
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND | NOFOLLOW_FLAG, 0o600)
     except OSError as exc:
         raise DurableSinkAppendError(
             f"failed to open durable sink stream file {target}; next action: verify "
             "the durable root still exists and is writable"
         ) from exc
+    body_error: BaseException | None = None
+    close_error: DurableSinkAppendError | None = None
+    close_cause: OSError | None = None
     try:
-        start_offset = os.lseek(fd, 0, os.SEEK_END)
+        try:
+            start_offset = os.lseek(fd, 0, os.SEEK_END)
+        except OSError as exc:
+            body_error = exc
+            raise DurableSinkAppendError(
+                f"failed to inspect durable sink stream tail {target}; next action: "
+                "verify the stream file is a regular writable file"
+            ) from exc
         try:
             _write_all(fd, blob)
             os.fsync(fd)
         except Exception as exc:
+            body_error = exc
             _rollback_partial_append(fd, start_offset)
             raise DurableSinkAppendError(
                 f"failed to append durable sink row to {target}; next action: inspect "
                 "storage write errors and validate the stream chain before retrying"
             ) from exc
     finally:
-        os.close(fd)
+        try:
+            os.close(fd)
+        except OSError as exc:
+            if body_error is None:
+                close_error = DurableSinkAppendError(
+                    f"failed to close durable sink stream file {target}; next action: "
+                    "verify storage writeback status before trusting the append"
+                )
+                close_cause = exc
+    if close_error is not None:
+        raise close_error from close_cause
     _fsync_directory(target.parent)
 
 
@@ -496,15 +527,30 @@ def _fsync_directory(path: Path) -> None:
             f"failed to open durable sink directory {path}; next action: verify the "
             "durable root still exists and is readable"
         ) from exc
+    body_error: BaseException | None = None
+    close_error: DurableSinkAppendError | None = None
+    close_cause: OSError | None = None
     try:
-        os.fsync(dir_fd)
-    except OSError as exc:
-        raise DurableSinkAppendError(
-            f"failed to fsync durable sink directory {path}; next action: verify the "
-            "durable root is writable and the filesystem is healthy"
-        ) from exc
+        try:
+            os.fsync(dir_fd)
+        except OSError as exc:
+            body_error = exc
+            raise DurableSinkAppendError(
+                f"failed to fsync durable sink directory {path}; next action: verify the "
+                "durable root is writable and the filesystem is healthy"
+            ) from exc
     finally:
-        os.close(dir_fd)
+        try:
+            os.close(dir_fd)
+        except OSError as exc:
+            if body_error is None:
+                close_error = DurableSinkAppendError(
+                    f"failed to close durable sink directory {path}; next action: "
+                    "verify directory fsync and storage writeback status"
+                )
+                close_cause = exc
+    if close_error is not None:
+        raise close_error from close_cause
 
 
 def _validate_row(

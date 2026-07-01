@@ -446,6 +446,28 @@ def test_validate_chain_rejects_non_file_stream_path(tmp_path: Path) -> None:
     assert result.issues[0].code == "not_file"
 
 
+def test_validate_chain_rejects_symlink_stream_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    path = sink.path_for_stream("payment-event")
+    path.symlink_to(tmp_path / "outside.jsonl")
+
+    result = validate_chain(path, stream_id="payment-event")
+
+    assert result.valid is False
+    assert result.issues[0].code == "symlink_stream"
+    with pytest.raises(DurableSinkChainError, match="next action"):
+        sink.append(
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/1",
+            payload={"idx": 1},
+            timestamp="2026-07-01T00:00:00Z",
+        )
+    assert not (tmp_path / "outside.jsonl").exists()
+
+
 def test_validate_chain_rejects_invalid_stream_id_argument(tmp_path: Path) -> None:
     with pytest.raises(DurableSinkValueError, match="stream_id.*next action"):
         validate_chain(tmp_path / "unused.jsonl", stream_id="../bad")
@@ -704,6 +726,41 @@ def test_append_stream_open_failure_has_next_action(
     assert not sink.path_for_stream("payment-event").exists()
 
 
+def test_append_stream_close_failure_has_next_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = _trusted_sink(tmp_path, monkeypatch)
+    real_open = sink_mod.os.open
+    real_close = sink_mod.os.close
+    stream_fds: list[int] = []
+
+    def recording_open(path: Any, flags: int, mode: int = 0o777) -> int:
+        fd = real_open(path, flags, mode)
+        if Path(path).name == "payment-event.jsonl":
+            stream_fds.append(fd)
+        return fd
+
+    def failing_stream_close(fd: int) -> None:
+        if fd in stream_fds:
+            real_close(fd)
+            raise OSError("simulated stream close failure")
+        real_close(fd)
+
+    monkeypatch.setattr(sink_mod.os, "open", recording_open)
+    monkeypatch.setattr(sink_mod.os, "close", failing_stream_close)
+
+    with pytest.raises(DurableSinkAppendError, match="close durable sink stream file.*next action"):
+        sink.append(
+            stream_id="payment-event",
+            data_class="financial_receipt",
+            source_receipt_ref="receipt://payment/1",
+            payload={"idx": 1},
+            timestamp="2026-07-01T00:00:00Z",
+        )
+
+    assert stream_fds
+
+
 def test_partial_append_raises_even_when_rollback_truncate_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -785,6 +842,23 @@ def test_directory_open_failure_has_next_action(
     monkeypatch.setattr(sink_mod.os, "open", failing_open)
 
     with pytest.raises(DurableSinkAppendError, match="open durable sink directory.*next action"):
+        sink_mod._fsync_directory(tmp_path)
+
+
+def test_directory_close_failure_has_next_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_open(_path: Any, _flags: int, _mode: int = 0o777) -> int:
+        return 99
+
+    def failing_close(_fd: int) -> None:
+        raise OSError("simulated directory close failure")
+
+    monkeypatch.setattr(sink_mod.os, "open", fake_open)
+    monkeypatch.setattr(sink_mod.os, "fsync", lambda _fd: None)
+    monkeypatch.setattr(sink_mod.os, "close", failing_close)
+
+    with pytest.raises(DurableSinkAppendError, match="close durable sink directory.*next action"):
         sink_mod._fsync_directory(tmp_path)
 
 
