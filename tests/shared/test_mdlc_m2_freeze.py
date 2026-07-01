@@ -311,6 +311,53 @@ def test_publish_only_without_flood_plan_refuses_at_m2() -> None:
     )
 
 
+def test_flood_envelope_fields_are_serialized() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget.update(
+        {
+            "publish_only": True,
+            "flood_plan": "flood-plan:public-audience-generation",
+            "non_public": False,
+            "no_audience": False,
+        }
+    )
+
+    artifact = M2FreezeArtifact.from_mapping(_artifact(budget_envelope=budget))
+
+    serialized_budget = artifact.to_dict()["budget_envelope"]
+    assert serialized_budget["publish_only"] is True
+    assert serialized_budget["flood_plan"] == "flood-plan:public-audience-generation"
+    assert serialized_budget["non_public"] is False
+    assert serialized_budget["no_audience"] is False
+
+
+@pytest.mark.parametrize("field", ("publish_only", "non_public", "no_audience"))
+def test_flood_envelope_bool_fields_must_be_boolean(field: str) -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget[field] = "yes"
+
+    result = verify_m2_freeze_artifact(
+        _artifact(budget_envelope=budget),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is M2FreezeRefusalReason.INVALID_BUDGET_ENVELOPE
+
+
+def test_non_publish_only_freeze_does_not_require_flood_path() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget["publish_only"] = False
+
+    result = verify_m2_freeze_artifact(
+        _artifact(budget_envelope=budget),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.LIT
+    assert result.refusal_reason is None
+
+
 @pytest.mark.parametrize("exemption", ("flood_plan", "non_public", "no_audience"))
 def test_publish_only_requires_flood_plan_or_no_audience_exemption(exemption: str) -> None:
     budget = dict(_artifact()["budget_envelope"])
