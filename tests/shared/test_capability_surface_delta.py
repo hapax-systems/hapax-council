@@ -260,6 +260,37 @@ def test_delta_refs_must_be_non_empty_when_present() -> None:
         CapabilitySurfaceDelta.model_validate(payload)
 
 
+def test_delta_list_tokens_must_be_non_empty() -> None:
+    payload = {
+        "delta_id": "bad",
+        "source": "unit-test",
+        "observed_at": NOW,
+        "detected_by": "test",
+        "surface_id": "route.codex.headless.full",
+        "delta_kind": "stale_determination",
+        "prior_descriptor_ref": "platform-capability-registry:codex.headless.full",
+        "observed_descriptor_ref": "platform-capability-receipt:codex:expired",
+        "evidence_refs": [""],
+        "authority_ceiling": "authoritative",
+        "affected_resource_pools": ["subscription_quota"],
+        "privacy_sensitive": True,
+        "public_egress": False,
+        "money_rail": False,
+        "freshness_state": "stale",
+        "required_intake_action": "refresh_receipt",
+        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+        "summary": "blank evidence ref",
+    }
+
+    with pytest.raises(ValueError, match="evidence_refs"):
+        CapabilitySurfaceDelta.model_validate(payload)
+
+    payload["evidence_refs"] = ["platform-capability-receipt:codex:expired"]
+    payload["affected_resource_pools"] = [""]
+    with pytest.raises(ValueError, match="affected_resource_pools"):
+        CapabilitySurfaceDelta.model_validate(payload)
+
+
 def test_new_capability_requires_null_prior_and_mint_action() -> None:
     payload = {
         "delta_id": "bad",

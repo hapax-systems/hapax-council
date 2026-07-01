@@ -15,7 +15,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -46,6 +46,9 @@ class CapabilitySurfaceDeltaError(ValueError):
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+NonEmptyString = Annotated[str, Field(min_length=1)]
 
 
 class SurfaceKind(StrEnum):
@@ -109,7 +112,7 @@ class CapabilitySurfaceDescriptor(StrictModel):
     authority_ceiling: AuthorityCeiling
     observed_at: datetime
     stale_after: str
-    evidence_refs: list[str] = Field(min_length=1)
+    evidence_refs: list[NonEmptyString] = Field(min_length=1)
     route_id: str | None = None
     supply_leaf_id: str | None = None
     carrier_platform: str | None = None
@@ -117,10 +120,10 @@ class CapabilitySurfaceDescriptor(StrictModel):
     provider_id: str | None = None
     effort: str | None = None
     context_window: str | None = None
-    resource_pools: list[str] = Field(default_factory=list)
-    tool_refs: list[str] = Field(default_factory=list)
-    harness_refs: list[str] = Field(default_factory=list)
-    orchestration_child_refs: list[str] = Field(default_factory=list)
+    resource_pools: list[NonEmptyString] = Field(default_factory=list)
+    tool_refs: list[NonEmptyString] = Field(default_factory=list)
+    harness_refs: list[NonEmptyString] = Field(default_factory=list)
+    orchestration_child_refs: list[NonEmptyString] = Field(default_factory=list)
     privacy_sensitive: bool = False
     public_egress: bool = False
     money_rail: bool = False
@@ -169,9 +172,9 @@ class CapabilitySurfaceDelta(StrictModel):
     delta_kind: DeltaKind
     prior_descriptor_ref: str | None = Field(default=None, min_length=1)
     observed_descriptor_ref: str | None = Field(default=None, min_length=1)
-    evidence_refs: list[str] = Field(min_length=1)
+    evidence_refs: list[NonEmptyString] = Field(min_length=1)
     authority_ceiling: AuthorityCeiling
-    affected_resource_pools: list[str]
+    affected_resource_pools: list[NonEmptyString]
     privacy_sensitive: bool
     public_egress: bool
     money_rail: bool

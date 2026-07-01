@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -453,7 +453,10 @@ def load_dispatch_policy_sources(
             (
                 surface_delta_refs_by_route,
                 surface_delta_blockers_by_route,
-            ) = _surface_delta_route_index(surface_delta_file)
+            ) = _surface_delta_route_index(
+                surface_delta_file,
+                known_route_ids=registry.route_map().keys() if registry is not None else None,
+            )
         except (CapabilitySurfaceDeltaError, OSError, ValueError) as exc:
             error_ref = _surface_delta_producer_error_ref(surface_delta_file, exc)
             surface_delta_refs_by_route = {GLOBAL_SURFACE_DELTA_ROUTE_KEY: (error_ref,)}
@@ -515,8 +518,15 @@ def _surface_delta_path_from_env() -> Path | None:
 
 def _surface_delta_route_index(
     path: Path,
+    *,
+    known_route_ids: Iterable[str] | None = None,
 ) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
     producer_file = load_capability_surface_delta_file(path)
+    known_routes = (
+        {normalize_route_id(route_id) for route_id in known_route_ids}
+        if known_route_ids is not None
+        else None
+    )
     descriptor_keys_by_ref: dict[str, set[str]] = {}
     for descriptor in producer_file.descriptors:
         keys = set(_surface_delta_descriptor_route_keys(descriptor))
@@ -533,7 +543,14 @@ def _surface_delta_route_index(
     blockers: dict[str, list[str]] = {}
     for delta in producer_file.deltas:
         delta_ref = _surface_delta_ref(delta)
-        for key in _surface_delta_route_keys(delta, descriptor_keys_by_ref_frozen):
+        route_keys = _surface_delta_route_keys(delta, descriptor_keys_by_ref_frozen)
+        if (
+            known_routes is not None
+            and not delta.allows_demand_fulfillment()
+            and not (_surface_delta_dispatch_lookup_keys(route_keys) & known_routes)
+        ):
+            route_keys = tuple(sorted({*route_keys, GLOBAL_SURFACE_DELTA_ROUTE_KEY}))
+        for key in route_keys:
             refs.setdefault(key, []).append(delta_ref)
             if not delta.allows_demand_fulfillment():
                 blockers.setdefault(key, []).append(delta_ref)
