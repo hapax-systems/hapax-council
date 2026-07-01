@@ -114,13 +114,13 @@ class CapabilitySurfaceDescriptor(StrictModel):
     observed_at: datetime
     stale_after: str
     evidence_refs: list[NonEmptyString] = Field(min_length=1)
-    route_id: str | None = None
-    supply_leaf_id: str | None = None
-    carrier_platform: str | None = None
-    model_id: str | None = None
-    provider_id: str | None = None
-    effort: str | None = None
-    context_window: str | None = None
+    route_id: NonEmptyString | None = None
+    supply_leaf_id: NonEmptyString | None = None
+    carrier_platform: NonEmptyString | None = None
+    model_id: NonEmptyString | None = None
+    provider_id: NonEmptyString | None = None
+    effort: NonEmptyString | None = None
+    context_window: NonEmptyString | None = None
     resource_pools: list[NonEmptyString] = Field(default_factory=list)
     tool_refs: list[NonEmptyString] = Field(default_factory=list)
     harness_refs: list[NonEmptyString] = Field(default_factory=list)
@@ -181,7 +181,7 @@ class CapabilitySurfaceDelta(StrictModel):
     money_rail: bool
     freshness_state: FreshnessState
     required_intake_action: RequiredIntakeAction
-    remediation_ref: str | None = None
+    remediation_ref: NonEmptyString | None = None
     summary: str = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -295,7 +295,7 @@ class CapabilitySurfaceDeltaFile(StrictModel):
     schema_version: Literal[1] = 1
     fixture_set_id: str | None = Field(default=None, min_length=1)
     schema_ref: Literal["schemas/capability-surface-delta.schema.json"]
-    generated_from: list[str] = Field(min_length=1)
+    generated_from: list[NonEmptyString] = Field(min_length=1)
     declared_at: datetime
     descriptors: list[CapabilitySurfaceDescriptor] = Field(min_length=1)
     deltas: list[CapabilitySurfaceDelta] = Field(min_length=1)
@@ -332,7 +332,10 @@ def parse_duration_spec(spec: str) -> timedelta:
     count_text = spec[:-1]
     unit = spec[-1:]
     if not count_text.isdigit() or count_text.startswith("0") or unit not in {"s", "m", "h", "d"}:
-        raise ValueError(f"invalid duration spec {spec!r}; use an integer plus s, m, h, or d")
+        raise ValueError(
+            f"invalid duration spec {spec!r}; use an integer plus s, m, h, or d; "
+            "next action: set stale_after to a positive duration such as 1h or 30m"
+        )
     count = int(count_text)
     if unit == "s":
         return timedelta(seconds=count)

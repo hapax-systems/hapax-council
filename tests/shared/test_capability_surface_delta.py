@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -30,6 +31,54 @@ NOW = datetime(2026, 7, 1, 4, 30, tzinfo=UTC)
 
 def _frontmatter(rendered: str) -> dict[str, object]:
     return yaml.safe_load(rendered.split("---", 2)[1])
+
+
+def _live_producer_payload() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "schema_ref": "schemas/capability-surface-delta.schema.json",
+        "generated_from": ["unit-test"],
+        "declared_at": "2026-07-01T04:30:00Z",
+        "descriptors": [
+            {
+                "descriptor_schema": 1,
+                "surface_id": "route.codex.headless.full",
+                "descriptor_ref": "platform-capability-registry:codex.headless.full",
+                "surface_kind": "model_route",
+                "authority_ceiling": "authoritative",
+                "observed_at": "2026-07-01T04:00:00Z",
+                "stale_after": "1h",
+                "evidence_refs": ["test:descriptor"],
+                "route_id": "codex.headless.full",
+                "resource_pools": ["subscription_quota"],
+            }
+        ],
+        "deltas": [
+            {
+                "delta_schema": 1,
+                "delta_id": "test:single-stale-codex",
+                "source": "unit-test",
+                "observed_at": "2026-07-01T04:30:00Z",
+                "detected_by": "unit-test",
+                "surface_id": "route.codex.headless.full",
+                "delta_kind": "stale_determination",
+                "prior_descriptor_ref": "platform-capability-registry:codex.headless.full",
+                "observed_descriptor_ref": "platform-capability-receipt:codex:expired",
+                "evidence_refs": ["test:expired"],
+                "authority_ceiling": "authoritative",
+                "affected_resource_pools": ["subscription_quota"],
+                "privacy_sensitive": True,
+                "public_egress": False,
+                "money_rail": False,
+                "freshness_state": "stale",
+                "required_intake_action": "refresh_receipt",
+                "remediation_ref": (
+                    "cc-task-capability-freshness-remediation-and-discovery-automation-20260630"
+                ),
+                "summary": "single live producer row",
+            }
+        ],
+    }
 
 
 def _descriptor(**overrides: object) -> CapabilitySurfaceDescriptor:
@@ -456,6 +505,56 @@ def test_live_producer_file_does_not_require_fixture_coverage_trio(tmp_path) -> 
 
     assert producer_file.fixture_set_id is None
     assert [delta.delta_id for delta in producer_file.deltas] == ["test:single-stale-codex"]
+
+
+def test_live_producer_file_rejects_schema_empty_generated_from(tmp_path) -> None:
+    path = tmp_path / "producer.json"
+    payload = _live_producer_payload()
+    payload["generated_from"] = [""]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(CapabilitySurfaceDeltaError, match="generated_from"):
+        load_capability_surface_delta_file(path)
+
+
+def test_live_producer_file_rejects_schema_empty_optional_refs(tmp_path) -> None:
+    path = tmp_path / "producer.json"
+    payload = _live_producer_payload()
+    descriptor = payload["descriptors"][0]
+    assert isinstance(descriptor, dict)
+    descriptor["route_id"] = ""
+    descriptor["model_id"] = ""
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(CapabilitySurfaceDeltaError, match="route_id"):
+        load_capability_surface_delta_file(path)
+
+
+def test_live_producer_file_rejects_schema_empty_remediation_ref(tmp_path) -> None:
+    path = tmp_path / "producer.json"
+    payload = _live_producer_payload()
+    delta = payload["deltas"][0]
+    assert isinstance(delta, dict)
+    delta["remediation_ref"] = ""
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(CapabilitySurfaceDeltaError, match="remediation_ref"):
+        load_capability_surface_delta_file(path)
+
+
+def test_invalid_duration_error_includes_next_action() -> None:
+    with pytest.raises(ValueError, match="next action: set stale_after"):
+        CapabilitySurfaceDescriptor.model_validate(
+            {
+                "surface_id": "route.codex.headless.full",
+                "descriptor_ref": "platform-capability-registry:codex.headless.full",
+                "surface_kind": "model_route",
+                "authority_ceiling": "authoritative",
+                "observed_at": NOW,
+                "stale_after": "0h",
+                "evidence_refs": ["test:descriptor"],
+            }
+        )
 
 
 def test_delta_task_render_preserves_governance_metadata() -> None:
