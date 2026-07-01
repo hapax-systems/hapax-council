@@ -97,9 +97,34 @@ def test_g2_invalid_target_refuses_before_commit(target: object) -> None:
     assert result.row is None
 
 
+def test_g2_invalid_gate_input_instance_refuses_before_commit() -> None:
+    result = verify_g2_legal(
+        G2GateInput(" ", TARGET.venue, TARGET.instrument),
+        registry=_registry(_row(verdict="LIT", operator_signed=True)),
+        today=TODAY,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is G2LegalRefusalReason.INVALID_TARGET
+    assert result.target.surface == " "
+    assert result.row is None
+
+
 def test_g2_verification_truthiness_is_not_allowed() -> None:
     result = verify_g2_legal(TARGET, registry=_registry(_row()), today=TODAY)
 
+    with pytest.raises(TypeError, match="truthiness is undefined"):
+        bool(result)
+
+
+def test_g2_admitted_verification_truthiness_is_not_allowed() -> None:
+    result = verify_g2_legal(
+        TARGET,
+        registry=_registry(_row(verdict="LIT", operator_signed=True)),
+        today=TODAY,
+    )
+
+    assert result.status is GateStatus.LIT
     with pytest.raises(TypeError, match="truthiness is undefined"):
         bool(result)
 
@@ -278,7 +303,13 @@ def test_g2_to_dict_records_exact_row_and_gate_result() -> None:
         "instrument": TARGET.instrument,
     }
     assert payload["row"]["g2_verdict"] == "LIT"
+    assert payload["gate_result"]["status"] == "lit"
     assert payload["gate_result"]["verdict"] is True
+    assert payload["gate_result"]["reason"] == "fresh_lit_legal_posture_row"
+    assert payload["gate_result"]["evidence_refs"] == [
+        f"legal-posture-row:{TARGET.surface}:{TARGET.venue}:{TARGET.instrument}",
+        "cc-task:20260628-registry-phase7-mdlc-g2-gate-wire",
+    ]
 
 
 def test_g2_to_dict_records_unsigned_dark_row_without_operator_sign_date() -> None:
