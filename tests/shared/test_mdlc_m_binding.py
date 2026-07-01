@@ -229,6 +229,27 @@ def test_rail_result_without_ladder_fails_closed() -> None:
     assert result.next_action
 
 
+def test_malformed_ladder_mapping_fails_closed_as_unsupported_shape() -> None:
+    m_binding = _binding_module()
+    malformed_ladder = {
+        "ruler_hash": HASH,
+        "min_corroboration_count": float("inf"),
+        "freshness_ttl_seconds": 3600,
+        "as_of": NOW,
+    }
+
+    result = m_binding.bind_m_result(
+        _measurement(),
+        malformed_ladder,
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
+    assert result.score_result is None
+    assert result.next_action
+
+
 def test_refused_rail_result_fails_closed_with_native_reason() -> None:
     m_binding = _binding_module()
 

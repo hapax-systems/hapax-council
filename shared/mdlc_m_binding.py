@@ -300,7 +300,7 @@ def _score_measurement(
         )
     try:
         score_result = score(measurement, ladder, ruler_hash_commit=ruler_hash_commit or "")
-    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+    except (AttributeError, KeyError, OverflowError, TypeError, ValueError) as exc:
         return _dark_result(
             reason="unsupported_shape",
             refusal_reason=MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE,
