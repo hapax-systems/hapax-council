@@ -73,6 +73,7 @@ def _assert_receive_only_provider_refused(
         venue_allowlist={"internal"},
         notional_cap=100.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=receive_only_registry,
     )
 
@@ -131,6 +132,7 @@ def test_executor_configuration_fails_closed(base_registry: AccountFederationReg
             venue_allowlist=set(),
             notional_cap=100.0,
             position_cap=500.0,
+            kill_switch=False,
             registry=base_registry,
         )
 
@@ -140,6 +142,7 @@ def test_executor_configuration_fails_closed(base_registry: AccountFederationReg
             venue_allowlist={"internal"},
             notional_cap=-1.0,
             position_cap=500.0,
+            kill_switch=False,
             registry=base_registry,
         )
 
@@ -149,6 +152,7 @@ def test_executor_configuration_fails_closed(base_registry: AccountFederationReg
             venue_allowlist={"internal"},
             notional_cap=float("nan"),
             position_cap=500.0,
+            kill_switch=False,
             registry=base_registry,
         )
 
@@ -158,6 +162,7 @@ def test_executor_configuration_fails_closed(base_registry: AccountFederationReg
             venue_allowlist={"internal"},
             notional_cap=float("inf"),
             position_cap=500.0,
+            kill_switch=False,
             registry=base_registry,
         )
 
@@ -167,6 +172,7 @@ def test_executor_configuration_fails_closed(base_registry: AccountFederationReg
             venue_allowlist={"internal"},
             notional_cap=100.0,
             position_cap=-1.0,
+            kill_switch=False,
             registry=base_registry,
         )
 
@@ -177,6 +183,7 @@ def test_executor_configuration_fails_closed(base_registry: AccountFederationReg
             notional_cap=100.0,
             position_cap=500.0,
             current_position=-1.0,
+            kill_switch=False,
             registry=base_registry,
         )
 
@@ -190,6 +197,7 @@ def test_executor_configuration_rejects_invalid_types(
             venue_allowlist={"internal"},
             notional_cap=100.0,
             position_cap=500.0,
+            kill_switch=False,
             registry=base_registry,
         )
 
@@ -199,6 +207,7 @@ def test_executor_configuration_rejects_invalid_types(
             venue_allowlist="external",  # type: ignore[arg-type]
             notional_cap=100.0,
             position_cap=500.0,
+            kill_switch=False,
             registry=base_registry,
         )
 
@@ -208,6 +217,7 @@ def test_executor_configuration_rejects_invalid_types(
             venue_allowlist={"internal", 1},  # type: ignore[list-item]
             notional_cap=100.0,
             position_cap=500.0,
+            kill_switch=False,
             registry=base_registry,
         )
 
@@ -217,6 +227,26 @@ def test_executor_configuration_rejects_invalid_types(
             venue_allowlist={"internal", "   "},
             notional_cap=100.0,
             position_cap=500.0,
+            kill_switch=False,
+            registry=base_registry,
+        )
+
+    with pytest.raises(TypeError, match="kill_switch"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist={"internal"},
+            notional_cap=100.0,
+            position_cap=500.0,
+            registry=base_registry,
+        )
+
+    with pytest.raises(TypeError, match="kill_switch"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist={"internal"},
+            notional_cap=100.0,
+            position_cap=500.0,
+            kill_switch=None,
             registry=base_registry,
         )
 
@@ -226,6 +256,7 @@ def test_executor_configuration_rejects_invalid_types(
             venue_allowlist={"internal"},
             notional_cap=100.0,
             position_cap=500.0,
+            kill_switch=False,
             registry="registry",  # type: ignore[arg-type]
         )
 
@@ -235,6 +266,7 @@ def test_executor_configuration_rejects_invalid_types(
             venue_allowlist={"internal"},
             notional_cap=100.0,
             position_cap="500",  # type: ignore[arg-type]
+            kill_switch=False,
             registry=base_registry,
         )
 
@@ -256,6 +288,7 @@ def test_require_execution_success(base_registry: AccountFederationRegistry) -> 
         notional_cap=100.0,
         position_cap=500.0,
         current_position=50.0,
+        kill_switch=False,
         registry=base_registry,
     )
 
@@ -299,6 +332,7 @@ def test_validate_request_is_dry_run(base_registry: AccountFederationRegistry) -
         notional_cap=100.0,
         position_cap=500.0,
         current_position=50.0,
+        kill_switch=False,
         registry=base_registry,
     )
 
@@ -347,6 +381,7 @@ def test_no_claim_refuses_before_route_specific_checks(
         venue_allowlist={"internal"},
         notional_cap=1.0,
         position_cap=1.0,
+        kill_switch=False,
         registry=receive_only_registry,
     )
 
@@ -430,6 +465,7 @@ def test_missing_scope_blocks(base_registry: AccountFederationRegistry) -> None:
         venue_allowlist={"internal"},
         notional_cap=100.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=base_registry,
     )
 
@@ -451,6 +487,7 @@ def test_default_token_fallback_blocks(base_registry: AccountFederationRegistry)
         venue_allowlist={"internal"},
         notional_cap=100.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=base_registry,
     )
 
@@ -474,6 +511,7 @@ def test_default_token_fallback_blocks(base_registry: AccountFederationRegistry)
         venue_allowlist={"internal"},
         notional_cap=100.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=placeholder_registry,
     )
     request_normal = OutboundExecutionRequest(
@@ -493,6 +531,7 @@ def test_default_token_fallback_blocks(base_registry: AccountFederationRegistry)
             venue_allowlist={"internal"},
             notional_cap=100.0,
             position_cap=500.0,
+            kill_switch=False,
             registry=placeholder_registry,
         )
         receipt_placeholder = executor_placeholder.execute(request_normal)
@@ -506,6 +545,7 @@ def test_default_token_fallback_blocks(base_registry: AccountFederationRegistry)
         venue_allowlist={"internal"},
         notional_cap=100.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=unsafe_registry,
     )
     receipt_unsafe = executor_unsafe.execute(request_normal)
@@ -528,6 +568,7 @@ def test_forbidden_action_blocks(base_registry: AccountFederationRegistry) -> No
         venue_allowlist={"internal"},
         notional_cap=100.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=registry_with_forward,
     )
 
@@ -542,6 +583,7 @@ def test_global_forbidden_write_scope_blocks(base_registry: AccountFederationReg
         venue_allowlist={"internal"},
         notional_cap=100.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=base_registry,
     )
 
@@ -564,6 +606,7 @@ def test_venue_allowlist_blocks(base_registry: AccountFederationRegistry) -> Non
         venue_allowlist={"internal"},
         notional_cap=100.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=base_registry,
     )
 
@@ -584,6 +627,7 @@ def test_notional_cap_blocks(base_registry: AccountFederationRegistry) -> None:
         venue_allowlist={"internal"},
         notional_cap=50.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=base_registry,
     )
 
@@ -606,6 +650,7 @@ def test_notional_cap_boundary_admits_equal_amount(
         venue_allowlist={"internal"},
         notional_cap=50.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=base_registry,
     )
 
@@ -620,7 +665,7 @@ def test_notional_cap_boundary_admits_equal_amount(
     assert receipt.current_position_after == 50.0
 
 
-def test_notional_cap_fractional_boundary_admits_close_float(
+def test_notional_cap_just_over_fractional_boundary_refuses(
     base_registry: AccountFederationRegistry,
 ) -> None:
     executor = OutboundExecutor(
@@ -628,18 +673,19 @@ def test_notional_cap_fractional_boundary_admits_close_float(
         venue_allowlist={"internal"},
         notional_cap=0.3,
         position_cap=1.0,
+        kill_switch=False,
         registry=base_registry,
     )
 
     request = OutboundExecutionRequest(
         scope="gmail_send_internal",
         venue="internal",
-        amount=0.1 + 0.2,
+        amount=0.3000000000001,
     )
 
     receipt = executor.execute(request)
-    assert receipt.status == "admitted"
-    assert receipt.current_position_after == pytest.approx(0.3)
+    assert receipt.status == "refused"
+    assert receipt.refusal_reason == "notional_cap_exceeded"
 
 
 def test_position_cap_blocks(base_registry: AccountFederationRegistry) -> None:
@@ -649,6 +695,7 @@ def test_position_cap_blocks(base_registry: AccountFederationRegistry) -> None:
         notional_cap=100.0,
         position_cap=150.0,
         current_position=140.0,
+        kill_switch=False,
         registry=base_registry,
     )
 
@@ -672,6 +719,7 @@ def test_position_cap_boundary_admits_equal_total(
         notional_cap=100.0,
         position_cap=150.0,
         current_position=140.0,
+        kill_switch=False,
         registry=base_registry,
     )
 
@@ -696,6 +744,7 @@ def test_position_cap_boundary_admits_direct_cap_amount(
         venue_allowlist={"internal"},
         notional_cap=150.0,
         position_cap=150.0,
+        kill_switch=False,
         registry=base_registry,
     )
 
@@ -719,6 +768,7 @@ def test_position_cap_fractional_boundary_admits_close_total(
         notional_cap=1.0,
         position_cap=0.3,
         current_position=0.1,
+        kill_switch=False,
         registry=base_registry,
     )
 
@@ -733,15 +783,39 @@ def test_position_cap_fractional_boundary_admits_close_total(
     assert receipt.current_position_after == pytest.approx(0.3)
 
 
+def test_position_cap_just_over_fractional_boundary_refuses(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=1.0,
+        position_cap=0.3,
+        current_position=0.1,
+        kill_switch=False,
+        registry=base_registry,
+    )
+
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=0.2000000000001,
+    )
+
+    receipt = executor.execute(request)
+    assert receipt.status == "refused"
+    assert receipt.refusal_reason == "position_cap_exceeded"
+
+
 def test_execute_position_admission_is_atomic(
     base_registry: AccountFederationRegistry,
 ) -> None:
     class SlowAdmitExecutor(OutboundExecutor):
-        def validate_request(
+        def _validate_request_locked(
             self,
             request: OutboundExecutionRequest,
         ) -> OutboundExecutionReceipt:
-            receipt = super().validate_request(request)
+            receipt = super()._validate_request_locked(request)
             if receipt.status == "admitted":
                 time.sleep(0.05)
             return receipt
@@ -751,6 +825,7 @@ def test_execute_position_admission_is_atomic(
         venue_allowlist={"internal"},
         notional_cap=1.0,
         position_cap=1.0,
+        kill_switch=False,
         registry=base_registry,
     )
     request = OutboundExecutionRequest(
@@ -776,6 +851,7 @@ def test_authority_ceilings(base_registry: AccountFederationRegistry) -> None:
         venue_allowlist={"internal"},
         notional_cap=100.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=base_registry,
     )
     req = OutboundExecutionRequest(scope="gmail_send_internal", venue="internal", amount=10.0)
@@ -787,6 +863,7 @@ def test_authority_ceilings(base_registry: AccountFederationRegistry) -> None:
         venue_allowlist={"external_venue"},
         notional_cap=100.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=base_registry,
     )
     req_external = OutboundExecutionRequest(
@@ -800,6 +877,7 @@ def test_authority_ceilings(base_registry: AccountFederationRegistry) -> None:
         venue_allowlist={"internal"},
         notional_cap=100.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=base_registry,
     )
     assert exec_evidence.execute(req).refusal_reason == "authority_ceiling_exceeded"
@@ -818,6 +896,7 @@ def test_authority_ceilings(base_registry: AccountFederationRegistry) -> None:
         venue_allowlist={"internal"},
         notional_cap=100.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=base_registry,
     )
     assert exec_public.execute(req).refusal_reason == "authority_ceiling_exceeded"
@@ -839,6 +918,7 @@ def test_internal_only_accepts_internal_venue_prefixes(
         venue_allowlist={"internal:logs", "private_internal_runner"},
         notional_cap=100.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=base_registry,
     )
 
@@ -857,6 +937,7 @@ def test_receipt_to_dict(base_registry: AccountFederationRegistry) -> None:
         venue_allowlist={"internal"},
         notional_cap=100.0,
         position_cap=500.0,
+        kill_switch=False,
         registry=base_registry,
     )
     request = OutboundExecutionRequest(

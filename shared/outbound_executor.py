@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import threading
 import uuid
+from decimal import Decimal
 from typing import Any, Final
 
 from pydantic import Field, field_validator
@@ -15,8 +16,6 @@ from shared.resource_capability import (
     AuthorityCeiling,
     StrictModel,
 )
-
-_CAP_COMPARISON_TOLERANCE: Final[float] = 1e-12
 
 
 def _provider_keys(provider: str) -> frozenset[str]:
@@ -124,7 +123,7 @@ class OutboundExecutor:
         notional_cap: float,
         position_cap: float,
         current_position: float = 0.0,
-        kill_switch: bool = False,
+        kill_switch: bool | None = None,
         registry: AccountFederationRegistry,
     ) -> None:
         if not isinstance(authority_ceiling, AuthorityCeiling):
@@ -155,6 +154,11 @@ class OutboundExecutor:
             raise ValueError(
                 "venue_allowlist entries must be nonblank; next action: remove blank venues"
             )
+        if not isinstance(kill_switch, bool):
+            raise TypeError(
+                "kill_switch must be an explicit bool; next action: bind the governed "
+                "kill switch state before constructing the executor"
+            )
         self.authority_ceiling = authority_ceiling
         self.venue_allowlist = frozenset(venue_allowlist)
         self.notional_cap = _finite_nonnegative_float("notional_cap", notional_cap)
@@ -162,10 +166,17 @@ class OutboundExecutor:
         self.current_position = _finite_nonnegative_float("current_position", current_position)
         self.kill_switch = kill_switch
         self.registry = registry
-        self._position_lock = threading.Lock()
+        self._position_lock = threading.RLock()
 
     def validate_request(self, request: OutboundExecutionRequest) -> OutboundExecutionReceipt:
         """Dry-run validate an execution request without mutating the position."""
+        with self._position_lock:
+            return self._validate_request_locked(request)
+
+    def _validate_request_locked(
+        self, request: OutboundExecutionRequest
+    ) -> OutboundExecutionReceipt:
+        """Validate a request while the position lock is held."""
         receipt_id = f"outbound-receipt-{uuid.uuid4()}"
 
         def _refuse(reason: str, verdict: str, next_action: str) -> OutboundExecutionReceipt:
@@ -266,7 +277,7 @@ class OutboundExecutor:
 
         # 8. Position Cap check
         position_after = self.current_position + request.amount
-        if _exceeds_cap(position_after, self.position_cap):
+        if _position_exceeds_cap(self.current_position, request.amount, self.position_cap):
             return _refuse(
                 "position_cap_exceeded",
                 f"Outbound execution refused: position {position_after} exceeds cap {self.position_cap}",
@@ -316,7 +327,7 @@ class OutboundExecutor:
     def execute(self, request: OutboundExecutionRequest) -> OutboundExecutionReceipt:
         """Validate request and, if admitted, mutate executor's current position."""
         with self._position_lock:
-            receipt = self.validate_request(request)
+            receipt = self._validate_request_locked(request)
             if receipt.status == "admitted":
                 self.current_position = receipt.current_position_after
             return receipt
@@ -343,12 +354,11 @@ def _finite_nonnegative_float(name: str, value: float) -> float:
 
 
 def _exceeds_cap(value: float, cap: float) -> bool:
-    return value > cap and not math.isclose(
-        value,
-        cap,
-        rel_tol=_CAP_COMPARISON_TOLERANCE,
-        abs_tol=_CAP_COMPARISON_TOLERANCE,
-    )
+    return Decimal(str(value)) > Decimal(str(cap))
+
+
+def _position_exceeds_cap(current_position: float, amount: float, cap: float) -> bool:
+    return Decimal(str(current_position)) + Decimal(str(amount)) > Decimal(str(cap))
 
 
 # This module is a governed contract for downstream lane adapters. Keep the
