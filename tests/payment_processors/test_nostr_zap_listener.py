@@ -180,7 +180,10 @@ class TestNostrZapListener:
     async def test_missing_poll_resource_receipt_blocks_relay_connect(self, monkeypatch):
         import agents.payment_processors.nostr_zap_listener as nostr_mod
 
+        websocket_calls: list[str] = []
+
         async def _websocket_should_not_open(_relay_url: str):
+            websocket_calls.append(_relay_url)
             raise AssertionError("websocket opened without a resource receipt")
 
         monkeypatch.setattr(
@@ -194,6 +197,7 @@ class TestNostrZapListener:
         )
 
         await listener._consume_relay("wss://relay.example")  # noqa: SLF001
+        assert websocket_calls == []
 
     @pytest.mark.asyncio
     async def test_consume_relay_records_subscription_resource_receipt(self, tmp_path, monkeypatch):
