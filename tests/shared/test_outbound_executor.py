@@ -3,14 +3,30 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from agents.payment_processors.usdc_receiver import RAIL_LABEL as X402_USDC_RAIL_LABEL
+from shared.license_request_price_class_router import ReceiveOnlyRail as LicenseReceiveOnlyRail
 from shared.outbound_executor import (
+    RECEIVE_ONLY_PROVIDERS,
     OutboundExecutionRefusal,
     OutboundExecutionRequest,
     OutboundExecutor,
 )
+from shared.payment_aggregator_v2_support_normalizer import Rail as SupportRail
 from shared.resource_capability import (
     AccountFederationRegistry,
     AuthorityCeiling,
+)
+
+_SOURCE_RECEIVE_ONLY_INVENTORY_PROVIDERS = tuple(
+    sorted(
+        {rail.value for rail in SupportRail}
+        | {
+            rail.value
+            for rail in LicenseReceiveOnlyRail
+            if rail is not LicenseReceiveOnlyRail.NO_RAIL
+        }
+        | {X402_USDC_RAIL_LABEL, "usdc"}
+    )
 )
 
 
@@ -35,6 +51,30 @@ def base_registry() -> AccountFederationRegistry:
         gmail_forwarding_policy="no_cross_account_reply",
         operator_boundary="operator_required_for_send",
     )
+
+
+def _assert_receive_only_provider_refused(
+    base_registry: AccountFederationRegistry,
+    provider: str,
+) -> None:
+    receive_only_registry = base_registry.model_copy(update={"provider": provider})
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=100.0,
+        position_cap=500.0,
+        registry=receive_only_registry,
+    )
+
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=10.0,
+    )
+
+    receipt = executor.execute(request)
+    assert receipt.status == "refused"
+    assert receipt.refusal_reason == "receive_only_rail"
 
 
 def test_executor_strictness() -> None:
@@ -286,24 +326,7 @@ def test_no_claim_refuses_before_route_specific_checks(
 
 
 def test_receive_only_rail_blocks(base_registry: AccountFederationRegistry) -> None:
-    receive_only_registry = base_registry.model_copy(update={"provider": "stripe"})
-    executor = OutboundExecutor(
-        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
-        venue_allowlist={"internal"},
-        notional_cap=100.0,
-        position_cap=500.0,
-        registry=receive_only_registry,
-    )
-
-    request = OutboundExecutionRequest(
-        scope="gmail_send_internal",
-        venue="internal",
-        amount=10.0,
-    )
-
-    receipt = executor.execute(request)
-    assert receipt.status == "refused"
-    assert receipt.refusal_reason == "receive_only_rail"
+    _assert_receive_only_provider_refused(base_registry, "stripe")
 
 
 @pytest.mark.parametrize(
@@ -326,24 +349,42 @@ def test_receive_only_provider_aliases_block(
     base_registry: AccountFederationRegistry,
     provider: str,
 ) -> None:
-    receive_only_registry = base_registry.model_copy(update={"provider": provider})
-    executor = OutboundExecutor(
-        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
-        venue_allowlist={"internal"},
-        notional_cap=100.0,
-        position_cap=500.0,
-        registry=receive_only_registry,
-    )
+    _assert_receive_only_provider_refused(base_registry, provider)
 
-    request = OutboundExecutionRequest(
-        scope="gmail_send_internal",
-        venue="internal",
-        amount=10.0,
-    )
 
-    receipt = executor.execute(request)
-    assert receipt.status == "refused"
-    assert receipt.refusal_reason == "receive_only_rail"
+@pytest.mark.parametrize("provider", _SOURCE_RECEIVE_ONLY_INVENTORY_PROVIDERS)
+def test_receive_only_source_inventory_blocks_provider_with_send_scope(
+    base_registry: AccountFederationRegistry,
+    provider: str,
+) -> None:
+    _assert_receive_only_provider_refused(base_registry, provider)
+
+
+@pytest.mark.parametrize(
+    "provider",
+    (
+        "Lightning",
+        "nostr-zap",
+        "Nostr Zap",
+        "Ko-fi Guarded",
+        "x402-usdc-base",
+        "USDC",
+        "Base USDC",
+    ),
+)
+def test_receive_only_payment_processor_aliases_block(
+    base_registry: AccountFederationRegistry,
+    provider: str,
+) -> None:
+    _assert_receive_only_provider_refused(base_registry, provider)
+
+
+@pytest.mark.parametrize("provider", tuple(sorted(RECEIVE_ONLY_PROVIDERS)))
+def test_receive_only_denylist_entries_block(
+    base_registry: AccountFederationRegistry,
+    provider: str,
+) -> None:
+    _assert_receive_only_provider_refused(base_registry, provider)
 
 
 def test_missing_scope_blocks(base_registry: AccountFederationRegistry) -> None:
@@ -467,6 +508,8 @@ def test_global_forbidden_write_scope_blocks(base_registry: AccountFederationReg
         registry=base_registry,
     )
 
+    # This scope is deliberately in send_scopes and the global forbidden set, so
+    # the test proves forbidden_action wins after the missing-scope check.
     request = OutboundExecutionRequest(
         scope="gmail_send_outside_expected_correspondence",
         venue="internal",
@@ -584,6 +627,28 @@ def test_position_cap_boundary_admits_equal_total(
     assert receipt.current_position_before == 140.0
     assert receipt.current_position_after == 150.0
     assert executor.current_position == 150.0
+
+
+def test_position_cap_boundary_admits_direct_cap_amount(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=150.0,
+        position_cap=150.0,
+        registry=base_registry,
+    )
+
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=150.0,
+    )
+
+    receipt = executor.execute(request)
+    assert receipt.status == "admitted"
+    assert receipt.current_position_after == 150.0
 
 
 def test_authority_ceilings(base_registry: AccountFederationRegistry) -> None:

@@ -6,6 +6,8 @@ from typing import Any, Final
 
 from pydantic import Field, field_validator
 
+from shared.license_request_price_class_router import ReceiveOnlyRail as LicenseReceiveOnlyRail
+from shared.payment_aggregator_v2_support_normalizer import Rail as SupportRail
 from shared.resource_capability import (
     FORBIDDEN_PROVIDER_WRITE_SCOPES,
     AccountFederationRegistry,
@@ -13,30 +15,51 @@ from shared.resource_capability import (
     StrictModel,
 )
 
-RECEIVE_ONLY_PROVIDERS: Final[frozenset[str]] = frozenset(
+
+def _provider_keys(provider: str) -> frozenset[str]:
+    normalized = provider.strip().casefold().replace("-", "_").replace(" ", "_").replace(".", "_")
+    return frozenset({normalized.strip("_"), "".join(ch for ch in normalized if ch.isalnum())})
+
+
+def _provider_alias_keys(providers: frozenset[str]) -> frozenset[str]:
+    return frozenset(key for provider in providers for key in _provider_keys(provider))
+
+
+_SOURCE_RECEIVE_ONLY_PROVIDERS: Final[frozenset[str]] = frozenset(
+    {rail.value for rail in SupportRail}
+    | {rail.value for rail in LicenseReceiveOnlyRail if rail is not LicenseReceiveOnlyRail.NO_RAIL}
+)
+_PROCESSOR_RECEIVE_ONLY_PROVIDER_ALIASES: Final[frozenset[str]] = frozenset(
+    {
+        "base_usdc",
+        "lightning",
+        "nostr_zap",
+        "usdc",
+        "usdc_base",
+        "x402",
+        "x402_usdc_base",
+    }
+)
+_LEGACY_RECEIVE_ONLY_PROVIDER_ALIASES: Final[frozenset[str]] = frozenset(
     {
         "buy_me_a_coffee",
-        "buymeacoffee",
         "bmac",
-        "github_sponsors",
-        "githubsponsors",
         "ko_fi",
-        "kofi",
-        "liberapay",
         "mercury",
         "modern_treasury",
-        "moderntreasury",
         "omg_lol_pay",
-        "omglolpay",
         "open_collective",
-        "opencollective",
-        "patreon",
-        "stripe_payment_link",
-        "stripepaymentlink",
         "stripe",
+        "stripe_payment_link",
         "treasury_prime",
-        "treasuryprime",
     }
+)
+
+
+RECEIVE_ONLY_PROVIDERS: Final[frozenset[str]] = frozenset(
+    _provider_alias_keys(_SOURCE_RECEIVE_ONLY_PROVIDERS)
+    | _provider_alias_keys(_PROCESSOR_RECEIVE_ONLY_PROVIDER_ALIASES)
+    | _provider_alias_keys(_LEGACY_RECEIVE_ONLY_PROVIDER_ALIASES)
 )
 
 
@@ -299,15 +322,11 @@ def _finite_nonnegative_float(name: str, value: float) -> float:
     return normalized
 
 
-def _provider_keys(provider: str) -> frozenset[str]:
-    normalized = provider.strip().casefold().replace("-", "_").replace(" ", "_").replace(".", "_")
-    return frozenset({normalized.strip("_"), "".join(ch for ch in normalized if ch.isalnum())})
-
-
 # This module is a governed contract for downstream lane adapters. Keep the
 # dynamic entrypoints and Pydantic validators visible to the diff-only
 # unused-callable gate until those adapters land.
 _OUTBOUND_EXECUTOR_ENTRYPOINTS: Final = (
+    OutboundExecutionRefusal,
     OutboundExecutionRequest._amount_is_finite_nonnegative,
     OutboundExecutor,
     OutboundExecutor.require_execution,
