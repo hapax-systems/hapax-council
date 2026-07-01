@@ -77,7 +77,7 @@ def test_g2_missing_target_refuses_before_commit() -> None:
     assert result.ok is False
     assert result.refusal_reason is G2LegalRefusalReason.MISSING_TARGET
     assert result.gate_result.verdict is None
-    assert result.next_action
+    assert result.next_action == "attach a surface, venue, and instrument target before M2 commit"
 
 
 @pytest.mark.parametrize(
@@ -322,6 +322,7 @@ def test_g2_verification_rejects_malformed_direct_fields(
 @pytest.mark.parametrize(
     "evidence_refs",
     (
+        "legal-posture-row:bug_bounty:hackerone:universal_jailbreak_bounty",
         ["legal-posture-row:bug_bounty:hackerone:universal_jailbreak_bounty"],
         ("legal-posture-row:bug_bounty:hackerone:universal_jailbreak_bounty", object()),
         (" ",),

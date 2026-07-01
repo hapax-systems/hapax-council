@@ -26,6 +26,9 @@ from shared.legal_posture_registry import (
 
 MONDLC_G2_LEGAL_NAME: Final = "mdlc_g2_legal"
 MONDLC_G2_LEGAL_VERSION: Final = 1
+_EVIDENCE_REFS_TYPE_ERROR: Final = (
+    "evidence refs must be a tuple of strings; wrap a single ref as a one-item tuple"
+)
 
 
 class G2LegalRefusalReason(StrEnum):
@@ -359,11 +362,11 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str) or not isinstance(value, tuple):
-        raise TypeError("evidence refs must be a tuple of strings")
+        raise TypeError(_EVIDENCE_REFS_TYPE_ERROR)
     refs: list[str] = []
     for item in value:
         if not isinstance(item, str):
-            raise TypeError("evidence refs must be a tuple of strings")
+            raise TypeError(_EVIDENCE_REFS_TYPE_ERROR)
         if not item.strip():
             raise TypeError("evidence refs must contain non-empty strings")
         refs.append(item.strip())
