@@ -12,7 +12,10 @@ import pytest
 
 import shared.payment_aggregator_v2_support_normalizer as normalizer_module
 from agents.payment_processors import resource_receipts
-from agents.payment_processors.resource_receipts import record_payment_event_resource_receipt
+from agents.payment_processors.resource_receipts import (
+    record_ingress_resource_receipt,
+    record_payment_event_resource_receipt,
+)
 from shared.payment_aggregator_v2_support_normalizer import (
     CurrencyUnit,
     EventType,
@@ -293,6 +296,88 @@ def test_public_emit_accepts_real_resource_receipt(tmp_path, monkeypatch):
 
     assert decision.verdict is NormalizerVerdict.EMITTED
     assert decision.resource_receipt_refs == (ref,)
+
+
+def test_public_emit_accepts_real_kofi_ingress_resource_receipt(tmp_path, monkeypatch):
+    receipt_log = tmp_path / "resource-receipts.jsonl"
+    monkeypatch.setattr(
+        resource_receipts,
+        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+        receipt_log,
+    )
+    monkeypatch.setattr(
+        normalizer_module,
+        "resource_receipt_matches",
+        resource_receipts.resource_receipt_matches,
+    )
+    receipt = _receipt(
+        rail=Rail.KOFI_GUARDED,
+        receipt_id_suffix="kofi-ingress",
+        resource_receipt_ref=None,
+    )
+    ref = record_ingress_resource_receipt(
+        rail="ko-fi",
+        route_path="/api/payment-rails/ko-fi",
+        external_id=receipt.receipt_id,
+        event_kind="Donation",
+        raw_payload_sha256="a" * 64,
+        downstream_action="rail_idempotency.record_or_skip",
+        log_path=receipt_log,
+    )
+    receipt = receipt.model_copy(update={"resource_receipt_ref": ref})
+
+    decision = evaluate_public_emit(
+        Rail.KOFI_GUARDED,
+        (receipt,),
+        surface_approval=_approval(Rail.KOFI_GUARDED),
+        readiness=_readiness(safe=True),
+        window_start=datetime(2026, 5, 2, 11, 0, tzinfo=UTC),
+        window_end=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+        captured_at=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+    )
+
+    assert decision.verdict is NormalizerVerdict.EMITTED
+    assert decision.resource_receipt_refs == (ref,)
+
+
+def test_public_emit_refuses_kofi_payment_event_operation(tmp_path, monkeypatch):
+    receipt_log = tmp_path / "resource-receipts.jsonl"
+    monkeypatch.setattr(
+        resource_receipts,
+        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+        receipt_log,
+    )
+    monkeypatch.setattr(
+        normalizer_module,
+        "resource_receipt_matches",
+        resource_receipts.resource_receipt_matches,
+    )
+    receipt = _receipt(
+        rail=Rail.KOFI_GUARDED,
+        receipt_id_suffix="wrong-op",
+        resource_receipt_ref=None,
+    )
+    ref = record_payment_event_resource_receipt(
+        rail="ko-fi",
+        external_id=receipt.receipt_id,
+        event_kind="Donation",
+        downstream_action="payment_event_log.append_event",
+        log_path=receipt_log,
+    )
+    receipt = receipt.model_copy(update={"resource_receipt_ref": ref})
+
+    decision = evaluate_public_emit(
+        Rail.KOFI_GUARDED,
+        (receipt,),
+        surface_approval=_approval(Rail.KOFI_GUARDED),
+        readiness=_readiness(safe=True),
+        window_start=datetime(2026, 5, 2, 11, 0, tzinfo=UTC),
+        window_end=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+        captured_at=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+    )
+
+    assert decision.verdict is NormalizerVerdict.REFUSED_MISSING_RESOURCE_RECEIPT
+    assert decision.emission is None
 
 
 def test_public_emit_refuses_real_resource_receipt_external_id_mismatch(tmp_path, monkeypatch):

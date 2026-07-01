@@ -84,6 +84,13 @@ _RESOURCE_RECEIPT_RAIL_BY_SUPPORT_RAIL: dict[Rail, str] = {
     Rail.KOFI_GUARDED: "ko-fi",
     Rail.YOUTUBE_FAN_FUNDING: "youtube_fan_funding",
 }
+_RESOURCE_RECEIPT_OPERATIONS_BY_SUPPORT_RAIL: dict[Rail, tuple[MoneyRailReceiptOperation, ...]] = {
+    Rail.LIGHTNING: (MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,),
+    Rail.NOSTR_ZAP: (MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,),
+    Rail.LIBERAPAY: (MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,),
+    Rail.KOFI_GUARDED: (MoneyRailReceiptOperation.INGRESS,),
+    Rail.YOUTUBE_FAN_FUNDING: (MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,),
+}
 
 
 class _NormalizerModel(BaseModel):
@@ -256,15 +263,7 @@ def evaluate_public_emit(
         )
 
     missing_resource_receipts = tuple(
-        r.receipt_id
-        for r in public_receipts
-        if not r.resource_receipt_ref
-        or not resource_receipt_matches(
-            r.resource_receipt_ref,
-            rail=_RESOURCE_RECEIPT_RAIL_BY_SUPPORT_RAIL[r.rail],
-            operation=MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
-            external_id=r.receipt_id,
-        )
+        r.receipt_id for r in public_receipts if not _resource_receipt_matches_support_receipt(r)
     )
     if missing_resource_receipts:
         return PublicEmitDecision(
@@ -298,6 +297,21 @@ def evaluate_public_emit(
             f"emitted aggregate for rail {rail.value!r}: "
             f"{len(public_receipts)} receipts totaling {total} {expected_currency.value}"
         ),
+    )
+
+
+def _resource_receipt_matches_support_receipt(receipt: NormalizedSupportReceipt) -> bool:
+    if not receipt.resource_receipt_ref:
+        return False
+    receipt_rail = _RESOURCE_RECEIPT_RAIL_BY_SUPPORT_RAIL[receipt.rail]
+    return any(
+        resource_receipt_matches(
+            receipt.resource_receipt_ref,
+            rail=receipt_rail,
+            operation=operation,
+            external_id=receipt.receipt_id,
+        )
+        for operation in _RESOURCE_RECEIPT_OPERATIONS_BY_SUPPORT_RAIL[receipt.rail]
     )
 
 
