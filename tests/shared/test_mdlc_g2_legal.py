@@ -8,11 +8,14 @@ from typing import Any
 
 import pytest
 
-from shared.capdlc_lifecycle import GateStatus
+from shared.capdlc_lifecycle import GateResult, GateStatus
 from shared.legal_posture_registry import G2GateInput, LegalPostureRegistry
 from shared.mdlc_g2_legal import (
+    MONDLC_G2_LEGAL_NAME,
+    MONDLC_G2_LEGAL_VERSION,
     G2LegalRefusal,
     G2LegalRefusalReason,
+    G2LegalVerification,
     require_g2_legal,
     verify_g2_legal,
 )
@@ -276,6 +279,68 @@ def test_g2_to_dict_records_exact_row_and_gate_result() -> None:
     }
     assert payload["row"]["g2_verdict"] == "LIT"
     assert payload["gate_result"]["verdict"] is True
+
+
+def test_g2_to_dict_records_unsigned_dark_row_without_operator_sign_date() -> None:
+    result = verify_g2_legal(TARGET, registry=_registry(_row()), today=TODAY)
+
+    payload = result.to_dict()
+
+    assert payload["status"] == "dark"
+    assert payload["row"]["g2_verdict"] == "DARK"
+    assert payload["row"]["operator_sign_date"] is None
+    assert payload["gate_result"]["verdict"] is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"status": "lit"},
+        {"gate_result": object()},
+        {"refusal_reason": "dark_row"},
+        {"target": object()},
+    ),
+)
+def test_g2_verification_rejects_malformed_direct_fields(
+    overrides: dict[str, object],
+) -> None:
+    kwargs: dict[str, object] = {
+        "validator": MONDLC_G2_LEGAL_NAME,
+        "validator_version": MONDLC_G2_LEGAL_VERSION,
+        "status": GateStatus.DARK,
+        "gate_result": GateResult(status=GateStatus.DARK, verdict=None),
+        "reason": "dark_row",
+        "refusal_reason": G2LegalRefusalReason.DARK_ROW,
+        "target": TARGET,
+    }
+    kwargs.update(overrides)
+
+    with pytest.raises(TypeError):
+        G2LegalVerification(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "evidence_refs",
+    (
+        ["legal-posture-row:bug_bounty:hackerone:universal_jailbreak_bounty"],
+        ("legal-posture-row:bug_bounty:hackerone:universal_jailbreak_bounty", object()),
+        (" ",),
+    ),
+)
+def test_g2_verification_rejects_malformed_direct_evidence_refs(
+    evidence_refs: object,
+) -> None:
+    with pytest.raises(TypeError, match="evidence refs"):
+        G2LegalVerification(
+            validator=MONDLC_G2_LEGAL_NAME,
+            validator_version=MONDLC_G2_LEGAL_VERSION,
+            status=GateStatus.DARK,
+            gate_result=GateResult(status=GateStatus.DARK, verdict=None),
+            reason="dark_row",
+            refusal_reason=G2LegalRefusalReason.DARK_ROW,
+            target=TARGET,
+            evidence_refs=evidence_refs,  # type: ignore[arg-type]
+        )
 
 
 def test_g2_missing_registry_file_fails_closed(tmp_path: Path) -> None:
