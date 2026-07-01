@@ -246,6 +246,25 @@ def test_risk_flag_derivation_still_flags_go_live_with_real_egress_marker() -> N
     assert flags.audio_or_live_egress_sensitive is True
 
 
+def test_risk_flag_derivation_does_not_trip_on_adverbial_live() -> None:
+    # 'live' here is adverbial ("the actual grounded retrieval path"), not a
+    # live-egress surface. The bare 'live' needle false-flagged PR #4265's title
+    # and vetoed its system auto-arm. Bare 'live' is dropped; real live surfaces
+    # are covered by 'livestream'/'broadcast' (next test).
+    flags = _derived_risk_flags("resolve_angle uses the live grounded Tavily retrieval path")
+    assert flags.audio_or_live_egress_sensitive is False
+
+
+def test_risk_flag_derivation_still_flags_livestream_and_broadcast() -> None:
+    # Real live-egress surfaces say 'livestream'/'broadcast', not bare 'live'.
+    # Dropping bare 'live' must not silently under-flag them.
+    assert (
+        _derived_risk_flags("routine task", tags=["livestream"]).audio_or_live_egress_sensitive
+        is True
+    )
+    assert _derived_risk_flags("broadcast gain staging").audio_or_live_egress_sensitive is True
+
+
 def test_risk_flag_derivation_governance_substring_does_not_false_trip() -> None:
     # 'policy' must not match inside an unrelated compound like 'policyholder'.
     flags = _derived_risk_flags("policyholder records cleanup")
