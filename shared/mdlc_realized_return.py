@@ -92,6 +92,7 @@ REFUND_REVERSAL_EVENT_KINDS: Final[frozenset[str]] = frozenset(
 OUTBOUND_EVENT_KINDS: Final[frozenset[str]] = frozenset({"expense_paid"})
 DIRECTION_FILTERED_EVENT_KINDS: Final[frozenset[str]] = frozenset(
     {
+        "collective_transaction_created",
         "transaction.create",
         "transaction.created",
         "transaction.updated",
@@ -145,7 +146,10 @@ class RealizedReturnRailResult:
     observed_at: datetime | None
     evidence_refs: tuple[str, ...]
     source_class: str = "payment_event"
-    detail: str = "no detail supplied; reject row and inspect refusal_reason"
+    detail: str = (
+        "no detail supplied; next action: do not score this event; preserve refusal_reason "
+        "for ratchet-ledger/CCTV reconciliation"
+    )
 
     def __post_init__(self) -> None:
         if self.status is not RealizedReturnStatus.REFUSED:
