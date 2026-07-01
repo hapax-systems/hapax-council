@@ -276,12 +276,19 @@ class OutboundExecutor:
             )
 
         # 8. Position Cap check
-        position_after = _position_after(self.current_position, request.amount)
-        if _position_exceeds_cap(self.current_position, request.amount, self.position_cap):
+        position_after_decimal = _position_after_decimal(self.current_position, request.amount)
+        position_after = float(position_after_decimal)
+        if _exceeds_decimal_cap(position_after_decimal, self.position_cap):
             return _refuse(
                 "position_cap_exceeded",
                 f"Outbound execution refused: position {position_after} exceeds cap {self.position_cap}",
                 "reduce the request or reset/raise the position cap through governance",
+            )
+        if _decimal(position_after) != position_after_decimal:
+            return _refuse(
+                "position_precision_loss",
+                f"Outbound execution refused: position {position_after_decimal} cannot be represented exactly",
+                "lower the request amount or use a smaller current position before retrying",
             )
 
         # 9. Authority Ceiling check
@@ -355,15 +362,11 @@ def _finite_nonnegative_float(name: str, value: float) -> float:
 
 
 def _exceeds_cap(value: float, cap: float) -> bool:
-    return _decimal(value) > _decimal(cap)
+    return _exceeds_decimal_cap(_decimal(value), cap)
 
 
-def _position_exceeds_cap(current_position: float, amount: float, cap: float) -> bool:
-    return _position_after_decimal(current_position, amount) > _decimal(cap)
-
-
-def _position_after(current_position: float, amount: float) -> float:
-    return float(_position_after_decimal(current_position, amount))
+def _exceeds_decimal_cap(value: Decimal, cap: float) -> bool:
+    return value > _decimal(cap)
 
 
 def _position_after_decimal(current_position: float, amount: float) -> Decimal:

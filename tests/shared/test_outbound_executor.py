@@ -281,6 +281,16 @@ def test_request_rejects_non_finite_amount() -> None:
             )
 
 
+def test_request_rejects_non_numeric_amount() -> None:
+    for amount in (True, "10"):
+        with pytest.raises(ValidationError, match="next action"):
+            OutboundExecutionRequest(
+                scope="gmail_send_internal",
+                venue="internal",
+                amount=amount,
+            )
+
+
 def test_require_execution_success(base_registry: AccountFederationRegistry) -> None:
     executor = OutboundExecutor(
         authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
@@ -815,6 +825,31 @@ def test_position_cap_just_over_fractional_boundary_refuses(
     receipt = executor.execute(request)
     assert receipt.status == "refused"
     assert receipt.refusal_reason == "position_cap_exceeded"
+
+
+def test_position_cap_refuses_unrepresentable_admitted_position(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=2.0,
+        position_cap=1.0000000000000002e16,
+        current_position=1e16,
+        kill_switch=False,
+        registry=base_registry,
+    )
+
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=1.0,
+    )
+
+    receipt = executor.execute(request)
+    assert receipt.status == "refused"
+    assert receipt.refusal_reason == "position_precision_loss"
+    assert executor.current_position == 1e16
 
 
 def test_execute_position_admission_is_atomic(
