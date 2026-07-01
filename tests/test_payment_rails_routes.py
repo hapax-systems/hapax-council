@@ -3438,3 +3438,175 @@ async def test_treasury_prime_route_missing_data_id_returns_400(
 
     assert response.status_code == 400
     assert "data.id" in response.json()["detail"]
+
+
+# ── Durable sink (Phase 3) integration tests ───────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def isolated_durable_sink(tmp_path, monkeypatch):
+    """Isolate the durable sink root for all route tests to prevent test pollution."""
+    durable_dir = tmp_path / "stage0-durable-sink"
+    durable_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(durable_dir))
+    import shared.durable_jsonl_sink as sink_mod
+
+    monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "btrfs")
+    return durable_dir
+
+
+@pytest.mark.asyncio
+async def test_missing_durable_sink_refuses_publishing(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Set the root to a non-existent directory
+    monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", "/nonexistent/durable/sink")
+
+    payload = _sponsorship_payload(action="created", sponsor_login="charlie")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _sign(raw)
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/github-sponsors",
+            content=raw,
+            headers={
+                "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": "gh-delivery-missing-sink-test",
+                "Content-Type": "application/json",
+            },
+        )
+
+    # Missing durable sink raises error and route returns 500
+    assert response.status_code == 500
+
+    # Verify that the publisher's manifest file was NOT written (refuses / holds receipt folding)
+    files = list(output_dir.glob("event-created-*.md"))
+    charlie_files = [f for f in files if "charlie" in f.read_text()]
+    assert len(charlie_files) == 0
+
+
+@pytest.mark.asyncio
+async def test_refund_reversal_records_are_new_rows_in_durable_sink(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+    isolated_durable_sink: Path,
+) -> None:
+    # 1. First event: sponsorship created
+    payload1 = _sponsorship_payload(action="created", sponsor_login="alice")
+    raw1 = json.dumps(payload1).encode("utf-8")
+    sig1 = _sign(raw1)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response1 = await client.post(
+            "/api/payment-rails/github-sponsors",
+            content=raw1,
+            headers={
+                "X-Hub-Signature-256": sig1,
+                "X-GitHub-Delivery": "delivery-refund-test-created",
+                "Content-Type": "application/json",
+            },
+        )
+    assert response1.status_code == 200
+
+    # 2. Second event: sponsorship cancelled (acts as reversal/refund shape)
+    payload2 = _sponsorship_payload(action="cancelled", sponsor_login="alice")
+    raw2 = json.dumps(payload2).encode("utf-8")
+    sig2 = _sign(raw2)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response2 = await client.post(
+            "/api/payment-rails/github-sponsors",
+            content=raw2,
+            headers={
+                "X-Hub-Signature-256": sig2,
+                "X-GitHub-Delivery": "delivery-refund-test-cancelled",
+                "Content-Type": "application/json",
+            },
+        )
+    assert response2.status_code == 200
+
+    # 3. Read the durable sink stream file and verify that both rows exist
+    stream_path = isolated_durable_sink / "payment-event.jsonl"
+    assert stream_path.exists()
+
+    rows = [json.loads(line) for line in stream_path.read_text(encoding="utf-8").splitlines()]
+    # Assert we have exactly 2 rows
+    assert len(rows) == 2
+
+    # Assert they are chained correctly
+    assert rows[0]["stream_id"] == "payment-event"
+    assert rows[0]["prior_hash"] == "0" * 64
+
+    assert rows[1]["stream_id"] == "payment-event"
+    assert rows[1]["prior_hash"] == rows[0]["row_hash"]
+
+    # Assert source receipt refs are distinct
+    assert rows[0]["source_receipt_ref"] != rows[1]["source_receipt_ref"]
+    assert "created" in rows[0]["source_receipt_ref"]
+    assert "cancelled" in rows[1]["source_receipt_ref"]
+
+
+@pytest.mark.asyncio
+async def test_idempotency_not_poisoned_on_durable_sink_failure(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 1. Set the root to a non-existent directory to cause failure
+    monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", "/nonexistent/durable/sink")
+
+    payload = _sponsorship_payload(action="created", sponsor_login="dave")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _sign(raw)
+    delivery_id = "gh-delivery-idempotency-poison-test"
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/github-sponsors",
+            content=raw,
+            headers={
+                "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": delivery_id,
+                "Content-Type": "application/json",
+            },
+        )
+    # The first delivery must fail with 500.
+    assert response.status_code == 500
+
+    # 2. Now restore the durable sink to a valid temp path.
+    durable_dir = output_dir / "stage0-durable-sink"
+    durable_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(durable_dir))
+    import shared.durable_jsonl_sink as sink_mod
+
+    monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "btrfs")
+
+    # 3. Re-send the exact same delivery_id.
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response2 = await client.post(
+            "/api/payment-rails/github-sponsors",
+            content=raw,
+            headers={
+                "X-Hub-Signature-256": sig,
+                "X-GitHub-Delivery": delivery_id,
+                "Content-Type": "application/json",
+            },
+        )
+    assert response2.status_code == 200
+    assert response2.json()["status"] == "received"
+
+    # 4. Verify it was written to the durable sink.
+    stream_path = durable_dir / "payment-event.jsonl"
+    assert stream_path.exists()
+    rows = [json.loads(line) for line in stream_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["payload"]["sponsor_login"] == "dave"
+    assert rows[0]["payload"]["event_kind"] == "created"
