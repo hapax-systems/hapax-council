@@ -11,6 +11,7 @@ import shared.durable_jsonl_sink as sink_mod
 from shared.capdlc_lifecycle import GateStatus
 from shared.mdlc_measure import MonDLCLadder, MonDLCVerdict, score
 from shared.mdlc_realized_return import (
+    AMBIGUOUS_BANK_TRANSACTION_EVENT_KINDS,
     DIRECTION_FILTERED_EVENT_KINDS,
     MEMBERSHIP_LIFECYCLE_EVENT_KINDS,
     NON_SETTLED_INBOUND_EVENT_KINDS,
@@ -83,6 +84,7 @@ def test_event_kind_contract_is_explicit_and_disjoint() -> None:
         | NON_SETTLED_INBOUND_EVENT_KINDS
         | OUTBOUND_EVENT_KINDS
         | REFUND_REVERSAL_EVENT_KINDS
+        | AMBIGUOUS_BANK_TRANSACTION_EVENT_KINDS
     )
 
     assert REALIZED_INBOUND_EVENT_KINDS
@@ -90,6 +92,7 @@ def test_event_kind_contract_is_explicit_and_disjoint() -> None:
     assert "customer_subscription_created" in MEMBERSHIP_LIFECYCLE_EVENT_KINDS
     assert "incoming_payment_detail.created" in NON_SETTLED_INBOUND_EVENT_KINDS
     assert "payment_refunded" in REFUND_REVERSAL_EVENT_KINDS
+    assert "transaction.updated" in AMBIGUOUS_BANK_TRANSACTION_EVENT_KINDS
 
 
 @pytest.mark.parametrize("event_kind", sorted(REALIZED_INBOUND_EVENT_KINDS))
@@ -184,6 +187,10 @@ def test_modern_treasury_created_refuses_as_non_settled_before_score_folding() -
             RealizedReturnRefusalReason.MISSING_INBOUND_DIRECTION,
         ),
         (
+            _accepted_event("transaction.updated", direction="incoming"),
+            RealizedReturnRefusalReason.AMBIGUOUS_BANK_TRANSACTION_EVENT,
+        ),
+        (
             _accepted_event("payment_intent_succeeded", provenance="projected"),
             RealizedReturnRefusalReason.PROJECTED_VALUE,
         ),
@@ -229,6 +236,35 @@ def test_malformed_timestamp_returns_invalid_shape_refusal() -> None:
     assert result.refusal_reason is RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
     assert result.measurement is None
     assert result.to_dict()["detail"] == "event timestamp is malformed"
+
+
+@pytest.mark.parametrize(
+    "event",
+    (
+        _accepted_event("payment_intent_succeeded", amount_currency_cents="1200"),
+        {
+            "event_kind": "payment_intent_succeeded",
+            "amount_usd": "Infinity",
+            "occurred_at": NOW,
+            "raw_payload_sha256": RAW_SHA,
+        },
+        {
+            "event_kind": "payment_intent_succeeded",
+            "amount_usd": "1.234",
+            "occurred_at": NOW,
+            "raw_payload_sha256": RAW_SHA,
+        },
+    ),
+)
+def test_malformed_amounts_return_invalid_shape_refusal(event: dict[str, object]) -> None:
+    result = realized_return_from_rail(
+        event,
+        source_receipt_ref="receipt://payment/test/bad-amount",
+    )
+
+    assert result.status is RealizedReturnStatus.REFUSED
+    assert result.refusal_reason is RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+    assert result.measurement is None
 
 
 def test_refusal_result_carries_cctv_and_ratchet_context() -> None:

@@ -42,9 +42,6 @@ REALIZED_INBOUND_EVENT_KINDS: Final[frozenset[str]] = frozenset(
         # Bank rails.
         "incoming_payment_detail.completed",
         "incoming_ach.create",
-        "transaction.create",
-        "transaction.created",
-        "transaction.updated",
         # Legacy awareness receive rails.
         "lightning",
         "nostr_zap",
@@ -71,6 +68,13 @@ NON_SETTLED_INBOUND_EVENT_KINDS: Final[frozenset[str]] = frozenset(
     {
         "payin_created",
         "incoming_payment_detail.created",
+    }
+)
+AMBIGUOUS_BANK_TRANSACTION_EVENT_KINDS: Final[frozenset[str]] = frozenset(
+    {
+        "transaction.create",
+        "transaction.created",
+        "transaction.updated",
     }
 )
 REFUND_REVERSAL_EVENT_KINDS: Final[frozenset[str]] = frozenset(
@@ -121,6 +125,7 @@ class RealizedReturnRefusalReason(StrEnum):
     MISSING_AMOUNT = "missing_amount"
     NON_POSITIVE_AMOUNT = "non_positive_amount"
     MISSING_INBOUND_DIRECTION = "missing_inbound_direction"
+    AMBIGUOUS_BANK_TRANSACTION_EVENT = "ambiguous_bank_transaction_event"
     MISSING_OBSERVED_AT = "missing_observed_at"
     MISSING_RAIL_EVIDENCE = "missing_rail_evidence"
     INVALID_EVENT_SHAPE = "invalid_event_shape"
@@ -140,7 +145,7 @@ class RealizedReturnRailResult:
     observed_at: datetime | None
     evidence_refs: tuple[str, ...]
     source_class: str = "payment_event"
-    detail: str = ""
+    detail: str = "no detail supplied; reject row and inspect refusal_reason"
 
     @property
     def ok(self) -> bool:
@@ -382,10 +387,10 @@ def realized_returns_from_durable_payment_events(
     """Read all current rows from a durable Stage0 payment-event stream file."""
 
     target = Path(path)
-    validation = validate_chain(target, stream_id=PAYMENT_EVENT_STREAM_ID)
-    validation.raise_for_issues()
     if not target.exists():
         return ()
+    validation = validate_chain(target, stream_id=PAYMENT_EVENT_STREAM_ID)
+    validation.raise_for_issues()
 
     results: list[RealizedReturnRailResult] = []
     with target.open("r", encoding="utf-8") as fh:
@@ -425,6 +430,8 @@ def _refusal_reason_for_event_kind(
         return RealizedReturnRefusalReason.REFUND_OR_REVERSAL_EVENT
     if event_kind in OUTBOUND_EVENT_KINDS or "payment_order" in event_kind:
         return RealizedReturnRefusalReason.OUTBOUND_EVENT
+    if event_kind in AMBIGUOUS_BANK_TRANSACTION_EVENT_KINDS:
+        return RealizedReturnRefusalReason.AMBIGUOUS_BANK_TRANSACTION_EVENT
     if event_kind in MEMBERSHIP_LIFECYCLE_EVENT_KINDS:
         return RealizedReturnRefusalReason.MEMBERSHIP_LIFECYCLE_EVENT
     if event_kind in NON_SETTLED_INBOUND_EVENT_KINDS:
@@ -540,10 +547,15 @@ def _major_units_to_minor(value: Any) -> int | None:
         minor = Decimal(str(value)) * Decimal("100")
     except (InvalidOperation, ValueError):
         return None
+    if not minor.is_finite():
+        return None
     integral = minor.to_integral_value()
     if minor != integral:
         return None
-    return int(integral)
+    try:
+        return int(integral)
+    except (OverflowError, ValueError):
+        return None
 
 
 def _evidence_refs(
@@ -653,6 +665,7 @@ def _string_tuple(value: Sequence[Any]) -> tuple[str, ...]:
 
 
 __all__ = [
+    "AMBIGUOUS_BANK_TRANSACTION_EVENT_KINDS",
     "DIRECTION_FILTERED_EVENT_KINDS",
     "MEMBERSHIP_LIFECYCLE_EVENT_KINDS",
     "NON_SETTLED_INBOUND_EVENT_KINDS",
