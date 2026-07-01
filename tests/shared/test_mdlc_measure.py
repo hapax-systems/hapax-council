@@ -360,6 +360,8 @@ def test_to_dict_exposes_gate_contract_without_python_identities() -> None:
             {"negative_threshold": 2.0, "positive_threshold": 1.0},
             "negative_threshold must be <= positive_threshold",
         ),
+        ({"positive_threshold": float("inf")}, "positive_threshold must be finite"),
+        ({"negative_threshold": float("nan")}, "negative_threshold must be finite"),
     ),
 )
 def test_ladder_validation_refuses_invalid_rulers(kwargs: dict[str, object], match: str) -> None:

@@ -229,14 +229,24 @@ def test_rail_result_without_ladder_fails_closed() -> None:
     assert result.next_action
 
 
-def test_malformed_ladder_mapping_fails_closed_as_unsupported_shape() -> None:
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"min_corroboration_count": float("inf")},
+        {"negative_threshold": float("nan")},
+    ),
+)
+def test_malformed_ladder_mapping_fails_closed_as_unsupported_shape(
+    overrides: dict[str, object],
+) -> None:
     m_binding = _binding_module()
     malformed_ladder = {
         "ruler_hash": HASH,
-        "min_corroboration_count": float("inf"),
+        "min_corroboration_count": 2,
         "freshness_ttl_seconds": 3600,
         "as_of": NOW,
     }
+    malformed_ladder.update(overrides)
 
     result = m_binding.bind_m_result(
         _measurement(),
