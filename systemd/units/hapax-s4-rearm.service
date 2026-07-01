@@ -1,0 +1,29 @@
+[Unit]
+Description=Torso S-4 silent gain-ladder re-assert (recurring + restart-coupled)
+# Silent re-assert path: --witness-mode none emits ONLY the gain-ladder CCs.
+# It runs NO wet-return marker probe, so it never plays a tone to the broadcast
+# bus — safe to run on a recurring timer and on every daimonion restart, even
+# while live. Wet-path liveness is surfaced by the active-voice pre-segment
+# witness in hapax-audio-routing-check, never by this unit.
+# hapax-daimonion is in After= (ordering) but NOT Requires=: the rearm must
+# still fire on its own timer when the daimonion is stopped; the daimonion
+# drop-in's Wants= pulls a rearm on each daimonion (re)start (review: glm-1).
+After=pipewire.service pipewire-pulse.service wireplumber.service systemd-udev-settle.service hapax-audio-reconciler.service hapax-daimonion.service
+Requires=pipewire.service pipewire-pulse.service wireplumber.service hapax-audio-reconciler.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=XDG_RUNTIME_DIR=%t
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/usr/bin/install -d -m 0755 /dev/shm/hapax-audio
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-s4-arm --require-file shared/s4_arm.py
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-s4-arm --witness-mode none --no-monitor-toggle --task-id s4-rearm-recurring-20260620 --authority-case CASE-VOICE-FOUNDATION-20260610 --parent-spec %h/Documents/Personal/30-areas/hapax/go-live-master-plan-2026-06-18.md --receipt-path /dev/shm/hapax-audio/s4-rearm-receipt.json
+TimeoutStartSec=120s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-s4-rearm
