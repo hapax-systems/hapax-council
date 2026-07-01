@@ -176,6 +176,16 @@ def test_executor_configuration_fails_closed(base_registry: AccountFederationReg
             registry=base_registry,
         )
 
+    with pytest.raises(ValueError, match="notional_cap"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist={"internal"},
+            notional_cap=10**400,
+            position_cap=500.0,
+            kill_switch=False,
+            registry=base_registry,
+        )
+
     with pytest.raises(ValueError, match="position_cap"):
         OutboundExecutor(
             authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
@@ -368,17 +378,27 @@ def test_request_rejects_coerced_default_token_flag() -> None:
 
 
 def test_request_is_immutable_after_validation() -> None:
+    source_payload = {"nested": {"refs": ["evidence:original"]}}
     request = OutboundExecutionRequest(
         scope="gmail_send_internal",
         venue="internal",
         amount=1.0,
         evidence_refs=["public-gate:receipt-1"],
+        payload=source_payload,
     )
+    source_payload["nested"]["refs"].append("evidence:source-mutated")
 
     with pytest.raises(ValidationError, match="frozen"):
         request.amount = -100.0  # type: ignore[misc]
     with pytest.raises(AttributeError):
         request.evidence_refs.append("public-gate:forged")  # type: ignore[attr-defined]
+    with pytest.raises(TypeError):
+        request.payload["forged"] = True  # type: ignore[index]
+    with pytest.raises(TypeError):
+        request.payload["nested"]["forged"] = True  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        request.payload["nested"]["refs"].append("evidence:forged")  # type: ignore[attr-defined]
+    assert request.to_dict()["payload"] == {"nested": {"refs": ["evidence:original"]}}
 
 
 def test_request_rejects_blank_evidence_refs() -> None:
@@ -1088,6 +1108,41 @@ def test_authority_ceilings(base_registry: AccountFederationRegistry) -> None:
     receipt = exec_public_bound.execute(req_public)
     assert receipt.status == "admitted"
     assert receipt.metadata["public_gate_evidence_ref"] == "public-gate:receipt-1"
+
+
+def test_receipt_payload_and_metadata_are_durable_snapshots(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.PUBLIC_GATE_REQUIRED,
+        venue_allowlist={"internal"},
+        notional_cap=100.0,
+        position_cap=500.0,
+        kill_switch=False,
+        public_gate_receipts={"public-gate:receipt-1"},
+        registry=base_registry,
+    )
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=10.0,
+        public_gate_passed=True,
+        evidence_refs=["public-gate:receipt-1"],
+        payload={"audit": {"refs": ["request:original"]}},
+    )
+
+    receipt = executor.execute(request)
+
+    with pytest.raises(TypeError):
+        receipt.request.payload["audit"]["forged"] = True  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        receipt.request.payload["audit"]["refs"].append("request:forged")  # type: ignore[attr-defined]
+    with pytest.raises(TypeError):
+        receipt.metadata["public_gate_evidence_ref"] = "public-gate:forged"  # type: ignore[index]
+
+    receipt_dict = receipt.to_dict()
+    assert receipt_dict["request"]["payload"] == {"audit": {"refs": ["request:original"]}}
+    assert receipt_dict["metadata"] == {"public_gate_evidence_ref": "public-gate:receipt-1"}
 
 
 def test_internal_only_accepts_internal_venue_prefixes(

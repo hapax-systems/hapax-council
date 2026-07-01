@@ -3,11 +3,12 @@ from __future__ import annotations
 import math
 import threading
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Any, Final, Literal
 
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, field_serializer, field_validator
 
 from shared.license_request_price_class_router import ReceiveOnlyRail as LicenseReceiveOnlyRail
 from shared.payment_aggregator_v2_support_normalizer import Rail as SupportRail
@@ -90,7 +91,7 @@ class OutboundExecutionRequest(StrictModel):
     use_default_token: bool = False
     evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
     public_gate_passed: bool = False
-    payload: dict[str, Any] = Field(default_factory=dict)
+    payload: Mapping[str, Any] = Field(default_factory=lambda: MappingProxyType({}))
 
     @field_validator("amount", mode="before")
     @classmethod
@@ -141,6 +142,20 @@ class OutboundExecutionRequest(StrictModel):
                 )
         return tuple(value)
 
+    @field_validator("payload", mode="before")
+    @classmethod
+    def _payload_is_string_key_mapping(cls, value: Any) -> Any:
+        return _validate_mapping_shape("payload", value)
+
+    @field_validator("payload", mode="after")
+    @classmethod
+    def _payload_is_immutable(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
+        return _freeze_mapping("payload", value)
+
+    @field_serializer("payload")
+    def _serialize_payload(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        return _thaw_mapping(value)
+
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
 
@@ -158,7 +173,21 @@ class OutboundExecutionReceipt(StrictModel):
     current_position_before: float
     current_position_after: float
     evidence_refs: tuple[str, ...] = Field(default_factory=tuple)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: Mapping[str, Any] = Field(default_factory=lambda: MappingProxyType({}))
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _metadata_is_string_key_mapping(cls, value: Any) -> Any:
+        return _validate_mapping_shape("metadata", value)
+
+    @field_validator("metadata", mode="after")
+    @classmethod
+    def _metadata_is_immutable(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
+        return _freeze_mapping("metadata", value)
+
+    @field_serializer("metadata")
+    def _serialize_metadata(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        return _thaw_mapping(value)
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
@@ -442,6 +471,59 @@ def _finite_nonnegative_float(name: str, value: float) -> float:
     return normalized
 
 
+def _validate_mapping_shape(name: str, value: Any) -> Any:
+    if value is None:
+        raise ValueError(
+            f"{name} must be a mapping with string keys; next action: attach "
+            "durable JSON-object evidence"
+        )
+    if not isinstance(value, Mapping):
+        raise ValueError(
+            f"{name} must be a mapping with string keys; next action: attach "
+            "durable JSON-object evidence"
+        )
+    _validate_string_keys(name, value)
+    return value
+
+
+def _validate_string_keys(name: str, value: Mapping[Any, Any]) -> None:
+    for key, nested_value in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(
+                f"{name} keys must be nonblank strings; next action: attach "
+                "durable JSON-object evidence"
+            )
+        if isinstance(nested_value, Mapping):
+            _validate_string_keys(name, nested_value)
+
+
+def _freeze_mapping(name: str, value: Mapping[str, Any]) -> Mapping[str, Any]:
+    return MappingProxyType(
+        {key: _freeze_value(name, nested_value) for key, nested_value in value.items()}
+    )
+
+
+def _freeze_value(name: str, value: Any) -> Any:
+    if isinstance(value, Mapping):
+        _validate_string_keys(name, value)
+        return _freeze_mapping(name, value)
+    if isinstance(value, list | tuple):
+        return tuple(_freeze_value(name, nested_value) for nested_value in value)
+    return value
+
+
+def _thaw_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: _thaw_value(nested_value) for key, nested_value in value.items()}
+
+
+def _thaw_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _thaw_mapping(value)
+    if isinstance(value, tuple):
+        return [_thaw_value(nested_value) for nested_value in value]
+    return value
+
+
 def _exceeds_cap(value: float, cap: float) -> bool:
     return _exceeds_decimal_cap(_decimal(value), cap)
 
@@ -518,6 +600,12 @@ _OUTBOUND_EXECUTOR_ENTRYPOINTS: Final = (
     OutboundExecutionRequest._public_gate_passed_is_explicit_bool,
     OutboundExecutionRequest._use_default_token_is_explicit_bool,
     OutboundExecutionRequest._evidence_refs_are_nonblank_strings,
+    OutboundExecutionRequest._payload_is_string_key_mapping,
+    OutboundExecutionRequest._payload_is_immutable,
+    OutboundExecutionRequest._serialize_payload,
+    OutboundExecutionReceipt._metadata_is_string_key_mapping,
+    OutboundExecutionReceipt._metadata_is_immutable,
+    OutboundExecutionReceipt._serialize_metadata,
     OutboundExecutor,
     OutboundExecutor.validate_request,
     OutboundExecutor.require_execution,
