@@ -14,20 +14,32 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from agents.payment_processors.resource_receipts import (
+    MoneyRailReceiptOperation,
+    tail_resource_receipts,
+)
 from agents.publication_bus.github_sponsors_publisher import (
     CANCELLATION_REFUSAL_AXIOM,
     CANCELLATION_REFUSAL_SURFACE,
 )
+from agents.publication_bus.publisher_kit import PublisherResult
 from logos.api.app import app
 from shared._rail_idempotency import reset_idempotency_store
 from shared.github_sponsors_receive_only_rail import (
     GITHUB_SPONSORS_WEBHOOK_SECRET_ENV,
 )
+from tests.shared import test_buy_me_a_coffee_receive_only_rail as bmac_fixtures
+from tests.shared import test_ko_fi_receive_only_rail as kofi_fixtures
+from tests.shared import test_mercury_receive_only_rail as mercury_fixtures
+from tests.shared import test_modern_treasury_receive_only_rail as mt_fixtures
+from tests.shared import test_open_collective_receive_only_rail as oc_fixtures
+from tests.shared import test_patreon_receive_only_rail as patreon_fixtures
+from tests.shared import test_stripe_payment_link_receive_only_rail as stripe_fixtures
+from tests.shared import test_treasury_prime_receive_only_rail as tp_fixtures
 
 _VALID_SECRET = "github-sponsors-webhook-secret-aBcDeFgHiJkLmN"
 
@@ -130,102 +142,118 @@ def refusal_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("path", "rail", "receiver_name", "headers", "payload"),
+    ("path", "rail", "publisher_name", "headers", "payload"),
     [
         (
             "/api/payment-rails/open-collective",
             "open-collective",
-            "OpenCollectiveRailReceiver",
+            "OpenCollectivePublisher",
             {"X-Open-Collective-Activity-Id": "oc-receipt-first"},
-            {"type": "order.processed", "data": {"id": "oc-receipt-first"}},
+            oc_fixtures._txn_payload(),
         ),
         (
             "/api/payment-rails/stripe-payment-link",
             "stripe-payment-link",
-            "StripePaymentLinkRailReceiver",
+            "StripePaymentLinkPublisher",
             {},
-            {"id": "evt_receipt_first", "type": "payment_intent.succeeded"},
+            stripe_fixtures._payment_intent_payload(),
         ),
         (
             "/api/payment-rails/ko-fi",
             "ko-fi",
-            "KoFiRailReceiver",
+            "KoFiPublisher",
             {},
-            {
-                "type": "Donation",
-                "message_type": "Donation",
-                "kofi_transaction_id": "kofi-receipt-first",
-            },
+            kofi_fixtures._donation_payload(),
         ),
         (
             "/api/payment-rails/patreon",
             "patreon",
-            "PatreonRailReceiver",
+            "PatreonPublisher",
             {
-                "X-Patreon-Event": "members:pledge:create",
+                "X-Patreon-Event": "members:create",
                 "X-Patreon-Webhook-Id": "patreon-receipt-first",
             },
-            {"data": {"id": "member-receipt-first"}, "type": "member"},
+            patreon_fixtures._members_create_payload(),
         ),
         (
             "/api/payment-rails/buy-me-a-coffee",
             "buy-me-a-coffee",
-            "BuyMeACoffeeRailReceiver",
+            "BuyMeACoffeePublisher",
             {},
-            {"type": "supporter.created", "event_id": "bmac-receipt-first"},
+            bmac_fixtures._donation_payload(),
         ),
         (
             "/api/payment-rails/mercury",
             "mercury",
-            "MercuryRailReceiver",
+            "MercuryPublisher",
             {},
-            {"type": "transaction.created", "data": {"id": "mercury-receipt-first"}},
+            mercury_fixtures._ach_incoming_payload(),
         ),
         (
             "/api/payment-rails/modern-treasury",
             "modern-treasury",
-            "ModernTreasuryRailReceiver",
+            "ModernTreasuryPublisher",
             {},
-            {
-                "event": "incoming_payment_detail.created",
-                "data": {"id": "mt-receipt-first"},
-            },
+            mt_fixtures._ach_payload(),
         ),
         (
             "/api/payment-rails/treasury-prime",
             "treasury-prime",
-            "TreasuryPrimeRailReceiver",
+            "TreasuryPrimePublisher",
             {},
-            {"event": "incoming_ach.create", "data": {"id": "tp-receipt-first"}},
+            tp_fixtures._ach_payload(),
         ),
     ],
 )
 async def test_all_webhook_routes_use_private_receipt_first_idempotency(
     path: str,
     rail: str,
-    receiver_name: str,
+    publisher_name: str,
     headers: dict[str, str],
     payload: dict,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    resource_receipt_log: Path,
 ) -> None:
     import logos.api.routes.payment_rails as mod
 
-    calls: list[dict[str, object]] = []
+    seen_ids: list[str] = []
+    published_events: list[object] = []
 
-    class _DuplicateReceiver:
-        def __init__(self, *, idempotency_store: object) -> None:
-            self.idempotency_store = idempotency_store
+    for env_name in (
+        oc_fixtures.OPEN_COLLECTIVE_WEBHOOK_SECRET_ENV,
+        stripe_fixtures.STRIPE_PAYMENT_LINK_WEBHOOK_SECRET_ENV,
+        patreon_fixtures.PATREON_WEBHOOK_SECRET_ENV,
+        bmac_fixtures.BUY_ME_A_COFFEE_WEBHOOK_SECRET_ENV,
+        mercury_fixtures.MERCURY_WEBHOOK_SECRET_ENV,
+        mt_fixtures.MODERN_TREASURY_WEBHOOK_SECRET_ENV,
+        tp_fixtures.TREASURY_PRIME_WEBHOOK_SECRET_ENV,
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv(
+        kofi_fixtures.KO_FI_WEBHOOK_VERIFICATION_TOKEN_ENV,
+        kofi_fixtures._VALID_TOKEN,
+    )
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
 
-        def ingest_webhook(self, *_args, **_kwargs):
+    class _Store:
+        def record_or_skip(self, event_id: str, *, first_seen_at=None) -> bool:
+            seen_ids.append(event_id)
+            return True
+
+        def has_seen(self, _event_id: str) -> bool:
+            return False
+
+        def remove(self, _event_id: str) -> None:
             return None
 
-    def _receipt_first_store(_request, **kwargs):
-        calls.append(kwargs)
-        return SimpleNamespace(resource_receipt_ref=f"private-receipt-ref:{rail}")
+    class _Publisher:
+        def publish_event(self, event):
+            published_events.append(event)
+            return PublisherResult(ok=True, detail="test-published")
 
-    monkeypatch.setattr(mod, receiver_name, _DuplicateReceiver)
-    monkeypatch.setattr(mod, "_receipt_first_idempotency_store", _receipt_first_store)
-    monkeypatch.setattr(mod, "_get_idempotency_store", lambda _rail: object())
+    monkeypatch.setattr(mod, "_get_idempotency_store", lambda _rail: _Store())
+    monkeypatch.setattr(mod, publisher_name, _Publisher)
 
     raw = json.dumps(payload).encode("utf-8")
 
@@ -237,11 +265,22 @@ async def test_all_webhook_routes_use_private_receipt_first_idempotency(
         )
 
     assert response.status_code == 200, response.text
-    assert calls and calls[0]["rail"] == rail
-    assert calls[0]["raw_body"] == raw
     body = response.json()
-    assert body["status"] == "duplicate"
+    assert body["status"] == "received"
     assert "resource_receipt_ref" not in body
+    assert seen_ids
+    assert published_events
+
+    receipts = tail_resource_receipts(log_path=resource_receipt_log)
+    assert len(receipts) == 1
+    receipt = receipts[0]
+    assert receipt.rail == rail
+    assert receipt.operation is MoneyRailReceiptOperation.INGRESS
+    assert receipt.route_path == path
+    assert receipt.raw_payload_sha256 == hashlib.sha256(raw).hexdigest()
+    assert receipt.downstream_action == "rail_idempotency.record_or_skip"
+    assert receipt.spend_authority_granted is False
+    assert receipt.public_projection_allowed is False
 
 
 def test_receipt_first_store_refuses_seen_state_mutation_when_receipt_missing(

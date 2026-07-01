@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+import agents.payment_processors.resource_receipts as resource_receipts
 import shared.support_copy_readiness as readiness_module
 from shared.conversion_target_readiness import REQUIRED_GATE_DIMENSIONS, GateDimension
 from shared.monetization_readiness_ledger import (
@@ -31,6 +32,7 @@ def _snapshot(
     satisfied: frozenset[GateDimension],
     *,
     resource_receipt: bool = True,
+    resource_receipt_ref: str = "money-rail-resource-receipt:liberapay:mrr-test",
 ) -> MonetizationReadinessSnapshot:
     return MonetizationReadinessSnapshot(
         captured_at=NOW,
@@ -39,7 +41,12 @@ def _snapshot(
             dim: GateDimensionEvidence(
                 dimension=dim,
                 satisfied=dim in satisfied,
-                evidence_refs=_evidence_refs(dim, satisfied, resource_receipt=resource_receipt),
+                evidence_refs=_evidence_refs(
+                    dim,
+                    satisfied,
+                    resource_receipt=resource_receipt,
+                    resource_receipt_ref=resource_receipt_ref,
+                ),
                 operator_visible_reason=(
                     f"{dim} satisfied" if dim in satisfied else f"{dim} missing"
                 ),
@@ -54,12 +61,13 @@ def _evidence_refs(
     satisfied: frozenset[GateDimension],
     *,
     resource_receipt: bool,
+    resource_receipt_ref: str,
 ) -> tuple[str, ...]:
     if dim not in satisfied:
         return ()
     refs = [f"evidence:{dim}"]
     if dim == "monetization" and resource_receipt:
-        refs.append("money-rail-resource-receipt:liberapay:mrr-test")
+        refs.append(resource_receipt_ref)
     return tuple(refs)
 
 
@@ -67,9 +75,14 @@ def _ledger(
     satisfied: frozenset[GateDimension],
     *,
     resource_receipt: bool = True,
+    resource_receipt_ref: str = "money-rail-resource-receipt:liberapay:mrr-test",
 ) -> MonetizationReadinessLedger:
     return evaluate_default_monetization_readiness(
-        _snapshot(satisfied, resource_receipt=resource_receipt)
+        _snapshot(
+            satisfied,
+            resource_receipt=resource_receipt,
+            resource_receipt_ref=resource_receipt_ref,
+        )
     )
 
 
@@ -180,6 +193,40 @@ def test_full_evidence_and_refs_returns_public_safe_machine_state() -> None:
         assert state.issue_invitation_allowed is False
         assert state.licensing_negotiation_allowed is False
         assert state.customer_service_expectation_allowed is False
+
+
+def test_full_evidence_and_refs_requires_real_resource_receipt(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_log = tmp_path / "money-rail-resource-receipts.jsonl"
+    monkeypatch.setattr(
+        resource_receipts,
+        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+        receipt_log,
+    )
+    monkeypatch.setattr(
+        readiness_module,
+        "resource_receipt_matches",
+        resource_receipts.resource_receipt_matches,
+    )
+    receipt_ref = resource_receipts.record_payment_event_resource_receipt(
+        rail="liberapay",
+        external_id="lp-public-safe-real-receipt",
+        event_kind="payin_succeeded",
+        downstream_action="payment_event_log.append_event",
+    )
+
+    assert receipt_ref is not None
+
+    decision = evaluate_support_copy_readiness(
+        _registry(),
+        _ledger(ALL_DIMS, resource_receipt_ref=receipt_ref),
+        readiness_refs=_refs(),
+    )
+
+    assert decision.state == "public-safe"
+    assert decision.resource_receipt_refs == (receipt_ref,)
 
 
 def test_missing_resource_receipt_holds_even_with_public_truth_and_monetization() -> None:
