@@ -377,6 +377,19 @@ def test_request_rejects_coerced_default_token_flag() -> None:
             )
 
 
+@pytest.mark.parametrize("field", ("scope", "venue"))
+def test_request_rejects_blank_scope_or_venue(field: str) -> None:
+    request_data = {
+        "scope": "gmail_send_internal",
+        "venue": "internal",
+        "amount": 1.0,
+    }
+    request_data[field] = "   "
+
+    with pytest.raises(ValidationError, match=field):
+        OutboundExecutionRequest(**request_data)
+
+
 def test_request_is_immutable_after_validation() -> None:
     source_payload = {"nested": {"refs": ["evidence:original"]}}
     request = OutboundExecutionRequest(
@@ -450,6 +463,29 @@ def test_receipt_rejects_mutable_or_non_json_metadata_values(
             current_position_after=0.0,
             metadata=metadata,
         )
+
+
+def test_executor_resnapshots_model_copy_mutated_request(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=100.0,
+        position_cap=500.0,
+        kill_switch=False,
+        registry=base_registry,
+    )
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=1.0,
+    )
+    copied_request = request.model_copy(update={"payload": {"ids": {"mutable-set-leaf"}}})
+
+    with pytest.raises(ValidationError, match="payload values"):
+        executor.execute(copied_request)
+    assert executor.current_position == 0.0
 
 
 def test_request_rejects_blank_evidence_refs() -> None:
@@ -669,6 +705,32 @@ def test_missing_scope_blocks(base_registry: AccountFederationRegistry) -> None:
     receipt = executor.execute(request)
     assert receipt.status == "refused"
     assert receipt.refusal_reason == "missing_scope"
+
+
+@pytest.mark.parametrize(
+    "send_scopes",
+    (
+        "gmail_send_internal",
+        [""],
+        ["gmail_send_internal", "   "],
+        [1],
+    ),
+)
+def test_malformed_registry_send_scopes_fail_closed(
+    base_registry: AccountFederationRegistry,
+    send_scopes: object,
+) -> None:
+    malformed_registry = base_registry.model_copy(update={"send_scopes": send_scopes})
+
+    with pytest.raises((TypeError, ValueError), match="registry.send_scopes"):
+        OutboundExecutor(
+            authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+            venue_allowlist={"internal"},
+            notional_cap=100.0,
+            position_cap=500.0,
+            kill_switch=False,
+            registry=malformed_registry,
+        )
 
 
 def test_default_token_fallback_blocks(base_registry: AccountFederationRegistry) -> None:

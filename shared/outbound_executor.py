@@ -93,6 +93,16 @@ class OutboundExecutionRequest(StrictModel):
     public_gate_passed: bool = False
     payload: Mapping[str, Any] = Field(default_factory=lambda: MappingProxyType({}))
 
+    @field_validator("scope", mode="before")
+    @classmethod
+    def _scope_is_nonblank_string(cls, value: Any) -> str:
+        return _nonblank_string("scope", value)
+
+    @field_validator("venue", mode="before")
+    @classmethod
+    def _venue_is_nonblank_string(cls, value: Any) -> str:
+        return _nonblank_string("venue", value)
+
     @field_validator("amount", mode="before")
     @classmethod
     def _amount_is_finite_nonnegative(cls, value: Any) -> float:
@@ -257,6 +267,14 @@ class OutboundExecutor:
         self.kill_switch = kill_switch
         self.public_gate_receipts = _normalize_public_gate_receipts(public_gate_receipts)
         self.registry = registry
+        self.send_scopes = _normalize_scope_collection(
+            "registry.send_scopes",
+            registry.send_scopes,
+        )
+        self.forbidden_actions = _normalize_scope_collection(
+            "registry.forbidden_actions",
+            registry.forbidden_actions,
+        )
         self._position_lock = threading.RLock()
 
     def validate_request(self, request: OutboundExecutionRequest) -> OutboundExecutionReceipt:
@@ -268,6 +286,7 @@ class OutboundExecutor:
         self, request: OutboundExecutionRequest
     ) -> OutboundExecutionReceipt:
         """Validate a request while the position lock is held."""
+        request = _snapshot_request(request)
         receipt_id = f"outbound-receipt-{uuid.uuid4()}"
 
         def _refuse(reason: str, verdict: str, next_action: str) -> OutboundExecutionReceipt:
@@ -313,7 +332,7 @@ class OutboundExecutor:
             )
 
         # 3. Missing scope check
-        if request.scope not in self.registry.send_scopes:
+        if request.scope not in self.send_scopes:
             return _refuse(
                 "missing_scope",
                 f"Outbound execution refused: scope {request.scope} is not in registry send_scopes",
@@ -323,7 +342,7 @@ class OutboundExecutor:
         # 4. Forbidden Action check
         if (
             request.scope in FORBIDDEN_PROVIDER_WRITE_SCOPES
-            or request.scope in self.registry.forbidden_actions
+            or request.scope in self.forbidden_actions
         ):
             return _refuse(
                 "forbidden_action",
@@ -471,6 +490,40 @@ def _finite_nonnegative_float(name: str, value: float) -> float:
     return normalized
 
 
+def _nonblank_string(name: str, value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"{name} must be a nonblank string; next action: bind a governed nonblank value"
+        )
+    return value
+
+
+def _normalize_scope_collection(name: str, values: Any) -> frozenset[str]:
+    if isinstance(values, str) or not isinstance(values, list | tuple | set | frozenset):
+        raise TypeError(
+            f"{name} must be a list, tuple, or set of scope strings; next action: "
+            "load a validated account federation registry"
+        )
+    return frozenset(_nonblank_string(f"{name} entries", value) for value in values)
+
+
+def _snapshot_request(request: OutboundExecutionRequest) -> OutboundExecutionRequest:
+    if not isinstance(request, OutboundExecutionRequest):
+        raise TypeError(
+            "request must be an OutboundExecutionRequest; next action: validate the "
+            "outbound request before execution"
+        )
+    return OutboundExecutionRequest(
+        scope=request.scope,
+        venue=request.venue,
+        amount=request.amount,
+        use_default_token=request.use_default_token,
+        evidence_refs=request.evidence_refs,
+        public_gate_passed=request.public_gate_passed,
+        payload=request.payload,
+    )
+
+
 def _validate_mapping_shape(name: str, value: Any) -> Any:
     if value is None:
         raise ValueError(
@@ -611,6 +664,8 @@ def _bound_public_gate_evidence_ref(
 # unused-callable gate until those adapters land.
 _OUTBOUND_EXECUTOR_ENTRYPOINTS: Final = (
     OutboundExecutionRefusal,
+    OutboundExecutionRequest._scope_is_nonblank_string,
+    OutboundExecutionRequest._venue_is_nonblank_string,
     OutboundExecutionRequest._amount_is_finite_nonnegative,
     OutboundExecutionRequest._public_gate_passed_is_explicit_bool,
     OutboundExecutionRequest._use_default_token_is_explicit_bool,
