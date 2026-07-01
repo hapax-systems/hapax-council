@@ -319,6 +319,21 @@ def test_phase0_request_rejects_customer_data_or_raw_payload_fields() -> None:
             )
 
 
+def test_phase0_request_rejects_caller_supplied_purpose_text() -> None:
+    raw_purpose = "raw customer purpose text should not be emitted"
+
+    with pytest.raises(
+        NDCVBApiHarnessError, match="purpose must be omitted or exactly.*next_action="
+    ) as exc:
+        package_ndcvb_detection_result(
+            request={**_request(), "purpose": raw_purpose},
+            verdicts=["sycophancy: corroborated@0.88"],
+            battery_gates=_gates(),
+        )
+
+    assert raw_purpose not in str(exc.value)
+
+
 def test_phase0_verdicts_and_battery_gates_reject_customer_payload_fields() -> None:
     with pytest.raises(NDCVBApiHarnessError, match="NDCVB verdict.*forbidden keys.*next_action="):
         package_ndcvb_detection_result(

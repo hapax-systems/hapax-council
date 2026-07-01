@@ -22,6 +22,7 @@ NDCVB_API_SCHEMA: Final = "hapax.ndcvb.phase0_detection_result.v1"
 NDCVB_PRODUCT_SURFACE_ID: Final = "ndcvb-b2b-api-phase0-harness"
 NDCVB_PHASE: Final = "phase0_packaging_only"
 NDCVB_REQUIRED_BATTERY_GATE_COUNT: Final = 4
+_DEFAULT_PURPOSE: Final = "operator_internal_phase0_packaging"
 _REFERENCE_RE: Final = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s]+$")
 
 _REQUEST_KEYS: Final = frozenset(
@@ -78,7 +79,8 @@ _FORBIDDEN_REQUEST_KEYS: Final = frozenset(
 )
 _REQUEST_NEXT_ACTION: Final = (
     "next_action=send only request_id, artifact_ref, evidence_ref, optional run_ref, "
-    "and optional/defaulted purpose; do not pass raw payload, customer, tenant, or user data"
+    f"and optional purpose exactly {_DEFAULT_PURPOSE!r}; do not pass raw payload, "
+    "customer, tenant, or user data"
 )
 _VERDICT_NEXT_ACTION: Final = (
     "next_action=send only NDCVB verdict-shaped fields: correspondent, kind, bound, "
@@ -121,7 +123,7 @@ class NDCVBPackagingRequest:
     artifact_ref: str
     evidence_ref: str
     run_ref: str | None = None
-    purpose: str = "operator_internal_phase0_packaging"
+    purpose: str = _DEFAULT_PURPOSE
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "request_id", _required_text(self.request_id, "request_id"))
@@ -139,7 +141,7 @@ class NDCVBPackagingRequest:
         object.__setattr__(
             self,
             "purpose",
-            _optional_text(self.purpose, "purpose") or "operator_internal_phase0_packaging",
+            _purpose(self.purpose),
         )
 
     @classmethod
@@ -157,8 +159,7 @@ class NDCVBPackagingRequest:
             artifact_ref=_required_text(raw.get("artifact_ref"), "artifact_ref"),
             evidence_ref=_required_text(raw.get("evidence_ref"), "evidence_ref"),
             run_ref=_optional_text(raw.get("run_ref"), "run_ref"),
-            purpose=_optional_text(raw.get("purpose"), "purpose")
-            or "operator_internal_phase0_packaging",
+            purpose=_purpose(raw.get("purpose")),
         )
 
     def to_api(self) -> dict[str, Any]:
@@ -545,6 +546,20 @@ def _optional_reference(value: Any, field: str) -> str | None:
     if text is None:
         return None
     _assert_reference(text, field)
+    return text
+
+
+def _purpose(value: Any) -> str:
+    text = _optional_text(value, "purpose")
+    if text is None:
+        return _DEFAULT_PURPOSE
+    if text != _DEFAULT_PURPOSE:
+        raise NDCVBApiHarnessError(
+            _with_next_action(
+                f"purpose must be omitted or exactly {_DEFAULT_PURPOSE!r}",
+                _REQUEST_NEXT_ACTION,
+            )
+        )
     return text
 
 
