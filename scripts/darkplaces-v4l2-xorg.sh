@@ -274,7 +274,7 @@ DISPLAY="$DISPLAY_NUM" SDL_VIDEODRIVER=x11 "$DARKPLACES_BIN" \
     +cl_sidespeed 360 \
     +cl_upspeed 240 \
     +hapax_live_texture_enable 1 \
-    +hapax_live_texture_name progs/aoa_sphere.mdl_0 \
+    +hapax_live_texture_name aoa_media_spher \
     +hapax_live_texture_path /dev/shm/hapax-compositor/quake-live-yt.bgra \
     +hapax_live_texture_width 2048 \
     +hapax_live_texture_height 1024 \

@@ -378,24 +378,14 @@ def paint_scanlines(
     alpha: float = SCANLINE_ALPHA,
     row_height_px: float = 16.0,
 ) -> None:
-    """Paint faint horizontal scanlines — CRT raster hint.
+    """Retired — scanlines are decorative substrate (operator 2026-06-21: "no
+    grid panels at all"; a ward shows only its content).
 
-    Every ``every_n_rows`` rows of ``row_height_px`` pixels, draw a 1 px
-    horizontal line at the given low alpha. Generalised from the HARDM
-    scanline pass. ``role_rgba``'s RGB is used; its alpha is overridden
-    by the ``alpha`` kwarg so callers can pass a palette role directly
-    without having to clone it.
+    Follows the same retirement as ``paint_emissive_bg`` / ``paint_bitchx_bg``:
+    the CRT scanline overlay is container chrome, not content, so it is now a
+    no-op. Signature preserved for back-compat; all callers inherit zero-chrome.
     """
-    r, g, b, _ = role_rgba
-    cr.save()
-    cr.set_source_rgba(r, g, b, alpha)
-    row = 0
-    while row < int(h // max(1.0, row_height_px)):
-        y = row * row_height_px + row_height_px / 2.0
-        cr.rectangle(0, y, w, 1.0)
-        cr.fill()
-        row += every_n_rows
-    cr.restore()
+    _ = (cr, w, h, role_rgba, every_n_rows, alpha, row_height_px)  # retained; unused
 
 
 def stance_hz(stance: str, *, fallback: float = 1.0) -> float:

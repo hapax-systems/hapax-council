@@ -19,12 +19,12 @@ DEFAULT_GAME_DATA = Path.home() / ".darkplaces/screwm/data"
 DEFAULT_CONTROLS = Path("/dev/shm/hapax-compositor/aoa-face-controls.json")
 DEFAULT_WIDTH = 2048
 DEFAULT_HEIGHT = 2048
-DEFAULT_COLUMNS = 32
-DEFAULT_CELL_SIZE = 64
+DEFAULT_COLUMNS = 64
+DEFAULT_CELL_SIZE = 32
 DEFAULT_FPS = 4.0
-FACE_COUNT = 1024
-GEOMETRY_REVISION = "aoa-regular-tetrix-v7-30pct-larger-perfect-fit-oarb"
-LEAF_FACE_EDGE_UNITS = 105.46
+FACE_COUNT = 4096
+GEOMETRY_REVISION = "aoa-regular-tetrix-v8-depth5-4096-faces-flat-oarb"
+LEAF_FACE_EDGE_UNITS = 131.8
 FACE_OPERABILITY_CONTRACT = "stable-independent-control-per-rendered-fractal-face"
 
 
@@ -202,7 +202,12 @@ def _face_color(face_index: int, now: float, scalars: dict[str, float]) -> tuple
         scalars["visual_color"],
         scalars["visual_feedback"],
     )
-    gain = 0.48 + pressure * 0.34 + scalars["active_ratio"] * 0.12
+    # gain raised 2026-06-21: the lattice now renders EF_FULLBRIGHT (unlit emissive),
+    # so the atlas IS the only brightness source — the old 0.48 idle gain left the
+    # wireframe below the visible threshold (a dark void). 0.90 makes the facet EDGES
+    # read (~200) as a luminous wireframe while the FILL (x0.16) stays dark. alpha-over
+    # caps at the per-layer value, so even face-on this stays a wireframe, not white.
+    gain = 0.90 + pressure * 0.20 + scalars["active_ratio"] * 0.08
     wave_a = 0.5 + 0.5 * math.sin(phase + family * 1.71)
     wave_b = 0.5 + 0.5 * math.sin(phase * 1.37 + family * 2.03)
     wave_c = 0.5 + 0.5 * math.sin(phase * 0.73 + family * 2.77)
@@ -323,7 +328,10 @@ def render_atlas(
     if width != columns * cell_size or height != columns * cell_size:
         raise ValueError("AoA atlas dimensions must be columns * cell_size square")
     if columns * columns != FACE_COUNT:
-        raise ValueError("AoA face atlas must expose exactly 1024 cells at depth 4")
+        raise ValueError(
+            f"AoA face atlas must expose exactly {FACE_COUNT} cells (columns^2); "
+            f"got columns={columns} -> {columns * columns}"
+        )
 
     scalars = _drift_scalars(game_data)
     face_controls = load_face_controls(controls)
@@ -355,7 +363,7 @@ def render_atlas(
         "columns": columns,
         "cell_size": cell_size,
         "face_count": FACE_COUNT,
-        "fractal_depth": 4,
+        "fractal_depth": 5,
         "leaf_face_edge_units": LEAF_FACE_EDGE_UNITS,
         "atlas_contract": "one-live-control-cell-per-rendered-fractal-face",
         "face_operability_contract": FACE_OPERABILITY_CONTRACT,

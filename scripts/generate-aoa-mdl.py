@@ -14,19 +14,28 @@ import math
 import struct
 from pathlib import Path
 
-AOA_GEOMETRY_REVISION = "aoa-regular-tetrix-v7-30pct-larger-perfect-fit-oarb"
-DEPTH = 4
+AOA_GEOMETRY_REVISION = "aoa-regular-tetrix-v8-depth5-4096-faces-flat-oarb"
+DEPTH = 5
 AOA_LEAF_FACE_EDGE_UNITS = 48
 AOA_ITERATION_SCALE_MULTIPLIER = 2.197
 BASE_SCALE = AOA_LEAF_FACE_EDGE_UNITS * (2**DEPTH)
-SCALE = BASE_SCALE * AOA_ITERATION_SCALE_MULTIPLIER
+# Operator 2026-06-20: AoA/OARB enlarged 2.5x (vs the homage wards' 2x). Scales
+# the tetrix and the inscribed OARB sphere together, preserving the perfect fit.
+# Operator 2026-06-21: scaled to FIT the room — at 2.5x the depth-5 circumradius
+# (6716u) exceeds the max camera standoff (~3545u to the south wall), so the full
+# tetrahedron silhouette was unframeable. 0.9x -> circumradius 2418u, void insphere
+# 806u, framed from a 3045u external standoff at FOV 90 with margin.
+AOA_DISPLAY_SCALE = 0.9
+SCALE = BASE_SCALE * AOA_ITERATION_SCALE_MULTIPLIER * AOA_DISPLAY_SCALE
 ATTENDANT_SPHERE_RADIUS = math.sqrt(6.0) / 12.0
 AOA_SPHERE_MODEL_SCALE = 1.0
 ATTENDANT_SPHERE_CLEARANCE_RATIO = 1.0
 MEDIA_SPHERE_SEGMENTS = 64
 MEDIA_SPHERE_RINGS = 32
-AOA_FACE_ATLAS_COLUMNS = 32
-AOA_FACE_ATLAS_CELL_SIZE = 64
+# Depth-5 has 4096 leaf faces (4·4^5). Keep the atlas at 2048² by halving the
+# cell to 32px and doubling the columns to 64 → a 64×64 grid of 32px cells.
+AOA_FACE_ATLAS_COLUMNS = 64
+AOA_FACE_ATLAS_CELL_SIZE = 32
 AOA_SKIN_W = AOA_FACE_ATLAS_COLUMNS * AOA_FACE_ATLAS_CELL_SIZE
 AOA_SKIN_H = AOA_FACE_ATLAS_COLUMNS * AOA_FACE_ATLAS_CELL_SIZE
 MEDIA_SPHERE_SKIN_W = 2048
@@ -488,21 +497,10 @@ def aoa_skin_pixels(width: int, height: int) -> bytes:
 
 
 def media_sphere_skin_pixels(width: int, height: int) -> bytes:
-    """Placeholder only; live BGRA upload replaces this skin at runtime."""
-    pixels = bytearray()
-    for y in range(height):
-        for x in range(width):
-            equator = abs(y - height * 0.5) < 2
-            meridian = x % max(1, width // 16) < 2
-            if x < 2 or y < 2 or x >= width - 2 or y >= height - 2:
-                pixels.append(245)
-            elif equator or meridian:
-                pixels.append(236)
-            elif (x * 7 + y * 11) % 29 < 5:
-                pixels.append(198)
-            else:
-                pixels.append(74 + ((x * 5 + y * 3) % 62))
-    return bytes(pixels)
+    """Placeholder only; live BGRA upload replaces this skin at runtime.
+    DIAGNOSTIC 2026-06-20: solid palette index 251 — if the OARB renders solid,
+    the MDL live-texture is NOT overriding the skin (root-cause confirmation)."""
+    return bytes([251]) * (width * height)
 
 
 def write_mdl(

@@ -598,12 +598,6 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
             self._render_idle_scaffold(cr, canvas_w, canvas_h, t, min(0.55, alpha))
             return
 
-        cr.save()
-        cr.set_source_rgba(0.02, 0.02, 0.05, 0.82 * alpha)
-        cr.rectangle(0, 0, canvas_w, canvas_h)
-        cr.fill()
-        cr.restore()
-
         rects = _layout_for_count(len(panes), canvas_w, canvas_h)
         for pane, rect in zip(panes, rects, strict=False):
             self._render_text_pane(cr, rect, pane, alpha, t)
@@ -616,85 +610,14 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         t: float,
         alpha: float,
     ) -> None:
-        """Render a non-sensitive idle substrate when no pane can be shown."""
-        import cairo
+        """Render a non-sensitive idle substrate when no pane can be shown.
 
-        from agents.studio_compositor.homage.rendering import active_package
-
-        pkg = active_package()
-        bg = pkg.palette.background
-        muted = pkg.palette.muted
-        bright = pkg.palette.bright
-        accent = pkg.palette.accent_cyan
-        w = max(1, canvas_w)
-        h = max(1, canvas_h)
-        a = max(0.0, min(1.0, alpha))
-
-        cr.save()
-        cr.rectangle(0, 0, w, h)
-        cr.clip()
-        grad = cairo.LinearGradient(0, 0, w, h)
-        grad.add_color_stop_rgba(0.0, bg[0] * 0.42, bg[1] * 0.42, bg[2] * 0.56, 0.84 * a)
-        grad.add_color_stop_rgba(
-            0.58,
-            muted[0] * 0.32,
-            muted[1] * 0.34,
-            muted[2] * 0.38,
-            0.72 * a,
-        )
-        grad.add_color_stop_rgba(
-            1.0,
-            accent[0] * 0.18,
-            accent[1] * 0.20,
-            accent[2] * 0.24,
-            0.62 * a,
-        )
-        cr.set_source(grad)
-        cr.paint()
-
-        step = max(18.0, min(w, h) / 6.0)
-        cr.set_line_width(max(1.0, min(w, h) * 0.006))
-        for idx in range(-4, int((w + h) / step) + 5):
-            phase = _idle_phase(t, idx + 7)
-            cr.set_source_rgba(
-                accent[0],
-                accent[1],
-                accent[2],
-                (0.06 + 0.11 * phase) * a,
-            )
-            x0 = idx * step - h
-            cr.move_to(x0, h)
-            cr.line_to(x0 + h + w, 0)
-            cr.stroke()
-
-        cr.set_line_width(max(1.0, min(w, h) * 0.010))
-        for idx in range(5):
-            pulse = _idle_phase(t, idx)
-            inset = 8.0 + idx * max(8.0, min(w, h) * 0.045)
-            if inset * 2 >= min(w, h):
-                break
-            cr.set_source_rgba(
-                bright[0],
-                bright[1],
-                bright[2],
-                (0.09 + 0.11 * pulse) * a,
-            )
-            cr.rectangle(inset, inset, max(1.0, w - inset * 2), max(1.0, h - inset * 2))
-            cr.stroke()
-
-        band_h = max(2.0, h * 0.035)
-        for idx in range(7):
-            pulse = _idle_phase(t, idx + 12)
-            x = (t * 18.0 + idx * w * 0.19) % (w + 80.0) - 80.0
-            cr.set_source_rgba(
-                muted[0],
-                muted[1],
-                muted[2],
-                (0.16 + 0.18 * pulse) * a,
-            )
-            cr.rectangle(x, h - (idx + 1) * band_h * 1.45, 54.0 + pulse * 42.0, band_h)
-            cr.fill()
-        cr.restore()
+        All decorative substrate (gradient wash, diagonal lattice, concentric
+        framing rectangles, scrolling bands) was removed per the operator
+        directive (2026-06-21, "no grid panels at all") so the idle ward shows
+        nothing rather than a decorative backdrop on the void.
+        """
+        del cr, canvas_w, canvas_h, t, alpha
 
     # ── Segment state reader ─────────────────────────────────────────
 
@@ -813,24 +736,6 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
         panel_x = margin
         panel_y = canvas_h - panel_h - margin
 
-        # Opaque background panel with rounded corners
-        radius = 12.0
-        cr.save()
-        cr.new_sub_path()
-        cr.arc(panel_x + panel_w - radius, panel_y + radius, radius, -1.5708, 0)
-        cr.arc(panel_x + panel_w - radius, panel_y + panel_h - radius, radius, 0, 1.5708)
-        cr.arc(panel_x + radius, panel_y + panel_h - radius, radius, 1.5708, 3.1416)
-        cr.arc(panel_x + radius, panel_y + radius, radius, 3.1416, 4.7124)
-        cr.close_path()
-        # Fully opaque dark background for legibility
-        cr.set_source_rgba(0.03, 0.03, 0.06, 0.96 * alpha)
-        cr.fill_preserve()
-        # Subtle border
-        cr.set_source_rgba(bright[0], bright[1], bright[2], 0.25 * alpha)
-        cr.set_line_width(1.5)
-        cr.stroke()
-        cr.restore()
-
         text_x = panel_x + pad
         text_y = panel_y + pad
         max_w = max(1, panel_w - pad * 2)
@@ -937,19 +842,7 @@ class CodingActivityReveal(HomageTransitionalSource, ActivityRevealMixin):
 
         x, y, w, h = rect
         pkg = active_package()
-        bg = pkg.palette.background
         muted = pkg.palette.muted
-        bright = pkg.palette.bright
-
-        cr.save()
-        cr.set_source_rgba(bg[0], bg[1], bg[2], min(bg[3], 0.88) * alpha)
-        cr.rectangle(x, y, w, h)
-        cr.fill()
-        cr.set_line_width(2.0)
-        cr.set_source_rgba(bright[0], bright[1], bright[2], 0.65 * alpha)
-        cr.rectangle(x, y, w, h)
-        cr.stroke()
-        cr.restore()
 
         self._render_reflection_layer(cr, rect, pane, alpha, t)
 

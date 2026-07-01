@@ -227,10 +227,6 @@ class VinylPlatterCairoSource(HomageTransitionalSource):
         # Platter disk (camera frame, circle-cropped, motion-blurred).
         self._draw_platter_disk(cr, cx, cy, radius, rate, frame_path)
 
-        # HOMAGE palette tint overlay — multiplicative wash in the
-        # package's identity-accent hue.
-        self._draw_homage_tint(cr, cx, cy, radius, pkg)
-
         # BitchX border + cardinal ``»»»`` markers.
         self._draw_border(cr, canvas_w, canvas_h, pkg)
 
@@ -271,11 +267,8 @@ class VinylPlatterCairoSource(HomageTransitionalSource):
         cr.clip()
 
         if surface is None:
-            # No frame yet — paint a muted grey placeholder so the disk
-            # reads correctly and the blur/tint/border still render.
-            cr.set_source_rgba(0.2, 0.2, 0.2, 1.0)
-            cr.rectangle(cx - radius, cy - radius, 2 * radius, 2 * radius)
-            cr.fill()
+            # No frame yet — leave the disk transparent so the void shows
+            # through (operator directive 2026-06-21: no decorative substrate).
             cr.restore()
             return
 
@@ -309,30 +302,6 @@ class VinylPlatterCairoSource(HomageTransitionalSource):
             cr.paint_with_alpha(sample_alpha)
             cr.restore()
 
-        cr.restore()
-
-    @staticmethod
-    def _draw_homage_tint(
-        cr: cairo.Context,
-        cx: float,
-        cy: float,
-        radius: float,
-        pkg: Any,
-    ) -> None:
-        """Overlay a HOMAGE-accent wash bounded by the platter disk.
-
-        Uses the package's ``identity_colour_role`` (BitchX: ``bright``)
-        at modest alpha so the camera frame stays legible while the
-        platter reads as tinted.
-        """
-        role = pkg.grammar.identity_colour_role
-        r, g, b, _a = pkg.resolve_colour(role)
-        cr.save()
-        cr.arc(cx, cy, radius, 0.0, 2.0 * math.pi)
-        cr.clip()
-        cr.set_source_rgba(r, g, b, 0.22)
-        cr.rectangle(cx - radius, cy - radius, 2 * radius, 2 * radius)
-        cr.fill()
         cr.restore()
 
     @staticmethod

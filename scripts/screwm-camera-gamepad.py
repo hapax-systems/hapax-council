@@ -36,9 +36,13 @@ MANUAL_HOLD_SECONDS = 120.0
 EXTERNAL_MANUAL_STALE_SECONDS = MANUAL_HOLD_SECONDS
 STARTUP_INPUT_GRACE_SECONDS = 3.0
 MANUAL_ACTIVATE_THRESHOLD = 0.24
-CAMERA_X_BOUNDS = (-2040.0, 2040.0)
-CAMERA_Y_BOUNDS = (-2520.0, 1420.0)
-CAMERA_Z_BOUNDS = (-48.0, 820.0)
+# Match the grown room + the CSQC freecam clamps (wards.qc -3700/-4000/-48..1690).
+# The old (-2040,2040)/(-2520,1420)/(-48,820) box was sized for the pre-2026-06-20
+# small room and trapped the camera in a central cube it could not leave, unable to
+# reach the wall-mounted wards/cameras — the "useless / doesn't respond" symptom.
+CAMERA_X_BOUNDS = (-3700.0, 3700.0)
+CAMERA_Y_BOUNDS = (-4000.0, 3000.0)
+CAMERA_Z_BOUNDS = (-48.0, 1690.0)
 
 AXIS_MAPPINGS = {
     # Alternate routes seen through some SDL/XInput bridges:
@@ -78,7 +82,10 @@ def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def normalize_axis(value: int, *, deadzone: float = 0.12) -> float:
+def normalize_axis(value: int, *, deadzone: float = 0.18) -> float:
+    # Deadzone raised 0.12 -> 0.18 (2026-06-20): the operator's left stick rests at
+    # ~0.14 (hardware drift), which leaked past the old 0.12 band and made the camera
+    # self-creep. 0.18 absorbs the measured drift with margin.
     norm = max(-1.0, min(1.0, value / 32767.0))
     if abs(norm) < deadzone:
         return 0.0

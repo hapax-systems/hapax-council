@@ -14,7 +14,7 @@ Environment=RUST_LOG=info
 Environment=HAPAX_SCREWM_DRIFT_GPU=5060
 # Comma list of GPU-drifted slots: name:WxH[:intensity]. Matching producer
 # units run in raw-output mode and leave these final BGRA files to this GPU owner.
-Environment=HAPAX_SCREWM_DRIFT_SLOTS=yt:2048x1024:1.6:sphere-front:1820x1024:0c0b0d,cam-brio-operator:1280x720,cam-brio-room:1280x720,cam-brio-synths:1280x720,cam-c920-desk:1280x720,cam-c920-room:1280x720,cam-c920-overhead:1280x720,ward-atlas:2048x2304,ticker-grounding:1344x176,ticker-precedent:1344x176,ticker-chronicle:1344x176,reverie:960x540,aoa-atlas:2048x2048:2.25,ir-brio-operator:340x340,ir-brio-room:340x340,ir-brio-synths:340x340
+Environment=HAPAX_SCREWM_DRIFT_SLOTS=yt:2048x1024:1.6:sphere-front:1820x1024:0c0b0d,cam-brio-operator:1280x720,cam-brio-room:1280x720,cam-brio-synths:1280x720,cam-c920-desk:1280x720,cam-c920-room:1280x720,cam-c920-overhead:1280x720,ward-atlas:2048x2304,ticker-grounding:1344x176,ticker-precedent:1344x176,ticker-chronicle:1344x176,reverie:960x540,aoa-atlas:2048x2048:0.01,ir-brio-operator:340x340,ir-brio-room:340x340,ir-brio-synths:340x340
 Environment=HAPAX_SCREWM_DRIFT_GAME_DATA=%h/.darkplaces/screwm/data
 Environment=HAPAX_SCREWM_DRIFT_FPS=20
 Environment=HAPAX_SCREWM_DRIFT_FULL_HASH_EVERY_N=10

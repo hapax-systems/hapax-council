@@ -29,7 +29,15 @@ void() spawn_aoa =
     aoa_common_visuals(aoa_entity);
     setmodel(aoa_entity, "progs/aoa.mdl");
     aoa_entity.scale = AOA_MODEL_SCALE;
-    aoa_entity.alpha = 0.16;
+    // 2026-06-21: the lattice is an EMISSIVE atlas wireframe — it must display its
+    // (now dark, sparse) atlas as glow, NOT be lit by the AoA's dynamic lights.
+    // With EF_DYNAMICMODELLIGHT the lights brightened the faces so face-on layer
+    // accumulation still reached white even after EF_ADDITIVE was removed. Unlit.
+    aoa_entity.effects = EF_DOUBLESIDED + EF_FULLBRIGHT;
+    // Operator 2026-06-20: at 2.5x the additive lattice accumulated to solid white
+    // and occluded the OARB/YT. Drop the alpha + drop EF_ADDITIVE so the lattice
+    // alpha-blends (translucent) instead of summing to white over the OARB sphere.
+    aoa_entity.alpha = 0.12;
     // Cool near-neutral tint (was saturated pink) so the AoA reads as a
     // desaturated luminous-edge body, not a magenta fill. Per-facet hue now comes
     // (subtly) from the desaturated atlas fill, not a global pink colormod.
@@ -38,7 +46,9 @@ void() spawn_aoa =
     aoa_entity.glow_color = 236;
     aoa_entity.glow_size = 0;
     aoa_entity.glow_trail = 0;
-    aoa_entity.effects = aoa_entity.effects + EF_ADDITIVE;
+    // EF_ADDITIVE removed 2026-06-20: additive accumulation of the 2.5x lattice
+    // blew the center to solid white and hid the OARB. Alpha blend instead.
+    // aoa_entity.effects = aoa_entity.effects + EF_ADDITIVE;
 
     aoa_sphere_entity = spawn();
     aoa_sphere_entity.classname = "aoa_media_sphere";
@@ -46,12 +56,17 @@ void() spawn_aoa =
     setorigin(aoa_sphere_entity, AOA_SPHERE_CENTER);
     setmodel(aoa_sphere_entity, "progs/aoa_sphere.mdl");
     aoa_sphere_entity.scale = AOA_SPHERE_MODEL_SCALE;
-    aoa_sphere_entity.alpha = 1.0;
+    aoa_sphere_entity.alpha = 0;  // hidden 2026-06-20: the OARB now renders via the BSP billboard (aoa_attendant_sphere_face); the 8-bit/compressed MDL skin format-garbled the live BGRA feed
     aoa_sphere_entity.colormod = '1.0 1.0 1.0';
     aoa_sphere_entity.glowmod = '0.35 0.25 0.10';
     aoa_sphere_entity.glow_color = 236;
     aoa_sphere_entity.glow_size = 0;
     aoa_sphere_entity.screwm_spin_y = 0;
+    // Operator 2026-06-20: the OARB was washed by scene lighting + the colored
+    // dynamic lights (EF_DYNAMICMODELLIGHT from aoa_common_visuals) + the diagnostic
+    // screen postprocess. Override effects: fullbright + doublesided, NO dynamic
+    // model light, so the live YT skin shows directly and legibly.
+    aoa_sphere_entity.effects = EF_DOUBLESIDED + EF_FULLBRIGHT;
 };
 
 void() spawn_ambient_sounds =

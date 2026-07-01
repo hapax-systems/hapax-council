@@ -175,33 +175,6 @@ class ResearchMarkerFrameSource(HomageTransitionalSource):
         banner_h = int(canvas_h * 0.34)
         banner_y = (canvas_h - banner_h) // 2
 
-        # Background rectangle
-        cr.save()
-        cr.set_source_rgba(
-            BANNER_BG_COLOR[0],
-            BANNER_BG_COLOR[1],
-            BANNER_BG_COLOR[2],
-            BANNER_OPACITY,
-        )
-        cr.rectangle(0, banner_y, canvas_w, banner_h)
-        cr.fill()
-        cr.restore()
-
-        # Top + bottom accent stripes
-        stripe_h = max(4, int(banner_h * 0.03))
-        cr.save()
-        cr.set_source_rgba(
-            BANNER_ACCENT_COLOR[0],
-            BANNER_ACCENT_COLOR[1],
-            BANNER_ACCENT_COLOR[2],
-            BANNER_OPACITY,
-        )
-        cr.rectangle(0, banner_y, canvas_w, stripe_h)
-        cr.fill()
-        cr.rectangle(0, banner_y + banner_h - stripe_h, canvas_w, stripe_h)
-        cr.fill()
-        cr.restore()
-
         # Header text
         header_text = "CONDITION CHANGE"
         header_font_size = max(12, int(canvas_h * HEADER_FONT_SIZE_RATIO))

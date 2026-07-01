@@ -344,26 +344,7 @@ class ResearchInstrumentDashboardCairoSource(HomageTransitionalSource):
         h: int,
         moksha: HomagePackage,
     ) -> None:
-        """Outer Moksha-chrome bracket frame + header label."""
-        # Soft dark backing — same alpha as Moksha's background colour
-        # so the shader surface shows through.
-        bg = _resolve(moksha, "background")
-        cr.set_source_rgba(*bg)
-        cr.rectangle(0, 0, w, h)
-        cr.fill()
-
-        # Steel-grey bracket border.
-        chrome = _resolve(moksha, "muted")
-        cr.set_source_rgba(*chrome)
-        cr.set_line_width(FRAME_BORDER_PX)
-        cr.rectangle(
-            FRAME_BORDER_PX / 2,
-            FRAME_BORDER_PX / 2,
-            w - FRAME_BORDER_PX,
-            h - FRAME_BORDER_PX,
-        )
-        cr.stroke()
-
+        """Header label only — no frame border (operator 2026-06-21: no grid panels)."""
         # Header label — Moksha curly bracket grammar.
         from agents.studio_compositor.text_render import (
             TextStyle,
@@ -380,11 +361,6 @@ class ResearchInstrumentDashboardCairoSource(HomageTransitionalSource):
         # cell exactly to source bounds, so edge-straddling text is lost.
         text_x = (w - text_w) / 2
         text_y = FRAME_BORDER_PX + 2.0
-        # Gap-fill behind the label so the bracket chrome doesn't show
-        # through the glyphs.
-        cr.set_source_rgba(*bg)
-        cr.rectangle(text_x - 6, text_y, text_w + 12, text_h)
-        cr.fill()
         render_text(cr, style, x=text_x, y=text_y)
 
     def _render_grid(

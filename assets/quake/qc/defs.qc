@@ -93,7 +93,7 @@ entity camera_entity;
 
 vector AOA_CENTER = '0 -555 224';
 vector AOA_SPHERE_CENTER = '0 -555 224';
-vector CAMERA_REVIEW_POS = '0 -2380 164';
+vector CAMERA_REVIEW_POS = '0 -3600 224';
 vector CAMERA_REVIEW_TARGET = '0 -555 224';
 float AOA_MODEL_SCALE = 1.3;
 // OARB is the exact insphere of the AoA central void. The lattice must remain
