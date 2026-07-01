@@ -154,7 +154,7 @@ def bind_durable_payment_events(
 
     try:
         rail_module = _load_rail_module()
-        rail_results = rail_module.realized_returns_from_durable_payment_events(path)
+        rail_results = tuple(rail_module.realized_returns_from_durable_payment_events(path))
     except (AttributeError, ImportError, ModuleNotFoundError) as exc:
         return _dark_result(
             reason="missing_or_invalid_rail_reader",
@@ -170,7 +170,7 @@ def bind_durable_payment_events(
             detail=str(exc),
         )
     return _score_rail_results(
-        tuple(rail_results),
+        rail_results,
         ladder,
         ruler_hash_commit=ruler_hash_commit,
         source_kind="durable_payment_events",
@@ -307,14 +307,19 @@ def _measurement_from_rail_results(rail_results: tuple[Any, ...]) -> Mapping[str
         observed_at = getattr(measurement, "observed_at", None)
         if observed_at is None:
             continue
+        row_refs = (
+            _string_tuple(getattr(measurement, "evidence_refs", ()))
+            + _string_tuple(getattr(measurement, "corroborated_by", ()))
+            + _string_tuple(getattr(result, "evidence_refs", ()))
+        )
+        if not row_refs:
+            continue
         try:
             values.append(float(value))
         except (TypeError, ValueError):
             continue
         observed_values.append(observed_at)
-        evidence_refs.extend(_string_tuple(getattr(measurement, "evidence_refs", ())))
-        evidence_refs.extend(_string_tuple(getattr(measurement, "corroborated_by", ())))
-        evidence_refs.extend(_string_tuple(getattr(result, "evidence_refs", ())))
+        evidence_refs.extend(row_refs)
 
     refs = tuple(dict.fromkeys(evidence_refs))
     if not values or not observed_values or not refs:

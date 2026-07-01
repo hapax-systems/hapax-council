@@ -257,6 +257,23 @@ def test_rail_result_sequence_ignores_values_without_observed_at() -> None:
     assert result.evidence_refs == ("rail:event:complete",)
 
 
+def test_rail_result_sequence_ignores_values_without_evidence_refs() -> None:
+    m_binding = _binding_module()
+
+    result = m_binding.bind_m_result(
+        (
+            _rail_result(value=12.5, evidence_refs=("rail:event:complete",)),
+            _rail_result(value=99.0, evidence_refs=()),
+        ),
+        _ladder(min_corroboration_count=1),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.LIT
+    assert result.score_result.measurement_value == 12.5
+    assert result.evidence_refs == ("rail:event:complete",)
+
+
 def test_empty_rail_result_sequence_fails_closed_as_missing_evidence() -> None:
     m_binding = _binding_module()
 
@@ -352,6 +369,32 @@ def test_bind_durable_payment_events_invalid_stream_has_stream_guidance(
     assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.INVALID_RAIL_EVENT_STREAM
     assert "durable payment-event stream" in result.next_action
     assert "shared.mdlc_realized_return" not in result.next_action
+
+
+def test_bind_durable_payment_events_generator_iteration_error_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    m_binding = _binding_module()
+
+    def fake_reader(path: Path | str):
+        yield _rail_result(value=12.5, evidence_refs=("rail:event:1",))
+        raise ValueError("invalid event after first row")
+
+    monkeypatch.setattr(
+        m_binding,
+        "_load_rail_module",
+        lambda: SimpleNamespace(realized_returns_from_durable_payment_events=fake_reader),
+    )
+
+    result = m_binding.bind_durable_payment_events(
+        "/tmp/payment-events.jsonl",
+        _ladder(),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.INVALID_RAIL_EVENT_STREAM
+    assert "invalid event after first row" in result.reason
 
 
 def test_unsupported_shape_fails_closed() -> None:
