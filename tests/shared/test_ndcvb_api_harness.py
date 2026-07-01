@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import traceback
+
 import pytest
 
 import shared.ndcvb_api_harness as harness
@@ -12,7 +14,6 @@ from shared.ndcvb_api_harness import (
     NDCVBPackagingRequest,
     package_ndcvb_detection_result,
 )
-from shared.segment_ndcvb_axis_b import ForbiddenAxisBVerdictError
 
 
 def _request() -> dict[str, str]:
@@ -224,12 +225,13 @@ def test_four_gate_battery_is_required_and_failures_hold_result() -> None:
 def test_battery_gate_ids_are_unique_and_have_provenance() -> None:
     duplicated = _gates()
     duplicated[1] = {**duplicated[1], "gate_id": "stimulus_capture"}
-    with pytest.raises(NDCVBApiHarnessError, match="must be unique"):
+    with pytest.raises(NDCVBApiHarnessError, match="must be unique") as exc:
         package_ndcvb_detection_result(
             request=_request(),
             verdicts=["sycophancy: corroborated@0.88"],
             battery_gates=duplicated,
         )
+    assert "stimulus_capture" not in str(exc.value)
 
     missing_provenance = _gates()
     missing_provenance[0] = {**missing_provenance[0], "provenance": []}
@@ -313,8 +315,13 @@ def test_forbidden_verdict_language_guard_remains_engine_owned() -> None:
             ],
             battery_gates=_gates(),
         )
-    assert isinstance(exc.value.__cause__, ForbiddenAxisBVerdictError)
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
     assert raw_rationale not in str(exc.value)
+    formatted = "".join(
+        traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    assert raw_rationale not in formatted
 
 
 def test_phase0_request_rejects_customer_data_or_raw_payload_fields() -> None:

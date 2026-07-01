@@ -98,11 +98,10 @@ _VERDICT_NEXT_ACTION: Final = (
     "tenant, or user data"
 )
 _BATTERY_NEXT_ACTION: Final = (
-    "next_action=provide exactly four canonical gate mappings "
-    "(stimulus_capture, counterfactual_probe, cross_context_consistency, "
-    "source_traceability) with boolean passed, confidence in [0.0, 1.0], non-empty "
-    "provenance refs, and optional local-only detail that is not returned by the "
-    "public envelope; do not pass raw payload, customer, tenant, or user data"
+    "next_action=provide exactly four documented canonical gate mappings with boolean "
+    "passed, confidence in [0.0, 1.0], non-empty provenance refs, and optional "
+    "local-only detail that is not returned by the public envelope; do not pass raw "
+    "payload, customer, tenant, or user data"
 )
 _TEXT_NEXT_ACTION: Final = "next_action=provide a non-empty string reference value"
 _REF_NEXT_ACTION: Final = (
@@ -269,15 +268,26 @@ def package_ndcvb_detection_result(
     request_record = _coerce_request(request)
     _validate_verdict_inputs(verdicts)
     gate_records = _coerce_battery_gates(battery_gates)
+    engine_report: Mapping[str, Any] | None = None
+    verdict_validation_failed = False
     try:
         engine_report = evaluate_ndcvb_axis_b(verdicts)
-    except AxisBNDCVBError as exc:
+    except AxisBNDCVBError:
+        verdict_validation_failed = True
+    if verdict_validation_failed:
         raise NDCVBApiHarnessError(
             _with_next_action(
                 "NDCVB verdict validation failed; Axis-B guard refused the verdict input",
                 _VERDICT_NEXT_ACTION,
             )
-        ) from exc
+        )
+    if engine_report is None:
+        raise NDCVBApiHarnessError(
+            _with_next_action(
+                "NDCVB verdict validation failed; Axis-B guard did not return a report",
+                _VERDICT_NEXT_ACTION,
+            )
+        )
     battery_report = _battery_report(gate_records)
     status = _status_for(engine_report=engine_report, battery_ok=battery_report["ok"])
     result_confidence = _result_confidence(engine_report)
@@ -418,7 +428,7 @@ def _coerce_battery_gates(
     if duplicate_ids:
         raise NDCVBApiHarnessError(
             _with_next_action(
-                "battery gate ids must be unique: " + ", ".join(duplicate_ids),
+                f"battery gate ids must be unique (duplicate_count={len(duplicate_ids)})",
                 _BATTERY_NEXT_ACTION,
             )
         )
