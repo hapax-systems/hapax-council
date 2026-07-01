@@ -2122,3 +2122,107 @@ class TestCognitionCarveoutParityGatesCutover:
         assert verdict["parity_ok"] is False  # the new cutover-gate term
         assert verdict["clean"] is False  # cutover BLOCKED on the parity break
         assert any("parity" in str(r).lower() for r in verdict["reasons"])
+
+
+class TestFileToplevelScopeAnchor:
+    """Regression for PR #4280: an in-scope edit to a SIBLING worktree's file must
+    resolve via the edited file's OWN repo/worktree toplevel, not just the hook
+    cwd. Without the file-toplevel anchor, a cross-worktree edit cannot match its
+    scope ref and is wrongly DENIED — the bug that generated the coord-grant chain
+    (a session rooted at the meta-workspace / primary worktree editing a --cns /
+    --review-witness lane worktree). Also pins the GIT_DIR/GIT_WORK_TREE hardening:
+    a hostile GIT_DIR must not redirect git discovery to an unrelated repo.
+    """
+
+    _GIT_IDENTITY = {
+        "GIT_AUTHOR_NAME": "test",
+        "GIT_AUTHOR_EMAIL": "test@test",
+        "GIT_COMMITTER_NAME": "test",
+        "GIT_COMMITTER_EMAIL": "test@test",
+    }
+
+    def _sibling_repo(self, tmp_path: Path, name: str, rel: str) -> Path:
+        repo = tmp_path / name
+        (repo / Path(rel).parent).mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text("# fixture\n")
+        env = {**os.environ, **self._GIT_IDENTITY}
+        for args in (
+            ["init", "-q"],
+            ["add", "-A"],
+            ["commit", "-q", "-m", "init"],
+        ):
+            subprocess.run(
+                ["git", *args],
+                cwd=str(repo),
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        return repo
+
+    def _vault_with_scope(self, home: Path, task_id: str, scope_ref: str) -> None:
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+        vault.mkdir(parents=True, exist_ok=True)
+        (vault / f"{task_id}-test-task.md").write_text(
+            f"""---
+type: cc-task
+task_id: {task_id}
+title: "Fixture cross-worktree task"
+status: in_progress
+assigned_to: alpha
+priority: normal
+parent_spec: {home / "parent-spec.md"}
+authority_case: CASE-TEST-001
+stage: S6_IMPLEMENTATION
+implementation_authorized: true
+source_mutation_authorized: true
+docs_mutation_authorized: true
+runtime_mutation_authorized: false
+route_metadata_schema: 1
+mutation_scope_refs:
+  - {scope_ref}
+created_at: 2026-04-20T00:00:00Z
+updated_at: 2026-04-20T00:00:00Z
+---
+
+# Fixture cross-worktree task
+"""
+        )
+        _write_claim(home, "alpha", task_id)
+
+    def test_sibling_worktree_edit_allowed_via_file_toplevel(self, tmp_path: Path) -> None:
+        # cwd = repo-a; the edited file lives in repo-b (a SIBLING worktree). The
+        # scope ref `src/module.py` can only match via the FILE's toplevel (repo-b),
+        # not the cwd's (repo-a). Without #4280's file_top anchor this is DENIED.
+        repo_a = self._sibling_repo(tmp_path, "repo-a", "src/module.py")
+        repo_b = self._sibling_repo(tmp_path, "repo-b", "src/module.py")
+        edit_file = repo_b / "src" / "module.py"
+        self._vault_with_scope(tmp_path, "xwork-001", "src/module.py")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(edit_file)}},
+            role="alpha",
+            home=tmp_path,
+            cwd=repo_a,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_hostile_git_dir_does_not_misresolve_scope(self, tmp_path: Path) -> None:
+        # Same cross-worktree edit, but GIT_DIR/GIT_WORK_TREE are hostile-pointed at
+        # repo-a. The env -u hardening in #4280 must strip them so git discovery
+        # proceeds from the edited file's dir (repo-b), not the hostile env.
+        repo_a = self._sibling_repo(tmp_path, "repo-a", "src/module.py")
+        repo_b = self._sibling_repo(tmp_path, "repo-b", "src/module.py")
+        edit_file = repo_b / "src" / "module.py"
+        self._vault_with_scope(tmp_path, "xwork-002", "src/module.py")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": str(edit_file)}},
+            role="alpha",
+            home=tmp_path,
+            cwd=repo_a,
+            extra_env={
+                "GIT_DIR": str(repo_a / ".git"),
+                "GIT_WORK_TREE": str(repo_a),
+            },
+        )
+        assert result.returncode == 0, result.stderr
