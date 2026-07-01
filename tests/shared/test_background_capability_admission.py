@@ -201,6 +201,54 @@ def test_background_model_call_refuses_without_platform_receipt(tmp_path: Path) 
     assert "provider_gateway_evidence_absent" in admission.denial_summary()
 
 
+def test_background_model_call_refuses_offered_unassigned_task(tmp_path: Path) -> None:
+    fields = _provider_task_fields()
+    fields["status"] = "offered"
+    fields["assigned_to"] = "unassigned"
+
+    admission = admit_background_capability(
+        capability_name="studio.scene_classifier.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        task_fields=fields,
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        authority_level="authoritative",
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is False
+    assert admission.policy_outcome is None
+    assert admission.reason_codes == ("inactive_task_status",)
+    assert "status=offered" in (admission.denied_reason or "")
+
+
+def test_background_runtime_fix_refuses_inactive_task_assignee(tmp_path: Path) -> None:
+    fields = _runtime_task_fields()
+    fields["assigned_to"] = None
+
+    admission = admit_background_capability(
+        capability_name="health_monitor.legacy_remediation_shell",
+        route_id="local_tool.local.worker",
+        task_fields=fields,
+        mutation_surface="runtime",
+        quality_floor="deterministic_ok",
+        authority_level="authoritative",
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is False
+    assert admission.policy_outcome is None
+    assert admission.reason_codes == ("inactive_task_assignee",)
+    assert "assigned_to=<absent>" in (admission.denied_reason or "")
+
+
 def test_background_model_call_refuses_when_task_surface_does_not_authorize_provider_spend(
     tmp_path: Path,
 ) -> None:

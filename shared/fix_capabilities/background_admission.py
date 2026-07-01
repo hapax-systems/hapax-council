@@ -54,6 +54,9 @@ _AUTHORITY_LEVEL_ORDER: dict[str, int] = {
     "authoritative": 2,
 }
 
+_ACTIVE_TASK_STATUSES: frozenset[str] = frozenset({"claimed", "in_progress", "pr_open"})
+_UNASSIGNED_VALUES: frozenset[str] = frozenset({"", "null", "none", "unassigned"})
+
 
 @dataclass(frozen=True)
 class BackgroundCapabilityAdmission:
@@ -215,6 +218,21 @@ def admit_background_capability(
             mutation_surface=mutation_surface,
             quality_floor=quality_floor,
             authority_level=authority_level,
+        )
+    lifecycle_blocker = _task_lifecycle_blocker(fields)
+    if lifecycle_blocker is not None:
+        reason, code = lifecycle_blocker
+        return _denied(
+            capability_name=capability_name,
+            route_id=normalized_route_id,
+            model_alias=model_alias,
+            denied_reason=reason,
+            reason_codes=(code,),
+            task_id=task_id,
+            authority_case=authority_case,
+            mutation_surface=mutation_surface,
+            quality_floor=quality_floor or _string_field(fields, "quality_floor"),
+            authority_level=authority_level or _string_field(fields, "authority_level"),
         )
     parent_spec = _string_field(fields, "parent_spec")
     if not parent_spec:
@@ -411,6 +429,22 @@ def _string_field(fields: Mapping[str, Any], key: str) -> str | None:
     if not text or text in {"null", "None"}:
         return None
     return text
+
+
+def _task_lifecycle_blocker(fields: Mapping[str, Any]) -> tuple[str, str] | None:
+    status = (_string_field(fields, "status") or "").lower()
+    assigned_to = (_string_field(fields, "assigned_to") or "").lower()
+    if status not in _ACTIVE_TASK_STATUSES:
+        return (
+            f"inactive_task_status:status={status or '<absent>'}",
+            "inactive_task_status",
+        )
+    if assigned_to in _UNASSIGNED_VALUES:
+        return (
+            f"inactive_task_assignee:assigned_to={assigned_to or '<absent>'}",
+            "inactive_task_assignee",
+        )
+    return None
 
 
 def _invocation_authority_blocker(
