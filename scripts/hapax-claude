@@ -52,6 +52,74 @@ CLAUDE_TASK="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
 READONLY=0
 CLAUDE_EXTRA=()
 
+record_child_spawn_receipt() {
+  local task_id="$1"
+  local child_id="$2"
+  local shape="${3:-existing_agent_harness}"
+  local role="${4:-worker}"
+  local helper="$COUNCIL_DIR/scripts/hapax-child-spawn-receipt"
+  local receipt_exports=""
+
+  if [ -z "${HAPAX_PARENT_ROUTE_ENVELOPE:-}" ] && [ "${HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-0}" != "1" ]; then
+    return 0
+  fi
+  if [ ! -x "$helper" ]; then
+    echo "hapax-claude: parent route envelope required but helper is missing: $helper; next action: sync this worktree/branch so scripts/hapax-child-spawn-receipt exists, then relaunch through hapax-methodology-dispatch" >&2
+    exit 18
+  fi
+  if ! receipt_exports="$("$helper" --task "$task_id" --child-id "$child_id" --shape "$shape" --capability-role "$role")"; then
+    echo "hapax-claude: governed child spawn receipt refused for '$child_id'; see error above" >&2
+    exit 18
+  fi
+  if [ -n "$receipt_exports" ]; then
+    eval "$receipt_exports"
+    export HAPAX_PARENT_ROUTE_ENVELOPE HAPAX_CHILD_SPAWN_ENVELOPE HAPAX_CHILD_RECEIPT_REF HAPAX_CHILD_RECEIPT_ID
+  fi
+}
+
+claude_agent_subagent_gate_wired() {
+  local settings="${HAPAX_CLAUDE_SETTINGS_JSON:-$HOME/.claude/settings.json}"
+  [ -f "$settings" ] || return 1
+  python3 - "$settings" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1])
+try:
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+
+
+def matcher_covers_subagent_tools(value: object) -> bool:
+    matcher = str(value or "")
+    if matcher.strip() == "":
+        return True
+    return {"Agent", "Task"} <= set(re.split(r"[|,\s]+", matcher))
+
+
+for entry in ((data.get("hooks") or {}).get("PreToolUse") or []):
+    if not isinstance(entry, dict) or not matcher_covers_subagent_tools(entry.get("matcher")):
+        continue
+    for hook in entry.get("hooks") or []:
+        if isinstance(hook, dict) and "conductor-pre.sh" in str(hook.get("command") or ""):
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+require_claude_agent_subagent_gate() {
+  if [ -z "${HAPAX_PARENT_ROUTE_ENVELOPE:-}" ] && [ "${HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-0}" != "1" ]; then
+    return 0
+  fi
+  if ! claude_agent_subagent_gate_wired; then
+    echo "hapax-claude: parent route envelope requires Agent|Task PreToolUse conductor-pre.sh gate for Task-tool subagents; next action: add conductor-pre.sh to a Claude hooks.PreToolUse matcher covering Agent|Task, restart Claude, then relaunch through hapax-methodology-dispatch" >&2
+    exit 18
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --role|--session|--name)
@@ -337,6 +405,10 @@ EOF
 fi
 if [ -n "$CLAUDE_TASK" ]; then
   export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
+  if [ -n "${HAPAX_PARENT_ROUTE_ENVELOPE:-}" ]; then
+    require_claude_agent_subagent_gate
+  fi
+  record_child_spawn_receipt "$CLAUDE_TASK" "claude:$ROLE:$SESSION_UUID"
 fi
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
@@ -365,6 +437,11 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   printf 'export HAPAX_WORKTREE_ROLE=%q\n' "$ROLE"
   printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
   printf 'export HAPAX_IDLE_UPDATE_SECONDS=%q\n' "$HAPAX_IDLE_UPDATE_SECONDS"
+  printf 'export HAPAX_PARENT_ROUTE_ENVELOPE=%q\n' "${HAPAX_PARENT_ROUTE_ENVELOPE:-}"
+  printf 'export HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE=%q\n' "${HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-}"
+  printf 'export HAPAX_CHILD_SPAWN_ENVELOPE=%q\n' "${HAPAX_CHILD_SPAWN_ENVELOPE:-}"
+  printf 'export HAPAX_CHILD_RECEIPT_REF=%q\n' "${HAPAX_CHILD_RECEIPT_REF:-}"
+  printf 'export HAPAX_CHILD_RECEIPT_ID=%q\n' "${HAPAX_CHILD_RECEIPT_ID:-}"
   if [ -n "$CLAUDE_TASK" ]; then
     printf 'export HAPAX_METHODOLOGY_DISPATCH_TASK=%q\n' "$CLAUDE_TASK"
   fi

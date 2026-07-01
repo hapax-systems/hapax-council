@@ -29,6 +29,31 @@ headless_allowed() {
   [[ "${HAPAX_CODEX_HEADLESS_ALLOW:-}" == "1" || -e "$ENABLE_FILE" ]]
 }
 
+record_child_spawn_receipt() {
+  local task_id="$1"
+  local child_id="$2"
+  local shape="${3:-existing_agent_harness}"
+  local role="${4:-worker}"
+  local helper="$COUNCIL_DIR/scripts/hapax-child-spawn-receipt"
+  local receipt_exports=""
+
+  if [[ -z "${HAPAX_PARENT_ROUTE_ENVELOPE:-}" && "${HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-0}" != "1" ]]; then
+    return 0
+  fi
+  if [[ ! -x "$helper" ]]; then
+    echo "hapax-codex-headless: parent route envelope required but helper is missing: $helper; next action: sync this worktree/branch so scripts/hapax-child-spawn-receipt exists, then relaunch through hapax-methodology-dispatch" >&2
+    exit 18
+  fi
+  if ! receipt_exports="$("$helper" --task "$task_id" --child-id "$child_id" --shape "$shape" --capability-role "$role")"; then
+    echo "hapax-codex-headless: governed child spawn receipt refused for '$child_id'; see error above" >&2
+    exit 18
+  fi
+  if [[ -n "$receipt_exports" ]]; then
+    eval "$receipt_exports"
+    export HAPAX_PARENT_ROUTE_ENVELOPE HAPAX_CHILD_SPAWN_ENVELOPE HAPAX_CHILD_RECEIPT_REF HAPAX_CHILD_RECEIPT_ID
+  fi
+}
+
 relay_retired() {
   local relay_name="$1"
   local relay_file="${HAPAX_RELAY_DIR:-$HOME/.cache/hapax/relay}/$relay_name.yaml"
@@ -211,6 +236,11 @@ for name in (
     "HAPAX_PARENT_AGENT_INTERFACE",
     "HAPAX_PARENT_AGENT_NAME",
     "HAPAX_METHODOLOGY_DISPATCH_TASK",
+    "HAPAX_PARENT_ROUTE_ENVELOPE",
+    "HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE",
+    "HAPAX_CHILD_SPAWN_ENVELOPE",
+    "HAPAX_CHILD_RECEIPT_REF",
+    "HAPAX_CHILD_RECEIPT_ID",
     "HAPAX_IDLE_UPDATE_SECONDS",
     "PASSWORD_STORE_DIR",
 ):
@@ -446,6 +476,7 @@ if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
   (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
 fi
 export HAPAX_METHODOLOGY_DISPATCH_TASK="$CODEX_TASK"
+record_child_spawn_receipt "$CODEX_TASK" "codex-headless:$SESSION:$SESSION_UUID"
 
 # Keep the lane from becoming a credential sink (same scrub as hapax-codex).
 unset GITHUB_PERSONAL_ACCESS_TOKEN

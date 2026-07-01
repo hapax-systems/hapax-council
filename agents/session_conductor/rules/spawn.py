@@ -14,10 +14,20 @@ import yaml
 from agents.session_conductor.rules import HookEvent, HookResponse, RuleBase
 from agents.session_conductor.state import ChildSession, SessionState
 from agents.session_conductor.topology import TopologyConfig
+from shared.subagent_route_receipts import (
+    RecordedChildSpawn,
+    SpawnCapabilityShape,
+    SubagentRouteReceiptError,
+    admit_and_record_child_spawn,
+    child_request_for_parent,
+    load_parent_route_resource_envelope,
+    require_parent_envelope_path_from_env,
+)
 
 log = logging.getLogger(__name__)
 
 DEFAULT_SPAWNS_DIR = Path.home() / ".cache" / "hapax" / "conductor" / "spawns"
+DEFAULT_ORCHESTRATION_LEDGER_DIR = Path.home() / ".cache" / "hapax" / "orchestration"
 
 MANIFEST_CLAIM_WINDOW = timedelta(minutes=10)
 
@@ -31,11 +41,18 @@ _SPAWN_PATTERNS = [
 ]
 
 _EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
+_SUBAGENT_TOOLS = frozenset({"Agent", "Task"})
+_SUBAGENT_NAME_KEYS = ("subagent_type", "agent_name", "agent", "name")
 
 
 def detect_spawn_intent(text: str) -> bool:
     """Return True if the text expresses intent to spawn a child session."""
     return any(p.search(text) for p in _SPAWN_PATTERNS)
+
+
+def _slug(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9_.:-]+", "-", value.strip().lower()).strip("-")
+    return slug or "agent"
 
 
 class SpawnRule(RuleBase):
@@ -65,6 +82,14 @@ class SpawnRule(RuleBase):
     def _write_manifest(self, topic: str, context: str = "") -> Path:
         """Write a spawn manifest YAML and record the child in state."""
         child_id = str(uuid.uuid4())[:8]
+        recorded = self._record_child_receipt(
+            f"session-conductor:{child_id}",
+            shape=SpawnCapabilityShape.ORCHESTRATOR,
+            capability_id="session-conductor.spawn-rule",
+            capability_role="capability_aggregator",
+            proposed_child_capabilities=("session-conductor.child-session",),
+            require_parent=False,
+        )
         manifest: dict[str, object] = {
             "child_id": child_id,
             "parent_session": self._state.session_id,
@@ -74,6 +99,15 @@ class SpawnRule(RuleBase):
             "status": "pending",
             "blocked_patterns": self._blocked_patterns(),
         }
+        if recorded is not None:
+            manifest.update(
+                {
+                    "parent_route_envelope": recorded.parent_envelope_path,
+                    "child_spawn_envelope": recorded.child_envelope_path,
+                    "child_receipt_id": recorded.child_receipt_id,
+                    "child_receipt_ref": recorded.child_receipt_ref,
+                }
+            )
         manifest_path = self.spawns_dir / f"{child_id}.yaml"
         manifest_path.write_text(yaml.dump(manifest, default_flow_style=False))
         log.info("SpawnRule: wrote spawn manifest %s for topic '%s'", child_id, topic)
@@ -86,6 +120,56 @@ class SpawnRule(RuleBase):
         )
         self._state.children.append(child)
         return manifest_path
+
+    def _record_child_receipt(
+        self,
+        child_id: str,
+        *,
+        shape: SpawnCapabilityShape,
+        capability_id: str,
+        capability_role: str,
+        proposed_child_capabilities: tuple[str, ...] = (),
+        require_parent: bool,
+    ) -> RecordedChildSpawn | None:
+        """Bind a conductor child manifest to the active parent route/resource envelope."""
+        parent_path = require_parent_envelope_path_from_env()
+        if parent_path is None:
+            if require_parent:
+                raise SubagentRouteReceiptError("missing_parent_route_resource_receipt")
+            return None
+        parent = load_parent_route_resource_envelope(parent_path)
+        child = child_request_for_parent(
+            parent,
+            child_id=child_id,
+            shape=shape,
+            capability_id=capability_id,
+            capability_role=capability_role,
+            proposed_child_capabilities=proposed_child_capabilities,
+        )
+        return admit_and_record_child_spawn(
+            parent_envelope_path=parent_path,
+            child=child,
+            ledger_dir=DEFAULT_ORCHESTRATION_LEDGER_DIR,
+        )
+
+    def _record_task_tool_subagent(self, event: HookEvent) -> RecordedChildSpawn:
+        agent_name = self._subagent_name(event)
+        session_id = event.session_id or "unknown-session"
+        child_id = f"claude-subagent:{agent_name}:{session_id}:{str(uuid.uuid4())[:8]}"
+        return self._record_child_receipt(
+            child_id,
+            shape=SpawnCapabilityShape.SUBAGENT,
+            capability_id=f"claude-subagent:{agent_name}",
+            capability_role="reviewer",
+            require_parent=True,
+        )
+
+    def _subagent_name(self, event: HookEvent) -> str:
+        for key in _SUBAGENT_NAME_KEYS:
+            value = event.tool_input.get(key)
+            if isinstance(value, str) and value.strip():
+                return _slug(value)
+        return "agent"
 
     # ------------------------------------------------------------------
     # Public API
@@ -177,6 +261,16 @@ class SpawnRule(RuleBase):
     # ------------------------------------------------------------------
 
     def on_pre_tool_use(self, event: HookEvent) -> HookResponse | None:
+        if event.tool_name in _SUBAGENT_TOOLS:
+            try:
+                self._record_task_tool_subagent(event)
+            except SubagentRouteReceiptError as exc:
+                return HookResponse.block(
+                    "subagent receipt refused: "
+                    f"{exc}; next action: relaunch parent through hapax-methodology-dispatch "
+                    "so HAPAX_PARENT_ROUTE_ENVELOPE is fresh before invoking Agent/Task"
+                )
+
         # Block child from editing parent's in-flight files
         if self._state.parent_session and event.tool_name in _EDIT_TOOLS:
             file_path: str = event.tool_input.get("file_path", "")
@@ -195,7 +289,14 @@ class SpawnRule(RuleBase):
         if event.user_message and detect_spawn_intent(event.user_message):
             topic = event.user_message[:50].strip().rstrip(".")
             log.info("SpawnRule: spawn intent detected — writing manifest")
-            self._write_manifest(topic=topic, context=event.user_message)
+            try:
+                self._write_manifest(topic=topic, context=event.user_message)
+            except SubagentRouteReceiptError as exc:
+                return HookResponse.block(
+                    "spawn receipt refused: "
+                    f"{exc}; next action: relaunch parent through hapax-methodology-dispatch "
+                    "so HAPAX_PARENT_ROUTE_ENVELOPE is fresh"
+                )
 
         # Check for completed children and inject reunion results
         if self._state.children:

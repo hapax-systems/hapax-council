@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Admit and record a governed spawned-worker receipt.
+
+Called by worker launchers that receive HAPAX_PARENT_ROUTE_ENVELOPE from
+hapax-methodology-dispatch. Output is shell-safe exports for the child process.
+"""
+
+from __future__ import annotations
+
+import argparse
+import shlex
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.subagent_route_receipts import (  # noqa: E402
+    CHILD_RECEIPT_ID_ENV,
+    CHILD_RECEIPT_REF_ENV,
+    CHILD_SPAWN_ENVELOPE_ENV,
+    PARENT_ROUTE_ENVELOPE_ENV,
+    SpawnCapabilityShape,
+    SubagentRouteReceiptError,
+    admit_and_record_child_spawn,
+    child_request_for_parent,
+    load_parent_route_resource_envelope,
+    require_parent_envelope_path_from_env,
+)
+
+
+def _ledger_dir(value: str | None) -> Path:
+    if value:
+        return Path(value).expanduser()
+    return Path.home() / ".cache" / "hapax" / "orchestration"
+
+
+def _shape(value: str) -> SpawnCapabilityShape:
+    try:
+        return SpawnCapabilityShape(value)
+    except ValueError as exc:
+        choices = ", ".join(item.value for item in SpawnCapabilityShape)
+        raise argparse.ArgumentTypeError(
+            f"unsupported shape '{value}' (choices: {choices})"
+        ) from exc
+
+
+def _export(name: str, value: str) -> str:
+    return f"export {name}={shlex.quote(value)}"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--parent", help=f"Parent envelope path; defaults to ${PARENT_ROUTE_ENVELOPE_ENV}"
+    )
+    parser.add_argument("--ledger-dir", help="Orchestration ledger dir")
+    parser.add_argument("--child-id", required=True)
+    parser.add_argument("--task", help="Child task id; defaults to parent task")
+    parser.add_argument("--shape", type=_shape, default=SpawnCapabilityShape.EXISTING_AGENT_HARNESS)
+    parser.add_argument("--route-id")
+    parser.add_argument("--capability-id")
+    parser.add_argument("--capability-role", default="worker")
+    parser.add_argument(
+        "--proposed-child-capability",
+        action="append",
+        default=[],
+        help="Nested orchestrator child capability; repeatable",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        parent_path = (
+            Path(args.parent).expanduser()
+            if args.parent
+            else require_parent_envelope_path_from_env()
+        )
+        if parent_path is None:
+            raise SubagentRouteReceiptError("missing_parent_route_resource_receipt")
+        parent = load_parent_route_resource_envelope(parent_path)
+        child = child_request_for_parent(
+            parent,
+            child_id=args.child_id,
+            task_id=args.task,
+            shape=args.shape,
+            route_id=args.route_id,
+            capability_id=args.capability_id,
+            capability_role=args.capability_role,
+            proposed_child_capabilities=args.proposed_child_capability,
+        )
+        recorded = admit_and_record_child_spawn(
+            parent_envelope_path=parent_path,
+            child=child,
+            ledger_dir=_ledger_dir(args.ledger_dir),
+        )
+    except SubagentRouteReceiptError as exc:
+        print(
+            "hapax-child-spawn-receipt: BLOCKED: "
+            f"{exc}; next action: launch through hapax-methodology-dispatch with "
+            f"a fresh {PARENT_ROUTE_ENVELOPE_ENV} route/resource receipt",
+            file=sys.stderr,
+        )
+        return 18
+
+    print(_export(PARENT_ROUTE_ENVELOPE_ENV, recorded.parent_envelope_path))
+    print(_export(CHILD_SPAWN_ENVELOPE_ENV, recorded.child_envelope_path))
+    print(_export(CHILD_RECEIPT_REF_ENV, recorded.child_receipt_ref))
+    print(_export(CHILD_RECEIPT_ID_ENV, recorded.child_receipt_id))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

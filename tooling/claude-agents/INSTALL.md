@@ -52,6 +52,15 @@ Append these entries to the existing `hooks.PreToolUse` and `hooks.PostToolUse` 
             "command": "<workspace>/hooks/scripts/relay-coordination-check.sh"
           }
         ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "<workspace>/hooks/scripts/conductor-pre.sh"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -117,6 +126,17 @@ echo '{"tool_name":"Edit","tool_input":{"file_path":"'"$(pwd)"'/agents/reverie/_
 After editing `agents/reverie/_uniforms.py`, the main Claude should spontaneously invoke the `shader-bridge-auditor` agent. After editing `agents/hapax_daimonion/run_inner.py`, it should invoke `affordance-pipeline-tracer`. After noting a PR has merged that touches `hapax-visual`, it should invoke `gpu-smoke-verifier`.
 
 Subagent invocation is probabilistic — Claude may not always spawn the agent if the context is ambiguous. The `description:` field's `<example>` blocks shape Claude's reasoning, but they're hints, not guarantees. You can always force-invoke via the Task tool or the `/agent <name>` command.
+
+These subagents are spawned capabilities, not free side workers. A governed parent session launched through `hapax-methodology-dispatch` carries `HAPAX_PARENT_ROUTE_ENVELOPE` and `HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE=1`. Worker launchers that spawn a child runtime run `scripts/hapax-child-spawn-receipt`, emit `HAPAX_CHILD_SPAWN_ENVELOPE` / `HAPAX_CHILD_RECEIPT_REF` / `HAPAX_CHILD_RECEIPT_ID`, and append the child receipt back to the parent route/resource envelope. Claude `Agent` / Task-tool invocations are blocked by the session conductor PreToolUse path unless a parent route envelope is present and a child receipt is recorded before the subagent starts. Do not treat the child as governed unless a child receipt exists in the parent envelope.
+
+If a launcher exits BLOCKED for a missing parent route envelope or child receipt, relaunch the parent through the governed `hapax-methodology-dispatch --launch` flow so it mints a fresh parent route/resource envelope. Then verify the child receipt path in the parent envelope before treating the spawned worker as admitted.
+
+Recheck after install or launcher changes:
+
+```bash
+rg -n 'HAPAX_PARENT_ROUTE_ENVELOPE|HAPAX_CHILD_SPAWN_ENVELOPE|hapax-child-spawn-receipt' scripts shared tests tooling/claude-agents
+uv run pytest tests/test_subagent_route_receipts.py tests/scripts/test_hapax_methodology_dispatch.py tests/scripts/test_hapax_codex_headless.py tests/scripts/test_hapax_claude_headless.py tests/scripts/test_vbe_dispatch.py tests/scripts/test_hapax_antigrav_launcher.py -q -k 'parent_route or child_spawn or envelope or receipt or required_parent or launches_codex_headless'
+```
 
 ## 5. Disable individually
 

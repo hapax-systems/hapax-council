@@ -50,6 +50,31 @@ is_codex_subcommand() {
   esac
 }
 
+record_child_spawn_receipt() {
+  local task_id="$1"
+  local child_id="$2"
+  local shape="${3:-existing_agent_harness}"
+  local role="${4:-worker}"
+  local helper="$COUNCIL_DIR/scripts/hapax-child-spawn-receipt"
+  local receipt_exports=""
+
+  if [ -z "${HAPAX_PARENT_ROUTE_ENVELOPE:-}" ] && [ "${HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-0}" != "1" ]; then
+    return 0
+  fi
+  if [ ! -x "$helper" ]; then
+    echo "hapax-codex: parent route envelope required but helper is missing: $helper; next action: sync this worktree/branch so scripts/hapax-child-spawn-receipt exists, then relaunch through hapax-methodology-dispatch" >&2
+    exit 18
+  fi
+  if ! receipt_exports="$("$helper" --task "$task_id" --child-id "$child_id" --shape "$shape" --capability-role "$role")"; then
+    echo "hapax-codex: governed child spawn receipt refused for '$child_id'; see error above" >&2
+    exit 18
+  fi
+  if [ -n "$receipt_exports" ]; then
+    eval "$receipt_exports"
+    export HAPAX_PARENT_ROUTE_ENVELOPE HAPAX_CHILD_SPAWN_ENVELOPE HAPAX_CHILD_RECEIPT_REF HAPAX_CHILD_RECEIPT_ID
+  fi
+}
+
 first_existing_dir() {
   local path
   for path in "$@"; do
@@ -400,6 +425,11 @@ for name in (
     "HAPAX_PARENT_AGENT_INTERFACE",
     "HAPAX_PARENT_AGENT_NAME",
     "HAPAX_METHODOLOGY_DISPATCH_TASK",
+    "HAPAX_PARENT_ROUTE_ENVELOPE",
+    "HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE",
+    "HAPAX_CHILD_SPAWN_ENVELOPE",
+    "HAPAX_CHILD_RECEIPT_REF",
+    "HAPAX_CHILD_RECEIPT_ID",
     "HAPAX_CODEX_WORKTREE_STRATEGY",
     "HAPAX_CC_TASK_GATE",
     "HAPAX_IDLE_UPDATE_SECONDS",
@@ -889,6 +919,10 @@ if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
     preflight_claimable_task "$TASK_ID" "$SESSION"
   fi
 fi
+if [ -n "$TASK_ID" ]; then
+  export HAPAX_METHODOLOGY_DISPATCH_TASK="$TASK_ID"
+  record_child_spawn_receipt "$TASK_ID" "codex:$SESSION:$SESSION_UUID"
+fi
 
 SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/codex-spawns"
 mkdir -p "$SPAWN_DIR"
@@ -1097,6 +1131,11 @@ if [ -n "$DISPATCH_HOST" ]; then
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
+    printf 'export HAPAX_PARENT_ROUTE_ENVELOPE=%q\n' "${HAPAX_PARENT_ROUTE_ENVELOPE:-}"
+    printf 'export HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE=%q\n' "${HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-}"
+    printf 'export HAPAX_CHILD_SPAWN_ENVELOPE=%q\n' "${HAPAX_CHILD_SPAWN_ENVELOPE:-}"
+    printf 'export HAPAX_CHILD_RECEIPT_REF=%q\n' "${HAPAX_CHILD_RECEIPT_REF:-}"
+    printf 'export HAPAX_CHILD_RECEIPT_ID=%q\n' "${HAPAX_CHILD_RECEIPT_ID:-}"
     printf 'cd %q\n' "$WORKDIR"
     printf 'exec ssh'
     for arg in \
@@ -1122,6 +1161,11 @@ else
     # Propagate the session id so the re-exec'd inner hapax-codex keeps ONE stable
     # uuid (reform Phase 1, FM-2) instead of minting a fresh one.
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
+    printf 'export HAPAX_PARENT_ROUTE_ENVELOPE=%q\n' "${HAPAX_PARENT_ROUTE_ENVELOPE:-}"
+    printf 'export HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE=%q\n' "${HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE:-}"
+    printf 'export HAPAX_CHILD_SPAWN_ENVELOPE=%q\n' "${HAPAX_CHILD_SPAWN_ENVELOPE:-}"
+    printf 'export HAPAX_CHILD_RECEIPT_REF=%q\n' "${HAPAX_CHILD_RECEIPT_REF:-}"
+    printf 'export HAPAX_CHILD_RECEIPT_ID=%q\n' "${HAPAX_CHILD_RECEIPT_ID:-}"
     printf 'cd %q\n' "$WORKDIR"
     printf 'exec %q' "$COUNCIL_DIR/scripts/hapax-codex"
     for arg in "${CHILD_ARGS[@]}"; do

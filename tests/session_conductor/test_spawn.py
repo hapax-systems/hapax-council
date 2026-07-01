@@ -2,15 +2,29 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
 import yaml
 
 from agents.session_conductor.rules import HookEvent
 from agents.session_conductor.rules.spawn import SpawnRule, detect_spawn_intent
 from agents.session_conductor.state import SessionState
 from agents.session_conductor.topology import TopologyConfig
+
+
+@pytest.fixture(autouse=True)
+def _clear_parent_route_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "HAPAX_PARENT_ROUTE_ENVELOPE",
+        "HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE",
+        "HAPAX_CHILD_SPAWN_ENVELOPE",
+        "HAPAX_CHILD_RECEIPT_REF",
+        "HAPAX_CHILD_RECEIPT_ID",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _make_state(session_id: str = "sess-alpha", parent: str | None = None) -> SessionState:
@@ -40,6 +54,57 @@ def _make_edit_event(file_path: str, session_id: str = "sess-beta") -> HookEvent
         tool_input={"file_path": file_path},
         session_id=session_id,
     )
+
+
+def _make_agent_pre_event(
+    agent_name: str = "shader-bridge-auditor",
+    *,
+    tool_name: str = "Agent",
+) -> HookEvent:
+    return HookEvent(
+        event_type="pre_tool_use",
+        tool_name=tool_name,
+        tool_input={"subagent_type": agent_name, "prompt": "audit the bridge"},
+        session_id="sess-alpha",
+    )
+
+
+def _write_parent_envelope(path: Path) -> Path:
+    payload = {
+        "parent_route_resource_envelope_schema": 1,
+        "envelope_id": "parent-route-session-conductor-test",
+        "issued_at": "2026-06-30T05:00:00+00:00",
+        "stale_after": "999999h",
+        "task_id": "cc-task-session-conductor-test",
+        "lane": "cx-cap-subagent",
+        "platform": "codex",
+        "mode": "headless",
+        "profile": "full",
+        "route_id": "codex.headless.full",
+        "authority_case": "CASE-CAPACITY-ROUTING-001",
+        "parent_spec": "/vault/spec.md",
+        "route_decision_id": "decision-session-conductor-test",
+        "route_decision_receipt_ref": "route-decision-receipt:test",
+        "capability_profile": "codex.headless.full",
+        "resource_budget": {
+            "quota_state": "ok",
+            "quota_receipt_refs": ["quota-receipt:test"],
+            "resource_receipt_refs": ["resource-receipt:test"],
+            "quota_freshness_green": True,
+            "resource_freshness_green": True,
+            "stale_after": "999999h",
+        },
+        "stop_conditions": ["parent_task_closed", "budget_or_resource_receipt_stale"],
+        "receipt_chain": [
+            "route-decision-receipt:test",
+            "route-decision:decision-session-conductor-test",
+            "resource-receipt:test",
+            "quota-receipt:test",
+        ],
+        "child_receipts": [],
+    }
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +147,92 @@ def test_writes_manifest_on_spawn_intent(tmp_path: Path):
     assert data["status"] == "pending"
     assert data["parent_session"] == "sess-alpha"
     assert len(state.children) == 1
+
+
+def test_spawn_manifest_records_parent_child_route_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    parent_path = _write_parent_envelope(tmp_path / "parent.json")
+    monkeypatch.setenv("HAPAX_PARENT_ROUTE_ENVELOPE", str(parent_path))
+    monkeypatch.setattr(
+        "agents.session_conductor.rules.spawn.DEFAULT_ORCHESTRATION_LEDGER_DIR",
+        tmp_path / "ledger",
+    )
+    state = _make_state()
+    rule = SpawnRule(TopologyConfig(), state, spawns_dir=tmp_path / "spawns")
+
+    manifest_path = rule._write_manifest(topic="fix relay bug", context="spawn a child session")
+
+    data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    assert data["parent_route_envelope"] == str(parent_path)
+    assert data["child_spawn_envelope"].endswith(".json")
+    assert data["child_receipt_id"].startswith("child-receipt-")
+    assert data["child_receipt_ref"].startswith("child-spawn-envelope:")
+
+    parent_payload = json.loads(parent_path.read_text(encoding="utf-8"))
+    receipt = parent_payload["child_receipts"][0]
+    assert receipt["child_id"] == f"session-conductor:{data['child_id']}"
+    assert receipt["capability_role"] == "capability_aggregator"
+    assert receipt["receipt_refs"][0] == data["child_receipt_ref"]
+
+
+def test_spawn_intent_blocks_when_required_parent_route_receipt_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE", "1")
+    state = _make_state()
+    rule = SpawnRule(TopologyConfig(), state, spawns_dir=tmp_path)
+
+    response = rule.on_post_tool_use(_make_user_msg_event("spawn a child session for relay work"))
+
+    assert response is not None
+    assert response.action == "block"
+    assert "missing_parent_route_resource_receipt" in (response.message or "")
+    assert "next action:" in (response.message or "")
+    assert list(tmp_path.glob("*.yaml")) == []
+
+
+def test_agent_tool_spawn_blocks_without_parent_route_receipt(tmp_path: Path):
+    state = _make_state()
+    rule = SpawnRule(TopologyConfig(), state, spawns_dir=tmp_path)
+
+    response = rule.on_pre_tool_use(_make_agent_pre_event())
+
+    assert response is not None
+    assert response.action == "block"
+    assert "missing_parent_route_resource_receipt" in (response.message or "")
+    assert "before invoking Agent/Task" in (response.message or "")
+
+    task_response = rule.on_pre_tool_use(_make_agent_pre_event(tool_name="Task"))
+    assert task_response is not None
+    assert task_response.action == "block"
+    assert "missing_parent_route_resource_receipt" in (task_response.message or "")
+
+
+def test_agent_tool_spawn_records_child_receipt_before_subagent_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    parent_path = _write_parent_envelope(tmp_path / "parent.json")
+    monkeypatch.setenv("HAPAX_PARENT_ROUTE_ENVELOPE", str(parent_path))
+    monkeypatch.setattr(
+        "agents.session_conductor.rules.spawn.DEFAULT_ORCHESTRATION_LEDGER_DIR",
+        tmp_path / "ledger",
+    )
+    state = _make_state()
+    rule = SpawnRule(TopologyConfig(), state, spawns_dir=tmp_path / "spawns")
+
+    response = rule.on_pre_tool_use(_make_agent_pre_event())
+
+    assert response is None
+    parent_payload = json.loads(parent_path.read_text(encoding="utf-8"))
+    receipt = parent_payload["child_receipts"][0]
+    assert receipt["shape"] == "subagent"
+    assert receipt["child_id"].startswith("claude-subagent:shader-bridge-auditor:sess-alpha:")
+    assert receipt["capability_id"] == "claude-subagent:shader-bridge-auditor"
+    assert receipt["receipt_refs"][0].startswith("child-spawn-envelope:")
 
 
 def test_child_claims_manifest(tmp_path: Path):

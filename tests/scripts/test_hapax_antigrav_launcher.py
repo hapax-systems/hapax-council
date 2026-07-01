@@ -11,6 +11,45 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = REPO_ROOT / "scripts" / "hapax-antigrav"
 
 
+def _write_parent_envelope(path: Path, task_id: str = "test-task") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "parent_route_resource_envelope_schema": 1,
+        "envelope_id": "parent-route-antigrav-test",
+        "issued_at": "2026-06-30T05:00:00+00:00",
+        "stale_after": "999999h",
+        "task_id": task_id,
+        "lane": "antigrav",
+        "platform": "antigrav",
+        "mode": "interactive",
+        "profile": "full",
+        "route_id": "antigrav.interactive.full",
+        "authority_case": "CASE-CAPACITY-ROUTING-001",
+        "parent_spec": "/vault/spec.md",
+        "route_decision_id": "decision-antigrav-test",
+        "route_decision_receipt_ref": "route-decision-receipt:test",
+        "capability_profile": "antigrav.interactive.full",
+        "resource_budget": {
+            "quota_state": "ok",
+            "quota_receipt_refs": ["quota-receipt:test"],
+            "resource_receipt_refs": ["resource-receipt:test"],
+            "quota_freshness_green": True,
+            "resource_freshness_green": True,
+            "stale_after": "999999h",
+        },
+        "stop_conditions": ["parent_task_closed", "budget_or_resource_receipt_stale"],
+        "receipt_chain": [
+            "route-decision-receipt:test",
+            "route-decision:decision-antigrav-test",
+            "resource-receipt:test",
+            "quota-receipt:test",
+        ],
+        "child_receipts": [],
+    }
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
 def _write_executable(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
@@ -35,6 +74,14 @@ def _base_env(tmp_path: Path) -> dict[str, str]:
             "HAPAX_ANTIGRAV_ALLOW": "1",
         }
     )
+    for key in (
+        "HAPAX_PARENT_ROUTE_ENVELOPE",
+        "HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE",
+        "HAPAX_CHILD_SPAWN_ENVELOPE",
+        "HAPAX_CHILD_RECEIPT_REF",
+        "HAPAX_CHILD_RECEIPT_ID",
+    ):
+        env.pop(key, None)
     return env
 
 
@@ -104,6 +151,109 @@ exit 0
     run_text = run_scripts[-1].read_text(encoding="utf-8")
     assert str(bin_dir / "agy") in run_text
     assert "--prompt-interactive" in run_text
+
+
+def test_launcher_records_parent_child_spawn_receipt(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    bin_dir = Path(env["PATH"].split(":", 1)[0])
+    agy_log = tmp_path / "agy.log"
+    tmux_log = tmp_path / "tmux.log"
+    _write_executable(
+        bin_dir / "agy",
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" >> {agy_log}\n",
+    )
+    _write_executable(
+        bin_dir / "tmux",
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {tmux_log}
+if [ "$1" = "has-session" ]; then
+  exit 1
+fi
+exit 0
+""",
+    )
+    parent_path = _write_parent_envelope(tmp_path / "parent.json")
+    env["HAPAX_PARENT_ROUTE_ENVELOPE"] = str(parent_path)
+    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    workdir.mkdir(parents=True)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "antigrav",
+            "--task",
+            "test-task",
+            "--cd",
+            str(workdir),
+            "--no-claim",
+            "--terminal",
+            "tmux",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    parent_payload = json.loads(parent_path.read_text(encoding="utf-8"))
+    receipt = parent_payload["child_receipts"][0]
+    assert receipt["child_id"].startswith("antigrav:antigrav:")
+    assert receipt["receipt_refs"][0].startswith("child-spawn-envelope:")
+
+    run_scripts = sorted(
+        (Path(env["XDG_CACHE_HOME"]) / "hapax" / "antigrav-spawns").glob("*-run.sh")
+    )
+    assert run_scripts
+    run_text = run_scripts[-1].read_text(encoding="utf-8")
+    assert f'export HAPAX_PARENT_ROUTE_ENVELOPE="{parent_path}"' in run_text
+    assert 'export HAPAX_CHILD_SPAWN_ENVELOPE="' in run_text
+    assert "child-spawn-" in run_text
+    assert 'export HAPAX_CHILD_RECEIPT_REF="child-spawn-envelope:' in run_text
+    assert 'export HAPAX_CHILD_RECEIPT_ID="child-receipt-' in run_text
+
+
+def test_launcher_refuses_required_parent_route_without_envelope(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    env["HAPAX_REQUIRE_PARENT_ROUTE_ENVELOPE"] = "1"
+    bin_dir = Path(env["PATH"].split(":", 1)[0])
+    agy_marker = tmp_path / "agy-called"
+    tmux_log = tmp_path / "tmux.log"
+    _write_executable(bin_dir / "agy", f"#!/usr/bin/env bash\n: > {agy_marker}\n")
+    _write_executable(
+        bin_dir / "tmux",
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {tmux_log}
+exit 0
+""",
+    )
+    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    workdir.mkdir(parents=True)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "antigrav",
+            "--task",
+            "test-task",
+            "--cd",
+            str(workdir),
+            "--no-claim",
+            "--terminal",
+            "tmux",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 18
+    assert "missing_parent_route_resource_receipt" in result.stderr
+    assert not agy_marker.exists()
+    assert not tmux_log.exists()
 
 
 def test_launcher_wires_agy_pretooluse_gate(tmp_path: Path) -> None:

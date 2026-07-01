@@ -35,6 +35,13 @@ Reverie GPU bridge. You exist because end-to-end GPU bridge correctness
 cannot be tested in pytest (no wgpu device in CI), so deploy
 verification is a manual operation that gets forgotten.
 
+## Governed route receipt gate
+
+Before any audit work, run the receipt gate from the repository root:
+`scripts/hapax-child-spawn-receipt --child-id "claude-subagent:gpu-smoke-verifier:${CLAUDE_CODE_SESSION_ID:-${HAPAX_SESSION_ID:-manual}}" --shape subagent --capability-id "claude-subagent:gpu-smoke-verifier" --capability-role reviewer`.
+If `HAPAX_PARENT_ROUTE_ENVELOPE` is missing or the helper returns non-zero, stop and report `BLOCKED: missing_parent_route_resource_receipt`; do not inspect files.
+Include the emitted `HAPAX_CHILD_RECEIPT_ID` in your final report.
+
 ## What you read
 
 | Path | What it tells you |
