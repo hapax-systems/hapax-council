@@ -205,6 +205,32 @@ def test_malformed_native_score_result_evidence_refs_fail_closed() -> None:
     assert result.score_result is None
 
 
+def test_bare_string_native_score_result_evidence_refs_fail_closed() -> None:
+    m_binding = _binding_module()
+    native_shape = SimpleNamespace(
+        scorer="mdlc_measure",
+        scorer_version=1,
+        status=GateStatus.LIT,
+        verdict=SimpleNamespace(value="corroborated"),
+        gate_result=GateResult(
+            status=GateStatus.LIT,
+            verdict=True,
+            reason="corroborated_realized_return",
+            evidence_refs=("rail:event:stub",),
+        ),
+        reason="corroborated_realized_return",
+        evidence_refs="rail:event:stub",
+        refusal_reason=None,
+    )
+
+    result = m_binding.bind_m_result(native_shape)
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
+    assert "evidence refs must be a string sequence" in result.reason
+    assert result.score_result is None
+
+
 @pytest.mark.parametrize(
     "gate_refs",
     (
@@ -524,6 +550,21 @@ def test_rail_result_sequence_rejects_malformed_evidence_refs() -> None:
 
     result = m_binding.bind_m_result(
         _rail_result(evidence_refs=("rail:event:1", object())),
+        _ladder(min_corroboration_count=1),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is m_binding.MonDLCBindingRefusalReason.UNSUPPORTED_SHAPE
+    assert "evidence refs must be a string sequence" in result.reason
+    assert result.score_result is None
+
+
+def test_rail_result_sequence_rejects_bare_string_evidence_refs() -> None:
+    m_binding = _binding_module()
+
+    result = m_binding.bind_m_result(
+        _rail_result(evidence_refs="rail:event:1"),  # type: ignore[arg-type]
         _ladder(min_corroboration_count=1),
         ruler_hash_commit=HASH,
     )

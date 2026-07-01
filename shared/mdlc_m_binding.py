@@ -423,7 +423,9 @@ def _strict_rail_ref_tuple(value: Any) -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str):
-        return (value.strip(),) if value.strip() else ()
+        raise _UnsupportedRailMeasurementShape(
+            "accepted rail evidence refs must be a string sequence"
+        )
     if not isinstance(value, Sequence):
         raise _UnsupportedRailMeasurementShape(
             "accepted rail evidence refs must be a string sequence"
@@ -443,7 +445,7 @@ def _strict_native_ref_tuple(value: Any) -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str):
-        return (value.strip(),) if value.strip() else ()
+        raise TypeError("native score_result evidence refs must be a string sequence")
     if not isinstance(value, Sequence):
         raise TypeError("native score_result evidence refs must be a string sequence")
     refs: list[str] = []
