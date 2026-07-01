@@ -455,6 +455,12 @@ def _route_admission(
         "route_policy_route_selection_authority": False,
         "route_policy_quality_floor_satisfied": admitted,
         "route_policy_authority_allowed": admitted,
+        "route_policy_authority_case": "CASE-TEST",
+        "route_policy_demand_vector_ref": {
+            "artifact_path": task_id,
+            "freshness_state": "fresh",
+            "hash": f"frontmatter-hash-{task_id}",
+        },
         "admitted": admitted,
         "blocked_reasons": [] if admitted else ["quota_stale"],
     }
@@ -479,6 +485,8 @@ def _write_route_decision_ledger(path: Path, admissions: list[dict]) -> None:
                     "resource_freshness_green": admission["route_policy_resource_freshness_green"],
                     "quota_evidence_refs": admission["route_policy_quota_evidence_refs"],
                     "resource_state_refs": admission["route_policy_resource_state_refs"],
+                    "authority_case": admission["authority_case"],
+                    "demand_vector_ref": admission["route_policy_demand_vector_ref"],
                 },
                 sort_keys=True,
             )
@@ -842,6 +850,84 @@ class TestVerdictBlockers:
             self._route_frontmatter(), note, pr_head_sha="a" * 40
         )
         assert blockers == ()
+
+    def test_route_admission_required_blocks_ledger_authority_case_mismatch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["route_admission_required"] = True
+        ledger_path = tmp_path / "route-decisions.jsonl"
+        monkeypatch.setattr(rt, "ROUTE_DECISION_LEDGER_PATH", ledger_path)
+        route_ids = {
+            "codex-1": "codex.headless.full",
+            "gemini-1": "antigrav.interactive.full",
+            "claude-1": "claude.headless.full",
+        }
+        admissions = []
+        for review in dossier["reviewers"]:
+            admission = _route_admission(review["id"], route_ids[review["id"]])
+            admissions.append(admission)
+            review["route_admissions"] = [admission]
+        _write_route_decision_ledger(ledger_path, admissions)
+        records = [
+            json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()
+        ]
+        records[0]["authority_case"] = "CASE-COPIED"
+        ledger_path.write_text(
+            "\n".join(json.dumps(record, sort_keys=True) for record in records) + "\n",
+            encoding="utf-8",
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        blockers = rt.review_team_verdict_blockers(
+            self._route_frontmatter(), note, pr_head_sha="a" * 40
+        )
+
+        assert any(
+            blocker.startswith("review_dossier_route_decision_mismatch:codex-1:")
+            and blocker.endswith(":authority_case")
+            for blocker in blockers
+        )
+
+    def test_route_admission_required_blocks_ledger_demand_vector_mismatch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["route_admission_required"] = True
+        ledger_path = tmp_path / "route-decisions.jsonl"
+        monkeypatch.setattr(rt, "ROUTE_DECISION_LEDGER_PATH", ledger_path)
+        route_ids = {
+            "codex-1": "codex.headless.full",
+            "gemini-1": "antigrav.interactive.full",
+            "claude-1": "claude.headless.full",
+        }
+        admissions = []
+        for review in dossier["reviewers"]:
+            admission = _route_admission(review["id"], route_ids[review["id"]])
+            admissions.append(admission)
+            review["route_admissions"] = [admission]
+        _write_route_decision_ledger(ledger_path, admissions)
+        records = [
+            json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()
+        ]
+        records[0]["demand_vector_ref"]["hash"] = "copied-frontmatter-hash"
+        ledger_path.write_text(
+            "\n".join(json.dumps(record, sort_keys=True) for record in records) + "\n",
+            encoding="utf-8",
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        blockers = rt.review_team_verdict_blockers(
+            self._route_frontmatter(), note, pr_head_sha="a" * 40
+        )
+
+        assert any(
+            blocker.startswith("review_dossier_route_decision_mismatch:codex-1:")
+            and blocker.endswith(":demand_vector_ref")
+            for blocker in blockers
+        )
 
     def test_route_admission_required_blocks_inline_receipt_without_ledger(
         self, monkeypatch: Any, tmp_path: Path

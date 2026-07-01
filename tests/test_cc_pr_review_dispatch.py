@@ -173,6 +173,12 @@ def _admitted_route_admission(
         "route_policy_route_selection_authority": False,
         "route_policy_quality_floor_satisfied": True,
         "route_policy_authority_allowed": True,
+        "route_policy_authority_case": "CASE-TEST",
+        "route_policy_demand_vector_ref": {
+            "artifact_path": "task-a",
+            "freshness_state": "fresh",
+            "hash": "frontmatter-hash-task-a",
+        },
         "admitted": True,
     }
 
@@ -584,6 +590,24 @@ class TestApply:
                 assert admission["route_policy_action"] == "launch"
                 assert admission["route_policy_quota_evidence_refs"]
                 assert admission["route_policy_resource_state_refs"]
+                assert admission["route_policy_authority_case"] == "CASE-TEST"
+                demand_ref = admission["route_policy_demand_vector_ref"]
+                assert demand_ref["artifact_path"].endswith("task-a.md")
+                assert demand_ref["freshness_state"] == "fresh"
+                assert demand_ref["hash"]
+                ledger_records = [
+                    json.loads(line)
+                    for line in Path(admission["route_decision_ledger"])
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                ]
+                record = next(
+                    item
+                    for item in ledger_records
+                    if item["decision_id"] == admission["route_decision_id"]
+                )
+                assert record["authority_case"] == admission["authority_case"]
+                assert record["demand_vector_ref"] == demand_ref
         assert dossier["review_team_verdict"] == "quorum-accept"
 
     def test_reviews_are_blind(self, tmp_path: Path) -> None:

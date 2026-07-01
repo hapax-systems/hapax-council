@@ -1229,6 +1229,12 @@ def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value]
 
 
+def _string_mapping(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): str(item) for key, item in value.items()}
+
+
 def _route_decision_ledger_record(
     ledger_path: Any,
     decision_id: str,
@@ -1286,11 +1292,21 @@ def _route_decision_ledger_blockers(
         "lane": f"review-seat-{reviewer_id}",
         "route_id": str(admission.get("route_id") or ""),
         "action": str(admission.get("route_policy_action") or ""),
+        "authority_case": str(admission.get("authority_case") or ""),
     }
     blockers: list[str] = []
     for field, expected_value in expected.items():
         if str(record.get(field) or "") != expected_value:
             blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:{field}")
+
+    admission_authority_case = str(admission.get("route_policy_authority_case") or "")
+    if (
+        admission_authority_case
+        and str(record.get("authority_case") or "") != admission_authority_case
+    ):
+        blockers.append(
+            f"review_dossier_route_decision_mismatch:{prefix}:route_policy_authority_case"
+        )
 
     bool_fields = {
         "launch_allowed": admission.get("route_policy_launch_allowed"),
@@ -1310,6 +1326,10 @@ def _route_decision_ledger_blockers(
     for field, expected_value in list_fields.items():
         if _string_list(record.get(field)) != _string_list(expected_value):
             blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:{field}")
+    admission_demand_ref = _string_mapping(admission.get("route_policy_demand_vector_ref"))
+    record_demand_ref = _string_mapping(record.get("demand_vector_ref"))
+    if not admission_demand_ref or record_demand_ref != admission_demand_ref:
+        blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:demand_vector_ref")
     return blockers
 
 

@@ -862,6 +862,10 @@ def route_decision_receipt_payload(decision: RouteDecision) -> dict[str, Any]:
                 "dimensional_evidence_refs": list(
                     _dimensional_receipt_evidence_refs(decision.dimensional_receipt)
                 ),
+                "route_policy_authority_case": decision.dimensional_receipt.authority_case,
+                "route_policy_demand_vector_ref": (
+                    decision.dimensional_receipt.demand_vector_ref.model_dump(mode="json")
+                ),
             }
         )
     return payload
