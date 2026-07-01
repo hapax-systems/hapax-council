@@ -674,3 +674,80 @@ def test_claim_inserts_missing_claim_keys(tmp_path: Path) -> None:
     assert re.search(r"^claimed_at: \d{4}-\d{2}-\d{2}T", frontmatter, flags=re.MULTILINE), (
         "claimed_at must be inserted when the authored note lacks the key:\n" + frontmatter
     )
+
+
+def test_claim_stamp_ignores_body_decoy_lines(tmp_path: Path) -> None:
+    """A column-0 `claimed_at:` line in the note BODY must neither absorb the
+    stamp nor satisfy the verification — stamping is frontmatter-scoped."""
+    home = tmp_path / "home"
+    root = _task_root(home)
+    task_id = "cc-body-decoy"
+    path = root / "active" / f"{task_id}.md"
+    path.write_text(
+        textwrap.dedent(
+            f"""\
+            ---
+            type: cc-task
+            task_id: {task_id}
+            title: "{task_id}"
+            status: offered
+            assigned_to: unassigned
+            kind: build
+            authority_case: CASE-TEST-001
+            parent_spec: /tmp/isap-test.md
+            quality_floor: frontier_required
+            mutation_surface: source
+            authority_level: authoritative
+            route_metadata_schema: 1
+            depends_on: []
+            created_at: 2026-05-09T00:00:00Z
+            updated_at: 2026-05-09T00:00:00Z
+            ---
+
+            # {task_id}
+
+            Quoted frontmatter from an earlier incident report:
+            claimed_at: 1999-01-01T00:00:00Z
+            status: offered
+
+            ## Session log
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = _claim(home, task_id)
+
+    assert result.returncode == 0, result.stderr
+    text = path.read_text(encoding="utf-8")
+    frontmatter = text[: text.find("\n---", 4)]
+    assert re.search(r"^claimed_at: \d{4}-\d{2}-\d{2}T", frontmatter, flags=re.MULTILINE), (
+        "claimed_at must be stamped INTO the frontmatter despite the body decoy:\n" + frontmatter
+    )
+    # The body decoy line is untouched.
+    assert "claimed_at: 1999-01-01T00:00:00Z" in text
+
+
+def test_claim_refuses_note_without_closing_frontmatter(tmp_path: Path) -> None:
+    """An unstampable note must fail loudly WITHOUT writing claim caches —
+    the no-cache-on-failure guarantee is the load-bearing fail-closed
+    property (a cache over a ghost-claimable note re-opens the H1 race)."""
+    home = tmp_path / "home"
+    root = _task_root(home)
+    task_id = "cc-no-closing-delimiter"
+    path = root / "active" / f"{task_id}.md"
+    path.write_text(
+        "---\n"
+        f"task_id: {task_id}\n"
+        "status: offered\n"
+        "assigned_to: unassigned\n"
+        "# frontmatter never closes\n",
+        encoding="utf-8",
+    )
+
+    result = _claim(home, task_id)
+
+    assert result.returncode != 0
+    cache_dir = home / ".cache" / "hapax"
+    leaked = list(cache_dir.glob("cc-active-task-*")) if cache_dir.exists() else []
+    assert leaked == [], f"claim caches must not be written on a failed stamp: {leaked}"

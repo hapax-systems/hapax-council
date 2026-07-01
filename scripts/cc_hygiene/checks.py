@@ -348,6 +348,13 @@ def check_ghost_claimed(
     kills the freshly launched lane via the launcher's terminal check
     (2026-07-01 eta/ndcvb-phase1 incident). A real ghost goes quiet and is
     flagged on the first sweep after the window.
+
+    Known limitation: the window is anchored to file mtime, so a writer that
+    touches a genuinely ghost note more often than the window (vault sync,
+    hook appends) defers detection while it keeps writing. Accepted: those
+    writers are themselves sweep-visible, and anchoring to frontmatter
+    timestamps is impossible here — the ghost predicate is precisely that
+    claimed_at is missing.
     """
     now = now or _now()
     events: list[HygieneEvent] = []

@@ -547,45 +547,57 @@ if unmet:
     sys.exit(5)
 
 if claim_mode == "claim":
-    text = re.sub(r"^status:.*$", "status: claimed", text, count=1, flags=re.MULTILINE)
-    text = re.sub(
-        r"^assigned_to:.*$", f"assigned_to: {role}", text, count=1, flags=re.MULTILINE
+    # A note authored without the full claim key set makes plain re.sub
+    # stamps silent no-ops: the claim lands as `status: claimed` with
+    # claimed_at absent — exactly the cc-hygiene H1 ghost predicate — and H1
+    # reverts the fresh claim out from under the live lane (2026-07-01
+    # eta/ndcvb-phase1 incident). Stamp, insert, and verify STRICTLY inside
+    # the frontmatter slice: a column-0 `claimed_at:`/`status:` line in the
+    # note BODY (quoted frontmatter in a session log, an annex) must neither
+    # absorb the stamp nor satisfy the verification.
+    _fm_end = text.find("\n---", 4)
+    if _fm_end < 0:
+        print(
+            f"cc-claim: FATAL — task note {path} has no closing frontmatter "
+            "delimiter; next action: repair the note (restore the closing "
+            "'---' line), then re-run cc-claim. No claim caches were written.",
+            file=sys.stderr,
+        )
+        sys.exit(6)
+    _front, _rest = text[:_fm_end], text[_fm_end:]
+    _front = re.sub(r"^status:.*$", "status: claimed", _front, count=1, flags=re.MULTILINE)
+    _front = re.sub(
+        r"^assigned_to:.*$", f"assigned_to: {role}", _front, count=1, flags=re.MULTILINE
     )
-    text = re.sub(
-        r"^claimed_at:.*$", f"claimed_at: {now}", text, count=1, flags=re.MULTILINE
+    _front = re.sub(
+        r"^claimed_at:.*$", f"claimed_at: {now}", _front, count=1, flags=re.MULTILINE
     )
-    # A note authored without the full claim key set makes the re.sub stamps
-    # silent no-ops: the claim lands as `status: claimed` with claimed_at
-    # absent — exactly the cc-hygiene H1 ghost predicate — and H1 reverts the
-    # fresh claim out from under the live lane (2026-07-01 eta/ndcvb-phase1
-    # incident). Insert any key the substitution could not find, then verify
-    # the full stamp landed before the claim caches are written.
     _required_stamp = {
         "status": "claimed",
         "assigned_to": role,
         "claimed_at": now,
     }
     for _key, _value in _required_stamp.items():
-        if re.search(rf"^{_key}:", text, flags=re.MULTILINE):
-            continue
-        _fm_end = text.find("\n---", 4)
-        if _fm_end < 0:
-            break
-        text = f"{text[:_fm_end]}\n{_key}: {_value}{text[_fm_end:]}"
+        if not re.search(rf"^{_key}:", _front, flags=re.MULTILINE):
+            _front = f"{_front}\n{_key}: {_value}"
     _unstamped = [
         _key
         for _key, _value in _required_stamp.items()
         if not re.search(
-            rf"^{_key}:\s*{re.escape(str(_value))}\s*$", text, flags=re.MULTILINE
+            rf"^{_key}:\s*{re.escape(str(_value))}\s*$", _front, flags=re.MULTILINE
         )
     ]
     if _unstamped:
         print(
             f"cc-claim: FATAL — claim stamp did not land for {_unstamped} in {path}; "
-            "refusing to write claim caches over a ghost-claimable note",
+            "refusing to write claim caches over a ghost-claimable note. Next "
+            "action: repair the note frontmatter (each key must be a "
+            "single-line scalar), then re-run cc-claim. No claim caches were "
+            "written; nothing to roll back.",
             file=sys.stderr,
         )
         sys.exit(6)
+    text = _front + _rest
     session_suffix = f", session={session_id}" if session_id else ""
     log_line = f"- {now} {role} claimed (cc-claim{session_suffix})\n"
     result_message = f"cc-claim: claimed task '{task_id}' for role '{role}'"

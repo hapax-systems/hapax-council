@@ -299,9 +299,10 @@ task_is_terminal() {
   local task="$1"
   [[ -n "$task" ]] || return 1   # no task binding -> legacy always-on behavior
 
-  local claimed="" claim_source="primary"
+  local claimed="" claim_source="primary" claim_file_used=""
   if [[ -s "$CLAIM_FILE" ]]; then
     claimed="$(head -n1 "$CLAIM_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
+    claim_file_used="$CLAIM_FILE"
   fi
 
   # If primary cache is missing or empty, try session-keyed claim files.
@@ -321,6 +322,7 @@ task_is_terminal() {
     if [[ -n "$session_claim" && -s "$session_claim" ]]; then
       claimed="$(head -n1 "$session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
       claim_source="session-keyed:$(basename "$session_claim")"
+      claim_file_used="$session_claim"
     fi
   fi
 
@@ -355,18 +357,27 @@ task_is_terminal() {
   local note_assigned=""
   note_assigned="$(grep -oP '^assigned_to:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
   if [[ -n "$note_assigned" && "$note_assigned" != "$ROLE" ]]; then
-    # assigned_to mismatch. If OUR claim cache names exactly this task, the
-    # cache — which this launcher's own cc-claim just wrote — is stronger
-    # evidence of liveness than the note: a partially stamped claim can look
-    # unassigned for a moment and cc-hygiene H1 may revert it out from under
-    # a freshly launched lane (2026-07-01 eta/ndcvb-phase1: reverted 13s
-    # after claim, lane SIGTERMed while the worker was healthy). Treat that
-    # combination as INDETERMINATE and fall through to the PR-state check;
-    # a genuinely reassigned task goes terminal once our cache re-points or
-    # clears (cc-close), and closed/merged notes were already handled above.
-    if [[ "$claimed" == "$task" ]]; then
-      printf 'hapax-claude-headless[%s]: task_is_terminal: note assigned_to=%s != role=%s but %s claim cache names this task — treating as indeterminate (claim-stamp drift?)\n' \
-        "$$" "$note_assigned" "$ROLE" "$claim_source" >&2
+    # assigned_to mismatch. If OUR claim cache names exactly this task AND is
+    # FRESH, the cache — which this launcher's own cc-claim just wrote — is
+    # stronger evidence of liveness than the note: a partially stamped claim
+    # can look unassigned for a moment and cc-hygiene H1 may revert it out
+    # from under a freshly launched lane (2026-07-01 eta/ndcvb-phase1:
+    # reverted 13s after claim, lane SIGTERMed while the worker was healthy).
+    # Treat that combination as INDETERMINATE and fall through to the
+    # PR-state check. The freshness bound (HAPAX_CLAIM_STAMP_GRACE_S, default
+    # 900s; the gate refreshes a live lane's cache mtime on each mutation) is
+    # what keeps a FORCED reassignment terminal: an old lane whose cache has
+    # gone stale must reap, or two lanes would own one task indefinitely.
+    local _stamp_grace="${HAPAX_CLAIM_STAMP_GRACE_S:-900}" _cache_mtime=0 _cache_age=-1
+    if [[ "$claimed" == "$task" && -n "$claim_file_used" ]]; then
+      _cache_mtime="$(stat -c %Y "$claim_file_used" 2>/dev/null || echo 0)"
+      if (( _cache_mtime > 0 )); then
+        _cache_age=$(( $(date +%s) - _cache_mtime ))
+      fi
+    fi
+    if [[ "$claimed" == "$task" ]] && (( _cache_age >= 0 && _cache_age <= _stamp_grace )); then
+      printf 'hapax-claude-headless[%s]: task_is_terminal: note assigned_to=%s != role=%s but fresh %s claim cache (age=%ss) names this task — treating as indeterminate (claim-stamp drift?)\n' \
+        "$$" "$note_assigned" "$ROLE" "$claim_source" "$_cache_age" >&2
     else
       return 0
     fi

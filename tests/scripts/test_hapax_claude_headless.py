@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -885,6 +886,9 @@ def _run_task_is_terminal(
     cache_task: str | None,
     note_status: str,
     note_assigned: str,
+    cache_age_s: int = 0,
+    note_pr: int | None = None,
+    gh_state: str = "",
 ) -> int:
     """Extract task_is_terminal() from the launcher and drive it with fixtures.
 
@@ -894,17 +898,22 @@ def _run_task_is_terminal(
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     note = tmp_path / "note.md"
+    pr_line = f"pr: {note_pr}\n" if note_pr is not None else ""
     note.write_text(
-        f"---\nstatus: {note_status}\nassigned_to: {note_assigned}\n---\n",
+        f"---\nstatus: {note_status}\nassigned_to: {note_assigned}\n{pr_line}---\n",
         encoding="utf-8",
     )
     claim_file = cache / "cc-active-task-eta"
     if cache_task is not None:
         claim_file.write_text(cache_task + "\n", encoding="utf-8")
+        if cache_age_s:
+            aged = time.time() - cache_age_s
+            os.utime(claim_file, (aged, aged))
     text = SCRIPT.read_text(encoding="utf-8")
     start = text.index("task_is_terminal()")
     end = text.index("\n}\n", start) + 3
     func = text[start:end]
+    gh_stub = f'gh() {{ echo "{gh_state}"; }}' if gh_state else "gh() { return 1; }"
     harness = "\n".join(
         [
             "set -u",
@@ -912,7 +921,7 @@ def _run_task_is_terminal(
             'ROLE="eta"',
             f'CLAIM_FILE="{claim_file}"',
             f'find_active_note() {{ echo "{note}"; }}',
-            "gh() { return 1; }",
+            gh_stub,
             func,
             'task_is_terminal "task-under-test"',
         ]
@@ -963,5 +972,42 @@ def test_terminal_check_reaps_done_note(tmp_path: Path) -> None:
         cache_task="task-under-test",
         note_status="done",
         note_assigned="eta",
+    )
+    assert rc == 0
+
+
+def test_terminal_check_reaps_foreign_assignee_when_cache_stale(tmp_path: Path) -> None:
+    """The indeterminate exception is freshness-bounded: a stale cache naming
+    the task no longer overrides a reassignment — old lanes must reap."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="claimed",
+        note_assigned="some-other-role",
+        cache_age_s=3600,
+    )
+    assert rc == 0
+
+
+def test_terminal_check_reaps_foreign_assignee_with_no_cache(tmp_path: Path) -> None:
+    """Missing cache + foreign assignee is the genuinely-reassigned shape."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task=None,
+        note_status="claimed",
+        note_assigned="some-other-role",
+    )
+    assert rc == 0
+
+
+def test_terminal_check_indeterminate_still_reaps_merged_pr(tmp_path: Path) -> None:
+    """The drift-survival fall-through still honors the merged-PR terminal."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        note_pr=4242,
+        gh_state="MERGED",
     )
     assert rc == 0
