@@ -417,6 +417,15 @@ def _witness_window(entry: Any) -> tuple[datetime | None, datetime | None]:
     return None, None
 
 
+def _witness_route_ids(entry: Any) -> frozenset[str]:
+    if not isinstance(entry, Mapping):
+        return frozenset()
+    raw = entry.get("route_ids")
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(str(item) for item in raw if str(item).strip())
+
+
 GATE_KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_GATE_OFF"
 CHECKLIST_ITEM_RE = re.compile(r"^- \[ \] (?P<slug>[a-z0-9-]+):", re.MULTILINE)
 CHECKLIST_VALUES = frozenset({"pass", "finding", "na"})
@@ -1530,6 +1539,8 @@ def _route_admission_blockers(
             blockers.append(f"review_dossier_route_admission_not_admitted:{prefix}:{detail}")
         if admission.get("route_policy_action") != "launch":
             blockers.append(f"review_dossier_route_policy_not_launch:{prefix}")
+        if admission.get("route_policy_launch_allowed") is not True:
+            blockers.append(f"review_dossier_route_policy_launch_not_allowed:{prefix}")
         if admission.get("route_policy_green") is not True:
             blockers.append(f"review_dossier_route_policy_not_green:{prefix}")
         if admission.get("route_policy_registry_freshness_green") is not True:
@@ -1677,11 +1688,23 @@ def _dossier_validity_blockers(
                 raise TypeError("family outage witness is not a mapping")
             constituted = _parse_iso_datetime(dossier.get("constituted_at"))
             admitted_at = _coerce_datetime(admission_time, reference=constituted)
+            expected_route_ids = {
+                str(entry.get("family")): str(entry.get("route_id") or "")
+                for entry in registry["families"]
+                if isinstance(entry, Mapping)
+            }
             unwitnessed = []
             for fam in degraded_outage:
                 try:
-                    started, observed = _witness_window(witness_state.get(fam))
+                    witness_entry = witness_state.get(fam)
+                    started, observed = _witness_window(witness_entry)
                     if started is None or observed is None:
+                        unwitnessed.append(fam)
+                        continue
+                    expected_route_id = expected_route_ids.get(fam, "")
+                    if expected_route_id and expected_route_id not in _witness_route_ids(
+                        witness_entry
+                    ):
                         unwitnessed.append(fam)
                         continue
                     # Window model (#4246 re-design): the dossier is valid iff it was

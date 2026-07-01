@@ -1078,6 +1078,38 @@ class TestVerdictBlockers:
             for blocker in blockers
         )
 
+    def test_route_admission_required_blocks_launch_not_allowed(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["route_admission_required"] = True
+        ledger_path = tmp_path / "route-decisions.jsonl"
+        monkeypatch.setattr(rt, "ROUTE_DECISION_LEDGER_PATH", ledger_path)
+        route_ids = {
+            "codex-1": "codex.headless.full",
+            "gemini-1": "antigrav.interactive.full",
+            "claude-1": "claude.headless.full",
+        }
+        admissions = []
+        for review in dossier["reviewers"]:
+            admission = _route_admission(review["id"], route_ids[review["id"]])
+            if review["id"] == "codex-1":
+                admission["route_policy_launch_allowed"] = False
+            admissions.append(admission)
+            review["route_admissions"] = [admission]
+        _write_route_decision_ledger(ledger_path, admissions)
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        blockers = rt.review_team_verdict_blockers(
+            self._route_frontmatter(), note, pr_head_sha="a" * 40
+        )
+
+        assert any(
+            blocker.startswith("review_dossier_route_policy_launch_not_allowed:codex-1:")
+            for blocker in blockers
+        )
+
     def test_route_admission_required_blocks_inline_receipt_without_ledger(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
@@ -2078,11 +2110,33 @@ class TestFamilyOutageDegradation:
         started=None,
     ):
         p = tmp_path / "family-outage.json"
+        route_ids = {
+            "claude": "claude.headless.full",
+            "codex": "codex.headless.full",
+            "gemini": "antigrav.interactive.full",
+            "glm": "glmcp.review.direct",
+        }
         if started is None:
-            state = {f: observed for f in families}  # legacy str format
+            state = {
+                f: {
+                    "observed_at": observed,
+                    "outage_started_at": observed,
+                    "outage_verdicts": ["provider-outage"],
+                    "route_ids": [route_ids.get(f, f"{f}.unknown.full")],
+                }
+                for f in families
+            }
         else:
             # window format: a sustained outage has a stable outage_started_at + a moving observed_at
-            state = {f: {"observed_at": observed, "outage_started_at": started} for f in families}
+            state = {
+                f: {
+                    "observed_at": observed,
+                    "outage_started_at": started,
+                    "outage_verdicts": ["provider-outage"],
+                    "route_ids": [route_ids.get(f, f"{f}.unknown.full")],
+                }
+                for f in families
+            }
         p.write_text(json.dumps(state), encoding="utf-8")
         return p
 
@@ -2103,6 +2157,34 @@ class TestFamilyOutageDegradation:
             pr_head_sha="a" * 40,
             outage_state_path=tmp_path / "absent-witness.json",
         )
+        assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
+
+    def test_cross_route_degradation_witness_blocks_admission(self, tmp_path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._degraded_dossier(rt))
+        witness = tmp_path / "family-outage.json"
+        witness.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-06-11T19:30:00+00:00",
+                        "outage_started_at": "2026-06-11T19:30:00+00:00",
+                        "outage_verdicts": ["provider-outage"],
+                        "route_ids": ["other.route.full"],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            outage_state_path=witness,
+            admission_time="2026-06-11T20:30:00+00:00",
+        )
+
         assert any(b.startswith("review_dossier_degradation_unwitnessed:") for b in blockers)
 
     def test_recovered_witness_invalidates_pending_degraded_admission(self, tmp_path) -> None:

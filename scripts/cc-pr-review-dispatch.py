@@ -316,7 +316,33 @@ def filter_outage_witness_for_current_routes(
     admission for all linked tasks.
     """
 
-    out: dict[str, str] = {}
+    filtered_entries = filter_outage_entries_for_current_routes(
+        outage_entries,
+        registry=registry,
+        keyed_matches=keyed_matches,
+        policy_sources=policy_sources,
+        route_decision_ledger_dir=route_decision_ledger_dir,
+        now=now,
+    )
+    return {
+        family: observed_at
+        for family, entry in filtered_entries.items()
+        if (observed_at := _witness_observed_at(entry)) is not None
+    }
+
+
+def filter_outage_entries_for_current_routes(
+    outage_entries: Mapping[str, Any],
+    *,
+    registry: Mapping[str, Any],
+    keyed_matches: list[tuple[Path, dict[str, Any], str]],
+    policy_sources: DispatchPolicySources,
+    route_decision_ledger_dir: Path | None,
+    now: datetime,
+) -> dict[str, Any]:
+    """Route-filter outage entries while preserving structured witness payloads."""
+
+    out: dict[str, Any] = {}
     family_cfgs = {str(entry.get("family")): entry for entry in registry["families"]}
     for family, entry in outage_entries.items():
         observed_at = _witness_observed_at(entry)
@@ -347,7 +373,7 @@ def filter_outage_witness_for_current_routes(
                 family,
             )
             continue
-        out[family] = observed_at
+        out[family] = entry
     return out
 
 
@@ -1416,6 +1442,7 @@ def write_acceptance_receipt_if_due(
     changed_file_count: int | None = None,
     outage_state_path: Path | None = None,
     outage_witness: dict[str, str] | None = None,
+    outage_witness_entries: Mapping[str, Any] | None = None,
 ) -> Path | None:
     """The dossier IS the acceptance receipt for review-floor tasks (spec §5).
 
@@ -1428,11 +1455,12 @@ def write_acceptance_receipt_if_due(
     witness_snapshot_path: Path | None = None
     validation_outage_state_path = outage_state_path or FAMILY_OUTAGE_STATE
     degraded_families = [str(f) for f in (dossier.get("degraded_family_outage") or [])]
-    if degraded_families and outage_witness is not None:
+    witness_source: Mapping[str, Any] | None = outage_witness_entries or outage_witness
+    if degraded_families and witness_source is not None:
         witness_snapshot = {
-            family: str(outage_witness[family])
+            family: witness_source[family]
             for family in degraded_families
-            if family in outage_witness
+            if family in witness_source
         }
         with tempfile.NamedTemporaryFile(
             "w",
@@ -1607,6 +1635,7 @@ def replay_dossier_side_effects(
     changed_file_count: int | None = None,
     outage_state_path: Path | None = None,
     outage_witness: dict[str, str] | None = None,
+    outage_witness_entries: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Idempotently replay side effects derived from an already-written dossier."""
 
@@ -1623,6 +1652,7 @@ def replay_dossier_side_effects(
         changed_file_count=changed_file_count,
         outage_state_path=outage_state_path,
         outage_witness=outage_witness,
+        outage_witness_entries=outage_witness_entries,
     )
     wake_path = None
     has_block = any(str(r.get("verdict")) == "block" for r in dossier.get("reviewers") or [])
@@ -1716,7 +1746,7 @@ def review_pr(
     if admission_now.tzinfo is None:
         admission_now = admission_now.replace(tzinfo=UTC)
     loaded_policy_sources = policy_sources or load_dispatch_policy_sources(now=admission_now)
-    outage_witness = filter_outage_witness_for_current_routes(
+    outage_entries = filter_outage_entries_for_current_routes(
         load_family_outage_entries(now_iso),
         registry=registry,
         keyed_matches=keyed_matches,
@@ -1724,6 +1754,11 @@ def review_pr(
         route_decision_ledger_dir=route_decision_ledger_dir,
         now=admission_now,
     )
+    outage_witness = {
+        family: observed_at
+        for family, entry in outage_entries.items()
+        if (observed_at := _witness_observed_at(entry)) is not None
+    }
     outage_families = frozenset(outage_witness)
     if outage_families:
         LOG.warning(
@@ -1827,6 +1862,8 @@ def review_pr(
                             pr_number=pr_info.number,
                             changed_files=pr_info.files,
                             changed_file_count=pr_info.changed_file_count,
+                            outage_witness=outage_witness,
+                            outage_witness_entries=outage_entries,
                         )
                     fresh_results.append(
                         {
@@ -1860,6 +1897,8 @@ def review_pr(
                     pr_number=pr_info.number,
                     changed_files=pr_info.files,
                     changed_file_count=pr_info.changed_file_count,
+                    outage_witness=outage_witness,
+                    outage_witness_entries=outage_entries,
                 )
             fresh_results.append(
                 {
@@ -2012,6 +2051,7 @@ def review_pr(
             changed_files=pr_info.files,
             changed_file_count=pr_info.changed_file_count,
             outage_witness=outage_witness,
+            outage_witness_entries=outage_entries,
         )
         results.append(
             {
