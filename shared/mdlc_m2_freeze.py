@@ -5,7 +5,8 @@ itself: artifact id, budget envelope, ladder, artifact ruler hash, signer,
 timestamp, and signature reference must be present. The artifact ruler hash is
 the authoritative frozen value; callers must pass the commit's carried ruler
 hash so verifier admission proves end-to-end equality. Boolean freeze flags are
-intentionally ignored.
+intentionally ignored, while budget-envelope publication/Flood routing fields
+are part of the signed M2 evidence contract.
 """
 
 from __future__ import annotations

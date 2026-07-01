@@ -331,6 +331,25 @@ def test_flood_envelope_fields_are_serialized() -> None:
     assert serialized_budget["no_audience"] is False
 
 
+def test_budget_envelope_from_mapping_accepts_flood_fields() -> None:
+    budget = dict(_artifact()["budget_envelope"])
+    budget.update(
+        {
+            "publish_only": True,
+            "flood_plan": "flood-plan:public-audience-generation",
+            "non_public": False,
+            "no_audience": True,
+        }
+    )
+
+    envelope = M2BudgetEnvelope.from_mapping(budget)
+
+    assert envelope.publish_only is True
+    assert envelope.flood_plan == "flood-plan:public-audience-generation"
+    assert envelope.non_public is False
+    assert envelope.no_audience is True
+
+
 @pytest.mark.parametrize("field", ("publish_only", "non_public", "no_audience"))
 def test_flood_envelope_bool_fields_must_be_boolean(field: str) -> None:
     budget = dict(_artifact()["budget_envelope"])
