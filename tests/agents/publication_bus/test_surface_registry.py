@@ -11,6 +11,7 @@ from agents.publication_bus.surface_registry import (
     is_engageable,
     refused_surfaces,
 )
+from shared.ndcvb_api_harness import NDCVB_PRODUCT_SURFACE_ID
 
 
 class TestSurfaceRegistry:
@@ -46,6 +47,12 @@ class TestSurfaceRegistry:
         """omg.lol has no Pay product, so the publication bus must not
         expose an omg.lol Pay surface or publisher activation path."""
         assert "omg-lol-pay-receiver" not in SURFACE_REGISTRY
+
+    def test_ndcvb_phase0_api_harness_is_not_a_publication_surface(self) -> None:
+        """Phase-0 NDCVB packaging is schema-only, not an engageable public offer."""
+        assert NDCVB_PRODUCT_SURFACE_ID not in SURFACE_REGISTRY
+        assert not is_engageable(NDCVB_PRODUCT_SURFACE_ID)
+        assert NDCVB_PRODUCT_SURFACE_ID not in dispatch_registry()
 
 
 class TestAutomationStatusEnum:

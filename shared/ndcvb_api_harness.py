@@ -1,0 +1,378 @@
+"""Phase-0 API packaging harness for NDCVB detection results.
+
+This module is intentionally schema-level only: it wraps already-produced
+NDCVB verdict-shaped outputs into a JSON-ready response envelope without
+creating a runtime endpoint, customer-data intake path, provider call, or public
+offer surface.
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any, Final
+
+from shared.segment_ndcvb_axis_b import evaluate_ndcvb_axis_b
+
+NDCVB_API_HARNESS_VERSION: Final = 1
+NDCVB_API_SCHEMA: Final = "hapax.ndcvb.phase0_detection_result.v1"
+NDCVB_PRODUCT_SURFACE_ID: Final = "ndcvb-b2b-api-phase0-harness"
+NDCVB_PHASE: Final = "phase0_packaging_only"
+NDCVB_REQUIRED_BATTERY_GATE_COUNT: Final = 4
+
+_REQUEST_KEYS: Final = frozenset(
+    {
+        "request_id",
+        "artifact_ref",
+        "evidence_ref",
+        "run_ref",
+        "purpose",
+    }
+)
+_FORBIDDEN_REQUEST_KEYS: Final = frozenset(
+    {
+        "client",
+        "client_id",
+        "content",
+        "customer",
+        "customer_data",
+        "customer_id",
+        "document",
+        "email",
+        "input",
+        "input_text",
+        "payload",
+        "prompt",
+        "raw",
+        "raw_payload",
+        "raw_text",
+        "tenant",
+        "tenant_id",
+        "user",
+        "user_id",
+    }
+)
+
+
+class NDCVBApiStatus(StrEnum):
+    """Machine-readable disposition for the packaged detection result."""
+
+    CLEAR = "clear"
+    HOLD = "hold"
+    REFUSED_NO_RELEASE = "refused_no_release"
+
+
+class NDCVBApiHarnessError(ValueError):
+    """Invalid phase-0 NDCVB API packaging input."""
+
+
+@dataclass(frozen=True)
+class NDCVBPackagingRequest:
+    """Reference-only request descriptor for the phase-0 harness.
+
+    The harness carries refs to already-local artifacts and evidence. It does
+    not accept raw prompt, completion, customer, tenant, or document payloads.
+    """
+
+    request_id: str
+    artifact_ref: str
+    evidence_ref: str
+    run_ref: str | None = None
+    purpose: str = "operator_internal_phase0_packaging"
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any]) -> NDCVBPackagingRequest:
+        """Build a strict request descriptor from API-like input."""
+
+        raw_keys = set(raw)
+        non_string_keys = [key for key in raw_keys if not isinstance(key, str)]
+        if non_string_keys:
+            raise NDCVBApiHarnessError("phase-0 harness request keys must be strings")
+        forbidden = sorted(raw_keys & _FORBIDDEN_REQUEST_KEYS)
+        if forbidden:
+            raise NDCVBApiHarnessError(
+                "phase-0 harness accepts refs only; forbidden request keys: " + ", ".join(forbidden)
+            )
+        unknown = sorted(raw_keys - _REQUEST_KEYS)
+        if unknown:
+            raise NDCVBApiHarnessError(
+                "phase-0 harness request has unsupported keys: " + ", ".join(unknown)
+            )
+        return cls(
+            request_id=_required_text(raw.get("request_id"), "request_id"),
+            artifact_ref=_required_text(raw.get("artifact_ref"), "artifact_ref"),
+            evidence_ref=_required_text(raw.get("evidence_ref"), "evidence_ref"),
+            run_ref=_optional_text(raw.get("run_ref"), "run_ref"),
+            purpose=_optional_text(raw.get("purpose"), "purpose")
+            or "operator_internal_phase0_packaging",
+        )
+
+    def to_api(self) -> dict[str, Any]:
+        """Return the public schema fragment for this reference-only request."""
+
+        return {
+            "request_id": self.request_id,
+            "artifact_ref": self.artifact_ref,
+            "evidence_ref": self.evidence_ref,
+            "run_ref": self.run_ref,
+            "purpose": self.purpose,
+            "raw_payload_persisted": False,
+            "customer_data_path_enabled": False,
+        }
+
+
+@dataclass(frozen=True)
+class NDCVBBatteryGate:
+    """One gate receipt from the external four-gate dissociation battery."""
+
+    gate_id: str
+    passed: bool
+    confidence: float
+    provenance: tuple[str, ...]
+    detail: str = ""
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any]) -> NDCVBBatteryGate:
+        """Build one battery-gate receipt from API-like input."""
+
+        gate_id = _required_text(raw.get("gate_id"), "gate_id")
+        passed = raw.get("passed")
+        if not isinstance(passed, bool):
+            raise NDCVBApiHarnessError("battery gate passed must be a boolean")
+        confidence = _unit_float(raw.get("confidence"), field="confidence")
+        provenance = _provenance_tuple(raw.get("provenance"), field="provenance")
+        detail = _optional_text(raw.get("detail"), "detail") or ""
+        return cls(
+            gate_id=gate_id,
+            passed=passed,
+            confidence=confidence,
+            provenance=provenance,
+            detail=detail,
+        )
+
+    def to_api(self) -> dict[str, Any]:
+        """Return this gate as a JSON-serializable schema fragment."""
+
+        return {
+            "gate_id": self.gate_id,
+            "passed": self.passed,
+            "confidence": round(self.confidence, 3),
+            "provenance": list(self.provenance),
+            "detail": self.detail,
+        }
+
+
+def package_ndcvb_detection_result(
+    *,
+    request: NDCVBPackagingRequest | Mapping[str, Any],
+    verdicts: Sequence[Mapping[str, Any] | str],
+    battery_gates: Sequence[NDCVBBatteryGate | Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Package NDCVB detection output for the bounded phase-0 API surface.
+
+    ``verdicts`` are still validated by ``evaluate_ndcvb_axis_b()``, so the
+    forbidden-verdict language guard and dissociation veto remain the engine's
+    own behavior rather than a duplicate policy in this harness.
+    """
+
+    request_record = _coerce_request(request)
+    gate_records = _coerce_battery_gates(battery_gates)
+    engine_report = evaluate_ndcvb_axis_b(verdicts)
+    battery_report = _battery_report(gate_records)
+    status = _status_for(engine_report=engine_report, battery_ok=battery_report["ok"])
+    result_confidence = _result_confidence(engine_report)
+    provenance = _overall_provenance(
+        request_record=request_record,
+        engine_report=engine_report,
+        battery_gates=gate_records,
+    )
+
+    return {
+        "schema": NDCVB_API_SCHEMA,
+        "harness_version": NDCVB_API_HARNESS_VERSION,
+        "surface": {
+            "surface_id": NDCVB_PRODUCT_SURFACE_ID,
+            "phase": NDCVB_PHASE,
+            "api_transport_enabled": False,
+            "public_offer_enabled": False,
+            "customer_data_path_enabled": False,
+            "provider_spend_enabled": False,
+            "runtime_endpoint_enabled": False,
+        },
+        "request": request_record.to_api(),
+        "status": status.value,
+        "detection": {
+            "kind": engine_report["kind"],
+            "verdict": engine_report["verdict"],
+            "ok": engine_report["ok"] is True,
+            "confidence": result_confidence,
+            "confidence_basis": _confidence_basis(engine_report),
+            "provenance": provenance,
+            "violations": list(engine_report.get("violations", [])),
+        },
+        "battery": battery_report,
+        "engine_guards": {
+            "engine": engine_report["scorer"],
+            "engine_version": engine_report["scorer_version"],
+            "forbidden_verdict_language_enforced": True,
+            "dissociated_veto_required": engine_report["dissociated_veto_required"] is True,
+            "floor_gate": dict(engine_report["floor_gate"]),
+            "release_boundary": "closed"
+            if engine_report["dissociated_veto_required"] is True
+            else "phase0_schema_only",
+        },
+        "engine_report": engine_report,
+    }
+
+
+def _coerce_request(
+    request: NDCVBPackagingRequest | Mapping[str, Any],
+) -> NDCVBPackagingRequest:
+    if isinstance(request, NDCVBPackagingRequest):
+        return request
+    if not isinstance(request, Mapping):
+        raise NDCVBApiHarnessError("request must be a mapping or NDCVBPackagingRequest")
+    return NDCVBPackagingRequest.from_mapping(request)
+
+
+def _coerce_battery_gates(
+    battery_gates: Sequence[NDCVBBatteryGate | Mapping[str, Any]],
+) -> tuple[NDCVBBatteryGate, ...]:
+    if isinstance(battery_gates, (str, bytes)) or not isinstance(battery_gates, Sequence):
+        raise NDCVBApiHarnessError("battery_gates must be a sequence")
+    gates = tuple(
+        gate if isinstance(gate, NDCVBBatteryGate) else _coerce_battery_gate(gate)
+        for gate in battery_gates
+    )
+    if len(gates) != NDCVB_REQUIRED_BATTERY_GATE_COUNT:
+        raise NDCVBApiHarnessError(
+            "phase-0 NDCVB packaging requires exactly "
+            f"{NDCVB_REQUIRED_BATTERY_GATE_COUNT} battery gates"
+        )
+    gate_ids = [gate.gate_id for gate in gates]
+    duplicate_ids = sorted({gate_id for gate_id in gate_ids if gate_ids.count(gate_id) > 1})
+    if duplicate_ids:
+        raise NDCVBApiHarnessError("battery gate ids must be unique: " + ", ".join(duplicate_ids))
+    return gates
+
+
+def _coerce_battery_gate(gate: object) -> NDCVBBatteryGate:
+    if not isinstance(gate, Mapping):
+        raise NDCVBApiHarnessError("battery gate must be a mapping or NDCVBBatteryGate")
+    return NDCVBBatteryGate.from_mapping(gate)
+
+
+def _battery_report(gates: Sequence[NDCVBBatteryGate]) -> dict[str, Any]:
+    passed = [gate for gate in gates if gate.passed]
+    failed = [gate for gate in gates if not gate.passed]
+    min_confidence = min(gate.confidence for gate in gates)
+    return {
+        "battery_id": "ndcvb_four_gate_dissociation_battery",
+        "required_gate_count": NDCVB_REQUIRED_BATTERY_GATE_COUNT,
+        "observed_gate_count": len(gates),
+        "passed_gate_count": len(passed),
+        "failed_gate_ids": [gate.gate_id for gate in failed],
+        "ok": not failed,
+        "min_confidence": round(min_confidence, 3),
+        "gates": [gate.to_api() for gate in gates],
+    }
+
+
+def _status_for(*, engine_report: Mapping[str, Any], battery_ok: bool) -> NDCVBApiStatus:
+    if engine_report.get("dissociated_veto_required") is True:
+        return NDCVBApiStatus.REFUSED_NO_RELEASE
+    if not battery_ok or engine_report.get("ok") is not True:
+        return NDCVBApiStatus.HOLD
+    return NDCVBApiStatus.CLEAR
+
+
+def _result_confidence(engine_report: Mapping[str, Any]) -> float | None:
+    sensitivity_bound = engine_report.get("sensitivity_bound")
+    if isinstance(sensitivity_bound, (int, float)) and not isinstance(sensitivity_bound, bool):
+        return round(float(sensitivity_bound), 3)
+    score_0_100 = engine_report.get("score_0_100")
+    if isinstance(score_0_100, (int, float)) and not isinstance(score_0_100, bool):
+        return round(float(score_0_100) / 100.0, 3)
+    return None
+
+
+def _confidence_basis(engine_report: Mapping[str, Any]) -> str:
+    if engine_report.get("sensitivity_bound") is not None:
+        return "ndcvb_sensitivity_bound"
+    if engine_report.get("score_0_100") is not None:
+        return "ndcvb_score_0_100"
+    return "unavailable_below_floor"
+
+
+def _overall_provenance(
+    *,
+    request_record: NDCVBPackagingRequest,
+    engine_report: Mapping[str, Any],
+    battery_gates: Sequence[NDCVBBatteryGate],
+) -> list[str]:
+    refs: list[str] = [
+        request_record.artifact_ref,
+        request_record.evidence_ref,
+    ]
+    if request_record.run_ref:
+        refs.append(request_record.run_ref)
+    for correspondent in engine_report.get("correspondent_scores", []):
+        if isinstance(correspondent, Mapping):
+            source = correspondent.get("source")
+            if isinstance(source, str) and source.strip():
+                refs.append(source.strip())
+    for gate in battery_gates:
+        refs.extend(gate.provenance)
+    return list(dict.fromkeys(refs))
+
+
+def _required_text(value: Any, field: str) -> str:
+    text = _optional_text(value, field)
+    if text is None:
+        raise NDCVBApiHarnessError(f"{field} is required")
+    return text
+
+
+def _optional_text(value: Any, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise NDCVBApiHarnessError(f"{field} must be a string")
+    text = value.strip()
+    if not text:
+        raise NDCVBApiHarnessError(f"{field} must not be empty")
+    return text
+
+
+def _unit_float(value: Any, *, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise NDCVBApiHarnessError(f"{field} must be a number in [0.0, 1.0]")
+    number = float(value)
+    if not math.isfinite(number) or number < 0.0 or number > 1.0:
+        raise NDCVBApiHarnessError(f"{field} must be a number in [0.0, 1.0]")
+    return number
+
+
+def _provenance_tuple(value: Any, *, field: str) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise NDCVBApiHarnessError(f"{field} must be a non-empty string sequence")
+    items = tuple(_required_text(item, field) for item in value)
+    if not items:
+        raise NDCVBApiHarnessError(f"{field} must be a non-empty string sequence")
+    return items
+
+
+__all__ = [
+    "NDCVB_API_HARNESS_VERSION",
+    "NDCVB_API_SCHEMA",
+    "NDCVB_PHASE",
+    "NDCVB_PRODUCT_SURFACE_ID",
+    "NDCVB_REQUIRED_BATTERY_GATE_COUNT",
+    "NDCVBApiHarnessError",
+    "NDCVBApiStatus",
+    "NDCVBBatteryGate",
+    "NDCVBPackagingRequest",
+    "package_ndcvb_detection_result",
+]
