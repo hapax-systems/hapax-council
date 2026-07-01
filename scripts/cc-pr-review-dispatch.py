@@ -750,10 +750,12 @@ def default_reviewer_runner(seat: review_team.Seat, family_cfg: dict[str, Any], 
 
 
 def _route_metadata_value(frontmatter: Mapping[str, Any], key: str) -> Any:
+    if key in frontmatter:
+        return frontmatter[key]
     nested = frontmatter.get("route_metadata")
     if isinstance(nested, Mapping) and key in nested:
         return nested[key]
-    return frontmatter.get(key)
+    return None
 
 
 def _missing_review_seat_authority(frontmatter: Mapping[str, Any]) -> list[str]:

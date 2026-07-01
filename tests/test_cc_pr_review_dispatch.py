@@ -503,6 +503,27 @@ class TestReviewSeatAdmissionContract:
         assert fields["mutation_surface"] == "none"
         assert fields["quality_floor"] == "frontier_review_required"
 
+    def test_review_seat_route_metadata_prefers_top_level_over_nested(self, tmp_path: Path) -> None:
+        note = _write_task(_make_vault(tmp_path))
+        frontmatter = _task_frontmatter(note)
+        top_level_risk_flags = dict(frontmatter["risk_flags"])
+        top_level_verification = dict(frontmatter["verification_surface"])
+        frontmatter["route_metadata"] = {
+            "risk_flags": {"governance_sensitive": True, "public_claim_sensitive": True},
+            "verification_surface": {"deterministic_tests": ["stale nested command"]},
+            "context_shape": {"codebase_locality": "stale-nested"},
+        }
+
+        fields = dispatch._review_seat_task_fields(
+            frontmatter,
+            note_path=note,
+            task_id=str(frontmatter["task_id"]),
+        )
+
+        assert fields["risk_flags"] == top_level_risk_flags
+        assert fields["verification_surface"] == top_level_verification
+        assert fields["context_shape"] == frontmatter["context_shape"]
+
     def test_missing_review_family_route_id_blocks_admission(self, tmp_path: Path) -> None:
         note = _write_task(_make_vault(tmp_path))
         admission = _admit_glm_review_seat(
