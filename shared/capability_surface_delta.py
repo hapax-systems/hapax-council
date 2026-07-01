@@ -643,30 +643,6 @@ def build_surface_delta(
             remediation_ref=remediation_ref,
             summary=f"registered surface {prior.surface_id} was not observed",
         )
-    freshness = observed.freshness_state(now=checked_now)
-    if freshness is FreshnessState.STALE:
-        return CapabilitySurfaceDelta(
-            delta_id=delta_id_for(
-                observed.surface_id, DeltaKind.STALE_DETERMINATION, observed.descriptor_ref
-            ),
-            source=source,
-            observed_at=checked_now,
-            detected_by=detected_by,
-            surface_id=observed.surface_id,
-            delta_kind=DeltaKind.STALE_DETERMINATION,
-            prior_descriptor_ref=prior.descriptor_ref if prior else observed.descriptor_ref,
-            observed_descriptor_ref=observed.descriptor_ref,
-            evidence_refs=observed.evidence_refs,
-            authority_ceiling=observed.authority_ceiling,
-            affected_resource_pools=observed.resource_pools,
-            privacy_sensitive=observed.privacy_sensitive,
-            public_egress=observed.public_egress,
-            money_rail=observed.money_rail,
-            freshness_state=FreshnessState.STALE,
-            required_intake_action=RequiredIntakeAction.REFRESH_RECEIPT,
-            remediation_ref=remediation_ref,
-            summary=f"observed surface {observed.surface_id} is stale",
-        )
     if prior is None:
         return CapabilitySurfaceDelta(
             delta_id=delta_id_for(
@@ -691,6 +667,32 @@ def build_surface_delta(
             summary=f"new capability surface {observed.surface_id} observed",
         )
     if prior.significant_signature() == observed.significant_signature():
+        freshness = observed.freshness_state(now=checked_now)
+        if freshness is FreshnessState.STALE:
+            return CapabilitySurfaceDelta(
+                delta_id=delta_id_for(
+                    observed.surface_id,
+                    DeltaKind.STALE_DETERMINATION,
+                    observed.descriptor_ref,
+                ),
+                source=source,
+                observed_at=checked_now,
+                detected_by=detected_by,
+                surface_id=observed.surface_id,
+                delta_kind=DeltaKind.STALE_DETERMINATION,
+                prior_descriptor_ref=prior.descriptor_ref,
+                observed_descriptor_ref=observed.descriptor_ref,
+                evidence_refs=observed.evidence_refs,
+                authority_ceiling=observed.authority_ceiling,
+                affected_resource_pools=observed.resource_pools,
+                privacy_sensitive=observed.privacy_sensitive,
+                public_egress=observed.public_egress,
+                money_rail=observed.money_rail,
+                freshness_state=FreshnessState.STALE,
+                required_intake_action=RequiredIntakeAction.REFRESH_RECEIPT,
+                remediation_ref=remediation_ref,
+                summary=f"observed surface {observed.surface_id} is stale",
+            )
         return None
     delta_kind = _descriptor_change_kind(prior, observed)
     return CapabilitySurfaceDelta(

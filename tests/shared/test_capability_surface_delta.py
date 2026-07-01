@@ -118,6 +118,37 @@ def test_stale_observation_requires_refresh_receipt_and_blocks_demand_fulfillmen
     assert delta.allows_demand_fulfillment() is False
 
 
+def test_stale_new_capability_still_mints_intake() -> None:
+    observed = _descriptor(
+        surface_id="route.openrouter.qwen3-coder.high",
+        descriptor_ref="provider-catalog:openrouter:qwen3-coder:high",
+        surface_kind=SurfaceKind.MODEL_ROUTE,
+        authority_ceiling=AuthorityCeiling.FRONTIER_REVIEW_REQUIRED,
+        observed_at=datetime(2026, 7, 1, 3, 0, tzinfo=UTC),
+        stale_after="30m",
+        route_id="openrouter.headless.qwen3_coder_high",
+        carrier_platform="openrouter",
+        model_id="qwen3-coder",
+        provider_id="openrouter",
+        resource_pools=["api_paid_spend"],
+        money_rail=True,
+    )
+
+    delta = build_surface_delta(
+        prior=None,
+        observed=observed,
+        source="unit-test",
+        detected_by="test",
+        remediation_ref="cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+        now=NOW,
+    )
+
+    assert delta is not None
+    assert delta.delta_kind is DeltaKind.NEW_CAPABILITY
+    assert delta.required_intake_action is RequiredIntakeAction.MINT_INTAKE_ITEM
+    assert delta.freshness_state is FreshnessState.DELTA_PENDING
+
+
 def test_authority_change_is_descriptor_update_not_availability() -> None:
     observed = _descriptor(
         descriptor_ref="publication-bus:weblog:publish-capable",
@@ -150,6 +181,41 @@ def test_authority_change_is_descriptor_update_not_availability() -> None:
     assert delta.required_intake_action is RequiredIntakeAction.UPDATE_DESCRIPTOR
     assert delta.public_egress is True
     assert delta.allows_demand_fulfillment() is False
+
+
+def test_stale_changed_capability_still_updates_descriptor() -> None:
+    observed = _descriptor(
+        descriptor_ref="publication-bus:weblog:publish-capable",
+        surface_id="surface.publication_bus.weblog",
+        surface_kind=SurfaceKind.PUBLICATION_BUS,
+        authority_ceiling=AuthorityCeiling.FRONTIER_REVIEW_REQUIRED,
+        observed_at=datetime(2026, 7, 1, 3, 0, tzinfo=UTC),
+        stale_after="30m",
+        public_egress=True,
+        resource_pools=["public_egress"],
+    )
+    prior = _descriptor(
+        descriptor_ref="publication-bus:weblog:read-only",
+        surface_id="surface.publication_bus.weblog",
+        surface_kind=SurfaceKind.PUBLICATION_BUS,
+        authority_ceiling=AuthorityCeiling.READ_ONLY,
+        public_egress=False,
+        resource_pools=["public_egress"],
+    )
+
+    delta = build_surface_delta(
+        prior=prior,
+        observed=observed,
+        source="unit-test",
+        detected_by="test",
+        remediation_ref="cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+        now=NOW,
+    )
+
+    assert delta is not None
+    assert delta.delta_kind is DeltaKind.AUTHORITY_CHANGED
+    assert delta.required_intake_action is RequiredIntakeAction.UPDATE_DESCRIPTOR
+    assert delta.freshness_state is FreshnessState.DELTA_PENDING
 
 
 def test_unchanged_fresh_descriptor_produces_no_delta() -> None:
