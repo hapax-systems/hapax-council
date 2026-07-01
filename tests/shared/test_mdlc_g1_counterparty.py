@@ -15,6 +15,14 @@ from shared.mdlc_g1_counterparty import (
     verify_g1_counterparty,
 )
 
+EXPECTED_ELIGIBLE_CLASSES = {
+    "institution",
+    "market",
+    "corporation",
+    "sophisticated_party",
+    "the_wealthy",
+}
+
 
 def _counterparty(**overrides: object) -> dict[str, object]:
     data: dict[str, object] = {
@@ -24,6 +32,11 @@ def _counterparty(**overrides: object) -> dict[str, object]:
     }
     data.update(overrides)
     return data
+
+
+def test_eligible_counterparty_class_contract_is_exact() -> None:
+    assert ELIGIBLE_COUNTERPARTY_CLASSES == EXPECTED_ELIGIBLE_CLASSES
+    assert {item.value for item in MonDLCCounterpartyClass} == EXPECTED_ELIGIBLE_CLASSES
 
 
 @pytest.mark.parametrize("counterparty_class", sorted(ELIGIBLE_COUNTERPARTY_CLASSES))
@@ -38,6 +51,38 @@ def test_allowed_counterparty_classes_are_lit(counterparty_class: str) -> None:
     assert result.counterparty_class == counterparty_class
     assert f"counterparty-class:{counterparty_class}" in result.evidence_refs
     assert "counterparty:counterparty:test-market-maker" in result.evidence_refs
+
+
+def test_lit_result_to_dict_preserves_gate_contract() -> None:
+    result = verify_g1_counterparty(_counterparty(counterparty_class="market"))
+
+    data = result.to_dict()
+
+    assert data["validator"] == "mdlc_g1_counterparty"
+    assert data["status"] == "lit"
+    assert data["ok"] is True
+    assert data["reason"] == "counterparty_class_eligible"
+    assert data["refusal_reason"] is None
+    assert data["counterparty_class"] == "market"
+    assert data["counterparty_id"] == "counterparty:test-market-maker"
+    assert data["gate_result"] == {
+        "status": "lit",
+        "verdict": True,
+        "reason": "counterparty_class_eligible",
+        "evidence_refs": list(result.evidence_refs),
+    }
+
+
+def test_counterparty_to_dict_preserves_normalized_fields() -> None:
+    counterparty = require_g1_counterparty(
+        _counterparty(counterparty_class=" Institution ", counterparty_id=" counterparty:abc ")
+    )
+
+    assert counterparty.to_dict() == {
+        "counterparty_class": "institution",
+        "counterparty_id": "counterparty:abc",
+        "evidence_refs": ["counterparty-registry:test-market-maker"],
+    }
 
 
 def test_native_counterparty_class_is_accepted() -> None:
@@ -110,11 +155,33 @@ def test_invalid_counterparty_shape_refuses() -> None:
     assert result.refusal_reason is G1CounterpartyRefusalReason.INVALID_COUNTERPARTY
 
 
+def test_invalid_optional_counterparty_id_refuses_with_counterparty_reason() -> None:
+    result = verify_g1_counterparty(_counterparty(counterparty_id=123))
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is G1CounterpartyRefusalReason.INVALID_COUNTERPARTY
+
+
 def test_invalid_evidence_refs_has_specific_refusal_reason() -> None:
     result = verify_g1_counterparty(_counterparty(evidence_refs="not-a-sequence"))
 
     assert result.status is GateStatus.DARK
     assert result.refusal_reason is G1CounterpartyRefusalReason.INVALID_EVIDENCE_REFS
+
+
+def test_dark_result_to_dict_preserves_refusal_contract() -> None:
+    result = verify_g1_counterparty(_counterparty(counterparty_class="retail"))
+
+    data = result.to_dict()
+
+    assert data["status"] == "dark"
+    assert data["ok"] is False
+    assert data["refusal_reason"] == "ineligible_counterparty_class"
+    assert data["counterparty_class"] is None
+    assert data["counterparty_id"] is None
+    assert data["evidence_refs"] == []
+    assert data["gate_result"]["status"] == "dark"
+    assert data["gate_result"]["verdict"] is None
 
 
 def test_g1_does_not_decide_g2_venue_or_instrument_legality() -> None:
