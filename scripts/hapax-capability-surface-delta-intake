@@ -38,6 +38,10 @@ def print_json(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def same_path(left: Path, right: Path) -> bool:
+    return left.expanduser().resolve() == right.expanduser().resolve()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -64,24 +68,38 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         now = parse_utc(args.now) if args.now else datetime.now(UTC)
-        producer_file = load_capability_surface_delta_file(args.fixtures)
-        deltas = list(producer_file.deltas)
-        if args.detect_from_descriptors:
-            detected = detect_surface_deltas(
-                registered=producer_file.descriptors,
-                observed=producer_file.descriptors,
-                source="capability-surface-delta-intake:self-check",
-                detected_by="hapax-capability-surface-delta-intake",
-                remediation_ref=producer_file.generated_from[0],
-                now=now,
+        if (
+            args.apply
+            and same_path(args.fixtures, CAPABILITY_SURFACE_DELTA_FIXTURES)
+            and same_path(args.task_root, DEFAULT_CAPABILITY_SURFACE_DELTA_TASK_ROOT)
+        ):
+            result = {
+                "ok": False,
+                "error": (
+                    "refusing to apply checked-in capability-surface delta fixtures to "
+                    "the default task vault; next action: pass a live producer file with "
+                    "--fixtures or use a non-default --task-root for fixture validation"
+                ),
+            }
+        else:
+            producer_file = load_capability_surface_delta_file(args.fixtures)
+            deltas = list(producer_file.deltas)
+            if args.detect_from_descriptors:
+                detected = detect_surface_deltas(
+                    registered=producer_file.descriptors,
+                    observed=producer_file.descriptors,
+                    source="capability-surface-delta-intake:self-check",
+                    detected_by="hapax-capability-surface-delta-intake",
+                    remediation_ref=producer_file.generated_from[0],
+                    now=now,
+                )
+                deltas.extend(detected)
+            result = write_capability_surface_delta_tasks(
+                deltas,
+                task_root=args.task_root,
+                generated_at=now,
+                apply=args.apply,
             )
-            deltas.extend(detected)
-        result = write_capability_surface_delta_tasks(
-            deltas,
-            task_root=args.task_root,
-            generated_at=now,
-            apply=args.apply,
-        )
     except CapabilitySurfaceDeltaError as exc:
         result = {"ok": False, "error": str(exc)}
     except ValueError as exc:

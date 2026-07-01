@@ -134,6 +134,16 @@ def test_apply_writes_delta_tasks_and_is_idempotent(tmp_path: Path) -> None:
     assert len(second["skipped_existing"]) == 3
 
 
+def test_apply_refuses_default_fixture_to_default_task_vault() -> None:
+    result = _run("--now", NOW, "--apply", "--json")
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert "refusing to apply checked-in capability-surface delta fixtures" in payload["error"]
+    assert "next action: pass a live producer file" in payload["error"]
+
+
 def test_cli_accepts_live_producer_file_without_fixture_set_id(tmp_path: Path) -> None:
     producer = tmp_path / "producer.json"
     task_root = tmp_path / "tasks"
