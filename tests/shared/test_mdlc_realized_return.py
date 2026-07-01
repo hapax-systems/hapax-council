@@ -229,6 +229,22 @@ def test_stripe_payment_intent_measurement_scores_lit_with_two_witness_refs() ->
     assert scored.verdict is MonDLCVerdict.CORROBORATED
 
 
+def test_accepted_result_default_detail_is_neutral() -> None:
+    result = realized_return_mod.RealizedReturnRailResult(
+        status=realized_return_mod.RealizedReturnStatus.ACCEPTED,
+        measurement=None,
+        refusal_reason=None,
+        event_kind="payment_intent_succeeded",
+        amount_minor_units=2500,
+        currency="USD",
+        observed_at=NOW,
+        evidence_refs=("receipt://payment/test/accepted",),
+    )
+
+    assert result.detail == "no detail supplied"
+    assert "next action:" not in result.to_dict()["detail"]
+
+
 def test_stripe_payment_intent_from_receiver_refuses_without_source_sign_witness() -> None:
     event = StripePaymentLinkRailReceiver().ingest_webhook(
         _stripe_payment_intent_payload(amount=-2500),

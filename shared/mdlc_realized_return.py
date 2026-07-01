@@ -157,16 +157,11 @@ class RealizedReturnRailResult:
     observed_at: datetime | None
     evidence_refs: tuple[str, ...]
     source_class: str = "payment_event"
-    detail: str = (
-        "no detail supplied; next action: do not score this event; preserve refusal_reason "
-        "for ratchet-ledger/CCTV reconciliation"
-    )
+    detail: str = "no detail supplied"
 
     def __post_init__(self) -> None:
-        if self.status is not RealizedReturnStatus.REFUSED:
-            return
         detail = self.detail.strip() or "refused rail event"
-        if "next action:" not in detail.casefold():
+        if self.status is RealizedReturnStatus.REFUSED and "next action:" not in detail.casefold():
             detail = (
                 f"{detail}; next action: do not score this event; preserve refusal_reason "
                 "for ratchet-ledger/CCTV reconciliation"
