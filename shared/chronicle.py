@@ -1,7 +1,9 @@
 """shared/chronicle.py — Unified observability event store.
 
 Provides a frozen ChronicleEvent dataclass, record/query/trim functions,
-and OTel span context extraction. Events are persisted as JSONL to /dev/shm.
+and OTel span context extraction. Default-path events are persisted as JSONL
+to /dev/shm, while Stage0 receipt/data rows are first mirrored to the durable
+JSONL sink so reboot/trim loss of tmpfs is not authoritative for those rows.
 
 Per cc-task ``chronicle-event-evidence-envelope-migration`` (WSJF 9.4),
 events now carry an optional **evidence envelope** — durable event_id,
@@ -375,8 +377,6 @@ def _query_durable_chronicle(
             ev = ChronicleEvent.from_json(json.dumps(row["payload"]))
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             continue
-        if ev.ts < since:
-            break
         if _matches_filters(
             ev,
             since=since,
@@ -489,7 +489,7 @@ def query(
         event_type is not None and event_type.startswith(STAGE0_EVENT_TYPE_PREFIXES)
     )
     if actual_path == CHRONICLE_FILE and (
-        not actual_path.exists() or query_is_stage0 or (source is None and event_type is None)
+        not actual_path.exists() or query_is_stage0 or source is None or event_type is None
     ):
         seen_ids = {ev.event_id for ev in results}
         for ev in _query_durable_chronicle(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from pathlib import Path
 
@@ -689,8 +690,10 @@ class TestDurableSinkIntegration:
         assert is_stage0_event(_make_event(source="gate_log"))
         assert is_stage0_event(_make_event(source="narration_triad"))
         assert is_stage0_event(_make_event(source="payment_processors.lightning"))
+        assert is_stage0_event(_make_event(source="engine", event_type="apperception.tick"))
         assert is_stage0_event(_make_event(source="engine", event_type="payment.received"))
         assert is_stage0_event(_make_event(source="engine", event_type="gate.allow"))
+        assert is_stage0_event(_make_event(source="engine", event_type="speech.public"))
         assert not is_stage0_event(_make_event(source="engine", event_type="rule.matched"))
 
     def test_record_writes_durable_before_volatile(
@@ -740,6 +743,54 @@ class TestDurableSinkIntegration:
 
         chronicle_mod.CHRONICLE_FILE.unlink()
         assert [ev.event_id for ev in query(since=0.0)] == [stage0.event_id]
+
+    def test_query_partial_filters_read_durable_after_volatile_reboot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._configure_durable_sink(tmp_path, monkeypatch)
+        stage0 = _make_event(source="engine", event_type="payment.received", ts=time.time())
+        record(stage0)
+
+        import shared.chronicle as chronicle_mod
+
+        chronicle_mod.CHRONICLE_FILE.unlink()
+        by_source = query(since=0.0, source="engine")
+        by_event_type = query(since=0.0, event_type="payment.received")
+        assert [ev.event_id for ev in by_source] == [stage0.event_id]
+        assert [ev.event_id for ev in by_event_type] == [stage0.event_id]
+
+    def test_durable_query_does_not_assume_timestamp_order(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._configure_durable_sink(tmp_path, monkeypatch)
+        now = time.time()
+        newer = _make_event(source="gate_log", event_type="gate.allow", ts=now)
+        older = _make_event(source="gate_log", event_type="gate.allow", ts=now - 3600)
+        record(newer)
+        record(older)
+
+        import shared.chronicle as chronicle_mod
+
+        chronicle_mod.CHRONICLE_FILE.unlink()
+        results = query(since=now - 60, source="gate_log")
+        assert [ev.event_id for ev in results] == [newer.event_id]
+
+    def test_record_recreates_volatile_dir_after_reboot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._configure_durable_sink(tmp_path, monkeypatch)
+        now = time.time()
+        first = _make_event(source="gate_log", event_type="gate.allow", ts=now - 10)
+        record(first)
+
+        import shared.chronicle as chronicle_mod
+
+        shutil.rmtree(chronicle_mod.CHRONICLE_FILE.parent)
+        second = _make_event(source="gate_log", event_type="gate.allow", ts=now - 5)
+        record(second)
+
+        event_ids = [ev.event_id for ev in query(since=0.0, source="gate_log")]
+        assert event_ids == [second.event_id, first.event_id]
 
     def test_trim_leaves_durable_rows(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
