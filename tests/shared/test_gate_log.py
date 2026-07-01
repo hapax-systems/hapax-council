@@ -144,3 +144,28 @@ def test_default_gate_log_durable_payload_is_scrubbed(
     content = (durable_root / "gate-log.jsonl").read_text(encoding="utf-8")
     assert "ghp_" not in content
     assert "[REDACTED:github_token]" in content
+
+
+def test_default_gate_log_durable_payload_scrubs_structured_secret_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    durable_root = _configure_durable_sink(tmp_path, monkeypatch)
+    monkeypatch.setattr("shared.gate_log.DEFAULT_GATE_LOG", tmp_path / "gate-events.jsonl")
+
+    append_gate_event(
+        GateEvent(
+            route="coding",
+            routing_class="edit-refine-iterate:single-file",
+            requirement_vector={
+                "api_key": "hunter2",
+                "nested": {"prompt": "private routing text"},
+            },
+            task_hash="abc123",
+        )
+    )
+
+    content = (durable_root / "gate-log.jsonl").read_text(encoding="utf-8")
+    assert "hunter2" not in content
+    assert "private routing text" not in content
+    assert "[REDACTED:secret_assignment]" in content
+    assert "[REDACTED:private_text]" in content

@@ -20,7 +20,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from shared.durable_jsonl_sink import DurableJsonlSink
-from shared.transcript_scrubber import assert_clean, scrub
+from shared.transcript_scrubber import scrub_structured_value
 
 INDEX_PATH = Path("/dev/shm/hapax-daimonion/public-speech-events.jsonl")
 
@@ -74,20 +74,8 @@ def compute_utterance_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _scrub_durable_value(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(k): _scrub_durable_value(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_scrub_durable_value(v) for v in value]
-    if isinstance(value, str):
-        cleaned = scrub(value).text
-        assert_clean(cleaned)
-        return cleaned
-    return value
-
-
 def _append_durable_public_speech_event(record: PublicSpeechEventRecord) -> None:
-    payload = _scrub_durable_value(json.loads(record.model_dump_json()))
+    payload = scrub_structured_value(json.loads(record.model_dump_json()))
     DurableJsonlSink().append(
         stream_id="public-speech-event",
         data_class="public_speech_event_witness",
@@ -97,8 +85,16 @@ def _append_durable_public_speech_event(record: PublicSpeechEventRecord) -> None
     )
 
 
-def append_public_speech_event(record: PublicSpeechEventRecord, path: Path | None = None) -> None:
-    actual_path = path if path is not None else INDEX_PATH
+def append_public_speech_event(
+    record: PublicSpeechEventRecord, path: Path | str | None = None
+) -> None:
+    """Append one record, mirroring the default index path to the durable sink first.
+
+    Passing ``None`` uses :data:`INDEX_PATH` and triggers the Stage0 durable
+    witness write before the tmpfs append. Passing an explicit path preserves the
+    caller's local JSONL-only behavior.
+    """
+    actual_path = Path(path) if path is not None else INDEX_PATH
     if actual_path == INDEX_PATH:
         _append_durable_public_speech_event(record)
 

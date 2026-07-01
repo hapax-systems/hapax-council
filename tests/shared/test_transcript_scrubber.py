@@ -21,6 +21,7 @@ from shared.transcript_scrubber import (
     assert_clean,
     load_secret_values,
     scrub,
+    scrub_structured_value,
 )
 
 
@@ -203,3 +204,21 @@ def test_short_env_value_not_denylisted(tmp_path: Path) -> None:
     assert "8051" not in load_secret_values(env)
     out = _scrub("the api is on port 8051 in debug true mode", env)
     assert out == "the api is on port 8051 in debug true mode"
+
+
+def test_structured_scrub_uses_secret_key_context() -> None:
+    scrubbed = scrub_structured_value({"nested": {"api_key": "hunter2"}})
+    assert scrubbed == {"nested": {"api_key": "[REDACTED:secret_assignment]"}}
+
+
+def test_structured_scrub_preserves_hash_but_redacts_text() -> None:
+    scrubbed = scrub_structured_value(
+        {
+            "utterance_hash": "abc123",
+            "utterance_text": "private phrase",
+        }
+    )
+    assert scrubbed == {
+        "utterance_hash": "abc123",
+        "utterance_text": "[REDACTED:private_text]",
+    }

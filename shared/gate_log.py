@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from shared.durable_jsonl_sink import DurableJsonlSink
 from shared.route_metadata_schema import LearningEligibility
-from shared.transcript_scrubber import assert_clean, scrub
+from shared.transcript_scrubber import scrub_structured_value
 
 # Persistent (NOT tmpfs): gate history must survive a reboot to be a measurement
 # substrate. ``~/.cache/hapax`` is on the NVMe; ``/tmp`` / ``/dev/shm`` are tmpfs
@@ -63,20 +63,8 @@ class GateEvent(BaseModel):
     provenance: Provenance = "unknown"  # only "witnessed" may move a posterior (see Provenance)
 
 
-def _scrub_durable_value(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(k): _scrub_durable_value(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_scrub_durable_value(v) for v in value]
-    if isinstance(value, str):
-        cleaned = scrub(value).text
-        assert_clean(cleaned)
-        return cleaned
-    return value
-
-
 def _append_durable_gate_event(event: GateEvent) -> None:
-    payload = _scrub_durable_value(json.loads(event.model_dump_json()))
+    payload = scrub_structured_value(json.loads(event.model_dump_json()))
     DurableJsonlSink().append(
         stream_id="gate-log",
         data_class="gate_event",

@@ -218,6 +218,31 @@ class TestAppendAndRead:
         assert "hello world" not in json.dumps(rows[0])
         assert "public_claim_authorized" not in rows[0]["payload"]
 
+    def test_default_append_scrubs_structured_private_payload(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shared.durable_jsonl_sink as sink_mod
+
+        durable_root = tmp_path / "durable"
+        durable_root.mkdir()
+        monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(durable_root))
+        monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "btrfs")
+        monkeypatch.setattr("shared.public_speech_index.INDEX_PATH", tmp_path / "events.jsonl")
+
+        append_public_speech_event(
+            _record(
+                route_decision={"destination": "livestream", "api_key": "hunter2"},
+                tts_result={"status": "completed", "transcript": "hello world"},
+                playback_result={"nested": {"access_token": "hunter2"}},
+            )
+        )
+
+        content = (durable_root / "public-speech-event.jsonl").read_text(encoding="utf-8")
+        assert "hunter2" not in content
+        assert "hello world" not in content
+        assert "[REDACTED:secret_assignment]" in content
+        assert "[REDACTED:private_text]" in content
+
     def test_default_append_missing_durable_root_refuses_before_index(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
