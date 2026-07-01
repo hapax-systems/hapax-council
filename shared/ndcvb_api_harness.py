@@ -31,6 +31,26 @@ _REQUEST_KEYS: Final = frozenset(
         "purpose",
     }
 )
+_VERDICT_KEYS: Final = frozenset(
+    {
+        "bound",
+        "correspondent",
+        "kind",
+        "rationale",
+        "rendered",
+        "source",
+        "verdict",
+    }
+)
+_BATTERY_GATE_KEYS: Final = frozenset(
+    {
+        "confidence",
+        "detail",
+        "gate_id",
+        "passed",
+        "provenance",
+    }
+)
 _FORBIDDEN_REQUEST_KEYS: Final = frozenset(
     {
         "client",
@@ -56,11 +76,17 @@ _FORBIDDEN_REQUEST_KEYS: Final = frozenset(
 )
 _REQUEST_NEXT_ACTION: Final = (
     "next_action=send only request_id, artifact_ref, evidence_ref, optional run_ref, "
-    "and optional purpose; do not pass raw payload, customer, tenant, or user data"
+    "and optional/defaulted purpose; do not pass raw payload, customer, tenant, or user data"
+)
+_VERDICT_NEXT_ACTION: Final = (
+    "next_action=send only NDCVB verdict-shaped fields: correspondent, kind, bound, "
+    "rationale, source, rendered, or verdict; do not pass raw payload, customer, "
+    "tenant, or user data"
 )
 _BATTERY_NEXT_ACTION: Final = (
     "next_action=provide exactly four gate mappings with unique gate_id, boolean "
-    "passed, confidence in [0.0, 1.0], and non-empty provenance refs"
+    "passed, confidence in [0.0, 1.0], non-empty provenance refs, and optional detail; "
+    "do not pass raw payload, customer, tenant, or user data"
 )
 _TEXT_NEXT_ACTION: Final = "next_action=provide a non-empty string reference value"
 
@@ -91,36 +117,27 @@ class NDCVBPackagingRequest:
     run_ref: str | None = None
     purpose: str = "operator_internal_phase0_packaging"
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "request_id", _required_text(self.request_id, "request_id"))
+        object.__setattr__(self, "artifact_ref", _required_text(self.artifact_ref, "artifact_ref"))
+        object.__setattr__(self, "evidence_ref", _required_text(self.evidence_ref, "evidence_ref"))
+        object.__setattr__(self, "run_ref", _optional_text(self.run_ref, "run_ref"))
+        object.__setattr__(
+            self,
+            "purpose",
+            _optional_text(self.purpose, "purpose") or "operator_internal_phase0_packaging",
+        )
+
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> NDCVBPackagingRequest:
         """Build a strict request descriptor from API-like input."""
 
-        raw_keys = set(raw)
-        non_string_keys = [key for key in raw_keys if not isinstance(key, str)]
-        if non_string_keys:
-            raise NDCVBApiHarnessError(
-                _with_next_action(
-                    "phase-0 harness request keys must be strings",
-                    _REQUEST_NEXT_ACTION,
-                )
-            )
-        forbidden = sorted(raw_keys & _FORBIDDEN_REQUEST_KEYS)
-        if forbidden:
-            raise NDCVBApiHarnessError(
-                _with_next_action(
-                    "phase-0 harness accepts refs only; forbidden request keys: "
-                    + ", ".join(forbidden),
-                    _REQUEST_NEXT_ACTION,
-                )
-            )
-        unknown = sorted(raw_keys - _REQUEST_KEYS)
-        if unknown:
-            raise NDCVBApiHarnessError(
-                _with_next_action(
-                    "phase-0 harness request has unsupported keys: " + ", ".join(unknown),
-                    _REQUEST_NEXT_ACTION,
-                )
-            )
+        _validate_mapping_keys(
+            raw,
+            allowed_keys=_REQUEST_KEYS,
+            next_action=_REQUEST_NEXT_ACTION,
+            label="phase-0 harness request",
+        )
         return cls(
             request_id=_required_text(raw.get("request_id"), "request_id"),
             artifact_ref=_required_text(raw.get("artifact_ref"), "artifact_ref"),
@@ -154,10 +171,34 @@ class NDCVBBatteryGate:
     provenance: tuple[str, ...]
     detail: str = ""
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "gate_id", _required_text(self.gate_id, "gate_id"))
+        if not isinstance(self.passed, bool):
+            raise NDCVBApiHarnessError(
+                _with_next_action("battery gate passed must be a boolean", _BATTERY_NEXT_ACTION)
+            )
+        object.__setattr__(
+            self,
+            "confidence",
+            _unit_float(self.confidence, field="confidence"),
+        )
+        object.__setattr__(
+            self,
+            "provenance",
+            _provenance_tuple(self.provenance, field="provenance"),
+        )
+        object.__setattr__(self, "detail", _optional_text(self.detail, "detail") or "")
+
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> NDCVBBatteryGate:
         """Build one battery-gate receipt from API-like input."""
 
+        _validate_mapping_keys(
+            raw,
+            allowed_keys=_BATTERY_GATE_KEYS,
+            next_action=_BATTERY_NEXT_ACTION,
+            label="battery gate",
+        )
         gate_id = _required_text(raw.get("gate_id"), "gate_id")
         passed = raw.get("passed")
         if not isinstance(passed, bool):
@@ -201,6 +242,7 @@ def package_ndcvb_detection_result(
     """
 
     request_record = _coerce_request(request)
+    _validate_verdict_inputs(verdicts)
     gate_records = _coerce_battery_gates(battery_gates)
     engine_report = evaluate_ndcvb_axis_b(verdicts)
     battery_report = _battery_report(gate_records)
@@ -263,6 +305,62 @@ def _coerce_request(
             )
         )
     return NDCVBPackagingRequest.from_mapping(request)
+
+
+def _validate_verdict_inputs(verdicts: Sequence[Mapping[str, Any] | str]) -> None:
+    if isinstance(verdicts, (str, bytes)) or not isinstance(verdicts, Sequence):
+        raise NDCVBApiHarnessError(
+            _with_next_action("verdicts must be a sequence", _VERDICT_NEXT_ACTION)
+        )
+    for verdict in verdicts:
+        if isinstance(verdict, str):
+            continue
+        if not isinstance(verdict, Mapping):
+            raise NDCVBApiHarnessError(
+                _with_next_action(
+                    "verdict must be a mapping or rendered verdict string",
+                    _VERDICT_NEXT_ACTION,
+                )
+            )
+        _validate_mapping_keys(
+            verdict,
+            allowed_keys=_VERDICT_KEYS,
+            next_action=_VERDICT_NEXT_ACTION,
+            label="NDCVB verdict",
+        )
+
+
+def _validate_mapping_keys(
+    raw: Mapping[object, Any],
+    *,
+    allowed_keys: frozenset[str],
+    next_action: str,
+    label: str,
+) -> None:
+    raw_keys = set(raw)
+    non_string_keys = [key for key in raw_keys if not isinstance(key, str)]
+    if non_string_keys:
+        raise NDCVBApiHarnessError(_with_next_action(f"{label} keys must be strings", next_action))
+    string_keys = {key for key in raw_keys if isinstance(key, str)}
+    forbidden = sorted(string_keys & _FORBIDDEN_REQUEST_KEYS)
+    if forbidden:
+        if label == "phase-0 harness request":
+            message = "phase-0 harness accepts refs only; forbidden request keys: " + ", ".join(
+                forbidden
+            )
+        else:
+            message = f"{label} accepts declared fields only; forbidden keys: " + ", ".join(
+                forbidden
+            )
+        raise NDCVBApiHarnessError(_with_next_action(message, next_action))
+    unknown = sorted(string_keys - allowed_keys)
+    if unknown:
+        raise NDCVBApiHarnessError(
+            _with_next_action(
+                f"{label} has unsupported keys: " + ", ".join(unknown),
+                next_action,
+            )
+        )
 
 
 def _coerce_battery_gates(

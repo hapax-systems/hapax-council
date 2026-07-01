@@ -175,6 +175,32 @@ def test_battery_gate_ids_are_unique_and_have_provenance() -> None:
         )
 
 
+def test_battery_gate_dataclass_constructor_enforces_public_contract() -> None:
+    with pytest.raises(NDCVBApiHarnessError, match="passed must be a boolean"):
+        NDCVBBatteryGate(  # type: ignore[arg-type]
+            gate_id="stimulus_capture",
+            passed="yes",
+            confidence=0.91,
+            provenance=("ndcvb:battery/stimulus_capture",),
+        )
+
+    with pytest.raises(NDCVBApiHarnessError, match="confidence must be a number"):
+        NDCVBBatteryGate(
+            gate_id="stimulus_capture",
+            passed=True,
+            confidence=float("nan"),
+            provenance=("ndcvb:battery/stimulus_capture",),
+        )
+
+    with pytest.raises(NDCVBApiHarnessError, match="provenance must be a non-empty"):
+        NDCVBBatteryGate(
+            gate_id="stimulus_capture",
+            passed=True,
+            confidence=0.91,
+            provenance=(),
+        )
+
+
 def test_forbidden_verdict_language_guard_remains_engine_owned() -> None:
     with pytest.raises(ForbiddenAxisBVerdictError):
         package_ndcvb_detection_result(
@@ -199,6 +225,32 @@ def test_phase0_request_rejects_customer_data_or_raw_payload_fields() -> None:
                 verdicts=["sycophancy: corroborated@0.88"],
                 battery_gates=_gates(),
             )
+
+
+def test_phase0_verdicts_and_battery_gates_reject_customer_payload_fields() -> None:
+    with pytest.raises(NDCVBApiHarnessError, match="NDCVB verdict.*forbidden keys.*next_action="):
+        package_ndcvb_detection_result(
+            request=_request(),
+            verdicts=[
+                {
+                    "correspondent": "sycophancy",
+                    "kind": "corroborated",
+                    "bound": 0.88,
+                    "source": "ndcvb:verdict/sycophancy",
+                    "raw_payload": "must-not-enter",
+                }
+            ],
+            battery_gates=_gates(),
+        )
+
+    with pytest.raises(NDCVBApiHarnessError, match="battery gate.*forbidden keys.*next_action="):
+        bad_gates = _gates()
+        bad_gates[0] = {**bad_gates[0], "customer_id": "must-not-enter"}
+        package_ndcvb_detection_result(
+            request=_request(),
+            verdicts=["sycophancy: corroborated@0.88"],
+            battery_gates=bad_gates,
+        )
 
 
 def test_phase0_request_and_battery_shapes_fail_with_harness_errors() -> None:
@@ -260,3 +312,31 @@ def test_unavailable_engine_confidence_is_explicit_hold(monkeypatch: pytest.Monk
     assert response["status"] == "hold"
     assert response["detection"]["confidence"] is None
     assert response["detection"]["confidence_basis"] == "unavailable_below_floor"
+
+
+def test_score_based_zero_confidence_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_evaluate(_verdicts: object) -> dict[str, object]:
+        return {
+            "kind": "corroborated",
+            "verdict": "corroborated@0.00",
+            "ok": True,
+            "score_0_100": 0,
+            "violations": [],
+            "scorer": "axis_b_ndcvb_integration_honesty",
+            "scorer_version": 1,
+            "dissociated_veto_required": False,
+            "floor_gate": {"ok": True},
+            "correspondent_scores": [],
+        }
+
+    monkeypatch.setattr(harness, "evaluate_ndcvb_axis_b", fake_evaluate)
+
+    response = package_ndcvb_detection_result(
+        request=_request(),
+        verdicts=["sycophancy: corroborated@0.00"],
+        battery_gates=_gates(),
+    )
+
+    assert response["status"] == "clear"
+    assert response["detection"]["confidence"] == 0.0
+    assert response["detection"]["confidence_basis"] == "ndcvb_score_0_100"
