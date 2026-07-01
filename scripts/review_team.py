@@ -15,8 +15,9 @@ CASE-ROUTING-OPERATIONALIZATION-20260609):
 Registry: ``config/review-lenses/registry.yaml``. Dossiers live beside the
 cc-task note as ``<task_id>.review-dossier.yaml`` (same pattern as acceptance
 receipts). Emergency bypass: ``HAPAX_REVIEW_TEAM_GATE_OFF=1`` disables only
-the admission blockers; the dispatcher killswitch is
-``HAPAX_REVIEW_TEAM_DISPATCH_OFF=1``.
+post-dossier admission blockers; it does not authorize dispatcher/provider
+invocation when route, quota, resource, or authority admission is missing. The
+dispatcher killswitch is ``HAPAX_REVIEW_TEAM_DISPATCH_OFF=1``.
 """
 
 from __future__ import annotations
@@ -40,6 +41,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.dispatcher_policy import (  # noqa: E402
+    DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION,
+    ROUTE_DECISION_LEDGER,
+    ROUTE_DECISION_SCHEMA_VERSION,
+    ROUTING_MODEL_VERSION,
+)
 from shared.failure_classification import (  # noqa: E402
     STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
     STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES,
@@ -48,9 +55,14 @@ from shared.failure_classification import (  # noqa: E402
     FailureCode,
     FailureReceipt,
 )
+from shared.route_metadata_schema import FreshnessState, build_demand_vector  # noqa: E402
 
 DEFAULT_REGISTRY_PATH = REPO_ROOT / "config" / "review-lenses" / "registry.yaml"
 LENS_DIR = REPO_ROOT / "config" / "review-lenses"
+DEFAULT_ROUTE_DECISION_LEDGER_PATH = (
+    Path.home() / ".cache" / "hapax" / "orchestration" / ROUTE_DECISION_LEDGER
+)
+ROUTE_DECISION_LEDGER_PATH = DEFAULT_ROUTE_DECISION_LEDGER_PATH
 
 #: Dossier filename suffix; the dossier lives beside the task note.
 REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
@@ -167,6 +179,11 @@ _STRUCTURED_PROVIDER_OUTAGE_ACTIONS = STRUCTURED_PROVIDER_OUTAGE_ACTIONS
 #: cannot self-certify a degradation (round-4 review finding).
 FAMILY_OUTAGE_STATE = Path.home() / ".cache" / "hapax" / "review-team" / "family-outage.json"
 FAMILY_OUTAGE_TTL_S = 2 * 3600
+REVIEW_SEAT_REVIEW_REQUIREMENT = {
+    "support_artifact_allowed": True,
+    "independent_review_required": True,
+    "authoritative_acceptor_profile": "frontier_full",
+}
 
 
 def _structured_zai_error_match_state(
@@ -398,6 +415,15 @@ def _witness_window(entry: Any) -> tuple[datetime | None, datetime | None]:
         dt = _parse_iso_datetime(entry)
         return dt, dt
     return None, None
+
+
+def _witness_route_ids(entry: Any) -> frozenset[str]:
+    if not isinstance(entry, Mapping):
+        return frozenset()
+    raw = entry.get("route_ids")
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(str(item) for item in raw if str(item).strip())
 
 
 GATE_KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_GATE_OFF"
@@ -1197,6 +1223,7 @@ def synthesize_dossier(
         "changed_file_count": changed_file_count,
         "changed_files": scoped_files,
         "constitution_notes": list(constitution_notes),
+        "route_admission_required": any("route_admissions" in r for r in reviews),
         "degraded_family_outage": degraded_outage,
         "post_recovery_rereview_required": bool(degraded_outage),
         "lenses": list(lenses),
@@ -1216,11 +1243,358 @@ def review_dossier_path(note_path: Path, task_id: str) -> Path:
     return note_path.parent / f"{task_id}{REVIEW_DOSSIER_SUFFIX}"
 
 
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def _string_mapping(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): str(item) for key, item in value.items()}
+
+
+def _valid_route_decision_created_at(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def _route_decision_schema_blockers(
+    record: Mapping[str, Any],
+    admission: Mapping[str, Any],
+    *,
+    prefix: str,
+) -> list[str]:
+    blockers: list[str] = []
+    scalar_expected = {
+        "decision_schema": ROUTE_DECISION_SCHEMA_VERSION,
+        "dimensional_route_receipt_schema": DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION,
+        "routing_model_version": ROUTING_MODEL_VERSION,
+        "decision": str(admission.get("route_policy_action") or ""),
+    }
+    for field, expected_value in scalar_expected.items():
+        if record.get(field) != expected_value:
+            blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:{field}")
+    if not _valid_route_decision_created_at(record.get("created_at")):
+        blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:created_at")
+    if not _string_mapping(record.get("candidate_snapshot_ref")).get("hash"):
+        blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:candidate_snapshot_ref")
+    if not isinstance(record.get("candidates"), list) or not record.get("candidates"):
+        blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:candidates")
+    if not _string_mapping(record.get("confidence")):
+        blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:confidence")
+    if str(admission.get("route_policy_action") or "") == "launch":
+        selected_route_id = str(record.get("selected_route_id") or "")
+        if selected_route_id != str(admission.get("route_id") or ""):
+            blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:selected_route_id")
+    return blockers
+
+
+def _route_decision_ledger_record(
+    ledger_path: Any,
+    decision_id: str,
+) -> tuple[Mapping[str, Any] | None, str | None]:
+    ledger_ref = str(ledger_path or "").strip()
+    if not ledger_ref:
+        return None, "ledger_missing"
+    path = Path(ledger_ref).expanduser()
+    try:
+        resolved_path = path.resolve(strict=False)
+        trusted_path = ROUTE_DECISION_LEDGER_PATH.expanduser().resolve(strict=False)
+    except OSError:
+        return None, "ledger_unreadable"
+    if resolved_path != trusted_path:
+        return None, "ledger_untrusted"
+    if not path.is_file():
+        return None, "ledger_unreadable"
+    try:
+        with path.open("r", encoding="utf-8") as ledger:
+            for line in ledger:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    return None, "ledger_malformed"
+                if (
+                    isinstance(record, Mapping)
+                    and str(record.get("decision_id") or "") == decision_id
+                ):
+                    return record, None
+    except OSError:
+        return None, "ledger_unreadable"
+    return None, "decision_missing"
+
+
+def _route_decision_ledger_blockers(
+    admission: Mapping[str, Any],
+    *,
+    reviewer_id: str,
+    prefix: str,
+    current_demand_ref: Mapping[str, Any] | None = None,
+) -> list[str]:
+    decision_id = str(admission.get("route_decision_id") or "").strip()
+    if not decision_id:
+        return []
+    record, error = _route_decision_ledger_record(
+        admission.get("route_decision_ledger"),
+        decision_id,
+    )
+    if record is None:
+        return [f"review_dossier_route_decision_{error}:{prefix}:{decision_id}"]
+
+    blockers = _route_decision_schema_blockers(record, admission, prefix=prefix)
+    expected = {
+        "task_id": str(admission.get("task_id") or ""),
+        "lane": f"review-seat-{reviewer_id}",
+        "route_id": str(admission.get("route_id") or ""),
+        "action": str(admission.get("route_policy_action") or ""),
+        "authority_case": str(admission.get("authority_case") or ""),
+    }
+    for field, expected_value in expected.items():
+        if str(record.get(field) or "") != expected_value:
+            blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:{field}")
+
+    admission_authority_case = str(admission.get("route_policy_authority_case") or "")
+    if (
+        admission_authority_case
+        and str(record.get("authority_case") or "") != admission_authority_case
+    ):
+        blockers.append(
+            f"review_dossier_route_decision_mismatch:{prefix}:route_policy_authority_case"
+        )
+
+    bool_fields = {
+        "launch_allowed": admission.get("route_policy_launch_allowed"),
+        "route_policy_green": admission.get("route_policy_green"),
+        "registry_freshness_green": admission.get("route_policy_registry_freshness_green"),
+        "quota_freshness_green": admission.get("route_policy_quota_freshness_green"),
+        "resource_freshness_green": admission.get("route_policy_resource_freshness_green"),
+    }
+    for field, expected_value in bool_fields.items():
+        if record.get(field) is not expected_value:
+            blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:{field}")
+
+    list_fields = {
+        "quota_evidence_refs": admission.get("route_policy_quota_evidence_refs"),
+        "resource_state_refs": admission.get("route_policy_resource_state_refs"),
+    }
+    for field, expected_value in list_fields.items():
+        if _string_list(record.get(field)) != _string_list(expected_value):
+            blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:{field}")
+    admission_demand_ref = _string_mapping(admission.get("route_policy_demand_vector_ref"))
+    record_demand_ref = _string_mapping(record.get("demand_vector_ref"))
+    if not admission_demand_ref or record_demand_ref != admission_demand_ref:
+        blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:demand_vector_ref")
+    current_demand = _string_mapping(current_demand_ref)
+    if current_demand and (
+        record_demand_ref.get("hash") != current_demand.get("hash")
+        or record_demand_ref.get("freshness_state") != current_demand.get("freshness_state")
+    ):
+        blockers.append(
+            f"review_dossier_route_decision_mismatch:{prefix}:current_demand_vector_ref"
+        )
+    return blockers
+
+
+def _current_route_demand_vector_ref(
+    frontmatter: Mapping[str, Any] | None,
+    *,
+    note_path: Path | None,
+    task_id: str,
+) -> dict[str, str] | None:
+    if not isinstance(frontmatter, Mapping):
+        return None
+
+    def route_metadata_value(key: str) -> Any:
+        if key in frontmatter:
+            return frontmatter[key]
+        nested = frontmatter.get("route_metadata")
+        if isinstance(nested, Mapping) and key in nested:
+            return nested[key]
+        return None
+
+    review_seat_fields = dict(frontmatter)
+    review_seat_fields["task_id"] = task_id
+    if note_path is not None:
+        review_seat_fields["__task_note_path"] = str(note_path)
+    route_metadata_schema = route_metadata_value("route_metadata_schema")
+    review_seat_fields["route_metadata_schema"] = (
+        route_metadata_schema if route_metadata_schema is not None else 1
+    )
+    review_seat_fields["quality_floor"] = "frontier_review_required"
+    review_seat_fields["authority_level"] = "support_non_authoritative"
+    review_seat_fields["mutation_surface"] = "none"
+    review_seat_fields["mutation_scope_refs"] = []
+    for key in ("risk_flags", "context_shape", "verification_surface", "route_constraints"):
+        value = route_metadata_value(key)
+        review_seat_fields[key] = value if value is not None else {}
+    review_seat_fields["review_requirement"] = REVIEW_SEAT_REVIEW_REQUIREMENT
+    review_seat_fields.pop("route_metadata", None)
+    try:
+        demand = build_demand_vector(
+            review_seat_fields,
+            note_path=str(note_path) if note_path is not None else None,
+            preserve_route_envelope_hold=True,
+        )
+    except ValueError:
+        return None
+    return {
+        "artifact_path": demand.work_item.note_path or demand.work_item.task_id,
+        "hash": demand.work_item.frontmatter_hash,
+        "freshness_state": FreshnessState.FRESH.value,
+    }
+
+
+def _route_admission_blockers(
+    review: Mapping[str, Any],
+    *,
+    task_id: str,
+    registry: Mapping[str, Any],
+    frontmatter: Mapping[str, Any] | None = None,
+    note_path: Path | None = None,
+) -> list[str]:
+    reviewer_id = str(review.get("id") or "missing")
+    reviewer_family = str(review.get("family") or "missing")
+    expected_authority_case = ""
+    expected_parent_spec = ""
+    if isinstance(frontmatter, Mapping):
+        expected_authority_case = str(frontmatter.get("authority_case") or "").strip()
+        expected_parent_spec = str(frontmatter.get("parent_spec") or "").strip()
+    expected_route_ids = {
+        str(entry.get("family")): str(entry.get("route_id") or "")
+        for entry in (registry.get("families") or [])
+        if isinstance(entry, Mapping)
+    }
+    expected_route_id = expected_route_ids.get(reviewer_family, "")
+    admissions = review.get("route_admissions")
+    if not isinstance(admissions, list) or not admissions:
+        return [f"review_dossier_route_admission_missing:{reviewer_id}"]
+
+    matching = [
+        admission
+        for admission in admissions
+        if isinstance(admission, Mapping) and str(admission.get("task_id") or "") == task_id
+    ]
+    if not matching:
+        return [f"review_dossier_route_admission_task_missing:{reviewer_id}:{task_id}"]
+
+    blockers: list[str] = []
+    current_demand_ref = _current_route_demand_vector_ref(
+        frontmatter,
+        note_path=note_path,
+        task_id=task_id,
+    )
+    if current_demand_ref is None:
+        blockers.append(f"review_dossier_route_current_demand_vector_unavailable:{reviewer_id}")
+    if not expected_route_id:
+        blockers.append(f"review_dossier_route_registry_missing:{reviewer_id}:{reviewer_family}")
+    for admission in matching:
+        route_id = str(admission.get("route_id") or "missing")
+        prefix = f"{reviewer_id}:{route_id}"
+        admission_seat_id = str(admission.get("seat_id") or "missing")
+        if admission_seat_id != reviewer_id:
+            blockers.append(
+                f"review_dossier_route_admission_seat_mismatch:{reviewer_id}:{admission_seat_id}"
+            )
+        admission_family = str(admission.get("family") or "missing")
+        if admission_family != reviewer_family:
+            blockers.append(
+                f"review_dossier_route_admission_family_mismatch:{reviewer_id}:"
+                f"{admission_family}!={reviewer_family}"
+            )
+        admission_authority_case = str(admission.get("authority_case") or "").strip()
+        if not expected_authority_case:
+            blockers.append(f"review_dossier_route_admission_authority_case_missing:{prefix}")
+        elif admission_authority_case != expected_authority_case:
+            blockers.append(
+                "review_dossier_route_admission_authority_case_mismatch:"
+                f"{prefix}:{admission_authority_case or 'missing'}!={expected_authority_case}"
+            )
+        admission_parent_spec = str(admission.get("parent_spec") or "").strip()
+        if not expected_parent_spec:
+            blockers.append(f"review_dossier_route_admission_parent_spec_missing:{prefix}")
+        elif admission_parent_spec != expected_parent_spec:
+            blockers.append(
+                "review_dossier_route_admission_parent_spec_mismatch:"
+                f"{prefix}:{admission_parent_spec or 'missing'}!={expected_parent_spec}"
+            )
+        if expected_route_id and route_id != expected_route_id:
+            blockers.append(
+                f"review_dossier_route_id_mismatch:{reviewer_id}:{route_id}!={expected_route_id}"
+            )
+        if admission.get("admitted") is not True:
+            reasons = [
+                str(reason)
+                for reason in (admission.get("blocked_reasons") or [])
+                if str(reason).strip()
+            ]
+            detail = ",".join(reasons) if reasons else "unknown"
+            blockers.append(f"review_dossier_route_admission_not_admitted:{prefix}:{detail}")
+        if admission.get("route_policy_action") != "launch":
+            blockers.append(f"review_dossier_route_policy_not_launch:{prefix}")
+        if admission.get("route_policy_launch_allowed") is not True:
+            blockers.append(f"review_dossier_route_policy_launch_not_allowed:{prefix}")
+        if admission.get("route_policy_green") is not True:
+            blockers.append(f"review_dossier_route_policy_not_green:{prefix}")
+        if admission.get("route_policy_registry_freshness_green") is not True:
+            blockers.append(f"review_dossier_route_registry_not_fresh:{prefix}")
+        quota_refs = admission.get("route_policy_quota_evidence_refs")
+        if admission.get("route_policy_quota_freshness_green") is not True:
+            blockers.append(f"review_dossier_route_quota_not_fresh:{prefix}")
+        if not isinstance(quota_refs, list) or not quota_refs:
+            blockers.append(f"review_dossier_route_quota_evidence_missing:{prefix}")
+        resource_refs = admission.get("route_policy_resource_state_refs")
+        if admission.get("route_policy_resource_freshness_green") is not True:
+            blockers.append(f"review_dossier_route_resource_not_fresh:{prefix}")
+        if not isinstance(resource_refs, list) or not resource_refs:
+            blockers.append(f"review_dossier_route_resource_evidence_missing:{prefix}")
+        if not str(admission.get("route_decision_id") or "").strip():
+            blockers.append(f"review_dossier_route_decision_missing:{prefix}")
+        blockers.extend(
+            _route_decision_ledger_blockers(
+                admission,
+                reviewer_id=reviewer_id,
+                prefix=prefix,
+                current_demand_ref=current_demand_ref,
+            )
+        )
+    return blockers
+
+
+def _frontmatter_requires_route_admissions(frontmatter: Mapping[str, Any] | None) -> bool:
+    if not isinstance(frontmatter, Mapping):
+        return False
+    nested = frontmatter.get("route_metadata")
+    nested_metadata = nested if isinstance(nested, Mapping) else {}
+    return bool(
+        frontmatter.get("route_metadata_schema")
+        or nested_metadata.get("route_metadata_schema")
+        or (frontmatter.get("authority_case") and frontmatter.get("parent_spec"))
+    )
+
+
+def _dossier_requires_route_admissions(
+    dossier: Mapping[str, Any],
+    frontmatter: Mapping[str, Any] | None,
+) -> bool:
+    return dossier.get(
+        "route_admission_required"
+    ) is True or _frontmatter_requires_route_admissions(frontmatter)
+
+
 def _dossier_validity_blockers(
     dossier: Mapping[str, Any],
     *,
     pr_head_sha: str | None,
     registry: Mapping[str, Any],
+    note_path: Path | None = None,
     frontmatter: Mapping[str, Any] | None = None,
     expected_task_id: str | None = None,
     pr_number: int | None = None,
@@ -1314,11 +1688,23 @@ def _dossier_validity_blockers(
                 raise TypeError("family outage witness is not a mapping")
             constituted = _parse_iso_datetime(dossier.get("constituted_at"))
             admitted_at = _coerce_datetime(admission_time, reference=constituted)
+            expected_route_ids = {
+                str(entry.get("family")): str(entry.get("route_id") or "")
+                for entry in registry["families"]
+                if isinstance(entry, Mapping)
+            }
             unwitnessed = []
             for fam in degraded_outage:
                 try:
-                    started, observed = _witness_window(witness_state.get(fam))
+                    witness_entry = witness_state.get(fam)
+                    started, observed = _witness_window(witness_entry)
                     if started is None or observed is None:
+                        unwitnessed.append(fam)
+                        continue
+                    expected_route_id = expected_route_ids.get(fam, "")
+                    if expected_route_id and expected_route_id not in _witness_route_ids(
+                        witness_entry
+                    ):
                         unwitnessed.append(fam)
                         continue
                     # Window model (#4246 re-design): the dossier is valid iff it was
@@ -1405,6 +1791,18 @@ def _dossier_validity_blockers(
         blockers.append(
             "review_dossier_unknown_reviewer_verdict:" + ",".join(sorted(unknown_verdicts))
         )
+    if _dossier_requires_route_admissions(dossier, frontmatter):
+        task_id = str(dossier.get("task_id") or "")
+        for review in reviews:
+            blockers.extend(
+                _route_admission_blockers(
+                    review,
+                    task_id=task_id,
+                    registry=registry,
+                    frontmatter=frontmatter,
+                    note_path=note_path,
+                )
+            )
 
     required_size = _required_team_size(sizing)
     if len(reviews) < required_size:
@@ -1526,6 +1924,7 @@ def review_dossier_validity_blockers(
         loaded,
         pr_head_sha=pr_head_sha,
         registry=registry,
+        note_path=note_path,
         frontmatter=frontmatter,
         expected_task_id=task_id,
         pr_number=pr_number,
@@ -1556,7 +1955,8 @@ def review_team_verdict_blockers(
     files are supplied, the recorded team class and lens set must match the
     same surface-derived scope used by the dispatcher.
     ``HAPAX_REVIEW_TEAM_GATE_OFF=1`` is the documented emergency bypass for
-    admission only; durable receipt minting must use
+    post-dossier admission only; it is not a dispatch-time/provider-use bypass.
+    Durable receipt minting must use
     :func:`review_dossier_validity_blockers` instead.
     """
 

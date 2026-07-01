@@ -239,6 +239,41 @@ def test_antigrav_agy_receipt_clears_unobservable_quota_catch22(tmp_path: Path) 
     assert "quota_telemetry_unknown" not in route.freshness.evidence.quota.blocked_reasons
 
 
+def test_glmcp_receipt_clears_static_review_route_freshness_blockers(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    reviewer = bin_dir / "hapax-glmcp-reviewer"
+    reviewer.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'hapax-glmcp-reviewer: ok secret=available base_url=https://api.z.ai/api/coding/paas/v4 model=glm-5 thinking=disabled timeout_seconds=900'\n",
+        encoding="utf-8",
+    )
+    reviewer.chmod(reviewer.stat().st_mode | stat.S_IXUSR)
+
+    result = _run_receipts(
+        tmp_path,
+        env={"HAPAX_GLMCP_BIN": str(reviewer)},
+        platform="glmcp",
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((tmp_path / "glmcp.json").read_text(encoding="utf-8"))
+    assert receipt["cli"]["available"] is True
+    assert receipt["cli"]["binary"] == str(reviewer)
+    assert "glmcp.review.direct" in receipt["routes"]
+    assert "quota_telemetry_unknown" in receipt["quota"]["reason_codes"]
+
+    registry = load_platform_capability_registry(REGISTRY, receipt_dir=tmp_path, now=NOW_DT)
+    route = registry.require("glmcp.review.direct")
+
+    assert route.route_state.value == "active"
+    assert "glmcp_review_seat_receipt_admission_required" not in route.blocked_reasons
+    assert "fresh_capability_evidence_absent" not in route.blocked_reasons
+    assert "fresh_resource_evidence_absent" not in route.blocked_reasons
+    assert "provider_docs_evidence_absent" not in route.blocked_reasons
+    assert "quota_telemetry_unknown" not in route.blocked_reasons
+
+
 def test_api_provider_gateway_receipt_allows_paid_gateway_dispatch(
     tmp_path: Path,
 ) -> None:

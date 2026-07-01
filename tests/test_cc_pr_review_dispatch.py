@@ -12,12 +12,18 @@ import importlib.util
 import json
 import subprocess
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import pytest
 import yaml
+
+from shared.dispatcher_policy import ROUTE_DECISION_LEDGER, DispatchPolicySources
+from shared.frontmatter import parse_frontmatter
+from shared.platform_capability_registry import PlatformCapabilityRegistry
+from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES, QuotaSpendLedger
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPTS = REPO_ROOT / "scripts"
@@ -74,6 +80,29 @@ pr: {pr}
 branch: feat/{pr}
 risk_tier: {risk_tier}
 quality_floor: {quality_floor}
+authority_level: authoritative
+mutation_surface: source
+mutation_scope_refs:
+  - shared/foo.py
+risk_flags:
+  governance_sensitive: false
+  privacy_or_secret_sensitive: false
+  public_claim_sensitive: false
+  aesthetic_theory_sensitive: false
+  audio_or_live_egress_sensitive: false
+  provider_billing_sensitive: false
+context_shape:
+  codebase_locality: module
+  vault_context_required: true
+  external_docs_required: false
+  currentness_required: false
+verification_surface:
+  deterministic_tests:
+    - uv run pytest tests/test_cc_pr_review_dispatch.py
+  static_checks: []
+  runtime_observation: []
+  operator_only: false
+review_requirement: {{}}
 authority_case: CASE-TEST
 parent_spec: docs/spec.md
 route_metadata_schema: 1
@@ -110,6 +139,68 @@ checklist:
     next-actions-on-error: pass
 ```
 """
+
+
+def _admitted_route_admission(
+    *,
+    seat_id: str = "glm-1",
+    family: str = "glm",
+    route_id: str = "glmcp.review.direct",
+) -> dict[str, Any]:
+    return {
+        "route_admission_schema": 1,
+        "seat_id": seat_id,
+        "family": family,
+        "task_id": "task-a",
+        "route_id": route_id,
+        "authority_case": "CASE-TEST",
+        "parent_spec": "docs/spec.md",
+        "route_decision_ledger": "/tmp/route-decisions.jsonl",
+        "route_decision_id": f"route-decision-{seat_id}",
+        "route_policy_action": "launch",
+        "route_policy_outcome": "launch",
+        "route_policy_reason_codes": ["policy_launch"],
+        "route_policy_launch_allowed": True,
+        "route_policy_green": True,
+        "route_policy_clog_state": "policy_green",
+        "route_policy_compatibility_mode": "none",
+        "route_policy_degraded_state": None,
+        "route_policy_registry_freshness_green": True,
+        "route_policy_quota_freshness_green": True,
+        "route_policy_quota_evidence_refs": [f"test:{route_id}:quota"],
+        "route_policy_resource_freshness_green": True,
+        "route_policy_resource_state_refs": [f"test:{route_id}:resource"],
+        "route_policy_route_selection_authority": False,
+        "route_policy_quality_floor_satisfied": True,
+        "route_policy_authority_allowed": True,
+        "route_policy_authority_case": "CASE-TEST",
+        "route_policy_demand_vector_ref": {
+            "artifact_path": "task-a",
+            "freshness_state": "fresh",
+            "hash": "frontmatter-hash-task-a",
+        },
+        "admitted": True,
+    }
+
+
+def test_glmcp_quota_hold_fails_closed_without_invoking_reviewer(tmp_path: Path) -> None:
+    reviewers = RecordingReviewers()
+    result, _, _, _ = _review(
+        tmp_path,
+        reviewers=reviewers,
+        policy_sources=_admitted_policy_sources(
+            now_iso="2026-06-11T21:00:00+00:00",
+            omit_quota_for={"glmcp.review.direct"},
+        ),
+    )
+
+    glm_reviews = [review for review in result["dossier"]["reviewers"] if review["family"] == "glm"]
+    assert glm_reviews
+    assert glm_reviews[0]["verdict"] == "reviewer-route-unavailable"
+    assert glm_reviews[0]["provider_invoked"] is False
+    assert "route_quota_not_fresh" in glm_reviews[0]["route_admission_diagnostic"]
+    assert all(family != "glm" for _, family, _ in reviewers.invocations)
+
 
 BLOCK_REPLY = """```yaml
 verdict: block
@@ -197,12 +288,136 @@ class RecordingReviewers:
         return self.replies.get(seat.family, self.replies.get(seat.id, GOOD_REPLY))
 
 
+def _stamp_before(now_iso: str) -> str:
+    now = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+    return (now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
+
+
+def _fresh_until_after(now_iso: str) -> str:
+    now = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+    return (now + timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+
+
+def _glmcp_admission_evidence_ref(*, observed_at: str, fresh_until: str) -> str:
+    return (
+        "relay-receipt:glmcp-quota-admission.yaml:"
+        "witness:supported-tool-usage-witness:"
+        "supported_tool:hapax-glmcp-reviewer:"
+        "endpoint:https://api.z.ai/api/coding/paas/v4:"
+        "model:glm-5:"
+        f"observed_at:{observed_at}:"
+        f"fresh_until:{fresh_until}"
+    )
+
+
+def _admitted_policy_sources(
+    *,
+    now_iso: str = "2026-06-11T21:00:00+00:00",
+    omit_quota_for: set[str] | None = None,
+) -> DispatchPolicySources:
+    observed_at = _stamp_before(now_iso)
+    fresh_until = _fresh_until_after(now_iso)
+    route_ids = {
+        "claude.headless.full",
+        "codex.headless.full",
+        "antigrav.interactive.full",
+        "glmcp.review.direct",
+    }
+    registry_payload = json.loads(
+        (REPO_ROOT / "config" / "platform-capability-registry.json").read_text(encoding="utf-8")
+    )
+    for route in registry_payload["routes"]:
+        if route["route_id"] not in route_ids:
+            continue
+        route["route_state"] = "active"
+        route["blocked_reasons"] = []
+        freshness = route["freshness"]
+        for key in (
+            "capability_checked_at",
+            "quota_checked_at",
+            "resource_checked_at",
+            "provider_docs_checked_at",
+        ):
+            freshness[key] = observed_at
+        for kind in ("capability", "quota", "resource", "provider_docs"):
+            freshness["evidence"][kind]["blocked_reasons"] = []
+            freshness["evidence"][kind]["evidence_refs"] = [
+                f"test:{route['route_id']}:{kind}:fresh"
+            ]
+        for score in route["capability_scores"].values():
+            score["observed_at"] = observed_at
+        for tool in route["tool_state"]:
+            tool["observed_at"] = observed_at
+    registry = PlatformCapabilityRegistry.model_validate(registry_payload)
+
+    omit_quota_for = omit_quota_for or set()
+    ledger_payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    ledger_payload["captured_at"] = observed_at
+    ledger_payload["generated_from"] = list(
+        dict.fromkeys(
+            [
+                *ledger_payload.get("generated_from", []),
+                "scripts/hapax-quota-telemetry-writer",
+            ]
+        )
+    )
+    for route_id in route_ids - omit_quota_for:
+        evidence_refs = [f"relay-receipt:{route_id}:quota:fresh"]
+        provider = "test-subscription"
+        if route_id == "glmcp.review.direct":
+            evidence_refs = [
+                _glmcp_admission_evidence_ref(observed_at=observed_at, fresh_until=fresh_until)
+            ]
+            provider = "z_ai-glm-coding-plan"
+        ledger_payload["quota_snapshots"].append(
+            {
+                "quota_snapshot_schema": 1,
+                "snapshot_id": f"quota-{route_id.replace('.', '-')}-fresh",
+                "captured_at": observed_at,
+                "fresh_until": fresh_until,
+                "route_id": route_id,
+                "provider": provider,
+                "capacity_pool": "subscription_quota",
+                "subscription_quota_state": "fresh",
+                "evidence_refs": evidence_refs,
+                "operator_visible_reason": f"test {route_id} quota fresh",
+            }
+        )
+    quota_ledger = QuotaSpendLedger.model_validate(ledger_payload)
+    return DispatchPolicySources(
+        registry=registry,
+        quota_ledger=quota_ledger,
+        quota_ledger_source="test",
+    )
+
+
+def _policy_kwargs(
+    tmp_path: Path,
+    *,
+    now_iso: str = "2026-06-11T21:00:00+00:00",
+) -> dict[str, Any]:
+    return {
+        "policy_sources": _admitted_policy_sources(now_iso=now_iso),
+        "route_decision_ledger_dir": tmp_path / "route-ledger",
+    }
+
+
 def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingReviewers, Path]:
     vault = _make_vault(tmp_path)
     note = _write_task(vault, **overrides.pop("task_kwargs", {}))
     gh = overrides.pop("gh", FakeGh())
     reviewers = overrides.pop("reviewers", RecordingReviewers())
+    now_iso = overrides.pop("now_iso", "2026-06-11T21:00:00+00:00")
+    policy_sources = overrides.pop("policy_sources", _admitted_policy_sources(now_iso=now_iso))
+    route_decision_ledger_dir = overrides.pop(
+        "route_decision_ledger_dir", tmp_path / "route-ledger"
+    )
     default_outage_state = dispatch.FAMILY_OUTAGE_STATE == dispatch.review_team.FAMILY_OUTAGE_STATE
+    old_review_team_route_decision_ledger_path = dispatch.review_team.ROUTE_DECISION_LEDGER_PATH
+    if route_decision_ledger_dir is not None:
+        dispatch.review_team.ROUTE_DECISION_LEDGER_PATH = (
+            Path(route_decision_ledger_dir) / ROUTE_DECISION_LEDGER
+        )
     if default_outage_state:
         old_dispatch_outage_state = dispatch.FAMILY_OUTAGE_STATE
         old_review_team_outage_state = dispatch.review_team.FAMILY_OUTAGE_STATE
@@ -218,16 +433,167 @@ def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingRe
         "reviewer_runner": reviewers,
         "wake_dir": tmp_path / "wake",
         "send_runner": lambda cmd: None,
-        "now_iso": "2026-06-11T21:00:00+00:00",
+        "now_iso": now_iso,
+        "policy_sources": policy_sources,
+        "route_decision_ledger_dir": route_decision_ledger_dir,
     }
     kwargs.update(overrides)
     try:
         result = dispatch.review_pr(42, **kwargs)
     finally:
+        dispatch.review_team.ROUTE_DECISION_LEDGER_PATH = old_review_team_route_decision_ledger_path
         if default_outage_state:
             dispatch.FAMILY_OUTAGE_STATE = old_dispatch_outage_state
             dispatch.review_team.FAMILY_OUTAGE_STATE = old_review_team_outage_state
     return result, gh, reviewers, note
+
+
+def _task_frontmatter(note: Path) -> dict[str, Any]:
+    frontmatter, _ = parse_frontmatter(note)
+    assert frontmatter
+    return frontmatter
+
+
+def _review_seat_family_cfg(
+    *, route_id: str | None = "glmcp.review.direct", route_waiver: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    cfg: dict[str, Any] = {
+        "family": "glm",
+        "reviewer_command": ["scripts/hapax-glmcp-reviewer"],
+        "timeout_seconds": 30,
+    }
+    if route_id is not None:
+        cfg["route_id"] = route_id
+    if route_waiver is not None:
+        cfg["route_waiver"] = route_waiver
+    return cfg
+
+
+def _admit_glm_review_seat(
+    tmp_path: Path,
+    frontmatter: dict[str, Any],
+    *,
+    family_cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return dispatch._admit_review_seat_for_task(
+        seat=dispatch.review_team.Seat(id="glm-1", family="glm"),
+        family_cfg=family_cfg or _review_seat_family_cfg(),
+        task_id=str(frontmatter["task_id"]),
+        note_path=tmp_path / "task-a.md",
+        frontmatter=frontmatter,
+        policy_sources=_admitted_policy_sources(),
+        route_decision_ledger_dir=tmp_path / "route-ledger",
+        now=datetime.fromisoformat("2026-06-11T21:00:00+00:00"),
+    )
+
+
+class TestReviewSeatAdmissionContract:
+    def test_review_seat_uses_fixed_support_review_requirement(self, tmp_path: Path) -> None:
+        note = _write_task(_make_vault(tmp_path))
+        frontmatter = _task_frontmatter(note)
+        frontmatter["review_requirement"] = {"independent_review_required": False}
+
+        fields = dispatch._review_seat_task_fields(
+            frontmatter,
+            note_path=note,
+            task_id=str(frontmatter["task_id"]),
+        )
+
+        assert fields["review_requirement"] == dispatch.REVIEW_SEAT_REVIEW_REQUIREMENT
+        assert fields["mutation_surface"] == "none"
+        assert fields["quality_floor"] == "frontier_review_required"
+
+    def test_review_seat_route_metadata_prefers_top_level_over_nested(self, tmp_path: Path) -> None:
+        note = _write_task(_make_vault(tmp_path))
+        frontmatter = _task_frontmatter(note)
+        top_level_risk_flags = dict(frontmatter["risk_flags"])
+        top_level_verification = dict(frontmatter["verification_surface"])
+        frontmatter["route_metadata"] = {
+            "risk_flags": {"governance_sensitive": True, "public_claim_sensitive": True},
+            "verification_surface": {"deterministic_tests": ["stale nested command"]},
+            "context_shape": {"codebase_locality": "stale-nested"},
+        }
+
+        fields = dispatch._review_seat_task_fields(
+            frontmatter,
+            note_path=note,
+            task_id=str(frontmatter["task_id"]),
+        )
+
+        assert fields["risk_flags"] == top_level_risk_flags
+        assert fields["verification_surface"] == top_level_verification
+        assert fields["context_shape"] == frontmatter["context_shape"]
+        assert "route_metadata" not in fields
+
+    def test_missing_review_family_route_id_blocks_admission(self, tmp_path: Path) -> None:
+        note = _write_task(_make_vault(tmp_path))
+        admission = _admit_glm_review_seat(
+            tmp_path,
+            _task_frontmatter(note),
+            family_cfg=_review_seat_family_cfg(route_id=None),
+        )
+
+        assert admission["admitted"] is False
+        assert admission["route_id"] is None
+        assert admission["blocked_reasons"] == ["review_family_route_id_missing"]
+
+    def test_waiver_only_review_family_blocks_admission(self, tmp_path: Path) -> None:
+        note = _write_task(_make_vault(tmp_path))
+        admission = _admit_glm_review_seat(
+            tmp_path,
+            _task_frontmatter(note),
+            family_cfg=_review_seat_family_cfg(
+                route_id=None,
+                route_waiver={"waiver_id": "legacy-review-family", "expires": "2026-06-30"},
+            ),
+        )
+
+        assert admission["admitted"] is False
+        assert admission["route_id"] is None
+        assert admission["blocked_reasons"] == [
+            "review_family_route_waiver_not_sufficient_for_provider_use"
+        ]
+
+    def test_malformed_review_family_route_id_blocks_admission(self, tmp_path: Path) -> None:
+        note = _write_task(_make_vault(tmp_path))
+        admission = _admit_glm_review_seat(
+            tmp_path,
+            _task_frontmatter(note),
+            family_cfg=_review_seat_family_cfg(route_id="glmcp.review"),
+        )
+
+        assert admission["admitted"] is False
+        assert admission["route_id"] == "glmcp.review"
+        assert admission["blocked_reasons"] == ["review_family_route_id_malformed"]
+
+    def test_missing_task_authority_metadata_blocks_admission(self, tmp_path: Path) -> None:
+        note = _write_task(_make_vault(tmp_path))
+        frontmatter = _task_frontmatter(note)
+        del frontmatter["authority_case"]
+        del frontmatter["verification_surface"]
+
+        admission = _admit_glm_review_seat(tmp_path, frontmatter)
+
+        assert admission["admitted"] is False
+        assert admission["route_id"] == "glmcp.review.direct"
+        assert admission["blocked_reasons"] == [
+            "review_seat_task_metadata_missing:authority_case,verification_surface"
+        ]
+
+    def test_falsey_malformed_task_route_metadata_blocks_admission(self, tmp_path: Path) -> None:
+        note = _write_task(_make_vault(tmp_path))
+        frontmatter = _task_frontmatter(note)
+        frontmatter["route_metadata_schema"] = 0
+        frontmatter["risk_flags"] = []
+
+        admission = _admit_glm_review_seat(tmp_path, frontmatter)
+
+        assert admission["admitted"] is False
+        assert admission["route_policy_action"] == "hold"
+        assert admission["route_policy_launch_allowed"] is False
+        assert "route_metadata_malformed" in admission["blocked_reasons"]
+        assert "route_metadata_schema: Input should be 1" in admission["blocked_reasons"]
+        assert any(reason.startswith("risk_flags:") for reason in admission["blocked_reasons"])
 
 
 class TestDryRun:
@@ -253,6 +619,32 @@ class TestApply:
         assert len(dossier["reviewers"]) == 3
         families = {r["family"] for r in dossier["reviewers"]}
         assert len(families) >= 2
+        assert dossier["route_admission_required"] is True
+        for review in dossier["reviewers"]:
+            assert review["route_admissions"]
+            for admission in review["route_admissions"]:
+                assert admission["admitted"] is True
+                assert admission["route_policy_action"] == "launch"
+                assert admission["route_policy_quota_evidence_refs"]
+                assert admission["route_policy_resource_state_refs"]
+                assert admission["route_policy_authority_case"] == "CASE-TEST"
+                demand_ref = admission["route_policy_demand_vector_ref"]
+                assert demand_ref["artifact_path"].endswith("task-a.md")
+                assert demand_ref["freshness_state"] == "fresh"
+                assert demand_ref["hash"]
+                ledger_records = [
+                    json.loads(line)
+                    for line in Path(admission["route_decision_ledger"])
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                ]
+                record = next(
+                    item
+                    for item in ledger_records
+                    if item["decision_id"] == admission["route_decision_id"]
+                )
+                assert record["authority_case"] == admission["authority_case"]
+                assert record["demand_vector_ref"] == demand_ref
         assert dossier["review_team_verdict"] == "quorum-accept"
 
     def test_reviews_are_blind(self, tmp_path: Path) -> None:
@@ -269,6 +661,28 @@ class TestApply:
             assert "PR body acceptance evidence" in prompt
             assert "Acceptance evidence belongs here." in prompt
             assert "```yaml" in prompt
+
+    def test_missing_route_quota_blocks_reviewer_before_invocation(self, tmp_path: Path) -> None:
+        policy_sources = _admitted_policy_sources(omit_quota_for={"codex.headless.full"})
+        reviewers = RecordingReviewers()
+        result, _, _, note = _review(
+            tmp_path,
+            reviewers=reviewers,
+            policy_sources=policy_sources,
+        )
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        codex_reviews = [r for r in dossier["reviewers"] if r["family"] == "codex"]
+        assert codex_reviews
+        assert all(review["verdict"] == "reviewer-route-unavailable" for review in codex_reviews)
+        assert not any(family == "codex" for _, family, _ in reviewers.invocations)
+        assert any(
+            "route_quota_evidence_refs_missing" in admission["blocked_reasons"]
+            for review in codex_reviews
+            for admission in review["route_admissions"]
+        )
+        assert result["status"] == "dispatched"
 
     def test_untrusted_blocks_escape_markdown_fences(self) -> None:
         rendered = dispatch.render_untrusted_block(
@@ -651,6 +1065,7 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T22:00:00+00:00",
+            **_policy_kwargs(tmp_path, now_iso="2026-06-11T22:00:00+00:00"),
         )
         assert result2["status"] == "skipped_fresh"
         assert reviewers2.invocations == []
@@ -672,10 +1087,295 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T22:00:00+00:00",
+            **_policy_kwargs(tmp_path, now_iso="2026-06-11T22:00:00+00:00"),
         )
         assert second["status"] == "skipped_blocked"
         assert second["review_team_verdict"] == "blocked"
         assert second_reviewers.invocations == []
+
+    def test_same_head_route_hold_no_quorum_dossier_recovers_when_current_admission_green(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault)
+        dossier_path = dispatch.review_team.review_dossier_path(note, "task-a")
+        dossier = {
+            "dossier_schema": 1,
+            "task_id": "task-a",
+            "pr": 42,
+            "head_sha": "c" * 40,
+            "team_class": "t2_standard",
+            "quorum_required": 2,
+            "constituted_at": "2026-06-11T21:00:00+00:00",
+            "registry_id": "review-lenses",
+            "registry_declared_at": "2026-06-11T00:00:00Z",
+            "writer_family": "claude",
+            "constitution_writer_family": "claude",
+            "changed_file_count": 2,
+            "changed_files": ["shared/foo.py", "tests/test_foo.py"],
+            "constitution_notes": [],
+            "route_admission_required": True,
+            "lenses": [
+                "tests-cover-the-diff",
+                "exit-predicate-adequacy",
+                "doc-claims-recheck",
+            ],
+            "reviewers": [
+                {
+                    "id": "glm-1",
+                    "family": "glm",
+                    "route_id": "glmcp.review.direct",
+                    "verdict": "reviewer-route-unavailable",
+                    "findings": [],
+                    "checklist": {},
+                    "route_admissions": [
+                        {
+                            "route_admission_schema": 1,
+                            "seat_id": "glm-1",
+                            "family": "glm",
+                            "task_id": "task-a",
+                            "route_id": "glmcp.review.direct",
+                            "route_decision_id": "route-decision-held",
+                            "route_policy_action": "hold",
+                            "route_policy_launch_allowed": False,
+                            "route_policy_green": False,
+                            "route_policy_registry_freshness_green": True,
+                            "route_policy_quota_freshness_green": False,
+                            "route_policy_quota_evidence_refs": [
+                                "relay-receipt:glmcp:quota-admission:absent"
+                            ],
+                            "route_policy_resource_freshness_green": True,
+                            "route_policy_resource_state_refs": ["test:resource"],
+                            "admitted": False,
+                            "blocked_reasons": ["subscription_route_quota_not_fresh"],
+                        }
+                    ],
+                }
+            ],
+            "escalations": [],
+            "accept_count": 0,
+            "review_team_verdict": "no-quorum",
+        }
+        dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
+
+        reviewers = RecordingReviewers()
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            **_policy_kwargs(tmp_path, now_iso="2026-06-11T22:00:00+00:00"),
+        )
+
+        assert result["status"] == "dispatched"
+        assert result["dossier"]["review_team_verdict"] == dispatch.review_team.QUORUM_ACCEPT
+        assert reviewers.invocations
+
+    def test_same_head_route_hold_with_unresolved_critical_does_not_recover(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault)
+        dossier_path = dispatch.review_team.review_dossier_path(note, "task-a")
+        dossier = {
+            "dossier_schema": 1,
+            "task_id": "task-a",
+            "pr": 42,
+            "head_sha": "c" * 40,
+            "team_class": "t2_standard",
+            "quorum_required": 2,
+            "constituted_at": "2026-06-11T21:00:00+00:00",
+            "registry_id": "review-lenses",
+            "registry_declared_at": "2026-06-11T00:00:00Z",
+            "writer_family": "claude",
+            "constitution_writer_family": "claude",
+            "changed_file_count": 2,
+            "changed_files": ["shared/foo.py", "tests/test_foo.py"],
+            "constitution_notes": [],
+            "route_admission_required": True,
+            "lenses": [
+                "tests-cover-the-diff",
+                "exit-predicate-adequacy",
+                "doc-claims-recheck",
+            ],
+            "reviewers": [
+                {
+                    "id": "glm-1",
+                    "family": "glm",
+                    "route_id": "glmcp.review.direct",
+                    "verdict": "reviewer-route-unavailable",
+                    "findings": [],
+                    "checklist": {},
+                    "route_admissions": [
+                        {
+                            "route_admission_schema": 1,
+                            "seat_id": "glm-1",
+                            "family": "glm",
+                            "task_id": "task-a",
+                            "route_id": "glmcp.review.direct",
+                            "route_decision_id": "route-decision-held",
+                            "route_policy_action": "hold",
+                            "route_policy_launch_allowed": False,
+                            "route_policy_green": False,
+                            "route_policy_registry_freshness_green": True,
+                            "route_policy_quota_freshness_green": False,
+                            "route_policy_quota_evidence_refs": [
+                                "relay-receipt:glmcp:quota-admission:absent"
+                            ],
+                            "route_policy_resource_freshness_green": True,
+                            "route_policy_resource_state_refs": ["test:resource"],
+                            "admitted": False,
+                            "blocked_reasons": ["subscription_route_quota_not_fresh"],
+                        }
+                    ],
+                },
+                {
+                    "id": "codex-1",
+                    "family": "codex",
+                    "route_id": "codex.headless.full",
+                    "verdict": "block",
+                    "findings": [
+                        {
+                            "severity": "critical",
+                            "lens": "sdlc-gate-compose",
+                            "file": "shared/foo.py",
+                            "line": 12,
+                            "title": "still broken",
+                            "detail": "must not disappear during route hold recovery",
+                            "resolved": False,
+                        }
+                    ],
+                    "checklist": {},
+                    "route_admissions": [
+                        _admitted_route_admission(
+                            seat_id="codex-1",
+                            family="codex",
+                            route_id="codex.headless.full",
+                        )
+                    ],
+                },
+            ],
+            "escalations": [],
+            "accept_count": 0,
+            "review_team_verdict": "blocked",
+        }
+        dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
+
+        reviewers = RecordingReviewers()
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            **_policy_kwargs(tmp_path, now_iso="2026-06-11T22:00:00+00:00"),
+        )
+
+        assert result["status"] == "skipped_blocked"
+        assert result["review_team_verdict"] == "blocked"
+        assert reviewers.invocations == []
+
+    def test_same_head_route_hold_no_quorum_dossier_stays_blocked_when_current_admission_held(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault)
+        dossier_path = dispatch.review_team.review_dossier_path(note, "task-a")
+        dossier = {
+            "dossier_schema": 1,
+            "task_id": "task-a",
+            "pr": 42,
+            "head_sha": "c" * 40,
+            "team_class": "t2_standard",
+            "quorum_required": 2,
+            "constituted_at": "2026-06-11T21:00:00+00:00",
+            "registry_id": "review-lenses",
+            "registry_declared_at": "2026-06-11T00:00:00Z",
+            "writer_family": "claude",
+            "constitution_writer_family": "claude",
+            "changed_file_count": 2,
+            "changed_files": ["shared/foo.py", "tests/test_foo.py"],
+            "constitution_notes": [],
+            "route_admission_required": True,
+            "lenses": [
+                "tests-cover-the-diff",
+                "exit-predicate-adequacy",
+                "doc-claims-recheck",
+            ],
+            "reviewers": [
+                {
+                    "id": "codex-1",
+                    "family": "codex",
+                    "route_id": "codex.headless.full",
+                    "verdict": "reviewer-route-unavailable",
+                    "findings": [],
+                    "checklist": {},
+                    "route_admissions": [
+                        {
+                            "route_admission_schema": 1,
+                            "seat_id": "codex-1",
+                            "family": "codex",
+                            "task_id": "task-a",
+                            "route_id": "codex.headless.full",
+                            "route_decision_id": "route-decision-held",
+                            "route_policy_action": "hold",
+                            "route_policy_launch_allowed": False,
+                            "route_policy_green": False,
+                            "route_policy_registry_freshness_green": True,
+                            "route_policy_quota_freshness_green": False,
+                            "route_policy_quota_evidence_refs": [
+                                "relay-receipt:codex:quota:absent"
+                            ],
+                            "route_policy_resource_freshness_green": True,
+                            "route_policy_resource_state_refs": ["test:resource"],
+                            "admitted": False,
+                            "blocked_reasons": ["subscription_route_quota_not_fresh"],
+                        }
+                    ],
+                }
+            ],
+            "escalations": [],
+            "accept_count": 0,
+            "review_team_verdict": "no-quorum",
+        }
+        dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
+
+        reviewers = RecordingReviewers()
+        route_ledger_dir = tmp_path / "route-ledger"
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            policy_sources=_admitted_policy_sources(
+                now_iso="2026-06-11T22:00:00+00:00",
+                omit_quota_for={"codex.headless.full"},
+            ),
+            route_decision_ledger_dir=route_ledger_dir,
+        )
+
+        assert result["status"] == "skipped_blocked"
+        assert result["review_team_verdict"] == "no-quorum"
+        assert "--force" in result["route_hold_recovery"]
+        assert reviewers.invocations == []
+        assert not (route_ledger_dir / "route-decisions.jsonl").exists()
 
     def test_multi_task_pr_writes_each_task_dossier(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
@@ -693,6 +1393,7 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T22:00:00+00:00",
+            **_policy_kwargs(tmp_path, now_iso="2026-06-11T22:00:00+00:00"),
         )
         assert result["status"] == "multi_dispatched"
         assert {item["task_id"] for item in result["results"]} == {"task-a", "task-b"}
@@ -723,6 +1424,7 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T23:00:00+00:00",
+            **_policy_kwargs(tmp_path, now_iso="2026-06-11T23:00:00+00:00"),
         )
         assert second["status"] == "multi_skipped_fresh"
         assert second_reviewers.invocations == []
@@ -746,6 +1448,7 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T22:00:00+00:00",
+            **_policy_kwargs(tmp_path, now_iso="2026-06-11T22:00:00+00:00"),
         )
         assert result2["status"] == "skipped_fresh"
         assert receipt_path.is_file()
@@ -767,6 +1470,8 @@ class TestAllMode:
             reviewer_runner=reviewers,
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            **_policy_kwargs(tmp_path, now_iso="2026-06-11T21:00:00+00:00"),
         )
         assert [r["status"] for r in results] == ["dispatched"]
         assert len(reviewers.invocations) == 3
@@ -782,6 +1487,8 @@ class TestAllMode:
             reviewer_runner=RecordingReviewers(),
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            **_policy_kwargs(tmp_path, now_iso="2026-06-11T21:00:00+00:00"),
         )
         assert [r["status"] for r in results] == ["no_task"]
 
@@ -819,6 +1526,8 @@ class TestAllMode:
             reviewer_runner=RecordingReviewers(),
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            **_policy_kwargs(tmp_path, now_iso="2026-06-11T21:00:00+00:00"),
         )
         assert [r["status"] for r in results] == ["error", "dispatched"]
 
@@ -937,6 +1646,7 @@ class TestReceiptAndWake:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T21:00:00+00:00",
+            **_policy_kwargs(tmp_path, now_iso="2026-06-11T21:00:00+00:00"),
         )
         assert "operator" in receipt_path.read_text(encoding="utf-8")
 
@@ -967,6 +1677,7 @@ class TestReceiptAndWake:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T21:00:00+00:00",
+            **_policy_kwargs(tmp_path, now_iso="2026-06-11T21:00:00+00:00"),
         )
 
         assert result["side_effects"]["receipt_path"] == str(receipt_path)
@@ -1111,6 +1822,7 @@ class TestExitPredicate:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T21:00:00+00:00",
+            **_policy_kwargs(tmp_path, now_iso="2026-06-11T21:00:00+00:00"),
         )
         assert result["status"] == "dispatched"
         dossier = result["dossier"]
@@ -1192,6 +1904,21 @@ class TestFamilyOutageDegradation:
         monkeypatch.setattr(dispatch, "FAMILY_OUTAGE_STATE", state)
         monkeypatch.setattr(dispatch, "DEGRADED_MERGES_LEDGER", ledger)
         return state, ledger
+
+    @staticmethod
+    def _structured_outage(
+        now: str,
+        verdict: str = "quota-wall",
+        route_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        outage = {
+            "observed_at": now,
+            "outage_started_at": now,
+            "outage_verdicts": [verdict],
+        }
+        if route_ids is not None:
+            outage["route_ids"] = route_ids
+        return outage
 
     def test_wall_on_stderr_classifies_as_quota_wall(
         self, monkeypatch: Any, tmp_path: Path
@@ -1449,6 +2176,119 @@ class TestFamilyOutageDegradation:
         recorded = json.loads(state.read_text(encoding="utf-8"))
         assert "gemini" in recorded
 
+    def test_route_admission_hold_does_not_record_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+
+        dispatch.update_family_outage(
+            [
+                {
+                    "id": "glm-1",
+                    "family": "glm",
+                    "verdict": "reviewer-route-unavailable",
+                    "route_admissions": [
+                        {
+                            "admitted": False,
+                            "blocked_reasons": ["subscription_route_quota_not_fresh"],
+                        }
+                    ],
+                }
+            ],
+            "2026-06-12T21:00:00+00:00",
+        )
+
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded == {}
+
+    def test_missing_route_admission_does_not_record_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+
+        dispatch.update_family_outage(
+            [
+                {
+                    "id": "glm-1",
+                    "family": "glm",
+                    "verdict": "reviewer-route-unavailable",
+                    "route_admissions": [],
+                }
+            ],
+            "2026-06-12T21:00:00+00:00",
+        )
+
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded == {}
+
+    def test_absent_route_admission_does_not_record_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+
+        dispatch.update_family_outage(
+            [
+                {
+                    "id": "glm-1",
+                    "family": "glm",
+                    "route_id": "glmcp.review.direct",
+                    "verdict": "reviewer-route-unavailable",
+                }
+            ],
+            "2026-06-12T21:00:00+00:00",
+        )
+
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded == {}
+
+    def test_malformed_route_admission_does_not_record_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+
+        dispatch.update_family_outage(
+            [
+                {
+                    "id": "glm-1",
+                    "family": "glm",
+                    "route_id": "glmcp.review.direct",
+                    "verdict": "reviewer-route-unavailable",
+                    "route_admissions": "not-a-route-admission-list",
+                }
+            ],
+            "2026-06-12T21:00:00+00:00",
+        )
+
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded == {}
+
+    def test_mismatched_route_admission_does_not_record_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+
+        dispatch.update_family_outage(
+            [
+                {
+                    "id": "glm-1",
+                    "family": "glm",
+                    "route_id": "glmcp.review.direct",
+                    "verdict": "reviewer-route-unavailable",
+                    "route_admissions": [
+                        _admitted_route_admission(
+                            seat_id="gemini-1",
+                            family="gemini",
+                            route_id="antigrav.interactive.full",
+                        )
+                    ],
+                }
+            ],
+            "2026-06-12T21:00:00+00:00",
+        )
+
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded == {}
+
     def test_stdout_unsupported_client_cannot_forge_route_unavailable(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
@@ -1494,6 +2334,8 @@ class TestFamilyOutageDegradation:
             "glm": {
                 "observed_at": "2026-06-12T21:00:00+00:00",
                 "outage_started_at": "2026-06-12T21:00:00+00:00",
+                "outage_verdicts": ["provider-outage"],
+                "route_ids": [],
             }
         }
 
@@ -1590,7 +2432,17 @@ class TestFamilyOutageDegradation:
 
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
-        state.write_text(json.dumps({"claude": now}), encoding="utf-8")
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": self._structured_outage(
+                        now,
+                        route_ids=["claude.headless.full"],
+                    )
+                }
+            ),
+            encoding="utf-8",
+        )
         result, _, _, note = _review(
             tmp_path,
             now_iso=now,
@@ -1613,12 +2465,151 @@ class TestFamilyOutageDegradation:
         assert entries[0]["degraded_family_outage"] == ["claude"]
         assert entries[0]["degraded_family_outage_witness"] == {"claude": now}
 
+    def test_legacy_unscoped_outage_yields_to_current_route_admission(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-12T21:00:00+00:00"
+        state.write_text(json.dumps({"gemini": now}), encoding="utf-8")
+
+        result, _, reviewers, _ = _review(
+            tmp_path,
+            now_iso=now,
+            task_kwargs={"risk_tier": "T1"},
+            gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
+        )
+
+        seated = {r["family"] for r in result["dossier"]["reviewers"]}
+        assert "gemini" in seated
+        assert "gemini" in {family for _, family, _ in reviewers.invocations}
+        assert "degraded_family_outage:gemini" not in result["plan"]["constitution_notes"]
+
+    def test_legacy_unscoped_outage_yields_to_current_route_hold(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-12T21:00:00+00:00"
+        state.write_text(json.dumps({"gemini": now}), encoding="utf-8")
+
+        result, _, reviewers, note = _review(
+            tmp_path,
+            now_iso=now,
+            task_kwargs={"risk_tier": "T1"},
+            gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
+            policy_sources=_admitted_policy_sources(
+                now_iso=now,
+                omit_quota_for={"antigrav.interactive.full"},
+            ),
+        )
+
+        gemini_reviews = [
+            review for review in result["dossier"]["reviewers"] if review["family"] == "gemini"
+        ]
+        assert gemini_reviews
+        assert gemini_reviews[0]["verdict"] == "reviewer-route-unavailable"
+        assert not any(family == "gemini" for _, family, _ in reviewers.invocations)
+        assert "degraded_family_outage:gemini" not in result["plan"]["constitution_notes"]
+        blockers = dispatch.review_team.review_dossier_validity_blockers(
+            _task_frontmatter(note),
+            note,
+            pr_head_sha="c" * 40,
+            pr_number=42,
+            changed_files=("shared/foo.py", "tests/test_foo.py"),
+            changed_file_count=2,
+            outage_state_path=state,
+            admission_time=now,
+        )
+        assert not any(
+            blocker.startswith("review_dossier_degradation_unwitnessed:gemini")
+            for blocker in blockers
+        )
+
+    def test_structured_outage_still_degrades_even_when_route_admits(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-12T21:00:00+00:00"
+        state.write_text(
+            json.dumps(
+                {
+                    "gemini": self._structured_outage(
+                        now,
+                        route_ids=["antigrav.interactive.full"],
+                    )
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result, _, reviewers, _ = _review(
+            tmp_path,
+            now_iso=now,
+            task_kwargs={"risk_tier": "T1"},
+            gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
+        )
+
+        seated = {r["family"] for r in result["dossier"]["reviewers"]}
+        assert "gemini" not in seated
+        assert "gemini" not in {family for _, family, _ in reviewers.invocations}
+        assert "degraded_family_outage:gemini" in result["plan"]["constitution_notes"]
+
+    def test_unscoped_structured_outage_yields_to_current_route_admission(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-12T21:00:00+00:00"
+        state.write_text(json.dumps({"gemini": self._structured_outage(now)}), encoding="utf-8")
+
+        result, _, reviewers, _ = _review(
+            tmp_path,
+            now_iso=now,
+            task_kwargs={"risk_tier": "T1"},
+            gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
+        )
+
+        seated = {r["family"] for r in result["dossier"]["reviewers"]}
+        assert "gemini" in seated
+        assert "gemini" in {family for _, family, _ in reviewers.invocations}
+        assert "degraded_family_outage:gemini" not in result["plan"]["constitution_notes"]
+
+    def test_cross_route_structured_outage_yields_to_current_route_admission(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-12T21:00:00+00:00"
+        state.write_text(
+            json.dumps({"gemini": self._structured_outage(now, route_ids=["other.route.full"])}),
+            encoding="utf-8",
+        )
+
+        result, _, reviewers, _ = _review(
+            tmp_path,
+            now_iso=now,
+            task_kwargs={"risk_tier": "T1"},
+            gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
+        )
+
+        seated = {r["family"] for r in result["dossier"]["reviewers"]}
+        assert "gemini" in seated
+        assert "gemini" in {family for _, family, _ in reviewers.invocations}
+        assert "degraded_family_outage:gemini" not in result["plan"]["constitution_notes"]
+
     def test_degraded_review_floor_accept_writes_receipt_against_dispatcher_witness(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
-        state.write_text(json.dumps({"claude": now}), encoding="utf-8")
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": self._structured_outage(
+                        now,
+                        route_ids=["claude.headless.full"],
+                    )
+                }
+            ),
+            encoding="utf-8",
+        )
         real_update = dispatch.update_family_outage
 
         def racing_update(
@@ -1659,7 +2650,17 @@ class TestFamilyOutageDegradation:
     ) -> None:
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
-        state.write_text(json.dumps({"claude": now}), encoding="utf-8")
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": self._structured_outage(
+                        now,
+                        route_ids=["claude.headless.full"],
+                    )
+                }
+            ),
+            encoding="utf-8",
+        )
         kwargs = {
             "now_iso": now,
             "task_kwargs": {"risk_tier": "T1"},
@@ -1681,7 +2682,17 @@ class TestFamilyOutageDegradation:
     ) -> None:
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
-        state.write_text(json.dumps({"claude": now}), encoding="utf-8")
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": self._structured_outage(
+                        now,
+                        route_ids=["claude.headless.full"],
+                    )
+                }
+            ),
+            encoding="utf-8",
+        )
         calls: list[int] = []
         real_flock = dispatch.fcntl.flock
 
@@ -1740,6 +2751,7 @@ class TestFamilyOutageDegradation:
             "families": [
                 {
                     "family": "glm",
+                    "route_id": "glmcp.review.direct",
                     "reviewer_command": ["scripts/hapax-glmcp-reviewer"],
                     "timeout_seconds": 30,
                 }
@@ -1753,6 +2765,86 @@ class TestFamilyOutageDegradation:
                 returncode=1,
             )
 
-        reviews = dispatch.dispatch_reviews(constitution, ["prompt"], registry, runner)
+        reviews = dispatch.dispatch_reviews(
+            constitution,
+            ["prompt"],
+            registry,
+            runner,
+            seat_admissions={"glm-1": [_admitted_route_admission()]},
+        )
 
         assert reviews[0]["verdict"] == "provider-outage"
+
+    def test_dispatch_reviews_fail_closed_without_seat_admissions(self) -> None:
+        constitution = dispatch.review_team.Constitution(
+            team_class="t2_standard",
+            quorum_required=2,
+            seats=(dispatch.review_team.Seat(id="glm-1", family="glm"),),
+            notes=(),
+        )
+        registry = {
+            "families": [
+                {
+                    "family": "glm",
+                    "route_id": "glmcp.review.direct",
+                    "reviewer_command": ["scripts/hapax-glmcp-reviewer"],
+                    "timeout_seconds": 30,
+                }
+            ]
+        }
+        calls = {"count": 0}
+
+        def runner(_seat: Any, _family_cfg: dict[str, Any], _prompt: str) -> str:
+            calls["count"] += 1
+            return GOOD_REPLY
+
+        reviews = dispatch.dispatch_reviews(constitution, ["prompt"], registry, runner)
+
+        assert calls["count"] == 0
+        assert reviews[0]["verdict"] == "reviewer-route-unavailable"
+        assert reviews[0]["route_admissions"] == []
+
+    def test_dispatch_reviews_rejects_bare_admitted_flag_before_invocation(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        monkeypatch.setenv("HAPAX_REVIEW_TEAM_GATE_OFF", "1")
+        constitution = dispatch.review_team.Constitution(
+            team_class="t2_standard",
+            quorum_required=2,
+            seats=(dispatch.review_team.Seat(id="glm-1", family="glm"),),
+            notes=(),
+        )
+        registry = {
+            "families": [
+                {
+                    "family": "glm",
+                    "route_id": "glmcp.review.direct",
+                    "reviewer_command": ["scripts/hapax-glmcp-reviewer"],
+                    "timeout_seconds": 30,
+                }
+            ]
+        }
+        calls = {"count": 0}
+
+        def runner(_seat: Any, _family_cfg: dict[str, Any], _prompt: str) -> str:
+            calls["count"] += 1
+            return GOOD_REPLY
+
+        reviews = dispatch.dispatch_reviews(
+            constitution,
+            ["prompt"],
+            registry,
+            runner,
+            seat_admissions={"glm-1": [{"admitted": True}]},
+        )
+
+        assert calls["count"] == 0
+        assert reviews[0]["verdict"] == "reviewer-route-unavailable"
+        assert reviews[0]["provider_invoked"] is False
+        assert "route_decision_missing" in reviews[0]["route_admission_diagnostic"]
+        assert "not a dispatch-time bypass" in reviews[0]["route_admission_diagnostic"]
+        assert "route_decision_missing" in reviews[0]["raw_reply_excerpt"]
+        dispatch.update_family_outage(reviews, "2026-06-12T21:00:00+00:00")
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded == {}
