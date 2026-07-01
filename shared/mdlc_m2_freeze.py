@@ -46,6 +46,7 @@ class M2FreezeRefusalReason(StrEnum):
     INVALID_SIGNED_AT = "invalid_signed_at"
     MISSING_SIGNATURE_REF = "missing_signature_ref"
     INVALID_EVIDENCE_REFS = "invalid_evidence_refs"
+    G2_TARGET_MISMATCH = "g2_target_mismatch"
 
 
 _NEXT_ACTIONS: Final[dict[M2FreezeRefusalReason, str]] = {
@@ -80,6 +81,9 @@ _NEXT_ACTIONS: Final[dict[M2FreezeRefusalReason, str]] = {
     ),
     M2FreezeRefusalReason.INVALID_EVIDENCE_REFS: (
         "record evidence_refs as a sequence of non-empty strings"
+    ),
+    M2FreezeRefusalReason.G2_TARGET_MISMATCH: (
+        "repair the M2 freeze artifact so its surface, venue, and instrument match the G2 target"
     ),
 }
 
@@ -395,13 +399,56 @@ def _commit_g2_target(
     target: G2GateInput | Mapping[str, Any] | None,
     artifact: M2FreezeArtifact,
 ) -> G2GateInput | Mapping[str, Any]:
-    if target is not None:
-        return target
     envelope = artifact.budget_envelope
-    return G2GateInput(
+    envelope_target = G2GateInput(
         surface=envelope.surface,
         venue=envelope.venue,
         instrument=envelope.instrument,
+    )
+    if target is not None:
+        supplied = _supplied_g2_target(target, artifact)
+        if supplied != envelope_target:
+            raise M2FreezeRefusal(
+                _refused(
+                    M2FreezeRefusalReason.G2_TARGET_MISMATCH,
+                    detail="caller-supplied G2 target differs from the signed freeze envelope",
+                    artifact=artifact,
+                )
+            )
+    return envelope_target
+
+
+def _supplied_g2_target(
+    target: G2GateInput | Mapping[str, Any],
+    artifact: M2FreezeArtifact,
+) -> G2GateInput:
+    try:
+        if isinstance(target, G2GateInput):
+            return G2GateInput(
+                surface=_required_string(target.surface),
+                venue=_required_string(target.venue),
+                instrument=_required_string(target.instrument),
+            )
+        if isinstance(target, Mapping):
+            return G2GateInput(
+                surface=_required_mapping_string(target, "surface"),
+                venue=_required_mapping_string(target, "venue"),
+                instrument=_required_mapping_string(target, "instrument"),
+            )
+    except (TypeError, ValueError, _FreezeInputError) as exc:
+        raise M2FreezeRefusal(
+            _refused(
+                M2FreezeRefusalReason.G2_TARGET_MISMATCH,
+                detail=str(exc),
+                artifact=artifact,
+            )
+        ) from exc
+    raise M2FreezeRefusal(
+        _refused(
+            M2FreezeRefusalReason.G2_TARGET_MISMATCH,
+            detail="g2_target must be a G2GateInput or mapping",
+            artifact=artifact,
+        )
     )
 
 

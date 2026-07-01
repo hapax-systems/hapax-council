@@ -140,6 +140,18 @@ def test_require_m2_commit_admission_requires_g2_lit_before_commit() -> None:
     )
 
 
+def test_require_m2_commit_admission_propagates_missing_freeze_refusal() -> None:
+    with pytest.raises(M2FreezeRefusal) as exc:
+        require_m2_commit_admission(
+            None,
+            ruler_hash_commit=HASH,
+            registry=_legal_registry(_legal_row()),
+            today=date(2026, 7, 1),
+        )
+
+    assert exc.value.verification.refusal_reason is M2FreezeRefusalReason.MISSING_ARTIFACT
+
+
 def test_require_m2_commit_admission_returns_freeze_and_legal_row() -> None:
     admission = require_m2_commit_admission(
         _artifact(),
@@ -154,6 +166,30 @@ def test_require_m2_commit_admission_returns_freeze_and_legal_row() -> None:
         "test-venue",
         "test-instrument",
     )
+
+
+def test_require_m2_commit_admission_rejects_g2_target_override() -> None:
+    with pytest.raises(M2FreezeRefusal) as exc:
+        require_m2_commit_admission(
+            _artifact(),
+            ruler_hash_commit=HASH,
+            g2_target={
+                "surface": "bug_bounty",
+                "venue": "hackerone",
+                "instrument": "universal_jailbreak_bounty",
+            },
+            registry=_legal_registry(
+                _legal_row(
+                    surface="bug_bounty",
+                    venue="hackerone",
+                    instrument="universal_jailbreak_bounty",
+                )
+            ),
+            today=date(2026, 7, 1),
+        )
+
+    assert exc.value.verification.refusal_reason is M2FreezeRefusalReason.G2_TARGET_MISMATCH
+    assert "differs from the signed freeze envelope" in exc.value.verification.reason
 
 
 def test_require_m2_commit_admission_refuses_when_freeze_cannot_supply_g2_target() -> None:
