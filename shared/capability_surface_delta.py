@@ -167,8 +167,8 @@ class CapabilitySurfaceDelta(StrictModel):
     detected_by: str = Field(min_length=1)
     surface_id: str = Field(min_length=1)
     delta_kind: DeltaKind
-    prior_descriptor_ref: str | None = None
-    observed_descriptor_ref: str | None = None
+    prior_descriptor_ref: str | None = Field(default=None, min_length=1)
+    observed_descriptor_ref: str | None = Field(default=None, min_length=1)
     evidence_refs: list[str] = Field(min_length=1)
     authority_ceiling: AuthorityCeiling
     affected_resource_pools: list[str]
@@ -182,6 +182,25 @@ class CapabilitySurfaceDelta(StrictModel):
 
     @model_validator(mode="after")
     def _delta_contract_is_actionable(self) -> Self:
+        if self.delta_kind is DeltaKind.NEW_CAPABILITY:
+            if self.prior_descriptor_ref is not None:
+                raise ValueError(
+                    "new capabilities require prior_descriptor_ref=null; next "
+                    "action: preserve the observed descriptor ref and leave "
+                    "prior_descriptor_ref null until the capability is registered"
+                )
+            if self.required_intake_action is not RequiredIntakeAction.MINT_INTAKE_ITEM:
+                raise ValueError(
+                    "new capabilities require mint_intake_item; next action: set "
+                    "required_intake_action=mint_intake_item so intake owns the "
+                    "descriptor admission"
+                )
+            if self.freshness_state is not FreshnessState.DELTA_PENDING:
+                raise ValueError(
+                    "new capabilities require delta_pending freshness_state; next "
+                    "action: keep freshness_state=delta_pending until governed "
+                    "intake admits or quarantines the descriptor"
+                )
         if self.delta_kind is not DeltaKind.NEW_CAPABILITY and self.prior_descriptor_ref is None:
             raise ValueError(
                 "non-new deltas require prior_descriptor_ref; next action: set it "
@@ -198,7 +217,6 @@ class CapabilitySurfaceDelta(StrictModel):
                 "absent_determination when no surface was observed"
             )
         if self.delta_kind in {
-            DeltaKind.NEW_CAPABILITY,
             DeltaKind.DESCRIPTOR_CHANGED,
             DeltaKind.AUTHORITY_CHANGED,
             DeltaKind.RESOURCE_POOL_CHANGED,

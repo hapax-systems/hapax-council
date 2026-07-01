@@ -596,7 +596,7 @@ def _surface_delta_route_keys(
 
 
 def _surface_delta_dispatch_lookup_keys(keys: Sequence[str]) -> set[str]:
-    return set(keys)
+    return {key for key in keys if ":" not in key and not key.startswith(("route.", "surface."))}
 
 
 def _surface_delta_values_for_route(

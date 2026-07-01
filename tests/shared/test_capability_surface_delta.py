@@ -234,6 +234,62 @@ def test_delta_requires_explicit_governance_flags() -> None:
         CapabilitySurfaceDelta.model_validate(payload)
 
 
+def test_delta_refs_must_be_non_empty_when_present() -> None:
+    payload = {
+        "delta_id": "bad",
+        "source": "unit-test",
+        "observed_at": NOW,
+        "detected_by": "test",
+        "surface_id": "route.codex.headless.full",
+        "delta_kind": "stale_determination",
+        "prior_descriptor_ref": "",
+        "observed_descriptor_ref": "platform-capability-receipt:codex:expired",
+        "evidence_refs": ["platform-capability-receipt:codex:expired"],
+        "authority_ceiling": "authoritative",
+        "affected_resource_pools": ["subscription_quota"],
+        "privacy_sensitive": True,
+        "public_egress": False,
+        "money_rail": False,
+        "freshness_state": "stale",
+        "required_intake_action": "refresh_receipt",
+        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+        "summary": "empty prior ref",
+    }
+
+    with pytest.raises(ValueError, match="prior_descriptor_ref"):
+        CapabilitySurfaceDelta.model_validate(payload)
+
+
+def test_new_capability_requires_null_prior_and_mint_action() -> None:
+    payload = {
+        "delta_id": "bad",
+        "source": "unit-test",
+        "observed_at": NOW,
+        "detected_by": "test",
+        "surface_id": "route.new",
+        "delta_kind": "new_capability",
+        "prior_descriptor_ref": "platform-capability-registry:existing",
+        "observed_descriptor_ref": "catalog:new",
+        "evidence_refs": ["catalog:new"],
+        "authority_ceiling": "frontier_review_required",
+        "affected_resource_pools": ["api_paid_spend"],
+        "privacy_sensitive": True,
+        "public_egress": False,
+        "money_rail": True,
+        "freshness_state": "delta_pending",
+        "required_intake_action": "update_descriptor",
+        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+        "summary": "wrong new-capability shape",
+    }
+
+    with pytest.raises(ValueError, match="prior_descriptor_ref=null"):
+        CapabilitySurfaceDelta.model_validate(payload)
+
+    payload["prior_descriptor_ref"] = None
+    with pytest.raises(ValueError, match="mint_intake_item"):
+        CapabilitySurfaceDelta.model_validate(payload)
+
+
 def test_bad_fixture_file_raises_typed_error(tmp_path) -> None:
     path = tmp_path / "bad.json"
     path.write_text("[]", encoding="utf-8")
