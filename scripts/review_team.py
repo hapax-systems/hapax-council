@@ -1493,6 +1493,8 @@ def _route_admission_blockers(
         note_path=note_path,
         task_id=task_id,
     )
+    if current_demand_ref is None:
+        blockers.append(f"review_dossier_route_current_demand_vector_unavailable:{reviewer_id}")
     if not expected_route_id:
         blockers.append(f"review_dossier_route_registry_missing:{reviewer_id}:{reviewer_family}")
     for admission in matching:

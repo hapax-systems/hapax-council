@@ -1078,6 +1078,33 @@ class TestVerdictBlockers:
             for blocker in blockers
         )
 
+    def test_route_admission_required_blocks_invalid_current_demand_vector(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["route_admission_required"] = True
+        ledger_path = tmp_path / "route-decisions.jsonl"
+        monkeypatch.setattr(rt, "ROUTE_DECISION_LEDGER_PATH", ledger_path)
+        route_ids = {
+            "codex-1": "codex.headless.full",
+            "gemini-1": "antigrav.interactive.full",
+            "claude-1": "claude.headless.full",
+        }
+        admissions = []
+        for review in dossier["reviewers"]:
+            admission = _route_admission(review["id"], route_ids[review["id"]])
+            admissions.append(admission)
+            review["route_admissions"] = [admission]
+        _write_route_decision_ledger(ledger_path, admissions)
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        frontmatter = self._full_route_frontmatter()
+        frontmatter["route_metadata_schema"] = 2
+
+        blockers = rt.review_team_verdict_blockers(frontmatter, note, pr_head_sha="a" * 40)
+
+        assert "review_dossier_route_current_demand_vector_unavailable:codex-1" in blockers
+
     def test_route_admission_required_blocks_launch_not_allowed(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
