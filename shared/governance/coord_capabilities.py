@@ -26,6 +26,7 @@ event log, and the 17-ledger removal are subsequent Phase-4 sub-slices.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import hmac
 import json
@@ -36,10 +37,26 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 #: Default single-use consumption ledger (cache path; the durable daemon-owned
 #: log replaces this in a later Phase-4 sub-slice).
 DEFAULT_CONSUMPTION_LEDGER = Path.home() / ".cache" / "hapax" / "coord-capability-consumption.jsonl"
+
+
+def _authority_runtime_dir() -> Path:
+    """Return the OS-account runtime authority dir, ignoring caller-controlled HOME."""
+    return Path("/run") / "user" / str(os.getuid()) / "hapax"
+
+
+def dispatch_launch_grant_key() -> Path:
+    """Return the env-independent dispatch-launch signing key path."""
+    return _authority_runtime_dir() / "coord" / "grant-key"
+
+
+def dispatch_launch_consumption_ledger() -> Path:
+    """Return the env-independent dispatch-launch replay ledger path."""
+    return _authority_runtime_dir() / "coord-capability-consumption.jsonl"
 
 
 # --- HMAC core ----------------------------------------------------------------
@@ -70,9 +87,16 @@ class DispatchCapability:
     issued_at: float
     expires_at: float
     signature: str
+    platform: str | None = None
+    mode: str | None = None
+    profile: str | None = None
+    worktree: str | None = None
+    purpose: str | None = None
+    issuer_pid: int | None = None
+    issuer_start_time: str | None = None
 
     def _signing_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "kind": "dispatch",
             "capability_id": self.capability_id,
             "task_id": self.task_id,
@@ -80,13 +104,38 @@ class DispatchCapability:
             "issued_at": self.issued_at,
             "expires_at": self.expires_at,
         }
+        for name in (
+            "platform",
+            "mode",
+            "profile",
+            "worktree",
+            "purpose",
+            "issuer_pid",
+            "issuer_start_time",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                payload[name] = value
+        return payload
 
     def is_expired(self, now: float) -> bool:
         return now > self.expires_at
 
 
 def mint_dispatch_capability(
-    *, task_id: str, lane: str, ttl_s: float, key: bytes, now: float
+    *,
+    task_id: str,
+    lane: str,
+    ttl_s: float,
+    key: bytes,
+    now: float,
+    platform: str | None = None,
+    mode: str | None = None,
+    profile: str | None = None,
+    worktree: str | None = None,
+    purpose: str | None = None,
+    issuer_pid: int | None = None,
+    issuer_start_time: str | None = None,
 ) -> DispatchCapability:
     """Mint a signed dispatch capability. Caller mints ONLY on a policy-pass."""
     fields = {
@@ -95,13 +144,32 @@ def mint_dispatch_capability(
         "lane": lane,
         "issued_at": now,
         "expires_at": now + ttl_s,
+        "platform": platform,
+        "mode": mode,
+        "profile": profile,
+        "worktree": worktree,
+        "purpose": purpose,
+        "issuer_pid": issuer_pid,
+        "issuer_start_time": issuer_start_time,
     }
-    payload = {"kind": "dispatch", **fields}
-    return DispatchCapability(signature=_sign(payload, key), **fields)
+    cap = DispatchCapability(signature="", **fields)
+    return DispatchCapability(signature=_sign(cap._signing_payload(), key), **fields)
 
 
 def verify_dispatch_capability(
-    cap: DispatchCapability | None, *, key: bytes, now: float, task_id: str, lane: str
+    cap: DispatchCapability | None,
+    *,
+    key: bytes,
+    now: float,
+    task_id: str,
+    lane: str,
+    platform: str | None = None,
+    mode: str | None = None,
+    profile: str | None = None,
+    worktree: str | None = None,
+    purpose: str | None = None,
+    issuer_pid: int | None = None,
+    issuer_start_time: str | None = None,
 ) -> bool:
     """True iff the signature matches, it is unexpired, and bound to (task_id, lane)."""
     if cap is None:
@@ -110,21 +178,49 @@ def verify_dispatch_capability(
         return False
     if cap.is_expired(now):
         return False
-    return cap.task_id == task_id and cap.lane == lane
+    if cap.task_id != task_id or cap.lane != lane:
+        return False
+    expected = {
+        "platform": platform,
+        "mode": mode,
+        "profile": profile,
+        "worktree": worktree,
+        "purpose": purpose,
+        "issuer_pid": issuer_pid,
+        "issuer_start_time": issuer_start_time,
+    }
+    for name, value in expected.items():
+        actual = getattr(cap, name)
+        if value is not None and actual != value:
+            return False
+        if value is None and actual is not None:
+            return False
+    return True
 
 
 def serialize_capability(cap: DispatchCapability) -> str:
-    return json.dumps(
-        {
-            "kind": "dispatch",
-            "capability_id": cap.capability_id,
-            "task_id": cap.task_id,
-            "lane": cap.lane,
-            "issued_at": cap.issued_at,
-            "expires_at": cap.expires_at,
-            "signature": cap.signature,
-        }
-    )
+    payload: dict[str, Any] = {
+        "kind": "dispatch",
+        "capability_id": cap.capability_id,
+        "task_id": cap.task_id,
+        "lane": cap.lane,
+        "issued_at": cap.issued_at,
+        "expires_at": cap.expires_at,
+        "signature": cap.signature,
+    }
+    for name in (
+        "platform",
+        "mode",
+        "profile",
+        "worktree",
+        "purpose",
+        "issuer_pid",
+        "issuer_start_time",
+    ):
+        value = getattr(cap, name)
+        if value is not None:
+            payload[name] = value
+    return json.dumps(payload)
 
 
 def read_capability_file(path: str | Path) -> DispatchCapability | None:
@@ -140,6 +236,15 @@ def read_capability_file(path: str | Path) -> DispatchCapability | None:
             issued_at=float(data["issued_at"]),
             expires_at=float(data["expires_at"]),
             signature=str(data["signature"]),
+            platform=str(data["platform"]) if "platform" in data else None,
+            mode=str(data["mode"]) if "mode" in data else None,
+            profile=str(data["profile"]) if "profile" in data else None,
+            worktree=str(data["worktree"]) if "worktree" in data else None,
+            purpose=str(data["purpose"]) if "purpose" in data else None,
+            issuer_pid=int(data["issuer_pid"]) if "issuer_pid" in data else None,
+            issuer_start_time=str(data["issuer_start_time"])
+            if "issuer_start_time" in data
+            else None,
         )
     except Exception:  # noqa: BLE001 — malformed/missing input must never raise.
         return None
@@ -148,9 +253,8 @@ def read_capability_file(path: str | Path) -> DispatchCapability | None:
 class CapabilityConsumptionLedger:
     """File-backed single-use ledger. ``consume`` returns False on replay.
 
-    Best-effort: on an IO error it returns True (availability) — the durable
-    single-use enforcement is the daemon-owned log in a later sub-slice; this
-    file ledger is the standalone fallback.
+    Fail-closed on IO errors. Launch authority must never be granted when replay
+    state cannot be witnessed.
     """
 
     def __init__(self, path: str | Path) -> None:
@@ -174,22 +278,50 @@ class CapabilityConsumptionLedger:
 
     def consume(self, capability_id: str) -> bool:
         try:
-            if capability_id in self._consumed_ids():
+            return self._consume_locked(capability_id)
+        except Exception:  # noqa: BLE001 — replay state failure refuses consumption.
+            return False
+
+    def _consume_locked(self, capability_id: str) -> bool:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        with self._path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            handle.seek(0)
+            consumed: set[str] = set()
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    consumed.add(str(json.loads(line)["capability_id"]))
+                except Exception:  # noqa: BLE001 — skip malformed ledger lines.
+                    continue
+            if capability_id in consumed:
                 return False
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._path.open("a", encoding="utf-8") as handle:
-                handle.write(
-                    json.dumps(
-                        {
-                            "capability_id": capability_id,
-                            "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        }
-                    )
-                    + "\n"
+            handle.seek(0, os.SEEK_END)
+            handle.write(
+                json.dumps(
+                    {
+                        "capability_id": capability_id,
+                        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    }
                 )
+                + "\n"
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
             return True
-        except Exception:  # noqa: BLE001 — never block a dispatch on ledger IO failure.
-            return True
+
+    def consume_strict(self, capability_id: str) -> bool:
+        """Consume a capability fail-closed.
+
+        Use for launch-authority checks where replay safety outranks
+        availability. Unlike ``consume``, any ledger IO failure refuses.
+        """
+        try:
+            return self._consume_locked(capability_id)
+        except Exception:  # noqa: BLE001 — launch capabilities fail closed on ledger IO.
+            return False
 
 
 # --- EscapeGrant (NEW-2: daemon-independent, signed file) ---------------------

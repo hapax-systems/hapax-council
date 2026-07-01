@@ -48,6 +48,16 @@ council checkout using branch `codex/<cx-session>`. Override the branch prefix w
 Explicit workdirs are not constructive. If `HAPAX_CODEX_HEADLESS_WORKDIR` is set,
 that exact path must already exist locally and remotely. A missing explicit path
 fails closed; unset the variable or create the path deliberately before retrying.
+When an explicit workdir is launched with `--no-claim`, the wrapper must also
+receive `HAPAX_METHODOLOGY_DISPATCH_CAPABILITY` from
+`scripts/hapax-methodology-dispatch`. The capability is signed with the
+env-independent dispatch-launch key at `/run/user/<uid>/hapax/coord/grant-key`,
+resolved from the OS account UID rather than caller `HOME`, bound to
+task/lane/platform/mode/profile/worktree/purpose and live issuer process,
+expires, and is consumed once through the matching dispatch-launch replay ledger
+before any Codex process starts. Direct callers cannot replace this with
+`HAPAX_METHODOLOGY_DISPATCH_LAUNCH_AUTH`, `HAPAX_COORD_GRANT_KEY`,
+`HAPAX_COORD_DIR`, or a caller-selected consumption ledger.
 
 Remote bootstrap failures print the failing branch and a next action. Check:
 
@@ -64,5 +74,6 @@ Recheck the contract from the council repo with:
 bash -n scripts/hapax-codex-headless
 shellcheck -S warning scripts/hapax-codex-headless
 uv run pytest tests/scripts/test_hapax_codex_headless.py -q
+uv run pytest tests/scripts/test_hapax_codex_headless.py -q -k 'external_no_claim'
 uv run pytest tests/scripts/test_hapax_codex_headless.py tests/scripts/test_hapax_codex_headless_fallback.py -q
 ```
