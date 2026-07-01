@@ -18,12 +18,22 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 if [[ -f "$SCRIPT_DIR/agent-role.sh" ]]; then
   . "$SCRIPT_DIR/agent-role.sh"
 fi
 
 INPUT="$(cat)"
-TOOL="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)" || exit 0
+if ! TOOL="$(printf '%s' "$INPUT" | jq -er '.tool_name // empty' 2>/dev/null)"; then
+  echo "authorization-packet-validator: BLOCKED — cannot parse hook payload tool_name." >&2
+  echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+  exit 2
+fi
+if [[ -z "$TOOL" ]]; then
+  echo "authorization-packet-validator: BLOCKED — hook payload is missing tool_name." >&2
+  echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
+  exit 2
+fi
 release_tool=false
 release_kind="none"
 case "$TOOL" in
@@ -39,6 +49,84 @@ case "$TOOL" in
   mcp__github__push_files)
     release_tool=true
     release_kind="push_files"
+    ;;
+  mcp__*)
+    canonical_tool=""
+    if command -v python3 >/dev/null 2>&1; then
+      set +e
+      canonical_tool="$(
+        PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}" \
+          python3 -m shared.mcp_connector_policy canonicalize "$TOOL" 2>/dev/null
+      )"
+      canonical_rc=$?
+      set -e
+      if [[ "$canonical_rc" -ne 0 ]]; then
+        echo "authorization-packet-validator: WARNING — MCP canonicalization failed for '$TOOL'; using conservative GitHub release fallback." >&2
+        case "$TOOL" in
+          *merge_pull_request*) canonical_tool="github.merge_pull_request" ;;
+          *create_pull_request*) canonical_tool="github.create_pull_request" ;;
+          *update_ref*) canonical_tool="github.update_ref" ;;
+          *push_files*|*create_or_update_file*|*create_file*|*update_file*|*delete_file*) canonical_tool="github.create_or_update_file" ;;
+          *)
+            echo "authorization-packet-validator: BLOCKED — MCP canonicalization failed for '$TOOL'." >&2
+            echo "  Repair MCP canonicalization before retrying, or use HAPAX_METHODOLOGY_EMERGENCY=1 for an operator-approved emergency bypass." >&2
+            exit 2
+            ;;
+        esac
+      fi
+    else
+      echo "authorization-packet-validator: WARNING — python3 unavailable for MCP canonicalization; using conservative GitHub release fallback." >&2
+      case "$TOOL" in
+        *merge_pull_request*|*enable_auto_merge*) canonical_tool="github.merge_pull_request" ;;
+        *create_pull_request*) canonical_tool="github.create_pull_request" ;;
+        *update_ref*) canonical_tool="github.update_ref" ;;
+        *push_files*|*create_or_update_file*|*create_file*|*update_file*|*delete_file*) canonical_tool="github.create_or_update_file" ;;
+        *)
+          echo "authorization-packet-validator: BLOCKED — python3 missing; cannot classify MCP tool '$TOOL'." >&2
+          echo "  Install/restore python3 on PATH before retrying, or use HAPAX_METHODOLOGY_EMERGENCY=1 for an operator-approved emergency bypass." >&2
+          exit 2
+          ;;
+      esac
+    fi
+    case "$canonical_tool" in
+      github.create_pull_request)
+        release_tool=true
+        release_kind="pr_create"
+        ;;
+      github.merge_pull_request|github.enable_auto_merge)
+        release_tool=true
+        release_kind="merge"
+        ;;
+      github.create_or_update_file|github.create_file|github.update_file|github.delete_file)
+        release_tool=true
+        release_kind="github_file_write"
+        ;;
+      github.update_ref)
+        release_tool=true
+        release_kind="ref_update"
+        ;;
+      *)
+        set +e
+        PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}" \
+          python3 -m shared.mcp_connector_policy is-side-effecting "$TOOL" >/dev/null 2>&1
+        side_effecting_rc=$?
+        set -e
+        case "$side_effecting_rc" in
+          0)
+            release_tool=true
+            release_kind="connector_mutation"
+            ;;
+          10)
+            exit 0
+            ;;
+          *)
+            echo "authorization-packet-validator: BLOCKED — MCP side-effect classification failed for '$TOOL'." >&2
+            echo "  Repair shared.mcp_connector_policy or config/mcp-connector-tool-manifest.json before retrying." >&2
+            exit 2
+            ;;
+        esac
+        ;;
+    esac
     ;;
   *) exit 0 ;;
 esac
@@ -335,7 +423,7 @@ if stage_num < 7 and release != "false":
     print(f"shadow_denial_violation:release_authorized={release}")
     sys.exit(0)
 
-if release_kind in {"merge", "release"} and release != "true":
+if release_kind in {"merge", "release", "ref_update", "github_file_write", "push_files"} and release != "true":
     print(f"release_not_authorized:{release_kind}:{release}")
     sys.exit(0)
 

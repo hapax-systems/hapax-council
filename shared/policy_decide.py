@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from shared.mcp_connector_policy import is_side_effecting_connector_tool
 from shared.policy_decision import Decision, FailMode, Verdict
 from shared.policy_floor import evaluate_floor, irreversible_gate
 from shared.sdlc_lifecycle import (
@@ -221,10 +222,6 @@ _DOCKER_MUTATING_SUBCMDS = frozenset(
 _GH_MUTATING_SUBCMDS = frozenset({"api", "repo", "release"})
 _GH_PR_MUTATING = frozenset({"create", "merge", "edit", "close", "reopen"})
 
-_GITHUB_MUTATING_RE = re.compile(
-    r"(create|update|delete|merge|push|commit|file|branch|tag|release|pull_request|issue_comment)"
-)
-
 
 def _head_tokens(command: str) -> list[str]:
     """Tokenize the FIRST simple command (up to a ; | && separator). Best-effort, never raises."""
@@ -408,9 +405,7 @@ def _is_gated_mutation(tool_name: str, command: str) -> bool:
         return (
             _bash_is_mutating(command) or irreversible_gate(tool_name, command=command) is not None
         )
-    if tool_name.startswith("mcp__github__"):
-        return bool(_GITHUB_MUTATING_RE.search(tool_name))
-    return False
+    return bool(is_side_effecting_connector_tool(tool_name))
 
 
 # --- Cognition carve-out (NEW-3: a blocked lane can always think) -------------

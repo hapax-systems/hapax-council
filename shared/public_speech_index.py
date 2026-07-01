@@ -19,6 +19,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from shared.durable_jsonl_sink import DurableJsonlSink
+from shared.transcript_scrubber import scrub_structured_value
+
 INDEX_PATH = Path("/dev/shm/hapax-daimonion/public-speech-events.jsonl")
 
 PublicSpeechScope = Literal["public_broadcast", "private_only", "blocked", "failed"]
@@ -71,10 +74,33 @@ def compute_utterance_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def append_public_speech_event(record: PublicSpeechEventRecord, path: Path = INDEX_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _append_durable_public_speech_event(record: PublicSpeechEventRecord) -> None:
+    payload = scrub_structured_value(json.loads(record.model_dump_json()))
+    DurableJsonlSink().append(
+        stream_id="public-speech-event",
+        data_class="public_speech_event_witness",
+        source_receipt_ref=f"public-speech:event:{record.speech_event_id}",
+        payload=payload,
+        timestamp=record.created_at,
+    )
+
+
+def append_public_speech_event(
+    record: PublicSpeechEventRecord, path: Path | str | None = None
+) -> None:
+    """Append one record, mirroring the default index path to the durable sink first.
+
+    Passing ``None`` uses :data:`INDEX_PATH` and triggers the Stage0 durable
+    witness write before the tmpfs append. Passing an explicit path preserves the
+    caller's local JSONL-only behavior.
+    """
+    actual_path = Path(path) if path is not None else INDEX_PATH
+    if actual_path == INDEX_PATH:
+        _append_durable_public_speech_event(record)
+
+    actual_path.parent.mkdir(parents=True, exist_ok=True)
     line = record.model_dump_json() + "\n"
-    with open(path, "a", encoding="utf-8") as f:
+    with open(actual_path, "a", encoding="utf-8") as f:
         f.write(line)
 
 

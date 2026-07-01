@@ -8,6 +8,8 @@ Spec: docs/superpowers/specs/2026-05-18-cctv-intake-gate-design.md
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from enum import StrEnum
 from pathlib import Path
@@ -78,8 +80,11 @@ class IntakeReceipt(BaseModel):
 
     request_id: str
     request_path: str
+    receipt_ref: str = ""
     verdict: IntakeVerdict
     recommendation: IntakeRecommendation
+    route_resource_admission: str = "missing"
+    capability_receipt_refs: tuple[str, ...] = ()
     axis_results: tuple[AxisResult, ...] = ()
     composite_score: float = 0.0
     convergence_status: ConvergenceStatus = ConvergenceStatus.HUNG
@@ -172,8 +177,11 @@ def build_receipt(
     convergence: ConvergenceStatus,
     has_research_refs: bool = False,
     impediments: tuple[str, ...] = (),
+    council_receipt: dict[str, Any] | None = None,
 ) -> IntakeReceipt:
     verdict = derive_verdict(scores, convergence, has_research_refs)
+    route_resource_admission = _route_resource_admission_from_council(council_receipt or {})
+    capability_refs = _capability_receipt_refs_from_council(council_receipt or {})
     axis_results = tuple(
         AxisResult(
             name=axis,
@@ -183,17 +191,79 @@ def build_receipt(
         )
         for axis in AXIS_WEIGHTS
     )
-    return IntakeReceipt(
+    receipt_ref = _intake_receipt_ref(
         request_id=request_id,
         request_path=request_path,
         verdict=verdict,
         recommendation=derive_recommendation(verdict),
+        route_resource_admission=route_resource_admission,
+        scores=scores,
+        capability_receipt_refs=capability_refs,
+    )
+    return IntakeReceipt(
+        request_id=request_id,
+        request_path=request_path,
+        receipt_ref=receipt_ref,
+        verdict=verdict,
+        recommendation=derive_recommendation(verdict),
+        route_resource_admission=route_resource_admission,
+        capability_receipt_refs=capability_refs,
         axis_results=axis_results,
         composite_score=compute_composite(scores),
         convergence_status=convergence,
         failing_axes=identify_failing_axes(scores),
         impediments=impediments,
     )
+
+
+def _route_resource_admission_from_council(receipt: dict[str, Any]) -> str:
+    value = receipt.get("route_resource_admission")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return "missing"
+
+
+def _capability_receipt_refs_from_council(receipt: dict[str, Any]) -> tuple[str, ...]:
+    refs: list[str] = []
+    direct_refs = receipt.get("capability_receipt_refs")
+    if isinstance(direct_refs, list | tuple):
+        refs.extend(str(ref) for ref in direct_refs if str(ref).strip())
+    admissions = receipt.get("capability_admissions")
+    if isinstance(admissions, list):
+        for item in admissions:
+            if not isinstance(item, dict):
+                continue
+            item_refs = item.get("receipt_refs")
+            if isinstance(item_refs, list | tuple):
+                refs.extend(str(ref) for ref in item_refs if str(ref).strip())
+            elif isinstance(item.get("receipt_ref"), str):
+                refs.append(str(item["receipt_ref"]))
+    return tuple(dict.fromkeys(refs))
+
+
+def _intake_receipt_ref(
+    *,
+    request_id: str,
+    request_path: str,
+    verdict: IntakeVerdict,
+    recommendation: IntakeRecommendation,
+    route_resource_admission: str,
+    scores: dict[str, int | None],
+    capability_receipt_refs: tuple[str, ...],
+) -> str:
+    payload = {
+        "request_id": request_id,
+        "request_path": request_path,
+        "verdict": verdict.value,
+        "recommendation": recommendation.value,
+        "route_resource_admission": route_resource_admission,
+        "scores": scores,
+        "capability_receipt_refs": list(capability_receipt_refs),
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+    return f"cctv-intake-receipt:{request_id}:{digest}"
 
 
 def _intake_axes_frontmatter(receipt: IntakeReceipt) -> dict[str, dict[str, Any]]:
@@ -343,6 +413,7 @@ async def run_intake(
         convergence=council_verdict.convergence_status,
         has_research_refs=_has_research_refs(frontmatter, body),
         impediments=tuple(council_verdict.disagreement_log),
+        council_receipt=council_verdict.receipt,
     )
 
     if write_back:
@@ -351,7 +422,10 @@ async def run_intake(
             if receipt.verdict == IntakeVerdict.READY_TO_PLAN
             else "captured"
         )
+        frontmatter["cctv_intake_receipt"] = receipt.receipt_ref
         frontmatter["cctv_intake_verdict"] = receipt.verdict.value
+        frontmatter["cctv_route_resource_admission"] = receipt.route_resource_admission
+        frontmatter["cctv_capability_receipts"] = list(receipt.capability_receipt_refs)
         frontmatter["recommendation"] = receipt.recommendation.value
         frontmatter["composite"] = receipt.composite_score
         frontmatter["axes"] = _intake_axes_frontmatter(receipt)

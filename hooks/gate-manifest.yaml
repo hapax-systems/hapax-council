@@ -20,7 +20,7 @@ runtimes:
           hooks:
             - hooks-doctor.sh
       PreToolUse:
-        - matcher: "Bash|mcp__github__create_pull_request|mcp__github__merge_pull_request"
+        - matcher: "Bash|mcp__github__create_pull_request|mcp__github__merge_pull_request|mcp__codex_apps__github___create_pull_request|mcp__codex_apps__github___merge_pull_request|mcp__codex_apps__github___enable_auto_merge"
           hooks:
             - pr-release-gate.sh
         - matcher: "Bash"
@@ -71,6 +71,11 @@ runtimes:
         - matcher: "Edit|Write|MultiEdit|NotebookEdit|Bash"
           hooks:
             - cc-task-gate.sh
+        - matcher: "mcp__.*"
+          hooks:
+            - cc-task-gate.sh
+            - mcp-connector-mutator-gate.sh
+            - authorization-packet-validator.sh
         - matcher: "Bash"
           hooks:
             - authorization-packet-validator.sh
@@ -160,6 +165,7 @@ runtimes:
           - docs-only-pr-warn.sh
         mutation:
           - cc-task-gate.sh
+          - mcp-connector-mutator-gate.sh
           - authorization-packet-validator.sh
           - axiom-scan.sh
           - pipewire-graph-edit-gate.sh

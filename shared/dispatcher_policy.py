@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -20,6 +20,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
+from shared.capability_surface_delta import (
+    CapabilitySurfaceDelta,
+    CapabilitySurfaceDeltaError,
+    load_capability_surface_delta_file,
+)
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -64,6 +69,8 @@ DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_DIRNAME = "route-authority"
 ROUTING_MODEL_VERSION = "capacity-dimensional-v1"
+CAPABILITY_SURFACE_DELTA_PATH_ENV = "HAPAX_CAPABILITY_SURFACE_DELTA_FILE"
+GLOBAL_SURFACE_DELTA_ROUTE_KEY = "__all__"
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
 UNKNOWN_OR_RISKY_PRIVACY_POSTURES = frozenset(
     {"provider_training_unknown", "public_risk", "unknown"}
@@ -138,6 +145,8 @@ class RouteCapabilityState(_PolicyModel):
     mutability: dict[str, bool] = Field(default_factory=dict)
     freshness_ok: bool = False
     freshness_errors: tuple[str, ...] = Field(default=())
+    surface_delta_refs: tuple[str, ...] = Field(default=())
+    surface_delta_blockers: tuple[str, ...] = Field(default=())
     telemetry_quota_source: str | None = None
     telemetry_resource_source: str | None = None
 
@@ -225,7 +234,12 @@ class ReviewRequirementReceipt(_PolicyModel):
 class RouteAuthorityReceipt(_PolicyModel):
     route_authority_receipt_schema: Literal[1] = ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION
     receipt_id: str
-    receipt_type: Literal["opus_model_entitlement", "quality_equivalence", "runtime_actuation"]
+    receipt_type: Literal[
+        "opus_model_entitlement",
+        "quality_equivalence",
+        "runtime_actuation",
+        "connector_mutation",
+    ]
     route_id: str
     issued_at: datetime
     stale_after: str
@@ -248,11 +262,11 @@ class RouteAuthorityReceipt(_PolicyModel):
             raise ValueError("quality_equivalence receipts require quality_floors")
         if self.receipt_type == "opus_model_entitlement" and not self.route_id.endswith(".opus"):
             raise ValueError("opus_model_entitlement receipts must target an opus route")
-        if self.receipt_type == "runtime_actuation":
+        if self.receipt_type in {"runtime_actuation", "connector_mutation"}:
             if not self.task_ids:
-                raise ValueError("runtime_actuation receipts require task_ids")
+                raise ValueError(f"{self.receipt_type} receipts require task_ids")
             if not self.mutation_surfaces:
-                raise ValueError("runtime_actuation receipts require mutation_surfaces")
+                raise ValueError(f"{self.receipt_type} receipts require mutation_surfaces")
         return self
 
 
@@ -369,6 +383,8 @@ class DispatchPolicySources(_PolicyModel):
     quota_ledger_source: str | None = None
     quota_live_error: str | None = None
     route_authority_receipts: tuple[RouteAuthorityReceipt, ...] = Field(default=())
+    surface_delta_refs_by_route: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    surface_delta_blockers_by_route: dict[str, tuple[str, ...]] = Field(default_factory=dict)
 
 
 def now_utc() -> datetime:
@@ -380,6 +396,7 @@ def load_dispatch_policy_sources(
     registry_path: Path | None = None,
     quota_ledger_path: Path | None = None,
     receipt_dir: Path | None = None,
+    surface_delta_path: Path | None = None,
     now: datetime | None = None,
 ) -> DispatchPolicySources:
     """Load inert policy sources, turning failures into request evidence."""
@@ -391,6 +408,8 @@ def load_dispatch_policy_sources(
     quota_ledger_source: str | None = None
     quota_live_error: str | None = None
     route_authority_receipts: tuple[RouteAuthorityReceipt, ...] = ()
+    surface_delta_refs_by_route: dict[str, tuple[str, ...]] = {}
+    surface_delta_blockers_by_route: dict[str, tuple[str, ...]] = {}
 
     try:
         effective_receipt_dir = receipt_dir or _receipt_dir_from_env()
@@ -428,6 +447,21 @@ def load_dispatch_policy_sources(
         quota_ledger = None
         quota_error = str(exc)
 
+    surface_delta_file = surface_delta_path or _surface_delta_path_from_env()
+    if surface_delta_file is not None:
+        try:
+            (
+                surface_delta_refs_by_route,
+                surface_delta_blockers_by_route,
+            ) = _surface_delta_route_index(
+                surface_delta_file,
+                known_route_ids=registry.route_map().keys() if registry is not None else None,
+            )
+        except (CapabilitySurfaceDeltaError, OSError, ValueError) as exc:
+            error_ref = _surface_delta_producer_error_ref(surface_delta_file, exc)
+            surface_delta_refs_by_route = {GLOBAL_SURFACE_DELTA_ROUTE_KEY: (error_ref,)}
+            surface_delta_blockers_by_route = {GLOBAL_SURFACE_DELTA_ROUTE_KEY: (error_ref,)}
+
     return DispatchPolicySources(
         registry=registry,
         registry_error=registry_error,
@@ -436,6 +470,8 @@ def load_dispatch_policy_sources(
         quota_ledger_source=quota_ledger_source,
         quota_live_error=quota_live_error,
         route_authority_receipts=route_authority_receipts,
+        surface_delta_refs_by_route=surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=surface_delta_blockers_by_route,
     )
 
 
@@ -471,6 +507,129 @@ def _receipt_dir_from_env() -> Path | None:
     return Path(configured).expanduser()
 
 
+def _surface_delta_path_from_env() -> Path | None:
+    configured = os.environ.get(CAPABILITY_SURFACE_DELTA_PATH_ENV)
+    if configured is None:
+        return None
+    if configured.strip() in {"", "0", "none", "None", "false", "False"}:
+        return None
+    return Path(configured).expanduser()
+
+
+def _surface_delta_route_index(
+    path: Path,
+    *,
+    known_route_ids: Iterable[str] | None = None,
+) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
+    producer_file = load_capability_surface_delta_file(path)
+    known_routes = (
+        {normalize_route_id(route_id) for route_id in known_route_ids}
+        if known_route_ids is not None
+        else None
+    )
+    descriptor_keys_by_ref: dict[str, set[str]] = {}
+    for descriptor in producer_file.descriptors:
+        keys = set(_surface_delta_descriptor_route_keys(descriptor))
+        for descriptor_ref in {
+            descriptor.descriptor_ref,
+            descriptor.surface_id,
+            *descriptor.evidence_refs,
+        }:
+            descriptor_keys_by_ref.setdefault(descriptor_ref, set()).update(keys)
+    descriptor_keys_by_ref_frozen = {
+        key: tuple(sorted(values)) for key, values in descriptor_keys_by_ref.items()
+    }
+    refs: dict[str, list[str]] = {}
+    blockers: dict[str, list[str]] = {}
+    for delta in producer_file.deltas:
+        delta_ref = _surface_delta_ref(delta)
+        route_keys, dispatch_keys = _surface_delta_route_key_sets(
+            delta,
+            descriptor_keys_by_ref_frozen,
+        )
+        if (
+            known_routes is not None
+            and not delta.allows_demand_fulfillment()
+            and not (dispatch_keys & known_routes)
+        ):
+            route_keys.add(GLOBAL_SURFACE_DELTA_ROUTE_KEY)
+        if known_routes is None and not delta.allows_demand_fulfillment() and not dispatch_keys:
+            route_keys.add(GLOBAL_SURFACE_DELTA_ROUTE_KEY)
+        for key in route_keys:
+            refs.setdefault(key, []).append(delta_ref)
+            if not delta.allows_demand_fulfillment():
+                blockers.setdefault(key, []).append(delta_ref)
+    return (
+        {key: tuple(dict.fromkeys(values)) for key, values in refs.items()},
+        {key: tuple(dict.fromkeys(values)) for key, values in blockers.items()},
+    )
+
+
+def _surface_delta_producer_error_ref(path: Path, exc: Exception) -> str:
+    digest = hashlib.sha256(f"{path}:{exc}".encode()).hexdigest()[:16]
+    return (
+        f"capability_surface_delta:unknown:producer_file:{path.name}:{digest}:invalid_or_unreadable"
+    )
+
+
+def _surface_delta_ref(delta: CapabilitySurfaceDelta) -> str:
+    return (
+        f"capability_surface_delta:{delta.freshness_state.value}:"
+        f"{delta.surface_id}:{delta.delta_id}"
+    )
+
+
+def _surface_delta_descriptor_route_keys(descriptor: Any) -> tuple[str, ...]:
+    keys = set()
+    if descriptor.surface_id.startswith("route."):
+        keys.add(normalize_route_id(descriptor.surface_id.removeprefix("route.")))
+    if descriptor.route_id:
+        keys.add(normalize_route_id(descriptor.route_id))
+    return tuple(sorted(keys))
+
+
+def _surface_delta_route_key_sets(
+    delta: CapabilitySurfaceDelta,
+    descriptor_keys_by_ref: Mapping[str, Sequence[str]],
+) -> tuple[set[str], set[str]]:
+    keys = {delta.surface_id}
+    dispatch_keys: set[str] = set()
+    if delta.surface_id.startswith("route."):
+        route_key = normalize_route_id(delta.surface_id.removeprefix("route."))
+        keys.add(route_key)
+        dispatch_keys.add(route_key)
+
+    def join_ref(ref: str) -> None:
+        keys.add(ref)
+        joined_keys = tuple(descriptor_keys_by_ref.get(ref, ()))
+        keys.update(joined_keys)
+        dispatch_keys.update(_surface_delta_dispatch_lookup_keys(joined_keys))
+
+    join_ref(delta.surface_id)
+    if delta.prior_descriptor_ref:
+        join_ref(delta.prior_descriptor_ref)
+    if delta.observed_descriptor_ref:
+        join_ref(delta.observed_descriptor_ref)
+    for evidence_ref in delta.evidence_refs:
+        join_ref(evidence_ref)
+    return keys, dispatch_keys
+
+
+def _surface_delta_dispatch_lookup_keys(keys: Sequence[str]) -> set[str]:
+    return {key for key in keys if ":" not in key and not key.startswith(("route.", "surface."))}
+
+
+def _surface_delta_values_for_route(
+    mapping: Mapping[str, Sequence[str]] | None,
+    route_id: str,
+) -> tuple[str, ...]:
+    if not mapping:
+        return ()
+    route_values = tuple(mapping.get(route_id, ()))
+    global_values = tuple(mapping.get(GLOBAL_SURFACE_DELTA_ROUTE_KEY, ()))
+    return tuple(dict.fromkeys((*route_values, *global_values)))
+
+
 def build_dispatch_request(
     *,
     task_id: str,
@@ -484,6 +643,8 @@ def build_dispatch_request(
     quota_ledger: QuotaSpendLedger | None = None,
     quota_error: str | None = None,
     route_authority_receipts: Sequence[RouteAuthorityReceipt] = (),
+    surface_delta_refs_by_route: Mapping[str, Sequence[str]] | None = None,
+    surface_delta_blockers_by_route: Mapping[str, Sequence[str]] | None = None,
     rollback_mode: bool = False,
     legacy_route_supported: bool = False,
     legacy_route_mutable: bool = False,
@@ -493,7 +654,14 @@ def build_dispatch_request(
 
     route_id = _route_id(platform, mode, profile)
     metadata = assess_route_metadata(task_fields)
-    capability = _capability_state(registry, route_id, registry_error, now=now)
+    capability = _capability_state(
+        registry,
+        route_id,
+        registry_error,
+        now=now,
+        surface_delta_refs_by_route=surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=surface_delta_blockers_by_route,
+    )
     route = registry.route_map().get(normalize_route_id(route_id)) if registry is not None else None
     try:
         demand_vector = build_demand_vector(
@@ -901,7 +1069,12 @@ def _default_route_authority_receipt_id(
 
 def build_route_authority_receipt(
     *,
-    receipt_type: Literal["opus_model_entitlement", "quality_equivalence", "runtime_actuation"],
+    receipt_type: Literal[
+        "opus_model_entitlement",
+        "quality_equivalence",
+        "runtime_actuation",
+        "connector_mutation",
+    ],
     route_id: str,
     evidence_refs: Sequence[str],
     receipt_id: str | None = None,
@@ -977,7 +1150,7 @@ def apply_route_authority_receipts(
     payload = registry.model_dump(mode="json")
     routes_by_id = {route["route_id"]: route for route in payload["routes"]}
     for receipt in authority_receipts:
-        if receipt.receipt_type == "runtime_actuation":
+        if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
             continue
         route_id = normalize_route_id(receipt.route_id)
         route_payload = routes_by_id.get(route_id)
@@ -1007,7 +1180,7 @@ def _load_fresh_route_authority_receipts(
             raise ValueError(f"invalid route authority receipt at {path}: {exc}") from exc
         if not _route_authority_receipt_is_fresh(receipt, now=checked_now):
             continue
-        if receipt.receipt_type == "runtime_actuation":
+        if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
             key = (
                 normalize_route_id(receipt.route_id),
                 receipt.receipt_type,
@@ -1097,7 +1270,7 @@ def _apply_route_authority_receipt_to_route_payload(
 def _route_authority_removable_reasons(receipt: RouteAuthorityReceipt) -> set[str]:
     if receipt.receipt_type == "opus_model_entitlement":
         return {"opus_model_entitlement_receipt_absent", "fresh_capability_evidence_absent"}
-    if receipt.receipt_type == "runtime_actuation":
+    if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
         return set()
     return {"quality_equivalence_record_absent", "fresh_capability_evidence_absent"}
 
@@ -1948,7 +2121,9 @@ def _downstream_review_point(request: DispatchRequest, decision: RouteDecision) 
 
 def _candidate_freshness_state(request: DispatchRequest) -> str:
     capability = request.capability
-    if capability is not None and not capability.freshness_ok:
+    if capability is not None and (
+        not capability.freshness_ok or capability.surface_delta_blockers
+    ):
         return FreshnessState.STALE.value
     if request.supply_vector is None:
         return FreshnessState.MISSING.value
@@ -1979,6 +2154,8 @@ def _capability_state(
     registry_error: str | None,
     *,
     now: datetime | None,
+    surface_delta_refs_by_route: Mapping[str, Sequence[str]] | None = None,
+    surface_delta_blockers_by_route: Mapping[str, Sequence[str]] | None = None,
 ) -> RouteCapabilityState | None:
     if registry is None:
         return None
@@ -1991,13 +2168,29 @@ def _capability_state(
             freshness_errors=(f"unsupported route: {normalize_route_id(route_id)}",),
         )
     freshness = check_registry_freshness(registry, route_ids=[route_id], now=now).routes[0]
-    return _route_capability_state(route, freshness.ok, freshness.errors)
+    normalized_route_id = normalize_route_id(route_id)
+    return _route_capability_state(
+        route,
+        freshness.ok,
+        freshness.errors,
+        surface_delta_refs=_surface_delta_values_for_route(
+            surface_delta_refs_by_route,
+            normalized_route_id,
+        ),
+        surface_delta_blockers=_surface_delta_values_for_route(
+            surface_delta_blockers_by_route,
+            normalized_route_id,
+        ),
+    )
 
 
 def _route_capability_state(
     route: PlatformCapabilityRoute,
     freshness_ok: bool,
     freshness_errors: tuple[str, ...],
+    *,
+    surface_delta_refs: tuple[str, ...] = (),
+    surface_delta_blockers: tuple[str, ...] = (),
 ) -> RouteCapabilityState:
     return RouteCapabilityState(
         route_id=route.route_id,
@@ -2021,6 +2214,8 @@ def _route_capability_state(
         mutability=route.mutability.model_dump(mode="json"),
         freshness_ok=freshness_ok,
         freshness_errors=freshness_errors,
+        surface_delta_refs=surface_delta_refs,
+        surface_delta_blockers=surface_delta_blockers,
         telemetry_quota_source=route.telemetry.quota_source.value,
         telemetry_resource_source=route.telemetry.resource_source.value,
     )
@@ -2177,11 +2372,18 @@ def _clog_state(action: DispatchAction, *, compatibility_degraded: bool) -> Clog
 
 def _registry_freshness_green(request: DispatchRequest) -> bool:
     capability = request.capability
-    return bool(capability is not None and capability.supported and capability.freshness_ok)
+    return bool(
+        capability is not None
+        and capability.supported
+        and capability.freshness_ok
+        and not capability.surface_delta_blockers
+    )
 
 
 def _quota_freshness_green(request: DispatchRequest) -> bool:
     capability = request.capability
+    if capability is not None and capability.surface_delta_blockers:
+        return False
     if _requires_route_specific_subscription_quota(request.route_id):
         if (
             capability is None
@@ -2211,7 +2413,7 @@ def _quota_freshness_green(request: DispatchRequest) -> bool:
 def _resource_freshness_green(request: DispatchRequest) -> bool:
     capability = request.capability
     quota = request.quota
-    if capability is None or not capability.freshness_ok:
+    if capability is None or not capability.freshness_ok or capability.surface_delta_blockers:
         return False
     if any("resource" in error for error in capability.freshness_errors):
         return False
@@ -2643,10 +2845,12 @@ def _unsupported_route_subscription_quota_reasons(
 
 
 def _freshness_hold_reasons(capability: RouteCapabilityState) -> tuple[str, ...]:
-    if capability.freshness_ok:
+    if capability.freshness_ok and not capability.surface_delta_blockers:
         return ()
     reasons = []
     errors = capability.freshness_errors
+    if capability.surface_delta_blockers:
+        reasons.append("capability_surface_delta_pending")
     if any("resource" in error for error in errors):
         reasons.append("resource_telemetry_stale_or_unknown")
     if any("quota" in error for error in errors):
@@ -2657,6 +2861,7 @@ def _freshness_hold_reasons(capability: RouteCapabilityState) -> tuple[str, ...]
         reasons.append("provider_docs_stale_or_unknown")
     if not reasons:
         reasons.append("capability_freshness_failed")
+    reasons.extend(capability.surface_delta_blockers)
     reasons.extend(errors)
     return tuple(reasons)
 

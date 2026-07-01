@@ -32,7 +32,9 @@ Receive-only invariants (carried through from the rail receivers):
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+from datetime import UTC
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -76,6 +78,7 @@ from shared.buy_me_a_coffee_receive_only_rail import (
 from shared.buy_me_a_coffee_receive_only_rail import (
     ReceiveOnlyRailError as BuyMeACoffeeReceiveOnlyRailError,
 )
+from shared.durable_jsonl_sink import DurableJsonlSink
 from shared.github_sponsors_receive_only_rail import (
     GitHubSponsorsRailReceiver,
 )
@@ -136,10 +139,44 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/payment-rails", tags=["payment-rails"])
 stripe_webhook_router = APIRouter(prefix="/api", tags=["payment-rails"])
 
+
 # Per-rail webhook delivery-id headers + bridge-fallback chains.
 # Idempotency stores themselves are managed by the shared registry in
 # `shared._rail_idempotency.get_idempotency_store(rail_subdir)` — see
 # the receive_*_webhook handlers below.
+def _payment_event_payload(event: Any) -> dict[str, Any]:
+    if hasattr(event, "model_dump_json"):
+        return json.loads(event.model_dump_json())
+    if hasattr(event, "model_dump"):
+        return event.model_dump(mode="json")
+    return json.loads(event.json())
+
+
+def _persist_payment_event_durable(event: Any, log_label: str) -> None:
+    """Write normalized PaymentEvent metadata to the durable Stage-0 sink.
+
+    Must fail-closed and propagate errors to FastAPI/client rather than
+    silently dropping to volatile-only persistence.
+    """
+    sink = DurableJsonlSink()
+    payload = _payment_event_payload(event)
+
+    ts = event.occurred_at
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    timestamp_str = ts.isoformat().replace("+00:00", "Z")
+
+    ref = f"receipt://payment/{log_label}/{event.raw_payload_sha256}/{event.event_kind.value}"
+
+    sink.append(
+        stream_id="payment-event",
+        data_class="financial_receipt",
+        source_receipt_ref=ref,
+        payload=payload,
+        timestamp=timestamp_str,
+    )
+
+
 GITHUB_SPONSORS_DELIVERY_ID_HEADER: str = "X-GitHub-Delivery"
 """GitHub webhook per-delivery identifier header (UUID per delivery)."""
 
@@ -345,6 +382,12 @@ async def receive_github_sponsors_webhook(request: Request) -> JSONResponse:
             resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
+    try:
+        _persist_payment_event_durable(event, log_label="github_sponsors")
+    except Exception:
+        if delivery_id:
+            _get_idempotency_store("github-sponsors").remove(delivery_id)
+        raise
     publish_result = GitHubSponsorsPublisher().publish_event(event)
     return dispatch_publish_result(
         publish_result,
@@ -408,6 +451,12 @@ async def receive_liberapay_webhook(request: Request) -> JSONResponse:
             resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
+    try:
+        _persist_payment_event_durable(event, log_label="liberapay")
+    except Exception:
+        if delivery_id:
+            _get_idempotency_store("liberapay").remove(delivery_id)
+        raise
     publish_result = LiberapayPublisher().publish_event(event)
     return dispatch_publish_result(
         publish_result,
@@ -460,6 +509,12 @@ async def receive_open_collective_webhook(request: Request) -> JSONResponse:
             resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
+    try:
+        _persist_payment_event_durable(event, log_label="open_collective")
+    except Exception:
+        if delivery_id:
+            _get_idempotency_store("open-collective").remove(delivery_id)
+        raise
     publish_result = OpenCollectivePublisher().publish_event(event)
     return dispatch_publish_result(
         publish_result,
@@ -510,6 +565,13 @@ async def receive_stripe_payment_link_webhook(request: Request) -> JSONResponse:
             resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
+    try:
+        _persist_payment_event_durable(event, log_label="stripe_payment_link")
+    except Exception:
+        event_id = payload.get("id")
+        if event_id:
+            _get_idempotency_store("stripe-payment-link").remove(event_id)
+        raise
     publish_result = StripePaymentLinkPublisher().publish_event(event)
     return dispatch_publish_result(
         publish_result,
@@ -566,6 +628,13 @@ async def receive_ko_fi_webhook(request: Request) -> JSONResponse:
             resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
+    try:
+        _persist_payment_event_durable(event, log_label="ko_fi")
+    except Exception:
+        transaction_id = payload.get("kofi_transaction_id")
+        if transaction_id:
+            _get_idempotency_store("ko-fi").remove(transaction_id)
+        raise
     publish_result = KoFiPublisher().publish_event(event)
     return dispatch_publish_result(
         publish_result,
@@ -619,6 +688,12 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
             resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
+    try:
+        _persist_payment_event_durable(event, log_label="patreon")
+    except Exception:
+        if webhook_id:
+            _get_idempotency_store("patreon").remove(webhook_id)
+        raise
     publish_result = PatreonPublisher().publish_event(event)
     return dispatch_publish_result(
         publish_result,
@@ -666,6 +741,13 @@ async def receive_buy_me_a_coffee_webhook(request: Request) -> JSONResponse:
             resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
+    try:
+        _persist_payment_event_durable(event, log_label="buy_me_a_coffee")
+    except Exception:
+        event_id = payload.get("event_id")
+        if event_id:
+            _get_idempotency_store("buy-me-a-coffee").remove(event_id)
+        raise
     publish_result = BuyMeACoffeePublisher().publish_event(event)
     return dispatch_publish_result(
         publish_result,
@@ -717,6 +799,13 @@ async def receive_mercury_webhook(request: Request) -> JSONResponse:
             resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
+    try:
+        _persist_payment_event_durable(event, log_label="mercury")
+    except Exception:
+        txn_id = (payload.get("data") or {}).get("id")
+        if txn_id:
+            _get_idempotency_store("mercury").remove(txn_id)
+        raise
     publish_result = MercuryPublisher().publish_event(event)
     return dispatch_publish_result(
         publish_result,
@@ -767,6 +856,14 @@ async def receive_modern_treasury_webhook(request: Request) -> JSONResponse:
             resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
+    try:
+        _persist_payment_event_durable(event, log_label="modern_treasury")
+    except Exception:
+        payment_id = (payload.get("data") or {}).get("id")
+        if payment_id:
+            idempotency_key = f"{event.event_kind.value}:{payment_id}"
+            _get_idempotency_store("modern-treasury").remove(idempotency_key)
+        raise
     publish_result = ModernTreasuryPublisher().publish_event(event)
     return dispatch_publish_result(
         publish_result,
@@ -817,6 +914,13 @@ async def receive_treasury_prime_webhook(request: Request) -> JSONResponse:
             resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
+    try:
+        _persist_payment_event_durable(event, log_label="treasury_prime")
+    except Exception:
+        ach_id = (payload.get("data") or {}).get("id")
+        if ach_id:
+            _get_idempotency_store("treasury-prime").remove(ach_id)
+        raise
     publish_result = TreasuryPrimePublisher().publish_event(event)
     return dispatch_publish_result(
         publish_result,
