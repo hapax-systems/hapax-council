@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,20 +12,6 @@ import shared.durable_jsonl_sink as sink_mod
 import shared.mdlc_realized_return as realized_return_mod
 from shared.capdlc_lifecycle import GateStatus
 from shared.mdlc_measure import MonDLCLadder, MonDLCVerdict, score
-from shared.mdlc_realized_return import (
-    AMBIGUOUS_BANK_TRANSACTION_EVENT_KINDS,
-    DIRECTION_FILTERED_EVENT_KINDS,
-    MEMBERSHIP_LIFECYCLE_EVENT_KINDS,
-    NON_SETTLED_INBOUND_EVENT_KINDS,
-    OUTBOUND_EVENT_KINDS,
-    REALIZED_INBOUND_EVENT_KINDS,
-    REFUND_REVERSAL_EVENT_KINDS,
-    RealizedReturnRefusalReason,
-    RealizedReturnStatus,
-    realized_return_from_durable_payment_event,
-    realized_return_from_rail,
-    realized_returns_from_durable_payment_events,
-)
 from shared.modern_treasury_receive_only_rail import (
     IncomingPaymentEvent,
     IncomingPaymentEventKind,
@@ -50,7 +37,7 @@ def _accepted_event(event_kind: str, **overrides: object) -> dict[str, object]:
         "occurred_at": NOW,
         "raw_payload_sha256": RAW_SHA,
     }
-    if event_kind in DIRECTION_FILTERED_EVENT_KINDS:
+    if event_kind in realized_return_mod.DIRECTION_FILTERED_EVENT_KINDS:
         event["direction"] = "credit"
     event.update(overrides)
     return event
@@ -81,30 +68,30 @@ def _trusted_sink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sink_mod.D
 
 def test_event_kind_contract_is_explicit_and_disjoint() -> None:
     refused = (
-        MEMBERSHIP_LIFECYCLE_EVENT_KINDS
-        | NON_SETTLED_INBOUND_EVENT_KINDS
-        | OUTBOUND_EVENT_KINDS
-        | REFUND_REVERSAL_EVENT_KINDS
-        | AMBIGUOUS_BANK_TRANSACTION_EVENT_KINDS
+        realized_return_mod.MEMBERSHIP_LIFECYCLE_EVENT_KINDS
+        | realized_return_mod.NON_SETTLED_INBOUND_EVENT_KINDS
+        | realized_return_mod.OUTBOUND_EVENT_KINDS
+        | realized_return_mod.REFUND_REVERSAL_EVENT_KINDS
+        | realized_return_mod.AMBIGUOUS_BANK_TRANSACTION_EVENT_KINDS
     )
 
-    assert REALIZED_INBOUND_EVENT_KINDS
-    assert REALIZED_INBOUND_EVENT_KINDS.isdisjoint(refused)
-    assert "customer_subscription_created" in MEMBERSHIP_LIFECYCLE_EVENT_KINDS
-    assert "incoming_payment_detail.created" in NON_SETTLED_INBOUND_EVENT_KINDS
-    assert "payment_refunded" in REFUND_REVERSAL_EVENT_KINDS
-    assert "transaction.updated" in AMBIGUOUS_BANK_TRANSACTION_EVENT_KINDS
+    assert realized_return_mod.REALIZED_INBOUND_EVENT_KINDS
+    assert realized_return_mod.REALIZED_INBOUND_EVENT_KINDS.isdisjoint(refused)
+    assert "customer_subscription_created" in realized_return_mod.MEMBERSHIP_LIFECYCLE_EVENT_KINDS
+    assert "incoming_payment_detail.created" in realized_return_mod.NON_SETTLED_INBOUND_EVENT_KINDS
+    assert "payment_refunded" in realized_return_mod.REFUND_REVERSAL_EVENT_KINDS
+    assert "transaction.updated" in realized_return_mod.AMBIGUOUS_BANK_TRANSACTION_EVENT_KINDS
 
 
-@pytest.mark.parametrize("event_kind", sorted(REALIZED_INBOUND_EVENT_KINDS))
+@pytest.mark.parametrize("event_kind", sorted(realized_return_mod.REALIZED_INBOUND_EVENT_KINDS))
 def test_all_enumerated_realized_inbound_event_kinds_become_measurements(
     event_kind: str,
 ) -> None:
-    result = realized_return_from_rail(
+    result = realized_return_mod.realized_return_from_rail(
         _accepted_event(event_kind), source_receipt_ref=_receipt(event_kind)
     )
 
-    assert result.status is RealizedReturnStatus.ACCEPTED
+    assert result.status is realized_return_mod.RealizedReturnStatus.ACCEPTED
     assert result.refusal_reason is None
     assert result.event_kind == event_kind
     assert result.amount_minor_units == 1200
@@ -126,7 +113,7 @@ def test_stripe_payment_intent_measurement_scores_lit_with_two_witness_refs() ->
         raw_payload_sha256=RAW_SHA,
     )
 
-    rail_result = realized_return_from_rail(
+    rail_result = realized_return_mod.realized_return_from_rail(
         event,
         source_receipt_ref="receipt://payment/stripe/rail-test/payment_intent_succeeded",
     )
@@ -161,10 +148,15 @@ def test_modern_treasury_created_refuses_as_non_settled_before_score_folding() -
         raw_payload_sha256=RAW_SHA,
     )
 
-    result = realized_return_from_rail(event, source_receipt_ref="receipt://payment/mt/created")
+    result = realized_return_mod.realized_return_from_rail(
+        event, source_receipt_ref="receipt://payment/mt/created"
+    )
 
-    assert result.status is RealizedReturnStatus.REFUSED
-    assert result.refusal_reason is RealizedReturnRefusalReason.NON_SETTLED_INBOUND_EVENT
+    assert result.status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert (
+        result.refusal_reason
+        is realized_return_mod.RealizedReturnRefusalReason.NON_SETTLED_INBOUND_EVENT
+    )
     assert result.measurement is None
 
 
@@ -173,45 +165,55 @@ def test_modern_treasury_created_refuses_as_non_settled_before_score_folding() -
     (
         (
             _accepted_event("payment_refunded"),
-            RealizedReturnRefusalReason.REFUND_OR_REVERSAL_EVENT,
+            realized_return_mod.RealizedReturnRefusalReason.REFUND_OR_REVERSAL_EVENT,
         ),
         (
             _accepted_event("processor_fee_charged"),
-            RealizedReturnRefusalReason.FEE_EVENT,
+            realized_return_mod.RealizedReturnRefusalReason.FEE_EVENT,
         ),
         (
             _accepted_event("transaction.created", direction="debit"),
-            RealizedReturnRefusalReason.OUTBOUND_EVENT,
+            realized_return_mod.RealizedReturnRefusalReason.OUTBOUND_EVENT,
         ),
         (
             _directionless_event("transaction.created"),
-            RealizedReturnRefusalReason.MISSING_INBOUND_DIRECTION,
+            realized_return_mod.RealizedReturnRefusalReason.MISSING_INBOUND_DIRECTION,
         ),
         (
             _accepted_event("transaction.updated", direction="incoming"),
-            RealizedReturnRefusalReason.AMBIGUOUS_BANK_TRANSACTION_EVENT,
+            realized_return_mod.RealizedReturnRefusalReason.AMBIGUOUS_BANK_TRANSACTION_EVENT,
         ),
         (
             _accepted_event("payment_intent_succeeded", provenance="projected"),
-            RealizedReturnRefusalReason.PROJECTED_VALUE,
+            realized_return_mod.RealizedReturnRefusalReason.PROJECTED_VALUE,
         ),
         (
             _accepted_event("customer_subscription_created"),
-            RealizedReturnRefusalReason.MEMBERSHIP_LIFECYCLE_EVENT,
+            realized_return_mod.RealizedReturnRefusalReason.MEMBERSHIP_LIFECYCLE_EVENT,
         ),
         (
             _accepted_event("unknown_payment_kind"),
-            RealizedReturnRefusalReason.UNSUPPORTED_EVENT_KIND,
+            realized_return_mod.RealizedReturnRefusalReason.UNSUPPORTED_EVENT_KIND,
+        ),
+        (
+            {
+                key: value
+                for key, value in _accepted_event("payment_intent_succeeded").items()
+                if key != "event_kind"
+            },
+            realized_return_mod.RealizedReturnRefusalReason.MISSING_EVENT_KIND,
         ),
     ),
 )
 def test_refusal_events_do_not_produce_measurements(
     event: dict[str, object],
-    reason: RealizedReturnRefusalReason,
+    reason: realized_return_mod.RealizedReturnRefusalReason,
 ) -> None:
-    result = realized_return_from_rail(event, source_receipt_ref="receipt://payment/test/refusal")
+    result = realized_return_mod.realized_return_from_rail(
+        event, source_receipt_ref="receipt://payment/test/refusal"
+    )
 
-    assert result.status is RealizedReturnStatus.REFUSED
+    assert result.status is realized_return_mod.RealizedReturnStatus.REFUSED
     assert result.refusal_reason is reason
     assert result.measurement is None
 
@@ -220,21 +222,26 @@ def test_missing_evidence_refuses_otherwise_valid_realized_kind() -> None:
     event = _accepted_event("payment_intent_succeeded")
     event.pop("raw_payload_sha256")
 
-    result = realized_return_from_rail(event)
+    result = realized_return_mod.realized_return_from_rail(event)
 
-    assert result.status is RealizedReturnStatus.REFUSED
-    assert result.refusal_reason is RealizedReturnRefusalReason.MISSING_RAIL_EVIDENCE
+    assert result.status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert (
+        result.refusal_reason
+        is realized_return_mod.RealizedReturnRefusalReason.MISSING_RAIL_EVIDENCE
+    )
     assert result.measurement is None
 
 
 def test_malformed_timestamp_returns_invalid_shape_refusal() -> None:
-    result = realized_return_from_rail(
+    result = realized_return_mod.realized_return_from_rail(
         _accepted_event("payment_intent_succeeded", occurred_at="not-a-date"),
         source_receipt_ref="receipt://payment/test/bad-clock",
     )
 
-    assert result.status is RealizedReturnStatus.REFUSED
-    assert result.refusal_reason is RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+    assert result.status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert (
+        result.refusal_reason is realized_return_mod.RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+    )
     assert result.measurement is None
     assert result.to_dict()["detail"].startswith("event timestamp is malformed")
     assert "next action:" in result.to_dict()["detail"]
@@ -259,18 +266,20 @@ def test_malformed_timestamp_returns_invalid_shape_refusal() -> None:
     ),
 )
 def test_malformed_amounts_return_invalid_shape_refusal(event: dict[str, object]) -> None:
-    result = realized_return_from_rail(
+    result = realized_return_mod.realized_return_from_rail(
         event,
         source_receipt_ref="receipt://payment/test/bad-amount",
     )
 
-    assert result.status is RealizedReturnStatus.REFUSED
-    assert result.refusal_reason is RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+    assert result.status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert (
+        result.refusal_reason is realized_return_mod.RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+    )
     assert result.measurement is None
 
 
 def test_refusal_result_carries_cctv_and_ratchet_context() -> None:
-    result = realized_return_from_rail(
+    result = realized_return_mod.realized_return_from_rail(
         _accepted_event("payment_refunded"),
         source_receipt_ref="receipt://payment/test/refund",
     )
@@ -292,27 +301,27 @@ def test_refusal_result_carries_cctv_and_ratchet_context() -> None:
     (
         (
             _accepted_event("processor_fee_charged"),
-            RealizedReturnRefusalReason.FEE_EVENT,
+            realized_return_mod.RealizedReturnRefusalReason.FEE_EVENT,
         ),
         (
             _accepted_event("customer_subscription_created"),
-            RealizedReturnRefusalReason.MEMBERSHIP_LIFECYCLE_EVENT,
+            realized_return_mod.RealizedReturnRefusalReason.MEMBERSHIP_LIFECYCLE_EVENT,
         ),
         (
             _accepted_event("transaction.updated", direction="incoming"),
-            RealizedReturnRefusalReason.AMBIGUOUS_BANK_TRANSACTION_EVENT,
+            realized_return_mod.RealizedReturnRefusalReason.AMBIGUOUS_BANK_TRANSACTION_EVENT,
         ),
         (
             _accepted_event("payment_intent_succeeded", amount_currency_cents="bad"),
-            RealizedReturnRefusalReason.INVALID_EVENT_SHAPE,
+            realized_return_mod.RealizedReturnRefusalReason.INVALID_EVENT_SHAPE,
         ),
     ),
 )
 def test_refusal_to_dict_shape_is_stable_across_reason_classes(
     event: dict[str, object],
-    reason: RealizedReturnRefusalReason,
+    reason: realized_return_mod.RealizedReturnRefusalReason,
 ) -> None:
-    result = realized_return_from_rail(
+    result = realized_return_mod.realized_return_from_rail(
         event,
         source_receipt_ref="receipt://payment/test/refusal-context",
     )
@@ -347,16 +356,21 @@ def test_reader_consumes_durable_stage0_payment_event_path(
         timestamp=NOW.isoformat().replace("+00:00", "Z"),
     )
 
-    results = realized_returns_from_durable_payment_events(sink.path_for_stream("payment-event"))
+    results = realized_return_mod.realized_returns_from_durable_payment_events(
+        sink.path_for_stream("payment-event")
+    )
 
     assert [result.status for result in results] == [
-        RealizedReturnStatus.ACCEPTED,
-        RealizedReturnStatus.REFUSED,
+        realized_return_mod.RealizedReturnStatus.ACCEPTED,
+        realized_return_mod.RealizedReturnStatus.REFUSED,
     ]
     assert results[0].measurement is not None
     assert f"durable:payment-event:{accepted.row_hash}" in results[0].evidence_refs
     assert accepted.source_receipt_ref in results[0].evidence_refs
-    assert results[1].refusal_reason is RealizedReturnRefusalReason.REFUND_OR_REVERSAL_EVENT
+    assert (
+        results[1].refusal_reason
+        is realized_return_mod.RealizedReturnRefusalReason.REFUND_OR_REVERSAL_EVENT
+    )
     assert f"durable:payment-event:{refused.row_hash}" in results[1].evidence_refs
 
 
@@ -373,20 +387,26 @@ def test_durable_row_wrapper_refuses_direct_sink_row_without_stream_validation(
         timestamp=NOW.isoformat().replace("+00:00", "Z"),
     )
 
-    result = realized_return_from_durable_payment_event(row)
+    result = realized_return_mod.realized_return_from_durable_payment_event(row)
 
-    assert result.status is RealizedReturnStatus.REFUSED
-    assert result.refusal_reason is RealizedReturnRefusalReason.NOT_STAGE0_PAYMENT_EVENT
+    assert result.status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert (
+        result.refusal_reason
+        is realized_return_mod.RealizedReturnRefusalReason.NOT_STAGE0_PAYMENT_EVENT
+    )
     assert result.measurement is None
     assert "durable rows must be read through" in result.detail
 
 
 def test_missing_durable_payment_event_file_returns_empty_tuple(tmp_path: Path) -> None:
-    assert realized_returns_from_durable_payment_events(tmp_path / "missing.jsonl") == ()
+    assert (
+        realized_return_mod.realized_returns_from_durable_payment_events(tmp_path / "missing.jsonl")
+        == ()
+    )
 
 
 def test_durable_row_wrapper_refuses_non_payment_event_rows() -> None:
-    result = realized_return_from_durable_payment_event(
+    result = realized_return_mod.realized_return_from_durable_payment_event(
         sink_mod.DurableSinkRow(
             schema_version=sink_mod.SCHEMA_VERSION,
             timestamp=NOW.isoformat().replace("+00:00", "Z"),
@@ -399,13 +419,16 @@ def test_durable_row_wrapper_refuses_non_payment_event_rows() -> None:
         )
     )
 
-    assert result.status is RealizedReturnStatus.REFUSED
-    assert result.refusal_reason is RealizedReturnRefusalReason.NOT_STAGE0_PAYMENT_EVENT
+    assert result.status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert (
+        result.refusal_reason
+        is realized_return_mod.RealizedReturnRefusalReason.NOT_STAGE0_PAYMENT_EVENT
+    )
     assert result.measurement is None
 
 
 def test_durable_row_wrapper_refuses_non_mapping_payload() -> None:
-    result = realized_return_from_durable_payment_event(
+    result = realized_return_mod.realized_return_from_durable_payment_event(
         sink_mod.DurableSinkRow(
             schema_version=sink_mod.SCHEMA_VERSION,
             timestamp=NOW.isoformat().replace("+00:00", "Z"),
@@ -418,13 +441,61 @@ def test_durable_row_wrapper_refuses_non_mapping_payload() -> None:
         )
     )
 
-    assert result.status is RealizedReturnStatus.REFUSED
-    assert result.refusal_reason is RealizedReturnRefusalReason.NOT_STAGE0_PAYMENT_EVENT
+    assert result.status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert (
+        result.refusal_reason
+        is realized_return_mod.RealizedReturnRefusalReason.NOT_STAGE0_PAYMENT_EVENT
+    )
     assert result.measurement is None
 
 
+def test_durable_stream_reader_refuses_non_mapping_payload_with_durable_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _NoIssues:
+        def raise_for_issues(self) -> None:
+            return None
+
+    row_hash = "c" * 64
+    path = tmp_path / "payment-event.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": sink_mod.SCHEMA_VERSION,
+                "timestamp": NOW.isoformat().replace("+00:00", "Z"),
+                "stream_id": "payment-event",
+                "data_class": "financial_receipt",
+                "source_receipt_ref": "receipt://payment/bad-payload",
+                "prior_hash": sink_mod.GENESIS_HASH,
+                "row_hash": row_hash,
+                "payload": ["not", "a", "mapping"],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        realized_return_mod,
+        "validate_chain",
+        lambda *_args, **_kwargs: _NoIssues(),
+    )
+
+    results = realized_return_mod.realized_returns_from_durable_payment_events(path)
+
+    assert len(results) == 1
+    assert results[0].status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert (
+        results[0].refusal_reason
+        is realized_return_mod.RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+    )
+    assert "receipt://payment/bad-payload" in results[0].evidence_refs
+    assert f"durable:payment-event:{row_hash}" in results[0].evidence_refs
+
+
 def test_durable_row_wrapper_refuses_unvalidated_mapping_even_with_valid_payload() -> None:
-    result = realized_return_from_durable_payment_event(
+    result = realized_return_mod.realized_return_from_durable_payment_event(
         {
             "stream_id": "payment-event",
             "data_class": "financial_receipt",
@@ -434,8 +505,11 @@ def test_durable_row_wrapper_refuses_unvalidated_mapping_even_with_valid_payload
         }
     )
 
-    assert result.status is RealizedReturnStatus.REFUSED
-    assert result.refusal_reason is RealizedReturnRefusalReason.NOT_STAGE0_PAYMENT_EVENT
+    assert result.status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert (
+        result.refusal_reason
+        is realized_return_mod.RealizedReturnRefusalReason.NOT_STAGE0_PAYMENT_EVENT
+    )
     assert result.measurement is None
 
 
@@ -455,8 +529,31 @@ def test_durable_stream_reader_refuses_non_mapping_jsonl_row(
         lambda *_args, **_kwargs: _NoIssues(),
     )
 
-    results = realized_returns_from_durable_payment_events(path)
+    results = realized_return_mod.realized_returns_from_durable_payment_events(path)
 
     assert len(results) == 1
-    assert results[0].status is RealizedReturnStatus.REFUSED
-    assert results[0].refusal_reason is RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+    assert results[0].status is realized_return_mod.RealizedReturnStatus.REFUSED
+    assert (
+        results[0].refusal_reason
+        is realized_return_mod.RealizedReturnRefusalReason.INVALID_EVENT_SHAPE
+    )
+
+
+def test_durable_stream_reader_raises_when_chain_validation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BrokenChain:
+        def raise_for_issues(self) -> None:
+            raise RuntimeError("chain validation failed")
+
+    path = tmp_path / "payment-event.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        realized_return_mod,
+        "validate_chain",
+        lambda *_args, **_kwargs: _BrokenChain(),
+    )
+
+    with pytest.raises(RuntimeError, match="chain validation failed"):
+        realized_return_mod.realized_returns_from_durable_payment_events(path)

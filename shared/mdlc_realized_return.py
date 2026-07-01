@@ -432,7 +432,11 @@ def _realized_return_from_durable_payment_event(
             amount_minor_units=None,
             currency=None,
             observed_at=None,
-            evidence_refs=_string_tuple((source_receipt_ref, row_hash)),
+            evidence_refs=_evidence_refs(
+                {},
+                source_receipt_ref=str(source_receipt_ref or ""),
+                durable_row_hash=str(row_hash or ""),
+            ),
             detail="durable payment row payload must be a mapping",
         )
     return realized_return_from_rail(
@@ -655,8 +659,10 @@ def _field(event: Any, *names: str) -> Any:
             if name in event:
                 return event[name]
             continue
-        if hasattr(event, name):
+        try:
             return getattr(event, name)
+        except AttributeError:
+            continue
     return None
 
 
