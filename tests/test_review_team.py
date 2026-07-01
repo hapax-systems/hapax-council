@@ -473,11 +473,19 @@ def _write_route_decision_ledger(path: Path, admissions: list[dict]) -> None:
         lines.append(
             json.dumps(
                 {
+                    "decision_schema": 1,
+                    "dimensional_route_receipt_schema": 1,
+                    "routing_model_version": "capacity-dimensional-v1",
                     "decision_id": admission["route_decision_id"],
+                    "created_at": "2026-06-11T21:00:00Z",
                     "task_id": admission["task_id"],
                     "lane": f"review-seat-{admission['seat_id']}",
                     "route_id": admission["route_id"],
                     "action": admission["route_policy_action"],
+                    "decision": admission["route_policy_action"],
+                    "selected_route_id": admission["route_id"]
+                    if admission["route_policy_action"] == "launch"
+                    else None,
                     "launch_allowed": admission["route_policy_launch_allowed"],
                     "route_policy_green": admission["route_policy_green"],
                     "registry_freshness_green": admission["route_policy_registry_freshness_green"],
@@ -487,6 +495,9 @@ def _write_route_decision_ledger(path: Path, admissions: list[dict]) -> None:
                     "resource_state_refs": admission["route_policy_resource_state_refs"],
                     "authority_case": admission["authority_case"],
                     "demand_vector_ref": admission["route_policy_demand_vector_ref"],
+                    "candidate_snapshot_ref": {"hash": "sha256:candidate-snapshot"},
+                    "candidates": [{"route_id": admission["route_id"], "status": "selected"}],
+                    "confidence": {"route_confidence": 3},
                 },
                 sort_keys=True,
             )
@@ -887,6 +898,68 @@ class TestVerdictBlockers:
         assert any(
             blocker.startswith("review_dossier_route_decision_mismatch:codex-1:")
             and blocker.endswith(":authority_case")
+            for blocker in blockers
+        )
+
+    def test_route_admission_required_blocks_schema_less_ledger_record(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = self._good_dossier(rt)
+        dossier["route_admission_required"] = True
+        ledger_path = tmp_path / "route-decisions.jsonl"
+        monkeypatch.setattr(rt, "ROUTE_DECISION_LEDGER_PATH", ledger_path)
+        route_ids = {
+            "codex-1": "codex.headless.full",
+            "gemini-1": "antigrav.interactive.full",
+            "claude-1": "claude.headless.full",
+        }
+        admissions = []
+        for review in dossier["reviewers"]:
+            admission = _route_admission(review["id"], route_ids[review["id"]])
+            admissions.append(admission)
+            review["route_admissions"] = [admission]
+        _write_route_decision_ledger(ledger_path, admissions)
+        records = [
+            json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()
+        ]
+        records[0] = {
+            key: records[0][key]
+            for key in (
+                "decision_id",
+                "task_id",
+                "lane",
+                "route_id",
+                "action",
+                "launch_allowed",
+                "route_policy_green",
+                "registry_freshness_green",
+                "quota_freshness_green",
+                "resource_freshness_green",
+                "quota_evidence_refs",
+                "resource_state_refs",
+                "authority_case",
+                "demand_vector_ref",
+            )
+        }
+        ledger_path.write_text(
+            "\n".join(json.dumps(record, sort_keys=True) for record in records) + "\n",
+            encoding="utf-8",
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        blockers = rt.review_team_verdict_blockers(
+            self._route_frontmatter(), note, pr_head_sha="a" * 40
+        )
+
+        assert any(
+            blocker.startswith("review_dossier_route_decision_mismatch:codex-1:")
+            and blocker.endswith(":decision_schema")
+            for blocker in blockers
+        )
+        assert any(
+            blocker.startswith("review_dossier_route_decision_mismatch:codex-1:")
+            and blocker.endswith(":dimensional_route_receipt_schema")
             for blocker in blockers
         )
 

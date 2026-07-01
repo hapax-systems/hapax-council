@@ -41,7 +41,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.dispatcher_policy import ROUTE_DECISION_LEDGER  # noqa: E402
+from shared.dispatcher_policy import (  # noqa: E402
+    DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION,
+    ROUTE_DECISION_LEDGER,
+    ROUTE_DECISION_SCHEMA_VERSION,
+    ROUTING_MODEL_VERSION,
+)
 from shared.failure_classification import (  # noqa: E402
     STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
     STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES,
@@ -1235,6 +1240,47 @@ def _string_mapping(value: Any) -> dict[str, str]:
     return {str(key): str(item) for key, item in value.items()}
 
 
+def _valid_route_decision_created_at(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def _route_decision_schema_blockers(
+    record: Mapping[str, Any],
+    admission: Mapping[str, Any],
+    *,
+    prefix: str,
+) -> list[str]:
+    blockers: list[str] = []
+    scalar_expected = {
+        "decision_schema": ROUTE_DECISION_SCHEMA_VERSION,
+        "dimensional_route_receipt_schema": DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION,
+        "routing_model_version": ROUTING_MODEL_VERSION,
+        "decision": str(admission.get("route_policy_action") or ""),
+    }
+    for field, expected_value in scalar_expected.items():
+        if record.get(field) != expected_value:
+            blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:{field}")
+    if not _valid_route_decision_created_at(record.get("created_at")):
+        blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:created_at")
+    if not _string_mapping(record.get("candidate_snapshot_ref")).get("hash"):
+        blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:candidate_snapshot_ref")
+    if not isinstance(record.get("candidates"), list) or not record.get("candidates"):
+        blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:candidates")
+    if not _string_mapping(record.get("confidence")):
+        blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:confidence")
+    if str(admission.get("route_policy_action") or "") == "launch":
+        selected_route_id = str(record.get("selected_route_id") or "")
+        if selected_route_id != str(admission.get("route_id") or ""):
+            blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:selected_route_id")
+    return blockers
+
+
 def _route_decision_ledger_record(
     ledger_path: Any,
     decision_id: str,
@@ -1287,6 +1333,7 @@ def _route_decision_ledger_blockers(
     if record is None:
         return [f"review_dossier_route_decision_{error}:{prefix}:{decision_id}"]
 
+    blockers = _route_decision_schema_blockers(record, admission, prefix=prefix)
     expected = {
         "task_id": str(admission.get("task_id") or ""),
         "lane": f"review-seat-{reviewer_id}",
@@ -1294,7 +1341,6 @@ def _route_decision_ledger_blockers(
         "action": str(admission.get("route_policy_action") or ""),
         "authority_case": str(admission.get("authority_case") or ""),
     }
-    blockers: list[str] = []
     for field, expected_value in expected.items():
         if str(record.get(field) or "") != expected_value:
             blockers.append(f"review_dossier_route_decision_mismatch:{prefix}:{field}")
