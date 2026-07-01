@@ -20,9 +20,12 @@ import logging
 import random
 import time
 from collections import deque
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from shared.durable_jsonl_sink import DurableJsonlSink
 
 log = logging.getLogger(__name__)
 
@@ -627,7 +630,42 @@ class ApperceptionStore:
 
     def add(self, apperception: Apperception) -> None:
         """Queue an apperception for batch persistence."""
+        self._append_durable_receipt(apperception)
         self._pending.append(apperception)
+
+    @staticmethod
+    def _text_hash(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    def _append_durable_receipt(self, apperception: Apperception) -> None:
+        trigger_hash = self._text_hash(apperception.trigger_text)
+        payload = {
+            "source": apperception.source,
+            "trigger_text_sha256": trigger_hash,
+            "observation_sha256": self._text_hash(apperception.observation),
+            "action_sha256": self._text_hash(apperception.action) if apperception.action else "",
+            "reflection_sha256": (
+                self._text_hash(apperception.reflection) if apperception.reflection else ""
+            ),
+            "valence": apperception.valence,
+            "valence_target_sha256": self._text_hash(apperception.valence_target),
+            "cascade_depth": apperception.cascade_depth,
+            "noise_level": apperception.noise_level,
+            "stimmung_stance": apperception.stimmung_stance,
+        }
+        timestamp = (
+            datetime.fromtimestamp(apperception.timestamp, UTC).isoformat().replace("+00:00", "Z")
+        )
+        DurableJsonlSink().append(
+            stream_id="apperception",
+            data_class="apperception_record",
+            source_receipt_ref=(
+                f"apperception:event:{apperception.source}:{trigger_hash[:16]}:"
+                f"{apperception.timestamp:.6f}"
+            ),
+            payload=payload,
+            timestamp=timestamp,
+        )
 
     @property
     def pending_count(self) -> int:
