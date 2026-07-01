@@ -289,6 +289,7 @@ def test_battery_gate_dataclass_constructor_enforces_public_contract() -> None:
 
 
 def test_forbidden_verdict_language_guard_remains_engine_owned() -> None:
+    raw_rationale = "the model is pretending to know the answer"
     with pytest.raises(
         NDCVBApiHarnessError, match="NDCVB verdict validation failed.*next_action="
     ) as exc:
@@ -299,12 +300,13 @@ def test_forbidden_verdict_language_guard_remains_engine_owned() -> None:
                     "correspondent": "sycophancy",
                     "kind": "dissociated",
                     "bound": 0.8,
-                    "rationale": "the model is pretending to know the answer",
+                    "rationale": raw_rationale,
                 }
             ],
             battery_gates=_gates(),
         )
     assert isinstance(exc.value.__cause__, ForbiddenAxisBVerdictError)
+    assert raw_rationale not in str(exc.value)
 
 
 def test_phase0_request_rejects_customer_data_or_raw_payload_fields() -> None:

@@ -87,8 +87,9 @@ _VERDICT_NEXT_ACTION: Final = (
 )
 _BATTERY_NEXT_ACTION: Final = (
     "next_action=provide exactly four gate mappings with unique gate_id, boolean "
-    "passed, confidence in [0.0, 1.0], non-empty provenance refs, and optional detail; "
-    "do not pass raw payload, customer, tenant, or user data"
+    "passed, confidence in [0.0, 1.0], non-empty provenance refs, and optional "
+    "local-only detail that is not returned by the public envelope; do not pass raw "
+    "payload, customer, tenant, or user data"
 )
 _TEXT_NEXT_ACTION: Final = "next_action=provide a non-empty string reference value"
 _REF_NEXT_ACTION: Final = (
@@ -260,7 +261,10 @@ def package_ndcvb_detection_result(
         engine_report = evaluate_ndcvb_axis_b(verdicts)
     except AxisBNDCVBError as exc:
         raise NDCVBApiHarnessError(
-            _with_next_action(f"NDCVB verdict validation failed: {exc}", _VERDICT_NEXT_ACTION)
+            _with_next_action(
+                "NDCVB verdict validation failed; Axis-B guard refused the verdict input",
+                _VERDICT_NEXT_ACTION,
+            )
         ) from exc
     battery_report = _battery_report(gate_records)
     status = _status_for(engine_report=engine_report, battery_ok=battery_report["ok"])
