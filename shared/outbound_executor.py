@@ -431,5 +431,6 @@ _OUTBOUND_EXECUTOR_ENTRYPOINTS: Final = (
     OutboundExecutionRequest._public_gate_passed_is_explicit_bool,
     OutboundExecutionRequest._evidence_refs_are_nonblank_strings,
     OutboundExecutor,
+    OutboundExecutor.validate_request,
     OutboundExecutor.require_execution,
 )
