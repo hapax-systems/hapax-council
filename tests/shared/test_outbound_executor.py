@@ -166,11 +166,11 @@ def test_executor_configuration_fails_closed(base_registry: AccountFederationReg
             registry=base_registry,
         )
 
-    with pytest.raises(ValueError, match="notional_cap must be finite"):
+    with pytest.raises(ValueError, match="notional_cap"):
         OutboundExecutor(
             authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
             venue_allowlist={"internal"},
-            notional_cap=10**400,
+            notional_cap=2**53 + 1,
             position_cap=500.0,
             kill_switch=False,
             registry=base_registry,
@@ -326,7 +326,7 @@ def test_executor_configuration_rejects_invalid_types(
 
 
 def test_request_rejects_non_finite_amount() -> None:
-    for amount in (float("nan"), float("inf"), float("-inf"), -1.0, 10**400):
+    for amount in (float("nan"), float("inf"), float("-inf"), -1.0, 2**53 + 1, 10**400):
         with pytest.raises(ValidationError, match="next action"):
             OutboundExecutionRequest(
                 scope="gmail_send_internal",

@@ -41,6 +41,7 @@ _PUBLIC_GATE_EVIDENCE_PREFIXES: Final[tuple[str, ...]] = (
     "public_gate:",
     "receipt:public-gate:",
 )
+_MAX_EXACT_FLOAT_INT: Final[int] = 2**53
 _SOURCE_RECEIVE_ONLY_PROVIDERS: Final[frozenset[str]] = frozenset(
     {rail.value for rail in SupportRail}
     | {rail.value for rail in LicenseReceiveOnlyRail if rail is not LicenseReceiveOnlyRail.NO_RAIL}
@@ -422,6 +423,11 @@ def _finite_nonnegative_float(name: str, value: float) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise TypeError(
             f"{name} must be a numeric cap; next action: supply a finite non-negative number"
+        )
+    if isinstance(value, int) and abs(value) > _MAX_EXACT_FLOAT_INT:
+        raise ValueError(
+            f"{name} must fit exact float integer bounds; next action: supply a bounded "
+            "non-negative number no larger than 2**53"
         )
     try:
         normalized = float(value)
