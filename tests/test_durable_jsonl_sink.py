@@ -640,11 +640,28 @@ def test_append_lock_release_failure_has_next_action_after_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sink = _trusted_sink(tmp_path, monkeypatch)
+    real_open = sink_mod.os.open
+    real_close = sink_mod.os.close
+    lock_fds: list[int] = []
+    closed_lock_fds: list[int] = []
 
     def failing_unlock(_fd: int, op: int) -> None:
         if op == sink_mod.fcntl.LOCK_UN:
             raise OSError("simulated lock release failure")
 
+    def recording_open(path: Any, flags: int, mode: int = 0o777) -> int:
+        fd = real_open(path, flags, mode)
+        if str(path).endswith(".lock"):
+            lock_fds.append(fd)
+        return fd
+
+    def recording_close(fd: int) -> None:
+        if fd in lock_fds:
+            closed_lock_fds.append(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(sink_mod.os, "open", recording_open)
+    monkeypatch.setattr(sink_mod.os, "close", recording_close)
     monkeypatch.setattr(sink_mod.fcntl, "flock", failing_unlock)
 
     with pytest.raises(DurableSinkAppendError, match="release durable sink lock.*next action"):
@@ -659,6 +676,7 @@ def test_append_lock_release_failure_has_next_action_after_commit(
     result = validate_chain(sink.path_for_stream("payment-event"), stream_id="payment-event")
     assert result.valid is True
     assert result.row_count == 1
+    assert closed_lock_fds == lock_fds
 
 
 def test_append_stream_open_failure_has_next_action(

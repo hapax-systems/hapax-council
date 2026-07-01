@@ -252,16 +252,33 @@ class DurableJsonlSink:
                 body_error = exc
                 raise
         finally:
+            release_error: DurableSinkAppendError | None = None
+            release_cause: OSError | None = None
+            close_error: DurableSinkAppendError | None = None
+            close_cause: OSError | None = None
             if locked:
                 try:
                     fcntl.flock(lock_fd, fcntl.LOCK_UN)
                 except OSError as exc:
                     if body_error is None:
-                        raise DurableSinkAppendError(
+                        release_error = DurableSinkAppendError(
                             f"failed to release durable sink lock {lock_path}; next "
                             "action: verify lock state before retrying append"
-                        ) from exc
-            os.close(lock_fd)
+                        )
+                        release_cause = exc
+            try:
+                os.close(lock_fd)
+            except OSError as exc:
+                if body_error is None and release_error is None:
+                    close_error = DurableSinkAppendError(
+                        f"failed to close durable sink lock {lock_path}; next action: "
+                        "verify lock fd state before retrying append"
+                    )
+                    close_cause = exc
+            if release_error is not None:
+                raise release_error from release_cause
+            if close_error is not None:
+                raise close_error from close_cause
 
 
 def make_row(
