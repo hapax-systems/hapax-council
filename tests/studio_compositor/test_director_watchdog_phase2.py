@@ -148,6 +148,7 @@ class TestSingleFlightLock:
         assert kwargs["model_alias"] == "command-r-08-2024"
         assert kwargs["mutation_surface"] == "none"
         assert kwargs["quality_floor"] == "deterministic_ok"
+        assert dl_mod._request_director_model("local-fast") == "local-fast"
 
     def test_director_route_model_mismatch_fails_closed(self, monkeypatch) -> None:
         monkeypatch.setenv(dl_mod.DIRECTOR_LLM_ROUTE_ID_ENV, "local_tool.local.worker")

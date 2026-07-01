@@ -155,6 +155,7 @@ from shared.dispatcher_policy import RouteAuthorityReceipt
 from shared.egress_cadence_feasibility import (
     assess_egress_cadence as _assess_egress_cadence,
 )
+from shared.platform_capability_registry import ProviderModelAlias
 
 _assess_egress_cadence
 
@@ -794,6 +795,10 @@ WorldSurfaceHealthFixtureSet.rows_for_fixture_case
 # Provider/tool route health validators are invoked dynamically by Pydantic
 # while projecting model/search/MCP/publication/local routes into WCS rows.
 ProviderToolRouteHealth._validate_route_claim_authority
+
+# Provider model aliases are validated dynamically by Pydantic when loading the
+# platform capability registry; vulture cannot see model_validator invocation.
+ProviderModelAlias._alias_freshness_duration_is_valid
 
 # Route authority receipts are Pydantic-validated when loaded from receipt
 # files; vulture cannot see model_validator invocation.

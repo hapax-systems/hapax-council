@@ -971,3 +971,4 @@ class TestTickFenceStripFallback:
         assert kwargs["model_alias"] == "command-r-08-2024"
         assert kwargs["mutation_surface"] == "none"
         assert kwargs["quality_floor"] == "deterministic_ok"
+        assert mod._request_imagination_model("reasoning") == "reasoning"

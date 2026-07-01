@@ -367,7 +367,44 @@ def test_provider_model_call_admits_declared_gateway_alias(
     aliases = {
         alias["alias"]: alias for alias in admission.model_descriptor["provider_model_aliases"]
     }
-    assert aliases["gemini-flash"]["model_id"] == "gemini-3.1-pro-preview"
+    assert aliases["gemini-flash"]["model_id"] == "gemini-3.5-flash"
+    assert aliases["gemini-flash"]["observed_at"] == "2026-07-01T20:35:00Z"
+    assert aliases["gemini-flash"]["stale_after"] == "24h"
+
+
+def test_provider_model_call_refuses_stale_gateway_alias_evidence(
+    tmp_path: Path,
+) -> None:
+    _write_provider_gateway_receipt(tmp_path)
+    registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    for route in registry["routes"]:
+        if route["route_id"] == "api.headless.provider_gateway":
+            route["provider_model_aliases"][0]["observed_at"] = "2026-06-01T00:00:00Z"
+            route["provider_model_aliases"][0]["stale_after"] = "1h"
+            break
+    registry_path = tmp_path / "registry" / "platform-capability-registry.json"
+    registry_path.parent.mkdir()
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+
+    admission = admit_background_capability(
+        capability_name="studio.scene_classifier.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        task_fields=_provider_task_fields(),
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        authority_level="authoritative",
+        registry_path=registry_path,
+        receipt_dir=tmp_path,
+        quota_ledger_path=QUOTA_FIXTURE,
+        now=NOW,
+        write_receipt=False,
+    )
+
+    assert admission.admitted is False
+    assert admission.policy_outcome is None
+    assert admission.reason_codes == ("provider_alias_evidence_stale",)
+    assert "alias=gemini-flash" in (admission.denied_reason or "")
 
 
 def test_fix_evaluator_model_call_refuses_undeclared_provider_gateway_alias(

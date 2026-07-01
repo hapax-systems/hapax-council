@@ -247,6 +247,7 @@ class TestDefaultLlmBackpressure:
         assert kwargs["model_alias"] == "command-r-08-2024"
         assert kwargs["mutation_surface"] == "none"
         assert kwargs["quality_floor"] == "deterministic_ok"
+        assert sd._request_structural_model("local-fast") == "local-fast"
 
     def test_tick_once_catches_default_llm_timeout(self):
         director = sd.StructuralDirector(

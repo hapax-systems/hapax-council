@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +25,7 @@ from shared.dispatcher_policy import (
     write_route_decision_receipt,
 )
 from shared.frontmatter import parse_frontmatter
-from shared.platform_capability_registry import normalize_route_id
+from shared.platform_capability_registry import normalize_route_id, parse_duration_spec
 
 BACKGROUND_CAPABILITY_TASK_NOTE_ENV = "HAPAX_BACKGROUND_CAPABILITY_TASK_NOTE"
 BACKGROUND_CAPABILITY_LANE_ENV = "HAPAX_BACKGROUND_CAPABILITY_LANE"
@@ -290,6 +290,7 @@ def admit_background_capability(
             route_id=normalized_route_id,
             model_alias=model_alias,
             mutation_surface=mutation_surface,
+            now=now,
         )
         if model_blocker is not None:
             reason, code = model_blocker
@@ -601,6 +602,7 @@ def _model_binding_blocker(
     route_id: str,
     model_alias: str | None,
     mutation_surface: str,
+    now: datetime | None = None,
 ) -> tuple[str, str] | None:
     if model_alias is None:
         return None
@@ -639,6 +641,9 @@ def _model_binding_blocker(
     for alias in getattr(route, "provider_model_aliases", ()):
         alias_keys = {str(alias.alias).strip(), str(alias.model_id).strip()}
         if requested in alias_keys:
+            alias_staleness = _provider_alias_freshness_blocker(alias, now=now)
+            if alias_staleness is not None:
+                return alias_staleness
             route_provider = str(getattr(route, "paid_provider", "") or "").strip()
             alias_provider = str(alias.provider).strip()
             if route_provider and alias_provider and alias_provider != route_provider:
@@ -655,6 +660,44 @@ def _model_binding_blocker(
         f"route_models={','.join(sorted(allowed)) or 'none'}",
         "provider_model_descriptor_mismatch",
     )
+
+
+def _provider_alias_freshness_blocker(
+    alias: Any,
+    *,
+    now: datetime | None,
+) -> tuple[str, str] | None:
+    observed_at = getattr(alias, "observed_at", None)
+    stale_after = str(getattr(alias, "stale_after", "") or "").strip()
+    alias_name = str(getattr(alias, "alias", "") or "").strip()
+    if observed_at is None or not stale_after:
+        return (
+            f"provider_alias_freshness_absent:alias={alias_name or 'unknown'}",
+            "provider_alias_freshness_absent",
+        )
+    try:
+        ttl = parse_duration_spec(stale_after)
+    except ValueError:
+        return (
+            f"provider_alias_freshness_invalid:alias={alias_name or 'unknown'} stale_after={stale_after}",
+            "provider_alias_freshness_invalid",
+        )
+    comparison_now = now or datetime.now(UTC)
+    if observed_at.tzinfo is None and comparison_now.tzinfo is not None:
+        observed_at = observed_at.replace(tzinfo=comparison_now.tzinfo)
+    elif observed_at.tzinfo is not None and comparison_now.tzinfo is None:
+        comparison_now = comparison_now.replace(tzinfo=observed_at.tzinfo)
+    age = comparison_now - observed_at
+    if age.total_seconds() < 0:
+        return None
+    if age > ttl:
+        return (
+            "provider_alias_evidence_stale:"
+            f"alias={alias_name or 'unknown'} observed_at={observed_at.isoformat()} "
+            f"stale_after={stale_after}",
+            "provider_alias_evidence_stale",
+        )
+    return None
 
 
 __all__ = [

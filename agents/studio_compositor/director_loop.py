@@ -901,6 +901,10 @@ def _resolved_director_model(model_alias: str) -> str:
     return MODELS.get(model_alias, model_alias)
 
 
+def _request_director_model(model_alias: str) -> str:
+    return MODELS.get(model_alias, model_alias)
+
+
 def _director_admission_spec(model_alias: str) -> tuple[str, str, str]:
     resolved = _resolved_director_model(model_alias)
     if resolved in DIRECTOR_LOCAL_MODEL_IDS:
@@ -4415,7 +4419,7 @@ class DirectorLoop:
                 BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
             )
             return ""
-        request_model = _resolved_director_model(DIRECTOR_MODEL)
+        request_model = _request_director_model(DIRECTOR_MODEL)
 
         content: list[dict] = []
         # Only forward images when the configured route is known multimodal.

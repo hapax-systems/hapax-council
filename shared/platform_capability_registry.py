@@ -160,6 +160,7 @@ class ModelId(StrEnum):
     COMMAND_R_08_2024 = "command-r-08-2024"
     MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     UNKNOWN = "unknown"
 
@@ -318,6 +319,13 @@ class ProviderModelAlias(StrictModel):
     model_id: ModelId
     provider: str
     evidence_refs: list[str] = Field(min_length=1)
+    observed_at: datetime
+    stale_after: str
+
+    @model_validator(mode="after")
+    def _alias_freshness_duration_is_valid(self) -> Self:
+        parse_duration_spec(self.stale_after)
+        return self
 
 
 class DescriptorVariant(StrictModel):

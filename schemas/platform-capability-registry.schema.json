@@ -438,6 +438,7 @@
         "command-r-08-2024",
         "mistral-medium-3.5",
         "gemini-3.1-pro-preview",
+        "gemini-3.5-flash",
         "z_ai-glm-5",
         "unknown"
       ]
@@ -469,7 +470,7 @@
     "provider_model_alias": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["alias", "model_id", "provider", "evidence_refs"],
+      "required": ["alias", "model_id", "provider", "evidence_refs", "observed_at", "stale_after"],
       "properties": {
         "alias": {"type": "string", "minLength": 1},
         "model_id": {"$ref": "#/$defs/model_id"},
@@ -478,7 +479,9 @@
           "type": "array",
           "minItems": 1,
           "items": {"type": "string", "minLength": 1}
-        }
+        },
+        "observed_at": {"type": "string", "format": "date-time"},
+        "stale_after": {"$ref": "#/$defs/duration"}
       }
     },
     "descriptor_variant": {

@@ -597,12 +597,14 @@
       "provider_model_aliases": [
         {
           "alias": "gemini-flash",
-          "model_id": "gemini-3.1-pro-preview",
+          "model_id": "gemini-3.5-flash",
           "provider": "google",
           "evidence_refs": [
             "shared/config.py:MODELS.vision-fast",
-            "docs/research/2026-04-15-litellm-config-drift-audit.md:gemini-flash"
-          ]
+            "~/llm-stack/litellm-config.yaml:model_name=gemini-flash model=gemini/gemini-3.5-flash"
+          ],
+          "observed_at": "2026-07-01T20:35:00Z",
+          "stale_after": "24h"
         }
       ],
       "paid_provider": "google",

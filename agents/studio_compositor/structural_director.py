@@ -438,7 +438,7 @@ def _default_llm_fn(prompt: str) -> str:
     litellm_url = "http://localhost:4000/v1/chat/completions"
     try:
         model_alias = os.environ.get(STRUCTURAL_MODEL_ENV, "local-fast")
-        request_model = _resolved_structural_model(model_alias)
+        request_model = _request_structural_model(model_alias)
         admission = _admit_structural_llm(model_alias)
         if not admission.admitted:
             log.warning(
@@ -527,6 +527,10 @@ def _admit_structural_llm(model_alias: str) -> BackgroundCapabilityAdmission:
 def _resolved_structural_model(model_alias: str) -> str:
     if model_alias in STRUCTURAL_LOCAL_MODEL_ALIASES:
         return "command-r-08-2024"
+    return MODELS.get(model_alias, model_alias)
+
+
+def _request_structural_model(model_alias: str) -> str:
     return MODELS.get(model_alias, model_alias)
 
 

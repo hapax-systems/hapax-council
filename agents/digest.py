@@ -300,17 +300,18 @@ The lookback window is {hours} hours."""
 
 def _admit_digest_synthesis() -> BackgroundCapabilityAdmission:
     model_id = _selected_digest_model_id()
+    admission_model_id = _digest_admission_model_id(model_id)
     expected_route, mutation_surface, quality_floor = _digest_admission_spec(model_id)
     configured_route = os.environ.get(DIGEST_LLM_ROUTE_ID_ENV, expected_route)
     if configured_route != expected_route:
         return BackgroundCapabilityAdmission(
             capability_name="agents.digest.synthesis",
             route_id=configured_route,
-            model_alias=model_id,
+            model_alias=admission_model_id,
             admitted=False,
             denied_reason=(
                 "digest_route_model_mismatch:"
-                f"model={model_id} expected_route={expected_route} "
+                f"model={admission_model_id} expected_route={expected_route} "
                 f"configured_route={configured_route}"
             ),
             reason_codes=("digest_route_model_mismatch",),
@@ -320,7 +321,7 @@ def _admit_digest_synthesis() -> BackgroundCapabilityAdmission:
     return admit_background_capability(
         capability_name="agents.digest.synthesis",
         route_id=configured_route,
-        model_alias=model_id,
+        model_alias=admission_model_id,
         mutation_surface=mutation_surface,
         quality_floor=quality_floor,
     )
@@ -335,10 +336,17 @@ def _selected_digest_model_id() -> str:
 
 
 def _digest_admission_spec(model_id: str) -> tuple[str, str, str]:
-    resolved = MODELS.get(model_id, model_id)
+    resolved = _digest_admission_model_id(model_id)
     if resolved in DIGEST_LOCAL_MODEL_IDS:
         return "local_tool.local.worker", "none", "deterministic_ok"
     return "api.headless.provider_gateway", "provider_spend", "frontier_required"
+
+
+def _digest_admission_model_id(model_id: str) -> str:
+    resolved = MODELS.get(model_id, model_id)
+    if resolved == "local-fast":
+        return "command-r-08-2024"
+    return resolved
 
 
 # ── Formatters ───────────────────────────────────────────────────────────────

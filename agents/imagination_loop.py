@@ -315,21 +315,23 @@ class ImaginationLoop:
             return 0.0
         return self.recent_fragments[-1].salience
 
-    def _get_agent(self):
+    def _get_agent(self, admission: BackgroundCapabilityAdmission):
         """Lazy-init pydantic_ai Agent for imagination generation."""
+        if not admission.admitted:
+            raise RuntimeError("imagination agent construction requires admitted capability")
         if self._agent is None:
             from pydantic_ai import Agent
 
             from agents._config import get_model
 
             self._agent = Agent(
-                get_model(_resolved_imagination_model(IMAGINATION_MODEL)),
+                get_model(_request_imagination_model(IMAGINATION_MODEL)),
                 output_type=ImaginationFragment,
                 system_prompt=IMAGINATION_SYSTEM_PROMPT,
             )
         return self._agent
 
-    def _get_text_agent(self):
+    def _get_text_agent(self, admission: BackgroundCapabilityAdmission):
         """Lazy-init pydantic-ai Agent *without* output_type constraint.
 
         Used as the markdown-fallback path when the structured agent's
@@ -338,13 +340,15 @@ class ImaginationLoop:
         every tick, fall back to a plain text call and salvage what we
         can via `_extract_fragment_from_markdown`.
         """
+        if not admission.admitted:
+            raise RuntimeError("imagination text-agent construction requires admitted capability")
         if getattr(self, "_text_agent", None) is None:
             from pydantic_ai import Agent
 
             from agents._config import get_model
 
             self._text_agent = Agent(
-                get_model(_resolved_imagination_model(IMAGINATION_MODEL)),
+                get_model(_request_imagination_model(IMAGINATION_MODEL)),
                 system_prompt=IMAGINATION_SYSTEM_PROMPT,
             )
         return self._text_agent
@@ -437,7 +441,7 @@ class ImaginationLoop:
 
         fragment: ImaginationFragment | None = None
         try:
-            agent = self._get_agent()
+            agent = self._get_agent(admission)
             result = await agent.run(context)
             fragment = result.output
         except Exception as structured_exc:  # noqa: BLE001
@@ -460,7 +464,7 @@ class ImaginationLoop:
                 type(structured_exc).__name__,
             )
             try:
-                text_agent = self._get_text_agent()
+                text_agent = self._get_text_agent(admission)
                 text_result = await text_agent.run(context)
                 raw_text = str(getattr(text_result, "output", text_result) or "")
                 fragment = _extract_fragment_from_json(raw_text)
@@ -501,6 +505,12 @@ class ImaginationLoop:
 def _resolved_imagination_model(model_alias: str) -> str:
     if model_alias in IMAGINATION_LOCAL_MODEL_ALIASES:
         return IMAGINATION_LOCAL_MODEL_ID
+    from agents._config import MODELS
+
+    return MODELS.get(model_alias, model_alias)
+
+
+def _request_imagination_model(model_alias: str) -> str:
     from agents._config import MODELS
 
     return MODELS.get(model_alias, model_alias)
