@@ -52,7 +52,11 @@ class MonDLCGate:
 
 @dataclass(frozen=True)
 class MonDLCLadder:
-    """Frozen ruler ladder inputs consumed by :func:`score`."""
+    """Frozen ruler ladder inputs consumed by :func:`score`.
+
+    ``freshness_ttl_seconds`` defaults to 24 hours for standalone scorer use.
+    Production freeze artifacts may override it explicitly.
+    """
 
     ruler_hash: str
     min_corroboration_count: int = 2
@@ -177,6 +181,9 @@ def score(
     Missing/projected/stale evidence never succeeds. A valid measurement can
     become LIT only when it satisfies the ruler hash, observed-evidence,
     freshness, and corroboration gates.
+
+    Raises TypeError/ValueError for unsupported input shapes before a
+    measurement contract can be constructed.
     """
 
     frozen_ladder = _coerce_ladder(ladder)
@@ -507,6 +514,8 @@ def _coerce_refs(value: Any) -> tuple[str, ...]:
 
 
 def _string_tuple(value: Sequence[str]) -> tuple[str, ...]:
+    if isinstance(value, str):
+        raise TypeError("evidence refs must be a string sequence; attach durable evidence ids")
     return tuple(str(item).strip() for item in value if str(item).strip())
 
 

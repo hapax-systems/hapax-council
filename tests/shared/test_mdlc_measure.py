@@ -259,6 +259,40 @@ def test_single_overwhelming_loss_is_lit_negative_under_ladder() -> None:
     assert result.reason == "negative_realized_return"
 
 
+def test_negative_threshold_boundary_is_negative() -> None:
+    result = score(
+        _measurement(measurement=-50.0),
+        _ladder(negative_threshold=-50.0),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.LIT
+    assert result.verdict is MonDLCVerdict.NEGATIVE
+
+
+def test_positive_threshold_boundary_is_undetermined() -> None:
+    result = score(
+        _measurement(measurement=10.0),
+        _ladder(negative_threshold=-50.0, positive_threshold=10.0),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.PARTIAL
+    assert result.verdict is MonDLCVerdict.UNDETERMINED
+    assert result.reason == "realized_return_below_lit_threshold"
+
+
+def test_corroboration_count_equal_to_minimum_passes_gate() -> None:
+    result = score(
+        _measurement(evidence_refs=("rail:event:1",)),
+        _ladder(min_corroboration_count=1),
+        ruler_hash_commit=HASH,
+    )
+
+    assert result.status is GateStatus.LIT
+    assert _by_gate(result, MonDLCGateName.CORROBORATION).status is GateStatus.LIT
+
+
 def test_ladder_mapping_and_measurement_mapping_are_supported() -> None:
     result = score(
         {
@@ -298,6 +332,7 @@ def test_to_dict_exposes_gate_contract_without_python_identities() -> None:
     assert payload["verdict"] == "corroborated"
     assert payload["ok"] is True
     assert payload["next_action"] is None
+    assert payload["evidence_refs"] == ["rail:event:1", "ledger:receipt:1"]
     assert payload["gates"] == [
         {"name": "ruler_hash", "status": "lit", "reason": "ruler_hash_matched"},
         {
@@ -335,6 +370,17 @@ def test_ladder_validation_refuses_invalid_rulers(kwargs: dict[str, object], mat
 def test_measurement_validation_rejects_non_numeric_values(bad_value: object) -> None:
     with pytest.raises(TypeError, match="value must be numeric or None"):
         MonDLCMeasurement(value=bad_value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field", ("evidence_refs", "corroborated_by"))
+def test_direct_measurement_rejects_plain_string_evidence_refs(field: str) -> None:
+    with pytest.raises(TypeError, match="evidence refs must be a string sequence"):
+        MonDLCMeasurement(
+            value=1.0,
+            provenance="realized",
+            observed_at=NOW,
+            **{field: "rail:event:1"},
+        )
 
 
 @pytest.mark.parametrize(
