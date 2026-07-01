@@ -209,8 +209,10 @@ def test_require_execution_refused(base_registry: AccountFederationRegistry) -> 
         amount=10.0,
     )
 
-    with pytest.raises(OutboundExecutionRefusal, match="kill switch is active"):
+    with pytest.raises(OutboundExecutionRefusal, match="kill switch is active") as exc_info:
         executor.require_execution(request)
+    assert exc_info.value.receipt.refusal_reason == "kill_switch_active"
+    assert exc_info.value.receipt.status == "refused"
 
 
 def test_validate_request_is_dry_run(base_registry: AccountFederationRegistry) -> None:
@@ -557,6 +559,31 @@ def test_position_cap_blocks(base_registry: AccountFederationRegistry) -> None:
     receipt = executor.execute(request)
     assert receipt.status == "refused"
     assert receipt.refusal_reason == "position_cap_exceeded"
+
+
+def test_position_cap_boundary_admits_equal_total(
+    base_registry: AccountFederationRegistry,
+) -> None:
+    executor = OutboundExecutor(
+        authority_ceiling=AuthorityCeiling.INTERNAL_ONLY,
+        venue_allowlist={"internal"},
+        notional_cap=100.0,
+        position_cap=150.0,
+        current_position=140.0,
+        registry=base_registry,
+    )
+
+    request = OutboundExecutionRequest(
+        scope="gmail_send_internal",
+        venue="internal",
+        amount=10.0,
+    )
+
+    receipt = executor.execute(request)
+    assert receipt.status == "admitted"
+    assert receipt.current_position_before == 140.0
+    assert receipt.current_position_after == 150.0
+    assert executor.current_position == 150.0
 
 
 def test_authority_ceilings(base_registry: AccountFederationRegistry) -> None:
