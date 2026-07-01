@@ -138,6 +138,31 @@ def test_g2_no_exact_row_blocks_commit() -> None:
     assert result.row is None
 
 
+def test_g2_no_exact_row_preserves_advisory_row_evidence() -> None:
+    result = verify_g2_legal(
+        TARGET,
+        registry=_registry(
+            _row(
+                venue="*",
+                instrument="*",
+                source_task="20260628-registry-phase0-schema-and-honest-dark-gate",
+            )
+        ),
+        today=TODAY,
+    )
+
+    assert result.status is GateStatus.DARK
+    assert result.refusal_reason is G2LegalRefusalReason.NO_EXACT_ROW
+    assert result.row is None
+    assert result.advisory_row is not None
+    assert result.advisory_row.key == (TARGET.surface, "*", "*")
+    assert result.evidence_refs == (
+        f"legal-posture-row:{TARGET.surface}:*:*",
+        "cc-task:20260628-registry-phase0-schema-and-honest-dark-gate",
+    )
+    assert result.gate_result.evidence_refs == result.evidence_refs
+
+
 def test_g2_dark_row_blocks_commit() -> None:
     result = verify_g2_legal(TARGET, registry=_registry(_row()), today=TODAY)
 

@@ -54,7 +54,7 @@ _G2_REASON_TO_REFUSAL: Final[dict[G2Reason, G2LegalRefusalReason]] = {
     G2Reason.UNSIGNED_NON_DARK: G2LegalRefusalReason.UNSIGNED_NON_DARK,
     G2Reason.STALE_NON_DARK: G2LegalRefusalReason.STALE_NON_DARK,
     G2Reason.PARTIAL_NOT_COMMITTABLE: G2LegalRefusalReason.PARTIAL_NOT_COMMITTABLE,
-    G2Reason.LIT_AUTHORITY_NOT_COMMITTABLE: (G2LegalRefusalReason.LIT_AUTHORITY_NOT_COMMITTABLE),
+    G2Reason.LIT_AUTHORITY_NOT_COMMITTABLE: G2LegalRefusalReason.LIT_AUTHORITY_NOT_COMMITTABLE,
     G2Reason.LIT_HAS_OPEN_QUESTIONS: G2LegalRefusalReason.LIT_HAS_OPEN_QUESTIONS,
 }
 
@@ -289,7 +289,8 @@ def _refused(
     next_action = _NEXT_ACTIONS[reason]
     message = reason.value if not detail else f"{reason.value}: {detail}"
     message = f"{message}; next action: {next_action}"
-    evidence_refs = _row_evidence_refs(row) if row is not None else ()
+    evidence_row = row or advisory_row
+    evidence_refs = _row_evidence_refs(evidence_row) if evidence_row is not None else ()
     return G2LegalVerification(
         validator=MONDLC_G2_LEGAL_NAME,
         validator_version=MONDLC_G2_LEGAL_VERSION,
