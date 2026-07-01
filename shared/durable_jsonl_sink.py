@@ -119,22 +119,39 @@ def assert_durable_root(root: Path | str) -> Path:
 
     candidate = Path(root).expanduser()
     if not candidate.is_absolute():
-        raise DurableSinkPathError(f"durable sink root must be absolute: {candidate}")
+        raise DurableSinkPathError(
+            f"durable sink root must be absolute: {candidate}; next action: set "
+            f"{DEFAULT_ROOT_ENV} to an absolute path on persistent storage"
+        )
     if not candidate.exists():
-        raise DurableSinkPathError(f"durable sink root is absent: {candidate}")
+        raise DurableSinkPathError(
+            f"durable sink root is absent: {candidate}; next action: create the "
+            "directory on persistent storage before launching the sink"
+        )
     if not candidate.is_dir():
-        raise DurableSinkPathError(f"durable sink root is not a directory: {candidate}")
+        raise DurableSinkPathError(
+            f"durable sink root is not a directory: {candidate}; next action: choose "
+            f"or create a directory for {DEFAULT_ROOT_ENV}"
+        )
 
     resolved = candidate.resolve()
     fstype = _mount_fstype_for_path(resolved)
     if fstype is None:
-        raise DurableSinkPathError(f"could not determine filesystem type for {resolved}")
+        raise DurableSinkPathError(
+            f"could not determine filesystem type for {resolved}; next action: verify "
+            f"/proc/mounts is readable and set {DEFAULT_ROOT_ENV} to a known "
+            "persistent mount"
+        )
     if fstype in VOLATILE_FS_TYPES:
         raise DurableSinkPathError(
-            f"durable sink root is on volatile filesystem {fstype}: {resolved}"
+            f"durable sink root is on volatile filesystem {fstype}: {resolved}; "
+            f"next action: move {DEFAULT_ROOT_ENV} to non-volatile storage"
         )
     if resolved.stat().st_mode & 0o002:
-        raise DurableSinkPathError(f"durable sink root is world-writable: {resolved}")
+        raise DurableSinkPathError(
+            f"durable sink root is world-writable: {resolved}; next action: remove "
+            "world-writable permissions or choose a protected directory"
+        )
     return resolved
 
 
@@ -201,9 +218,14 @@ def make_row(
     data_class = _required_text(data_class, "data_class")
     source_receipt_ref = _required_text(source_receipt_ref, "source_receipt_ref")
     if not _is_sha256(prior_hash):
-        raise DurableSinkValueError(f"prior_hash must be 64 lowercase hex chars: {prior_hash!r}")
+        raise DurableSinkValueError(
+            f"prior_hash must be 64 lowercase hex chars: {prior_hash!r}; next "
+            "action: validate the prior durable sink tail hash before appending"
+        )
     if not isinstance(payload, Mapping):
-        raise DurableSinkValueError("payload must be a mapping")
+        raise DurableSinkValueError(
+            "payload must be a mapping; next action: pass a JSON-object-compatible payload envelope"
+        )
 
     timestamp = _required_text(timestamp or _utc_now_iso(), "timestamp")
     payload_copy = _json_safe_copy(dict(payload), field_name="payload")
@@ -325,7 +347,10 @@ def _append_row_locked(target: Path, row: DurableSinkRow) -> None:
             os.fsync(fd)
         except Exception as exc:
             _rollback_partial_append(fd, start_offset)
-            raise DurableSinkAppendError(f"failed to append durable sink row to {target}") from exc
+            raise DurableSinkAppendError(
+                f"failed to append durable sink row to {target}; next action: inspect "
+                "storage write errors and validate the stream chain before retrying"
+            ) from exc
     finally:
         os.close(fd)
     _fsync_directory(target.parent)
@@ -337,7 +362,10 @@ def _write_all(fd: int, blob: bytes) -> None:
     while written_total < len(blob):
         written = os.write(fd, view[written_total:])
         if written <= 0:
-            raise DurableSinkAppendError("os.write returned no progress")
+            raise DurableSinkAppendError(
+                "os.write returned no progress; next action: treat the append as "
+                "failed and inspect the storage device"
+            )
         written_total += written
 
 
@@ -354,7 +382,10 @@ def _fsync_directory(path: Path) -> None:
     try:
         os.fsync(dir_fd)
     except OSError as exc:
-        raise DurableSinkAppendError(f"failed to fsync durable sink directory {path}") from exc
+        raise DurableSinkAppendError(
+            f"failed to fsync durable sink directory {path}; next action: verify the "
+            "durable root is writable and the filesystem is healthy"
+        ) from exc
     finally:
         os.close(dir_fd)
 
@@ -512,7 +543,10 @@ def _result_with_expectation_checks(
 
 def _required_text(value: str, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise DurableSinkValueError(f"{field} must be a non-empty string")
+        raise DurableSinkValueError(
+            f"{field} must be a non-empty string; next action: provide the required "
+            "durable sink envelope field"
+        )
     return value
 
 
@@ -520,7 +554,8 @@ def _stream_filename(stream_id: str) -> str:
     if not isinstance(stream_id, str) or not _STREAM_ID_RE.fullmatch(stream_id):
         raise DurableSinkValueError(
             "stream_id must start with an alphanumeric and contain only "
-            "alphanumerics, '.', '_', ':', or '-'"
+            "alphanumerics, '.', '_', ':', or '-'; next action: choose a stable "
+            "filename-safe stream id"
         )
     return f"{stream_id}.jsonl"
 
@@ -547,9 +582,15 @@ def _json_safe_copy(value: Mapping[str, Any], *, field_name: str) -> dict[str, A
     try:
         loaded = json.loads(_canonical_json(value))
     except (TypeError, ValueError) as exc:
-        raise DurableSinkValueError(f"{field_name} must be canonical JSON encodable") from exc
+        raise DurableSinkValueError(
+            f"{field_name} must be canonical JSON encodable; next action: remove "
+            "non-finite numbers and non-JSON values before append"
+        ) from exc
     if not isinstance(loaded, dict):
-        raise DurableSinkValueError(f"{field_name} must encode to a JSON object")
+        raise DurableSinkValueError(
+            f"{field_name} must encode to a JSON object; next action: pass an object "
+            "payload rather than an array or scalar"
+        )
     return loaded
 
 
