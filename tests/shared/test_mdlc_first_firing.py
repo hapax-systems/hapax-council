@@ -13,8 +13,8 @@ from shared.mdlc_m_binding import bind_durable_payment_events, bind_m_result
 from shared.mdlc_measure import MonDLCLadder
 
 NOW = datetime(2026, 7, 1, 11, 30, tzinfo=UTC)
-HASH = "phase5-ruler-hash"
-RAW_SHA = "b" * 64
+HASH = "e16bfb8c6c5f80f69dd53edd7f5a9c303c7bff047153d6a337bf5c23db76fbb7"
+RAW_SHA = "4cad08e003531ce772360aca72435081607ebd1174d4ab8dddba685ad89726d2"
 
 
 def _trusted_sink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sink_mod.DurableJsonlSink:
