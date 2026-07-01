@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from math import isfinite
 from typing import Any
 
 from shared.capdlc_lifecycle import GateResult, GateStatus
@@ -66,6 +67,42 @@ class MonDLCLadder:
     negative_threshold: float = -1.0
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "min_corroboration_count",
+            _finite_int(
+                self.min_corroboration_count,
+                field="min_corroboration_count",
+                guidance="supply a finite frozen ruler ladder",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "freshness_ttl_seconds",
+            _finite_int(
+                self.freshness_ttl_seconds,
+                field="freshness_ttl_seconds",
+                guidance="supply a finite frozen ruler ladder",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "positive_threshold",
+            _finite_float(
+                self.positive_threshold,
+                field="positive_threshold",
+                guidance="supply a finite frozen ruler ladder",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "negative_threshold",
+            _finite_float(
+                self.negative_threshold,
+                field="negative_threshold",
+                guidance="supply a finite frozen ruler ladder",
+            ),
+        )
         if not self.ruler_hash.strip():
             raise ValueError("MonDLCLadder.ruler_hash is required")
         if self.min_corroboration_count < 1:
@@ -89,21 +126,19 @@ class MonDLCMeasurement:
     corroborated_by: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.value is not None and isinstance(self.value, bool):
-            raise TypeError(
-                "MonDLCMeasurement.value must be numeric or None; attach a witnessed numeric "
-                "realized return"
-            )
-        if self.value is not None and not isinstance(self.value, (int, float)):
-            raise TypeError(
-                "MonDLCMeasurement.value must be numeric or None; attach a witnessed numeric "
-                "realized return"
-            )
-        object.__setattr__(
-            self,
-            "value",
-            None if self.value is None else float(self.value),
-        )
+        if self.value is not None:
+            if isinstance(self.value, bool) or not isinstance(self.value, (int, float)):
+                raise TypeError(
+                    "MonDLCMeasurement.value must be numeric or None; attach a witnessed numeric "
+                    "realized return"
+                )
+            numeric_value = float(self.value)
+            if not isfinite(numeric_value):
+                raise ValueError(
+                    "MonDLCMeasurement.value must be finite; attach a witnessed numeric "
+                    "realized return"
+                )
+            object.__setattr__(self, "value", numeric_value)
         if self.observed_at is not None:
             object.__setattr__(self, "observed_at", _ensure_utc(self.observed_at))
         object.__setattr__(self, "evidence_refs", _string_tuple(self.evidence_refs))
@@ -337,13 +372,27 @@ def _coerce_ladder(value: MonDLCLadder | Mapping[str, Any]) -> MonDLCLadder:
     as_of = _optional_datetime(value.get("as_of"))
     return MonDLCLadder(
         ruler_hash=_required_str(value.get("ruler_hash"), field="ruler_hash"),
-        min_corroboration_count=int(value.get("min_corroboration_count", value.get("min_N", 2))),
-        freshness_ttl_seconds=int(
-            value.get("freshness_ttl_seconds", value.get("freshness_ttl_s", 86_400))
+        min_corroboration_count=_finite_int(
+            value.get("min_corroboration_count", value.get("min_N", 2)),
+            field="min_corroboration_count",
+            guidance="supply a finite frozen ruler ladder",
+        ),
+        freshness_ttl_seconds=_finite_int(
+            value.get("freshness_ttl_seconds", value.get("freshness_ttl_s", 86_400)),
+            field="freshness_ttl_seconds",
+            guidance="supply a finite frozen ruler ladder",
         ),
         as_of=as_of,
-        positive_threshold=float(value.get("positive_threshold", 0.0)),
-        negative_threshold=float(value.get("negative_threshold", -1.0)),
+        positive_threshold=_finite_float(
+            value.get("positive_threshold", 0.0),
+            field="positive_threshold",
+            guidance="supply a finite frozen ruler ladder",
+        ),
+        negative_threshold=_finite_float(
+            value.get("negative_threshold", -1.0),
+            field="negative_threshold",
+            guidance="supply a finite frozen ruler ladder",
+        ),
     )
 
 
@@ -477,9 +526,28 @@ def _first_present(mapping: Mapping[str, Any], *keys: str) -> Any:
 
 
 def _numeric(value: Any, *, field: str) -> float:
+    return _finite_float(
+        value,
+        field=field,
+        guidance="attach a witnessed numeric realized return",
+    )
+
+
+def _finite_float(value: Any, *, field: str, guidance: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise TypeError(f"{field} must be numeric; attach a witnessed numeric realized return")
-    return float(value)
+        raise TypeError(f"{field} must be numeric; {guidance}")
+    numeric_value = float(value)
+    if not isfinite(numeric_value):
+        raise ValueError(f"{field} must be finite; {guidance}")
+    return numeric_value
+
+
+def _finite_int(value: Any, *, field: str, guidance: str) -> int:
+    numeric_value = _finite_float(value, field=field, guidance=guidance)
+    integer_value = int(numeric_value)
+    if integer_value != numeric_value:
+        raise ValueError(f"{field} must be an integer; {guidance}")
+    return integer_value
 
 
 def _required_str(value: Any, *, field: str) -> str:
