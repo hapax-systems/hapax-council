@@ -487,6 +487,15 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
         "authority-case-check",
         REVIEW_TEAM_QUORUM_EVIDENCE,
     ),
+    # A public-claim-sensitive source change auto-arms only when the current
+    # PR head has passed authority-case validation and the source-pinned review
+    # dossier has quorum-accepted the public-claim posture. This does not grant
+    # public egress or provider spend: those still fail closed through mutation
+    # surface, public_current, and provider-spend gates.
+    "public_claim_sensitive": (
+        "authority-case-check",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
+    ),
     # A privacy/secret-sensitive change auto-arms when the dedicated secret
     # scanner passes on its diff (no committed credential). The redaction
     # CORRECTNESS of such a change is separately gated by the general test/review
