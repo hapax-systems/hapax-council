@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from shared.execution_observer import FallbackEvent, observe_claude_transcript
+from shared.execution_observer import (
+    FallbackEvent,
+    ObservedExecution,
+    check_execution_invariant,
+    observe_claude_transcript,
+)
 
 
 def _write(path: Path, records: list[dict]) -> Path:
@@ -79,3 +84,44 @@ def test_missing_file_yields_empty_observation(tmp_path: Path) -> None:
     assert obs.turn_count == 0
     assert obs.drifted is False
     assert obs.endpoint_attested is False
+
+
+def test_invariant_satisfied_when_observed_subset_of_sanctioned() -> None:
+    obs = ObservedExecution(models=frozenset({"claude-opus-4-8"}), turn_count=3)
+    v = check_execution_invariant(obs, frozenset({"claude-opus-4-8"}))
+    assert v.status == "execution_invariant_satisfied"
+    assert v.admissible is True
+    assert v.unsanctioned_models == frozenset()
+
+
+def test_invariant_drift_when_unsanctioned_model_ran() -> None:
+    obs = ObservedExecution(models=frozenset({"claude-opus-4-8"}), turn_count=1)
+    v = check_execution_invariant(obs, frozenset({"claude-fable-5"}))
+    assert v.status == "execution_drift_observed"
+    assert v.admissible is False
+    assert v.unsanctioned_models == frozenset({"claude-opus-4-8"})
+
+
+def test_invariant_unsanctioned_fallback_is_its_own_state() -> None:
+    obs = ObservedExecution(
+        models=frozenset({"claude-fable-5", "claude-opus-4-8"}),
+        fallback_events=(FallbackEvent(from_model="claude-fable-5", to_model="claude-opus-4-8"),),
+        turn_count=2,
+    )
+    v = check_execution_invariant(obs, frozenset({"claude-fable-5"}))
+    assert v.status == "unsanctioned_fallback_observed"
+    assert v.admissible is False
+    assert v.unsanctioned_fallbacks[0].to_model == "claude-opus-4-8"
+
+
+def test_invariant_missing_when_nothing_observed() -> None:
+    v = check_execution_invariant(ObservedExecution(), frozenset({"claude-opus-4-8"}))
+    assert v.status == "execution_observation_missing"
+    assert v.admissible is False
+
+
+def test_invariant_empty_sanctioned_set_fails_closed() -> None:
+    obs = ObservedExecution(models=frozenset({"claude-opus-4-8"}), turn_count=1)
+    v = check_execution_invariant(obs, frozenset())
+    assert v.admissible is False
+    assert v.unsanctioned_models == frozenset({"claude-opus-4-8"})

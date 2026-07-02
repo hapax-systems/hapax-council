@@ -124,3 +124,61 @@ def observe_claude_transcript(path: str | Path) -> ObservedExecution:
         source_path=str(p),
         malformed_lines=malformed,
     )
+
+
+#: The five CEI terminal states (capability-execution-invariant-spec §terminal states).
+EXECUTION_INVARIANT_SATISFIED = "execution_invariant_satisfied"
+EXECUTION_OBSERVATION_MISSING = "execution_observation_missing"
+EXECUTION_DRIFT_OBSERVED = "execution_drift_observed"
+UNSANCTIONED_FALLBACK_OBSERVED = "unsanctioned_fallback_observed"
+UNSUPPORTED_EXECUTION_OBSERVER = "unsupported_execution_observer"
+
+
+@dataclass(frozen=True)
+class ExecutionInvariantVerdict:
+    """The verdict of ``observed ⊆ sanctioned``. Only ``execution_invariant_satisfied`` is
+    admissible — every other state fails closed (governed use must not proceed / a work
+    product is tainted) until a reauthorization receipt sanctions the observed execution."""
+
+    status: str
+    observed_models: frozenset[str] = frozenset()
+    sanctioned_models: frozenset[str] = frozenset()
+    unsanctioned_models: frozenset[str] = frozenset()
+    unsanctioned_fallbacks: tuple[FallbackEvent, ...] = ()
+
+    @property
+    def admissible(self) -> bool:
+        return self.status == EXECUTION_INVARIANT_SATISFIED
+
+
+def check_execution_invariant(
+    observed: ObservedExecution, sanctioned: frozenset[str] | set[str] | tuple[str, ...]
+) -> ExecutionInvariantVerdict:
+    """Evaluate ``observed ⊆ sanctioned`` into one of the five CEI terminal states.
+
+    Fail-closed precedence: MISSING (nothing observed — cannot attest) > UNSANCTIONED
+    FALLBACK (a silent remap served an unsanctioned model) > DRIFT (an unsanctioned model
+    ran without a recorded fallback) > SATISFIED. An empty ``sanctioned`` set means nothing
+    is sanctioned, so any observed model is drift (fail-closed)."""
+    sanctioned_set = frozenset(sanctioned)
+    unsanctioned_models = frozenset(observed.models - sanctioned_set)
+    unsanctioned_fallbacks = tuple(
+        event for event in observed.fallback_events if event.to_model not in sanctioned_set
+    )
+
+    if not observed.models and observed.turn_count == 0:
+        status = EXECUTION_OBSERVATION_MISSING
+    elif unsanctioned_fallbacks:
+        status = UNSANCTIONED_FALLBACK_OBSERVED
+    elif unsanctioned_models:
+        status = EXECUTION_DRIFT_OBSERVED
+    else:
+        status = EXECUTION_INVARIANT_SATISFIED
+
+    return ExecutionInvariantVerdict(
+        status=status,
+        observed_models=observed.models,
+        sanctioned_models=sanctioned_set,
+        unsanctioned_models=unsanctioned_models,
+        unsanctioned_fallbacks=unsanctioned_fallbacks,
+    )

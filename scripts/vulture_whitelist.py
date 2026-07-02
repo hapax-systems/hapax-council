@@ -4675,8 +4675,19 @@ _ = (
 # the close-gate + the Yard Crow recomposition attestation will consume in follow-up
 # slices. Tests exercise it now; the static call paths land with the close-gate. Keep
 # the library entrypoint explicit.
-from shared.execution_observer import (
-    observe_claude_transcript as _observe_claude_transcript,  # noqa: E402
+from shared.execution_observer import (  # noqa: E402
+    ExecutionInvariantVerdict as _ExecutionInvariantVerdict,
+)
+from shared.execution_observer import (  # noqa: E402
+    check_execution_invariant as _check_execution_invariant,
+)
+from shared.execution_observer import (  # noqa: E402
+    observe_claude_transcript as _observe_claude_transcript,
 )
 
-_ = (_observe_claude_transcript,)
+_ = (
+    _observe_claude_transcript,
+    _check_execution_invariant,
+    _ExecutionInvariantVerdict,
+    _ExecutionInvariantVerdict.admissible,
+)
