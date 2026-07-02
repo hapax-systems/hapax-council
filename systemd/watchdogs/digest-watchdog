@@ -2,14 +2,19 @@
 set -euo pipefail
 
 # Content digest generator — saves to profiles/ + vault and sends notification
-cd /home/hapax/projects/hapax-council
+SOURCE_ROOT="${HAPAX_SOURCE_ACTIVATION_WORKTREE:-/home/hapax/.cache/hapax/source-activation/worktree}"
+cd "$SOURCE_ROOT"
 
 # Load credentials from pass store (systemd sets PASSWORD_STORE_DIR + GNUPGHOME)
 export LITELLM_API_KEY=$(pass show litellm/master-key 2>/dev/null || echo "changeme")
 export LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key 2>/dev/null || true)
 export LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key 2>/dev/null || true)
+export HAPAX_BACKGROUND_CAPABILITY_LANE=${HAPAX_BACKGROUND_CAPABILITY_LANE:-digest-watchdog}
+export HAPAX_BACKGROUND_CAPABILITY_RECEIPTS=${HAPAX_BACKGROUND_CAPABILITY_RECEIPTS:-1}
 
 UV=/home/hapax/.local/bin/uv
+# agents.digest gates synthesis with admit_background_capability; without a
+# task note and current route/resource/quota receipts, it degrades without LLM use.
 REPORT=$($UV run python -m agents.digest --hours 24 --save --json 2>/dev/null)
 
 # Notify via shared.notify (pass JSON via stdin)
@@ -26,4 +31,4 @@ if new_docs > 0:
 " 2>/dev/null || true
 
 # Append to history
-echo "$REPORT" >> /home/hapax/projects/hapax-council/profiles/digest-history.jsonl 2>/dev/null || true
+echo "$REPORT" >> "$SOURCE_ROOT/profiles/digest-history.jsonl" 2>/dev/null || true

@@ -40,9 +40,16 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+
+from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+    BackgroundCapabilityAdmission,
+    admit_background_capability,
+)
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +62,7 @@ CLASSIFICATION_PATH = SHM_DIR / "scene-classification.json"
 # LiteLLM gateway (same URL the director uses).
 LITELLM_URL = "http://localhost:4000/v1/chat/completions"
 SCENE_MODEL = "gemini-flash"
+SCENE_ROUTE_ID = "api.headless.provider_gateway"
 
 # Cache TTL in seconds; repeated calls within this window reuse the last
 # classification.
@@ -142,14 +150,33 @@ class Classification:
     confidence: float
     evidence: str
     ts: float  # epoch seconds when the classification was produced
+    route_id: str | None = None
+    model_descriptor: dict[str, object] | None = None
+    quota_evidence_refs: tuple[str, ...] = ()
+    task_id: str | None = None
+    authority_case: str | None = None
+    route_decision_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "scene": self.scene,
             "confidence": self.confidence,
             "evidence": self.evidence,
             "ts": self.ts,
         }
+        if self.route_id is not None:
+            payload["route_id"] = self.route_id
+        if self.model_descriptor:
+            payload["model_descriptor"] = self.model_descriptor
+        if self.quota_evidence_refs:
+            payload["quota_evidence_refs"] = list(self.quota_evidence_refs)
+        if self.task_id is not None:
+            payload["task_id"] = self.task_id
+        if self.authority_case is not None:
+            payload["authority_case"] = self.authority_case
+        if self.route_decision_id is not None:
+            payload["route_decision_id"] = self.route_decision_id
+        return payload
 
 
 # ── Hero camera resolution ────────────────────────────────────────────────
@@ -221,6 +248,33 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 
 def _publish(classification: Classification, path: Path = CLASSIFICATION_PATH) -> None:
     _atomic_write_json(path, classification.to_dict())
+
+
+def _classification_with_admission(
+    classification: Classification,
+    admission: BackgroundCapabilityAdmission | None,
+) -> Classification:
+    if admission is None:
+        return classification
+    return replace(
+        classification,
+        route_id=admission.route_id,
+        model_descriptor=admission.model_descriptor,
+        quota_evidence_refs=admission.quota_evidence_refs,
+        task_id=admission.task_id,
+        authority_case=admission.authority_case,
+        route_decision_id=admission.route_decision_id,
+    )
+
+
+def _admit_scene_classifier() -> BackgroundCapabilityAdmission:
+    return admit_background_capability(
+        capability_name="studio.scene_classifier.llm",
+        route_id=os.environ.get("HAPAX_SCENE_CLASSIFIER_ROUTE_ID", SCENE_ROUTE_ID),
+        model_alias=SCENE_MODEL,
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )
 
 
 # ── LLM call ──────────────────────────────────────────────────────────────
@@ -362,6 +416,7 @@ class SceneClassifier:
         classification_path: Path | None = None,
         cache_ttl_s: float = CACHE_TTL_S,
         call_llm: Any = None,
+        admission_gate: Callable[[], BackgroundCapabilityAdmission] | None = None,
     ) -> None:
         self._shm_dir = shm_dir
         self._override_path = override_path or (shm_dir / "hero-camera-override.json")
@@ -369,6 +424,7 @@ class SceneClassifier:
         self._cache_ttl_s = cache_ttl_s
         # Injection point for tests — defaults to the real LiteLLM call.
         self._call_llm = call_llm or _call_gemini_flash
+        self._admission_gate = admission_gate or _admit_scene_classifier
         self._last: Classification | None = None
         self._lock = threading.Lock()
 
@@ -405,6 +461,32 @@ class SceneClassifier:
             log.warning("scene_classifier: failed to read snapshot %s", snapshot, exc_info=True)
             return None
 
+        admission: BackgroundCapabilityAdmission | None = None
+        if self._admission_gate is not None:
+            admission = self._admission_gate()
+            if not admission.admitted:
+                log.warning(
+                    "scene_classifier: capability admission denied for route=%s reason=%s; "
+                    "next_action=set %s and refresh route/resource/quota receipts",
+                    admission.route_id,
+                    admission.denial_summary(),
+                    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+                )
+                classification = _classification_with_admission(
+                    Classification(
+                        scene=FALLBACK_SCENE,
+                        confidence=0.0,
+                        evidence=f"admission-denied: {admission.denial_summary()}"[:200],
+                        ts=now,
+                    ),
+                    admission,
+                )
+                with self._lock:
+                    self._last = classification
+                _count(classification.scene)
+                _publish(classification, self._classification_path)
+                return classification
+
         try:
             raw = self._call_llm(image_b64)
         except Exception as exc:
@@ -417,6 +499,7 @@ class SceneClassifier:
             )
         else:
             classification = _parse_classification(raw, now)
+        classification = _classification_with_admission(classification, admission)
 
         with self._lock:
             self._last = classification

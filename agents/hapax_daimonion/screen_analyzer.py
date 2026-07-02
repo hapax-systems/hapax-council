@@ -5,12 +5,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Callable
 from contextlib import nullcontext
 from pathlib import Path
 
 from openai import AsyncOpenAI
 
 from agents.hapax_daimonion.screen_models import Issue, ScreenAnalysis
+from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+    BackgroundCapabilityAdmission,
+    admit_background_capability,
+)
 
 try:
     from agents.telemetry.llm_call_span import llm_call_span
@@ -20,6 +26,8 @@ except ImportError:  # telemetry optional
 log = logging.getLogger(__name__)
 
 DEFAULT_CONTEXT_PATH = Path.home() / ".local" / "share" / "hapax-daimonion" / "screen_context.md"
+SCREEN_ANALYZER_ROUTE_ID = "api.headless.provider_gateway"
+SCREEN_ANALYZER_ROUTE_ID_ENV = "HAPAX_DAIMONION_SCREEN_ANALYZER_ROUTE_ID"
 
 _BASE_PROMPT = """\
 You are a screen awareness system for a single-operator Linux workstation (Hyprland/Wayland).
@@ -50,9 +58,11 @@ class ScreenAnalyzer:
         self,
         model: str = "gemini-flash",
         context_path: str | Path = DEFAULT_CONTEXT_PATH,
+        admission_gate: Callable[[], BackgroundCapabilityAdmission] | None = None,
     ) -> None:
         self.model = model
         self._system_prompt = self._build_prompt(Path(context_path))
+        self._admission_gate = admission_gate or (lambda: _admit_screen_analyzer(self.model))
         self._client: AsyncOpenAI | None = None
 
     def _build_prompt(self, context_path: Path) -> str:
@@ -94,6 +104,17 @@ class ScreenAnalyzer:
     async def _call_vision(
         self, image_base64: str, extra_context: str | None
     ) -> ScreenAnalysis | None:
+        admission = self._admission_gate()
+        if not admission.admitted:
+            log.warning(
+                "screen_analyzer: capability admission denied for route=%s reason=%s; "
+                "next_action=set %s and refresh route/resource/quota receipts",
+                admission.route_id,
+                admission.denial_summary(),
+                BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+            )
+            return None
+
         client = self._get_client()
 
         system = self._system_prompt
@@ -101,7 +122,7 @@ class ScreenAnalyzer:
             system += "\n\n## Additional Context\n\n" + extra_context
 
         metrics_ctx = (
-            llm_call_span(model=self.model, route="screen-analyzer")
+            llm_call_span(model=self.model, route=admission.route_id)
             if llm_call_span is not None
             else nullcontext(None)
         )
@@ -144,3 +165,13 @@ class ScreenAnalyzer:
             suggestions=data.get("suggestions", []),
             keywords=data.get("keywords", []),
         )
+
+
+def _admit_screen_analyzer(model: str) -> BackgroundCapabilityAdmission:
+    return admit_background_capability(
+        capability_name="hapax_daimonion.screen_analyzer.vision",
+        route_id=os.environ.get(SCREEN_ANALYZER_ROUTE_ID_ENV, SCREEN_ANALYZER_ROUTE_ID),
+        model_alias=model,
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )

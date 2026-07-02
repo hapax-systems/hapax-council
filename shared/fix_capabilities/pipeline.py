@@ -10,6 +10,7 @@ execution of safe remediation commands already embedded in health checks.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shlex
 
@@ -17,8 +18,12 @@ from pydantic import BaseModel, Field
 
 from agents.health_monitor import CheckResult, HealthReport, Status, run_cmd
 from shared.fix_capabilities import get_capability_for_group
+from shared.fix_capabilities.background_admission import (
+    BackgroundCapabilityAdmission,
+    admit_background_capability,
+)
 from shared.fix_capabilities.base import ExecutionResult, FixProposal, Safety
-from shared.fix_capabilities.evaluator import evaluate_check
+from shared.fix_capabilities.evaluator import admit_fix_evaluator, evaluate_check
 from shared.maintenance_lock import (
     first_docker_maintenance_lock,
     maintenance_lock_for_target,
@@ -27,6 +32,9 @@ from shared.maintenance_lock import (
 from shared.notify import send_notification
 
 log = logging.getLogger(__name__)
+
+FIX_PIPELINE_ROUTE_ID_ENV = "HAPAX_FIX_PIPELINE_ROUTE_ID"
+FIX_PIPELINE_ROUTE_ID = ""
 
 # ── Deterministic fallback ──────────────────────────────────────────────────
 
@@ -164,6 +172,9 @@ async def _run_deterministic_fix(check: CheckResult) -> FixOutcome:
         rationale=f"LLM evaluator unavailable; executing safe remediation: {cmd}",
         safety=Safety.SAFE,
     )
+    admission = _admit_runtime_fix_execution(proposal.capability, proposal.action_name)
+    if not admission.admitted:
+        return _admission_denied_outcome(check.name, proposal, admission)
 
     try:
         args = shlex.split(cmd)
@@ -239,6 +250,7 @@ class FixOutcome(BaseModel):
     notified: bool = False
     execution_result: ExecutionResult | None = None
     rejected_reason: str | None = None
+    admission: dict[str, object] | None = None
 
 
 class PipelineResult(BaseModel):
@@ -256,6 +268,47 @@ class PipelineResult(BaseModel):
     def notified_count(self) -> int:
         """Number of outcomes where notifications were sent."""
         return sum(1 for o in self.outcomes if o.notified)
+
+
+def _admit_runtime_fix_execution(
+    capability_name: str,
+    action_name: str,
+) -> BackgroundCapabilityAdmission:
+    route_id = os.environ.get(FIX_PIPELINE_ROUTE_ID_ENV, FIX_PIPELINE_ROUTE_ID).strip()
+    if not route_id:
+        return BackgroundCapabilityAdmission(
+            capability_name=f"health_monitor.fix.{capability_name}.{action_name}",
+            route_id="unconfigured",
+            admitted=False,
+            denied_reason=f"runtime_route_unconfigured:{FIX_PIPELINE_ROUTE_ID_ENV}",
+            reason_codes=("runtime_route_unconfigured",),
+            mutation_surface="runtime",
+            quality_floor="deterministic_ok",
+        )
+    return admit_background_capability(
+        capability_name=f"health_monitor.fix.{capability_name}.{action_name}",
+        route_id=route_id,
+        mutation_surface="runtime",
+        quality_floor="deterministic_ok",
+    )
+
+
+def _admission_denied_outcome(
+    check_name: str,
+    proposal: FixProposal,
+    admission: BackgroundCapabilityAdmission,
+) -> FixOutcome:
+    return FixOutcome(
+        check_name=check_name,
+        proposal=proposal,
+        rejected_reason=(
+            f"Capability admission denied for route {admission.route_id}: "
+            f"{admission.denial_summary()}. Next action: set "
+            "HAPAX_BACKGROUND_CAPABILITY_TASK_NOTE for this service and refresh "
+            "route/resource/quota/runtime-actuation receipts."
+        ),
+        admission=admission.metadata(),
+    )
 
 
 # ── Pipeline ─────────────────────────────────────────────────────────────────
@@ -311,7 +364,12 @@ async def run_fix_pipeline(
         # Evaluate — ask LLM for a fix proposal
         proposal = None
         if probe is not None:
-            proposal = await evaluate_check(check, probe, cap.available_actions())
+            proposal = await evaluate_check(
+                check,
+                probe,
+                cap.available_actions(),
+                admission_gate=admit_fix_evaluator,
+            )
 
         if proposal is None:
             # LLM evaluator unavailable or returned no proposal — deterministic fallback
@@ -349,6 +407,10 @@ async def run_fix_pipeline(
 
         # Execute or notify based on safety
         if proposal.is_safe():
+            admission = _admit_runtime_fix_execution(proposal.capability, proposal.action_name)
+            if not admission.admitted:
+                result.outcomes.append(_admission_denied_outcome(check.name, proposal, admission))
+                continue
             exec_result = await cap.execute(proposal)
             result.outcomes.append(
                 FixOutcome(
@@ -356,6 +418,7 @@ async def run_fix_pipeline(
                     proposal=proposal,
                     executed=True,
                     execution_result=exec_result,
+                    admission=admission.metadata(),
                 )
             )
         else:

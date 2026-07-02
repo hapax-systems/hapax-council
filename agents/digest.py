@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 import time
 from datetime import UTC, datetime
@@ -29,8 +30,13 @@ log = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from agents._config import PROFILES_DIR, get_model_adaptive, get_qdrant
+from agents._config import MODELS, PROFILES_DIR, get_model, get_qdrant
 from agents._operator import get_system_prompt_fragment
+from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+    BackgroundCapabilityAdmission,
+    admit_background_capability,
+)
 
 # Import Langfuse OTel config (side-effect: configures exporter)
 try:
@@ -176,23 +182,57 @@ GUIDELINES:
 Call lookup_constraints() for additional operator constraints.
 """
 
-digest_agent = Agent(
-    get_model_adaptive("fast"),
-    system_prompt=get_system_prompt_fragment("digest") + "\n\n" + SYSTEM_PROMPT,
-    output_type=Digest,
+DIGEST_MODEL_ALIAS = "fast"
+DIGEST_LLM_ROUTE_ID_ENV = "HAPAX_DIGEST_LLM_ROUTE_ID"
+DIGEST_LOCAL_MODEL_IDS: frozenset[str] = frozenset(
+    {"local-fast", "appendix-fast", "local-research-instruct", "command-r-08-2024"}
 )
 
-# Register on-demand operator context tools
+from agents._axiom_tools import get_axiom_tools
 from agents._context_tools import get_context_tools
 
-for _tool_fn in get_context_tools():
-    digest_agent.tool(_tool_fn)
+# Lazily constructed by _get_digest_agent() — module import must bind no model
+# descriptor, and a denied admission must never reach get_model() (no-escape predicate).
+_digest_agent: Agent | None = None
+_digest_agent_model_id: str | None = None
 
-# Register axiom compliance tools
-from agents._axiom_tools import get_axiom_tools
 
-for _tool_fn in get_axiom_tools():
-    digest_agent.tool(_tool_fn)
+def _get_digest_agent(admission: BackgroundCapabilityAdmission) -> Agent:
+    """Construct (once per selected model) the digest agent for an ADMITTED capability.
+
+    Raises RuntimeError for a non-admitted admission. Construction is pinned to
+    the admitted identity: if the stimmung-adaptive selection shifted between
+    admission and construction such that the current selection no longer maps
+    to the admitted served-leaf identity, fail closed instead of binding an
+    unadmitted model (closes the admit-A/bind-B TOCTOU).
+    """
+    if not admission.admitted:
+        raise RuntimeError("digest agent construction requires admitted capability")
+    global _digest_agent, _digest_agent_model_id
+    # Bind the alias FROZEN AT ADMISSION — never a re-resolved (stimmung/env
+    # mutable) value — and verify it still normalizes to the admitted
+    # served-leaf identity. The residual LiteLLM-side alias-remap window is
+    # bounded by the fail-closed alias-evidence freshness check at admission
+    # and closed live by the post-call witness (litellm-post-call-witness task).
+    request_alias = str(admission.request_model_alias or admission.model_alias or "")
+    admitted_identity = str(admission.model_alias or "")
+    if not request_alias or _digest_admission_model_id(request_alias) != admitted_identity:
+        raise RuntimeError(
+            f"digest_model_admission_mismatch:request={request_alias} admitted={admitted_identity}"
+        )
+    if _digest_agent is None or _digest_agent_model_id != request_alias:
+        agent = Agent(
+            get_model(request_alias),
+            system_prompt=get_system_prompt_fragment("digest") + "\n\n" + SYSTEM_PROMPT,
+            output_type=Digest,
+        )
+        for _tool_fn in get_context_tools():
+            agent.tool(_tool_fn)
+        for _tool_fn in get_axiom_tools():
+            agent.tool(_tool_fn)
+        _digest_agent = agent
+        _digest_agent_model_id = request_alias
+    return _digest_agent
 
 
 async def generate_digest(hours: int = 24) -> Digest:
@@ -256,7 +296,19 @@ Generate a content digest. The timestamp is {datetime.now(UTC).isoformat()[:19]}
 The lookback window is {hours} hours."""
 
     try:
-        result = await digest_agent.run(prompt)
+        admission = _admit_digest_synthesis()
+        if not admission.admitted:
+            log.warning(
+                "Digest synthesis admission denied route=%s reason=%s; "
+                "next_action=set %s and refresh route/resource/quota receipts before "
+                "enabling autonomous model use",
+                admission.route_id,
+                admission.denial_summary(),
+                BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+                extra={"background_capability": admission.metadata()},
+            )
+            raise RuntimeError(f"digest_synthesis_admission_denied:{admission.denial_summary()}")
+        result = await _get_digest_agent(admission).run(prompt)
         digest = result.output
     except Exception as e:
         log.error("LLM synthesis failed: %s", e)
@@ -273,6 +325,63 @@ The lookback window is {hours} hours."""
     digest.stats = stats
 
     return digest
+
+
+def _admit_digest_synthesis() -> BackgroundCapabilityAdmission:
+    model_id = _selected_digest_model_id()
+    admission_model_id = _digest_admission_model_id(model_id)
+    expected_route, mutation_surface, quality_floor = _digest_admission_spec(model_id)
+    configured_route = os.environ.get(DIGEST_LLM_ROUTE_ID_ENV, expected_route)
+    if configured_route != expected_route:
+        return BackgroundCapabilityAdmission(
+            capability_name="agents.digest.synthesis",
+            route_id=configured_route,
+            model_alias=admission_model_id,
+            admitted=False,
+            denied_reason=(
+                "digest_route_model_mismatch:"
+                f"model={admission_model_id} expected_route={expected_route} "
+                f"configured_route={configured_route}"
+            ),
+            reason_codes=("digest_route_model_mismatch",),
+            mutation_surface=mutation_surface,
+            quality_floor=quality_floor,
+        )
+    return admit_background_capability(
+        capability_name="agents.digest.synthesis",
+        route_id=configured_route,
+        model_alias=admission_model_id,
+        request_model_alias=model_id,
+        mutation_surface=mutation_surface,
+        quality_floor=quality_floor,
+    )
+
+
+def _selected_digest_model_id() -> str:
+    """Resolve the digest model id WITHOUT constructing an agent.
+
+    Admission must be computable with no agent in existence — resolution goes
+    through the same stimmung-adaptive selection get_model_adaptive() uses
+    (shared.config.resolve_model_alias_adaptive), then the MODELS alias table.
+    """
+    from shared.config import resolve_model_alias_adaptive
+
+    alias = resolve_model_alias_adaptive(DIGEST_MODEL_ALIAS)
+    return MODELS.get(alias, alias)
+
+
+def _digest_admission_spec(model_id: str) -> tuple[str, str, str]:
+    resolved = _digest_admission_model_id(model_id)
+    if resolved in DIGEST_LOCAL_MODEL_IDS:
+        return "local_tool.local.worker", "none", "deterministic_ok"
+    return "api.headless.provider_gateway", "provider_spend", "frontier_required"
+
+
+def _digest_admission_model_id(model_id: str) -> str:
+    resolved = MODELS.get(model_id, model_id)
+    if resolved == "local-fast":
+        return "command-r-08-2024"
+    return resolved
 
 
 # ── Formatters ───────────────────────────────────────────────────────────────

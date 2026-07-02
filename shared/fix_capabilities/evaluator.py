@@ -7,11 +7,18 @@ Uses pydantic-ai to select the best action and return a FixProposal.
 from __future__ import annotations
 
 import logging
+import os
+from collections.abc import Callable
 
 from pydantic_ai import Agent
 
 from agents.health_monitor import CheckResult, Status
-from shared.config import get_model
+from shared.config import MODELS, get_model
+from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+    BackgroundCapabilityAdmission,
+    admit_background_capability,
+)
 from shared.fix_capabilities.base import Action, FixProposal, ProbeResult
 
 log = logging.getLogger(__name__)
@@ -40,11 +47,44 @@ Be conservative. Only propose destructive actions when safe alternatives cannot 
 
 # ── Agent ────────────────────────────────────────────────────────────────────
 
-_evaluator_agent = Agent(
-    model=get_model("balanced"),
-    output_type=FixProposal,
-    system_prompt=_SYSTEM_PROMPT,
-)
+EVALUATOR_MODEL_ALIAS = "fast"
+EVALUATOR_ROUTE_ID_ENV = "HAPAX_FIX_EVALUATOR_ROUTE_ID"
+EVALUATOR_ROUTE_ID = "api.headless.provider_gateway"
+
+# Lazily constructed by _get_evaluator_agent() — module import must bind no model
+# descriptor, and a denied admission must never reach get_model() (no-escape predicate).
+_evaluator_agent: Agent | None = None
+
+
+def _get_evaluator_agent(admission: BackgroundCapabilityAdmission) -> Agent:
+    """Construct (once) and return the evaluator agent for an ADMITTED capability.
+
+    Raises RuntimeError when called with a non-admitted admission: agent
+    construction binds the LiteLLM-backed model descriptor, which is exactly the
+    resource a denied route must never bind.
+    """
+    if not admission.admitted:
+        raise RuntimeError("fix evaluator agent construction requires admitted capability")
+    global _evaluator_agent
+    if _evaluator_agent is None:
+        _evaluator_agent = Agent(
+            model=get_model(EVALUATOR_MODEL_ALIAS),
+            output_type=FixProposal,
+            system_prompt=_SYSTEM_PROMPT,
+        )
+    return _evaluator_agent
+
+
+def admit_fix_evaluator() -> BackgroundCapabilityAdmission:
+    """Admit the exact LiteLLM provider route used by the evaluator model."""
+
+    return admit_background_capability(
+        capability_name="health_monitor.fix_evaluator.llm",
+        route_id=os.environ.get(EVALUATOR_ROUTE_ID_ENV, EVALUATOR_ROUTE_ID),
+        model_alias=MODELS.get(EVALUATOR_MODEL_ALIAS, EVALUATOR_MODEL_ALIAS),
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )
 
 
 # ── Prompt builder ───────────────────────────────────────────────────────────
@@ -92,6 +132,8 @@ async def evaluate_check(
     check: CheckResult,
     probe: ProbeResult,
     actions: list[Action],
+    *,
+    admission_gate: Callable[[], BackgroundCapabilityAdmission] | None = None,
 ) -> FixProposal | None:
     """Evaluate a failing check and return a fix proposal, or None.
 
@@ -99,6 +141,7 @@ async def evaluate_check(
     - The check is healthy
     - No actions are available
     - The LLM proposes "no_action"
+    - Capability admission is denied
     - Any error occurs during evaluation
     """
     if check.status == Status.HEALTHY:
@@ -107,9 +150,24 @@ async def evaluate_check(
     if not actions:
         return None
 
+    gate = admission_gate or admit_fix_evaluator
+    admission = gate()
+    if not admission.admitted:
+        log.warning(
+            "Evaluator admission denied for check %s route=%s reason=%s; "
+            "next_action=set %s and refresh "
+            "route/resource/quota receipts before enabling autonomous model use",
+            check.name,
+            admission.route_id,
+            admission.denial_summary(),
+            BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+        )
+        return None
+
     try:
         prompt = _build_prompt(check, probe, actions)
-        result = await _evaluator_agent.run(prompt)
+        agent = _get_evaluator_agent(admission)
+        result = await agent.run(prompt)
         proposal = result.output
 
         if proposal.action_name == "no_action":
@@ -120,3 +178,6 @@ async def evaluate_check(
     except Exception:
         log.warning("Evaluator failed for check %s", check.name, exc_info=True)
         return None
+
+
+__all__ = ["admit_fix_evaluator", "evaluate_check"]

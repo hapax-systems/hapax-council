@@ -274,6 +274,12 @@ def test_provider_gateway_route_is_explicit_fail_closed_paid_runtime_surface() -
     assert route.capacity_pool.value == "api_paid_spend"
     assert route.paid_provider == "google"
     assert route.paid_profile == "frontier-fast"
+    aliases = {entry.alias: entry for entry in route.provider_model_aliases}
+    assert aliases["gemini-flash"].model_id.value == "gemini-3.5-flash"
+    assert aliases["gemini-flash"].provider == "google"
+    assert aliases["gemini-flash"].observed_at is not None
+    assert aliases["gemini-flash"].stale_after == "24h"
+    assert "claude-sonnet" not in aliases
     assert route.mutability.source is False
     assert route.mutability.runtime is True
     assert route.mutability.provider_spend is True

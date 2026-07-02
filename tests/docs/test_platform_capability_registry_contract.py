@@ -78,6 +78,16 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
     }
     assert "paid_provider" in route["properties"]
     assert "paid_profile" in route["properties"]
+    assert "provider_model_aliases" in route["properties"]
+    provider_alias = schema["$defs"]["provider_model_alias"]
+    assert set(provider_alias["required"]) == {
+        "alias",
+        "model_id",
+        "provider",
+        "evidence_refs",
+        "observed_at",
+        "stale_after",
+    }
     assert set(schema["$defs"]["authority_ceiling"]["enum"]) == {
         "authoritative",
         "frontier_review_required",
@@ -118,7 +128,12 @@ def test_schema_pins_execution_descriptor_axes_and_model_catalog() -> None:
     }
     assert "extended_1m" in set(schema["$defs"]["context_mode"]["enum"])
     model_ids = set(schema["$defs"]["model_id"]["enum"])
-    assert {"gpt-5.5", "gpt-5.3-codex-spark", "claude-opus-4-8"} <= model_ids
+    assert {
+        "gpt-5.5",
+        "gpt-5.3-codex-spark",
+        "claude-opus-4-8",
+        "gemini-3.5-flash",
+    } <= model_ids
     # the retired placeholder must NOT be a structured model identity
     assert "claude-code-default" not in model_ids
 

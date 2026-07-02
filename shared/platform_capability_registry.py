@@ -160,6 +160,7 @@ class ModelId(StrEnum):
     COMMAND_R_08_2024 = "command-r-08-2024"
     MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     UNKNOWN = "unknown"
 
@@ -309,6 +310,22 @@ class ExecutionDescriptor(StrictModel):
     context_mode: ContextMode = ContextMode.STANDARD
     fast_mode: FastMode = FastMode.OFF
     quantization: Quantization = Quantization.NONE
+
+
+class ProviderModelAlias(StrictModel):
+    """A concrete provider-gateway alias that a route is allowed to spend through."""
+
+    alias: str
+    model_id: ModelId
+    provider: str
+    evidence_refs: list[str] = Field(min_length=1)
+    observed_at: datetime
+    stale_after: str
+
+    @model_validator(mode="after")
+    def _alias_freshness_duration_is_valid(self) -> Self:
+        parse_duration_spec(self.stale_after)
+        return self
 
 
 class DescriptorVariant(StrictModel):
@@ -577,6 +594,7 @@ class PlatformCapabilityRoute(StrictModel):
     blocked_reasons: list[str] = Field(default_factory=list)
     model_or_engine: str | None
     execution_descriptor: ExecutionDescriptor
+    provider_model_aliases: list[ProviderModelAlias] = Field(default_factory=list)
     descriptor_variants: list[DescriptorVariant] = Field(default_factory=list)
     paid_provider: str | None = None
     paid_profile: str | None = None
@@ -653,6 +671,16 @@ class PlatformCapabilityRoute(StrictModel):
             CapacityPool.BOOTSTRAP_BUDGET,
         }:
             raise ValueError("provider-spend mutation requires a paid or bootstrap capacity pool")
+
+        if self.provider_model_aliases:
+            if not self.mutability.provider_spend:
+                raise ValueError("provider model aliases require provider_spend mutability")
+            aliases = [entry.alias for entry in self.provider_model_aliases]
+            duplicates = sorted({alias for alias in aliases if aliases.count(alias) > 1})
+            if duplicates:
+                raise ValueError(
+                    f"duplicate provider model aliases on {self.route_id}: {duplicates}"
+                )
 
         if (
             self.authority_ceiling is AuthorityCeiling.AUTHORITATIVE
