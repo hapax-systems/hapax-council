@@ -4670,3 +4670,13 @@ _ = (
     _Stage0DurableJsonlSink,
     _Stage0DurableJsonlSink.path_for_stream,
 )
+
+# CEI SLICE 4: the transcript execution observer is the observed-execution source that
+# the close-gate + the Yard Crow recomposition attestation will consume in follow-up
+# slices. Tests exercise it now; the static call paths land with the close-gate. Keep
+# the library entrypoint explicit.
+from shared.execution_observer import (
+    observe_claude_transcript as _observe_claude_transcript,  # noqa: E402
+)
+
+_ = (_observe_claude_transcript,)
