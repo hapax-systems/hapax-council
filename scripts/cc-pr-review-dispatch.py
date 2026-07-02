@@ -746,16 +746,41 @@ def _prior_unresolved_criticals(dossier_path: Path) -> list[dict[str, Any]]:
     return out
 
 
+# Prior findings are untrusted: a finding can cite an arbitrarily large tracked
+# file (or a huge single-line blob). Cap the blob before reading it whole so an
+# advisory excerpt can never make dispatch allocate unbounded memory.
+_MAX_EXCERPT_BLOB_BYTES = 1_000_000
+
+
 def _git_show_at_head(repo_root: Path, head_sha: str, rel: str) -> list[str] | None:
     """Read ``rel`` exactly as it exists at ``head_sha`` via ``git show``.
 
-    Returns None when the object/path is unreadable at that sha. Never falls
-    back to the checked-out worktree file: a worktree can sit on ANY branch
-    (primary tree, deploy tree), and substituting its bytes as "current source"
-    is precisely the stale-evidence defect this function exists to prevent.
+    Returns None when the object/path is unreadable, too large, or absent at
+    that sha. Never falls back to the checked-out worktree file: a worktree can
+    sit on ANY branch (primary tree, deploy tree), and substituting its bytes as
+    "current source" is precisely the stale-evidence defect this function exists
+    to prevent.
     """
 
     try:
+        size_proc = subprocess.run(
+            ["git", "cat-file", "-s", f"{head_sha}:{rel}"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if size_proc.returncode != 0:
+            return None
+        try:
+            blob_bytes = int(size_proc.stdout.strip())
+        except ValueError:
+            return None
+        if blob_bytes > _MAX_EXCERPT_BLOB_BYTES:
+            # Too large to read as advisory evidence; fail closed to
+            # evidence_unavailable rather than allocate the whole blob.
+            return None
         proc = subprocess.run(
             ["git", "show", f"{head_sha}:{rel}"],
             cwd=str(repo_root),

@@ -442,6 +442,23 @@ class TestApply:
             {"file": "scripts/missing.py", "line": 2, "status": "evidence_unavailable"},
         ]
 
+    def test_prior_file_excerpts_oversize_blob_is_unavailable(self, tmp_path: Path) -> None:
+        """A prior finding citing a huge tracked file must NOT be read whole into
+        an advisory excerpt — it fails closed to evidence_unavailable."""
+        rel = "scripts/huge.py"
+        big = "\n".join("x" * 200 for _ in range(20000))  # > 1MB
+        head_sha = self._git_repo_with_commit(tmp_path, rel, big)
+        rendered, records = dispatch.build_prior_file_excerpts(
+            [{"file": rel, "line": 5}],
+            repo_root=tmp_path,
+            head_sha=head_sha,
+            radius=1,
+        )
+        assert "evidence_unavailable" in rendered
+        assert records[0]["status"] == "evidence_unavailable"
+        # the multi-hundred-KB body never entered the rendered evidence
+        assert len(rendered) < 2000
+
     def test_prior_file_excerpts_line_past_eof_is_out_of_range(self, tmp_path: Path) -> None:
         """A prior finding citing a line past EOF at this head must NOT render an
         empty section recorded as 'shown' with an inverted range."""
