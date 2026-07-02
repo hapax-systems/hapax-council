@@ -107,11 +107,13 @@ class ModelId(StrEnum):
     # replaces the coarse free-text model_or_engine for spend metering; drift-pinned to the registry.
     CLAUDE_OPUS_4_8 = "claude-opus-4-8"
     CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
+    CLAUDE_SONNET_5 = "claude-sonnet-5"
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
     GPT_5_5 = "gpt-5.5"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
     COMMAND_R_08_2024 = "command-r-08-2024"
+    QWEN3_5_9B = "qwen3.5-9b"
     MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
     Z_AI_GLM_5 = "z_ai-glm-5"

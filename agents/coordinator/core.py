@@ -40,7 +40,11 @@ from shared.notify import send_notification
 from shared.recovery_governor import converge_action_cap
 from shared.relay_mq import send_message
 from shared.relay_mq_envelope import Envelope
-from shared.route_metadata_schema import assess_route_metadata
+from shared.route_metadata_schema import (
+    RouteMetadataStatus,
+    assess_route_metadata,
+    route_metadata_payload_from_frontmatter,
+)
 from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
 from shared.sdlc_pressure_gate import admission_state
 
@@ -983,10 +987,39 @@ def _effective_platform_suitability(platforms: object, frontmatter: dict) -> tup
     base = _platform_tokens(platforms) or ("any",)
     try:
         assessment = assess_route_metadata(frontmatter)
-    except Exception:  # noqa: BLE001 - malformed metadata is still caught by dispatch.
-        return base
+    except Exception:  # noqa: BLE001 - defense-in-depth; assess_route_metadata is fail-safe
+        # Defensive only: assess_route_metadata does NOT raise on malformed input (it returns
+        # status=MALFORMED, metadata=None — handled below). If it ever did raise, fail closed.
+        log.warning(
+            "route metadata assessment raised for task %r; failing scope mask closed",
+            frontmatter.get("task_id"),
+        )
+        return ()
+    mask_declared = "route_constraints" in route_metadata_payload_from_frontmatter(frontmatter)
+    if assessment.status is RouteMetadataStatus.MALFORMED and mask_declared:
+        # FAIL CLOSED (scope-mask R5): a scope NEVER/ONLY mask WAS DECLARED but the metadata is
+        # unparseable, so the mask cannot be trusted/read. Return () (the "nothing suitable / held"
+        # signal), never the unconstrained base — silently dropping a declared-but-unreadable mask
+        # to base is the fail-open that voids the scope regime. This keys on STATUS + mask-presence,
+        # NOT on an exception (assess never raises on malformed) nor on metadata-is-None. Mask
+        # presence is checked via route_metadata_payload_from_frontmatter — the SAME canonical
+        # extractor the schema uses — so it catches route_constraints in BOTH the top-level and the
+        # nested `route_metadata:` mapping forms (a top-level-key check missed the nested form).
+        # Tasks that are MALFORMED only because unrelated fields are missing (e.g. a quality_floor-
+        # only note with no mask) have no mask to drop and fall through to base — normal dispatch
+        # is unaffected.
+        log.warning(
+            "malformed route metadata WITH a declared route_constraints mask for task %r (%s); "
+            "scope suitability failed closed to ()",
+            frontmatter.get("task_id"),
+            "; ".join(assessment.validation_errors) or "unparseable",
+        )
+        return ()
     metadata = assessment.metadata
     if metadata is None:
+        # HOLD / no declared route_metadata / MALFORMED-without-a-mask: no readable scope mask is
+        # in play (the NEVER/ONLY mask lives in route_constraints, absent or maskless here), so the
+        # base suitability stands. A present-but-unparseable mask is handled by the fail-close above.
         return base
 
     constraints = metadata.route_constraints
