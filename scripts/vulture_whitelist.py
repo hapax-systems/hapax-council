@@ -4675,6 +4675,12 @@ _ = (
 # the close-gate + the Yard Crow recomposition attestation will consume in follow-up
 # slices. Tests exercise it now; the static call paths land with the close-gate. Keep
 # the library entrypoint explicit.
+from shared.execution_attestation import (  # noqa: E402
+    attest_transcript as _attest_transcript,
+)
+from shared.execution_attestation import (  # noqa: E402
+    sanctioned_models_for_route as _sanctioned_models_for_route,
+)
 from shared.execution_observer import (  # noqa: E402
     ExecutionInvariantVerdict as _ExecutionInvariantVerdict,
 )
@@ -4694,4 +4700,6 @@ _ = (
     _check_execution_invariant,
     _ExecutionInvariantVerdict,
     _ExecutionInvariantVerdict.admissible,
+    _attest_transcript,
+    _sanctioned_models_for_route,
 )
