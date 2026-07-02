@@ -10,6 +10,8 @@
 set -euo pipefail
 
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+AUTHORITY_COUNCIL_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
 if [ -f "$ROLE_HELPER" ]; then
   # shellcheck source=../hooks/scripts/agent-role.sh
@@ -395,6 +397,114 @@ fi
 [[ -d "$WORKDIR" ]] || { echo "hapax-codex-headless: worktree not found: $WORKDIR" >&2; exit 3; }
 WORKDIR="$(cd "$WORKDIR" && pwd)"
 
+CLAIM_SCRIPT="${HAPAX_CC_CLAIM_SCRIPT:-}"
+CLAIM_SCRIPT_INJECTED=0
+if [[ -n "$CLAIM_SCRIPT" ]]; then
+  CLAIM_SCRIPT_INJECTED=1
+else
+  CLAIM_SCRIPT="$WORKDIR/scripts/cc-claim"
+fi
+CLOSE_SCRIPT="${HAPAX_CC_CLOSE_SCRIPT:-}"
+CLOSE_SCRIPT_INJECTED=0
+if [[ -n "$CLOSE_SCRIPT" ]]; then
+  CLOSE_SCRIPT_INJECTED=1
+else
+  CLOSE_SCRIPT="$WORKDIR/scripts/cc-close"
+fi
+validate_external_no_claim_authorization() {
+  local capability="${HAPAX_METHODOLOGY_DISPATCH_CAPABILITY:-}"
+  local profile="${HAPAX_METHODOLOGY_DISPATCH_PROFILE:-full}"
+  if [[ -z "$capability" || ! -r "$capability" ]]; then
+    echo "hapax-codex-headless: external --no-claim workdir requires methodology dispatch capability; next action: launch external worktrees through hapax-methodology-dispatch" >&2
+    exit 14
+  fi
+  if ! python3 - "$capability" "$CODEX_TASK" "$SESSION" "$WORKDIR" codex headless "$profile" "$AUTHORITY_COUNCIL_DIR" <<'PYEOF'
+import os
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+capability, task, lane, workdir, platform, mode, profile, council_dir = sys.argv[1:]
+sys.path.insert(0, council_dir)
+try:
+    from shared.governance.coord_capabilities import (
+        CapabilityConsumptionLedger,
+        dispatch_launch_consumption_ledger,
+        dispatch_launch_grant_key,
+        read_capability_file,
+        verify_dispatch_capability,
+    )
+except Exception as exc:
+    print(f"cannot import dispatch capability verifier: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+cap = read_capability_file(capability)
+def process_start_time(pid: int) -> str:
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            return handle.read().split()[21]
+    except OSError:
+        return ""
+
+def process_cmdline(pid: int) -> list[str]:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            return [part.decode("utf-8", "replace") for part in handle.read().split(b"\0") if part]
+    except OSError:
+        return []
+
+def issuer_is_live_methodology_dispatch(capability, council_dir: str) -> bool:
+    if capability is None:
+        return False
+    if capability.issuer_pid is None or not capability.issuer_start_time:
+        return False
+    if process_start_time(capability.issuer_pid) != capability.issuer_start_time:
+        return False
+    expected = os.path.realpath(os.path.join(council_dir, "scripts", "hapax-methodology-dispatch"))
+    for arg in process_cmdline(capability.issuer_pid):
+        if os.path.exists(arg) and os.path.realpath(arg) == expected:
+            return True
+    return False
+
+if not issuer_is_live_methodology_dispatch(cap, council_dir):
+    print("dispatch capability issuer is not live methodology-dispatch", file=sys.stderr)
+    raise SystemExit(1)
+try:
+    key = dispatch_launch_grant_key().read_bytes()
+except OSError as exc:
+    print(f"cannot read dispatch capability signing key: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+now = datetime.now(UTC).timestamp()
+worktree_realpath = os.path.realpath(workdir)
+ok = any(
+    verify_dispatch_capability(
+        cap,
+        key=key,
+        now=now,
+        task_id=task,
+        lane=lane,
+        platform=platform,
+        mode=mode,
+        profile=profile,
+        worktree=worktree_realpath,
+        purpose=purpose,
+        issuer_pid=cap.issuer_pid,
+        issuer_start_time=cap.issuer_start_time,
+    )
+    for purpose in ("external_launch", "dispatch_launch")
+)
+if not ok:
+    print("dispatch capability invalid/expired/mismatched", file=sys.stderr)
+    raise SystemExit(1)
+if not CapabilityConsumptionLedger(dispatch_launch_consumption_ledger()).consume_strict(cap.capability_id):
+    print("dispatch capability already consumed (replay)", file=sys.stderr)
+    raise SystemExit(1)
+PYEOF
+  then
+    echo "hapax-codex-headless: invalid methodology dispatch capability for $WORKDIR; next action: relaunch external worktrees through hapax-methodology-dispatch" >&2
+    exit 14
+  fi
+}
+
 HOOK="$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"
 [[ -x "$HOOK" ]] || { echo "hapax-codex-headless: hook adapter not executable: $HOOK" >&2; exit 6; }
 
@@ -441,9 +551,43 @@ if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CODEX_TASK" ]]; then
   echo "hapax-codex-headless: refusing launch; '$SESSION' already claims '$CLAIMED_TASK', not dispatch task '$CODEX_TASK'" >&2
   exit 13
 fi
+if [[ "$CLAIM_TASK" -eq 1 && ( "$CLAIM_SCRIPT_INJECTED" -eq 1 || "$CLOSE_SCRIPT_INJECTED" -eq 1 ) ]]; then
+  echo "hapax-codex-headless: injected lifecycle scripts cannot be used for wrapper-side claims; next action: launch external worktrees through hapax-methodology-dispatch, which uses --no-claim, or repair target lifecycle scripts" >&2
+  exit 14
+fi
+
+LOG_DIR="$HOME/.cache/hapax/codex-headless/$SESSION"
+if [[ -n "${HAPAX_CODEX_HEADLESS_PID_DIR:-}" ]]; then
+  PID_DIR="$HAPAX_CODEX_HEADLESS_PID_DIR"
+elif [[ -n "${PYTEST_CURRENT_TEST:-}" ]]; then
+  PID_DIR="$HOME/.cache/hapax/codex-headless-pids"
+else
+  PID_DIR="/run/user/$(id -u)/hapax-codex"
+fi
+mkdir -p "$LOG_DIR" "$PID_DIR" 2>/dev/null || true
+[[ -d "$PID_DIR" ]] || PID_DIR="$LOG_DIR"
+LOG_FILE="$LOG_DIR/output.jsonl"
+PID_FILE="$PID_DIR/$SESSION.pid"
+
+# Refuse to double-launch a live lane before any claim or remote dispatch-host
+# mutation. --force only reactivates retired relay state; it must not bypass the
+# single-live-headless-lane invariant.
+if [[ -f "$PID_FILE" ]]; then
+  EXISTING_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+  if [[ -n "$EXISTING_PID" ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
+    echo "hapax-codex-headless: lane '$SESSION' already live (pid=$EXISTING_PID); stop the live lane or remove the stale pid after verifying it is gone" >&2
+    exit 11
+  fi
+fi
+
+if [[ "$CLAIM_TASK" -eq 0 && "$WORKDIR_EXPLICIT" -eq 1 ]]; then
+  validate_external_no_claim_authorization
+fi
+
 if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
-  [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
-  (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
+  [[ -x "$CLAIM_SCRIPT" ]] || { echo "hapax-codex-headless: missing cc-claim at $CLAIM_SCRIPT; next action: launch external worktrees through hapax-methodology-dispatch or repair target lifecycle scripts" >&2; exit 14; }
+  [[ -x "$CLOSE_SCRIPT" ]] || { echo "hapax-codex-headless: missing cc-close at $CLOSE_SCRIPT; next action: launch external worktrees through hapax-methodology-dispatch or repair target lifecycle scripts" >&2; exit 14; }
+  (cd "$WORKDIR" && "$CLAIM_SCRIPT" "$CODEX_TASK")
 fi
 export HAPAX_METHODOLOGY_DISPATCH_TASK="$CODEX_TASK"
 
@@ -455,12 +599,6 @@ unset CONTEXT7_API_KEY
 MCP_CONFIG_SCRUB="$COUNCIL_DIR/scripts/hapax-codex-mcp-config-scrub"
 [[ -x "$MCP_CONFIG_SCRUB" ]] && "$MCP_CONFIG_SCRUB"
 
-LOG_DIR="$HOME/.cache/hapax/codex-headless/$SESSION"
-PID_DIR="${HAPAX_CODEX_HEADLESS_PID_DIR:-/run/user/$(id -u)/hapax-codex}"
-mkdir -p "$LOG_DIR" "$PID_DIR" 2>/dev/null || true
-[[ -d "$PID_DIR" ]] || PID_DIR="$LOG_DIR"
-LOG_FILE="$LOG_DIR/output.jsonl"
-PID_FILE="$PID_DIR/$SESSION.pid"
 DISPATCH_PROOF_DIR="${HAPAX_DISPATCH_PROOF_DIR:-$HOME/.cache/hapax/orchestration/dispatch-host-proofs}"
 DISPATCH_PROOF_BASENAME="$(date -u +%Y%m%dT%H%M%SZ)-$SESSION-${CODEX_TASK:-no-task}-headless"
 DISPATCH_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-remote.json"
@@ -527,17 +665,6 @@ with open(proof_file, "w", encoding="utf-8") as fh:
     fh.write(json.dumps(payload, sort_keys=True) + "\n")
 PYEOF
 }
-
-# Refuse to double-launch a live lane before any remote dispatch-host mutation.
-# --force only reactivates retired relay state; it must not bypass the
-# single-live-headless-lane invariant.
-if [[ -f "$PID_FILE" ]]; then
-  EXISTING_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
-  if [[ -n "$EXISTING_PID" ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then
-    echo "hapax-codex-headless: lane '$SESSION' already live (pid=$EXISTING_PID); stop the live lane or remove the stale pid after verifying it is gone" >&2
-    exit 11
-  fi
-fi
 
 DISPATCH_HOST_REQUESTED="${HAPAX_DISPATCH_HOST:-}"
 DISPATCH_HOST=""

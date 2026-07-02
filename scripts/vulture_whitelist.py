@@ -197,6 +197,8 @@ from shared.format_wcs_requirement_matrix import (
     opportunity_gate_projection,
 )
 from shared.github_publication_log import GitHubPublicationLogEvent
+from shared.governance import coord_capabilities
+from shared.governance.coord_capabilities import CapabilityConsumptionLedger
 from shared.grounding_provider_router import (
     build_eval_artifact,
     build_privacy_egress_preflight,
@@ -633,6 +635,13 @@ LivestreamHealthGroup._non_healthy_groups_explain_themselves
 LivestreamHealthEnvelope._validate_group_set_and_claim_implications
 GitHubPublicationLogEvent._publication_state_matches_evidence
 LivestreamHealthEnvelope.groups_by_id
+
+# Dispatch launch capability replay checks are invoked by embedded Python blocks
+# in scripts/hapax-codex-headless and scripts/hapax-claude-headless. Vulture
+# cannot see those dynamic shell heredoc call paths.
+CapabilityConsumptionLedger.consume_strict
+coord_capabilities.dispatch_launch_consumption_ledger
+coord_capabilities.dispatch_launch_grant_key
 
 # Director intent models split real provenance from synthetic diagnostics via
 # Pydantic validators. The properties are consumed as public read helpers, but
@@ -4669,4 +4678,20 @@ from shared.durable_jsonl_sink import DurableJsonlSink as _Stage0DurableJsonlSin
 _ = (
     _Stage0DurableJsonlSink,
     _Stage0DurableJsonlSink.path_for_stream,
+)
+
+# Dispatch launch redemption substrate. The coord/governor service and wrapper
+# cutover consume these entrypoints dynamically; this slice lands the pure core
+# and socket server first so static vulture cannot see production callsites yet.
+# cc-task-dispatch-launch-redemption-service-20260701.
+from shared.governance.dispatch_redemption import (  # noqa: E402
+    DispatchLaunchRedemptionAuthority as _DispatchLaunchRedemptionAuthority,
+)
+from shared.governance.dispatch_redemption import (
+    DispatchLaunchRedemptionServer as _DispatchLaunchRedemptionServer,
+)
+
+_ = (
+    _DispatchLaunchRedemptionAuthority.mint,
+    _DispatchLaunchRedemptionServer.serve_once,
 )
