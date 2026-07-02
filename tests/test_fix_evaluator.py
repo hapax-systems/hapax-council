@@ -70,11 +70,14 @@ def _make_proposal() -> FixProposal:
     )
 
 
-def _admission(*, admitted: bool = True) -> BackgroundCapabilityAdmission:
+def _admission(
+    *, admitted: bool = True, request_model_alias: str | None = None
+) -> BackgroundCapabilityAdmission:
     return BackgroundCapabilityAdmission(
         capability_name="health_monitor.fix_evaluator.llm",
         route_id="api.headless.provider_gateway",
         model_alias="gemini-flash",
+        request_model_alias=request_model_alias,
         admitted=admitted,
         denied_reason=None if admitted else "route_policy_denied",
         reason_codes=("policy_launch",) if admitted else ("provider_gateway_evidence_absent",),
@@ -257,6 +260,27 @@ def test_denied_admission_construction_raises():
 
     mock_get_model.assert_not_called()
     mock_agent_cls.assert_not_called()
+
+
+def test_get_evaluator_agent_binds_admission_frozen_alias():
+    """_get_evaluator_agent binds the admission-frozen request_model_alias, never the
+    mutable EVALUATOR_MODEL_ALIAS constant. Regression for the review-blocking critical:
+    re-resolving "fast" post-admission would let a later alias remap bind a model the
+    admission receipt never covered (breaking the no-escape predicate)."""
+    from shared.fix_capabilities import evaluator
+
+    frozen = _admission(admitted=True, request_model_alias="frozen-model-xyz")
+    evaluator._evaluator_agent = None
+    try:
+        with (
+            patch("shared.fix_capabilities.evaluator.get_model") as mock_get_model,
+            patch("shared.fix_capabilities.evaluator.Agent"),
+        ):
+            evaluator._get_evaluator_agent(frozen)
+        mock_get_model.assert_called_once_with("frozen-model-xyz")
+        assert evaluator.EVALUATOR_MODEL_ALIAS != "frozen-model-xyz"  # guard the test's premise
+    finally:
+        evaluator._evaluator_agent = None
 
 
 def test_module_import_binds_no_model():

@@ -67,8 +67,13 @@ def _get_evaluator_agent(admission: BackgroundCapabilityAdmission) -> Agent:
         raise RuntimeError("fix evaluator agent construction requires admitted capability")
     global _evaluator_agent
     if _evaluator_agent is None:
+        # Bind the alias frozen at admission — never re-resolve the mutable
+        # EVALUATOR_MODEL_ALIAS constant post-admission (mirrors structural_director
+        # and imagination_loop). Re-resolving "fast" here would let a later alias
+        # remap bind a model the admission receipt never covered, breaking the
+        # no-escape predicate for the autonomous health-fix path.
         _evaluator_agent = Agent(
-            model=get_model(EVALUATOR_MODEL_ALIAS),
+            model=get_model(str(admission.request_model_alias or EVALUATOR_MODEL_ALIAS)),
             output_type=FixProposal,
             system_prompt=_SYSTEM_PROMPT,
         )
