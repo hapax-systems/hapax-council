@@ -322,7 +322,8 @@ def test_claude_adapter_matches_real_headless_artifact_layout() -> None:
     assert 'PIPE_DIR="${HAPAX_CLAUDE_HEADLESS_PIPE_DIR:-/run/user/$(id -u)/hapax-claude}"' in script
     assert 'STDIN_PIPE="$PIPE_DIR/$ROLE.stdin"' in script
     assert 'CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE"' in script
-    assert '(cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")' in script
+    assert 'CLAIM_SCRIPT="${HAPAX_CC_CLAIM_SCRIPT:-}"' in script
+    assert '(cd "$WORKDIR" && "$CLAIM_SCRIPT" "$CLAUDE_TASK")' in script
     assert (
         artifacts.output_stream == "/home/operator/.cache/hapax/claude-headless/alpha/output.jsonl"
     )
@@ -338,14 +339,14 @@ def test_codex_adapter_matches_headless_and_interactive_launcher_artifacts() -> 
     assert 'TMUX_NAME="hapax-codex-$SESSION"' in interactive_script
     assert 'LOG_DIR="$HOME/.cache/hapax/codex-headless/$SESSION"' in headless_script
     assert 'LOG_FILE="$LOG_DIR/output.jsonl"' in headless_script
-    assert (
-        'PID_DIR="${HAPAX_CODEX_HEADLESS_PID_DIR:-/run/user/$(id -u)/hapax-codex}"'
-        in headless_script
-    )
+    assert 'PID_DIR="$HAPAX_CODEX_HEADLESS_PID_DIR"' in headless_script
+    assert 'PID_DIR="$HOME/.cache/hapax/codex-headless-pids"' in headless_script
+    assert 'PID_DIR="/run/user/$(id -u)/hapax-codex"' in headless_script
     assert '[[ -d "$PID_DIR" ]] || PID_DIR="$LOG_DIR"' in headless_script
     assert 'PID_FILE="$PID_DIR/$SESSION.pid"' in headless_script
     assert 'CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$SESSION"' in headless_script
-    assert '(cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")' in headless_script
+    assert 'CLAIM_SCRIPT="${HAPAX_CC_CLAIM_SCRIPT:-}"' in headless_script
+    assert '(cd "$WORKDIR" && "$CLAIM_SCRIPT" "$CODEX_TASK")' in headless_script
     assert '"$CLAIM_SCRIPT" "$TASK_ID"' in interactive_script
     assert "  --json\n" in headless_script
     assert '  --cd "$WORKDIR"\n' in headless_script

@@ -1,21 +1,140 @@
+import atexit
 import fcntl
 import json
 import os
 import subprocess
+import sys
 import textwrap
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from shared.governance.coord_capabilities import (
+    dispatch_launch_consumption_ledger,
+    dispatch_launch_grant_key,
+    load_or_create_key,
+    mint_dispatch_capability,
+    serialize_capability,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-claude-headless"
 VISIBLE = REPO_ROOT / "scripts" / "hapax-claude"
+METHODOLOGY_DISPATCH = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
+_ISSUER_PROCS: list[subprocess.Popen[str]] = []
+
+
+def _cleanup_issuers() -> None:
+    for proc in _ISSUER_PROCS:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+
+atexit.register(_cleanup_issuers)
+
+
+def _process_start_time(pid: int) -> str:
+    return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21]
+
+
+def _methodology_issuer() -> tuple[int, str]:
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)", str(METHODOLOGY_DISPATCH)],
+        text=True,
+    )
+    _ISSUER_PROCS.append(proc)
+    return proc.pid, _process_start_time(proc.pid)
 
 
 def _stub_bin(bin_dir: Path, name: str, body: str) -> None:
     path = bin_dir / name
     path.write_text("#!/usr/bin/env bash\n" + textwrap.dedent(body))
     path.chmod(0o755)
+
+
+def _set_launch_auth(
+    env: dict[str, str],
+    tmp_path: Path,
+    workdir: Path,
+    *,
+    token: str = "test-dispatch-token",
+    task_id: str = "task-x",
+    lane: str = "beta",
+    platform: str = "claude",
+    ttl_s: float = 600,
+) -> Path:
+    council_dir = Path(env["HAPAX_COUNCIL_DIR"])
+    shared_link = council_dir / "shared"
+    if not shared_link.exists():
+        shared_link.symlink_to(REPO_ROOT / "shared", target_is_directory=True)
+    key = load_or_create_key(dispatch_launch_grant_key())
+    issuer_pid, issuer_start_time = _methodology_issuer()
+    cap = mint_dispatch_capability(
+        task_id=task_id,
+        lane=lane,
+        ttl_s=ttl_s,
+        key=key,
+        now=datetime.now(UTC).timestamp(),
+        platform=platform,
+        mode="headless",
+        profile="full",
+        worktree=os.path.realpath(workdir),
+        purpose="external_launch",
+        issuer_pid=issuer_pid,
+        issuer_start_time=issuer_start_time,
+    )
+    capability = tmp_path / f"{platform}-dispatch-capability-{lane}-{token}.json"
+    capability.write_text(serialize_capability(cap) + "\n", encoding="utf-8")
+    env["HAPAX_METHODOLOGY_DISPATCH_CAPABILITY"] = str(capability)
+    env["HAPAX_METHODOLOGY_DISPATCH_PROFILE"] = "full"
+    return capability
+
+
+def _write_launch_auth_signed_by(
+    env: dict[str, str],
+    tmp_path: Path,
+    workdir: Path,
+    *,
+    signing_key_path: Path,
+    token: str = "attacker-dispatch-token",
+    task_id: str = "task-x",
+    lane: str = "beta",
+    platform: str = "claude",
+) -> Path:
+    council_dir = Path(env["HAPAX_COUNCIL_DIR"])
+    shared_link = council_dir / "shared"
+    if not shared_link.exists():
+        shared_link.symlink_to(REPO_ROOT / "shared", target_is_directory=True)
+    key = load_or_create_key(signing_key_path)
+    issuer_pid, issuer_start_time = _methodology_issuer()
+    cap = mint_dispatch_capability(
+        task_id=task_id,
+        lane=lane,
+        ttl_s=600,
+        key=key,
+        now=datetime.now(UTC).timestamp(),
+        platform=platform,
+        mode="headless",
+        profile="full",
+        worktree=os.path.realpath(workdir),
+        purpose="external_launch",
+        issuer_pid=issuer_pid,
+        issuer_start_time=issuer_start_time,
+    )
+    capability = tmp_path / f"{platform}-dispatch-capability-{lane}-{token}.json"
+    capability.write_text(serialize_capability(cap) + "\n", encoding="utf-8")
+    env["HAPAX_METHODOLOGY_DISPATCH_CAPABILITY"] = str(capability)
+    env["HAPAX_METHODOLOGY_DISPATCH_PROFILE"] = "full"
+    return capability
+
+
+def _launch_consumption_ledger(_home: Path) -> Path:
+    return dispatch_launch_consumption_ledger()
 
 
 def _headless_env(home: Path, bin_dir: Path, pipe_dir: Path) -> dict[str, str]:
@@ -54,6 +173,15 @@ def test_headless_defaults_to_disabled_without_governed_enable(tmp_path: Path) -
     home = tmp_path / "home"
     (home / "projects" / "hapax-council--beta").mkdir(parents=True)
     env = os.environ.copy()
+    for var in (
+        "HAPAX_METHODOLOGY_DISPATCH_TASK",
+        "HAPAX_AGENT_ROLE",
+        "HAPAX_AGENT_NAME",
+        "CLAUDE_ROLE",
+        "HAPAX_WORKTREE_ROLE",
+        "HAPAX_SESSION_ID",
+    ):
+        env.pop(var, None)
     env["HOME"] = str(home)
     env["PATH"] = "/usr/bin:/bin"
     env.pop("HAPAX_CLAUDE_HEADLESS_ALLOW", None)
@@ -387,6 +515,15 @@ def test_headless_refuses_without_task_or_existing_claim(tmp_path: Path) -> None
     claude.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     claude.chmod(0o755)
     env = os.environ.copy()
+    for var in (
+        "HAPAX_METHODOLOGY_DISPATCH_TASK",
+        "HAPAX_AGENT_ROLE",
+        "HAPAX_AGENT_NAME",
+        "CLAUDE_ROLE",
+        "HAPAX_WORKTREE_ROLE",
+        "HAPAX_SESSION_ID",
+    ):
+        env.pop(var, None)
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
     env["HAPAX_CLAUDE_HEADLESS_ALLOW"] = "1"
@@ -405,6 +542,530 @@ def test_headless_refuses_without_task_or_existing_claim(tmp_path: Path) -> None
 
     assert result.returncode == 15
     assert "without --task" in result.stderr
+
+
+def test_headless_external_workdir_rejects_injected_lifecycle_claim_even_with_spoofed_binding(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    council = tmp_path / "council"
+    claim_marker = tmp_path / "claim-called.txt"
+    (council / "scripts").mkdir(parents=True)
+    _stub_bin(
+        council / "scripts",
+        "cc-claim",
+        f"""printf '%s\\n' "$PWD $1" > {claim_marker}
+mkdir -p "$HOME/.cache/hapax"
+printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-$HAPAX_AGENT_ROLE"
+exit 0
+""",
+    )
+    _stub_bin(council / "scripts", "cc-close", "exit 0\n")
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(
+        bin_dir,
+        "claude",
+        f": > {claude_called}\n"
+        'rm -f "$HOME/.cache/hapax/cc-active-task-$HAPAX_AGENT_ROLE"\nexit 0\n',
+    )
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(external)
+    env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = "task-x"
+    env["HAPAX_METHODOLOGY_DISPATCH_BOUND_WORKTREE"] = str(external)
+    env["HAPAX_CC_CLAIM_SCRIPT"] = str(council / "scripts" / "cc-claim")
+    env["HAPAX_CC_CLOSE_SCRIPT"] = str(council / "scripts" / "cc-close")
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 14
+    assert "injected lifecycle scripts cannot be used for wrapper-side claims" in result.stderr
+    assert (
+        "next action: launch external worktrees through hapax-methodology-dispatch" in result.stderr
+    )
+    assert not claim_marker.exists()
+    assert not claude_called.exists()
+
+
+def test_headless_direct_external_workdir_requires_injected_lifecycle_scripts(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(external)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 14
+    assert f"missing cc-claim at {external / 'scripts' / 'cc-claim'}" in result.stderr
+    assert (
+        "next action: launch external worktrees through hapax-methodology-dispatch" in result.stderr
+    )
+    assert not claude_called.exists()
+
+
+def test_headless_direct_external_workdir_rejects_unbound_injected_scripts(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    _stub_bin(council / "scripts", "cc-claim", "exit 0\n")
+    _stub_bin(council / "scripts", "cc-close", "exit 0\n")
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(external)
+    env["HAPAX_CC_CLAIM_SCRIPT"] = str(council / "scripts" / "cc-claim")
+    env["HAPAX_CC_CLOSE_SCRIPT"] = str(council / "scripts" / "cc-close")
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 14
+    assert "injected lifecycle scripts cannot be used for wrapper-side claims" in result.stderr
+    assert (
+        "next action: launch external worktrees through hapax-methodology-dispatch" in result.stderr
+    )
+    assert not claude_called.exists()
+
+
+def test_headless_direct_external_no_claim_requires_launch_capability(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(external)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 14
+    assert "external --no-claim workdir requires methodology dispatch capability" in result.stderr
+    assert (
+        "next action: launch external worktrees through hapax-methodology-dispatch" in result.stderr
+    )
+    assert not claude_called.exists()
+
+
+def test_headless_existing_claim_external_no_claim_requires_launch_capability(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-beta").write_text("task-x\n", encoding="utf-8")
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(external)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 14
+    assert "external --no-claim workdir requires methodology dispatch capability" in result.stderr
+    assert not claude_called.exists()
+
+
+def test_headless_external_no_claim_accepts_dispatch_launch_capability(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(external)
+    _set_launch_auth(env, tmp_path, external)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert claude_called.exists()
+
+
+def test_headless_external_no_claim_rejects_forged_launch_capability(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(external)
+    auth = _set_launch_auth(env, tmp_path, external)
+    payload = json.loads(auth.read_text(encoding="utf-8"))
+    payload["signature"] = "0" * 64
+    auth.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 14
+    assert "invalid methodology dispatch capability" in result.stderr
+    assert not claude_called.exists()
+
+
+def test_headless_external_no_claim_rejects_attacker_selected_grant_key(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(external)
+    attacker_key = tmp_path / "attacker" / "grant-key"
+    env["HAPAX_COORD_GRANT_KEY"] = str(attacker_key)
+    _write_launch_auth_signed_by(env, tmp_path, external, signing_key_path=attacker_key)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 14
+    assert "invalid methodology dispatch capability" in result.stderr
+    assert not claude_called.exists()
+
+
+def test_headless_external_no_claim_rejects_fake_home_grant_key(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "fake-home"
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(external)
+    fake_home_key = home / ".cache" / "hapax" / "coord" / "grant-key"
+    _write_launch_auth_signed_by(env, tmp_path, external, signing_key_path=fake_home_key)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 14
+    assert "invalid methodology dispatch capability" in result.stderr
+    assert not claude_called.exists()
+
+
+def test_headless_external_no_claim_ignores_fake_council_verifier(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    council = tmp_path / "fake-council"
+    (council / "scripts").mkdir(parents=True)
+    fake_verifier = council / "shared" / "governance" / "coord_capabilities.py"
+    fake_verifier.parent.mkdir(parents=True, exist_ok=True)
+    fake_verifier.write_text(
+        "from pathlib import Path\n"
+        "class CapabilityConsumptionLedger:\n"
+        "    def __init__(self, path): pass\n"
+        "    def consume_strict(self, capability_id): return True\n"
+        "def dispatch_launch_consumption_ledger(): return Path('/tmp/fake-ledger')\n"
+        "def dispatch_launch_grant_key(): return Path('/tmp/fake-key')\n"
+        "def read_capability_file(path): return object()\n"
+        "def verify_dispatch_capability(*args, **kwargs): return True\n",
+        encoding="utf-8",
+    )
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(external)
+    attacker_key = tmp_path / "attacker" / "grant-key"
+    _write_launch_auth_signed_by(env, tmp_path, external, signing_key_path=attacker_key)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 14
+    assert "invalid methodology dispatch capability" in result.stderr
+    assert not claude_called.exists()
+
+
+def test_headless_external_no_claim_rejects_wrong_task_capability(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(external)
+    _set_launch_auth(env, tmp_path, external, task_id="other-task")
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 14
+    assert "invalid methodology dispatch capability" in result.stderr
+    assert not claude_called.exists()
+
+
+def test_headless_external_no_claim_rejects_wrong_lane_capability(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(external)
+    _set_launch_auth(env, tmp_path, external, lane="gamma")
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 14
+    assert "invalid methodology dispatch capability" in result.stderr
+    assert not claude_called.exists()
+
+
+def test_headless_external_no_claim_rejects_expired_capability(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(external)
+    _set_launch_auth(env, tmp_path, external, ttl_s=-1)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 14
+    assert "invalid methodology dispatch capability" in result.stderr
+    assert not claude_called.exists()
+
+
+def test_headless_external_no_claim_rejects_replayed_dispatch_capability(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_calls = tmp_path / "claude-calls"
+    _stub_bin(bin_dir, "claude", f"printf 'call\\n' >> {claude_calls}\nexit 0\n")
+    env = _headless_env(home, bin_dir, pipe_dir)
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(external)
+    capability = _set_launch_auth(env, tmp_path, external)
+    payload = json.loads(capability.read_text(encoding="utf-8"))
+    ledger = _launch_consumption_ledger(home)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(
+        json.dumps({"capability_id": payload["capability_id"], "ts": "2026-07-01T00:00:00Z"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=20,
+    )
+
+    assert result.returncode == 14
+    assert "invalid methodology dispatch capability" in result.stderr
+    assert not claude_calls.exists()
 
 
 # ---------------------------------------------------------------------------

@@ -293,7 +293,66 @@ def _worktree(path: Path, *, guarded: bool = True, close_guarded: bool = True) -
     )
     _write(path / "scripts" / "cc-claim", f"#!/usr/bin/env bash\n# {guard}\n")
     _write(path / "scripts" / "cc-close", f"#!/usr/bin/env bash\n# {close_guard}\n")
+    (path / "scripts" / "cc-claim").chmod(0o755)
+    (path / "scripts" / "cc-close").chmod(0o755)
+    _write(path / "hooks" / "scripts" / "codex-hook-adapter.sh", "#!/usr/bin/env bash\nexit 0\n")
+    (path / "hooks" / "scripts" / "codex-hook-adapter.sh").chmod(0o755)
+    _write(
+        path / "hooks" / "scripts" / "agent-role.sh",
+        '#!/usr/bin/env bash\nhapax_agent_is_codex_name() { [[ "${1:-}" =~ ^cx-[a-z0-9][a-z0-9-]*$ ]]; }\n',
+    )
     return path
+
+
+def _source_route_metadata(scope_refs: list[str]) -> str:
+    scope_lines = "\n".join(f"          - {ref}" for ref in scope_refs)
+    return textwrap.dedent(
+        f"""
+        route_metadata_schema: 1
+        quality_floor: frontier_required
+        authority_level: authoritative
+        mutation_surface: source
+        mutation_scope_refs:
+{scope_lines}
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: []
+          prohibited_platforms: []
+          required_mode: null
+          required_profile: null
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
+        """
+    ).strip()
+
+
+def _build_frontmatter_with_scope(spec: Path, scope_refs: list[str]) -> str:
+    return textwrap.dedent(
+        f"""\
+            kind: build
+            authority_case: CASE-TEST-001
+            parent_spec: {spec}
+            """
+    ) + _source_route_metadata(scope_refs)
 
 
 def _arg_value(args: tuple[str, ...], name: str) -> str | None:
@@ -601,9 +660,16 @@ def _run(
     durable_mq: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    for var in (
+        "HAPAX_DISPATCH_HOST",
+        "HAPAX_DEFAULT_DISPATCH_HOST",
+        "HAPAX_DISPATCH_HOST_FALLBACK",
+    ):
+        env.pop(var, None)
     env["HOME"] = str(tmp_path / "home")
     env["HAPAX_CC_TASK_ROOT"] = str(tmp_path / "tasks")
     env["HAPAX_DISPATCH_WORKTREE"] = str(tmp_path / "worktree")
+    env["HAPAX_COUNCIL_DIR"] = env["HAPAX_DISPATCH_WORKTREE"]
     env["HAPAX_ORCHESTRATION_LEDGER_DIR"] = str(tmp_path / "ledger")
     env["HAPAX_PLATFORM_CAPABILITY_REGISTRY"] = str(_fresh_registry(tmp_path))
     env["HAPAX_COORD_LEDGER_DB"] = str(tmp_path / "coord" / "ledger.db")
@@ -1023,6 +1089,375 @@ def test_prompt_does_not_use_canonical_checkout_cc_claim(tmp_path: Path) -> None
     assert "hapax-council/scripts/cc-claim" not in prompt or "hapax-council--beta" in prompt, (
         "prompt must not reference the canonical checkout cc-claim for a non-alpha lane"
     )
+
+
+def test_external_reins_worktree_uses_governing_lifecycle_scripts(tmp_path: Path) -> None:
+    external = tmp_path / "projects" / "reins--purview-intake-verify"
+    (external / "docs").mkdir(parents=True)
+    spec = _spec(tmp_path / "isap-test.md")
+    scope_ref = "reins--purview-intake-verify/docs/PURVIEW-INTAKE.md"
+    _task(
+        tmp_path / "tasks",
+        "reins-build",
+        _build_frontmatter_with_scope(spec, [scope_ref]),
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "reins-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--dry-run",
+        "--print-prompt",
+        extra_env={
+            "HAPAX_DISPATCH_WORKTREE": str(external),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    prompt = result.stdout
+    assert f"Worktree: {external}" in prompt
+    assert f"Claim command: {REPO_ROOT / 'scripts' / 'cc-claim'}" in prompt
+    assert f"Close command: {REPO_ROOT / 'scripts' / 'cc-close'}" in prompt
+    assert "external worktree bound to governing council lifecycle scripts" in prompt
+    assert scope_ref in prompt
+    assert "Route evidence: decision_id=" in prompt
+    assert "Resource/quota admission:" in prompt
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is True
+    assert receipt["dispatch_worktree"] == str(external)
+    assert receipt["dispatch_worktree_external"] is True
+    assert receipt["dispatch_worktree_receipt"]["claim_script"] == str(
+        REPO_ROOT / "scripts" / "cc-claim"
+    )
+    assert receipt["dispatch_worktree_receipt"]["scope_coverage_refs"] == [scope_ref]
+    assert receipt["durable_mq_dispatch_bound"] is True
+
+
+def test_external_worktree_with_copied_lifecycle_scripts_is_blocked(tmp_path: Path) -> None:
+    external = _worktree(tmp_path / "projects" / "reins--purview-intake-verify")
+    (external / "docs").mkdir(parents=True, exist_ok=True)
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "reins-build",
+        _build_frontmatter_with_scope(
+            spec, ["reins--purview-intake-verify/docs/PURVIEW-INTAKE.md"]
+        ),
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "reins-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--launch",
+        extra_env={
+            "HAPAX_DISPATCH_WORKTREE": str(external),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+        },
+    )
+
+    assert result.returncode == 10
+    assert "lifecycle script names but is not a verified hapax-council worktree" in result.stderr
+    assert "dispatch through governing council lifecycle scripts" in result.stderr
+
+
+def test_external_worktree_launch_sets_dispatch_authorization(tmp_path: Path) -> None:
+    external = tmp_path / "projects" / "reins--purview-intake-verify"
+    (external / "docs").mkdir(parents=True)
+    spec = _spec(tmp_path / "isap-test.md")
+    scope_ref = "reins--purview-intake-verify/docs/PURVIEW-INTAKE.md"
+    _task(
+        tmp_path / "tasks",
+        "reins-build",
+        _build_frontmatter_with_scope(spec, [scope_ref]),
+        route_metadata_defaults=False,
+    )
+    launcher_env = tmp_path / "launcher-env.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex-headless"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf 'capability=%s\\nworkdir=%s\\nprofile=%s\\n' "$HAPAX_METHODOLOGY_DISPATCH_CAPABILITY" "$HAPAX_CODEX_HEADLESS_WORKDIR" "$HAPAX_METHODOLOGY_DISPATCH_PROFILE" > {launcher_env}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "reins-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--launch",
+        extra_env={
+            "HAPAX_DISPATCH_WORKTREE": str(external),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    captured = dict(
+        line.split("=", 1) for line in launcher_env.read_text(encoding="utf-8").splitlines()
+    )
+    assert captured["workdir"] == str(external)
+    assert captured["profile"] == "full"
+    assert captured["capability"]
+    capability = json.loads(Path(captured["capability"]).read_text(encoding="utf-8"))
+    assert capability["kind"] == "dispatch"
+    assert capability["task_id"] == "reins-build"
+    assert capability["lane"] == "cx-green"
+    assert capability["platform"] == "codex"
+    assert capability["mode"] == "headless"
+    assert capability["profile"] == "full"
+    assert capability["worktree"] == str(external.resolve())
+    assert capability["purpose"] == "external_launch"
+    assert capability["issuer_pid"]
+    assert capability["issuer_start_time"]
+    assert capability["capability_id"]
+    assert capability["signature"]
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["dispatch_launch_capability_path"] == captured["capability"]
+    assert receipt["dispatch_launch_capability_id"] == capability["capability_id"]
+
+
+def test_external_worktree_missing_is_blocked_with_next_action(tmp_path: Path) -> None:
+    external = tmp_path / "projects" / "reins--missing"
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "reins-build",
+        _build_frontmatter_with_scope(spec, ["reins--missing/docs/PURVIEW-INTAKE.md"]),
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "reins-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_DISPATCH_WORKTREE": str(external),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+        },
+    )
+
+    assert result.returncode == 10
+    assert "external dispatch worktree not found" in result.stderr
+    assert "next action: provision the target worktree" in result.stderr
+
+
+def test_external_worktree_without_scope_refs_is_blocked_with_next_action(
+    tmp_path: Path,
+) -> None:
+    external = tmp_path / "projects" / "reins--purview-intake-verify"
+    external.mkdir(parents=True)
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "reins-build",
+        _build_frontmatter_with_scope(spec, []),
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "reins-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_DISPATCH_WORKTREE": str(external),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+        },
+    )
+
+    assert result.returncode == 10
+    assert "external dispatch worktree lacks task mutation_scope_refs coverage" in result.stderr
+    assert "next action: add the target repo/path" in result.stderr
+
+
+def test_external_worktree_without_scope_coverage_is_blocked(tmp_path: Path) -> None:
+    external = tmp_path / "projects" / "reins--purview-intake-verify"
+    external.mkdir(parents=True)
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "reins-build",
+        _build_frontmatter_with_scope(spec, ["other-repo/docs/PURVIEW-INTAKE.md"]),
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "reins-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_DISPATCH_WORKTREE": str(external),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+        },
+    )
+
+    assert result.returncode == 10
+    assert "external dispatch worktree is outside task mutation_scope_refs" in result.stderr
+    assert "next action: correct HAPAX_DISPATCH_WORKTREE" in result.stderr
+
+
+def test_external_worktree_generic_relative_scope_ref_does_not_cover_target_repo(
+    tmp_path: Path,
+) -> None:
+    external = tmp_path / "projects" / "reins--purview-intake-verify"
+    (external / "docs").mkdir(parents=True)
+    (external / "docs" / "PURVIEW-INTAKE.md").write_text("target doc\n", encoding="utf-8")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "reins-build",
+        _build_frontmatter_with_scope(spec, ["docs/PURVIEW-INTAKE.md"]),
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "reins-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_DISPATCH_WORKTREE": str(external),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+        },
+    )
+
+    assert result.returncode == 10
+    assert "external dispatch worktree is outside task mutation_scope_refs" in result.stderr
+
+
+def test_external_worktree_without_durable_route_binding_is_blocked(tmp_path: Path) -> None:
+    external = tmp_path / "projects" / "reins--purview-intake-verify"
+    external.mkdir(parents=True)
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "reins-build",
+        _build_frontmatter_with_scope(
+            spec, ["reins--purview-intake-verify/docs/PURVIEW-INTAKE.md"]
+        ),
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "reins-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_DISPATCH_WORKTREE": str(external),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+        },
+        durable_mq=False,
+    )
+
+    assert result.returncode == 10
+    assert "external dispatch worktree requires route authority binding" in result.stderr
+    assert "next action: dispatch through the durable methodology control plane" in result.stderr
+
+
+def test_external_worktree_cannot_disable_dispatch_receipt(tmp_path: Path) -> None:
+    external = tmp_path / "projects" / "reins--purview-intake-verify"
+    external.mkdir(parents=True)
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "reins-build",
+        _build_frontmatter_with_scope(
+            spec, ["reins--purview-intake-verify/docs/PURVIEW-INTAKE.md"]
+        ),
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "reins-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--no-receipt",
+        extra_env={
+            "HAPAX_DISPATCH_WORKTREE": str(external),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+        },
+    )
+
+    assert result.returncode == 10
+    assert "external dispatch worktree requires a methodology dispatch receipt" in result.stderr
 
 
 def test_receipt_contains_task_and_authority(tmp_path: Path) -> None:
@@ -1685,6 +2120,98 @@ printf '%s\\n' "$@" > {launcher_args}
     )
 
 
+def test_external_worktree_binding_sets_headless_launcher_workdirs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    external = tmp_path / "external-repo"
+    external.mkdir()
+    claim_script = REPO_ROOT / "scripts" / "cc-claim"
+    close_script = REPO_ROOT / "scripts" / "cc-close"
+    validation = module.Validation(
+        True,
+        "eligible",
+        worktree_binding=module.WorktreeBinding(
+            worktree=external,
+            governing_council_dir=REPO_ROOT,
+            claim_script=claim_script,
+            close_script=close_script,
+            external=True,
+            target_lifecycle_scripts_present=False,
+        ),
+    )
+    monkeypatch.delenv("HAPAX_DISPATCH_WORKTREE", raising=False)
+
+    codex_env = tmp_path / "codex-env.txt"
+    codex_args = tmp_path / "codex-args.txt"
+    codex_launcher = tmp_path / "bin" / "hapax-codex-headless"
+    codex_launcher.parent.mkdir(parents=True, exist_ok=True)
+    codex_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {codex_args}
+printf 'workdir=%s\\nclaim=%s\\nclose=%s\\n' "$HAPAX_CODEX_HEADLESS_WORKDIR" "${{HAPAX_CC_CLAIM_SCRIPT:-}}" "${{HAPAX_CC_CLOSE_SCRIPT:-}}" > {codex_env}
+""",
+        encoding="utf-8",
+    )
+    codex_launcher.chmod(0o755)
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CODEX_HEADLESS", str(codex_launcher))
+
+    codex_result = module.launch_codex_headless(
+        "reins-build",
+        "cx-green",
+        "prompt",
+        validation,
+        module.PLATFORM_PATHS[("codex", "headless", "full")],
+    )
+
+    assert codex_result == 0
+    assert codex_env.read_text(encoding="utf-8").splitlines() == [
+        f"workdir={external}",
+        "claim=",
+        "close=",
+    ]
+    assert codex_args.read_text(encoding="utf-8").splitlines()[:4] == [
+        "--task",
+        "reins-build",
+        "--no-claim",
+        "cx-green",
+    ]
+
+    claude_env = tmp_path / "claude-env.txt"
+    claude_args = tmp_path / "claude-args.txt"
+    claude_launcher = tmp_path / "bin" / "hapax-claude-headless"
+    claude_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {claude_args}
+printf 'workdir=%s\\nclaim=%s\\nclose=%s\\n' "$HAPAX_CLAUDE_HEADLESS_WORKDIR" "${{HAPAX_CC_CLAIM_SCRIPT:-}}" "${{HAPAX_CC_CLOSE_SCRIPT:-}}" > {claude_env}
+""",
+        encoding="utf-8",
+    )
+    claude_launcher.chmod(0o755)
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CLAUDE_HEADLESS", str(claude_launcher))
+
+    claude_result = module.launch_claude_headless(
+        "reins-build",
+        "beta",
+        "prompt",
+        module.PLATFORM_PATHS[("claude", "headless", "full")],
+        validation,
+    )
+
+    assert claude_result == 0
+    assert claude_env.read_text(encoding="utf-8").splitlines() == [
+        f"workdir={external}",
+        "claim=",
+        "close=",
+    ]
+    assert claude_args.read_text(encoding="utf-8").splitlines()[:4] == [
+        "--task",
+        "reins-build",
+        "--no-claim",
+        "beta",
+    ]
+
+
 def test_governed_relay_reactivation_passes_force_to_headless_launcher(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
@@ -1790,7 +2317,6 @@ def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: P
                 "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(
                     REPO_ROOT / "scripts" / "hapax-codex-headless"
                 ),
-                "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
                 "HAPAX_CODEX_HEADLESS_ALLOW": "1",
                 "HAPAX_CODEX_HEADLESS_WORKDIR": str(tmp_path / "worktree"),
                 "HAPAX_CODEX_HEADLESS_PID_DIR": str(pid_dir),
@@ -1858,7 +2384,6 @@ def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path)
         "--launch",
         extra_env={
             "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(REPO_ROOT / "scripts" / "hapax-codex-headless"),
-            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
             "HAPAX_CODEX_HEADLESS_ALLOW": "1",
             "HAPAX_CODEX_HEADLESS_WORKDIR": str(tmp_path / "worktree"),
             "HAPAX_CODEX_HEADLESS_PID_DIR": str(pid_dir),
@@ -2037,7 +2562,6 @@ def test_codex_headless_dispatch_propagates_retired_relay_block(tmp_path: Path) 
         "--launch",
         extra_env={
             "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(REPO_ROOT / "scripts" / "hapax-codex-headless"),
-            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
             "HAPAX_CODEX_HEADLESS_ALLOW": "1",
             "HAPAX_CODEX_HEADLESS_WORKDIR": str(tmp_path / "worktree"),
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -2095,7 +2619,6 @@ def test_codex_headless_dispatch_blocks_mq_bound_read_only_exempt_retired_relay(
         "--launch",
         extra_env={
             "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(REPO_ROOT / "scripts" / "hapax-codex-headless"),
-            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
             "HAPAX_CODEX_HEADLESS_ALLOW": "1",
             "HAPAX_CODEX_HEADLESS_WORKDIR": str(tmp_path / "worktree"),
             "PATH": f"{bin_dir}:{os.environ['PATH']}",

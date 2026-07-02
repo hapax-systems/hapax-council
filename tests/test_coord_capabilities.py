@@ -16,6 +16,8 @@ re-bound lane) fails verification.
 """
 
 import json
+import subprocess
+import sys
 from dataclasses import replace
 
 from shared.governance.coord_capabilities import (
@@ -73,6 +75,55 @@ class TestDispatchCapability:
         assert loaded is not None
         assert verify_dispatch_capability(loaded, key=KEY, now=1100.0, task_id="t1", lane="theta")
 
+    def test_optional_binding_fields_are_signed_when_present(self, tmp_path):
+        cap = mint_dispatch_capability(
+            task_id="t1",
+            lane="theta",
+            ttl_s=600,
+            key=KEY,
+            now=1000.0,
+            platform="codex",
+            mode="headless",
+            profile="full",
+            worktree="/repo",
+            purpose="external_launch",
+        )
+        path = tmp_path / "cap.json"
+        data = json.loads(serialize_capability(cap))
+        data["worktree"] = "/other"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        loaded = read_capability_file(path)
+        assert loaded is not None
+        assert not verify_dispatch_capability(
+            loaded,
+            key=KEY,
+            now=1100.0,
+            task_id="t1",
+            lane="theta",
+            platform="codex",
+            mode="headless",
+            profile="full",
+            worktree="/other",
+            purpose="external_launch",
+        )
+
+    def test_adding_optional_binding_to_legacy_capability_invalidates_signature(self, tmp_path):
+        cap = mint_dispatch_capability(task_id="t1", lane="theta", ttl_s=600, key=KEY, now=1000.0)
+        data = json.loads(serialize_capability(cap))
+        data["purpose"] = "external_launch"
+        path = tmp_path / "cap.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        loaded = read_capability_file(path)
+        assert loaded is not None
+        assert not verify_dispatch_capability(
+            loaded,
+            key=KEY,
+            now=1100.0,
+            task_id="t1",
+            lane="theta",
+            purpose="external_launch",
+        )
+
 
 # --- consumption ledger (single-use) ------------------------------------------
 
@@ -92,6 +143,32 @@ class TestConsumptionLedger:
     def test_never_raises_on_bad_path(self):
         led = CapabilityConsumptionLedger("/this/does/not/exist/consumed.jsonl")
         assert led.consume("cap-x") in (True, False)
+
+    def test_strict_consume_fails_closed_on_bad_path(self):
+        led = CapabilityConsumptionLedger("/this/does/not/exist/consumed.jsonl")
+        assert led.consume_strict("cap-x") is False
+
+    def test_strict_consume_is_atomic_across_processes(self, tmp_path):
+        path = tmp_path / "consumed.jsonl"
+        code = (
+            "import sys;"
+            "from shared.governance.coord_capabilities import CapabilityConsumptionLedger;"
+            "print(CapabilityConsumptionLedger(sys.argv[1]).consume_strict('cap-race'))"
+        )
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", code, str(path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for _ in range(8)
+        ]
+        outputs = [proc.communicate(timeout=10) for proc in procs]
+        assert all(proc.returncode == 0 for proc in procs), outputs
+        results = [stdout.strip() for stdout, _stderr in outputs]
+        assert results.count("True") == 1
+        assert results.count("False") == 7
 
 
 # --- EscapeGrant (NEW-2: daemon-independent, signed file) ---------------------
