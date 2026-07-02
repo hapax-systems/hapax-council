@@ -430,6 +430,53 @@ assigned_to: cx-red
 
         assert platforms == ("codex",)
 
+    def test_malformed_route_metadata_fails_closed_not_base(self):
+        """R5 scope-mask fail-close, through the REAL parser (no mock): declared-but-
+        unparseable route metadata means the scope NEVER/ONLY mask cannot be read, so
+        suitability must be () (held) — never the unconstrained base. This is the exact
+        fixture the review flagged: assess_route_metadata does NOT raise on it — it returns
+        status=MALFORMED with metadata=None — so the fail-close must key on status, and a
+        test that mocks the parser to raise would green-light the live fail-open."""
+        # No patch: the real assess_route_metadata classifies this as MALFORMED.
+        platforms = _effective_platform_suitability(
+            ["claude", "codex"],
+            {"route_metadata_schema": 1, "route_constraints": "not-a-dict"},
+        )
+        assert platforms == ()
+
+    def test_nested_route_metadata_malformed_mask_fails_closed(self):
+        """A scope mask declared under the NESTED route_metadata mapping
+        (route_metadata.route_constraints) that is unparseable must ALSO fail closed —
+        a top-level-key-only guard missed this form (review finding). Mask presence is
+        detected with the canonical route_metadata_payload_from_frontmatter extractor."""
+        platforms = _effective_platform_suitability(
+            ["claude", "codex"],
+            {"route_metadata_schema": 1, "route_metadata": {"route_constraints": "not-a-dict"}},
+        )
+        assert platforms == ()
+
+    def test_malformed_explicit_metadata_with_a_mask_fails_closed(self):
+        """A declared explicit block whose OTHER fields are unparseable (invalid quality_floor)
+        is MALFORMED — even though a route_constraints mask is present, it cannot be trusted,
+        so suitability fails closed to () rather than reading a mask off untrusted metadata."""
+        platforms = _effective_platform_suitability(
+            ["claude", "codex"],
+            {
+                "route_metadata_schema": 1,
+                "quality_floor": "not-a-real-floor",
+                "authority_level": "authoritative",
+                "mutation_surface": "source",
+                "route_constraints": {"prohibited_platforms": ["codex"]},
+            },
+        )
+        assert platforms == ()
+
+    def test_no_route_metadata_keeps_base_suitability(self):
+        """Absence of declared constraints (metadata is None) is NOT the same as
+        cannot-determine: with no route_metadata the base suitability stands."""
+        platforms = _effective_platform_suitability(["claude", "codex"], {})
+        assert set(platforms) == {"claude", "codex"}
+
     def test_required_interactive_mode_is_not_coordinator_routable(self):
         platforms = _effective_platform_suitability(
             ["claude"],
