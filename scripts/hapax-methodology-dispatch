@@ -1469,6 +1469,19 @@ def classify_and_witness_launch(
     return rc
 
 
+#: Registry-declared model pin per claude dispatch profile — the launch-side half of the
+#: CapabilityExecutionInvariant. Values are Claude Code ``--model`` aliases. Mirrors the
+#: registry ExecutionDescriptors (claude.headless.full/opus -> claude-opus-4-8 => "opus";
+#: claude.headless.sonnet -> claude-sonnet-* => "sonnet"; claude.headless.haiku => "haiku").
+#: A profile absent here fails closed rather than inheriting the CLI default model.
+CLAUDE_PROFILE_MODEL_PIN: dict[str, str] = {
+    "full": "opus",
+    "opus": "opus",
+    "sonnet": "sonnet",
+    "haiku": "haiku",
+}
+
+
 def launch_claude_headless(task_id: str, lane: str, prompt: str, route: PlatformPath) -> int:
     launcher = Path(
         os.environ.get(
@@ -1481,8 +1494,21 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
     # per-spawn HAPAX_SESSION_ID so two same-role re-dispatched lanes never share a
     # claim key (reform-identity-coherence cluster 11, AC1).
     env.pop("HAPAX_SESSION_ID", None)
-    if route.profile in {"opus", "sonnet"}:
-        env["HAPAX_CLAUDE_MODEL"] = route.profile
+    # CapabilityExecutionInvariant drift guard (R0-pin): pin --model for EVERY claude
+    # profile to its registry-declared model. Never let a profile inherit the Claude Code
+    # CLI default (~/.claude/settings.json model=fable), which can silently drop fable->opus
+    # under indeterminate conditions — an observed != sanctioned execution drift. `full`
+    # declares claude-opus-4-8, so it pins "opus"; unknown profiles FAIL CLOSED rather than
+    # inherit the default.
+    pinned_model = CLAUDE_PROFILE_MODEL_PIN.get(route.profile)
+    if pinned_model is None:
+        print(
+            f"claude profile '{route.profile}' has no declared model pin; refusing to launch "
+            "(CEI drift guard — a launch must never inherit the CLI default model)",
+            file=sys.stderr,
+        )
+        return 9
+    env["HAPAX_CLAUDE_MODEL"] = pinned_model
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(lane_worktree(lane, "claude"))
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("claude", "headless")
