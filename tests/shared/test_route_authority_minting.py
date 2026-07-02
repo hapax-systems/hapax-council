@@ -23,6 +23,7 @@ from pydantic import ValidationError
 from shared.dispatcher_policy import (
     RouteAuthorityReceipt,
     _receipt_dir_from_env,
+    _route_authority_removable_reasons,
     build_route_authority_receipt,
     route_authority_receipt_payload_hash,
     route_authority_receipt_reference,
@@ -144,6 +145,44 @@ def test_build_quality_equivalence_requires_quality_floors() -> None:
             route_id="claude.headless.sonnet",
             evidence_refs=["operator-signed:equivalence"],
         )
+
+
+def test_build_local_inference_entitlement_receipt_round_trips_and_validates() -> None:
+    receipt = build_route_authority_receipt(
+        receipt_type="local_inference_entitlement",
+        route_id="local_tool.local.worker",
+        evidence_refs=["operator-signed:local-inference-entitlement"],
+    )
+
+    assert receipt.receipt_type == "local_inference_entitlement"
+    assert receipt.route_id == "local_tool.local.worker"
+    assert receipt.signed_payload_sha256 == route_authority_receipt_payload_hash(receipt)
+    reloaded = RouteAuthorityReceipt.model_validate(json.loads(receipt.model_dump_json()))
+    assert reloaded == receipt
+
+
+def test_build_local_inference_entitlement_requires_local_tool_route() -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        build_route_authority_receipt(
+            receipt_type="local_inference_entitlement",
+            route_id="claude.headless.opus",
+            evidence_refs=["operator-signed:local-inference-entitlement"],
+        )
+
+
+def test_local_inference_entitlement_clears_the_local_worker_blockers() -> None:
+    """The entitlement receipt clears exactly the local worker's admission + capability-evidence
+    + quota-telemetry blocked-reasons so apply_route_authority_receipts flips the route active."""
+    receipt = build_route_authority_receipt(
+        receipt_type="local_inference_entitlement",
+        route_id="local_tool.local.worker",
+        evidence_refs=["operator-signed:local-inference-entitlement"],
+    )
+    assert _route_authority_removable_reasons(receipt) == {
+        "local_inference_worker_receipt_admission_required",
+        "fresh_capability_evidence_absent",
+        "quota_telemetry_unknown",
+    }
 
 
 def test_build_opus_entitlement_requires_opus_route() -> None:

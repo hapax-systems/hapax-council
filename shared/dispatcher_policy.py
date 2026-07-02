@@ -239,6 +239,7 @@ class RouteAuthorityReceipt(_PolicyModel):
         "quality_equivalence",
         "runtime_actuation",
         "connector_mutation",
+        "local_inference_entitlement",
     ]
     route_id: str
     issued_at: datetime
@@ -262,6 +263,10 @@ class RouteAuthorityReceipt(_PolicyModel):
             raise ValueError("quality_equivalence receipts require quality_floors")
         if self.receipt_type == "opus_model_entitlement" and not self.route_id.endswith(".opus"):
             raise ValueError("opus_model_entitlement receipts must target an opus route")
+        if self.receipt_type == "local_inference_entitlement" and not self.route_id.startswith(
+            "local_tool."
+        ):
+            raise ValueError("local_inference_entitlement receipts must target a local_tool route")
         if self.receipt_type in {"runtime_actuation", "connector_mutation"}:
             if not self.task_ids:
                 raise ValueError(f"{self.receipt_type} receipts require task_ids")
@@ -1074,6 +1079,7 @@ def build_route_authority_receipt(
         "quality_equivalence",
         "runtime_actuation",
         "connector_mutation",
+        "local_inference_entitlement",
     ],
     route_id: str,
     evidence_refs: Sequence[str],
@@ -1270,6 +1276,14 @@ def _apply_route_authority_receipt_to_route_payload(
 def _route_authority_removable_reasons(receipt: RouteAuthorityReceipt) -> set[str]:
     if receipt.receipt_type == "opus_model_entitlement":
         return {"opus_model_entitlement_receipt_absent", "fresh_capability_evidence_absent"}
+    if receipt.receipt_type == "local_inference_entitlement":
+        # One operator-signed entitlement/quota receipt clears the local worker's admission
+        # gate + its capability-evidence + quota-telemetry blockers, flipping the route active.
+        return {
+            "local_inference_worker_receipt_admission_required",
+            "fresh_capability_evidence_absent",
+            "quota_telemetry_unknown",
+        }
     if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
         return set()
     return {"quality_equivalence_record_absent", "fresh_capability_evidence_absent"}
