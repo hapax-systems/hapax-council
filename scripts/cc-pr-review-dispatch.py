@@ -755,48 +755,62 @@ def _git_show_at_head(repo_root: Path, head_sha: str, rel: str) -> list[str] | N
     is precisely the stale-evidence defect this function exists to prevent.
     """
 
-    proc = subprocess.run(
-        ["git", "show", f"{head_sha}:{rel}"],
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "show", f"{head_sha}:{rel}"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            # A binary blob at that path would raise UnicodeDecodeError under the
+            # default strict decoder and escape this helper; replace keeps it
+            # returning best-effort lines (the excerpt is advisory evidence).
+            errors="replace",
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
     if proc.returncode != 0:
         return None
     return proc.stdout.splitlines()
 
 
 def ensure_head_object(repo_root: Path, head_sha: str, pr_number: int) -> bool:
-    """Best-effort: make sure the PR head commit exists locally for git show."""
+    """Best-effort: make sure the PR head commit exists locally for git show.
 
-    have = subprocess.run(
-        ["git", "cat-file", "-e", f"{head_sha}^{{commit}}"],
-        cwd=str(repo_root),
-        capture_output=True,
-        check=False,
-        timeout=30,
-    )
-    if have.returncode == 0:
+    Truly best-effort: any subprocess OSError/timeout returns False rather than
+    escaping — a failure here must degrade to evidence_unavailable, never abort
+    review dispatch.
+    """
+
+    def _have() -> bool:
+        try:
+            r = subprocess.run(
+                ["git", "cat-file", "-e", f"{head_sha}^{{commit}}"],
+                cwd=str(repo_root),
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return r.returncode == 0
+
+    if _have():
         return True
-    fetched = subprocess.run(
-        ["git", "fetch", "--quiet", "origin", f"pull/{pr_number}/head"],
-        cwd=str(repo_root),
-        capture_output=True,
-        check=False,
-        timeout=120,
-    )
+    try:
+        fetched = subprocess.run(
+            ["git", "fetch", "--quiet", "origin", f"pull/{pr_number}/head"],
+            cwd=str(repo_root),
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
     if fetched.returncode != 0:
         return False
-    have = subprocess.run(
-        ["git", "cat-file", "-e", f"{head_sha}^{{commit}}"],
-        cwd=str(repo_root),
-        capture_output=True,
-        check=False,
-        timeout=30,
-    )
-    return have.returncode == 0
+    return _have()
 
 
 _REL_DISPLAY_SAFE_RE = re.compile(r"[^A-Za-z0-9_./-]")
@@ -878,6 +892,26 @@ def build_prior_file_excerpts(
                 "worktree copy as current source; verify via the diff only)\n"
             )
             records.append({"file": shown, "line": line, "status": "evidence_unavailable"})
+            if len(sections) >= limit:
+                break
+            continue
+        if line > len(source_lines):
+            # Prior finding cites a line past EOF at this head (the file shrank,
+            # or the finding was always out of range). Do NOT emit an empty
+            # section recorded as 'shown' with an inverted range.
+            sections.append(
+                f"## {shown}:{line} @ {head_sha[:9]}\n\n"
+                f"(evidence_unavailable: {shown}:{line} is outside the file "
+                f"({len(source_lines)} lines) at {head_sha[:9]} — verify via the diff only)\n"
+            )
+            records.append(
+                {
+                    "file": shown,
+                    "line": line,
+                    "status": "line_out_of_range",
+                    "file_lines": len(source_lines),
+                }
+            )
             if len(sections) >= limit:
                 break
             continue

@@ -442,6 +442,25 @@ class TestApply:
             {"file": "scripts/missing.py", "line": 2, "status": "evidence_unavailable"},
         ]
 
+    def test_prior_file_excerpts_line_past_eof_is_out_of_range(self, tmp_path: Path) -> None:
+        """A prior finding citing a line past EOF at this head must NOT render an
+        empty section recorded as 'shown' with an inverted range."""
+        rel = "scripts/review_team.py"
+        head_sha = self._git_repo_with_commit(
+            tmp_path, rel, "\n".join(f"line {idx}" for idx in range(1, 6))
+        )  # 5 lines
+        rendered, records = dispatch.build_prior_file_excerpts(
+            [{"file": rel, "line": 99}],
+            repo_root=tmp_path,
+            head_sha=head_sha,
+            radius=1,
+        )
+        assert "evidence_unavailable" in rendered
+        assert "outside the file" in rendered
+        assert records[0]["status"] == "line_out_of_range"
+        assert records[0]["file_lines"] == 5
+        assert "shown" not in {r["status"] for r in records}
+
     def test_pr_comment_posted_with_dossier(self, tmp_path: Path) -> None:
         _, gh, _, _ = _review(tmp_path)
         assert len(gh.comments) == 1
