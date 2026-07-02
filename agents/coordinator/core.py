@@ -983,10 +983,16 @@ def _effective_platform_suitability(platforms: object, frontmatter: dict) -> tup
     base = _platform_tokens(platforms) or ("any",)
     try:
         assessment = assess_route_metadata(frontmatter)
-    except Exception:  # noqa: BLE001 - malformed metadata is still caught by dispatch.
-        return base
+    except Exception:  # noqa: BLE001
+        # FAIL CLOSED (scope-mask R5): unparseable route metadata means the scope
+        # NEVER/ONLY mask CANNOT be determined — return () (the same "nothing
+        # suitable / held" signal as the required_mode/profile mismatch below), never
+        # the unconstrained base. Cannot-determine-constraints != no-constraints;
+        # silently dropping the mask to base is a fail-open that voids the scope regime.
+        return ()
     metadata = assessment.metadata
     if metadata is None:
+        # Legitimately no declared route_metadata → no constraints → base suitability.
         return base
 
     constraints = metadata.route_constraints

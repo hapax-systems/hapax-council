@@ -430,6 +430,26 @@ assigned_to: cx-red
 
         assert platforms == ("codex",)
 
+    def test_malformed_route_metadata_fails_closed_not_base(self):
+        """R5 scope-mask fail-close: when route metadata is UNPARSEABLE the scope
+        NEVER/ONLY mask cannot be determined, so suitability must be () (held) — never
+        the unconstrained base. Dropping the mask to base is a fail-open that voids the
+        scope regime."""
+        with patch(
+            "agents.coordinator.core.assess_route_metadata",
+            side_effect=ValueError("malformed route metadata"),
+        ):
+            platforms = _effective_platform_suitability(
+                ["claude", "codex"], {"route_metadata_schema": 1, "route_constraints": "not-a-dict"}
+            )
+        assert platforms == ()
+
+    def test_no_route_metadata_keeps_base_suitability(self):
+        """Absence of declared constraints (metadata is None) is NOT the same as
+        cannot-determine: with no route_metadata the base suitability stands."""
+        platforms = _effective_platform_suitability(["claude", "codex"], {})
+        assert set(platforms) == {"claude", "codex"}
+
     def test_required_interactive_mode_is_not_coordinator_routable(self):
         platforms = _effective_platform_suitability(
             ["claude"],
