@@ -239,6 +239,7 @@ class RouteAuthorityReceipt(_PolicyModel):
         "quality_equivalence",
         "runtime_actuation",
         "connector_mutation",
+        "local_inference_entitlement",
     ]
     route_id: str
     issued_at: datetime
@@ -262,6 +263,14 @@ class RouteAuthorityReceipt(_PolicyModel):
             raise ValueError("quality_equivalence receipts require quality_floors")
         if self.receipt_type == "opus_model_entitlement" and not self.route_id.endswith(".opus"):
             raise ValueError("opus_model_entitlement receipts must target an opus route")
+        if self.receipt_type == "local_inference_entitlement" and not self.route_id.startswith(
+            "local_tool."
+        ):
+            raise ValueError(
+                "local_inference_entitlement receipts must target a local_tool route "
+                f"(got route_id={self.route_id!r}); re-mint with --route-id local_tool.local.worker "
+                "(or the intended local_tool.* route)."
+            )
         if self.receipt_type in {"runtime_actuation", "connector_mutation"}:
             if not self.task_ids:
                 raise ValueError(f"{self.receipt_type} receipts require task_ids")
@@ -1074,6 +1083,7 @@ def build_route_authority_receipt(
         "quality_equivalence",
         "runtime_actuation",
         "connector_mutation",
+        "local_inference_entitlement",
     ],
     route_id: str,
     evidence_refs: Sequence[str],
@@ -1217,22 +1227,38 @@ def _apply_route_authority_receipt_to_route_payload(
         if reason not in removable_reasons
     ]
     freshness = route_payload["freshness"]
-    capability_evidence = freshness["evidence"]["capability"]
-    capability_evidence["blocked_reasons"] = [
-        reason
-        for reason in capability_evidence.get("blocked_reasons", [])
-        if reason not in removable_reasons
-    ]
-    capability_evidence["evidence_refs"] = list(
-        dict.fromkeys(
-            [
-                *capability_evidence.get("evidence_refs", []),
-                *receipt.evidence_refs,
-                receipt_ref,
-            ]
-        )
-    )
     issued_at = _coerce_utc(receipt.issued_at).isoformat().replace("+00:00", "Z")
+    receipt_evidence_refs = [*receipt.evidence_refs, receipt_ref]
+    # A receipt clears its removable reasons wherever they live, not only on the capability
+    # surface: the local-worker admission gate + fresh-capability blockers sit on the
+    # capability surface, but quota_telemetry_unknown sits on the quota surface. Stripping
+    # only the capability surface let the top-level re-derivation below re-sweep the quota
+    # surface and re-inject the reason, leaving the route blocked (the R1 keystone bug).
+    for surface_name, surface_payload in freshness["evidence"].items():
+        original = surface_payload.get("blocked_reasons", [])
+        if not original:
+            continue
+        remaining = [reason for reason in original if reason not in removable_reasons]
+        if remaining == original:
+            continue
+        surface_payload["blocked_reasons"] = remaining
+        # The receipt IS the evidence that cleared these reasons: record it on the surface
+        # (so the clearing is attributable AND the surface is not left empty — a freshness
+        # surface must carry evidence_refs or blocked_reasons) and stamp the surface fresh
+        # (a surface with a null checked_at must still carry blocked_reasons, so a cleared
+        # surface must be marked checked at the receipt's issue time).
+        surface_payload["evidence_refs"] = list(
+            dict.fromkeys([*surface_payload.get("evidence_refs", []), *receipt_evidence_refs])
+        )
+        freshness[f"{surface_name}_checked_at"] = issued_at
+        freshness[f"{surface_name}_stale_after"] = receipt.stale_after
+    # The receipt is fundamentally fresh CAPABILITY evidence: record it on the capability
+    # surface + stamp capability freshness unconditionally, even if that surface carried no
+    # removable blocker to clear.
+    capability_evidence = freshness["evidence"]["capability"]
+    capability_evidence["evidence_refs"] = list(
+        dict.fromkeys([*capability_evidence.get("evidence_refs", []), *receipt_evidence_refs])
+    )
     freshness["capability_checked_at"] = issued_at
     freshness["capability_stale_after"] = receipt.stale_after
 
@@ -1270,6 +1296,14 @@ def _apply_route_authority_receipt_to_route_payload(
 def _route_authority_removable_reasons(receipt: RouteAuthorityReceipt) -> set[str]:
     if receipt.receipt_type == "opus_model_entitlement":
         return {"opus_model_entitlement_receipt_absent", "fresh_capability_evidence_absent"}
+    if receipt.receipt_type == "local_inference_entitlement":
+        # One operator-signed entitlement/quota receipt clears the local worker's admission
+        # gate + its capability-evidence + quota-telemetry blockers, flipping the route active.
+        return {
+            "local_inference_worker_receipt_admission_required",
+            "fresh_capability_evidence_absent",
+            "quota_telemetry_unknown",
+        }
     if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
         return set()
     return {"quality_equivalence_record_absent", "fresh_capability_evidence_absent"}
