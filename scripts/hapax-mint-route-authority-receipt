@@ -299,11 +299,14 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         choices=[
             "opus_model_entitlement",
+            "local_inference_entitlement",
             "quality_equivalence",
             "runtime_actuation",
             "connector_mutation",
         ],
         help="opus_model_entitlement raises the opus authority ceiling; "
+        "local_inference_entitlement clears a local_tool worker's admission + quota-telemetry "
+        "blockers (route-id must be a local_tool.* route); "
         "quality_equivalence records a bounded-floor equivalence for a fallback route; "
         "runtime_actuation records task-bound authority for a runtime mutation; "
         "connector_mutation records task-bound authority for an MCP/app connector mutation.",
