@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import sqlite3
 import subprocess
 import sys
@@ -253,6 +256,20 @@ class TaskNote:
     fields: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class WorktreeBinding:
+    worktree: Path
+    governing_council_dir: Path
+    claim_script: Path
+    close_script: Path
+    external: bool
+    target_lifecycle_scripts_present: bool
+    mutation_scope_refs: tuple[str, ...] = ()
+    scope_coverage_refs: tuple[str, ...] = ()
+    receipt_required: bool = False
+    reason: str = ""
+
+
 @dataclass
 class Validation:
     ok: bool
@@ -260,6 +277,7 @@ class Validation:
     task: TaskNote | None = None
     parent_spec_path: Path | None = None
     exempt_read_only: bool = False
+    worktree_binding: WorktreeBinding | None = None
 
 
 @dataclass(frozen=True)
@@ -268,6 +286,11 @@ class DurableDispatchBinding:
     advisory_only: bool
     reason: str
     message_id: str | None = None
+
+
+@dataclass(frozen=True)
+class LaunchAuthorization:
+    path: Path
 
 
 def now_utc() -> str:
@@ -569,6 +592,87 @@ def is_claude_operator_pool_lane(lane: str, platform: str) -> bool:
     return strip_scalar(platform).lower() == "claude" and is_claude_operator_pool_role(lane)
 
 
+def governing_council_dir() -> Path:
+    """Council checkout that owns the authoritative cc-task lifecycle scripts."""
+    override = os.environ.get("HAPAX_COUNCIL_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(__file__).resolve().parents[1]
+
+
+def mutation_scope_refs_from_fields(fields: dict[str, Any]) -> tuple[str, ...]:
+    raw = fields.get("mutation_scope_refs")
+    if is_nullish(raw):
+        return ()
+    if isinstance(raw, list):
+        return tuple(strip_scalar(str(item)) for item in raw if not is_nullish(str(item)))
+    if isinstance(raw, tuple):
+        return tuple(strip_scalar(str(item)) for item in raw if not is_nullish(str(item)))
+    text = strip_scalar(str(raw))
+    if not text:
+        return ()
+    if "\x1f" in text:
+        return tuple(part.strip() for part in text.split("\x1f") if part.strip())
+    return (text,)
+
+
+def _path_contains(parent: Path, candidate: Path) -> bool:
+    try:
+        parent_resolved = parent.expanduser().resolve(strict=False)
+        candidate_resolved = candidate.expanduser().resolve(strict=False)
+    except OSError:
+        parent_resolved = parent.expanduser().absolute()
+        candidate_resolved = candidate.expanduser().absolute()
+    return candidate_resolved == parent_resolved or parent_resolved in candidate_resolved.parents
+
+
+def _project_root_for_worktree(worktree: Path) -> Path:
+    override = os.environ.get("HAPAX_DISPATCH_PROJECT_ROOT")
+    if override:
+        return Path(override).expanduser()
+    return worktree.expanduser().parent
+
+
+def _scope_ref_path_candidates(raw_ref: str, worktree: Path) -> tuple[Path, ...]:
+    ref = strip_scalar(str(raw_ref)).strip()
+    if not ref or ref.startswith(("cc-task:", "request:")):
+        return ()
+    if ref.startswith("vault:"):
+        ref = ref.split(":", 1)[1].strip()
+        if not ref:
+            return ()
+        return (Path.home() / "Documents" / "Personal" / ref,)
+    if re.match(r"^[A-Za-z][A-Za-z0-9 _-]{0,48}:\s+[~/]", ref):
+        # Labeled evidence refs such as "transcript refs: /abs/path".
+        ref = ref.split(":", 1)[1].strip()
+    path = Path(ref).expanduser()
+    if path.is_absolute():
+        return (path,)
+    roots = [_project_root_for_worktree(worktree), Path.home() / "Documents" / "Personal"]
+    parts = path.parts
+    if not parts or (worktree / parts[0]).exists():
+        roots.insert(0, worktree)
+    seen: set[str] = set()
+    candidates: list[Path] = []
+    for root in roots:
+        candidate = root / path
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            candidates.append(candidate)
+    return tuple(candidates)
+
+
+def scope_refs_cover_worktree(worktree: Path, scope_refs: tuple[str, ...]) -> tuple[str, ...]:
+    covered: list[str] = []
+    for raw_ref in scope_refs:
+        for candidate in _scope_ref_path_candidates(raw_ref, worktree):
+            if _path_contains(worktree, candidate) or _path_contains(candidate, worktree):
+                covered.append(raw_ref)
+                break
+    return tuple(dict.fromkeys(covered))
+
+
 # --- capability-gated SYSTEM drain of an orphaned dead-lane task --------------
 # (dn-validate-task-relax; CASE-SDLC-REFORM-001). A narrow, ADDITIVE admit edge:
 # the reserved __system__ actor may advance an orphaned pr_open/claimed/in_progress
@@ -788,28 +892,34 @@ def run_claim_sweep(task_root: Path, *, notify: bool = True) -> list[tuple[str, 
     return reaped
 
 
-def check_worktree_claim_guard(worktree: Path) -> tuple[bool, str]:
-    script = worktree / "scripts" / "cc-claim"
+def check_cc_claim_guard(script: Path, subject: str) -> tuple[bool, str]:
     if not script.is_file():
         return False, f"missing cc-claim at {script}"
     text = script.read_text(encoding="utf-8", errors="replace")
     required = DISPATCH_CLAIM_GUARD_MARKERS
     missing = [needle for needle in required if needle not in text]
     if missing:
-        return False, f"stale cc-claim in {worktree}: missing {', '.join(missing)}"
-    return True, "worktree cc-claim authority/spec guard present"
+        return False, f"stale cc-claim in {subject}: missing {', '.join(missing)}"
+    return True, f"{subject} cc-claim authority/spec guard present"
 
 
-def check_worktree_close_guard(worktree: Path) -> tuple[bool, str]:
-    script = worktree / "scripts" / "cc-close"
+def check_cc_close_guard(script: Path, subject: str) -> tuple[bool, str]:
     if not script.is_file():
         return False, f"missing cc-close at {script}"
     text = script.read_text(encoding="utf-8", errors="replace")
     required = DISPATCH_CLOSE_GUARD_MARKERS
     missing = [needle for needle in required if needle not in text]
     if missing:
-        return False, f"stale cc-close in {worktree}: missing {', '.join(missing)}"
-    return True, "worktree cc-close exact-duplicate guard present"
+        return False, f"stale cc-close in {subject}: missing {', '.join(missing)}"
+    return True, f"{subject} cc-close exact-duplicate guard present"
+
+
+def check_worktree_claim_guard(worktree: Path) -> tuple[bool, str]:
+    return check_cc_claim_guard(worktree / "scripts" / "cc-claim", str(worktree))
+
+
+def check_worktree_close_guard(worktree: Path) -> tuple[bool, str]:
+    return check_cc_close_guard(worktree / "scripts" / "cc-close", str(worktree))
 
 
 def check_worktree_cc_task_tool_guards(worktree: Path) -> tuple[bool, str]:
@@ -820,6 +930,110 @@ def check_worktree_cc_task_tool_guards(worktree: Path) -> tuple[bool, str]:
     if not close_ok:
         return False, close_reason
     return True, f"{claim_reason}; {close_reason}"
+
+
+def check_governing_cc_task_tool_guards(council_dir: Path) -> tuple[bool, str]:
+    claim_ok, claim_reason = check_cc_claim_guard(
+        council_dir / "scripts" / "cc-claim", f"governing council {council_dir}"
+    )
+    if not claim_ok:
+        return False, claim_reason
+    close_ok, close_reason = check_cc_close_guard(
+        council_dir / "scripts" / "cc-close", f"governing council {council_dir}"
+    )
+    if not close_ok:
+        return False, close_reason
+    return True, f"{claim_reason}; {close_reason}"
+
+
+def validate_worktree_binding(
+    *, worktree: Path, fields: dict[str, Any]
+) -> tuple[bool, str, WorktreeBinding]:
+    worktree = worktree.expanduser()
+    council_dir = governing_council_dir()
+    target_claim = worktree / "scripts" / "cc-claim"
+    target_close = worktree / "scripts" / "cc-close"
+    target_lifecycle_scripts_present = target_claim.exists() or target_close.exists()
+    if target_lifecycle_scripts_present:
+        binding = WorktreeBinding(
+            worktree=worktree,
+            governing_council_dir=council_dir,
+            claim_script=target_claim,
+            close_script=target_close,
+            external=False,
+            target_lifecycle_scripts_present=True,
+            reason="council-shaped worktree lifecycle scripts present",
+        )
+        if not worktree.is_dir():
+            return False, f"worktree not found: {worktree}", binding
+        ok, reason = check_worktree_cc_task_tool_guards(worktree)
+        return ok, reason, WorktreeBinding(
+            worktree=worktree,
+            governing_council_dir=council_dir,
+            claim_script=target_claim,
+            close_script=target_close,
+            external=False,
+            target_lifecycle_scripts_present=True,
+            reason="council-shaped worktree lifecycle guard present",
+        )
+
+    scope_refs = mutation_scope_refs_from_fields(fields)
+    covered_refs = scope_refs_cover_worktree(worktree, scope_refs)
+    binding = WorktreeBinding(
+        worktree=worktree,
+        governing_council_dir=council_dir,
+        claim_script=council_dir / "scripts" / "cc-claim",
+        close_script=council_dir / "scripts" / "cc-close",
+        external=True,
+        target_lifecycle_scripts_present=False,
+        mutation_scope_refs=scope_refs,
+        scope_coverage_refs=covered_refs,
+        receipt_required=True,
+        reason="external worktree requires governing council lifecycle scripts",
+    )
+    if not worktree.is_dir():
+        return (
+            False,
+            "external dispatch worktree not found: "
+            f"{worktree}; next action: provision the target worktree or correct "
+            "HAPAX_DISPATCH_WORKTREE before dispatch",
+            binding,
+        )
+    ok, reason = check_governing_cc_task_tool_guards(council_dir)
+    if not ok:
+        return False, reason, binding
+    if not scope_refs:
+        return (
+            False,
+            "external dispatch worktree lacks task mutation_scope_refs coverage: "
+            f"{worktree}; next action: add the target repo/path to the task "
+            "mutation_scope_refs or dispatch the task to an in-scope worktree",
+            binding,
+        )
+    if not covered_refs:
+        return (
+            False,
+            "external dispatch worktree is outside task mutation_scope_refs: "
+            f"{worktree}; next action: correct HAPAX_DISPATCH_WORKTREE or add an "
+            "explicit mutation_scope_refs entry covering the target worktree",
+            binding,
+        )
+    reason = (
+        "external worktree bound to governing council lifecycle scripts; "
+        f"scope coverage refs: {', '.join(covered_refs)}"
+    )
+    return True, reason, WorktreeBinding(
+        worktree=worktree,
+        governing_council_dir=council_dir,
+        claim_script=council_dir / "scripts" / "cc-claim",
+        close_script=council_dir / "scripts" / "cc-close",
+        external=True,
+        target_lifecycle_scripts_present=False,
+        mutation_scope_refs=scope_refs,
+        scope_coverage_refs=covered_refs,
+        receipt_required=True,
+        reason=reason,
+    )
 
 
 def _relay_mq_db_path() -> Path:
@@ -1134,11 +1348,16 @@ def validate_task(
         )
 
     if strict_worktree:
-        ok, reason = check_worktree_cc_task_tool_guards(lane_worktree(lane, platform))
+        ok, reason, binding = validate_worktree_binding(
+            worktree=lane_worktree(lane, platform),
+            fields=fields,
+        )
         if not ok:
-            return Validation(False, reason, task, parent_spec_path, exempt)
+            return Validation(False, reason, task, parent_spec_path, exempt, binding)
+    else:
+        binding = None
 
-    return Validation(True, "eligible", task, parent_spec_path, exempt)
+    return Validation(True, "eligible", task, parent_spec_path, exempt, binding)
 
 
 def build_prompt(
@@ -1149,6 +1368,8 @@ def build_prompt(
     profile: str,
     validation: Validation,
     route: PlatformPath,
+    route_decision: RouteDecision | None = None,
+    durable_binding: DurableDispatchBinding | None = None,
 ) -> str:
     if lane == SYSTEM_DRAIN_LANE:
         raise ValueError(
@@ -1160,9 +1381,35 @@ def build_prompt(
     authority_case = fields.get("authority_case")
     parent_spec = fields.get("parent_spec")
     title = fields.get("title")
-    worktree = lane_worktree(lane, platform)
-    claim_cmd = worktree / "scripts" / "cc-claim"
-    close_cmd = worktree / "scripts" / "cc-close"
+    binding = validation.worktree_binding
+    worktree = binding.worktree if binding is not None else lane_worktree(lane, platform)
+    claim_cmd = binding.claim_script if binding is not None else worktree / "scripts" / "cc-claim"
+    close_cmd = binding.close_script if binding is not None else worktree / "scripts" / "cc-close"
+    scope_refs = mutation_scope_refs_from_fields(fields)
+    scope_lines = [f"  - {ref}" for ref in scope_refs] or ["  - []"]
+    if route_decision is None:
+        route_evidence = "not evaluated before this prompt"
+        resource_admission = "not evaluated before this prompt"
+    else:
+        reason_codes = ",".join(route_decision.reason_codes) or "none"
+        route_evidence = (
+            f"decision_id={route_decision.decision_id}; "
+            f"action={route_decision.action.value}; route_id={route_decision.route_id}; "
+            f"reason_codes={reason_codes}"
+        )
+        resource_admission = (
+            f"registry_fresh={route_decision.registry_freshness_green}; "
+            f"quota_fresh={route_decision.quota_freshness_green}; "
+            f"resource_fresh={route_decision.resource_freshness_green}; "
+            f"dispatch_host={effective_dispatch_host(platform, mode)}"
+        )
+    if durable_binding is None:
+        durable_line = "not checked"
+    else:
+        durable_line = (
+            f"bound={durable_binding.ok}; advisory_only={durable_binding.advisory_only}; "
+            f"reason={durable_binding.reason}; message_id={durable_binding.message_id or 'none'}"
+        )
     claim_file = (
         Path(os.environ.get("HAPAX_CC_CLAIMS_DIR", str(Path.home() / ".cache" / "hapax")))
         / f"cc-active-task-{lane}"
@@ -1189,6 +1436,15 @@ def build_prompt(
             f"AuthorityCase: {strip_scalar(str(authority_case or 'read-only-exempt'))}",
             f"Parent spec: {strip_scalar(str(parent_spec or 'read-only-exempt'))}",
             f"Task note: {validation.task.path}",
+            f"Worktree: {worktree}",
+            f"Claim command: {claim_cmd}",
+            f"Close command: {close_cmd}",
+            f"Dispatch worktree binding: {binding.reason if binding is not None else 'not checked'}",
+            "Mutation scope refs:",
+            *scope_lines,
+            f"Route evidence: {route_evidence}",
+            f"Resource/quota admission: {resource_admission}",
+            f"Durable dispatch binding: {durable_line}",
             "",
             "Instructions:",
             f"1. Work only on task {task_id}.",
@@ -1235,6 +1491,7 @@ def write_receipt(
     route_decision_receipt_path: Path | None = None,
     durable_binding: DurableDispatchBinding | None = None,
     dispatch_launch: DispatchLaunchResult | None = None,
+    launch_authorization: LaunchAuthorization | None = None,
 ) -> Path:
     ledger_dir = orchestration_ledger_dir()
     ledger_dir.mkdir(parents=True, exist_ok=True)
@@ -1262,6 +1519,30 @@ def write_receipt(
         "launch_returncode": launch_returncode,
         "prompt": prompt,
     }
+    if validation.worktree_binding is not None:
+        binding = validation.worktree_binding
+        record["dispatch_worktree"] = str(binding.worktree)
+        record["dispatch_worktree_external"] = binding.external
+        record["dispatch_worktree_receipt_schema"] = 1
+        record["dispatch_worktree_receipt"] = {
+            "schema_version": 1,
+            "event": "dispatch_worktree_binding",
+            "task_id": task_id,
+            "lane": lane,
+            "platform": platform,
+            "mode": mode,
+            "profile": profile,
+            "worktree": str(binding.worktree),
+            "external": binding.external,
+            "target_lifecycle_scripts_present": binding.target_lifecycle_scripts_present,
+            "governing_council_dir": str(binding.governing_council_dir),
+            "claim_script": str(binding.claim_script),
+            "close_script": str(binding.close_script),
+            "mutation_scope_refs": list(binding.mutation_scope_refs),
+            "scope_coverage_refs": list(binding.scope_coverage_refs),
+            "receipt_required": binding.receipt_required,
+            "reason": binding.reason,
+        }
     if durable_binding is not None:
         record["durable_mq_dispatch_bound"] = durable_binding.ok
         record["advisory_only"] = durable_binding.advisory_only
@@ -1273,6 +1554,8 @@ def write_receipt(
         record["coord_dispatch_reason"] = dispatch_launch.reason
         record["coord_dispatch_event_id"] = dispatch_launch.event_id
         record["coord_dispatch_cleanup_state"] = dispatch_launch.cleanup_state
+    if launch_authorization is not None:
+        record["dispatch_launch_authorization_path"] = str(launch_authorization.path)
     if route_decision is not None:
         record.update(route_decision_receipt_payload(route_decision))
         record["route_decision_receipt_path"] = (
@@ -1282,6 +1565,85 @@ def write_receipt(
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
     return path
+
+
+def launch_authorization_secret_path() -> Path:
+    return (
+        Path.home()
+        / ".cache"
+        / "hapax"
+        / "orchestration"
+        / "methodology-dispatch-launch-auth.key"
+    )
+
+
+def read_or_create_launch_authorization_secret() -> bytes:
+    path = launch_authorization_secret_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return path.read_bytes().strip()
+    secret = secrets.token_bytes(32)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(secret.hex().encode("ascii") + b"\n")
+    return secret.hex().encode("ascii")
+
+
+def launch_authorization_signature(payload: dict[str, Any], secret: bytes) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hmac.new(secret, canonical, hashlib.sha256).hexdigest()
+
+
+def write_launch_authorization(
+    *,
+    task_id: str,
+    lane: str,
+    platform: str,
+    mode: str,
+    profile: str,
+    validation: Validation,
+    durable_binding: DurableDispatchBinding,
+    route_decision: RouteDecision,
+) -> LaunchAuthorization:
+    binding = validation.worktree_binding
+    nonce = secrets.token_urlsafe(32)
+    auth_dir = orchestration_ledger_dir() / "methodology-dispatch-launch-auth"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    path = (
+        auth_dir
+        / (
+            f"{now_utc().replace(':', '').replace('-', '')}-{slugify(lane)}-"
+            f"{slugify(task_id)}-{slugify(nonce[:12])}.json"
+        )
+    )
+    worktree = launch_worktree(validation, lane, platform)
+    payload = {
+        "schema_version": 1,
+        "event": "methodology_dispatch_launch_authorization",
+        "timestamp": now_utc(),
+        "task_id": task_id,
+        "lane": lane,
+        "platform": platform,
+        "mode": mode,
+        "profile": profile,
+        "worktree": str(worktree),
+        "external": bool(binding.external) if binding is not None else False,
+        "receipt_required": bool(binding.receipt_required) if binding is not None else False,
+        "scope_coverage_refs": list(binding.scope_coverage_refs) if binding is not None else [],
+        "durable_mq_dispatch_bound": durable_binding.ok,
+        "durable_mq_reason": durable_binding.reason,
+        "durable_mq_message_id": durable_binding.message_id,
+        "route_decision_action": route_decision.action.value,
+        "route_decision_id": route_decision.decision_id,
+        "nonce": nonce,
+    }
+    payload["signature"] = launch_authorization_signature(
+        payload, read_or_create_launch_authorization_secret()
+    )
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, sort_keys=True) + "\n")
+    return LaunchAuthorization(path=path)
 
 
 def slugify(value: str) -> str:
@@ -1382,6 +1744,12 @@ def _await_sdlc_admission(args: argparse.Namespace) -> None:
     print(f"sdlc-pressure cleared ({final.state}): proceeding with {args.task}", file=sys.stderr)
 
 
+def launch_worktree(validation: Validation, lane: str, platform: str) -> Path:
+    if validation.worktree_binding is not None:
+        return validation.worktree_binding.worktree
+    return lane_worktree(lane, platform)
+
+
 # Worker-lane terminal-failure classification -> guarded family-availability witness
 # (cc-task capability-adapter-worker-path-classify-failure). Best-effort + strictly FAIL-OPEN:
 # classification NEVER changes the dispatch returncode or outcome. The guard, single-key write, and
@@ -1469,7 +1837,14 @@ def classify_and_witness_launch(
     return rc
 
 
-def launch_claude_headless(task_id: str, lane: str, prompt: str, route: PlatformPath) -> int:
+def launch_claude_headless(
+    task_id: str,
+    lane: str,
+    prompt: str,
+    route: PlatformPath,
+    validation: Validation,
+    launch_authorization: LaunchAuthorization | None = None,
+) -> int:
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_CLAUDE_HEADLESS",
@@ -1484,9 +1859,16 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
     if route.profile in {"opus", "sonnet"}:
         env["HAPAX_CLAUDE_MODEL"] = route.profile
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
-    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(lane_worktree(lane, "claude"))
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(launch_worktree(validation, lane, "claude"))
+    env["HAPAX_COUNCIL_DIR"] = str(governing_council_dir())
+    if launch_authorization is not None:
+        env["HAPAX_METHODOLOGY_DISPATCH_LAUNCH_AUTH"] = str(launch_authorization.path)
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("claude", "headless")
-    return _sliced_call([str(launcher), "--task", task_id, lane, prompt], env)
+    args = [str(launcher), "--task", task_id]
+    if validation.worktree_binding is not None and validation.worktree_binding.external:
+        args.append("--no-claim")
+    args.extend([lane, prompt])
+    return _sliced_call(args, env)
 
 
 def launch_claude_interactive(task_id: str, lane: str, validation: Validation) -> int:
@@ -1671,6 +2053,7 @@ def launch_codex_headless(
     route: PlatformPath,
     *,
     reactivate_retired_relay: bool = False,
+    launch_authorization: LaunchAuthorization | None = None,
 ) -> int:
     # Genuine headless path (reform §6 P0): `codex exec` via hapax-codex-headless,
     # NOT a tmux pane. The tmux launcher (hapax-codex) remains the interactive
@@ -1692,7 +2075,10 @@ def launch_codex_headless(
     local_fallback_allowed = allow_codex_p0_local_dispatch_fallback(task_id, lane, validation)
     if reactivate_retired_relay or local_fallback_allowed:
         args.append("--force")
-    if status in {"claimed", "in_progress"}:
+    external_worktree = (
+        validation.worktree_binding is not None and validation.worktree_binding.external
+    )
+    if status in {"claimed", "in_progress"} or external_worktree:
         args.append("--no-claim")
     args.extend([lane, prompt])
     if route.profile == "spark":
@@ -1707,6 +2093,10 @@ def launch_codex_headless(
         )
     env = os.environ.copy()
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(launch_worktree(validation, lane, "codex"))
+    env["HAPAX_COUNCIL_DIR"] = str(governing_council_dir())
+    if launch_authorization is not None:
+        env["HAPAX_METHODOLOGY_DISPATCH_LAUNCH_AUTH"] = str(launch_authorization.path)
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
     if local_fallback_allowed:
         # Preserve a caller/operator-provided fallback value; the P0 drain rule
@@ -1957,6 +2347,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--launch", action="store_true", help="Launch after validation")
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and write/print receipts without launching; this is the default.",
+    )
+    parser.add_argument(
         "--list-platform-paths",
         action="store_true",
         help="List governed platform/mode/profile launch paths and exit",
@@ -2012,6 +2407,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     args.profile = normalize_profile(args.platform, args.profile)
+    if args.dry_run:
+        args.launch = False
 
     if args.list_platform_paths:
         print("\n".join(supported_route_lines()))
@@ -2087,6 +2484,15 @@ def main(argv: list[str] | None = None) -> int:
                 launched=False,
             )
         print(f"BLOCKED: {validation.reason}", file=sys.stderr)
+        return 10
+
+    if (
+        validation.worktree_binding is not None
+        and validation.worktree_binding.receipt_required
+        and args.no_receipt
+    ):
+        reason = "external dispatch worktree requires a methodology dispatch receipt; --no-receipt is not allowed"
+        print(f"BLOCKED: {reason}", file=sys.stderr)
         return 10
 
     if args.mode == "receipt-only":
@@ -2247,6 +2653,42 @@ def main(argv: list[str] | None = None) -> int:
             validation=validation,
             message_id=mq_message_id,
         )
+    if (
+        validation.worktree_binding is not None
+        and validation.worktree_binding.external
+        and not durable_binding.ok
+        and args.launch
+    ):
+        reason = (
+            "external dispatch worktree requires route authority binding: "
+            f"{durable_binding.reason}; next action: dispatch through the durable "
+            "methodology control plane with a fresh relay message binding"
+        )
+        blocked = Validation(
+            False,
+            reason,
+            validation.task,
+            validation.parent_spec_path,
+            validation.exempt_read_only,
+            validation.worktree_binding,
+        )
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=route,
+                validation=blocked,
+                prompt=None,
+                launched=False,
+                route_decision=route_decision,
+                route_decision_receipt_path=route_decision_receipt_path,
+                durable_binding=durable_binding,
+            )
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 10
     if not durable_binding.ok and args.launch:
         reason = f"durable MQ authority binding required: {durable_binding.reason}"
         blocked = Validation(
@@ -2282,6 +2724,8 @@ def main(argv: list[str] | None = None) -> int:
         args.profile,
         validation,
         route,
+        route_decision,
+        durable_binding,
     )
 
     if args.print_prompt:
@@ -2289,11 +2733,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ADVISORY_ONLY: {durable_binding.reason}")
         print(prompt)
 
+    launch_authorization: LaunchAuthorization | None = None
     if args.launch:
         # L3 SDLC pressure admission gate — block-and-wait (QUEUE, never skip)
         # while the box is under sustained CPU pressure, then proceed. The fleet
         # slows; no dispatch is dropped.
         _await_sdlc_admission(args)
+
+        if (args.platform, args.mode) in {("claude", "headless"), ("codex", "headless")}:
+            launch_authorization = write_launch_authorization(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                validation=validation,
+                durable_binding=durable_binding,
+                route_decision=route_decision,
+            )
 
         # Launchable (platform, mode) -> adapter call. Eligibility is decided by
         # the Executor capability registry (supports_route), NOT a hard if-ladder
@@ -2306,7 +2763,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         launchers: dict[tuple[str, str], Any] = {
             ("claude", "headless"): lambda: launch_claude_headless(
-                args.task, args.lane, prompt or "", route
+                args.task, args.lane, prompt or "", route, validation, launch_authorization
             ),
             ("claude", "interactive"): lambda: launch_claude_interactive(
                 args.task, args.lane, validation
@@ -2318,6 +2775,7 @@ def main(argv: list[str] | None = None) -> int:
                 validation,
                 route,
                 reactivate_retired_relay=reactivate_retired_codex_relay,
+                launch_authorization=launch_authorization,
             ),
             ("vibe", "headless"): lambda: launch_vibe_headless(
                 args.task, args.lane, prompt or "", validation
@@ -2403,6 +2861,7 @@ def main(argv: list[str] | None = None) -> int:
                         route_decision=route_decision,
                         route_decision_receipt_path=route_decision_receipt_path,
                         durable_binding=durable_binding,
+                        launch_authorization=launch_authorization,
                     )
                 print(f"BLOCKED: {reason}", file=sys.stderr)
                 return 10
@@ -2425,6 +2884,7 @@ def main(argv: list[str] | None = None) -> int:
                 route_decision_receipt_path=route_decision_receipt_path,
                 durable_binding=durable_binding,
                 dispatch_launch=dispatch_launch,
+                launch_authorization=launch_authorization,
             )
         return rc
 

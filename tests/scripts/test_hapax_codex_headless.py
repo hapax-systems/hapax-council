@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -12,10 +14,65 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
 
 
+def _isolated_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for var in (
+        "HAPAX_DISPATCH_HOST",
+        "HAPAX_DISPATCH_HOST_FALLBACK",
+        "HAPAX_SESSION_ID",
+        "CODEX_THREAD_NAME",
+        "HAPAX_AGENT_ROLE",
+        "HAPAX_AGENT_NAME",
+        "CODEX_ROLE",
+        "HAPAX_WORKTREE_ROLE",
+        "HAPAX_METHODOLOGY_DISPATCH_TASK",
+    ):
+        env.pop(var, None)
+    return env
+
+
 def _write_executable(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
     path.chmod(0o755)
+
+
+def _set_launch_auth(
+    env: dict[str, str],
+    tmp_path: Path,
+    workdir: Path,
+    *,
+    token: str = "test-dispatch-token",
+    task_id: str = "task-x",
+    lane: str = "cx-amber",
+    platform: str = "codex",
+) -> Path:
+    home = Path(env["HOME"])
+    secret_file = home / ".cache" / "hapax" / "orchestration" / "methodology-dispatch-launch-auth.key"
+    secret_file.parent.mkdir(parents=True, exist_ok=True)
+    secret_file.write_text("test-dispatch-secret\n", encoding="utf-8")
+    auth = tmp_path / f"{platform}-launch-auth-{lane}.json"
+    payload = {
+        "schema_version": 1,
+        "event": "methodology_dispatch_launch_authorization",
+        "nonce": token,
+        "task_id": task_id,
+        "lane": lane,
+        "platform": platform,
+        "mode": "headless",
+        "worktree": str(workdir),
+        "external": True,
+        "receipt_required": True,
+        "durable_mq_dispatch_bound": True,
+        "route_decision_action": "launch",
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    payload["signature"] = hmac.new(
+        b"test-dispatch-secret", canonical, hashlib.sha256
+    ).hexdigest()
+    auth.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    env["HAPAX_METHODOLOGY_DISPATCH_LAUNCH_AUTH"] = str(auth)
+    return auth
 
 
 def _write_classifying_ssh(
@@ -169,12 +226,13 @@ exit 0
 """,
     )
 
-    env = os.environ.copy()
+    env = _isolated_env()
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    _set_launch_auth(env, tmp_path, workdir)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
@@ -249,7 +307,9 @@ exit 0
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    _set_launch_auth(env, tmp_path, workdir)
     env["HAPAX_DISPATCH_HOST"] = "appendix"
+    _set_launch_auth(env, tmp_path, workdir)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -306,6 +366,7 @@ exit 0
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
     env["HAPAX_DISPATCH_HOST"] = "192.168.68.50"
+    _set_launch_auth(env, tmp_path, workdir)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -351,7 +412,7 @@ exit 0
 """,
     )
 
-    env = os.environ.copy()
+    env = _isolated_env()
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(primary)
@@ -401,7 +462,7 @@ exit 99
 """,
     )
 
-    env = os.environ.copy()
+    env = _isolated_env()
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(primary)
@@ -449,6 +510,7 @@ exit 99
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+    _set_launch_auth(env, tmp_path, workdir)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -487,6 +549,7 @@ def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    _set_launch_auth(env, tmp_path, workdir)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
     result = subprocess.run(
@@ -960,6 +1023,7 @@ exit 0
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    _set_launch_auth(env, tmp_path, workdir)
     env["HAPAX_SESSION_ID"] = sid
 
     result = subprocess.run(
@@ -972,6 +1036,273 @@ exit 0
 
     assert result.returncode == 0, result.stderr
     assert args_file.exists()
+
+
+def test_codex_headless_external_workdir_rejects_injected_lifecycle_claim_even_with_spoofed_binding(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    (home / ".cache" / "hapax").mkdir(parents=True)
+    workdir = tmp_path / "external-repo"
+    workdir.mkdir()
+    council = tmp_path / "council"
+    claim_marker = tmp_path / "claim-called.txt"
+    _write_executable(
+        council / "scripts" / "cc-claim",
+        f"""printf '%s\\n' "$PWD $1" > {claim_marker}
+mkdir -p "$HOME/.cache/hapax"
+printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-$HAPAX_AGENT_NAME"
+exit 0
+""",
+    )
+    _write_executable(council / "scripts" / "cc-close", "exit 0\n")
+    _write_executable(council / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(bin_dir / "codex", f": > {codex_called}\nexit 0\n")
+
+    env = _isolated_env()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = "task-x"
+    env["HAPAX_METHODOLOGY_DISPATCH_BOUND_WORKTREE"] = str(workdir)
+    env["HAPAX_CC_CLAIM_SCRIPT"] = str(council / "scripts" / "cc-claim")
+    env["HAPAX_CC_CLOSE_SCRIPT"] = str(council / "scripts" / "cc-close")
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 14
+    assert "injected lifecycle scripts cannot be used for wrapper-side claims" in result.stderr
+    assert "next action: launch external worktrees through hapax-methodology-dispatch" in result.stderr
+    assert not claim_marker.exists()
+    assert not codex_called.exists()
+
+
+def test_codex_headless_direct_external_workdir_requires_injected_lifecycle_scripts(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    (home / ".cache" / "hapax").mkdir(parents=True)
+    workdir = tmp_path / "external-repo"
+    workdir.mkdir()
+    council = tmp_path / "council"
+    _write_executable(council / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(bin_dir / "codex", f": > {codex_called}\nexit 0\n")
+
+    env = _isolated_env()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 14
+    assert f"missing cc-claim at {workdir / 'scripts' / 'cc-claim'}" in result.stderr
+    assert "next action: launch external worktrees through hapax-methodology-dispatch" in result.stderr
+    assert not codex_called.exists()
+
+
+def test_codex_headless_direct_external_workdir_rejects_unbound_injected_scripts(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    (home / ".cache" / "hapax").mkdir(parents=True)
+    workdir = tmp_path / "external-repo"
+    workdir.mkdir()
+    council = tmp_path / "council"
+    _write_executable(council / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
+    _write_executable(council / "scripts" / "cc-claim", "exit 0\n")
+    _write_executable(council / "scripts" / "cc-close", "exit 0\n")
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(bin_dir / "codex", f": > {codex_called}\nexit 0\n")
+
+    env = _isolated_env()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_CC_CLAIM_SCRIPT"] = str(council / "scripts" / "cc-claim")
+    env["HAPAX_CC_CLOSE_SCRIPT"] = str(council / "scripts" / "cc-close")
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 14
+    assert "injected lifecycle scripts cannot be used for wrapper-side claims" in result.stderr
+    assert "next action: launch external worktrees through hapax-methodology-dispatch" in result.stderr
+    assert not codex_called.exists()
+
+
+def test_codex_headless_direct_external_no_claim_requires_launch_authorization(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    (home / ".cache" / "hapax").mkdir(parents=True)
+    workdir = tmp_path / "external-repo"
+    workdir.mkdir()
+    council = tmp_path / "council"
+    _write_executable(council / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(bin_dir / "codex", f": > {codex_called}\nexit 0\n")
+
+    env = _isolated_env()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 14
+    assert "external --no-claim workdir requires methodology dispatch launch authorization" in result.stderr
+    assert "next action: launch external worktrees through hapax-methodology-dispatch" in result.stderr
+    assert not codex_called.exists()
+
+
+def test_codex_headless_existing_claim_external_no_claim_requires_launch_authorization(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
+    workdir = tmp_path / "external-repo"
+    workdir.mkdir()
+    council = tmp_path / "council"
+    _write_executable(council / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(bin_dir / "codex", f": > {codex_called}\nexit 0\n")
+
+    env = _isolated_env()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 14
+    assert "external --no-claim workdir requires methodology dispatch launch authorization" in result.stderr
+    assert not codex_called.exists()
+
+
+def test_codex_headless_external_no_claim_accepts_dispatch_launch_authorization(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    (home / ".cache" / "hapax").mkdir(parents=True)
+    workdir = tmp_path / "external-repo"
+    workdir.mkdir()
+    council = tmp_path / "council"
+    _write_executable(council / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(bin_dir / "codex", f": > {codex_called}\nexit 0\n")
+
+    env = _isolated_env()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    _set_launch_auth(env, tmp_path, workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert codex_called.exists()
+
+
+def test_codex_headless_external_no_claim_rejects_forged_launch_authorization(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    (home / ".cache" / "hapax").mkdir(parents=True)
+    workdir = tmp_path / "external-repo"
+    workdir.mkdir()
+    council = tmp_path / "council"
+    _write_executable(council / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(bin_dir / "codex", f": > {codex_called}\nexit 0\n")
+
+    env = _isolated_env()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    auth = _set_launch_auth(env, tmp_path, workdir)
+    payload = json.loads(auth.read_text(encoding="utf-8"))
+    payload["signature"] = "0" * 64
+    auth.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 14
+    assert "invalid methodology dispatch launch authorization" in result.stderr
+    assert not codex_called.exists()
 
 
 def test_codex_headless_blocks_retired_relay_without_force(tmp_path: Path) -> None:
@@ -1000,6 +1331,7 @@ exit 0
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    _set_launch_auth(env, tmp_path, workdir)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "cx-amber", "governed prompt"],
@@ -1042,6 +1374,7 @@ exit 0
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    _set_launch_auth(env, tmp_path, workdir)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "cx-amber", "governed prompt"],
@@ -1084,6 +1417,7 @@ exit 0
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    _set_launch_auth(env, tmp_path, workdir)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "cx-amber", "governed prompt"],
@@ -1163,6 +1497,7 @@ exit 0
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    _set_launch_auth(env, tmp_path, workdir)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -1263,6 +1598,7 @@ def test_codex_headless_cleanup_removes_owned_pid_and_retires_relay(
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
     env["HAPAX_CODEX_HEADLESS_PID_DIR"] = str(pid_dir)
+    _set_launch_auth(env, tmp_path, workdir)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "cx-amber", "governed prompt"],
@@ -1312,6 +1648,7 @@ exit 0
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
     env["HAPAX_CODEX_HEADLESS_PID_DIR"] = str(pid_dir)
+    _set_launch_auth(env, tmp_path, workdir)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "cx-amber", "governed prompt"],
