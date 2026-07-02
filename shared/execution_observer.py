@@ -128,6 +128,58 @@ def observe_claude_transcript(path: str | Path) -> ObservedExecution:
     )
 
 
+def _model_of_codex_turn(record: dict) -> str | None:
+    """The model of a Codex rollout ``turn_context`` record: ``payload.model``."""
+    if record.get("type") != "turn_context":
+        return None
+    payload = record.get("payload")
+    if isinstance(payload, dict):
+        model = payload.get("model")
+        if isinstance(model, str) and model and not model.startswith("<"):
+            return model
+    return None
+
+
+def observe_codex_rollout(path: str | Path) -> ObservedExecution:
+    """Parse a Codex session rollout (``~/.codex/sessions/.../rollout-*.jsonl``) into its
+    :class:`ObservedExecution`. Codex records the served model per turn on the
+    ``turn_context`` record's ``payload.model``. Codex has no ``model_refusal_fallback``
+    (that is Claude-specific), so drift here surfaces as >1 model in the observed set (a
+    silent model change across the session). Same fail-safe contract as the Claude observer.
+    """
+    p = Path(path)
+    models: set[str] = set()
+    turns = 0
+    malformed = 0
+
+    if not p.is_file():
+        return ObservedExecution(source_path=str(p))
+
+    with p.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except (ValueError, TypeError):
+                malformed += 1
+                continue
+            if not isinstance(record, dict):
+                continue
+            model = _model_of_codex_turn(record)
+            if model is not None:
+                models.add(model)
+                turns += 1
+
+    return ObservedExecution(
+        models=frozenset(models),
+        turn_count=turns,
+        source_path=str(p),
+        malformed_lines=malformed,
+    )
+
+
 #: The five CEI terminal states (capability-execution-invariant-spec §terminal states).
 EXECUTION_INVARIANT_SATISFIED = "execution_invariant_satisfied"
 EXECUTION_OBSERVATION_MISSING = "execution_observation_missing"

@@ -4684,9 +4684,13 @@ from shared.execution_observer import (  # noqa: E402
 from shared.execution_observer import (  # noqa: E402
     observe_claude_transcript as _observe_claude_transcript,
 )
+from shared.execution_observer import (  # noqa: E402
+    observe_codex_rollout as _observe_codex_rollout,
+)
 
 _ = (
     _observe_claude_transcript,
+    _observe_codex_rollout,
     _check_execution_invariant,
     _ExecutionInvariantVerdict,
     _ExecutionInvariantVerdict.admissible,

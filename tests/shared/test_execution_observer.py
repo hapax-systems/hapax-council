@@ -10,6 +10,7 @@ from shared.execution_observer import (
     ObservedExecution,
     check_execution_invariant,
     observe_claude_transcript,
+    observe_codex_rollout,
 )
 
 
@@ -99,6 +100,37 @@ def test_missing_file_yields_empty_observation(tmp_path: Path) -> None:
     assert obs.turn_count == 0
     assert obs.drifted is False
     assert obs.endpoint_attested is False
+
+
+def test_codex_rollout_single_model_no_drift(tmp_path: Path) -> None:
+    t = _write(
+        tmp_path / "rollout.jsonl",
+        [
+            {"type": "session_meta", "payload": {"id": "x"}},
+            {"type": "turn_context", "payload": {"model": "gpt-5.5", "effort": "xhigh"}},
+            {"type": "turn_context", "payload": {"model": "gpt-5.5", "effort": "xhigh"}},
+        ],
+    )
+    obs = observe_codex_rollout(t)
+    assert obs.models == frozenset({"gpt-5.5"})
+    assert obs.turn_count == 2
+    assert obs.drifted is False
+
+
+def test_codex_rollout_model_change_is_drift(tmp_path: Path) -> None:
+    t = _write(
+        tmp_path / "rollout.jsonl",
+        [
+            {"type": "turn_context", "payload": {"model": "gpt-5.5"}},
+            {"type": "turn_context", "payload": {"model": "gpt-5.3-codex-spark"}},
+        ],
+    )
+    obs = observe_codex_rollout(t)
+    assert obs.models == frozenset({"gpt-5.5", "gpt-5.3-codex-spark"})
+    assert obs.drifted is True
+    v = check_execution_invariant(obs, frozenset({"gpt-5.5"}))
+    assert v.status == "execution_drift_observed"
+    assert v.admissible is False
 
 
 def test_invariant_satisfied_when_observed_subset_of_sanctioned() -> None:
