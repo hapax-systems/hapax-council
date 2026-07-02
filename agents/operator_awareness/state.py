@@ -28,6 +28,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+MONEY_RAIL_RESOURCE_RECEIPT_REF_PREFIX = "money-rail-resource-receipt:"
+
 log = logging.getLogger(__name__)
 
 DEFAULT_STATE_PATH = Path(
@@ -268,6 +270,13 @@ class PaymentEvent(BaseModel):
     amount_eur: float | None = None
     sender_excerpt: str = Field(default="", max_length=80)
     external_id: str | None = None  # invoice id / zap event id / sponsorship id
+    resource_receipt_ref: str | None = Field(
+        default=None,
+        pattern=(
+            rf"^{MONEY_RAIL_RESOURCE_RECEIPT_REF_PREFIX}"
+            r"[a-z0-9][a-z0-9_-]*:[a-z0-9][a-z0-9_-]*$"
+        ),
+    )
 
 
 class MonetizationBlock(_Block):

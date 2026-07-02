@@ -13,6 +13,10 @@ from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from agents.payment_processors.resource_receipts import (
+    MoneyRailReceiptOperation,
+    resource_receipt_matches,
+)
 from shared.conversion_target_readiness import GateDimension, TargetFamilyId
 from shared.monetization_readiness_ledger import MonetizationReadinessLedger
 from shared.support_surface_registry import SupportSurfaceRegistry, public_prompt_allowed
@@ -42,6 +46,7 @@ SUPPORT_COPY_CONSUMERS: Final[tuple[SupportCopyConsumer, ...]] = (
     "public_package_surface",
     "github_readme",
 )
+MONEY_RAIL_RESOURCE_RECEIPT_REF_PREFIX: Final[str] = "money-rail-resource-receipt:"
 
 PUBLIC_TRUTH_DIMENSIONS: Final[frozenset[GateDimension]] = frozenset(
     {
@@ -132,6 +137,7 @@ class SupportCopyReadinessDecision(SupportCopyModel):
     buildable_conversion: str | None = None
     blockers: tuple[str, ...] = Field(default=())
     evidence_refs: tuple[str, ...] = Field(default=())
+    resource_receipt_refs: tuple[str, ...] = Field(default=())
     missing_gate_dimensions: tuple[GateDimension, ...] = Field(default=())
     missing_readiness_refs: tuple[str, ...] = Field(default=())
     prohibited_copy_shapes: tuple[str, ...] = PROHIBITED_SUPPORT_COPY_SHAPES
@@ -319,6 +325,30 @@ def evaluate_support_copy_readiness(
             registry=registry,
         )
 
+    receipt_refs = _resource_receipt_refs(entry.evidence_refs)
+    if not receipt_refs:
+        return _decision(
+            state="monetization-held",
+            target_family_id=target_family_id,
+            surface_id=surface_id,
+            blockers=("money_rail_resource_receipt_missing",),
+            evidence_refs=entry.evidence_refs,
+            registry=registry,
+        )
+    unverified_receipt_refs = tuple(
+        ref for ref in receipt_refs if not _payment_event_receipt_matches_ref(ref)
+    )
+    if unverified_receipt_refs:
+        return _decision(
+            state="monetization-held",
+            target_family_id=target_family_id,
+            surface_id=surface_id,
+            blockers=("money_rail_resource_receipt_unverified",),
+            evidence_refs=entry.evidence_refs,
+            resource_receipt_refs=receipt_refs,
+            registry=registry,
+        )
+
     evidence_refs = tuple(dict.fromkeys((*registry.source_refs, *entry.evidence_refs)))
     return _decision(
         state="public-safe",
@@ -326,6 +356,7 @@ def evaluate_support_copy_readiness(
         surface_id=surface_id,
         allowed_public_copy=surface.allowed_public_copy,
         evidence_refs=evidence_refs,
+        resource_receipt_refs=receipt_refs,
         registry=registry,
     )
 
@@ -341,6 +372,7 @@ def _decision(
     refusal_brief_refs: tuple[str, ...] = (),
     buildable_conversion: str | None = None,
     evidence_refs: tuple[str, ...] = (),
+    resource_receipt_refs: tuple[str, ...] = (),
     missing_gate_dimensions: tuple[GateDimension, ...] = (),
     missing_readiness_refs: tuple[str, ...] = (),
     registry: SupportSurfaceRegistry | None = None,
@@ -361,6 +393,7 @@ def _decision(
         buildable_conversion=buildable_conversion,
         blockers=blockers,
         evidence_refs=evidence_refs,
+        resource_receipt_refs=resource_receipt_refs,
         missing_gate_dimensions=missing_gate_dimensions,
         missing_readiness_refs=missing_readiness_refs,
         aggregate_receipts_public_only=(
@@ -396,4 +429,20 @@ def _consumer_state(
         licensing_negotiation_allowed=False,
         customer_service_expectation_allowed=False,
         reason_codes=reason_codes,
+    )
+
+
+def _resource_receipt_refs(refs: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(ref for ref in refs if ref.startswith(MONEY_RAIL_RESOURCE_RECEIPT_REF_PREFIX))
+
+
+def _payment_event_receipt_matches_ref(ref: str) -> bool:
+    try:
+        _prefix, rail, _receipt_id = ref.split(":", 2)
+    except ValueError:
+        return False
+    return resource_receipt_matches(
+        ref,
+        rail=rail,
+        operation=MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
     )

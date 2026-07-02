@@ -18,15 +18,28 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from agents.payment_processors.resource_receipts import (
+    MoneyRailReceiptOperation,
+    tail_resource_receipts,
+)
 from agents.publication_bus.github_sponsors_publisher import (
     CANCELLATION_REFUSAL_AXIOM,
     CANCELLATION_REFUSAL_SURFACE,
 )
+from agents.publication_bus.publisher_kit import PublisherResult
 from logos.api.app import app
 from shared._rail_idempotency import reset_idempotency_store
 from shared.github_sponsors_receive_only_rail import (
     GITHUB_SPONSORS_WEBHOOK_SECRET_ENV,
 )
+from tests.shared import test_buy_me_a_coffee_receive_only_rail as bmac_fixtures
+from tests.shared import test_ko_fi_receive_only_rail as kofi_fixtures
+from tests.shared import test_mercury_receive_only_rail as mercury_fixtures
+from tests.shared import test_modern_treasury_receive_only_rail as mt_fixtures
+from tests.shared import test_open_collective_receive_only_rail as oc_fixtures
+from tests.shared import test_patreon_receive_only_rail as patreon_fixtures
+from tests.shared import test_stripe_payment_link_receive_only_rail as stripe_fixtures
+from tests.shared import test_treasury_prime_receive_only_rail as tp_fixtures
 
 _VALID_SECRET = "github-sponsors-webhook-secret-aBcDeFgHiJkLmN"
 
@@ -96,6 +109,21 @@ def gh_sponsors_idempotency_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 
 @pytest.fixture
+def resource_receipt_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Isolate governed money-rail resource receipts from /dev/shm."""
+
+    import agents.payment_processors.resource_receipts as resource_receipts
+
+    log_path = tmp_path / "resource-receipts.jsonl"
+    monkeypatch.setattr(
+        resource_receipts,
+        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+        log_path,
+    )
+    return log_path
+
+
+@pytest.fixture
 def refusal_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Override the refusal-brief log path so cancellation rows go to the test dir.
 
@@ -112,6 +140,183 @@ def refusal_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return log_path.parent
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "rail", "publisher_name", "headers", "payload"),
+    [
+        (
+            "/api/payment-rails/open-collective",
+            "open-collective",
+            "OpenCollectivePublisher",
+            {"X-Open-Collective-Activity-Id": "oc-receipt-first"},
+            oc_fixtures._txn_payload(),
+        ),
+        (
+            "/api/payment-rails/stripe-payment-link",
+            "stripe-payment-link",
+            "StripePaymentLinkPublisher",
+            {},
+            stripe_fixtures._payment_intent_payload(),
+        ),
+        (
+            "/api/payment-rails/ko-fi",
+            "ko-fi",
+            "KoFiPublisher",
+            {},
+            kofi_fixtures._donation_payload(),
+        ),
+        (
+            "/api/payment-rails/patreon",
+            "patreon",
+            "PatreonPublisher",
+            {
+                "X-Patreon-Event": "members:create",
+                "X-Patreon-Webhook-Id": "patreon-receipt-first",
+            },
+            patreon_fixtures._members_create_payload(),
+        ),
+        (
+            "/api/payment-rails/buy-me-a-coffee",
+            "buy-me-a-coffee",
+            "BuyMeACoffeePublisher",
+            {},
+            bmac_fixtures._donation_payload(),
+        ),
+        (
+            "/api/payment-rails/mercury",
+            "mercury",
+            "MercuryPublisher",
+            {},
+            mercury_fixtures._ach_incoming_payload(),
+        ),
+        (
+            "/api/payment-rails/modern-treasury",
+            "modern-treasury",
+            "ModernTreasuryPublisher",
+            {},
+            mt_fixtures._ach_payload(),
+        ),
+        (
+            "/api/payment-rails/treasury-prime",
+            "treasury-prime",
+            "TreasuryPrimePublisher",
+            {},
+            tp_fixtures._ach_payload(),
+        ),
+    ],
+)
+async def test_all_webhook_routes_use_private_receipt_first_idempotency(
+    path: str,
+    rail: str,
+    publisher_name: str,
+    headers: dict[str, str],
+    payload: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    resource_receipt_log: Path,
+) -> None:
+    import logos.api.routes.payment_rails as mod
+
+    seen_ids: list[str] = []
+    published_events: list[object] = []
+
+    for env_name in (
+        oc_fixtures.OPEN_COLLECTIVE_WEBHOOK_SECRET_ENV,
+        stripe_fixtures.STRIPE_PAYMENT_LINK_WEBHOOK_SECRET_ENV,
+        patreon_fixtures.PATREON_WEBHOOK_SECRET_ENV,
+        bmac_fixtures.BUY_ME_A_COFFEE_WEBHOOK_SECRET_ENV,
+        mercury_fixtures.MERCURY_WEBHOOK_SECRET_ENV,
+        mt_fixtures.MODERN_TREASURY_WEBHOOK_SECRET_ENV,
+        tp_fixtures.TREASURY_PRIME_WEBHOOK_SECRET_ENV,
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv(
+        kofi_fixtures.KO_FI_WEBHOOK_VERIFICATION_TOKEN_ENV,
+        kofi_fixtures._VALID_TOKEN,
+    )
+    monkeypatch.setenv("HAPAX_HOME", str(tmp_path))
+
+    class _Store:
+        def record_or_skip(self, event_id: str, *, first_seen_at=None) -> bool:
+            seen_ids.append(event_id)
+            return True
+
+        def has_seen(self, _event_id: str) -> bool:
+            return False
+
+        def remove(self, _event_id: str) -> None:
+            return None
+
+    class _Publisher:
+        def publish_event(self, event):
+            published_events.append(event)
+            return PublisherResult(ok=True, detail="test-published")
+
+    monkeypatch.setattr(mod, "_get_idempotency_store", lambda _rail: _Store())
+    monkeypatch.setattr(mod, publisher_name, _Publisher)
+
+    raw = json.dumps(payload).encode("utf-8")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            path,
+            content=raw,
+            headers={"Content-Type": "application/json", **headers},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "received"
+    assert "resource_receipt_ref" not in body
+    assert seen_ids
+    assert published_events
+
+    receipts = tail_resource_receipts(log_path=resource_receipt_log)
+    assert len(receipts) == 1
+    receipt = receipts[0]
+    assert receipt.rail == rail
+    assert receipt.operation is MoneyRailReceiptOperation.INGRESS
+    assert receipt.route_path == path
+    assert receipt.raw_payload_sha256 == hashlib.sha256(raw).hexdigest()
+    assert receipt.downstream_action == "rail_idempotency.record_or_skip"
+    assert receipt.spend_authority_granted is False
+    assert receipt.public_projection_allowed is False
+
+
+def test_receipt_first_store_refuses_seen_state_mutation_when_receipt_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import logos.api.routes.payment_rails as mod
+
+    calls: list[str] = []
+
+    class _Store:
+        def record_or_skip(self, _event_id: str, *, first_seen_at=None) -> bool:
+            calls.append("record_or_skip")
+            return True
+
+        def has_seen(self, _event_id: str) -> bool:
+            return False
+
+    def _missing_receipt(**_kwargs) -> str:
+        calls.append("receipt")
+        raise RuntimeError("missing governed receipt")
+
+    monkeypatch.setattr(mod, "require_ingress_resource_receipt", _missing_receipt)
+    store = mod._ReceiptFirstIdempotencyStore(  # noqa: SLF001
+        _Store(),
+        rail="liberapay",
+        route_path="/api/payment-rails/liberapay",
+        raw_payload_sha256="a" * 64,
+        event_kind="payin_succeeded",
+    )
+
+    with pytest.raises(RuntimeError, match="missing governed receipt"):
+        store.record_or_skip("lp-receipt-first")
+
+    assert calls == ["receipt"]
+
+
 # ---------------------------------------------------------------------------
 # Happy paths
 # ---------------------------------------------------------------------------
@@ -122,6 +327,7 @@ async def test_signed_created_event_returns_200_and_writes_manifest(
     output_dir: Path,
     secret_env: str,
     gh_sponsors_idempotency_isolated: Path,
+    resource_receipt_log: Path,
 ) -> None:
     payload = _sponsorship_payload(action="created", sponsor_login="alice")
     raw = json.dumps(payload).encode("utf-8")
@@ -143,6 +349,7 @@ async def test_signed_created_event_returns_200_and_writes_manifest(
     assert body["status"] == "received"
     assert body["event_kind"] == "created"
     assert "raw_payload_sha256" in body
+    assert "resource_receipt_ref" not in body
 
     files = list(output_dir.glob("event-created-*.md"))
     assert len(files) == 1, f"expected 1 manifest file, got {files}"
@@ -150,6 +357,12 @@ async def test_signed_created_event_returns_200_and_writes_manifest(
     assert "GitHub Sponsors event — created" in contents
     assert "alice" in contents
     assert "2500" in contents  # amount_usd_cents (was "25.00" pre-cents-normalization)
+    from agents.payment_processors.resource_receipts import tail_resource_receipts
+
+    receipts = tail_resource_receipts(log_path=resource_receipt_log)
+    assert len(receipts) == 1
+    assert receipts[0].rail == "github-sponsors"
+    assert receipts[0].spend_authority_granted is False
 
 
 @pytest.mark.asyncio
@@ -440,6 +653,7 @@ async def test_github_sponsors_route_replays_same_delivery_id_returns_duplicate(
     output_dir: Path,
     secret_env: str,
     gh_sponsors_idempotency_isolated: Path,
+    resource_receipt_log: Path,
 ) -> None:
     payload = _sponsorship_payload(action="created", sponsor_login="alice")
     raw = json.dumps(payload).encode("utf-8")
@@ -459,6 +673,59 @@ async def test_github_sponsors_route_replays_same_delivery_id_returns_duplicate(
     body = second.json()
     assert body["status"] == "duplicate"
     assert body["delivery_id"] == "gh-replay-001"
+    assert "resource_receipt_ref" not in first.json()
+    assert "resource_receipt_ref" not in body
+    files = list(output_dir.glob("event-created-*.md"))
+    assert len(files) == 1
+    from agents.payment_processors.resource_receipts import tail_resource_receipts
+
+    assert len(tail_resource_receipts(log_path=resource_receipt_log)) == 1
+
+
+@pytest.mark.asyncio
+async def test_github_sponsors_resource_receipt_missing_blocks_publish(
+    output_dir: Path,
+    secret_env: str,
+    gh_sponsors_idempotency_isolated: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agents.payment_processors.resource_receipts as resource_receipts
+
+    allow_receipts = {"enabled": False}
+    real_append = resource_receipts.append_resource_receipt
+
+    def _missing_receipt(*_args, **_kwargs) -> bool:
+        if not allow_receipts["enabled"]:
+            return False
+        return real_append(*_args, **_kwargs)
+
+    monkeypatch.setattr(resource_receipts, "append_resource_receipt", _missing_receipt)
+
+    payload = _sponsorship_payload(action="created", sponsor_login="alice")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = _sign(raw)
+    headers = {
+        "X-Hub-Signature-256": sig,
+        "X-GitHub-Delivery": "gh-delivery-missing-receipt",
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/github-sponsors",
+            content=raw,
+            headers=headers,
+        )
+        allow_receipts["enabled"] = True
+        retry = await client.post(
+            "/api/payment-rails/github-sponsors",
+            content=raw,
+            headers=headers,
+        )
+
+    assert response.status_code == 500
+    assert "resource receipt" in response.json()["detail"]
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["status"] == "received"
     files = list(output_dir.glob("event-created-*.md"))
     assert len(files) == 1
 
@@ -585,6 +852,7 @@ async def test_liberapay_signed_payin_succeeded_writes_manifest(
     liberapay_output_dir: Path,
     liberapay_secret_env: str,
     liberapay_idempotency_isolated: Path,
+    resource_receipt_log: Path,
 ) -> None:
     payload = _liberapay_payload(event="payin_succeeded")
     raw = json.dumps(payload).encode("utf-8")
@@ -604,11 +872,18 @@ async def test_liberapay_signed_payin_succeeded_writes_manifest(
     body = response.json()
     assert body["status"] == "received"
     assert body["event_kind"] == "payin_succeeded"
+    assert "resource_receipt_ref" not in body
     files = list(liberapay_output_dir.glob("event-payin_succeeded-*.md"))
     assert len(files) == 1, f"expected 1 manifest, got {files}"
     contents = files[0].read_text()
     assert "alice-donor" in contents
     assert "Liberapay donation event" in contents
+    from agents.payment_processors.resource_receipts import tail_resource_receipts
+
+    receipts = tail_resource_receipts(log_path=resource_receipt_log)
+    assert len(receipts) == 1
+    assert receipts[0].rail == "liberapay"
+    assert receipts[0].spend_authority_granted is False
 
 
 @pytest.mark.asyncio
@@ -764,6 +1039,7 @@ async def test_liberapay_route_replays_same_delivery_id_returns_duplicate(
     liberapay_output_dir: Path,
     liberapay_secret_env: str,
     liberapay_idempotency_isolated: Path,
+    resource_receipt_log: Path,
 ) -> None:
     """Two POSTs with same X-Liberapay-Delivery-Id → 2nd is duplicate."""
     payload = _liberapay_payload(event="payin_succeeded")
@@ -783,6 +1059,61 @@ async def test_liberapay_route_replays_same_delivery_id_returns_duplicate(
     body = second.json()
     assert body["status"] == "duplicate"
     assert body["delivery_id"] == "lp-replay-001"
+    assert "resource_receipt_ref" not in first.json()
+    assert "resource_receipt_ref" not in body
+    files = list(liberapay_output_dir.glob("event-payin_succeeded-*.md"))
+    assert len(files) == 1
+    from agents.payment_processors.resource_receipts import tail_resource_receipts
+
+    assert len(tail_resource_receipts(log_path=resource_receipt_log)) == 1
+
+
+@pytest.mark.asyncio
+async def test_liberapay_resource_receipt_missing_blocks_publish(
+    liberapay_output_dir: Path,
+    liberapay_secret_env: str,
+    liberapay_idempotency_isolated: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agents.payment_processors.resource_receipts as resource_receipts
+
+    allow_receipts = {"enabled": False}
+    real_append = resource_receipts.append_resource_receipt
+
+    def _missing_receipt(*_args, **_kwargs) -> bool:
+        if not allow_receipts["enabled"]:
+            return False
+        return real_append(*_args, **_kwargs)
+
+    monkeypatch.setattr(resource_receipts, "append_resource_receipt", _missing_receipt)
+
+    payload = _liberapay_payload(event="payin_succeeded")
+    raw = json.dumps(payload).encode("utf-8")
+    sig = hmac.new(liberapay_secret_env.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    headers = {
+        "X-Liberapay-Signature": sig,
+        "X-Liberapay-Delivery-Id": "lp-delivery-missing-receipt",
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw,
+            headers=headers,
+        )
+        allow_receipts["enabled"] = True
+        retry = await client.post(
+            "/api/payment-rails/liberapay",
+            content=raw,
+            headers=headers,
+        )
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert "resource receipt" in detail
+    assert "HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH" in detail
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["status"] == "received"
     files = list(liberapay_output_dir.glob("event-payin_succeeded-*.md"))
     assert len(files) == 1
 

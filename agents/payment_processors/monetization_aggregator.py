@@ -37,11 +37,18 @@ from agents.operator_awareness.state import (
 )
 from agents.payment_processors.event_log import (
     DEFAULT_PAYMENT_LOG_PATH,
+    event_window_sha256,
     tail_events,
 )
 from agents.payment_processors.liberapay_receiver import LiberapayReceiver
 from agents.payment_processors.lightning_receiver import LightningReceiver
 from agents.payment_processors.nostr_zap_listener import NostrZapListener
+from agents.payment_processors.resource_receipts import (
+    commit_prepared_resource_receipt,
+    prepare_awareness_write_resource_receipt,
+    resource_receipt_exists,
+    retract_prepared_resource_receipt,
+)
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +66,14 @@ def build_monetization_block(
     re-reads don't double-count. Empty log → default block (zeros).
     """
     events = tail_events(log_path=log_path)
+    return build_monetization_block_from_events(events, public=public)
+
+
+def build_monetization_block_from_events(
+    events: list[PaymentEvent], *, public: bool = False
+) -> MonetizationBlock:
+    """Build the awareness block from an already-captured event window."""
+
     seen_ids: set[tuple[str, str]] = set()
     counts: dict[str, int] = defaultdict(int)
     total_sats = 0
@@ -153,14 +168,32 @@ class MonetizationAggregator:
         Returns True iff the write succeeded. Called periodically by
         ``run_aggregate_loop``; can also be invoked from tests.
         """
-        block = build_monetization_block(log_path=self._log_path)
+        events = tail_events(log_path=self._log_path)
+        _receipt_ref, receipt = prepare_awareness_write_resource_receipt(
+            state_path=self._state_path,
+            source_log_path=self._log_path,
+            receipt_count=len(events),
+            source_window_sha256=event_window_sha256(events),
+        )
+        receipt_preexisting = resource_receipt_exists(_receipt_ref)
+        if commit_prepared_resource_receipt(receipt) is None:
+            log.warning(
+                "monetization awareness write blocked: resource receipt missing; "
+                "check HAPAX_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH, /dev/shm availability, "
+                "and receipt log permissions"
+            )
+            return False
+        block = build_monetization_block_from_events(events)
         from datetime import UTC, datetime
 
         state = AwarenessState(
             timestamp=datetime.now(UTC),
             monetization=block,
         )
-        return write_state_atomic(state, self._state_path)
+        ok = write_state_atomic(state, self._state_path)
+        if not ok and not receipt_preexisting:
+            retract_prepared_resource_receipt(receipt)
+        return ok
 
     def run_aggregate_loop(self) -> None:
         """30s tick: rebuild the block + flush to /dev/shm."""
@@ -198,4 +231,5 @@ __all__ = [
     "DEFAULT_AGGREGATE_TICK_S",
     "MonetizationAggregator",
     "build_monetization_block",
+    "build_monetization_block_from_events",
 ]

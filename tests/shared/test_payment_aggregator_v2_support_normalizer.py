@@ -11,6 +11,11 @@ from datetime import UTC, datetime
 import pytest
 
 import shared.payment_aggregator_v2_support_normalizer as normalizer_module
+from agents.payment_processors import resource_receipts
+from agents.payment_processors.resource_receipts import (
+    record_ingress_resource_receipt,
+    record_payment_event_resource_receipt,
+)
 from shared.payment_aggregator_v2_support_normalizer import (
     CurrencyUnit,
     EventType,
@@ -33,6 +38,7 @@ def _receipt(
     receipt_id_suffix: str = "001",
     amount: float = 5.0,
     currency: CurrencyUnit | None = None,
+    resource_receipt_ref: str | None = "money-rail-resource-receipt:liberapay:mrr-test",
 ) -> NormalizedSupportReceipt:
     if currency is None:
         currency = {
@@ -50,6 +56,7 @@ def _receipt(
         timestamp=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
         event_type=EventType.SUPPORT_RECEIVED,
         visibility=visibility,
+        resource_receipt_ref=resource_receipt_ref,
     )
 
 
@@ -62,6 +69,15 @@ def _readiness(safe: bool = True) -> MonetizationReadinessGate:
         safe_to_monetize=safe,
         captured_at=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
         snapshot_source="test-fixture",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _verified_resource_receipt_refs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        normalizer_module,
+        "resource_receipt_matches",
+        lambda _ref, **_kwargs: True,
     )
 
 
@@ -80,6 +96,7 @@ def test_normalized_receipt_required_fields_match_acceptance():
         "timestamp",
         "event_type",
         "visibility",
+        "resource_receipt_ref",
     }
     assert expected.issubset(NormalizedSupportReceipt.model_fields.keys())
 
@@ -94,6 +111,7 @@ def test_normalized_receipt_refuses_payer_identity_fields():
         "timestamp": datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
         "event_type": EventType.SUPPORT_RECEIVED,
         "visibility": Visibility.AGGREGATE_PUBLIC,
+        "resource_receipt_ref": "money-rail-resource-receipt:liberapay:mrr-test",
     }
     for forbidden in (
         "name",
@@ -158,6 +176,7 @@ def test_public_emit_succeeds_for_approved_safe_window():
     assert decision.emission is not None
     assert decision.emission.receipt_count == 2
     assert decision.emission.total_amount == 10.0
+    assert decision.resource_receipt_refs
 
 
 def test_public_emit_refused_when_surface_not_approved():
@@ -201,6 +220,234 @@ def test_public_emit_refused_when_all_receipts_private_only():
         captured_at=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
     )
     assert decision.verdict is NormalizerVerdict.REFUSED_PRIVATE_ONLY
+
+
+def test_public_emit_refused_when_resource_receipt_missing():
+    rail = Rail.LIBERAPAY
+    decision = evaluate_public_emit(
+        rail,
+        (_receipt(rail=rail, resource_receipt_ref=None),),
+        surface_approval=_approval(rail),
+        readiness=_readiness(safe=True),
+        window_start=datetime(2026, 5, 2, 11, 0, tzinfo=UTC),
+        window_end=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+        captured_at=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+    )
+
+    assert decision.verdict is NormalizerVerdict.REFUSED_MISSING_RESOURCE_RECEIPT
+    assert decision.emission is None
+
+
+def test_public_emit_refused_when_resource_receipt_ref_unverified(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    rail = Rail.LIBERAPAY
+    monkeypatch.setattr(
+        normalizer_module,
+        "resource_receipt_matches",
+        lambda _ref, **_kwargs: False,
+    )
+
+    decision = evaluate_public_emit(
+        rail,
+        (_receipt(rail=rail, resource_receipt_ref="money-rail-resource-receipt:liberapay:fake"),),
+        surface_approval=_approval(rail),
+        readiness=_readiness(safe=True),
+        window_start=datetime(2026, 5, 2, 11, 0, tzinfo=UTC),
+        window_end=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+        captured_at=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+    )
+
+    assert decision.verdict is NormalizerVerdict.REFUSED_MISSING_RESOURCE_RECEIPT
+    assert decision.emission is None
+
+
+def test_public_emit_accepts_real_resource_receipt(tmp_path, monkeypatch):
+    receipt_log = tmp_path / "resource-receipts.jsonl"
+    monkeypatch.setattr(
+        resource_receipts,
+        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+        receipt_log,
+    )
+    monkeypatch.setattr(
+        normalizer_module,
+        "resource_receipt_matches",
+        resource_receipts.resource_receipt_matches,
+    )
+    receipt = _receipt(rail=Rail.LIBERAPAY, resource_receipt_ref=None)
+    ref = record_payment_event_resource_receipt(
+        rail="liberapay",
+        external_id=receipt.receipt_id,
+        event_kind="completed_payin",
+        downstream_action="payment_event_log.append_event",
+        log_path=receipt_log,
+    )
+    receipt = receipt.model_copy(update={"resource_receipt_ref": ref})
+
+    decision = evaluate_public_emit(
+        Rail.LIBERAPAY,
+        (receipt,),
+        surface_approval=_approval(Rail.LIBERAPAY),
+        readiness=_readiness(safe=True),
+        window_start=datetime(2026, 5, 2, 11, 0, tzinfo=UTC),
+        window_end=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+        captured_at=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+    )
+
+    assert decision.verdict is NormalizerVerdict.EMITTED
+    assert decision.resource_receipt_refs == (ref,)
+
+
+def test_public_emit_accepts_real_kofi_ingress_resource_receipt(tmp_path, monkeypatch):
+    receipt_log = tmp_path / "resource-receipts.jsonl"
+    monkeypatch.setattr(
+        resource_receipts,
+        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+        receipt_log,
+    )
+    monkeypatch.setattr(
+        normalizer_module,
+        "resource_receipt_matches",
+        resource_receipts.resource_receipt_matches,
+    )
+    receipt = _receipt(
+        rail=Rail.KOFI_GUARDED,
+        receipt_id_suffix="kofi-ingress",
+        resource_receipt_ref=None,
+    )
+    ref = record_ingress_resource_receipt(
+        rail="ko-fi",
+        route_path="/api/payment-rails/ko-fi",
+        external_id=receipt.receipt_id,
+        event_kind="Donation",
+        raw_payload_sha256="a" * 64,
+        downstream_action="rail_idempotency.record_or_skip",
+        log_path=receipt_log,
+    )
+    receipt = receipt.model_copy(update={"resource_receipt_ref": ref})
+
+    decision = evaluate_public_emit(
+        Rail.KOFI_GUARDED,
+        (receipt,),
+        surface_approval=_approval(Rail.KOFI_GUARDED),
+        readiness=_readiness(safe=True),
+        window_start=datetime(2026, 5, 2, 11, 0, tzinfo=UTC),
+        window_end=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+        captured_at=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+    )
+
+    assert decision.verdict is NormalizerVerdict.EMITTED
+    assert decision.resource_receipt_refs == (ref,)
+
+
+def test_public_emit_refuses_kofi_payment_event_operation(tmp_path, monkeypatch):
+    receipt_log = tmp_path / "resource-receipts.jsonl"
+    monkeypatch.setattr(
+        resource_receipts,
+        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+        receipt_log,
+    )
+    monkeypatch.setattr(
+        normalizer_module,
+        "resource_receipt_matches",
+        resource_receipts.resource_receipt_matches,
+    )
+    receipt = _receipt(
+        rail=Rail.KOFI_GUARDED,
+        receipt_id_suffix="wrong-op",
+        resource_receipt_ref=None,
+    )
+    ref = record_payment_event_resource_receipt(
+        rail="ko-fi",
+        external_id=receipt.receipt_id,
+        event_kind="Donation",
+        downstream_action="payment_event_log.append_event",
+        log_path=receipt_log,
+    )
+    receipt = receipt.model_copy(update={"resource_receipt_ref": ref})
+
+    decision = evaluate_public_emit(
+        Rail.KOFI_GUARDED,
+        (receipt,),
+        surface_approval=_approval(Rail.KOFI_GUARDED),
+        readiness=_readiness(safe=True),
+        window_start=datetime(2026, 5, 2, 11, 0, tzinfo=UTC),
+        window_end=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+        captured_at=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+    )
+
+    assert decision.verdict is NormalizerVerdict.REFUSED_MISSING_RESOURCE_RECEIPT
+    assert decision.emission is None
+
+
+def test_public_emit_refuses_real_resource_receipt_external_id_mismatch(tmp_path, monkeypatch):
+    receipt_log = tmp_path / "resource-receipts.jsonl"
+    monkeypatch.setattr(
+        resource_receipts,
+        "DEFAULT_MONEY_RAIL_RESOURCE_RECEIPT_LOG_PATH",
+        receipt_log,
+    )
+    monkeypatch.setattr(
+        normalizer_module,
+        "resource_receipt_matches",
+        resource_receipts.resource_receipt_matches,
+    )
+    receipt = _receipt(rail=Rail.LIBERAPAY, resource_receipt_ref=None)
+    ref = record_payment_event_resource_receipt(
+        rail="liberapay",
+        external_id="different-receipt-id",
+        event_kind="completed_payin",
+        downstream_action="payment_event_log.append_event",
+        log_path=receipt_log,
+    )
+    receipt = receipt.model_copy(update={"resource_receipt_ref": ref})
+
+    decision = evaluate_public_emit(
+        Rail.LIBERAPAY,
+        (receipt,),
+        surface_approval=_approval(Rail.LIBERAPAY),
+        readiness=_readiness(safe=True),
+        window_start=datetime(2026, 5, 2, 11, 0, tzinfo=UTC),
+        window_end=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+        captured_at=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+    )
+
+    assert decision.verdict is NormalizerVerdict.REFUSED_MISSING_RESOURCE_RECEIPT
+    assert decision.emission is None
+
+
+def test_public_emit_receipt_matcher_receives_rail_operation_and_receipt_id(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    rail = Rail.LIBERAPAY
+    calls: list[dict[str, object]] = []
+
+    def _matches(ref: str, **kwargs: object) -> bool:
+        calls.append({"ref": ref, **kwargs})
+        return True
+
+    monkeypatch.setattr(normalizer_module, "resource_receipt_matches", _matches)
+
+    receipt = _receipt(rail=rail, receipt_id_suffix="match")
+    decision = evaluate_public_emit(
+        rail,
+        (receipt,),
+        surface_approval=_approval(rail),
+        readiness=_readiness(safe=True),
+        window_start=datetime(2026, 5, 2, 11, 0, tzinfo=UTC),
+        window_end=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+        captured_at=datetime(2026, 5, 2, 13, 0, tzinfo=UTC),
+    )
+
+    assert decision.verdict is NormalizerVerdict.EMITTED
+    assert calls == [
+        {
+            "ref": receipt.resource_receipt_ref,
+            "rail": "liberapay",
+            "operation": normalizer_module.MoneyRailReceiptOperation.PAYMENT_EVENT_APPEND,
+            "external_id": receipt.receipt_id,
+        }
+    ]
 
 
 def test_public_emit_refused_when_no_receipts():

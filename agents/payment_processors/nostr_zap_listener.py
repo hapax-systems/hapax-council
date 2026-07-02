@@ -40,6 +40,13 @@ from prometheus_client import Counter
 from agents.operator_awareness.state import PaymentEvent
 from agents.payment_processors.event_log import append_event
 from agents.payment_processors.refusal_annex import emit_rail_refusal
+from agents.payment_processors.resource_receipts import (
+    commit_prepared_resource_receipt,
+    prepare_payment_event_resource_receipt,
+    record_external_api_poll_receipt,
+    resource_receipt_exists,
+    retract_prepared_resource_receipt,
+)
 from agents.payment_processors.secrets import load_nostr_npub
 from shared.chronicle import ChronicleEvent, current_otel_ids, record
 
@@ -139,6 +146,18 @@ class NostrZapListener:
         """
         backoff = DEFAULT_BACKOFF_S
         while not self._stop_evt.is_set():
+            if (
+                record_external_api_poll_receipt(
+                    rail="nostr_zap",
+                    endpoint=f"SUBSCRIBE {relay_url}",
+                    downstream_action="websockets.connect",
+                )
+                is None
+            ):
+                zap_relay_errors_total.labels(kind="resource_receipt").inc()
+                await self._backoff_sleep(backoff)
+                backoff = min(DEFAULT_BACKOFF_MAX_S, backoff * 2.0)
+                continue
             try:
                 ws = await self._open_websocket(relay_url)
             except Exception as e:  # noqa: BLE001
@@ -197,7 +216,22 @@ class NostrZapListener:
         payment_event = _zap_event_to_payment_event(event_data)
         if payment_event is None:
             return
-        append_event(payment_event)
+        receipt_ref, receipt = prepare_payment_event_resource_receipt(
+            rail="nostr_zap",
+            external_id=event_id,
+            event_kind="zap_receipt",
+            downstream_action="payment_event_log.append_event",
+        )
+        receipt_preexisting = resource_receipt_exists(receipt_ref)
+        if commit_prepared_resource_receipt(receipt) is None:
+            zap_relay_errors_total.labels(kind="resource_receipt").inc()
+            return
+        payment_event = payment_event.model_copy(update={"resource_receipt_ref": receipt_ref})
+        if not append_event(payment_event):
+            if not receipt_preexisting:
+                retract_prepared_resource_receipt(receipt)
+            zap_relay_errors_total.labels(kind="payment_event_append").inc()
+            return
         _record_chronicle(payment_event)
         zap_receipts_total.labels(rail="nostr_zap").inc()
         self._seen_event_ids.add(event_id)
