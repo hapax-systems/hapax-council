@@ -63,6 +63,21 @@ def test_refusal_fallback_is_captured_as_drift(tmp_path: Path) -> None:
     assert obs.drifted is True
 
 
+def test_synthetic_placeholder_model_is_not_counted(tmp_path: Path) -> None:
+    """Placeholder pseudo-models like "<synthetic>" (hook/tool-injected turns) are not a
+    served identity and must not register as an extra model / false-positive drift."""
+    t = _write(
+        tmp_path / "t.jsonl",
+        [
+            {"type": "assistant", "message": {"model": "claude-opus-4-8", "content": "a"}},
+            {"type": "assistant", "message": {"model": "<synthetic>", "content": "tool"}},
+        ],
+    )
+    obs = observe_claude_transcript(t)
+    assert obs.models == frozenset({"claude-opus-4-8"})
+    assert obs.turn_count == 1
+
+
 def test_malformed_lines_are_skipped_not_raised(tmp_path: Path) -> None:
     t = tmp_path / "t.jsonl"
     t.write_text(

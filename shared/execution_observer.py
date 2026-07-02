@@ -57,7 +57,9 @@ def _model_of_assistant_turn(record: dict) -> str | None:
     message = record.get("message")
     if isinstance(message, dict):
         model = message.get("model")
-        if isinstance(model, str) and model:
+        # Skip placeholder pseudo-models (e.g. "<synthetic>" on hook/tool-injected turns):
+        # they are not a served model identity and must not register as execution drift.
+        if isinstance(model, str) and model and not model.startswith("<"):
             return model
     return None
 
