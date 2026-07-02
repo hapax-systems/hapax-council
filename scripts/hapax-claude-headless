@@ -10,6 +10,7 @@ set -euo pipefail
 # Saved BEFORE arg parsing shifts "$@", so the L1 slice self-attach below can
 # re-exec with the full original argv.
 ORIG_ARGS=("$@")
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
 
 DISABLE_FILE="${HAPAX_CLAUDE_HEADLESS_DISABLE_FILE:-$HOME/.cache/hapax/disable-claude-headless}"
 ENABLE_FILE="${HAPAX_CLAUDE_HEADLESS_ENABLE_FILE:-$HOME/.cache/hapax/enable-claude-headless}"
@@ -20,6 +21,7 @@ headless_allowed() {
 
 ROLE=""
 CLAUDE_TASK="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
+CLAIM_TASK=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --task)
@@ -28,6 +30,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --task=*)
       CLAUDE_TASK="${1#--task=}"
+      shift
+      ;;
+    --no-claim)
+      CLAIM_TASK=0
       shift
       ;;
     *)
@@ -39,7 +45,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$ROLE" ]]; then
-  echo "usage: hapax-claude-headless [--task TASK_ID] <role> [governed-initial-message]" >&2
+  echo "usage: hapax-claude-headless [--task TASK_ID] [--no-claim] <role> [governed-initial-message]" >&2
   exit 1
 fi
 
@@ -97,7 +103,11 @@ export HAPAX_SESSION_ID="$SESSION_UUID"
 mkdir -p "$HOME/.cache/hapax" 2>/dev/null || true
 printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID" 2>/dev/null || true
 
+WORKDIR_EXPLICIT=0
 WORKDIR="${HAPAX_CLAUDE_HEADLESS_WORKDIR:-}"
+if [[ -n "$WORKDIR" ]]; then
+  WORKDIR_EXPLICIT=1
+fi
 if [[ -n "$WORKDIR" && "$WORKDIR" == "~/"* ]]; then
   WORKDIR="$HOME/${WORKDIR#"~/"}"
 fi
@@ -108,6 +118,79 @@ fi
 [[ -d "$WORKDIR" ]] || { echo "hapax-claude-headless: worktree not found: $WORKDIR" >&2; exit 3; }
 
 export PATH="$WORKDIR/scripts:$PATH"
+export PATH="$COUNCIL_DIR/scripts:$PATH"
+
+CLAIM_SCRIPT="${HAPAX_CC_CLAIM_SCRIPT:-}"
+CLAIM_SCRIPT_INJECTED=0
+if [[ -n "$CLAIM_SCRIPT" ]]; then
+  CLAIM_SCRIPT_INJECTED=1
+else
+  if [[ -x "$WORKDIR/scripts/cc-claim" ]]; then
+    CLAIM_SCRIPT="$WORKDIR/scripts/cc-claim"
+  else
+    CLAIM_SCRIPT="$WORKDIR/scripts/cc-claim"
+  fi
+fi
+CLOSE_SCRIPT="${HAPAX_CC_CLOSE_SCRIPT:-}"
+CLOSE_SCRIPT_INJECTED=0
+if [[ -n "$CLOSE_SCRIPT" ]]; then
+  CLOSE_SCRIPT_INJECTED=1
+else
+  if [[ -x "$WORKDIR/scripts/cc-close" ]]; then
+    CLOSE_SCRIPT="$WORKDIR/scripts/cc-close"
+  else
+    CLOSE_SCRIPT="$WORKDIR/scripts/cc-close"
+  fi
+fi
+validate_external_no_claim_authorization() {
+  local auth="${HAPAX_METHODOLOGY_DISPATCH_LAUNCH_AUTH:-}"
+  local secret_file="$HOME/.cache/hapax/orchestration/methodology-dispatch-launch-auth.key"
+  if [[ -z "$auth" || ! -r "$auth" || ! -r "$secret_file" ]]; then
+    echo "hapax-claude-headless: external --no-claim workdir requires methodology dispatch launch authorization; next action: launch external worktrees through hapax-methodology-dispatch" >&2
+    exit 14
+  fi
+  if ! python3 - "$auth" "$secret_file" "$CLAUDE_TASK" "$ROLE" "$WORKDIR" claude headless <<'PYEOF'
+import hashlib
+import hmac
+import json
+import os
+import sys
+
+auth, secret_file, task, lane, workdir, platform, mode = sys.argv[1:]
+try:
+    with open(auth, encoding="utf-8") as fh:
+        data = json.load(fh)
+    with open(secret_file, "rb") as fh:
+        secret = fh.read().strip()
+except Exception as exc:
+    print(f"cannot read launch authorization: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+signature = str(data.pop("signature", ""))
+canonical = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+expected_signature = hmac.new(secret, canonical, hashlib.sha256).hexdigest()
+checks = {
+    "schema_version": data.get("schema_version") == 1,
+    "event": data.get("event") == "methodology_dispatch_launch_authorization",
+    "signature": hmac.compare_digest(signature, expected_signature),
+    "task_id": data.get("task_id") == task,
+    "lane": data.get("lane") == lane,
+    "platform": data.get("platform") == platform,
+    "mode": data.get("mode") == mode,
+    "durable_mq_dispatch_bound": data.get("durable_mq_dispatch_bound") is True,
+    "route_decision_action": data.get("route_decision_action") == "launch",
+    "worktree": os.path.realpath(str(data.get("worktree", ""))) == os.path.realpath(workdir),
+}
+for field, ok in checks.items():
+    if not ok:
+        print(f"launch authorization mismatch: {field}", file=sys.stderr)
+        raise SystemExit(1)
+PYEOF
+  then
+    echo "hapax-claude-headless: invalid methodology dispatch launch authorization for $WORKDIR; next action: relaunch external worktrees through hapax-methodology-dispatch" >&2
+    exit 14
+  fi
+}
 
 PIPE_DIR="${HAPAX_CLAUDE_HEADLESS_PIPE_DIR:-/run/user/$(id -u)/hapax-claude}"
 LOG_DIR="$HOME/.cache/hapax/claude-headless/$ROLE"
@@ -158,7 +241,7 @@ LOG_FILE="$LOG_DIR/output.jsonl"
 [[ -p "$STDIN_PIPE" ]] && rm -f "$STDIN_PIPE"
 mkfifo "$STDIN_PIPE"
 
-RELAY_RETIRE="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}/scripts/hapax-relay-retire"
+RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 cleanup() {
   rm -f "$STDIN_PIPE" "$PID_FILE" "$LAUNCHER_PIDFILE" "$SELF_REAP_FLAG"
   "$RELAY_RETIRE" "$ROLE" --reason "clean exit (headless)" 2>/dev/null || true
@@ -239,9 +322,17 @@ if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CLAUDE_TASK" ]]; then
   echo "hapax-claude-headless: refusing launch; role '$ROLE' already claims '$CLAIMED_TASK', not dispatch task '$CLAUDE_TASK'" >&2
   exit 13
 fi
-if [[ -z "$CLAIMED_TASK" ]]; then
-  [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-claude-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
-  (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")
+if [[ "$CLAIM_TASK" -eq 0 && "$WORKDIR_EXPLICIT" -eq 1 ]]; then
+  validate_external_no_claim_authorization
+fi
+if [[ "$CLAIM_TASK" -eq 1 && ( "$CLAIM_SCRIPT_INJECTED" -eq 1 || "$CLOSE_SCRIPT_INJECTED" -eq 1 ) ]]; then
+  echo "hapax-claude-headless: injected lifecycle scripts cannot be used for wrapper-side claims; next action: launch external worktrees through hapax-methodology-dispatch, which uses --no-claim, or repair target lifecycle scripts" >&2
+  exit 14
+fi
+if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
+  [[ -x "$CLAIM_SCRIPT" ]] || { echo "hapax-claude-headless: missing cc-claim at $CLAIM_SCRIPT; next action: launch external worktrees through hapax-methodology-dispatch or repair target lifecycle scripts" >&2; exit 14; }
+  [[ -x "$CLOSE_SCRIPT" ]] || { echo "hapax-claude-headless: missing cc-close at $CLOSE_SCRIPT; next action: launch external worktrees through hapax-methodology-dispatch or repair target lifecycle scripts" >&2; exit 14; }
+  (cd "$WORKDIR" && "$CLAIM_SCRIPT" "$CLAUDE_TASK")
 fi
 export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
 
