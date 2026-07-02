@@ -444,6 +444,17 @@ assigned_to: cx-red
         )
         assert platforms == ()
 
+    def test_nested_route_metadata_malformed_mask_fails_closed(self):
+        """A scope mask declared under the NESTED route_metadata mapping
+        (route_metadata.route_constraints) that is unparseable must ALSO fail closed —
+        a top-level-key-only guard missed this form (review finding). Mask presence is
+        detected with the canonical route_metadata_payload_from_frontmatter extractor."""
+        platforms = _effective_platform_suitability(
+            ["claude", "codex"],
+            {"route_metadata_schema": 1, "route_metadata": {"route_constraints": "not-a-dict"}},
+        )
+        assert platforms == ()
+
     def test_malformed_explicit_metadata_with_a_mask_fails_closed(self):
         """A declared explicit block whose OTHER fields are unparseable (invalid quality_floor)
         is MALFORMED — even though a route_constraints mask is present, it cannot be trusted,
