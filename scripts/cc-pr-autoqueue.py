@@ -722,7 +722,12 @@ def fetch_open_prs(
                 "labels",
                 "reviewDecision",
                 "autoMergeRequest",
-                "statusCheckRollup",
+                # NOTE: statusCheckRollup is deliberately NOT requested in this bulk query.
+                # It is the check-runs-per-PR field; requesting it for the whole open-PR
+                # backlog makes the aggregate GraphQL response large enough that GitHub
+                # returns HTTP 504 (empirically deterministic at ~30 open PRs), which this
+                # function then swallowed as an empty list — silently deadlocking the whole
+                # merge pipeline. It is fetched per-PR below (a light call that always serves).
             ]
         ),
     ]
@@ -748,10 +753,59 @@ def fetch_open_prs(
     prs: list[PullRequest] = []
     for item in raw:
         if isinstance(item, dict):
+            # Attach the per-PR statusCheckRollup (kept out of the bulk query above to avoid
+            # the 504). Fail-closed: an unfetchable rollup becomes [] so the PR reads as
+            # "checks unknown / not green" and the autoqueue does not merge it wrongly.
+            item["statusCheckRollup"] = _fetch_status_check_rollup(
+                item.get("number"),
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+            )
             pr = _parse_pr(item)
             if pr is not None:
                 prs.append(pr)
     return prs
+
+
+def _fetch_status_check_rollup(
+    number: object,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> list[Any]:
+    """Fetch one PR's ``statusCheckRollup`` via a light per-PR ``gh pr view``.
+
+    Kept separate from the bulk ``gh pr list`` because requesting statusCheckRollup for the
+    whole open-PR backlog 504s. Returns ``[]`` fail-closed on any error (missing number,
+    non-zero rc, non-JSON, wrong shape) so an unknown-checks PR is never treated as green.
+    """
+    if not isinstance(number, int):
+        return []
+    proc = runner(
+        ["gh", "pr", "view", str(number), "--repo", repo, "--json", "statusCheckRollup"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        LOG.warning(
+            "per-PR statusCheckRollup fetch failed for #%s (rc=%d): %s",
+            number,
+            proc.returncode,
+            (proc.stderr or "").strip(),
+        )
+        return []
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        LOG.warning("per-PR statusCheckRollup for #%s emitted non-JSON: %s", number, exc)
+        return []
+    rollup = payload.get("statusCheckRollup") if isinstance(payload, dict) else None
+    return rollup if isinstance(rollup, list) else []
 
 
 def fetch_pr_release_evidence(

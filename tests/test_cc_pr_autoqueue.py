@@ -2220,7 +2220,14 @@ def test_governance_auto_arm_refetches_live_mitigation_evidence_before_write(
     class _StaleMitigationRunner(_FakeRunner):
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
             result = super().__call__(cmd, **kwargs)
-            if cmd[:3] == ["gh", "pr", "list"]:
+            # The INITIAL per-PR check fetch (`gh pr view N --json statusCheckRollup`) returns the
+            # PASSING checks (result was built before this mutation); the mutation then leaves
+            # open_prs FAILING so the refetch-before-write
+            # (`gh pr view N --json headRefOid,statusCheckRollup`, fetch_pr_release_evidence)
+            # observes the fresh authority-case-check failure — the stale->fresh transition this
+            # test exercises. (statusCheckRollup was moved out of the bulk `gh pr list` to avoid a
+            # 504 on the open-PR backlog, so the injection point moved from the list to this fetch.)
+            if cmd[:3] == ["gh", "pr", "view"] and cmd[-1] == "statusCheckRollup":
                 self.open_prs[0]["statusCheckRollup"] = [
                     _check("lint"),
                     _check("test"),
@@ -2378,7 +2385,14 @@ def test_already_queued_refetches_mitigation_checks_before_success_proof(
     class _StaleMitigationRunner(_FakeRunner):
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
             result = super().__call__(cmd, **kwargs)
-            if cmd[:3] == ["gh", "pr", "list"]:
+            # The INITIAL per-PR check fetch (`gh pr view N --json statusCheckRollup`) returns the
+            # PASSING checks (result was built before this mutation); the mutation then leaves
+            # open_prs FAILING so the refetch-before-write
+            # (`gh pr view N --json headRefOid,statusCheckRollup`, fetch_pr_release_evidence)
+            # observes the fresh authority-case-check failure — the stale->fresh transition this
+            # test exercises. (statusCheckRollup was moved out of the bulk `gh pr list` to avoid a
+            # 504 on the open-PR backlog, so the injection point moved from the list to this fetch.)
+            if cmd[:3] == ["gh", "pr", "view"] and cmd[-1] == "statusCheckRollup":
                 self.open_prs[0]["statusCheckRollup"] = [
                     _check("lint"),
                     _check("test"),
