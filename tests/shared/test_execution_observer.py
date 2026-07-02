@@ -64,6 +64,86 @@ def test_refusal_fallback_is_captured_as_drift(tmp_path: Path) -> None:
     assert obs.drifted is True
 
 
+def test_fallback_only_unsanctioned_source_is_not_satisfied(tmp_path: Path) -> None:
+    """The fail-open the review caught: a model_refusal_fallback from an UNSANCTIONED source
+    to a SANCTIONED target, with NO assistant turn for the source, must still register the
+    source as observed and NOT return execution_invariant_satisfied. The source ran — it
+    produced the refusal that triggered the remap."""
+    t = _write(
+        tmp_path / "t.jsonl",
+        [
+            # No assistant turn for the source model; only the fallback system record.
+            {
+                "type": "system",
+                "subtype": "model_refusal_fallback",
+                "originalModel": "claude-fable-5",
+                "fallbackModel": "claude-opus-4-8",
+                "trigger": "refusal",
+            },
+            {"type": "assistant", "message": {"model": "claude-opus-4-8", "content": "served"}},
+        ],
+    )
+    obs = observe_claude_transcript(t)
+    # from_model is in the observed set even though it has no assistant turn of its own.
+    assert obs.models == frozenset({"claude-fable-5", "claude-opus-4-8"})
+
+    # sanctioned = only the fallback TARGET. The unsanctioned source must be caught.
+    verdict = check_execution_invariant(obs, frozenset({"claude-opus-4-8"}))
+    assert verdict.status == "unsanctioned_fallback_observed"
+    assert verdict.admissible is False
+    assert "claude-fable-5" in verdict.unsanctioned_models
+    assert verdict.unsanctioned_fallbacks[0].from_model == "claude-fable-5"
+
+
+def test_assistant_turn_missing_model_key_is_not_counted(tmp_path: Path) -> None:
+    """An assistant record whose message lacks a model key registers no model and no turn."""
+    t = _write(
+        tmp_path / "t.jsonl",
+        [
+            {"type": "assistant", "message": {"content": "no model key"}},
+            {"type": "assistant", "message": {"model": None, "content": "null model"}},
+            {"type": "assistant", "message": {"model": "claude-opus-4-8", "content": "real"}},
+        ],
+    )
+    obs = observe_claude_transcript(t)
+    assert obs.models == frozenset({"claude-opus-4-8"})
+    assert obs.turn_count == 1
+
+
+def test_non_dict_toplevel_json_record_is_skipped(tmp_path: Path) -> None:
+    """A valid-JSON but non-object line (array/string) is skipped, not raised or counted."""
+    t = tmp_path / "t.jsonl"
+    t.write_text(
+        '["not", "an", "object"]\n'
+        '"a bare string"\n'
+        '{"type":"assistant","message":{"model":"claude-opus-4-8"}}\n',
+        encoding="utf-8",
+    )
+    obs = observe_claude_transcript(t)
+    assert obs.models == frozenset({"claude-opus-4-8"})
+    assert obs.turn_count == 1
+    assert obs.malformed_lines == 0
+
+
+def test_codex_rollout_missing_file_and_malformed(tmp_path: Path) -> None:
+    """The Codex observer honors the same fail-safe contract as the Claude observer."""
+    empty = observe_codex_rollout(tmp_path / "nope.jsonl")
+    assert empty.models == frozenset()
+    assert empty.turn_count == 0
+
+    t = tmp_path / "rollout.jsonl"
+    t.write_text(
+        '{"type":"turn_context","payload":{"model":"gpt-5.5"}}\n'
+        "not json at all\n"
+        '{"type":"turn_context","payload":{"model":"gpt-5.5"}}\n',
+        encoding="utf-8",
+    )
+    obs = observe_codex_rollout(t)
+    assert obs.models == frozenset({"gpt-5.5"})
+    assert obs.turn_count == 2
+    assert obs.malformed_lines == 1
+
+
 def test_synthetic_placeholder_model_is_not_counted(tmp_path: Path) -> None:
     """Placeholder pseudo-models like "<synthetic>" (hook/tool-injected turns) are not a
     served identity and must not register as an extra model / false-positive drift."""

@@ -4671,10 +4671,11 @@ _ = (
     _Stage0DurableJsonlSink.path_for_stream,
 )
 
-# CEI SLICE 4: the transcript execution observer is the observed-execution source that
-# the close-gate + the Yard Crow recomposition attestation will consume in follow-up
-# slices. Tests exercise it now; the static call paths land with the close-gate. Keep
-# the library entrypoint explicit.
+# CEI SLICE 4: the transcript execution observer + the attest_transcript close-gate CORE
+# ship in this PR (attest_transcript composes observe + verdict); its remaining consumer —
+# the cc-close wiring + the Yard Crow recomposition attestation — lands in a follow-up
+# slice. Tests exercise these now; the cc-close static call path lands next. Keep the
+# library entrypoints explicit.
 from shared.execution_attestation import (  # noqa: E402
     attest_transcript as _attest_transcript,
 )

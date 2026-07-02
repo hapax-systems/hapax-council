@@ -84,9 +84,11 @@ def observe_claude_transcript(path: str | Path) -> ObservedExecution:
     """Parse a Claude Code session transcript (JSONL) into its :class:`ObservedExecution`.
 
     Fail-safe: a missing file yields an empty observation; malformed lines are counted and
-    skipped, never raised. The result's ``models`` includes both the model of each
-    assistant turn AND the ``to_model`` of every fallback (the model that actually served
-    the retried turn).
+    skipped, never raised. The result's ``models`` includes the model of each assistant turn
+    AND BOTH ends of every fallback — the ``to_model`` that served the retry and the
+    ``from_model`` that was invoked (it produced the refusal that triggered the remap).
+    Including ``from_model`` is load-bearing: omitting it fails open when an unsanctioned
+    source remaps to a sanctioned target with no assistant turn of its own.
     """
     p = Path(path)
     models: set[str] = set()
@@ -116,7 +118,12 @@ def observe_claude_transcript(path: str | Path) -> ObservedExecution:
             fallback = _fallback_of_record(record)
             if fallback is not None:
                 fallbacks.append(fallback)
-                # The fallback target actually served a turn — it is part of observed set.
+                # BOTH ends of a fallback actually ran and are part of the observed set: the
+                # target served the retried turn, and the SOURCE was invoked with session
+                # content — it produced the refusal that triggered the remap. Omitting
+                # from_model fails open: an unsanctioned source that remapped to a sanctioned
+                # target (with no assistant turn of its own) would otherwise pass the invariant.
+                models.add(fallback.from_model)
                 models.add(fallback.to_model)
 
     return ObservedExecution(
@@ -216,8 +223,13 @@ def check_execution_invariant(
     is sanctioned, so any observed model is drift (fail-closed)."""
     sanctioned_set = frozenset(sanctioned)
     unsanctioned_models = frozenset(observed.models - sanctioned_set)
+    # A fallback is unsanctioned if EITHER end left the sanctioned set: the target served a
+    # turn, and the source was invoked (it produced the refusal). Checking only to_model
+    # fails open on an unsanctioned source that remapped to a sanctioned target.
     unsanctioned_fallbacks = tuple(
-        event for event in observed.fallback_events if event.to_model not in sanctioned_set
+        event
+        for event in observed.fallback_events
+        if event.to_model not in sanctioned_set or event.from_model not in sanctioned_set
     )
 
     if not observed.models and observed.turn_count == 0:
