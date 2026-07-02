@@ -4670,3 +4670,12 @@ _ = (
     _Stage0DurableJsonlSink,
     _Stage0DurableJsonlSink.path_for_stream,
 )
+
+# Entitlement→capability classifier: the pure core the entitlement reconciler consumes in
+# the follow-up. Tests exercise it now; the static call path lands with the reconciler.
+from shared.entitlement_capability import (
+    classify_entitlement as _classify_entitlement,  # noqa: E402
+)
+from shared.entitlement_capability import is_routable_supply as _is_routable_supply  # noqa: E402
+
+_ = (_classify_entitlement, _is_routable_supply)
