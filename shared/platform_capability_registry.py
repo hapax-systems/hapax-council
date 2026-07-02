@@ -153,6 +153,7 @@ class ModelId(StrEnum):
 
     CLAUDE_OPUS_4_8 = "claude-opus-4-8"
     CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
+    CLAUDE_SONNET_5 = "claude-sonnet-5"
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
     GPT_5_5 = "gpt-5.5"
@@ -1365,7 +1366,13 @@ _SMUGGLED_EFFORT_SUFFIXES: dict[str, Effort] = {
 _MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
     "claude-code-default": ModelId.CLAUDE_OPUS_4_8,
     "claude-opus": ModelId.CLAUDE_OPUS_4_8,
+    # NOTE (2026-07-02 registry-freshness): the bare "claude-sonnet" alias still projects to the
+    # PRIOR Sonnet (4-6). Post-Sonnet-5-release the carrier's `--model sonnet` most likely serves
+    # Sonnet 5, so any route declaring the bare "claude-sonnet" may be a CapabilityExecutionInvariant
+    # DECLARE-layer drift (observed != declared). Repointing this alias is a production-routing
+    # decision deferred to the operator; the explicit "claude-sonnet-5" identity below is additive.
     "claude-sonnet": ModelId.CLAUDE_SONNET_4_6,
+    "claude-sonnet-5": ModelId.CLAUDE_SONNET_5,
     "claude-haiku": ModelId.CLAUDE_HAIKU_4_5,
     "gpt-5.5": ModelId.GPT_5_5,
     "gpt-5.3-codex-spark": ModelId.GPT_5_3_CODEX_SPARK,
