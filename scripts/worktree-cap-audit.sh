@@ -18,6 +18,7 @@
 #   * SECONDARY  — `hapax-council--epsilon/` or any path matching
 #                  `hapax-council--epsilon*` (epsilon, permanent since 2026-04-24)
 #   * CODEX      — `hapax-council--cx-<color>/` first-class Codex worktree
+#   * AGY        — `hapax-council--agy` / `hapax-council--agy-*` canonical agy worktree
 #   * SPONTANEOUS— any other `hapax-council--<slug>/` worktree
 #   * INFRA      — any path containing `/.cache/`, `/cache/hapax/`, `/.claude/worktrees/`,
 #                  `/.codex/worktrees/`, `/source-activation/`, or `/llm-data/runtime/`
@@ -71,6 +72,7 @@ done < <(git worktree list 2>/dev/null)
 primary_count=0
 secondary_count=0
 codex_count=0
+agy_count=0
 spontaneous_count=0
 infra_count=0
 unknown_count=0
@@ -78,6 +80,7 @@ unknown_count=0
 declare -a primary_lines=()
 declare -a secondary_lines=()
 declare -a codex_lines=()
+declare -a agy_lines=()
 declare -a spontaneous_lines=()
 declare -a infra_lines=()
 declare -a unknown_lines=()
@@ -116,6 +119,10 @@ for line in "${worktrees[@]}"; do
             codex_count=$((codex_count + 1))
             codex_lines+=("$line")
             ;;
+        */hapax-council--agy|*/hapax-council--agy/*|*/hapax-council--agy-*)
+            agy_count=$((agy_count + 1))
+            agy_lines+=("$line")
+            ;;
         */hapax-council--*)
             spontaneous_count=$((spontaneous_count + 1))
             spontaneous_lines+=("$line")
@@ -127,7 +134,7 @@ for line in "${worktrees[@]}"; do
     esac
 done
 
-session_count=$((primary_count + secondary_count + codex_count + spontaneous_count + unknown_count))
+session_count=$((primary_count + secondary_count + codex_count + agy_count + spontaneous_count + unknown_count))
 # Keep in sync with session_wt_cap in hooks/scripts/no-stale-branches.sh.
 cap=20
 
@@ -136,6 +143,7 @@ if [ "$json" = true ]; then
     printf '"primary": %d, ' "$primary_count"
     printf '"secondary": %d, ' "$secondary_count"
     printf '"codex": %d, ' "$codex_count"
+    printf '"agy": %d, ' "$agy_count"
     printf '"spontaneous": %d, ' "$spontaneous_count"
     printf '"infra": %d, ' "$infra_count"
     printf '"unknown": %d, ' "$unknown_count"
@@ -162,6 +170,9 @@ elif [ "$quiet" != true ]; then
     echo ""
     echo "CODEX first-class ($codex_count):"
     for l in "${codex_lines[@]:-}"; do [ -n "$l" ] && echo "  $l"; done
+    echo ""
+    echo "AGY first-class ($agy_count):"
+    for l in "${agy_lines[@]:-}"; do [ -n "$l" ] && echo "  $l"; done
     echo ""
     echo "SPONTANEOUS ($spontaneous_count):"
     for l in "${spontaneous_lines[@]:-}"; do [ -n "$l" ] && echo "  $l"; done

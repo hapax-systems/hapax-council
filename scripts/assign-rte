@@ -152,7 +152,11 @@ def is_vibe_lane(lane: str) -> bool:
 
 
 def is_antigrav_lane(lane: str) -> bool:
-    return lane == "antigrav" or lane.startswith("antigrav-")
+    return lane in {"antigrav", "antigravity"} or lane.startswith(("antigrav-", "antigravity-"))
+
+
+def is_agy_lane(lane: str) -> bool:
+    return lane == "agy" or lane.startswith("agy-")
 
 
 def is_gemini_lane(lane: str) -> bool:
@@ -162,7 +166,7 @@ def is_gemini_lane(lane: str) -> bool:
 def is_auto_eligible(lane: str, *, originator: str) -> bool:
     if not lane or lane == originator:
         return False
-    if is_vibe_lane(lane) or is_antigrav_lane(lane) or is_gemini_lane(lane):
+    if is_vibe_lane(lane) or is_antigrav_lane(lane) or is_agy_lane(lane) or is_gemini_lane(lane):
         return False
     return lane.startswith("cx-") or lane in {
         "alpha",
@@ -183,9 +187,11 @@ def validate_explicit_rte(rte: str, *, originator: str, allow_protocol_exception
         raise ValueError("empty RTE lane")
     if rte == originator:
         raise ValueError(f"RTE cannot be the originator ({originator})")
+    if is_antigrav_lane(rte):
+        raise ValueError(f"{rte} is retired; use agy/agy-* instead")
     if is_vibe_lane(rte) and not allow_protocol_exception:
         raise ValueError(f"{rte} is a Vibe burst lane and cannot be RTE")
-    if (is_antigrav_lane(rte) or is_gemini_lane(rte)) and not allow_protocol_exception:
+    if (is_agy_lane(rte) or is_gemini_lane(rte)) and not allow_protocol_exception:
         raise ValueError(
             f"{rte} is not auto-RTE eligible; use --protocol-exception for explicit operator assignment"
         )
@@ -338,7 +344,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--protocol-exception",
         action="store_true",
-        help="allow explicit antigrav/gemini/vibe assignment when protocol/operator says so",
+        help="allow explicit agy/antigrav/gemini/vibe assignment when protocol/operator says so",
     )
     parser.add_argument(
         "--json", action="store_true", help="emit JSON for --show or assignment result"

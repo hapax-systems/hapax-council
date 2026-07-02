@@ -4,7 +4,7 @@
 # Blocks Bash commands that reference a non-approved session name.
 # Canonical lane vocabulary (mirror of hooks/scripts/agent-role.sh assert-identity):
 #
-#   greek slots: alpha beta gamma delta epsilon zeta eta theta  (+ antigrav)
+#   greek slots: alpha beta gamma delta epsilon zeta eta theta  (+ agy)
 #
 # Codex thread names use `cx-<color-word>`, Claude relay lanes `cc-<name>`, and
 # Vibe lanes `vbe-<n>` — distinct namespaces, not greek-letter-shaped, so the
@@ -90,7 +90,7 @@ done
 
 if [ -n "$violation" ]; then
     echo "BLOCKED: Unknown session name referenced: '$violation'" >&2
-    echo "  Approved lanes: greek slots alpha..theta, antigrav, cx-<color>, cc-<name>, vbe-<n>" >&2
+    echo "  Approved lanes: greek slots alpha..theta, agy/agy-*, cx-<color>, cc-<name>, vbe-<n>" >&2
     echo "  (canonical vocabulary SSOT: hooks/scripts/agent-role.sh assert-identity)" >&2
     echo "  Governance: docs/governance/ (session-naming invariant, task #152)" >&2
     echo "  Command: $(echo "$CMD" | head -c 120)" >&2

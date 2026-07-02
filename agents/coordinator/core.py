@@ -118,7 +118,7 @@ ORPHAN_CLAIM_REOFFER_GRACE_S = _positive_env_float(
 MAX_ORPHAN_CLAIM_REOFFERS_PER_TICK = 5
 COORDINATOR_DISPATCH_MODE = "headless"
 COORDINATOR_DISPATCH_PROFILE = "full"
-SUPPORTED_DISPATCH_PLATFORMS = ("claude", "codex", "gemini", "vibe", "antigrav", "api")
+SUPPORTED_DISPATCH_PLATFORMS = ("claude", "codex", "gemini", "vibe", "agy", "api")
 
 # Dispatch through the running release checkout by default. A hard-coded primary
 # clone can drift dirty and make the coordinator follow unactivated source.
@@ -1404,6 +1404,12 @@ def _lane_not_alive_next_action(role: str, platform: str, worktree: Path) -> str
 
 
 def _unsupported_dispatch_platform_next_action(platform: str) -> str:
+    if platform in {"antigrav", "antigravity"}:
+        return (
+            "do not re-enable Antigrav coordinator dispatch; Antigrav is deprecated "
+            "provenance only, so migrate current work to agy/agy-* or leave stale "
+            "Antigrav state unavailable"
+        )
     supported = ", ".join(COORDINATOR_DISPATCHABLE_PLATFORMS)
     return (
         f"route work to a supported coordinator headless platform ({supported}), "

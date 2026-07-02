@@ -113,6 +113,9 @@ runtimes:
         - matcher: "Bash"
           hooks:
             - pr-size-advisory.sh
+        - matcher: "Bash"
+          hooks:
+            - cc-task-pr-link.sh
         - matcher: "Edit|Write|MultiEdit"
           hooks:
             - ruff-autoformat.sh
@@ -122,6 +125,10 @@ runtimes:
         - matcher: "Agent"
           hooks:
             - subagent-file-persistence-check.sh
+      UserPromptSubmit:
+        - matcher: ""
+          hooks:
+            - sense-reissue-capture.sh
       SubagentStop:
         - matcher: ""
           hooks:
@@ -199,7 +206,7 @@ runtimes:
     script: scripts/hapax-antigrav
     hook_adapter: hooks/scripts/antigrav-hook-adapter.sh
     capability_markers:
-      - 'export HAPAX_AGENT_INTERFACE="antigravity"'
+      - 'export HAPAX_AGENT_INTERFACE="agy"'
       - 'export HAPAX_AGENT_NAME="$SESSION"'
       - 'export HAPAX_AGENT_SLOT="$SESSION"'
       - 'export HAPAX_AGENT_ROLE="$SESSION"'

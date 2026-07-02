@@ -13,15 +13,17 @@
 The workspace runs a cap of **twenty visible session worktrees**, matching
 the threshold enforced by `hooks/scripts/no-stale-branches.sh`. The floor is
 ~15 steady-state slots (1 primary + 4 Claude peers + 7 Codex lanes + 2 Vibe +
-1 Antigrav = 15), leaving ~5 spontaneous slots. (An earlier draft of this doc
-and the audit tool said "eight"; that transition target diverged from the
-enforced hook and is retired — the two MUST stay in sync.)
+1 agy = 15), leaving ~5 spontaneous slots. Legacy Antigrav is retired naming;
+current operator-facing runbooks must refer to `agy` / `agy-*`. (An earlier
+draft of this doc and the audit tool said "eight"; that transition target
+diverged from the enforced hook and is retired — the two MUST stay in sync.)
 
 | Interface / slot | Path convention | Permanence | Role |
 |------|-----------------|------------|------|
 | primary | `hapax-council/` (top-level) | permanent | integrator / primary workstation-resident session |
 | Claude legacy | `hapax-council--beta/`, `--delta*`, `--epsilon*`, `--main-red` | transition-permanent | existing Claude Code lanes |
 | Codex | `hapax-council--cx-<color>/` | session-owned | first-class Codex lanes |
+| agy | `hapax-council--agy/`, `hapax-council--agy-*/` | session-owned | canonical agy lanes; legacy Antigrav names are deprecated |
 | spontaneous | `hapax-council--<slug>/` | temporary | ONE short-lived non-session worktree for a specific task |
 
 **Hard rules:**
@@ -103,6 +105,8 @@ Given a worktree path, classify via:
     path == .../hapax-council--delta*  -> SECONDARY permanent (delta)
     path == .../hapax-council--epsilon* -> SECONDARY permanent (epsilon)
     path == .../hapax-council--cx-*    -> CODEX first-class
+    path == .../hapax-council--agy      -> AGY first-class
+    path == .../hapax-council--agy-*    -> AGY first-class
     path matches .../hapax-council--*  -> SPONTANEOUS
     anything else                      -> UNKNOWN (likely leak; investigate)
 

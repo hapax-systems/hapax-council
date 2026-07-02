@@ -590,17 +590,31 @@ class TestRecipientExpansion(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unknown broadcast group"):
                 expand_recipients("*:gemini", relay_dir)
 
-    def test_expand_broadcast_antigrav(self) -> None:
+    def test_expand_broadcast_agy(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             relay_dir = _make_relay_dir(
-                Path(td), ["alpha", "antigrav", "antigrav-2", "antigravity", "cx-red"]
+                Path(td),
+                ["alpha", "agy", "agy-2", "agyity-2", "antigrav", "cx-red"],
             )
-            result = expand_recipients("*:antigrav", relay_dir)
-            self.assertIn("antigrav", result)
-            self.assertIn("antigrav-2", result)
-            self.assertIn("antigravity", result)
+            result = expand_recipients("*:agy", relay_dir)
+            self.assertIn("agy", result)
+            self.assertIn("agy-2", result)
+            self.assertNotIn("agyity-2", result)
+            self.assertNotIn("antigrav", result)
             self.assertNotIn("alpha", result)
             self.assertNotIn("cx-red", result)
+
+    def test_expand_broadcast_antigrav_is_deprecated_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            relay_dir = _make_relay_dir(Path(td), ["alpha", "antigrav", "antigrav-2"])
+            with self.assertRaisesRegex(ValueError, "Deprecated broadcast group"):
+                expand_recipients("*:antigrav", relay_dir)
+
+    def test_expand_direct_antigrav_recipients_are_deprecated_refusal(self) -> None:
+        for spec in ("antigrav", "antigravity", "antigrav-2", "antigravity-2"):
+            with self.subTest(spec=spec):
+                with self.assertRaisesRegex(ValueError, "Deprecated recipient lane"):
+                    expand_recipients(spec)
 
     def test_expand_broadcast_vibe(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -615,13 +629,25 @@ class TestRecipientExpansion(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             relay_dir = _make_relay_dir(
                 Path(td),
-                ["alpha", "cx-red", "iota", "antigrav", "vbe-1", "rte", "alpha-status"],
+                [
+                    "alpha",
+                    "cx-red",
+                    "iota",
+                    "agy",
+                    "agyity-2",
+                    "antigrav",
+                    "vbe-1",
+                    "rte",
+                    "alpha-status",
+                ],
             )
             result = expand_recipients("*:workers", relay_dir)
             self.assertIn("alpha", result)
             self.assertIn("cx-red", result)
             self.assertNotIn("iota", result)
-            self.assertIn("antigrav", result)
+            self.assertIn("agy", result)
+            self.assertNotIn("agyity-2", result)
+            self.assertNotIn("antigrav", result)
             self.assertIn("vbe-1", result)
             # Coordinators-only and stray status-file stems are not worker lanes.
             self.assertNotIn("rte", result)

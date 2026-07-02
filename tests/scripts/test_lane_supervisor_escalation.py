@@ -42,7 +42,7 @@ def _base_env(tmp_path: Path, *, notify_record: Path, codex_rc: int) -> dict[str
         HAPAX_SUPERVISOR_VAULT_ROOT=str(tmp_path / "vault"),
         HAPAX_SUPERVISOR_CLAUDE_LANES="",
         HAPAX_SUPERVISOR_CODEX_LANES=LANE,
-        HAPAX_SUPERVISOR_ANTIGRAV_LANES="",
+        HAPAX_SUPERVISOR_AGY_LANES="",
         HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS="0",
         # Deterministic worktree presence: dir-check only, no git fallback.
         HAPAX_SUPERVISOR_GIT_WORKTREE_DETECT="0",
@@ -167,12 +167,12 @@ def test_present_worktree_clears_missing_streak(tmp_path: Path) -> None:
     assert len(_notify_lines(record)) == 1, "no further escalation once provisioned"
 
 
-def test_default_codex_antigrav_roster_is_empty(tmp_path: Path) -> None:
-    """The stale phantom codex/antigrav defaults are retired (default empty)."""
+def test_default_codex_agy_roster_is_empty(tmp_path: Path) -> None:
+    """The stale phantom codex/agy defaults are retired (default empty)."""
     record = tmp_path / "notify.log"
     env = _base_env(tmp_path, notify_record=record, codex_rc=4)
     del env["HAPAX_SUPERVISOR_CODEX_LANES"]
-    del env["HAPAX_SUPERVISOR_ANTIGRAV_LANES"]
+    del env["HAPAX_SUPERVISOR_AGY_LANES"]
     env["HAPAX_SUPERVISOR_ESCALATE_RESPAWN_FAILS"] = "1"
     env["HAPAX_SUPERVISOR_ESCALATE_MISSING_WORKTREE_CYCLES"] = "1"
 

@@ -88,6 +88,8 @@ class TestUnapprovedFlagForms:
         assert result.returncode == 2
         assert "BLOCKED" in result.stderr
         assert "kappa" in result.stderr.lower()
+        assert "agy/agy-*" in result.stderr
+        assert "antigrav" not in result.stderr
 
     def test_session_equals_lambda_blocked(self) -> None:
         result = _run(_bash("foo session=lambda"))

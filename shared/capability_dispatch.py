@@ -52,7 +52,7 @@ LAUNCHABLE_PATHS: frozenset[tuple[str, str]] = frozenset(
         ("claude", "interactive"),
         ("codex", "headless"),
         ("vibe", "headless"),
-        ("antigrav", "interactive"),
+        ("agy", "interactive"),
     }
 )
 
@@ -60,8 +60,8 @@ LAUNCHABLE_PATHS: frozenset[tuple[str, str]] = frozenset(
 # in the registry's required_route_ids (resolve validates this). Ergonomic aliases
 # only; the route_id (``<platform>.<mode>.<profile>``) is the authority.
 CAPABILITY_ALIASES: dict[str, str] = {
-    "agy": "antigrav.interactive.full",
-    "gemini": "antigrav.interactive.full",
+    "agy": "agy.interactive.full",
+    "gemini": "agy.interactive.full",
     "codex": "codex.headless.full",
     "codex-spark": "codex.headless.spark",
     "claude": "claude.headless.full",

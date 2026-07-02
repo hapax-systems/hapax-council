@@ -283,6 +283,58 @@ def test_restricted_assignment_requires_protocol_exception(tmp_path: Path) -> No
     assert "restricted RTE lane requires protocol_exception" in payload["reasons"][0]
 
 
+def test_agy_assignment_requires_protocol_exception(tmp_path: Path) -> None:
+    _write_tick(tmp_path / "relay", "green")
+    _write_assignment(tmp_path / "relay", rte="agy")
+    _write_planning_feed(tmp_path / "planning-feed-state.json")
+
+    result = _run(tmp_path, "--json")
+
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["assignment"]["status"] == "invalid"
+    assert "restricted RTE lane requires protocol_exception" in payload["reasons"][0]
+
+
+def test_agy_suffixed_assignment_requires_protocol_exception(tmp_path: Path) -> None:
+    _write_tick(tmp_path / "relay", "green")
+    _write_assignment(tmp_path / "relay", rte="agy-2")
+    _write_planning_feed(tmp_path / "planning-feed-state.json")
+
+    result = _run(tmp_path, "--json")
+
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["assignment"]["status"] == "invalid"
+    assert "restricted RTE lane requires protocol_exception" in payload["reasons"][0]
+
+
+def test_legacy_antigravity_assignment_requires_protocol_exception(tmp_path: Path) -> None:
+    _write_tick(tmp_path / "relay", "green")
+    _write_assignment(tmp_path / "relay", rte="antigravity")
+    _write_planning_feed(tmp_path / "planning-feed-state.json")
+
+    result = _run(tmp_path, "--json")
+
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["assignment"]["status"] == "invalid"
+    assert "retired Antigrav lane cannot be RTE" in payload["reasons"][0]
+
+
+def test_legacy_antigravity_assignment_invalid_even_with_protocol_exception(tmp_path: Path) -> None:
+    _write_tick(tmp_path / "relay", "green")
+    _write_assignment(tmp_path / "relay", rte="antigravity-2", protocol_exception=True)
+    _write_planning_feed(tmp_path / "planning-feed-state.json")
+
+    result = _run(tmp_path, "--json")
+
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["assignment"]["status"] == "invalid"
+    assert "retired Antigrav lane cannot be RTE" in payload["reasons"][0]
+
+
 def test_protocol_exception_restricted_assignment_can_be_active(tmp_path: Path) -> None:
     _write_tick(tmp_path / "relay", "green")
     _write_assignment(tmp_path / "relay", rte="gemini-1", protocol_exception=True)
@@ -363,7 +415,61 @@ def test_assign_rte_refuses_restricted_explicit_lane_without_exception(tmp_path:
     result = _run_assign_rte(tmp_path, "--rte", "antigrav", "--originator", "alpha")
 
     assert result.returncode == 4
+    assert "retired; use agy/agy-*" in result.stderr
+    assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
+
+
+def test_assign_rte_refuses_agy_without_protocol_exception(tmp_path: Path) -> None:
+    result = _run_assign_rte(tmp_path, "--rte", "agy", "--originator", "alpha")
+
+    assert result.returncode == 4
     assert "protocol-exception" in result.stderr
+    assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
+
+
+def test_assign_rte_refuses_agy_suffixed_without_protocol_exception(tmp_path: Path) -> None:
+    result = _run_assign_rte(tmp_path, "--rte", "agy-2", "--originator", "alpha")
+
+    assert result.returncode == 4
+    assert "protocol-exception" in result.stderr
+    assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
+
+
+def test_assign_rte_refuses_legacy_antigravity_without_protocol_exception(tmp_path: Path) -> None:
+    result = _run_assign_rte(tmp_path, "--rte", "antigravity-2", "--originator", "alpha")
+
+    assert result.returncode == 4
+    assert "retired; use agy/agy-*" in result.stderr
+    assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
+
+
+def test_assign_rte_refuses_legacy_antigravity_with_protocol_exception(tmp_path: Path) -> None:
+    result = _run_assign_rte(
+        tmp_path,
+        "--rte",
+        "antigravity-2",
+        "--originator",
+        "alpha",
+        "--protocol-exception",
+    )
+
+    assert result.returncode == 4
+    assert "retired; use agy/agy-*" in result.stderr
+    assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
+
+
+def test_assign_rte_refuses_legacy_antigrav_with_protocol_exception(tmp_path: Path) -> None:
+    result = _run_assign_rte(
+        tmp_path,
+        "--rte",
+        "antigrav",
+        "--originator",
+        "alpha",
+        "--protocol-exception",
+    )
+
+    assert result.returncode == 4
+    assert "retired; use agy/agy-*" in result.stderr
     assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
 
 

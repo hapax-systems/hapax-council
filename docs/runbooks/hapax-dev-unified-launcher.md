@@ -8,7 +8,7 @@ tmux`, identity export):
 ```bash
 hapax-dev claude      # visible claude session, auto non-conflicting identity
 hapax-dev codex       # visible codex session
-hapax-dev agy         # visible agy (Antigravity CLI) session
+hapax-dev agy         # visible agy CLI session
 ```
 
 …and all the right things happen: a **fresh, unique `HAPAX_SESSION_ID`** plus a
@@ -19,9 +19,13 @@ parallel stream (e.g. audio) that never collides with the headless fleet.
 
 It does **not** reimplement launch logic. Identity export, governance wiring,
 the tmux spawn, and the runtime exec all stay in `hapax-claude` /
-`hapax-codex` / `hapax-antigrav`. `hapax-dev` only (a) picks a free identity,
+`hapax-codex` / `hapax-agy`. `hapax-dev` only (a) picks a free identity,
 (b) refuses collisions by construction, (c) guarantees a fresh session id, and
 (d) handles visibility (attach / window / detach).
+
+`hapax-agy` is currently the canonical entrypoint shim over the legacy
+`hapax-antigrav` implementation. That implementation filename is retained only
+until `cc-task-agy-wrapper-legacy-antigrav-surface-excision-20260630` lands.
 
 ## Identities (interactive pools, distinct from the supervised fleet)
 
@@ -29,7 +33,23 @@ the tmux spawn, and the runtime exec all stay in `hapax-claude` /
 |----------|---------|------------------|--------------|
 | `claude` | `hapax-claude` | `dev`, `dev2`, `dev3`, … | `hapax-claude-<name>` |
 | `codex`  | `hapax-codex`  | `cx-blue`, `cx-green`, `cx-cyan`, … | `hapax-codex-<name>` |
-| `agy` (alias `antigrav`) | `hapax-antigrav` | `antigrav`, `antigrav-2`, … | `hapax-antigrav-<name>` |
+| `agy` | `hapax-agy` | `agy`, `agy-2`, … | `hapax-agy-<name>` |
+
+`antigrav` is deprecated. `hapax-dev antigrav` refuses with a migration message; use
+`hapax-dev agy` or an explicit `agy-*` identity.
+
+Recheck:
+
+```bash
+HAPAX_DEV_DRY_RUN=1 scripts/hapax-dev agy --dry-run
+HAPAX_DEV_DRY_RUN=1 HAPAX_DEV_FAKE_LIVE_TMUX=hapax-agy-agy scripts/hapax-dev attach agy
+HAPAX_DEV_DRY_RUN=1 scripts/hapax-dev antigrav --dry-run
+```
+
+The first command must resolve an `agy` / `agy-*` identity through `hapax-agy`;
+the attach command must use exact tmux targeting (`-t =hapax-agy-agy`); the
+deprecated-platform command must exit non-zero with
+`deprecated platform 'antigrav'; use 'agy'`.
 
 - **Why a `dev` pool for claude?** The greek roles `alpha..theta` are the
   *supervised headless reform fleet* — `hapax-lane-supervisor` auto-respawns them

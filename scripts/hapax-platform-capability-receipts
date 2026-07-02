@@ -40,21 +40,21 @@ from shared.platform_capability_registry import (  # noqa: E402
 )
 
 BINARY_BY_PLATFORM = {
-    "antigrav": "agy",
+    "agy": "agy",
     "api": "python3",
     "claude": "claude",
     "codex": "codex",
     "vibe": "vibe",
 }
 VERSION_ARGS_BY_PLATFORM = {
-    "antigrav": ["--version"],
+    "agy": ["--version"],
     "api": ["--version"],
     "claude": ["--version"],
     "codex": ["--version"],
     "vibe": ["--version"],
 }
 CONFIG_REFS_BY_PLATFORM = {
-    "antigrav": [
+    "agy": [
         "~/.cache/hapax/relay/onboarding-antigrav.md",
         "~/.gemini/antigravity-cli/settings.json",
         "~/.gemini/antigravity/global_workflows",
@@ -142,9 +142,9 @@ def sha256_file(path: Path) -> str | None:
 def candidate_binaries(platform: str) -> list[str]:
     override = os.environ.get(f"HAPAX_{platform.upper()}_BIN", "").strip()
     candidates = [BINARY_BY_PLATFORM[platform]]
-    if platform == "antigrav":
+    if platform == "agy":
         candidates.extend(["/usr/bin/agy"])
-    if override and (platform != "antigrav" or Path(override).name == "agy"):
+    if override and Path(override).name == "agy":
         candidates.insert(0, override)
     return list(dict.fromkeys(candidates))
 
@@ -285,7 +285,7 @@ def build_receipt(
     resource_status = EvidenceStatus.OBSERVED if wrapper.exists else EvidenceStatus.MISSING
     resource_refs = [f"local:{wrapper.path}:exists:{str(wrapper.exists).lower()}"]
     quota_reason = (
-        "quota_telemetry_unknown" if platform == "antigrav" else "account_live_quota_receipt_absent"
+        "quota_telemetry_unknown" if platform == "agy" else "account_live_quota_receipt_absent"
     )
     quota = surface_evidence(
         status=EvidenceStatus.UNOBSERVABLE,

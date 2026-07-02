@@ -2885,28 +2885,22 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert "claude/interactive/full" in result.stdout
     assert "claude/headless/sonnet" in result.stdout
     assert "gemini/" not in result.stdout
-    assert "antigrav/interactive/full" in result.stdout
+    assert "agy/interactive/full" in result.stdout
+    assert "antigrav/interactive/full" not in result.stdout
     assert "api/headless/api_frontier" in result.stdout
     assert "api/headless/provider_gateway" in result.stdout
 
 
-def test_antigrav_lane_worktree_tracks_requested_lane(monkeypatch, tmp_path: Path) -> None:
+def test_agy_lane_worktree_tracks_requested_lane(monkeypatch, tmp_path: Path) -> None:
     dispatcher = _dispatcher_module()
     monkeypatch.delenv("HAPAX_DISPATCH_WORKTREE", raising=False)
     monkeypatch.setenv("HAPAX_DISPATCH_PROJECT_ROOT", str(tmp_path))
 
-    assert dispatcher.lane_worktree("antigrav", "antigrav") == (
-        tmp_path / "hapax-council--antigrav"
-    )
-    assert dispatcher.lane_worktree("antigrav-5", "antigrav") == (
-        tmp_path / "hapax-council--antigrav-5"
-    )
-    assert dispatcher.lane_worktree("antigravity", "antigrav") == (
-        tmp_path / "hapax-council--antigrav"
-    )
+    assert dispatcher.lane_worktree("agy", "agy") == (tmp_path / "hapax-council--agy")
+    assert dispatcher.lane_worktree("agy-5", "agy") == (tmp_path / "hapax-council--agy-5")
 
 
-def test_antigrav_launch_passes_governed_dispatch_inflection(tmp_path: Path) -> None:
+def test_agy_platform_requires_agy_lane_family(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
     _task(
@@ -2918,8 +2912,38 @@ def test_antigrav_launch_passes_governed_dispatch_inflection(tmp_path: Path) -> 
         parent_spec: {spec}
         """,
     )
-    launcher_args = tmp_path / "antigrav-args.txt"
-    fake_launcher = tmp_path / "bin" / "hapax-antigrav"
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "beta",
+        "--platform",
+        "agy",
+        "--mode",
+        "interactive",
+    )
+
+    assert result.returncode == 2
+    assert "agy platform requires lane 'beta' to be agy or agy-*" in result.stderr
+    assert not (tmp_path / "ledger" / "methodology-dispatch.jsonl").exists()
+
+
+def test_agy_launch_passes_governed_dispatch_inflection(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "agy-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-agy"
     fake_launcher.parent.mkdir(parents=True, exist_ok=True)
     fake_launcher.write_text(
         f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {launcher_args}\n",
@@ -2932,15 +2956,15 @@ def test_antigrav_launch_passes_governed_dispatch_inflection(tmp_path: Path) -> 
         "--task",
         "governed-build",
         "--lane",
-        "antigrav-5",
+        "agy-5",
         "--platform",
-        "antigrav",
+        "agy",
         "--mode",
         "interactive",
         "--launch",
         extra_env={
-            "HAPAX_METHODOLOGY_ANTIGRAV_LAUNCHER": str(fake_launcher),
-            "HAPAX_ANTIGRAV_SPAWN_DIR": str(tmp_path / "antigrav-spawns"),
+            "HAPAX_METHODOLOGY_AGY_LAUNCHER": str(fake_launcher),
+            "HAPAX_ANTIGRAV_SPAWN_DIR": str(tmp_path / "agy-spawns"),
         },
     )
 
@@ -2948,7 +2972,7 @@ def test_antigrav_launch_passes_governed_dispatch_inflection(tmp_path: Path) -> 
     args = launcher_args.read_text(encoding="utf-8").splitlines()
     assert args[:6] == [
         "--session",
-        "antigrav-5",
+        "agy-5",
         "--task",
         "governed-build",
         "--terminal",
@@ -2960,6 +2984,104 @@ def test_antigrav_launch_passes_governed_dispatch_inflection(tmp_path: Path) -> 
     assert "Task: governed-build" in text
     assert "AuthorityCase: CASE-TEST-001" in text
     assert "Do not choose unrelated queue work" in text
+
+
+def test_deprecated_antigrav_platform_refuses_with_migration_receipt(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    for platform in ("antigrav", "antigravity"):
+        result = _run(
+            tmp_path,
+            "--task",
+            "governed-build",
+            "--lane",
+            "agy",
+            "--platform",
+            platform,
+            "--mode",
+            "interactive",
+        )
+
+        assert result.returncode == 10
+        assert f"deprecated platform '{platform}': use 'agy' route identity" in result.stderr
+        ledger = (tmp_path / "ledger" / "methodology-dispatch.jsonl").read_text(encoding="utf-8")
+        assert f'"platform": "{platform}"' in ledger
+        assert "archive provenance only" in ledger
+
+
+def test_deprecated_antigrav_lane_refuses_before_receipt_or_launch(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "antigrav",
+        "--platform",
+        "agy",
+        "--mode",
+        "interactive",
+        durable_mq=False,
+    )
+
+    assert result.returncode == 2
+    assert "deprecated Antigrav lane 'antigrav'; use agy or agy-*" in result.stderr
+    assert not (tmp_path / "ledger" / "methodology-dispatch.jsonl").exists()
+
+
+def test_deprecated_antigrav_suffixed_lane_refuses_before_receipt_or_launch(
+    tmp_path: Path,
+) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    for lane in ("antigrav-2", "antigravity-2"):
+        result = _run(
+            tmp_path,
+            "--task",
+            "governed-build",
+            "--lane",
+            lane,
+            "--platform",
+            "agy",
+            "--mode",
+            "interactive",
+            durable_mq=False,
+        )
+
+        assert result.returncode == 2
+        assert f"deprecated Antigrav lane '{lane}'; use agy or agy-*" in result.stderr
+        assert not (tmp_path / "ledger" / "methodology-dispatch.jsonl").exists()
 
 
 def test_codex_launch_unsupported_mode_fails_closed(tmp_path: Path) -> None:

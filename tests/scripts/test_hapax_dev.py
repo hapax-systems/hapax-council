@@ -34,7 +34,7 @@ def run_dev(
     *args: str,
     claim_dir: Path,
     workdir: Path,
-    live_tmux: str = "",
+    live_tmux: str | None = "",
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Invoke hapax-dev hermetically (fake tmux probe active by default)."""
@@ -43,9 +43,10 @@ def run_dev(
         "HOME": str(workdir),
         "HAPAX_DEV_CLAIM_DIR": str(claim_dir),
         "HAPAX_DEV_WORKDIR": str(workdir),
-        "HAPAX_DEV_FAKE_LIVE_TMUX": live_tmux,
         "HAPAX_DEV_TMUX": "tmux",
     }
+    if live_tmux is not None:
+        env["HAPAX_DEV_FAKE_LIVE_TMUX"] = live_tmux
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -169,7 +170,7 @@ class TestCollisionGuard:
         )
         assert r.returncode == 3
         assert "already live" in r.stderr
-        assert "tmux attach -t hapax-claude-dev" in r.stderr
+        assert "tmux attach -t =hapax-claude-dev" in r.stderr
 
     def test_explicit_busy_greek_refused_via_claim(self, tmp_path: Path) -> None:
         # AC: an operator session must not collide with a running reform lane.
@@ -247,14 +248,13 @@ class TestCodexAndAgy:
     def test_agy_alias_and_default_slot(self, tmp_path: Path) -> None:
         r = run_dev("agy", "--dry-run", claim_dir=tmp_path / "c", workdir=tmp_path)
         assert r.returncode == 0, r.stderr
-        assert _field(r.stdout, "identity") == "antigrav"
-        assert _field(r.stdout, "spawn").startswith(
-            "hapax-antigrav --session antigrav --terminal tmux"
-        )
+        assert _field(r.stdout, "identity") == "agy"
+        assert _field(r.stdout, "spawn").startswith("hapax-agy --session agy --terminal tmux")
 
-    def test_antigrav_keyword_equivalent_to_agy(self, tmp_path: Path) -> None:
+    def test_antigrav_keyword_is_deprecated(self, tmp_path: Path) -> None:
         r = run_dev("antigrav", "--dry-run", claim_dir=tmp_path / "c", workdir=tmp_path)
-        assert _field(r.stdout, "identity") == "antigrav"
+        assert r.returncode == 2
+        assert "deprecated platform 'antigrav'; use 'agy'" in r.stderr
 
     def test_agy_window_opens_own_window(self, tmp_path: Path) -> None:
         # agy spawner has no foot path → hapax-dev opens the window itself, so
@@ -271,7 +271,7 @@ class TestVisibility:
     def test_detach_prints_attach_command(self, tmp_path: Path) -> None:
         r = run_dev("claude", "--detach", "--dry-run", claim_dir=tmp_path / "c", workdir=tmp_path)
         assert _field(r.stdout, "visibility") == "detach"
-        assert _field(r.stdout, "attach") == "tmux attach -t hapax-claude-dev"
+        assert _field(r.stdout, "attach") == "tmux attach -t =hapax-claude-dev"
 
     def test_default_is_attach(self, tmp_path: Path) -> None:
         r = run_dev("claude", "--dry-run", claim_dir=tmp_path / "c", workdir=tmp_path)
@@ -346,7 +346,44 @@ class TestLsAndAttach:
             extra_env={"HAPAX_DEV_DRY_RUN": "1"},
         )
         assert r.returncode == 0
-        assert "would attach: tmux attach -t hapax-claude-dev" in r.stdout
+        assert "would attach: tmux attach -t =hapax-claude-dev" in r.stdout
+
+    def test_attach_uses_exact_tmux_target_not_prefix_match(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        tmux_stub = bin_dir / "tmux"
+        tmux_stub.write_text(
+            """#!/usr/bin/env bash
+target=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -t) target="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$target" in
+  =hapax-agy-agy) exit 1 ;;
+  =hapax-agy-agy-2) exit 0 ;;
+  hapax-agy-agy) exit 0 ;;  # Emulate tmux prefix match: agy-2 satisfies agy.
+  hapax-agy-agy-2) exit 0 ;;
+  *) exit 1 ;;
+esac
+""",
+            encoding="utf-8",
+        )
+        tmux_stub.chmod(0o755)
+
+        r = run_dev(
+            "attach",
+            "agy",
+            claim_dir=tmp_path / "c",
+            workdir=tmp_path,
+            live_tmux=None,
+            extra_env={"HAPAX_DEV_TMUX": str(tmux_stub), "HAPAX_DEV_DRY_RUN": "1"},
+        )
+
+        assert r.returncode == 3
+        assert "no live tmux session 'hapax-agy-agy'" in r.stderr
 
     def test_attach_unknown_name_cannot_infer_platform(self, tmp_path: Path) -> None:
         r = run_dev("attach", "weirdname", claim_dir=tmp_path / "c", workdir=tmp_path)
@@ -501,4 +538,4 @@ class TestRealSpawn:
         )
         assert r.returncode == 0, r.stderr
         assert "--role dev" in spawn_marker.read_text()
-        assert "attach -t hapax-claude-dev" in tmux_marker.read_text()
+        assert "attach -t =hapax-claude-dev" in tmux_marker.read_text()

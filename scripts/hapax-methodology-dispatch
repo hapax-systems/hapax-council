@@ -32,7 +32,7 @@ from executor_contract import (  # noqa: E402
 )
 
 from shared.capability_adapter_protocol import (
-    AntigravAdapter,
+    AgyAdapter,
     CapabilityAdapter,
     ClaudeAdapter,
     CodexAdapter,
@@ -112,6 +112,11 @@ CAPACITY_INVARIANT = (
 )
 DEFAULT_P0_CODEX_DRAIN_LANES = ("cx-p0", "cx-crit")
 DEFAULT_INVARIANT_MANIFEST = REPO_ROOT_FOR_IMPORTS / "config" / "invariant-manifest.yaml"
+DEPRECATED_PLATFORM_MIGRATIONS = {
+    "antigrav": "agy",
+    "antigravity": "agy",
+}
+DEPRECATED_LANE_PREFIXES = ("antigrav", "antigravity")
 
 
 @dataclass(frozen=True)
@@ -189,14 +194,15 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "JR+ bounded worker path; task fit must exclude governance-critical or off-limits work.",
     ),
-    ("antigrav", "interactive", "full"): PlatformPath(
-        "antigrav",
+    ("agy", "interactive", "full"): PlatformPath(
+        "agy",
         "interactive",
         "full",
-        "~/.local/bin/hapax-antigrav --session <lane> --task <task> --terminal tmux",
-        "Google Antigravity CLI lane",
+        "scripts/hapax-agy --session <lane> --task <task> --terminal tmux",
+        "agy CLI lane",
         True,
-        "agy CLI interactive path; requires governed dispatch bootstrap and task claim.",
+        "agy interactive path; requires governed dispatch bootstrap and task claim. "
+        "The old antigrav platform name is deprecated and refused.",
     ),
     ("api", "headless", "api_frontier"): PlatformPath(
         "api",
@@ -1389,7 +1395,7 @@ def _await_sdlc_admission(args: argparse.Namespace) -> None:
 _WORKER_FAILURE_ADAPTERS: dict[str, type[CapabilityAdapter]] = {
     "claude": ClaudeAdapter,
     "codex": CodexAdapter,
-    "antigrav": AntigravAdapter,
+    "agy": AgyAdapter,
 }
 
 
@@ -1748,7 +1754,7 @@ def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Valid
     return _sliced_call(args)
 
 
-def write_antigrav_inflection(task_id: str, lane: str, prompt: str) -> Path:
+def write_agy_inflection(task_id: str, lane: str, prompt: str) -> Path:
     spawn_dir = Path(
         os.environ.get(
             "HAPAX_ANTIGRAV_SPAWN_DIR",
@@ -1767,15 +1773,15 @@ def write_antigrav_inflection(task_id: str, lane: str, prompt: str) -> Path:
     path.write_text(
         "\n".join(
             [
-                "# Hapax Antigrav Methodology Dispatch",
+                "# Hapax agy Methodology Dispatch",
                 "",
                 prompt,
                 "",
-                "Antigrav launch contract:",
+                "agy launch contract:",
                 "",
                 "- This bootstrap was produced by `hapax-methodology-dispatch` after task authority validation.",
                 "- Treat the task note and parent spec named above as the only work authority.",
-                "- Do not choose unrelated queue work from inside Antigravity.",
+                "- Do not choose unrelated queue work from inside agy.",
                 "- Keep relay/status surfaces current while blocked, waiting, or idle.",
                 "",
             ]
@@ -1785,7 +1791,7 @@ def write_antigrav_inflection(task_id: str, lane: str, prompt: str) -> Path:
     return path
 
 
-def launch_antigrav_interactive(
+def launch_agy_interactive(
     task_id: str,
     lane: str,
     validation: Validation,
@@ -1793,18 +1799,21 @@ def launch_antigrav_interactive(
 ) -> int:
     launcher = Path(
         os.environ.get(
-            "HAPAX_METHODOLOGY_ANTIGRAV_LAUNCHER",
-            str(Path.home() / ".local" / "bin" / "hapax-antigrav"),
+            "HAPAX_METHODOLOGY_AGY_LAUNCHER",
+            os.environ.get(
+                "HAPAX_METHODOLOGY_ANTIGRAV_LAUNCHER",
+                str(Path(__file__).resolve().parent / "hapax-agy"),
+            ),
         )
     )
     if not launcher.is_file():
-        print(f"Antigrav launcher not found: {launcher}", file=sys.stderr)
+        print(f"agy launcher not found: {launcher}", file=sys.stderr)
         return 8
 
     status = ""
     if validation.task is not None:
         status = strip_scalar(str(validation.task.fields.get("status", "")))
-    inflection_path = write_antigrav_inflection(task_id, lane, prompt)
+    inflection_path = write_agy_inflection(task_id, lane, prompt)
     args = [
         str(launcher),
         "--session",
@@ -1941,7 +1950,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--platform",
         default="claude",
-        choices=["api", "claude", "codex", "vibe", "antigrav"],
+        help=(
+            "Platform route identity: api, agy, claude, codex, or vibe. "
+            "The deprecated antigrav identity is accepted only to emit a "
+            "migration/refusal receipt."
+        ),
     )
     parser.add_argument(
         "--mode", default="headless", choices=["headless", "interactive", "receipt-only"]
@@ -2011,6 +2024,15 @@ def main(argv: list[str] | None = None) -> int:
         "stage is advanced here via cc-stage-advance once liveness + capability pass.",
     )
     args = parser.parse_args(argv)
+    current_platforms = {"api", "agy", "claude", "codex", "vibe"}
+    allowed_platforms = {*current_platforms, *DEPRECATED_PLATFORM_MIGRATIONS}
+    if args.platform not in allowed_platforms:
+        choices = ", ".join(sorted(current_platforms))
+        deprecated = ", ".join(sorted(DEPRECATED_PLATFORM_MIGRATIONS))
+        parser.error(
+            f"argument --platform: invalid choice: {args.platform!r} "
+            f"(current choices: {choices}; deprecated receipt-only aliases: {deprecated})"
+        )
     args.profile = normalize_profile(args.platform, args.profile)
 
     if args.list_platform_paths:
@@ -2039,12 +2061,58 @@ def main(argv: list[str] | None = None) -> int:
             "--task and --lane are required unless --list-platform-paths or --capabilities is used"
         )
 
+    lane_name = strip_scalar(args.lane)
+    if (
+        lane_name in DEPRECATED_LANE_PREFIXES
+        or lane_name.startswith("antigrav-")
+        or lane_name.startswith("antigravity-")
+    ):
+        parser.error(
+            f"argument --lane: deprecated Antigrav lane {lane_name!r}; "
+            "use agy or agy-* route identities"
+        )
+    if args.platform == "agy" and not (lane_name == "agy" or lane_name.startswith("agy-")):
+        parser.error(
+            f"argument --lane: agy platform requires lane {lane_name!r} to be agy or agy-*"
+        )
+
     task_root = Path(
         os.environ.get(
             "HAPAX_CC_TASK_ROOT",
             str(Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"),
         )
     )
+
+    if args.platform in DEPRECATED_PLATFORM_MIGRATIONS:
+        replacement = DEPRECATED_PLATFORM_MIGRATIONS[args.platform]
+        reason = (
+            f"deprecated platform {args.platform!r}: use {replacement!r} route identity; "
+            f"{args.platform} is archive provenance only and is not selectable capacity"
+        )
+        task = read_task(task_root, args.task)
+        parent_spec_path = None
+        exempt = False
+        if task is not None:
+            parent_spec_path = resolve_declared_path(
+                task.fields.get("parent_spec"),
+                base=Path.home() / "Documents" / "Personal",
+            )
+            exempt = is_authority_exempt(task.fields)
+        blocked = Validation(False, reason, task, parent_spec_path, exempt)
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=None,
+                validation=blocked,
+                prompt=None,
+                launched=False,
+            )
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 10
 
     # Opportunistic cross-role stale-claim sweep: every dispatch frees lease-expired
     # / terminal claims fleet-wide so a dead or wedged lane never parks a slot
@@ -2322,7 +2390,7 @@ def main(argv: list[str] | None = None) -> int:
             ("vibe", "headless"): lambda: launch_vibe_headless(
                 args.task, args.lane, prompt or "", validation
             ),
-            ("antigrav", "interactive"): lambda: launch_antigrav_interactive(
+            ("agy", "interactive"): lambda: launch_agy_interactive(
                 args.task, args.lane, validation, prompt or ""
             ),
         }

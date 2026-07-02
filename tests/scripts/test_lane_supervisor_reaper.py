@@ -82,7 +82,7 @@ def _base(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path, Path]
             "HAPAX_SUPERVISOR_VAULT_ROOT": str(home / "vault"),
             "HAPAX_SUPERVISOR_CLAUDE_LANES": "delta",
             "HAPAX_SUPERVISOR_CODEX_LANES": "",
-            "HAPAX_SUPERVISOR_ANTIGRAV_LANES": "",
+            "HAPAX_SUPERVISOR_AGY_LANES": "",
             "HAPAX_SUPERVISOR_RESTART_COOLDOWN_S": "0",
             "HAPAX_CLAUDE_HEADLESS_BIN": str(bin_dir / "hapax-claude-headless"),
             "HAPAX_CLAUDE_BIN": str(bin_dir / "hapax-claude"),

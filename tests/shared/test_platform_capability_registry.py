@@ -93,7 +93,7 @@ def test_seed_registry_loads_sanctioned_platform_routes() -> None:
 
     assert set(registry.route_map()) == REQUIRED_ROUTE_IDS
     assert {route.platform.value for route in registry.routes} >= {
-        "antigrav",
+        "agy",
         "claude",
         "codex",
         "vibe",

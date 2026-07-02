@@ -96,7 +96,11 @@ class TestDispatchWorktreeGuard:
             assert _dispatch_worktree("beta", "claude") == root / "hapax-council--beta"
             assert _dispatch_worktree("gamma", "gemini") == root / "hapax-council"
             assert _dispatch_worktree("vbe-1", "vibe") == root / "hapax-council--vbe-1"
-            assert _dispatch_worktree("antigravity", "antigrav") == root / "hapax-council--antigrav"
+            assert _dispatch_worktree("agy", "agy") == root / "hapax-council--agy"
+            assert _dispatch_worktree("agy-2", "agy") == root / "hapax-council--agy-2"
+            assert _dispatch_worktree("antigravity", "antigrav") == root / "hapax-council--agy"
+            assert _dispatch_worktree("antigrav-2", "agy") == root / "hapax-council--agy-2"
+            assert _dispatch_worktree("antigravity-2", "agy") == root / "hapax-council--agy-2"
             assert _dispatch_worktree("other", "unknown") == root / "hapax-council"
 
     def test_dispatch_worktree_expands_project_root_home(self, tmp_path: Path):
@@ -121,6 +125,7 @@ class TestDispatchWorktreeGuard:
             ("gamma", "gemini"),
             ("vbe-1", "vibe"),
             ("antigravity", "antigrav"),
+            ("antigravity-2", "agy"),
             ("other", "unknown"),
         )
 
@@ -293,7 +298,8 @@ class TestDispatchWorktreeGuard:
         assert blocker is not None
         assert "unsupported dispatch platform 'antigrav'" in blocker
         assert "next_action=" in blocker
-        assert "add coordinator headless dispatch support for 'antigrav'" in blocker
+        assert "do not re-enable Antigrav coordinator dispatch" in blocker
+        assert "migrate current work to agy/agy-*" in blocker
 
 
 class TestParseTask:
@@ -708,10 +714,8 @@ current_claim: null
         assert state.dispatch_ready is False
         assert state.dispatch_blocked_reason is not None
         assert "unsupported dispatch platform 'antigrav'" in state.dispatch_blocked_reason
-        assert (
-            "add coordinator headless dispatch support for 'antigrav'"
-            in state.dispatch_blocked_reason
-        )
+        assert "do not re-enable Antigrav coordinator dispatch" in state.dispatch_blocked_reason
+        assert "migrate current work to agy/agy-*" in state.dispatch_blocked_reason
 
     def test_relay_claim_beats_stale_active_claim_file(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"

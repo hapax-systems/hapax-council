@@ -41,9 +41,16 @@ def dispatch_worktree(role: str, platform: str) -> Path:
         return root / "hapax-council" if role == "alpha" else root / f"hapax-council--{role}"
     if platform == "vibe":
         return root / f"hapax-council--{role}"
-    if platform == "antigrav":
-        # Antigrav has governed interactive dispatch, so the dispatcher needs a
+    if platform in {"agy", "antigrav"}:
+        # agy has governed interactive dispatch, so the dispatcher needs a
         # worktree mapping even though coordinator headless dispatch excludes it.
-        normalized = "antigrav" if role == "antigravity" else role
+        # The legacy antigrav platform/name is accepted here only so old
+        # persisted coordination state maps to the canonical worktree family.
+        if role in {"agy", "antigrav", "antigravity"}:
+            normalized = "agy"
+        elif role.startswith("antigrav-") or role.startswith("antigravity-"):
+            normalized = f"agy-{role.split('-', 1)[1]}"
+        else:
+            normalized = role
         return root / f"hapax-council--{normalized}"
     return root / "hapax-council"

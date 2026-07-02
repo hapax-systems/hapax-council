@@ -6,7 +6,7 @@
 # registry.required_route_ids), so a platform the operator EXPECTS but the registry does NOT carry
 # is flagged. The scorer never hardcodes the count; edit this file to assert the real expected set.
 #
-# 7 prefixes are observed in the live registry (antigrav, api, claude, codex, glmcp, local_tool,
+# 7 prefixes are observed in the live registry (agy, api, claude, codex, glmcp, local_tool,
 # vibe). `gemini` has a Platform enum slot but no route yet. cohere/hf are retired phantoms the
 # operator still counts in the target.
 #
@@ -22,7 +22,7 @@ expected_platform_set: 12
 # The concrete declared set. D0 omitted_platforms = (members - observed). A member not observed
 # in the registry cannot pass, regardless of descriptor richness.
 expected_platform_members:
-  - antigrav
+  - agy
   - api
   - claude
   - codex

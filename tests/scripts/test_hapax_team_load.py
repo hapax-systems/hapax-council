@@ -89,3 +89,21 @@ def test_memory_psi_pressure_closes_team_load_gate() -> None:
 
     assert level == "red"
     assert any("memory PSI some" in reason for reason in reasons)
+
+
+def test_legacy_antigravity_tmux_session_normalizes_to_agy(monkeypatch) -> None:
+    team_load = _load_team_load()
+
+    def fake_check_output(cmd: list[str], **_: Any) -> str:
+        if cmd[:3] == ["tmux", "list-sessions", "-F"]:
+            return "hapax-antigrav-antigravity\nhapax-antigrav-antigravity-2\n"
+        if cmd[:3] == ["tmux", "list-panes", "-t"]:
+            return "123\n"
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(team_load.subprocess, "check_output", fake_check_output)
+
+    assert team_load.list_team_sessions() == [
+        ("agy", "agy", [123]),
+        ("agy", "agy-2", [123]),
+    ]
