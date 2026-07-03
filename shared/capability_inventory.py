@@ -18,6 +18,9 @@ from shared.capability_harness_descriptor import (
 )
 from shared.capability_harness_seed import SEED_CAPABILITY_DESCRIPTORS
 
+# full_inventory_delta is imported lazily inside main(--delta) to avoid pulling
+# all adapter modules at import time for users who only want the seed inventory.
+
 __all__ = ["inventory_report", "project_inventory"]
 
 
@@ -111,7 +114,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--gaps-only", action="store_true", help="only list descriptors with shape-validation gaps"
     )
+    parser.add_argument(
+        "--delta",
+        action="store_true",
+        help="run the full capability_surface_delta over ALL 7 vocabularies (the real failing check)",
+    )
     args = parser.parse_args(argv)
+
+    if args.delta:
+        from shared.capability_inventory_aggregator import full_inventory_delta
+
+        observed, delta = full_inventory_delta()
+        print(
+            f"capability_surface_delta: {len(delta.new_capability_ids)} new, "
+            f"{len(delta.changed_capability_ids)} changed, "
+            f"{len(delta.missing_capability_ids)} missing "
+            f"(of {len(observed)} observed)"
+        )
+        for cid, kind in delta.kinds():
+            print(f"  {kind.value}: {cid}")
+        return 0
 
     descriptors = SEED_CAPABILITY_DESCRIPTORS
     if args.gaps_only:
