@@ -64,8 +64,22 @@ class WorktreeRecord:
     # the live-signal derive refreshes only NON-pinned records, so a pinned `infra`/`active`/`merging`
     # is never silently re-derived and reaped.
     pinned: bool = False
-    host: str | None = None
     note: str | None = None
+    # --- canonical Lane instance fields (lane-standardization S4) ---
+    # A lane is a supply-side execution instance; these standardize its identity, capability
+    # reference, host-intent, and second liveness signal. Additive + defaulted (backward-compatible).
+    lane_id: str | None = (
+        None  # governed slot id (config/lanes.yaml); stable identity, distinct from role
+    )
+    route_id: str | None = (
+        None  # FK into platform_capability_registry P(B); capability referenced, never embedded
+    )
+    dispatch_host: str | None = (
+        None  # placement/confinement intent (replaces the readerless `host`)
+    )
+    supervisor: str | None = (
+        None  # launcher-pidfile ref: the liveness signal a worktree path-scan cannot see
+    )
 
 
 def _record_from_json(raw: str) -> WorktreeRecord:
@@ -81,8 +95,11 @@ def _record_from_json(raw: str) -> WorktreeRecord:
         pr=d.get("pr"),
         status=d.get("status", "active"),
         pinned=bool(d.get("pinned", False)),
-        host=d.get("host"),
         note=d.get("note"),
+        lane_id=d.get("lane_id"),
+        route_id=d.get("route_id"),
+        dispatch_host=d.get("dispatch_host"),
+        supervisor=d.get("supervisor"),
     )
 
 
@@ -170,7 +187,10 @@ def register(
     task_id: str | None = None,
     pr: int | None = None,
     status: Status = "active",
-    host: str | None = None,
+    lane_id: str | None = None,
+    route_id: str | None = None,
+    dispatch_host: str | None = None,
+    supervisor: str | None = None,
     now: datetime | None = None,
     last_heartbeat: datetime | None = None,
     pinned: bool | None = None,
@@ -210,7 +230,14 @@ def register(
         pinned=eff_pinned,
         created_at=created,
         last_heartbeat=last_heartbeat if last_heartbeat is not None else ts,
-        host=host if host is not None else (existing.host if existing else None),
+        lane_id=lane_id if lane_id is not None else (existing.lane_id if existing else None),
+        route_id=route_id if route_id is not None else (existing.route_id if existing else None),
+        dispatch_host=dispatch_host
+        if dispatch_host is not None
+        else (existing.dispatch_host if existing else None),
+        supervisor=supervisor
+        if supervisor is not None
+        else (existing.supervisor if existing else None),
     )
     save(rec)
     return rec
@@ -482,6 +509,7 @@ def probe_worktree(
     open_pr_branches: set[str] | None,
     abandoned_after_s: int = DEFAULT_ABANDONED_AFTER_S,
     live_count_fn: Callable[[str], int] | None = None,
+    launcher_live_fn: Callable[[WorktreeRecord | None], bool] | None = None,
     now_epoch: float | None = None,
 ) -> dict | None:
     """Derive a worktree's effective status (the real reap code path; unit-tested with an injected
@@ -494,15 +522,23 @@ def probe_worktree(
     is then False and abandonment falls back to the HEARTBEAT — a stale, non-live lane is abandoned even
     without gh (the production timer path). A CORRUPT record (present but unparseable) fails closed: the
     worktree is returned registered + pinned + ``corrupt=True`` so it is protected and never reaped on a
-    guess. Keys: path, branch, infra, live, clean, merged, has_pr,
-    status, pinned, registered, corrupt."""
+    guess. ``live`` is the UNION of the worktree path-scan and an injected ``launcher_live_fn`` (the
+    supervisor-launcher signal a worktree path-scan structurally cannot see); ``liveness_evidence``
+    records which signal won. Keys: path, branch, infra, live, clean, merged, has_pr,
+    status, pinned, registered, corrupt, liveness_evidence."""
     real = os.path.realpath(path)
     if not os.path.isdir(real):
         return None
     rec, corrupt = _read_record(real)
     live_fn = live_count_fn if live_count_fn is not None else live_process_count
     infra = is_infra_path(real, canonical=canonical)
-    live = live_fn(real) > 0
+    path_live = live_fn(real) > 0
+    # Two-signal UNION (lane-standardization S4): a live SUPERVISOR launcher keeps a lane live even when
+    # no process resolves inside the worktree — the launcher pidfile lives under /run, not the worktree
+    # (the false-kill-under-live-supervisor class). launcher_live_fn is injected (default off -> unchanged).
+    supervisor_live = bool(launcher_live_fn is not None and launcher_live_fn(rec))
+    live = path_live or supervisor_live
+    liveness_evidence = "proc" if path_live else ("pidfile" if supervisor_live else None)
     # Capture the mtime-based idle age BEFORE is_clean(): is_clean() already uses --no-optional-locks so
     # `git status` cannot rewrite the index mtime, but reading the staleness signal first is belt-and-
     # suspenders — no status read this probe makes can advance the idle clock it then classifies on.
@@ -528,6 +564,7 @@ def probe_worktree(
             "pinned": True,
             "registered": True,
             "corrupt": True,
+            "liveness_evidence": liveness_evidence,
         }
     ages = [mtime_age]
     if rec is not None:
@@ -555,4 +592,5 @@ def probe_worktree(
         "pinned": pinned,
         "registered": rec is not None,
         "corrupt": False,
+        "liveness_evidence": liveness_evidence,
     }
