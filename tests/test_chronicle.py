@@ -9,15 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from shared.chronicle import (
-    RETENTION_S,
-    ChronicleEvent,
-    current_otel_ids,
-    is_stage0_event,
-    query,
-    record,
-    trim,
-)
+import shared.chronicle as chronicle_mod
+
+RETENTION_S = chronicle_mod.RETENTION_S
+ChronicleEvent = chronicle_mod.ChronicleEvent
+current_otel_ids = chronicle_mod.current_otel_ids
+is_stage0_event = chronicle_mod.is_stage0_event
+query = chronicle_mod.query
+record = chronicle_mod.record
+trim = chronicle_mod.trim
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -780,8 +780,6 @@ class TestDurableSinkIntegration:
 
         assert [ev.event_id for ev in query(since=0.0)] == [stage0.event_id]
 
-        import shared.chronicle as chronicle_mod
-
         chronicle_mod.CHRONICLE_FILE.unlink()
         assert [ev.event_id for ev in query(since=0.0)] == [stage0.event_id]
 
@@ -791,8 +789,6 @@ class TestDurableSinkIntegration:
         self._configure_durable_sink(tmp_path, monkeypatch)
         stage0 = _make_event(source="engine", event_type="payment.received", ts=time.time())
         record(stage0)
-
-        import shared.chronicle as chronicle_mod
 
         chronicle_mod.CHRONICLE_FILE.unlink()
         by_source = query(since=0.0, source="engine")
@@ -809,8 +805,6 @@ class TestDurableSinkIntegration:
         older = _make_event(source="gate_log", event_type="gate.allow", ts=now - 3600)
         record(newer)
         record(older)
-
-        import shared.chronicle as chronicle_mod
 
         chronicle_mod.CHRONICLE_FILE.unlink()
         results = query(since=0.0, source="gate_log", limit=1)
@@ -831,8 +825,6 @@ class TestDurableSinkIntegration:
             payload={"not": "a chronicle event"},
         )
 
-        import shared.chronicle as chronicle_mod
-
         chronicle_mod.CHRONICLE_FILE.unlink()
         assert [ev.event_id for ev in query(since=0.0, source="gate_log")] == [stage0.event_id]
 
@@ -849,8 +841,6 @@ class TestDurableSinkIntegration:
         row["payload"]["payload"] = {"tampered": True}
         durable_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
 
-        import shared.chronicle as chronicle_mod
-
         chronicle_mod.CHRONICLE_FILE.unlink()
         with pytest.raises(sink_mod.DurableSinkChainError, match="next action"):
             query(since=0.0, source="gate_log")
@@ -862,8 +852,6 @@ class TestDurableSinkIntegration:
         now = time.time()
         first = _make_event(source="gate_log", event_type="gate.allow", ts=now - 10)
         record(first)
-
-        import shared.chronicle as chronicle_mod
 
         shutil.rmtree(chronicle_mod.CHRONICLE_FILE.parent)
         second = _make_event(source="gate_log", event_type="gate.allow", ts=now - 5)
@@ -882,8 +870,6 @@ class TestDurableSinkIntegration:
             ts=time.time() - 24 * 3600,
         )
         record(old_stage0)
-
-        import shared.chronicle as chronicle_mod
 
         trim(retention_s=RETENTION_S)
         assert chronicle_mod.CHRONICLE_FILE.read_text(encoding="utf-8") == ""
