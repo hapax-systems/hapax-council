@@ -895,6 +895,8 @@ def _run_task_is_terminal_result(
     gh_state: str = "",
     legacy_cache: bool = False,
     sidecar_task: str | None = None,
+    session_keyed_cache: bool = False,
+    epoch_check_bypass: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Extract task_is_terminal() from the launcher and drive it with fixtures.
 
@@ -916,15 +918,19 @@ def _run_task_is_terminal_result(
         f"---\nstatus: {note_status}\nassigned_to: {note_assigned}\n{pr_line}---\n",
         encoding="utf-8",
     )
+    sid = "9b6ba5ca-513c-41aa-9900-d3026b42aad1"
     claim_file = cache / "cc-active-task-eta"
-    sidecar = cache / "cc-claim-epoch-eta"
+    active_claim_file = cache / f"cc-active-task-eta-{sid}" if session_keyed_cache else claim_file
+    sidecar = (
+        cache / f"cc-claim-epoch-eta-{sid}" if session_keyed_cache else cache / "cc-claim-epoch-eta"
+    )
     sidecar.unlink(missing_ok=True)
     if cache_task is not None:
-        claim_file.write_text(cache_task + "\n", encoding="utf-8")
+        active_claim_file.write_text(cache_task + "\n", encoding="utf-8")
         if legacy_cache:
             if cache_age_s:
                 aged = time.time() - cache_age_s
-                os.utime(claim_file, (aged, aged))
+                os.utime(active_claim_file, (aged, aged))
         else:
             epoch = int(time.time()) - cache_age_s
             bound_task = sidecar_task if sidecar_task is not None else cache_task
@@ -940,6 +946,7 @@ def _run_task_is_terminal_result(
             f'HOME="{home}"',
             'ROLE="eta"',
             f'CLAIM_FILE="{claim_file}"',
+            f'HAPAX_CLAIM_EPOCH_CHECK_BYPASS="{1 if epoch_check_bypass else 0}"',
             f'find_active_note() {{ echo "{note}"; }}',
             gh_stub,
             func,
@@ -962,6 +969,8 @@ def _run_task_is_terminal(
     gh_state: str = "",
     legacy_cache: bool = False,
     sidecar_task: str | None = None,
+    session_keyed_cache: bool = False,
+    epoch_check_bypass: bool = False,
 ) -> int:
     """Return the bash exit code: 0 = terminal (lane reaped), 1 = live."""
     result = _run_task_is_terminal_result(
@@ -974,6 +983,8 @@ def _run_task_is_terminal(
         gh_state=gh_state,
         legacy_cache=legacy_cache,
         sidecar_task=sidecar_task,
+        session_keyed_cache=session_keyed_cache,
+        epoch_check_bypass=epoch_check_bypass,
     )
     return result.returncode
 
@@ -1080,6 +1091,33 @@ def test_terminal_check_logs_expired_unassigned_claim(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "exceeds grace=600s" in result.stderr
     assert "stale unassigned claim" in result.stderr
+
+
+def test_terminal_check_uses_session_keyed_epoch_sidecar(tmp_path: Path) -> None:
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        session_keyed_cache=True,
+    )
+    assert result.returncode == 1
+    assert "session-keyed:cc-active-task-eta-" in result.stderr
+    assert "treating as indeterminate" in result.stderr
+
+
+def test_terminal_check_epoch_bypass_keeps_matching_cache_live(tmp_path: Path) -> None:
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        legacy_cache=True,
+        epoch_check_bypass=True,
+    )
+    assert result.returncode == 1
+    assert "HAPAX_CLAIM_EPOCH_CHECK_BYPASS=1" in result.stderr
+    assert "repair the writer" in result.stderr
 
 
 def test_terminal_check_reaps_when_cache_repointed(tmp_path: Path) -> None:

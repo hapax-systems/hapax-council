@@ -416,6 +416,10 @@ task_is_terminal() {
       printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but fresh %s claim cache (claim age=%ss) names this task — treating as indeterminate (H1 ghost-revert shape)\n' \
         "$$" "$claim_source" "$_cache_age" >&2
     else
+      if [[ "$claimed" == "$task" && "${HAPAX_CLAIM_EPOCH_CHECK_BYPASS:-0}" == "1" ]]; then
+        printf 'hapax-claude-headless[%s]: task_is_terminal: HAPAX_CLAIM_EPOCH_CHECK_BYPASS=1 for role=%s task=%s with %s claim cache — treating as indeterminate; next action: repair the writer or recreate cc-claim-epoch sidecar, then unset the bypass\n' "$$" "$ROLE" "$task" "$claim_source" >&2
+        return 1
+      fi
       if [[ "$claimed" == "$task" ]]; then
         if [[ -z "$claim_file_used" ]]; then
           printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but matching claim cache path unavailable for role=%s task=%s — treating as terminal (cannot verify claim epoch)\n' "$$" "$ROLE" "$task" >&2
