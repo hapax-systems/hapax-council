@@ -82,7 +82,7 @@ SUPPORT_CEILINGS = frozenset(
 )
 NON_MUTATING_SURFACES = frozenset({"none"})
 CLOUD_BURST_ROUTE_IDS = frozenset({"api.headless.api_frontier"})
-LOCAL_DEV_PLATFORMS = frozenset({"antigrav", "claude", "codex", "vibe"})
+LOCAL_DEV_PLATFORMS = frozenset({"agy", "claude", "codex", "vibe"})
 LOCAL_DEV_TARGET = "appendix"
 # GLMCP false-negative recovery is receipt-plane: create a fresh short-lived
 # supported-tool admission receipt and rerun quota telemetry. There is no

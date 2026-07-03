@@ -9,6 +9,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = REPO_ROOT / "scripts" / "hapax-antigrav"
+AGY_WRAPPER = REPO_ROOT / "scripts" / "hapax-agy"
 
 
 def _write_executable(path: Path, text: str) -> None:
@@ -29,10 +30,10 @@ def _base_env(tmp_path: Path) -> dict[str, str]:
             "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
             "HAPAX_VIBE_WORKTREE_ROOT": str(tmp_path / "projects"),
             "XDG_CACHE_HOME": str(tmp_path / "cache"),
-            # Bypass the governed enable-latch (capability-adapter-antigrav-glue): these tests
+            # Bypass the governed agy enable-latch: these tests
             # exercise agy wiring / AGENTS.md / tmux, not the latch (which is covered by
             # test_hapax_antigrav_gate.py). Without this the default-deny latch refuses (exit 7).
-            "HAPAX_ANTIGRAV_ALLOW": "1",
+            "HAPAX_AGY_ALLOW": "1",
         }
     )
     return env
@@ -57,7 +58,7 @@ fi
 exit 0
 """,
     )
-    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    workdir = tmp_path / "projects" / "hapax-council--agy"
     workdir.mkdir(parents=True)
     prompt = tmp_path / "dispatch.md"
     prompt.write_text("SDLC GOVERNED DISPATCH.\nTask: test-task\n", encoding="utf-8")
@@ -66,7 +67,7 @@ exit 0
         [
             str(LAUNCHER),
             "--session",
-            "antigrav",
+            "agy",
             "--task",
             "test-task",
             "--cd",
@@ -84,8 +85,8 @@ exit 0
     )
 
     assert result.returncode == 0, result.stderr
-    assert "using Antigravity CLI" in result.stderr
-    assert "launched agy in tmux session hapax-antigrav-antigrav" in result.stderr
+    assert "using agy CLI" in result.stderr
+    assert "launched agy in tmux session hapax-agy-agy" in result.stderr
     assert "new-session" in tmux_log.read_text(encoding="utf-8")
     assert "test-task" in tmux_log.read_text(encoding="utf-8")
     assert (workdir / ".agents" / "rules" / "hapax-antigrav-lane.md").is_file()
@@ -96,14 +97,208 @@ exit 0
     rule_text = (workdir / ".agents" / "rules" / "hapax-antigrav-lane.md").read_text(
         encoding="utf-8"
     )
+    agents_text = (workdir / "AGENTS.md").read_text(encoding="utf-8")
+    assert "# Hapax agy Lane" in agents_text
+    assert "- Interface: `agy`" in agents_text
+    assert "- Interface: `antigravity-cli`" not in agents_text
     assert "self-claim highest" not in rule_text.lower()
+    assert "alpha-to-agy-*.yaml" in rule_text
+    assert "historical compatibility intake" in rule_text
     run_scripts = sorted(
         (Path(env["XDG_CACHE_HOME"]) / "hapax" / "antigrav-spawns").glob("*-run.sh")
     )
     assert run_scripts
     run_text = run_scripts[-1].read_text(encoding="utf-8")
     assert str(bin_dir / "agy") in run_text
+    assert 'export HAPAX_AGENT_INTERFACE="agy"' in run_text
+    assert 'export HAPAX_AGENT_INTERFACE="antigravity"' not in run_text
     assert "--prompt-interactive" in run_text
+
+
+def test_hapax_agy_wrapper_invokes_canonical_launcher_path(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    bin_dir = Path(env["PATH"].split(":", 1)[0])
+    _write_executable(bin_dir / "agy", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        bin_dir / "tmux",
+        """#!/usr/bin/env bash
+if [ "$1" = "has-session" ]; then exit 1; fi
+exit 0
+""",
+    )
+    workdir = tmp_path / "projects" / "hapax-council--agy"
+    workdir.mkdir(parents=True)
+
+    result = subprocess.run(
+        [
+            str(AGY_WRAPPER),
+            "--session",
+            "agy",
+            "--cd",
+            str(workdir),
+            "--no-claim",
+            "--terminal",
+            "tmux",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "launched agy in tmux session hapax-agy-agy" in result.stderr
+
+
+def test_launcher_exports_canonical_agy_interface_for_current_terminal(
+    tmp_path: Path,
+) -> None:
+    env = _base_env(tmp_path)
+    bin_dir = Path(env["PATH"].split(":", 1)[0])
+    interface_log = tmp_path / "interface.log"
+    _write_executable(
+        bin_dir / "agy",
+        f"""#!/usr/bin/env bash
+printf 'interface=%s\\n' "$HAPAX_AGENT_INTERFACE" > {interface_log}
+""",
+    )
+    workdir = tmp_path / "projects" / "hapax-council--agy"
+    workdir.mkdir(parents=True)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "agy",
+            "--cd",
+            str(workdir),
+            "--no-claim",
+            "--terminal",
+            "current",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert interface_log.read_text(encoding="utf-8") == "interface=agy\n"
+
+
+def test_default_agy_worktree_provisioning_uses_lane_specific_branches(
+    tmp_path: Path,
+) -> None:
+    env = _base_env(tmp_path)
+    bin_dir = Path(env["PATH"].split(":", 1)[0])
+    git_log = tmp_path / "git.log"
+    branch_dir = tmp_path / "branches"
+    branch_dir.mkdir()
+    _write_executable(bin_dir / "agy", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        bin_dir / "tmux",
+        """#!/usr/bin/env bash
+if [ "$1" = "has-session" ]; then exit 1; fi
+exit 0
+""",
+    )
+    _write_executable(
+        bin_dir / "git",
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {git_log}
+if [ "$1" = "-C" ]; then shift 2; fi
+case "$1 $2" in
+  "rev-parse --is-inside-work-tree") exit 0 ;;
+  "rev-parse --verify")
+    case "${{@:4:1}}" in
+      main) exit 0 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  "show-ref --verify")
+    branch="${{4#refs/heads/}}"
+    [ -f "{branch_dir}/$branch" ] && exit 0 || exit 1
+    ;;
+  "worktree add")
+    if [ "$3" = "-b" ]; then
+      branch="$4"
+      target="$5"
+    else
+      branch="$4"
+      target="$3"
+      [ -f "{branch_dir}/$branch.checked-out" ] && exit 9
+    fi
+    mkdir -p "$target"
+    mkdir -p "{branch_dir}/$(dirname "$branch")"
+    touch "{branch_dir}/$branch" "{branch_dir}/$branch.checked-out"
+    exit 0
+    ;;
+esac
+exit 1
+""",
+    )
+
+    for session in ("agy", "agy-2"):
+        result = subprocess.run(
+            [
+                str(LAUNCHER),
+                "--session",
+                session,
+                "--no-claim",
+                "--terminal",
+                "tmux",
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stderr
+
+    log = git_log.read_text(encoding="utf-8")
+    assert "worktree add -b agy/agy/scratch" in log
+    assert "worktree add -b agy/agy-2/scratch" in log
+    assert (tmp_path / "projects" / "hapax-council--agy").is_dir()
+    assert (tmp_path / "projects" / "hapax-council--agy-2").is_dir()
+
+
+def test_launcher_normalizes_bare_legacy_antigrav_session_to_agy(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    bin_dir = Path(env["PATH"].split(":", 1)[0])
+    tmux_log = tmp_path / "tmux.log"
+    _write_executable(bin_dir / "agy", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        bin_dir / "tmux",
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {tmux_log}
+if [ "$1" = "has-session" ]; then exit 1; fi
+exit 0
+""",
+    )
+    workdir = tmp_path / "projects" / "hapax-council--agy"
+    workdir.mkdir(parents=True)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "antigrav",
+            "--cd",
+            str(workdir),
+            "--no-claim",
+            "--terminal",
+            "tmux",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "normalizing deprecated 'antigrav' -> 'agy'" in result.stderr
+    assert "hapax-agy-agy" in tmux_log.read_text(encoding="utf-8")
 
 
 def test_launcher_wires_agy_pretooluse_gate(tmp_path: Path) -> None:
@@ -112,14 +307,14 @@ def test_launcher_wires_agy_pretooluse_gate(tmp_path: Path) -> None:
     # run_command/write_to_file/replace_file_content call is translated by the
     # adapter and gated by cc-task-gate — closing the Antigrav enforcing-gate P0.
     env = _base_env(tmp_path)
-    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    workdir = tmp_path / "projects" / "hapax-council--agy"
     workdir.mkdir(parents=True)
 
     result = subprocess.run(
         [
             str(LAUNCHER),
             "--session",
-            "antigrav",
+            "agy",
             "--cd",
             str(workdir),
             "--no-claim",
@@ -157,7 +352,7 @@ def test_launcher_wires_agy_pretooluse_gate(tmp_path: Path) -> None:
 def test_launcher_preserves_foreign_hooks_json(tmp_path: Path) -> None:
     # A hand-rolled hooks.json that Hapax did not author must not be clobbered.
     env = _base_env(tmp_path)
-    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    workdir = tmp_path / "projects" / "hapax-council--agy"
     workdir.mkdir(parents=True)
     cfg_dir = Path(env["HOME"]) / ".gemini" / "antigravity-cli"
     cfg_dir.mkdir(parents=True)
@@ -168,7 +363,7 @@ def test_launcher_preserves_foreign_hooks_json(tmp_path: Path) -> None:
         [
             str(LAUNCHER),
             "--session",
-            "antigrav",
+            "agy",
             "--cd",
             str(workdir),
             "--no-claim",
@@ -210,7 +405,7 @@ fi
 exit 0
 """,
     )
-    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    workdir = tmp_path / "projects" / "hapax-council--agy"
     workdir.mkdir(parents=True)
 
     result = subprocess.run(
@@ -254,7 +449,7 @@ def test_wire_hooks_only_fails_closed_on_foreign_hooks(tmp_path: Path) -> None:
     foreign = cfg_dir / "hooks.json"
     original = '{"hooks": {"PreToolUse": []}, "operator": "custom"}\n'
     foreign.write_text(original, encoding="utf-8")
-    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    workdir = tmp_path / "projects" / "hapax-council--agy"
     workdir.mkdir(parents=True)
 
     result = subprocess.run(
@@ -272,15 +467,15 @@ def test_wire_hooks_only_fails_closed_on_foreign_hooks(tmp_path: Path) -> None:
 
 def test_launcher_env_override_missing_fails_closed(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
-    env["HAPAX_ANTIGRAV_BIN"] = str(tmp_path / "missing-agy")
-    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    env["HAPAX_AGY_BIN"] = str(tmp_path / "missing-agy")
+    workdir = tmp_path / "projects" / "hapax-council--agy"
     workdir.mkdir(parents=True)
 
     result = subprocess.run(
         [
             str(LAUNCHER),
             "--session",
-            "antigrav",
+            "agy",
             "--cd",
             str(workdir),
             "--terminal",
@@ -293,22 +488,55 @@ def test_launcher_env_override_missing_fails_closed(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 4
-    assert "Antigravity CLI not found" in result.stderr
+    assert "agy CLI not found" in result.stderr
+
+
+def test_launcher_prefers_canonical_agy_bin_override(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    canonical_agy = tmp_path / "agy"
+    legacy_agy = tmp_path / "legacy" / "agy"
+    legacy_agy.parent.mkdir()
+    _write_executable(canonical_agy, "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(legacy_agy, "#!/usr/bin/env bash\nexit 0\n")
+    env["HAPAX_AGY_BIN"] = str(canonical_agy)
+    env["HAPAX_ANTIGRAV_BIN"] = str(legacy_agy)
+    workdir = tmp_path / "projects" / "hapax-council--agy"
+    workdir.mkdir(parents=True)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "agy",
+            "--cd",
+            str(workdir),
+            "--no-claim",
+            "--terminal",
+            "current",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"using agy CLI: {canonical_agy}" in result.stderr
 
 
 def test_launcher_env_override_non_agy_fails_closed(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     fake_gemini = tmp_path / "gemini"
     _write_executable(fake_gemini, "#!/usr/bin/env bash\nexit 0\n")
-    env["HAPAX_ANTIGRAV_BIN"] = str(fake_gemini)
-    workdir = tmp_path / "projects" / "hapax-council--antigrav"
+    env["HAPAX_AGY_BIN"] = str(fake_gemini)
+    workdir = tmp_path / "projects" / "hapax-council--agy"
     workdir.mkdir(parents=True)
 
     result = subprocess.run(
         [
             str(LAUNCHER),
             "--session",
-            "antigrav",
+            "agy",
             "--cd",
             str(workdir),
             "--terminal",
@@ -321,4 +549,87 @@ def test_launcher_env_override_non_agy_fails_closed(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 4
-    assert "HAPAX_ANTIGRAV_BIN must point to an agy executable" in result.stderr
+    assert "HAPAX_AGY_BIN must point to an agy executable" in result.stderr
+
+
+def test_launcher_uses_exact_tmux_session_match_for_agy_prefixes(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    bin_dir = Path(env["PATH"].split(":", 1)[0])
+    tmux_log = tmp_path / "tmux.log"
+    _write_executable(bin_dir / "agy", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        bin_dir / "tmux",
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$*" >> {tmux_log}
+if [ "$1" = "has-session" ]; then
+  # Simulate tmux prefix behavior that used to mistake hapax-agy-agy-2
+  # for hapax-agy-agy. Exact target syntax must prevent this match.
+  if [ "$3" = "hapax-agy-agy" ]; then exit 0; fi
+  exit 1
+fi
+exit 0
+""",
+    )
+    workdir = tmp_path / "projects" / "hapax-council--agy"
+    workdir.mkdir(parents=True)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "agy",
+            "--cd",
+            str(workdir),
+            "--no-claim",
+            "--terminal",
+            "tmux",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    log = tmux_log.read_text(encoding="utf-8")
+    assert "has-session -t =hapax-agy-agy" in log
+    assert "new-session" in log
+    assert "new-window" not in log
+
+
+def test_staged_inflection_filename_includes_lane_task_and_nonce(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    bin_dir = Path(env["PATH"].split(":", 1)[0])
+    _write_executable(bin_dir / "agy", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(bin_dir / "tmux", "#!/usr/bin/env bash\nexit 0\n")
+    workdir = tmp_path / "projects" / "hapax-council--agy-2"
+    workdir.mkdir(parents=True)
+    prompt = tmp_path / "dispatch.md"
+    prompt.write_text("task prompt\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "agy-2",
+            "--task",
+            "task-alpha",
+            "--cd",
+            str(workdir),
+            "--inflection",
+            str(prompt),
+            "--no-claim",
+            "--no-open",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    staged = sorted(
+        (Path(env["HOME"]) / ".cache" / "hapax" / "relay").glob("alpha-to-agy-*-staged.yaml")
+    )
+    assert len(staged) == 1
+    assert "agy-2-task-alpha" in staged[0].name

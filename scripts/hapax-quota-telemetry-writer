@@ -203,7 +203,7 @@ def role_platform(role: str) -> str:
     if normalized.startswith("gemini") or normalized.startswith("gm-"):
         return "retired-gemini"
     if normalized.startswith("antigrav") or normalized.startswith("agy"):
-        return "antigrav"
+        return "agy"
     if normalized.startswith("vbe-") or normalized.startswith("vibe"):
         return "vibe"
     return "claude"

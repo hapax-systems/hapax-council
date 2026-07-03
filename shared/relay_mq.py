@@ -168,7 +168,7 @@ def _row_to_envelope(row: sqlite3.Row) -> Envelope:
 
 
 # Canonical Claude coordination-lane names (greek slots). Codex lanes are
-# ``cx-<color>``; Antigrav lanes start ``antigrav``; Vibe lanes start
+# ``cx-<color>``; agy lanes are ``agy`` or ``agy-*``; Vibe lanes start
 # ``vbe``/``vibe``. These predicates are the single source of truth shared by
 # the per-runtime broadcast groups and the cross-runtime ``workers`` group.
 _CLAUDE_LANE_NAMES = frozenset(
@@ -184,8 +184,12 @@ def _is_codex_lane(peer: str) -> bool:
     return peer.startswith("cx-")
 
 
-def _is_antigrav_lane(peer: str) -> bool:
-    return peer.startswith("antigrav")
+def _is_agy_lane(peer: str) -> bool:
+    return peer == "agy" or peer.startswith("agy-")
+
+
+def _is_deprecated_antigrav_lane(peer: str) -> bool:
+    return peer in {"antigrav", "antigravity"} or peer.startswith(("antigrav-", "antigravity-"))
 
 
 def _is_vibe_lane(peer: str) -> bool:
@@ -195,10 +199,7 @@ def _is_vibe_lane(peer: str) -> bool:
 def _is_worker_lane(peer: str) -> bool:
     """A recognised executor lane across active runtimes."""
     return (
-        _is_claude_lane(peer)
-        or _is_codex_lane(peer)
-        or _is_antigrav_lane(peer)
-        or _is_vibe_lane(peer)
+        _is_claude_lane(peer) or _is_codex_lane(peer) or _is_agy_lane(peer) or _is_vibe_lane(peer)
     )
 
 
@@ -225,8 +226,10 @@ def expand_recipients(
             return [p for p in peers if _is_claude_lane(p)]
         elif group == "codex":
             return [p for p in peers if _is_codex_lane(p)]
+        elif group == "agy":
+            return [p for p in peers if _is_agy_lane(p)]
         elif group == "antigrav":
-            return [p for p in peers if _is_antigrav_lane(p)]
+            raise ValueError("Deprecated broadcast group: '*:antigrav'; use '*:agy'")
         elif group == "vibe":
             return [p for p in peers if _is_vibe_lane(p)]
         elif group == "workers":
@@ -237,6 +240,10 @@ def expand_recipients(
     tokens = [_normalize_role(t) for t in spec.split(",") if t.strip()]
     if not tokens:
         raise ValueError("Empty recipients spec")
+    deprecated = [token for token in tokens if _is_deprecated_antigrav_lane(token)]
+    if deprecated:
+        joined = ", ".join(deprecated)
+        raise ValueError(f"Deprecated recipient lane(s): {joined}; use agy or agy-*")
     return tokens
 
 

@@ -7,7 +7,7 @@ split from dispatch: the supervisor guarantees the process exists; the launcher
 lane into idle-await is correct, not spam.
 
 Coverage spans all runtimes: claude (greek, headless pidfile model), codex
-(cx-*, tmux model), and antigrav (tmux model).
+(cx-*, tmux model), and agy (tmux model).
 """
 
 from __future__ import annotations
@@ -56,7 +56,11 @@ def _write_fake_tmux(bin_dir: Path) -> None:
               esac
             done
             for live in ${TMUX_LIVE:-}; do
-              [ "$live" = "$target" ] && exit 0
+              if [[ "$target" == =* ]]; then
+                [ "$live" = "${target#=}" ] && exit 0
+              elif [[ "$live" == "$target"* ]]; then
+                exit 0
+              fi
             done
             exit 1
             ;;
@@ -80,7 +84,8 @@ def _base(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path]:
     _write_recorder(bin_dir / "hapax-claude-headless", calls / "claude-headless.txt")
     _write_recorder(bin_dir / "hapax-claude", calls / "claude.txt")
     _write_recorder(bin_dir / "hapax-codex", calls / "codex.txt")
-    _write_recorder(bin_dir / "hapax-antigrav", calls / "antigrav.txt")
+    _write_recorder(bin_dir / "hapax-agy", calls / "agy.txt")
+    _write_recorder(bin_dir / "agy", calls / "raw-agy.txt")
 
     env = os.environ.copy()
     # Strip any inherited lane identity so it cannot leak into the subprocess.
@@ -96,13 +101,14 @@ def _base(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path]:
             "HAPAX_SUPERVISOR_VAULT_ROOT": str(home / "vault"),
             "HAPAX_SUPERVISOR_CLAUDE_LANES": "",
             "HAPAX_SUPERVISOR_CODEX_LANES": "",
-            "HAPAX_SUPERVISOR_ANTIGRAV_LANES": "",
+            "HAPAX_SUPERVISOR_AGY_LANES": "",
             "HAPAX_SUPERVISOR_RESTART_COOLDOWN_S": "0",
             "HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS": "0",
             "HAPAX_CLAUDE_HEADLESS_BIN": str(bin_dir / "hapax-claude-headless"),
             "HAPAX_CLAUDE_BIN": str(bin_dir / "hapax-claude"),
             "HAPAX_CODEX_BIN": str(bin_dir / "hapax-codex"),
-            "HAPAX_ANTIGRAV_BIN": str(bin_dir / "hapax-antigrav"),
+            "HAPAX_AGY_BIN": str(bin_dir / "agy"),
+            "HAPAX_AGY_LAUNCHER_BIN": str(bin_dir / "hapax-agy"),
         }
     )
     env.update(overrides)
@@ -893,15 +899,90 @@ def test_supervisor_skips_live_codex_lane(tmp_path: Path) -> None:
     assert _reads(calls, "codex.txt") == ""
 
 
-def test_supervisor_respawns_dead_antigrav_lane(tmp_path: Path) -> None:
-    env, calls = _base(tmp_path, HAPAX_SUPERVISOR_ANTIGRAV_LANES="antigrav")
-    _make_worktree(env, "antigrav")
+def test_supervisor_respawns_dead_agy_lane(tmp_path: Path) -> None:
+    env, calls = _base(tmp_path, HAPAX_SUPERVISOR_AGY_LANES="agy")
+    _make_worktree(env, "agy")
 
     result = _run(env)
 
     assert result.returncode == 0, result.stderr
-    antigrav = _reads(calls, "antigrav.txt")
-    assert "--session antigrav" in antigrav
+    agy = _reads(calls, "agy.txt")
+    assert "--session agy" in agy
+    assert _reads(calls, "raw-agy.txt") == ""
+
+
+def test_supervisor_uses_agy_launcher_bin_not_raw_agy_bin(tmp_path: Path) -> None:
+    env, calls = _base(tmp_path, HAPAX_SUPERVISOR_AGY_LANES="agy")
+    _make_worktree(env, "agy")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert "--session agy" in _reads(calls, "agy.txt")
+    assert _reads(calls, "raw-agy.txt") == ""
+
+
+def test_supervisor_uses_exact_tmux_match_for_agy_liveness(tmp_path: Path) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_AGY_LANES="agy",
+        TMUX_LIVE="hapax-agy-agy-2",
+    )
+    _make_worktree(env, "agy")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert "--session agy" in _reads(calls, "agy.txt")
+
+
+def test_supervisor_normalizes_deprecated_antigrav_roster_to_agy(tmp_path: Path) -> None:
+    env, calls = _base(tmp_path)
+    env.pop("HAPAX_SUPERVISOR_AGY_LANES")
+    env["HAPAX_SUPERVISOR_ANTIGRAV_LANES"] = "antigrav-2"
+    _make_worktree(env, "agy-2")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "deprecated HAPAX_SUPERVISOR_ANTIGRAV_LANES normalized to agy lanes: agy-2" in result.stdout
+    )
+    agy = _reads(calls, "agy.txt")
+    assert "--session agy-2" in agy
+
+
+def test_supervisor_normalizes_deprecated_antigravity_roster_to_agy(tmp_path: Path) -> None:
+    env, calls = _base(tmp_path)
+    env.pop("HAPAX_SUPERVISOR_AGY_LANES")
+    env["HAPAX_SUPERVISOR_ANTIGRAV_LANES"] = "antigravity-2"
+    _make_worktree(env, "agy-2")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "deprecated HAPAX_SUPERVISOR_ANTIGRAV_LANES normalized to agy lanes: agy-2" in result.stdout
+    )
+    agy = _reads(calls, "agy.txt")
+    assert "--session agy-2" in agy
+
+
+def test_supervisor_explicit_empty_agy_roster_does_not_fall_back_to_legacy_antigrav(
+    tmp_path: Path,
+) -> None:
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_AGY_LANES="",
+        HAPAX_SUPERVISOR_ANTIGRAV_LANES="antigrav-2",
+    )
+    _make_worktree(env, "agy-2")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert "deprecated HAPAX_SUPERVISOR_ANTIGRAV_LANES normalized" not in result.stdout
+    assert _reads(calls, "agy.txt") == ""
 
 
 # ─── guardrails: cooldown, worktree presence, dry-run, burst ───────────────────

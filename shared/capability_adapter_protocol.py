@@ -2,7 +2,7 @@
 
 The adapter layer is a *thin* facade over the existing pure dispatch functions. It
 exists to give every platform (claude/codex worker lanes, the api budget authority, the
-glmcp review seat, antigrav) ONE uniform surface —
+glmcp review seat, agy) ONE uniform surface —
 ``describe / admit / observe / collect_receipts`` (FINAL, non-overridable delegations) plus
 ``preflight / launch / send / classify_failure`` (the per-platform overridable surface) —
 WITHOUT widening any authority or duplicating policy.
@@ -72,7 +72,7 @@ __all__ = [
     "ReviewSeatAdapter",
     "ClaudeAdapter",
     "CodexAdapter",
-    "AntigravAdapter",
+    "AgyAdapter",
 ]
 
 
@@ -285,11 +285,11 @@ class WorkerAdapter(CapabilityAdapter):
 class SendCapableAdapter:
     """Mixin granting the relay ``send`` capability. Combine as
     ``class FooAdapter(WorkerAdapter, SendCapableAdapter)``. Platforms without send (api, the glmcp
-    review seat, antigrav) do not mix this in, so ``send`` is absent from their MRO.
+    review seat, agy) do not mix this in, so ``send`` is absent from their MRO.
 
     Not a :class:`CapabilityAdapter` subclass on its own (so defining it does not trip the FINAL
     guard). The protocol layer marks the capability + gates authority; the actual relay is wired
-    per-platform in the glue slices (antigrav-glue / vibe-glue; the live relay is
+    per-platform in the glue slices (agy-glue / vibe-glue; the live relay is
     ``scripts/hapax-claude-send``).
     """
 
@@ -386,31 +386,32 @@ class CodexAdapter(WorkerAdapter, SendCapableAdapter):
         )
 
 
-# Antigrav LAUNCHER exit codes (scripts/hapax-antigrav) -> FailureCode. Only the two codes with a
+# agy launcher exit codes (currently through scripts/hapax-antigrav compatibility wrapper) -> FailureCode.
+# Only the two codes with a
 # genuine availability/claim meaning are mapped; usage/env/setup errors (2/3/5/6/9) stay UNKNOWN
 # (no auto-degrade). Verbatim from the launcher: exit 4 = agy binary not found (route gone),
 # exit 8 = cc-claim failed (claim conflict — the reserved CLAIM_CONFLICT code's first producer).
-_ANTIGRAV_EXIT_CODE_TO_FAILURE: dict[int, FailureCode] = {
+_AGY_EXIT_CODE_TO_FAILURE: dict[int, FailureCode] = {
     4: FailureCode.ROUTE_UNAVAILABLE,
     8: FailureCode.CLAIM_CONFLICT,
 }
 
 
-class AntigravAdapter(WorkerAdapter):
-    """Antigrav worker lane: a WorkerAdapter that does NOT mix in :class:`SendCapableAdapter`, so it
-    has no ``send`` (criterion: "antigrav adapter has no send"). Interactive-only (the ``agy`` CLI).
+class AgyAdapter(WorkerAdapter):
+    """agy worker lane: a WorkerAdapter that does NOT mix in :class:`SendCapableAdapter`, so it
+    has no ``send``. Interactive-only (the ``agy`` CLI).
 
     ``classify_failure`` maps the launcher's exit codes to a FailureCode (UNKNOWN default, lossless).
     Neither mapped code (ROUTE_UNAVAILABLE/CLAIM_CONFLICT) is in the worker-availability degrade
-    allowlist, so an antigrav failure yields a receipt but never degrades family availability.
+    allowlist, so an agy failure yields a receipt but never degrades family availability.
 
-    AUTHORITY EXCLUSION (#3802): the antigrav PreToolUse gate (wired into agy's hooks.json) covers
+    AUTHORITY EXCLUSION (#3802): the agy PreToolUse gate (wired into agy's hooks.json) covers
     ONLY agy's native mutation tools. Direct IDE Edit/Write is outside agy's hook mechanism and thus
     outside this adapter's gated authority — closing it would require Claude Code settings.json
     wiring, not agy hooks.json. A scoped, documented exclusion, not a silent gap.
     """
 
-    PLATFORM: ClassVar[Platform] = Platform.ANTIGRAV
+    PLATFORM: ClassVar[Platform] = Platform.AGY
 
     def classify_failure(
         self,
@@ -423,7 +424,7 @@ class AntigravAdapter(WorkerAdapter):
         exit_code: int | None = None,
     ) -> FailureReceipt:
         code = (
-            _ANTIGRAV_EXIT_CODE_TO_FAILURE.get(exit_code, FailureCode.UNKNOWN)
+            _AGY_EXIT_CODE_TO_FAILURE.get(exit_code, FailureCode.UNKNOWN)
             if exit_code is not None
             else FailureCode.UNKNOWN
         )

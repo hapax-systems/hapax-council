@@ -40,7 +40,15 @@ Defined in `RouteConstraints.preferred_platforms` / `allowed_platforms` / `prohi
 | `claude` | Claude Code (Opus/Sonnet) | Frontier | 1M | Multi-file refactors, governance, architecture |
 | `codex` | Codex headless | Frontier | 192K | Bounded implementation, parallel lanes |
 | `vibe` | Mistral Medium 3.5 | JR+ | 256K | Mechanical: tests, deps, CI fixes |
-| `antigrav` | Antigravity/agy (Gemini-family) | JR+ | large | Directed, bounded, agy-backed CLI/IDE work |
+| `agy` | agy CLI (Gemini-family; Antigrav is deprecated provenance only) | JR+ | large | Directed, bounded, governed CLI/IDE work |
+
+Recheck: `scripts/hapax-methodology-dispatch --list-platform-paths` must include
+`agy/interactive/full` and omit `antigrav/interactive/full`; `scripts/hapax-methodology-dispatch
+--task <valid-task> --lane agy --platform antigrav --mode interactive --profile full`
+uses a canonical lane deliberately and must refuse with the Antigrav-to-agy platform
+migration receipt. Deprecated lane spellings are a separate input-validity failure:
+`scripts/hapax-methodology-dispatch --task <valid-task> --lane antigrav --platform agy
+--mode interactive --profile full` must fail before any dispatch receipt or launch.
 
 ## Reaching the Opus Route (signed route-authority receipts)
 

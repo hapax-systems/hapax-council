@@ -215,8 +215,11 @@ def read_assignment() -> dict[str, Any]:
     if rte.startswith("vbe-") and not protocol_exception:
         status = "invalid"
         reasons.append("Vibe burst lane requires protocol_exception")
+    if rte in {"antigrav", "antigravity"} or rte.startswith(("antigrav-", "antigravity-")):
+        status = "invalid"
+        reasons.append("retired Antigrav lane cannot be RTE")
     if (
-        rte in {"antigrav", "gemini"} or rte.startswith("antigrav-") or rte.startswith("gemini-")
+        rte in {"agy", "gemini"} or rte.startswith("agy-") or rte.startswith("gemini-")
     ) and not protocol_exception:
         status = "invalid"
         reasons.append("restricted RTE lane requires protocol_exception")

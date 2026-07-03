@@ -131,6 +131,7 @@ lane_families:
     cx-glmcp: glm
     codex-glmcp: glm
     glmcp: glm
+    agy: gemini
     antigrav: gemini
     antigravity: gemini
   prefixes:

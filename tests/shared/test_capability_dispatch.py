@@ -28,7 +28,7 @@ from shared.capability_dispatch import (
 # A fixed registry set so resolution tests don't depend on the live registry file.
 VALID = frozenset(
     {
-        "antigrav.interactive.full",
+        "agy.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
         "claude.headless.full",
@@ -51,13 +51,13 @@ VALID = frozenset(
 def test_resolve_known_alias_ok() -> None:
     res = resolve_capability("agy", valid_route_ids=VALID)
     assert res.ok
-    assert res.route_id == "antigrav.interactive.full"
-    assert (res.platform, res.mode, res.profile) == ("antigrav", "interactive", "full")
+    assert res.route_id == "agy.interactive.full"
+    assert (res.platform, res.mode, res.profile) == ("agy", "interactive", "full")
 
 
 def test_resolve_is_case_insensitive_and_trims() -> None:
     res = resolve_capability("  AGY ", valid_route_ids=VALID)
-    assert res.ok and res.route_id == "antigrav.interactive.full"
+    assert res.ok and res.route_id == "agy.interactive.full"
 
 
 def test_resolve_raw_route_id_ok() -> None:
@@ -89,8 +89,8 @@ def test_resolve_non_spawnable_platform_fails_closed() -> None:
 
 
 def test_resolve_alias_to_route_absent_from_registry() -> None:
-    # agy -> antigrav.interactive.full, but pretend the registry lacks that route.
-    res = resolve_capability("agy", valid_route_ids=VALID - {"antigrav.interactive.full"})
+    # agy -> agy.interactive.full, but pretend the registry lacks that route.
+    res = resolve_capability("agy", valid_route_ids=VALID - {"agy.interactive.full"})
     assert not res.ok and "not in the registry" in res.reason
 
 
@@ -301,11 +301,11 @@ def test_utilization_active_vs_latent() -> None:
     records = [
         {"platform": "codex", "mode": "headless", "profile": "full", "launched": True},
         {"platform": "codex", "mode": "headless", "profile": "full", "launched": True},
-        {"platform": "antigrav", "mode": "interactive", "profile": "full", "launched": True},
+        {"platform": "agy", "mode": "interactive", "profile": "full", "launched": True},
     ]
     u = utilization(records, valid_route_ids=VALID)
     assert "codex.headless.full" in u.active
-    assert "antigrav.interactive.full" in u.active
+    assert "agy.interactive.full" in u.active
     assert "vibe.headless.full" in u.latent  # launchable but unused
     assert u.counts["codex.headless.full"] == 2
     assert set(u.active).isdisjoint(set(u.latent))
@@ -333,7 +333,7 @@ def test_utilization_counts_unknown_routes_but_excludes_from_known() -> None:
 
 
 def test_utilization_alias_for_uses_primary_alias() -> None:
-    records = [{"platform": "antigrav", "mode": "interactive", "profile": "full", "launched": True}]
+    records = [{"platform": "agy", "mode": "interactive", "profile": "full", "launched": True}]
     u = utilization(records, valid_route_ids=VALID)
     # agy is declared before gemini, so it is the primary display alias.
-    assert u.alias_for["antigrav.interactive.full"] == "agy"
+    assert u.alias_for["agy.interactive.full"] == "agy"

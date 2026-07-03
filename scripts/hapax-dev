@@ -11,7 +11,7 @@
 #
 # ...and all the right things happen: a FRESH unique HAPAX_SESSION_ID and a
 # free interactive identity distinct from the headless reform fleet, dispatched
-# to the existing platform spawner (hapax-claude / hapax-codex / hapax-antigrav).
+# to the existing platform spawner (hapax-claude / hapax-codex / hapax-agy).
 # This is the ergonomic layer on top of the session-keyed identity model — a
 # session with a unique explicit identity is guaranteed non-conflicting, so the
 # operator can spin up a parallel stream (e.g. audio) that never collides with
@@ -50,18 +50,26 @@ FAKE_TMUX_ACTIVE="${HAPAX_DEV_FAKE_LIVE_TMUX+1}"
 #     auto-respawned by hapax-lane-supervisor, so the interactive pool is the
 #     non-greek `dev` namespace. A free greek role is used ONLY if named.
 #   - codex colors red (primary) and violet (protected) are reserved.
-#   - agy interactive slots are the antigrav lane names the spawner accepts.
+#   - agy interactive slots use agy lane names; antigrav is only a deprecated input alias.
 CLAUDE_POOL="${HAPAX_DEV_CLAUDE_POOL:-dev dev2 dev3 dev4 dev5}"
 CODEX_POOL="${HAPAX_DEV_CODEX_POOL:-cx-blue cx-green cx-cyan cx-magenta cx-amber cx-teal}"
-AGY_POOL="${HAPAX_DEV_AGY_POOL:-antigrav antigrav-2 antigrav-3}"
+AGY_POOL="${HAPAX_DEV_AGY_POOL:-agy agy-2 agy-3}"
 
 CLAUDE_BIN="${HAPAX_DEV_CLAUDE_BIN:-hapax-claude}"
 CODEX_BIN="${HAPAX_DEV_CODEX_BIN:-hapax-codex}"
-AGY_BIN="${HAPAX_DEV_AGY_BIN:-hapax-antigrav}"
+AGY_BIN="${HAPAX_DEV_AGY_BIN:-hapax-agy}"
 
 PROG="hapax-dev"
 
-die() { echo "$PROG: $*" >&2; exit "${2:-1}"; }
+die() {
+  local rc=1
+  if [ "$#" -gt 1 ] && [[ "${!#}" =~ ^[0-9]+$ ]]; then
+    rc="${!#}"
+    set -- "${@:1:$(($# - 1))}"
+  fi
+  echo "$PROG: $*" >&2
+  exit "$rc"
+}
 
 # ── Per-platform descriptors ────────────────────────────────────────────────
 # Resolve a platform keyword to its spawner bin, tmux session prefix, identity
@@ -70,7 +78,7 @@ platform_descriptor() {
   case "$1" in
     claude)          printf '%s\t%s\t%s\t%s\t%s\n' "$CLAUDE_BIN" "hapax-claude"    "--role"    "$CLAUDE_POOL" "claude-headless" ;;
     codex)           printf '%s\t%s\t%s\t%s\t%s\n' "$CODEX_BIN"  "hapax-codex"     "--session" "$CODEX_POOL"  "codex-headless" ;;
-    agy|antigrav)    printf '%s\t%s\t%s\t%s\t%s\n' "$AGY_BIN"    "hapax-antigrav"  "--session" "$AGY_POOL"    "" ;;
+    agy)             printf '%s\t%s\t%s\t%s\t%s\n' "$AGY_BIN"    "hapax-agy"       "--session" "$AGY_POOL"    "" ;;
     *) return 1 ;;
   esac
 }
@@ -79,7 +87,8 @@ normalize_platform() {
   case "$1" in
     claude) echo claude ;;
     codex)  echo codex ;;
-    agy|antigrav) echo agy ;;
+    agy)    echo agy ;;
+    antigrav) die "deprecated platform 'antigrav'; use 'agy'" 2 ;;
     *) return 1 ;;
   esac
 }
@@ -92,7 +101,7 @@ valid_name_for_platform() {
   case "$platform" in
     claude) [[ "$name" =~ ^dev[0-9]*$ || "$name" =~ ^(alpha|beta|gamma|delta|epsilon|zeta|eta|theta)$ ]] ;;
     codex)  [[ "$name" =~ ^cx-[a-z][a-z-]*$ ]] ;;
-    agy)    [[ "$name" =~ ^antigrav(-[a-z0-9-]+)?$ ]] ;;
+    agy)    [[ "$name" =~ ^agy(-[a-z0-9-]+)?$ ]] ;;
     *) return 1 ;;
   esac
 }
@@ -110,7 +119,12 @@ tmux_session_live() {
     return 1
   fi
   command -v "$TMUX_BIN" >/dev/null 2>&1 || return 1
-  "$TMUX_BIN" has-session -t "$session" 2>/dev/null
+  "$TMUX_BIN" has-session -t "=$session" 2>/dev/null
+}
+
+tmux_attach_args() {
+  local session="$1"
+  printf 'attach -t =%s\n' "$session"
 }
 
 # An identity is "live" — and therefore NOT free — if ANY of these hold. This
@@ -173,7 +187,7 @@ usage:
 platforms:
   claude            interactive pool: $CLAUDE_POOL
   codex             interactive pool: $CODEX_POOL
-  agy (= antigrav)  interactive pool: $AGY_POOL
+  agy              interactive pool: $AGY_POOL
 
 flags:
   --window          open a new terminal window attached to the session
@@ -239,15 +253,16 @@ cmd_attach() {
   case "$name" in
     dev|dev[0-9]*|alpha|beta|gamma|delta|epsilon|zeta|eta|theta) platform=claude; prefix=hapax-claude ;;
     cx-*) platform=codex; prefix=hapax-codex ;;
-    antigrav|antigrav-*) platform=agy; prefix=hapax-antigrav ;;
+    agy|agy-*) platform=agy; prefix=hapax-agy ;;
+    antigrav|antigrav-*) die "attach: deprecated lane '$name'; use agy/agy-* and hapax-agy sessions" 2 ;;
     *) die "attach: cannot infer platform from name '$name'" 2 ;;
   esac
   local session="$prefix-$name"
   if ! tmux_session_live "$session"; then
     die "attach: no live tmux session '$session' (try '$PROG ls')" 3
   fi
-  [ "$DRY_RUN" = "1" ] && { echo "would attach: $TMUX_BIN attach -t $session"; return 0; }
-  exec "$TMUX_BIN" attach -t "$session"
+  [ "$DRY_RUN" = "1" ] && { echo "would attach: $TMUX_BIN $(tmux_attach_args "$session")"; return 0; }
+  exec "$TMUX_BIN" attach -t "=$session"
 }
 
 # ── Launch ──────────────────────────────────────────────────────────────────
@@ -295,7 +310,7 @@ cmd_launch() {
   if identity_is_live "$prefix" "$name" "$hbsub"; then
     echo "$PROG: '$name' is already live — not launching a second $platform session." >&2
     if tmux_session_live "$tmux_session"; then
-      echo "  attach with: $TMUX_BIN attach -t $tmux_session" >&2
+      echo "  attach with: $TMUX_BIN $(tmux_attach_args "$tmux_session")" >&2
     else
       local t; t="$(claimed_task_for "$name")"
       echo "  it holds an active claim/heartbeat${t:+ (task: $t)} — pick another name." >&2
@@ -332,7 +347,7 @@ cmd_launch() {
     echo "visibility:  $visibility"
     echo "spawn:       ${spawn_cmd[*]}"
     if [ "$detach" -eq 1 ]; then
-      echo "attach:      $TMUX_BIN attach -t $tmux_session"
+      echo "attach:      $TMUX_BIN $(tmux_attach_args "$tmux_session")"
     fi
     return 0
   fi
@@ -343,7 +358,7 @@ cmd_launch() {
 
   if [ "$detach" -eq 1 ]; then
     echo "$PROG: $platform '$name' started detached."
-    echo "  attach with: $TMUX_BIN attach -t $tmux_session"
+    echo "  attach with: $TMUX_BIN $(tmux_attach_args "$tmux_session")"
     return 0
   fi
 
@@ -352,8 +367,8 @@ cmd_launch() {
     local foot_bin
     foot_bin="$(command -v footclient || command -v foot || true)"
     [ -n "$foot_bin" ] || die "footclient/foot not found for --window" 10
-    setsid -f "$foot_bin" --app-id "hapax-antigrav-$name" --title "$name" \
-      "$TMUX_BIN" attach -t "$tmux_session" >/dev/null 2>&1
+    setsid -f "$foot_bin" --app-id "hapax-agy-$name" --title "$name" \
+      "$TMUX_BIN" attach -t "=$tmux_session" >/dev/null 2>&1
     echo "$PROG: opened agy '$name' in a new window."
     return 0
   fi
@@ -365,7 +380,7 @@ cmd_launch() {
   fi
 
   # Default: attach in the CURRENT terminal (operator-initiated ⇒ attach wanted).
-  exec "$TMUX_BIN" attach -t "$tmux_session"
+  exec "$TMUX_BIN" attach -t "=$tmux_session"
 }
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
@@ -375,7 +390,8 @@ main() {
     help|-h|--help) usage ;;
     ls|list)        shift || true; cmd_ls ;;
     attach)         shift; cmd_attach "$@" ;;
-    claude|codex|agy|antigrav) cmd_launch "$@" ;;
+    claude|codex|agy) cmd_launch "$@" ;;
+    antigrav) die "deprecated platform 'antigrav'; use 'agy'" 2 ;;
     *) usage >&2; die "unknown command or platform '$cmd'" 2 ;;
   esac
 }

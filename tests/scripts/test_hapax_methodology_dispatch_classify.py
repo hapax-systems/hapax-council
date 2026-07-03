@@ -126,8 +126,8 @@ def test_platform_without_adapter_emits_unknown_receipt() -> None:
     assert rec.call_args.kwargs["receipt"].platform == "vibe"
 
 
-def test_antigrav_exit_code_flows_through_wrapper_to_adapter() -> None:
-    # the wrapper must pass exit_code=rc so AntigravAdapter's launcher exit-code table is LIVE
+def test_agy_exit_code_flows_through_wrapper_to_adapter() -> None:
+    # the wrapper must pass exit_code=rc so AgyAdapter's launcher exit-code table is LIVE
     for rc, expected in ((4, FailureCode.ROUTE_UNAVAILABLE), (8, FailureCode.CLAIM_CONFLICT)):
         with (
             mock.patch.object(_MOD, "_read_worker_failure_text", return_value="agy failure"),
@@ -137,8 +137,8 @@ def test_antigrav_exit_code_flows_through_wrapper_to_adapter() -> None:
             _MOD._classify_and_witness_terminal_failure(
                 rc,
                 task_id="t",
-                lane="antigrav",
-                platform="antigrav",
+                lane="agy",
+                platform="agy",
                 mode="interactive",
                 profile="jr",
             )

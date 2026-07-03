@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Canonical agy launcher surface. The implementation still delegates to the
+# legacy hapax-antigrav wrapper until the historical script/rule filenames are
+# fully renamed by cc-task-agy-wrapper-legacy-antigrav-surface-excision-20260630;
+# dispatch and capability receipts should target this file.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec "$SCRIPT_DIR/hapax-antigrav" "$@"

@@ -71,11 +71,42 @@ def test_claude_role_supported_for_compatibility() -> None:
     assert out == "beta"
 
 
+def test_legacy_antigrav_env_identity_normalizes_to_agy() -> None:
+    out = _bash("hapax_agent_identity", env={"HAPAX_AGENT_ROLE": "antigrav-2"})
+    assert out == "agy-2"
+
+
+def test_legacy_antigravity_env_identity_normalizes_to_agy() -> None:
+    out = _bash("hapax_agent_identity", env={"HAPAX_AGENT_ROLE": "antigravity-2"})
+    assert out == "agy-2"
+
+
 def test_role_from_delta_worktree_path(tmp_path: Path) -> None:
     worktree = tmp_path / "hapax-council--delta-omg"
     worktree.mkdir()
     out = _bash("hapax_agent_worktree_role", cwd=worktree)
     assert out == "delta"
+
+
+def test_role_from_agy_worktree_path(tmp_path: Path) -> None:
+    worktree = tmp_path / "hapax-council--agy-2"
+    worktree.mkdir()
+    out = _bash("hapax_agent_worktree_role", cwd=worktree)
+    assert out == "agy-2"
+
+
+def test_legacy_antigrav_worktree_path_normalizes_to_agy(tmp_path: Path) -> None:
+    worktree = tmp_path / "hapax-council--antigrav-2"
+    worktree.mkdir()
+    out = _bash("hapax_agent_worktree_role", cwd=worktree)
+    assert out == "agy-2"
+
+
+def test_legacy_antigravity_worktree_path_normalizes_to_agy(tmp_path: Path) -> None:
+    worktree = tmp_path / "hapax-council--antigravity-2"
+    worktree.mkdir()
+    out = _bash("hapax_agent_worktree_role", cwd=worktree)
+    assert out == "agy-2"
 
 
 def test_codex_interface_detection() -> None:
@@ -123,6 +154,19 @@ def test_session_role_write_then_read(tmp_path: Path) -> None:
     assert out == "alpha"
 
 
+def test_assert_identity_accepts_agy_lane(tmp_path: Path) -> None:
+    result = subprocess.run(
+        ["bash", str(HELPER), "assert-identity", "agy-2"],
+        env={**os.environ, "HOME": str(tmp_path), "HAPAX_SESSION_ID": "sid-agy"},
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    marker = tmp_path / ".cache/hapax/session-role-sid-agy"
+    assert marker.read_text(encoding="utf-8").strip() == "agy-2"
+
+
 def test_session_role_read_missing_returns_nonzero(tmp_path: Path) -> None:
     out = _bash("hapax_session_role_read nope || echo MISS", env={"HOME": str(tmp_path)})
     assert out == "MISS"
@@ -144,6 +188,30 @@ def test_identity_resolves_from_session_marker(tmp_path: Path) -> None:
         env={"HOME": str(tmp_path), "HAPAX_SESSION_ID": "sess-1"},
     )
     assert out == "epsilon"
+
+
+def test_legacy_antigrav_session_marker_normalizes_to_agy(tmp_path: Path) -> None:
+    marker = tmp_path / ".cache/hapax/session-role-sess-agy"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("antigrav-2\n")
+    out = _bash(
+        "hapax_agent_identity",
+        cwd=tmp_path,
+        env={"HOME": str(tmp_path), "HAPAX_SESSION_ID": "sess-agy"},
+    )
+    assert out == "agy-2"
+
+
+def test_legacy_antigravity_session_marker_normalizes_to_agy(tmp_path: Path) -> None:
+    marker = tmp_path / ".cache/hapax/session-role-sess-agy"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("antigravity-2\n")
+    out = _bash(
+        "hapax_agent_identity",
+        cwd=tmp_path,
+        env={"HOME": str(tmp_path), "HAPAX_SESSION_ID": "sess-agy"},
+    )
+    assert out == "agy-2"
 
 
 def test_explicit_env_role_beats_session_marker(tmp_path: Path) -> None:

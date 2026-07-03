@@ -93,7 +93,7 @@ def _base(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path]:
     _write_recorder(bin_dir / "hapax-claude-headless", calls / "claude-headless.txt")
     _write_recorder(bin_dir / "hapax-claude", calls / "claude.txt")
     _write_recorder(bin_dir / "hapax-codex", calls / "codex.txt")
-    _write_recorder(bin_dir / "hapax-antigrav", calls / "antigrav.txt")
+    _write_recorder(bin_dir / "hapax-agy", calls / "agy.txt")
     _write_recorder(bin_dir / "curl", calls / "curl.txt")
 
     env = os.environ.copy()
@@ -109,13 +109,13 @@ def _base(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path]:
             "HAPAX_SUPERVISOR_VAULT_ROOT": str(home / "vault"),
             "HAPAX_SUPERVISOR_CLAUDE_LANES": "",
             "HAPAX_SUPERVISOR_CODEX_LANES": "",
-            "HAPAX_SUPERVISOR_ANTIGRAV_LANES": "",
+            "HAPAX_SUPERVISOR_AGY_LANES": "",
             "HAPAX_SUPERVISOR_RESTART_COOLDOWN_S": "0",
             "HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS": "0",
             "HAPAX_CLAUDE_HEADLESS_BIN": str(bin_dir / "hapax-claude-headless"),
             "HAPAX_CLAUDE_BIN": str(bin_dir / "hapax-claude"),
             "HAPAX_CODEX_BIN": str(bin_dir / "hapax-codex"),
-            "HAPAX_ANTIGRAV_BIN": str(bin_dir / "hapax-antigrav"),
+            "HAPAX_AGY_BIN": str(bin_dir / "hapax-agy"),
             # progress-watchdog knobs
             "HAPAX_SUPERVISOR_CLAUDE_LOG_DIR": str(log_dir),
             "HAPAX_SUPERVISOR_STALL_T": "900",

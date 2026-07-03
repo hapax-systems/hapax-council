@@ -9,7 +9,7 @@ from unittest import mock
 import pytest
 
 from shared.capability_adapter_protocol import (
-    AntigravAdapter,
+    AgyAdapter,
     AuthorityViolation,
     BudgetAuthorityAdapter,
     CapabilityAdapter,
@@ -129,9 +129,9 @@ def test_review_seat_has_no_launch_or_send() -> None:
     assert not hasattr(ReviewSeatAdapter, "send")
 
 
-def test_antigrav_has_launch_but_no_send() -> None:
-    assert hasattr(AntigravAdapter, "launch")  # it IS a worker
-    assert not hasattr(AntigravAdapter, "send")  # but does not mix SendCapableAdapter
+def test_agy_has_launch_but_no_send() -> None:
+    assert hasattr(AgyAdapter, "launch")  # it IS a worker
+    assert not hasattr(AgyAdapter, "send")  # but does not mix SendCapableAdapter
 
 
 def test_platform_classvars_are_pinned() -> None:
@@ -139,7 +139,7 @@ def test_platform_classvars_are_pinned() -> None:
     assert CodexAdapter.PLATFORM is Platform.CODEX
     assert BudgetAuthorityAdapter.PLATFORM is Platform.API
     assert ReviewSeatAdapter.PLATFORM is Platform.GLMCP
-    assert AntigravAdapter.PLATFORM is Platform.ANTIGRAV
+    assert AgyAdapter.PLATFORM is Platform.AGY
 
 
 # --- criterion 5: launch() FIRST asserts authority, else AuthorityViolation --------------------
@@ -273,17 +273,17 @@ def test_codex_classify_failure_shares_the_cli_table() -> None:
     assert adapter.classify_failure("x").platform == Platform.CODEX.value
 
 
-def test_antigrav_classify_failure_maps_launcher_exit_codes() -> None:
-    a = AntigravAdapter()
+def test_agy_classify_failure_maps_launcher_exit_codes() -> None:
+    a = AgyAdapter()
     # the two codes with a genuine availability/claim meaning map; everything else stays UNKNOWN
     assert a.classify_failure("agy not found", exit_code=4).code is FailureCode.ROUTE_UNAVAILABLE
     assert a.classify_failure("cc-claim failed", exit_code=8).code is FailureCode.CLAIM_CONFLICT
     for ec in (2, 3, 5, 6, 9, 99):  # usage/env/setup + unmapped -> no auto-degrade
         assert a.classify_failure("x", exit_code=ec).code is FailureCode.UNKNOWN
     assert a.classify_failure("no exit code given").code is FailureCode.UNKNOWN
-    receipt = a.classify_failure("Antigravity CLI not found", exit_code=4)
-    assert receipt.platform == Platform.ANTIGRAV.value
-    assert receipt.raw_signal == "Antigravity CLI not found"  # lossless
+    receipt = a.classify_failure("agy CLI not found", exit_code=4)
+    assert receipt.platform == Platform.AGY.value
+    assert receipt.raw_signal == "agy CLI not found"  # lossless
     # neither mapped code degrades family availability (not in the witness allowlist)
     from shared.worker_failure_witness import WORKER_AVAILABILITY_DEGRADE_CODES
 

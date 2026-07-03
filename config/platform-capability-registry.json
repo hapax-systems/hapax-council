@@ -10,7 +10,7 @@
     "fresh-platform-surface-research:2026-05-17T18:38Z"
   ],
   "required_route_ids": [
-    "antigrav.interactive.full",
+    "agy.interactive.full",
     "api.headless.api_frontier",
     "api.headless.provider_gateway",
     "claude.headless.full",
@@ -27,19 +27,19 @@
   "routes": [
     {
       "registry_schema": 1,
-      "route_id": "antigrav.interactive.full",
-      "platform": "antigrav",
+      "route_id": "agy.interactive.full",
+      "platform": "agy",
       "mode": "interactive",
       "profile": "full",
-      "launcher": "~/.local/bin/hapax-antigrav --session <lane> --task <task> --terminal tmux",
-      "summary": "Google Antigravity CLI lane",
+      "launcher": "scripts/hapax-agy --session <lane> --task <task> --terminal tmux",
+      "summary": "agy CLI lane",
       "notes": "agy CLI audited full-worker lane; requires governed dispatch bootstrap, task claim, external gates, PR review, and sensitive-surface restrictions.",
       "route_state": "blocked",
       "blocked_reasons": [
         "fresh_capability_evidence_absent",
         "quota_telemetry_unknown"
       ],
-      "model_or_engine": "google-antigravity-cli-agy",
+      "model_or_engine": "agy-cli",
       "execution_descriptor": {
         "model_id": "gemini-3.1-pro-preview",
         "effort": "none",
@@ -110,7 +110,7 @@
           },
           "resource": {
             "evidence_refs": [
-              "local:~/.local/bin/hapax-antigrav --help:available:2026-05-17T08:07Z"
+              "local:scripts/hapax-agy --help:available:2026-06-30T18:44Z"
             ],
             "blocked_reasons": []
           },
@@ -123,16 +123,16 @@
         }
       },
       "known_unknowns": [
-        "Antigravity account-live quota is not exposed as local telemetry; fresh local receipts record this as an advisory blocker rather than a pre-launch catch-22.",
+        "agy account-live quota is not exposed as local telemetry; fresh local receipts record this as an advisory blocker rather than a pre-launch catch-22.",
         "Provider training/privacy posture is not equivalent to local execution; privacy/secret-sensitive tasks remain excluded by route policy.",
-        "Current Antigravity implementation is the agy terminal CLI; legacy antigravity IDE naming is compatibility only."
+        "Antigrav is deprecated archive provenance; current capability must be expressed as agy route identity and granular measured supply leaves."
       ],
       "capability_scores": {
         "grounding": {
           "score": 2,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:grounding"
+            "platform-capability-registry:agy.interactive.full:dimensional-score:grounding"
           ],
           "observed_at": "2026-05-09T20:50:00Z",
           "stale_after": "24h"
@@ -141,7 +141,7 @@
           "score": 2,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:governance_reasoning"
+            "platform-capability-registry:agy.interactive.full:dimensional-score:governance_reasoning"
           ],
           "observed_at": "2026-05-09T20:50:00Z",
           "stale_after": "24h"
@@ -150,7 +150,7 @@
           "score": 3,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:source_editing"
+            "platform-capability-registry:agy.interactive.full:dimensional-score:source_editing"
           ],
           "observed_at": "2026-05-09T20:50:00Z",
           "stale_after": "24h"
@@ -159,7 +159,7 @@
           "score": 3,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:architecture"
+            "platform-capability-registry:agy.interactive.full:dimensional-score:architecture"
           ],
           "observed_at": "2026-05-09T20:50:00Z",
           "stale_after": "24h"
@@ -168,7 +168,7 @@
           "score": 2,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:ambiguity_resolution"
+            "platform-capability-registry:agy.interactive.full:dimensional-score:ambiguity_resolution"
           ],
           "observed_at": "2026-05-09T20:50:00Z",
           "stale_after": "24h"
@@ -177,7 +177,7 @@
           "score": 2,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:long_context"
+            "platform-capability-registry:agy.interactive.full:dimensional-score:long_context"
           ],
           "observed_at": "2026-05-09T20:50:00Z",
           "stale_after": "24h"
@@ -186,7 +186,7 @@
           "score": 2,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:current_docs_grounding"
+            "platform-capability-registry:agy.interactive.full:dimensional-score:current_docs_grounding"
           ],
           "observed_at": "2026-05-09T20:50:00Z",
           "stale_after": "24h"
@@ -195,7 +195,7 @@
           "score": 2,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:multimodal_verification"
+            "platform-capability-registry:agy.interactive.full:dimensional-score:multimodal_verification"
           ],
           "observed_at": "2026-05-09T20:50:00Z",
           "stale_after": "24h"
@@ -204,7 +204,7 @@
           "score": 3,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:runtime_debugging"
+            "platform-capability-registry:agy.interactive.full:dimensional-score:runtime_debugging"
           ],
           "observed_at": "2026-05-09T20:50:00Z",
           "stale_after": "24h"
@@ -213,7 +213,7 @@
           "score": 2,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:test_authoring"
+            "platform-capability-registry:agy.interactive.full:dimensional-score:test_authoring"
           ],
           "observed_at": "2026-05-09T20:50:00Z",
           "stale_after": "24h"
@@ -222,7 +222,7 @@
           "score": 2,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:coordination_reliability"
+            "platform-capability-registry:agy.interactive.full:dimensional-score:coordination_reliability"
           ],
           "observed_at": "2026-05-09T20:50:00Z",
           "stale_after": "24h"
@@ -231,7 +231,7 @@
           "score": 1,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:privacy_safety"
+            "platform-capability-registry:agy.interactive.full:dimensional-score:privacy_safety"
           ],
           "observed_at": "2026-05-09T20:50:00Z",
           "stale_after": "24h"
@@ -240,7 +240,7 @@
           "score": 2,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:public_claim_safety"
+            "platform-capability-registry:agy.interactive.full:dimensional-score:public_claim_safety"
           ],
           "observed_at": "2026-05-09T20:50:00Z",
           "stale_after": "24h"
@@ -249,7 +249,7 @@
           "score": 2,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:local_calibration"
+            "platform-capability-registry:agy.interactive.full:dimensional-score:local_calibration"
           ],
           "observed_at": "2026-05-09T20:50:00Z",
           "stale_after": "24h"
@@ -265,7 +265,7 @@
           ],
           "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
-          "evidence_ref": "platform-capability-registry:antigrav.interactive.full:tool_access.filesystem"
+          "evidence_ref": "platform-capability-registry:agy.interactive.full:tool_access.filesystem"
         },
         {
           "tool_id": "local_shell",
@@ -277,7 +277,7 @@
           ],
           "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
-          "evidence_ref": "platform-capability-registry:antigrav.interactive.full:tool_access.shell"
+          "evidence_ref": "platform-capability-registry:agy.interactive.full:tool_access.shell"
         },
         {
           "tool_id": "browser",
@@ -288,10 +288,10 @@
           ],
           "observed_at": "2026-05-17T08:14:11Z",
           "stale_after": "24h",
-          "evidence_ref": "platform-capability-registry:antigrav.interactive.full:tool_access.browser"
+          "evidence_ref": "platform-capability-registry:agy.interactive.full:tool_access.browser"
         }
       ],
-      "sanctioned_wrapper": "~/.local/bin/hapax-antigrav",
+      "sanctioned_wrapper": "scripts/hapax-agy",
       "approval_posture": "default_deny_enable_latch",
       "capability_tier": "audited_full_worker",
       "worker_tier": "audited_full_worker"

@@ -49,11 +49,11 @@ def _run_launcher(tmp_path, *, latch: str = "absent", config: str = "clean", env
         "HAPAX_COUNCIL_DIR": str(REPO),
         "HAPAX_ANTIGRAV_BIN": str(stub),
         "HAPAX_ANTIGRAV_CONFIG_DIR": str(cfg),
-        "HAPAX_ANTIGRAV_ENABLE_FILE": str(enable),
-        "HAPAX_ANTIGRAV_DISABLE_FILE": str(disable),
+        "HAPAX_AGY_ENABLE_FILE": str(enable),
+        "HAPAX_AGY_DISABLE_FILE": str(disable),
     }
     if latch == "allow":
-        env["HAPAX_ANTIGRAV_ALLOW"] = "1"
+        env["HAPAX_AGY_ALLOW"] = "1"
     env.update(env_extra or {})
     return subprocess.run(
         [str(LAUNCHER), "--workdir", str(wd), "--no-claim", "--terminal", "current"],
@@ -107,10 +107,10 @@ def test_launcher_hook_wiring_override_proceeds_past_the_wire(tmp_path) -> None:
 
 def test_helper_default_deny_when_no_latch(tmp_path) -> None:
     rc = _run_helper(
-        "antigrav",
+        "agy",
         {
-            "HAPAX_ANTIGRAV_ENABLE_FILE": str(tmp_path / "enable"),
-            "HAPAX_ANTIGRAV_DISABLE_FILE": str(tmp_path / "disable"),
+            "HAPAX_AGY_ENABLE_FILE": str(tmp_path / "enable"),
+            "HAPAX_AGY_DISABLE_FILE": str(tmp_path / "disable"),
         },
     )
     assert rc == 1  # absent enable -> refuse (default-deny)
@@ -120,10 +120,10 @@ def test_helper_allows_when_enable_present(tmp_path) -> None:
     enable = tmp_path / "enable"
     enable.touch()
     rc = _run_helper(
-        "antigrav",
+        "agy",
         {
-            "HAPAX_ANTIGRAV_ENABLE_FILE": str(enable),
-            "HAPAX_ANTIGRAV_DISABLE_FILE": str(tmp_path / "disable"),
+            "HAPAX_AGY_ENABLE_FILE": str(enable),
+            "HAPAX_AGY_DISABLE_FILE": str(tmp_path / "disable"),
         },
     )
     assert rc == 0
@@ -131,11 +131,11 @@ def test_helper_allows_when_enable_present(tmp_path) -> None:
 
 def test_helper_allow_env_bypasses(tmp_path) -> None:
     rc = _run_helper(
-        "antigrav",
+        "agy",
         {
-            "HAPAX_ANTIGRAV_ENABLE_FILE": str(tmp_path / "enable"),
-            "HAPAX_ANTIGRAV_DISABLE_FILE": str(tmp_path / "disable"),
-            "HAPAX_ANTIGRAV_ALLOW": "1",
+            "HAPAX_AGY_ENABLE_FILE": str(tmp_path / "enable"),
+            "HAPAX_AGY_DISABLE_FILE": str(tmp_path / "disable"),
+            "HAPAX_AGY_ALLOW": "1",
         },
     )
     assert rc == 0
@@ -147,8 +147,8 @@ def test_helper_disable_overrides_enable(tmp_path) -> None:
     enable.touch()
     disable.touch()
     rc = _run_helper(
-        "antigrav",
-        {"HAPAX_ANTIGRAV_ENABLE_FILE": str(enable), "HAPAX_ANTIGRAV_DISABLE_FILE": str(disable)},
+        "agy",
+        {"HAPAX_AGY_ENABLE_FILE": str(enable), "HAPAX_AGY_DISABLE_FILE": str(disable)},
     )
     assert rc == 1  # disable present -> refuse even with enable present
 
@@ -174,7 +174,8 @@ def test_wire_hooks_only_fails_closed_on_foreign_hooks_json(tmp_path) -> None:
 def test_latch_is_wired_into_the_launch_path() -> None:
     # Structural: the launch path must call the shared latch helper, OPEN_IDE-gated, exit 7 on refuse.
     src = LAUNCHER.read_text(encoding="utf-8")
-    assert "hapax_check_enable_latch antigrav || exit 7" in src
+    assert "hapax_check_enable_latch agy || exit 7" in src
+    assert "hapax_check_enable_latch antigrav || exit 7" not in src
     assert "command -v hapax_check_enable_latch" in src
     # the fail-closed hook-wiring + its documented override are present
     assert "exit 6" in src and "HAPAX_ANTIGRAV_OVERRIDE_HOOK_WIRING" in src
