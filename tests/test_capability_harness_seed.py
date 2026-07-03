@@ -19,7 +19,7 @@ class SeedRegistryTest(unittest.TestCase):
     def test_seed_covers_every_shape(self) -> None:
         shapes = {d.shape for d in SEED_CAPABILITY_DESCRIPTORS}
         self.assertEqual(shapes, set(CapabilityShape))
-        self.assertEqual(len(SEED_CAPABILITY_DESCRIPTORS), len(CapabilityShape))
+        self.assertGreaterEqual(len(SEED_CAPABILITY_DESCRIPTORS), len(CapabilityShape))
 
     def test_every_seed_descriptor_validates(self) -> None:
         for desc in SEED_CAPABILITY_DESCRIPTORS:
@@ -35,13 +35,25 @@ class SeedRegistryTest(unittest.TestCase):
         ids = [d.capability_id for d in SEED_CAPABILITY_DESCRIPTORS]
         self.assertEqual(len(ids), len(set(ids)))
 
+    def test_fugu_descriptors_present_and_prioritized(self) -> None:
+        """Fugu (the top model post-Fable) is modeled with its entitlement + harnessing flagged."""
+        ids = {d.capability_id for d in SEED_CAPABILITY_DESCRIPTORS}
+        self.assertIn("fugu.existing-agent-harness", ids)
+        self.assertIn("fugu.ultra.highest-tier", ids)
+        fugu_ultra = next(
+            d for d in SEED_CAPABILITY_DESCRIPTORS if d.capability_id == "fugu.ultra.highest-tier"
+        )
+        self.assertEqual(fugu_ultra.shape, CapabilityShape.MODEL_EFFORT_SLICE)
+        self.assertIn("fugu-ultra-entitlement", fugu_ultra.resource_pools)
+        self.assertTrue(fugu_ultra.spend_authority_required)
+
 
 class InventoryReportTest(unittest.TestCase):
     """The structured inventory report."""
 
     def test_report_totals(self) -> None:
         report = inventory_report(SEED_CAPABILITY_DESCRIPTORS)
-        self.assertEqual(report["total"], 12)
+        self.assertEqual(report["total"], len(SEED_CAPABILITY_DESCRIPTORS))
         self.assertEqual(report["with_validation_gaps"], 0)
 
     def test_report_shape_counts_cover_all(self) -> None:
@@ -71,7 +83,9 @@ class InventoryReportTest(unittest.TestCase):
         # the seed has no gaps -> gaps_only returns empty
         self.assertEqual(project_inventory(SEED_CAPABILITY_DESCRIPTORS, gaps_only=True), [])
         # all rows returned without the filter
-        self.assertEqual(len(project_inventory(SEED_CAPABILITY_DESCRIPTORS)), 12)
+        self.assertEqual(
+            len(project_inventory(SEED_CAPABILITY_DESCRIPTORS)), len(SEED_CAPABILITY_DESCRIPTORS)
+        )
 
 
 class InventoryCliTest(unittest.TestCase):
@@ -93,7 +107,7 @@ class InventoryCliTest(unittest.TestCase):
             rc = inventory_cli.main(["--json"])
         self.assertEqual(rc, 0)
         report = json.loads(buf.getvalue())
-        self.assertEqual(report["total"], 12)
+        self.assertEqual(report["total"], len(SEED_CAPABILITY_DESCRIPTORS))
         self.assertEqual(report["with_validation_gaps"], 0)
 
     def test_gaps_only_prints_nothing_for_clean_seed(self) -> None:

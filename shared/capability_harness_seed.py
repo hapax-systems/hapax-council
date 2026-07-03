@@ -215,6 +215,58 @@ SEED_CAPABILITY_DESCRIPTORS: list[CapabilityHarnessDescriptor] = [
         freshness_state=FreshnessState.DARK,
         freshness_remediation_task="cc-task-capability-harness-descriptor-20260703",
     ),
+    # fugu (Sakana AI Scientist) — the strongest model now that Fable is inoperable on much of the
+    # codebase (the silent-downgrade; Fable is disqualified for the seat). PRIORITIZED entitlement +
+    # capability-shape + harnessing exploration (operator directive 2026-07-03). Two tiers: Fugu
+    # (standard) + Fugu Ultra (highest sub-tier); Fugu > Fugu Ultra at some work types (to-measure).
+    CapabilityHarnessDescriptor(
+        capability_id="fugu.existing-agent-harness",
+        display_name="Fugu (Sakana AI Scientist)",
+        shape=CapabilityShape.EXISTING_AGENT_HARNESS,
+        domain=CapabilityDomain.LLM_WORKER,
+        actions=[CapabilityAction.IMPLEMENT, CapabilityAction.REASON, CapabilityAction.ORCHESTRATE],
+        platform_id="fugu",
+        route_id="fugu.headless.full",
+        execution_harness_id="hapax-fugu-harness",
+        model="fugu",
+        authority_ceiling=AuthorityCeiling.REPO_MUTATION,
+        mutation_surfaces=["source"],
+        spend_authority_required=True,
+        resource_pools=["fugu-entitlement"],
+        cost_source=CostSource.PROVIDER,
+        quota_source=QuotaSource.PROVIDER,
+        freshness_state=FreshnessState.DARK,
+        freshness_remediation_task="cc-task-capability-harness-descriptor-20260703",
+        owner_docs=[
+            "PRIORITIZED (operator 2026-07-03): Fugu is the strongest model post-Fable-disqualification.",
+            "Also an orchestrator (taxonomy example); modeled as existing_agent_harness per the operator framing.",
+            "Fugu > Fugu Ultra at some work types — the work-type fit is to-measure.",
+        ],
+    ),
+    CapabilityHarnessDescriptor(
+        capability_id="fugu.ultra.highest-tier",
+        display_name="Fugu Ultra (highest sub-tier)",
+        shape=CapabilityShape.MODEL_EFFORT_SLICE,
+        domain=CapabilityDomain.LLM_WORKER,
+        actions=[CapabilityAction.IMPLEMENT, CapabilityAction.REASON],
+        platform_id="fugu",
+        route_id="fugu.headless.ultra",
+        execution_harness_id="hapax-fugu-harness",
+        model="fugu-ultra",
+        effort="ultra",
+        authority_ceiling=AuthorityCeiling.REPO_MUTATION,
+        mutation_surfaces=["source"],
+        spend_authority_required=True,
+        resource_pools=["fugu-ultra-entitlement"],
+        cost_source=CostSource.PROVIDER,
+        quota_source=QuotaSource.PROVIDER,
+        freshness_state=FreshnessState.DARK,
+        freshness_remediation_task="cc-task-capability-harness-descriptor-20260703",
+        owner_docs=[
+            "PRIORITIZED (operator 2026-07-03): Fugu Ultra = the highest sub-tier entitlement (to-explore).",
+            "Not appropriate for all work types (Fugu > Ultra at some); work-type fit to-measure.",
+        ],
+    ),
 ]
 
 
