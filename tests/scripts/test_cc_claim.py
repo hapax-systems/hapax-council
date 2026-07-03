@@ -843,6 +843,8 @@ def test_claim_refuses_note_without_closing_frontmatter(tmp_path: Path) -> None:
     result = _claim(home, task_id)
 
     assert result.returncode != 0
+    assert "no closing frontmatter delimiter" in result.stderr
+    assert "No claim caches were written" in result.stderr
     cache_dir = home / ".cache" / "hapax"
     leaked = list(cache_dir.glob("cc-active-task-*")) if cache_dir.exists() else []
     assert leaked == [], f"claim caches must not be written on a failed stamp: {leaked}"

@@ -860,6 +860,10 @@ def test_appendix_hop_threads_session_identity_end_to_end(tmp_path: Path) -> Non
     # materialization path can have written it), single-line format.
     keyed = cache / f"cc-active-task-beta-{sid}"
     assert keyed.read_text(encoding="utf-8") == "task-x\n"
+    epoch_sidecar = cache / f"cc-claim-epoch-beta-{sid}"
+    epoch, _, sidecar_task = epoch_sidecar.read_text(encoding="utf-8").strip().partition(" ")
+    assert epoch.isdigit()
+    assert sidecar_task == "task-x"
 
     # The dispatch proof witnesses the session, not just the pid.
     proofs = sorted((cache / "orchestration" / "dispatch-host-proofs").glob("*.json"))
@@ -880,7 +884,7 @@ def test_appendix_hop_threads_session_identity_end_to_end(tmp_path: Path) -> Non
 # ---------------------------------------------------------------------------
 
 
-def _run_task_is_terminal(
+def _run_task_is_terminal_result(
     tmp_path: Path,
     *,
     cache_task: str | None,
@@ -891,7 +895,7 @@ def _run_task_is_terminal(
     gh_state: str = "",
     legacy_cache: bool = False,
     sidecar_task: str | None = None,
-) -> int:
+) -> subprocess.CompletedProcess[str]:
     """Extract task_is_terminal() from the launcher and drive it with fixtures.
 
     Returns the bash exit code: 0 = terminal (lane reaped), 1 = live.
@@ -944,6 +948,33 @@ def _run_task_is_terminal(
     )
     result = subprocess.run(["bash", "-c", harness], text=True, capture_output=True, check=False)
     assert result.returncode in (0, 1), result.stderr
+    return result
+
+
+def _run_task_is_terminal(
+    tmp_path: Path,
+    *,
+    cache_task: str | None,
+    note_status: str,
+    note_assigned: str,
+    cache_age_s: int = 0,
+    note_pr: int | None = None,
+    gh_state: str = "",
+    legacy_cache: bool = False,
+    sidecar_task: str | None = None,
+) -> int:
+    """Return the bash exit code: 0 = terminal (lane reaped), 1 = live."""
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task=cache_task,
+        note_status=note_status,
+        note_assigned=note_assigned,
+        cache_age_s=cache_age_s,
+        note_pr=note_pr,
+        gh_state=gh_state,
+        legacy_cache=legacy_cache,
+        sidecar_task=sidecar_task,
+    )
     return result.returncode
 
 
@@ -992,31 +1023,63 @@ def test_terminal_check_reaps_long_unassigned_despite_gate_heartbeat(
     assert rc == 0
 
 
+@pytest.mark.parametrize("note_assigned", ["", "null", "none", "~", "[]", '"null"'])
+def test_terminal_check_treats_nullish_assignee_as_unassigned(
+    tmp_path: Path, note_assigned: str
+) -> None:
+    """Nullish YAML spellings are the unassigned drift shape, not a named role."""
+    rc = _run_task_is_terminal(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned=note_assigned,
+        cache_age_s=3600,
+    )
+    assert rc == 0
+
+
 def test_terminal_check_reaps_sidecarless_cache(tmp_path: Path) -> None:
     """No mtime fallback: mtime is heartbeat-refreshed by the gate, so a
     matching cache with NO sidecar (non-conforming writer) reaps in the
     unassigned-drift shape rather than living unbounded."""
-    rc = _run_task_is_terminal(
+    result = _run_task_is_terminal_result(
         tmp_path,
         cache_task="task-under-test",
         note_status="offered",
         note_assigned="unassigned",
         legacy_cache=True,
     )
-    assert rc == 0
+    assert result.returncode == 0
+    assert "no valid task-bound epoch sidecar" in result.stderr
+    assert "non-conforming writer" in result.stderr
 
 
 def test_terminal_check_ignores_stale_sidecar_bound_to_other_task(tmp_path: Path) -> None:
     """A sidecar naming a DIFFERENT task (stale leftover from an earlier
     claim) must not vouch for this claim — the lane reaps."""
-    rc = _run_task_is_terminal(
+    result = _run_task_is_terminal_result(
         tmp_path,
         cache_task="task-under-test",
         note_status="offered",
         note_assigned="unassigned",
         sidecar_task="an-earlier-task",
     )
-    assert rc == 0
+    assert result.returncode == 0
+    assert "sidecar names task=an-earlier-task" in result.stderr
+    assert "stale sidecar" in result.stderr
+
+
+def test_terminal_check_logs_expired_unassigned_claim(tmp_path: Path) -> None:
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        cache_age_s=3600,
+    )
+    assert result.returncode == 0
+    assert "exceeds grace=600s" in result.stderr
+    assert "stale unassigned claim" in result.stderr
 
 
 def test_terminal_check_reaps_when_cache_repointed(tmp_path: Path) -> None:

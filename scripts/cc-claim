@@ -185,6 +185,14 @@ from shared.sdlc_lifecycle import (  # noqa: E402
 )
 
 text = path.read_text(encoding="utf-8")
+if not text.startswith("---") or text.find("\n---", 4) < 0:
+    print(
+        f"cc-claim: FATAL — task note {path} has no closing frontmatter "
+        "delimiter; next action: repair the note (restore the opening and "
+        "closing '---' lines), then re-run cc-claim. No claim caches were written.",
+        file=sys.stderr,
+    )
+    sys.exit(6)
 frontmatter = frontmatter_from_text(text)
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
