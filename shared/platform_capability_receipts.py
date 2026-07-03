@@ -8,6 +8,7 @@ authority by themselves.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -22,6 +23,8 @@ DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR = (
 PLATFORM_CAPABILITY_RECEIPT_DIR_ENV = "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR"
 RECEIPT_SCHEMA_VERSION = 1
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
+
+LOG = logging.getLogger(__name__)
 
 
 class PlatformCapabilityReceiptError(ValueError):
@@ -177,13 +180,26 @@ def load_platform_capability_receipts(
     *,
     now: datetime | None = None,
 ) -> dict[str, PlatformCapabilityReceipt]:
-    """Load the newest fresh receipt per platform from a directory."""
+    """Load the newest fresh receipt per platform from a directory.
+
+    Per-file isolation: a single malformed receipt is quarantined (logged and
+    skipped), never allowed to abort the whole load. Before this guard, one bad
+    file raised ``PlatformCapabilityReceiptError`` out of the loop, collapsing the
+    entire capability registry to ``None`` -> every route HOLDs
+    ``capability_registry_unavailable`` -> the whole fleet goes un-dispatchable
+    (the fleet-blind class). Mirrors the per-record fail-closed isolation in
+    ``worktree_registry._read_record``.
+    """
 
     if not receipt_dir.exists():
         return {}
     receipts: dict[str, PlatformCapabilityReceipt] = {}
     for path in sorted(receipt_dir.glob("*.json")):
-        receipt = load_platform_capability_receipt(path)
+        try:
+            receipt = load_platform_capability_receipt(path)
+        except PlatformCapabilityReceiptError as exc:
+            LOG.warning("quarantining malformed platform-capability receipt %s: %s", path, exc)
+            continue
         if not receipt_is_fresh(receipt, now=now):
             continue
         prior = receipts.get(receipt.platform)

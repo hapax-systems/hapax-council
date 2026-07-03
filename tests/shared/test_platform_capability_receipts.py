@@ -27,6 +27,7 @@ from shared.dispatcher_policy import (
 from shared.platform_capability_receipts import (
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
     load_platform_capability_receipt,
+    load_platform_capability_receipts,
     receipt_is_fresh,
 )
 from shared.platform_capability_registry import load_platform_capability_registry
@@ -1935,3 +1936,34 @@ def test_live_read_path_defaults_receipt_dir_to_env_for_opus(tmp_path: Path) -> 
 
     assert decision.action is DispatchAction.LAUNCH
     assert "policy_launch" in decision.reason_codes
+
+
+def test_loader_quarantines_malformed_receipt_and_keeps_valid_ones(tmp_path: Path) -> None:
+    """One malformed receipt must NOT collapse the whole load (the fleet-blind class).
+
+    Regression for the S0 fail-hard hole: ``load_platform_capability_receipts`` looped
+    the per-file loader with no try/except, so a single bad file raised
+    ``PlatformCapabilityReceiptError`` out of the loop and dropped every valid receipt
+    -> registry ``None`` -> every route HOLDs. Per-file isolation quarantines the bad
+    file and keeps the good ones.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+    now = _current_iso_z()
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=now)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "codex.json").exists()
+
+    # Two malformed receipts beside the valid one: non-object JSON and a schema-invalid
+    # object. Sorted-glob puts these after codex.json, so before the fix the raise still
+    # aborts the whole load even though codex was already parsed.
+    (tmp_path / "zzz-broken.json").write_text("{ not valid json", encoding="utf-8")
+    (tmp_path / "zzz-schema.json").write_text('{"platform": "codex"}', encoding="utf-8")
+
+    loaded = load_platform_capability_receipts(
+        tmp_path, now=datetime.fromisoformat(now.replace("Z", "+00:00"))
+    )
+
+    assert "codex" in loaded
+    assert loaded["codex"].platform == "codex"
