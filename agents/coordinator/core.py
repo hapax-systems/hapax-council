@@ -35,6 +35,7 @@ from shared.dispatch_service_time import (
     plan_dispatches,
     wsjf_effective,
 )
+from shared.dispatcher_policy import LOCAL_DEV_TARGET
 from shared.jsonl_append import append_jsonl
 from shared.notify import send_notification
 from shared.recovery_governor import converge_action_cap
@@ -245,7 +246,13 @@ class Coordinator:
     def tick(self) -> None:
         tasks = self._scan_tasks()
         lanes = self._check_lanes()
-        admission = admission_state()
+        # Admit on the DISPATCH TARGET's pressure, not the local box: dev/SDLC
+        # execution is confined to appendix (LOCAL_DEV_TARGET), so gating on
+        # podium's PRODUCTION load wrongly closes appendix-bound dispatch — the
+        # documented "raw PSI starved appendix lanes ~4h" incident
+        # (sdlc_pressure_gate.py:176/209/414). read_remote_pressure fails OPEN if
+        # the target is unreachable, so this can only loosen, never re-starve.
+        admission = admission_state(target_host=LOCAL_DEV_TARGET)
         orphan_reoffers = (
             0
             if admission.state == "closed"
