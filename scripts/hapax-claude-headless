@@ -300,30 +300,48 @@ task_is_terminal() {
   [[ -n "$task" ]] || return 1   # no task binding -> legacy always-on behavior
 
   local claimed="" claim_source="primary" claim_file_used=""
+  local primary_claimed="" primary_claim_file_used="" session_claimed="" session_claim_file_used=""
   if [[ -s "$CLAIM_FILE" ]]; then
-    claimed="$(head -n1 "$CLAIM_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
-    claim_file_used="$CLAIM_FILE"
+    primary_claimed="$(head -n1 "$CLAIM_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
+    primary_claim_file_used="$CLAIM_FILE"
   fi
 
-  # If primary cache is missing or empty, try session-keyed claim files.
-  # cc-claim writes cc-active-task-<role>-<session_id>, so we glob for all
-  # session-keyed files matching this role and pick the most recently modified.
-  if [[ -z "$claimed" ]]; then
-    local session_claim="" newest_mtime=0
-    for candidate in "$HOME/.cache/hapax/cc-active-task-${ROLE}-"*; do
-      [[ -s "$candidate" ]] || continue
-      local mtime
-      mtime="$(stat -c %Y "$candidate" 2>/dev/null || echo 0)"
-      if (( mtime > newest_mtime )); then
-        newest_mtime="$mtime"
-        session_claim="$candidate"
-      fi
-    done
-    if [[ -n "$session_claim" && -s "$session_claim" ]]; then
-      claimed="$(head -n1 "$session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
-      claim_source="session-keyed:$(basename "$session_claim")"
-      claim_file_used="$session_claim"
+  # Prefer a session-keyed cache that names this task over the shared legacy
+  # cache. The legacy cc-active-task-<role> file is shared by role and can be
+  # repointed by a later session; the session-keyed lease is stronger evidence
+  # for this lane's liveness.
+  local session_claim="" newest_mtime=0
+  for candidate in "$HOME/.cache/hapax/cc-active-task-${ROLE}-"*; do
+    [[ -s "$candidate" ]] || continue
+    local candidate_claimed="" mtime
+    candidate_claimed="$(head -n1 "$candidate" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ "$candidate_claimed" == "$task" ]]; then
+      session_claimed="$candidate_claimed"
+      session_claim_file_used="$candidate"
+      break
     fi
+    mtime="$(stat -c %Y "$candidate" 2>/dev/null || echo 0)"
+    if (( mtime > newest_mtime )); then
+      newest_mtime="$mtime"
+      session_claim="$candidate"
+    fi
+  done
+  if [[ -z "$session_claimed" && -n "$session_claim" && -s "$session_claim" ]]; then
+    session_claimed="$(head -n1 "$session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
+    session_claim_file_used="$session_claim"
+  fi
+  if [[ "$session_claimed" == "$task" ]]; then
+    claimed="$session_claimed"
+    claim_source="session-keyed:$(basename "$session_claim_file_used")"
+    claim_file_used="$session_claim_file_used"
+  elif [[ -n "$primary_claimed" ]]; then
+    claimed="$primary_claimed"
+    claim_source="primary"
+    claim_file_used="$primary_claim_file_used"
+  elif [[ -n "$session_claimed" ]]; then
+    claimed="$session_claimed"
+    claim_source="session-keyed:$(basename "$session_claim_file_used")"
+    claim_file_used="$session_claim_file_used"
   fi
 
   if [[ -z "$claimed" ]]; then
@@ -422,13 +440,13 @@ task_is_terminal() {
       fi
       if [[ "$claimed" == "$task" ]]; then
         if [[ -z "$claim_file_used" ]]; then
-          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but matching claim cache path unavailable for role=%s task=%s — treating as terminal (cannot verify claim epoch)\n' "$$" "$ROLE" "$task" >&2
+          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but matching claim cache path unavailable for role=%s task=%s — treating as terminal (cannot verify claim epoch); next action: rerun cc-claim or the launcher materializer to recreate the claim cache and epoch sidecar\n' "$$" "$ROLE" "$task" >&2
         elif [[ ! "$_claim_epoch" =~ ^[0-9]+$ ]]; then
-          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim cache has no valid task-bound epoch sidecar for task=%s — treating as terminal (non-conforming writer)\n' "$$" "$claim_source" "$task" >&2
+          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim cache has no valid task-bound epoch sidecar for task=%s — treating as terminal (non-conforming writer); next action: repair the writer or recreate cc-claim-epoch sidecar, then retry the lane\n' "$$" "$claim_source" "$task" >&2
         elif [[ "$_epoch_task" != "$task" ]]; then
-          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim epoch sidecar names task=%s, not task=%s — treating as terminal (stale sidecar)\n' "$$" "$claim_source" "${_epoch_task:-<empty>}" "$task" >&2
+          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim epoch sidecar names task=%s, not task=%s — treating as terminal (stale sidecar); next action: remove the stale cc-claim-epoch sidecar and re-run cc-claim\n' "$$" "$claim_source" "${_epoch_task:-<empty>}" "$task" >&2
         else
-          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim cache age=%ss exceeds grace=%ss for task=%s — treating as terminal (stale unassigned claim)\n' "$$" "$claim_source" "$_cache_age" "$_stamp_grace" "$task" >&2
+          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim cache age=%ss exceeds grace=%ss for task=%s — treating as terminal (stale unassigned claim); next action: re-run cc-claim to refresh ownership or clear the stale claim\n' "$$" "$claim_source" "$_cache_age" "$_stamp_grace" "$task" >&2
         fi
       fi
       return 0

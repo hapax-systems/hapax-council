@@ -896,6 +896,7 @@ def _run_task_is_terminal_result(
     legacy_cache: bool = False,
     sidecar_task: str | None = None,
     session_keyed_cache: bool = False,
+    legacy_cache_task: str | None = None,
     epoch_check_bypass: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Extract task_is_terminal() from the launcher and drive it with fixtures.
@@ -925,6 +926,8 @@ def _run_task_is_terminal_result(
         cache / f"cc-claim-epoch-eta-{sid}" if session_keyed_cache else cache / "cc-claim-epoch-eta"
     )
     sidecar.unlink(missing_ok=True)
+    if legacy_cache_task is not None:
+        claim_file.write_text(legacy_cache_task + "\n", encoding="utf-8")
     if cache_task is not None:
         active_claim_file.write_text(cache_task + "\n", encoding="utf-8")
         if legacy_cache:
@@ -970,6 +973,7 @@ def _run_task_is_terminal(
     legacy_cache: bool = False,
     sidecar_task: str | None = None,
     session_keyed_cache: bool = False,
+    legacy_cache_task: str | None = None,
     epoch_check_bypass: bool = False,
 ) -> int:
     """Return the bash exit code: 0 = terminal (lane reaped), 1 = live."""
@@ -984,6 +988,7 @@ def _run_task_is_terminal(
         legacy_cache=legacy_cache,
         sidecar_task=sidecar_task,
         session_keyed_cache=session_keyed_cache,
+        legacy_cache_task=legacy_cache_task,
         epoch_check_bypass=epoch_check_bypass,
     )
     return result.returncode
@@ -1100,6 +1105,22 @@ def test_terminal_check_uses_session_keyed_epoch_sidecar(tmp_path: Path) -> None
         note_status="offered",
         note_assigned="unassigned",
         session_keyed_cache=True,
+    )
+    assert result.returncode == 1
+    assert "session-keyed:cc-active-task-eta-" in result.stderr
+    assert "treating as indeterminate" in result.stderr
+
+
+def test_terminal_check_prefers_matching_session_cache_over_repointed_legacy(
+    tmp_path: Path,
+) -> None:
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task="task-under-test",
+        note_status="offered",
+        note_assigned="unassigned",
+        session_keyed_cache=True,
+        legacy_cache_task="newer-task-on-shared-role",
     )
     assert result.returncode == 1
     assert "session-keyed:cc-active-task-eta-" in result.stderr
