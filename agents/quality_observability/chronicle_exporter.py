@@ -150,8 +150,10 @@ class ChronicleQualityExporter:
     """30 s-tick exporter computing content-quality aggregates.
 
     Stateless across ticks — every tick reads the chronicle window
-    fresh. No in-memory event buffer; the chronicle file IS the
-    durable record.
+    fresh through the chronicle query API. No in-memory event buffer;
+    default-path tmpfs rows remain the hot read surface, while Stage0
+    receipt/data rows can be replayed from the durable chronicle sink
+    after trim or reboot.
 
     Tests construct an exporter with ``registry=CollectorRegistry()``
     to avoid clobbering the global Prometheus registry across test

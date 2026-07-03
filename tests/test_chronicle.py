@@ -796,6 +796,26 @@ class TestDurableSinkIntegration:
         assert [ev.event_id for ev in by_source] == [stage0.event_id]
         assert [ev.event_id for ev in by_event_type] == [stage0.event_id]
 
+    def test_exact_non_stage0_query_skips_missing_durable_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(tmp_path / "missing-durable-root"))
+        monkeypatch.setattr("shared.chronicle.CHRONICLE_FILE", tmp_path / "shm" / "events.jsonl")
+
+        result = query(since=0.0, source="engine", event_type="rule.matched")
+
+        assert result == []
+
+    def test_broad_non_stage0_query_skips_missing_durable_root_when_volatile_exists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(tmp_path / "missing-durable-root"))
+        monkeypatch.setattr("shared.chronicle.CHRONICLE_FILE", tmp_path / "shm" / "events.jsonl")
+        non_stage0 = _make_event(source="engine", event_type="rule.matched", ts=time.time())
+        record(non_stage0)
+
+        assert [ev.event_id for ev in query(since=0.0)] == [non_stage0.event_id]
+
     def test_durable_query_does_not_assume_timestamp_order(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

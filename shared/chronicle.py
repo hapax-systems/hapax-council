@@ -31,7 +31,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from shared.durable_jsonl_sink import DurableJsonlSink, validate_chain
+from shared.durable_jsonl_sink import (
+    DurableJsonlSink,
+    configured_durable_sink_root,
+    validate_chain,
+)
 from shared.transcript_scrubber import scrub
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -430,6 +434,31 @@ def _query_durable_chronicle(
     return results[:limit]
 
 
+def _durable_chronicle_root_exists() -> bool:
+    try:
+        return configured_durable_sink_root().expanduser().exists()
+    except OSError:
+        return False
+
+
+def _should_query_durable_chronicle(
+    *,
+    actual_path: Path,
+    source: str | None,
+    event_type: str | None,
+) -> bool:
+    if actual_path != CHRONICLE_FILE:
+        return False
+    query_is_stage0 = source in STAGE0_SOURCES or (
+        event_type is not None and event_type.startswith(STAGE0_EVENT_TYPE_PREFIXES)
+    )
+    if query_is_stage0:
+        return True
+    if source is None or event_type is None:
+        return _durable_chronicle_root_exists()
+    return False
+
+
 def query(
     *,
     since: float,
@@ -519,11 +548,10 @@ def query(
                 if len(results) >= limit:
                     break  # Reverse walk produces newest-first; stop at limit.
 
-    query_is_stage0 = source in STAGE0_SOURCES or (
-        event_type is not None and event_type.startswith(STAGE0_EVENT_TYPE_PREFIXES)
-    )
-    if actual_path == CHRONICLE_FILE and (
-        not actual_path.exists() or query_is_stage0 or source is None or event_type is None
+    if _should_query_durable_chronicle(
+        actual_path=actual_path,
+        source=source,
+        event_type=event_type,
     ):
         seen_ids = {ev.event_id for ev in results}
         for ev in _query_durable_chronicle(
