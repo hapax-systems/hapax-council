@@ -33,6 +33,12 @@ from pydantic import BaseModel, Field
 
 from agents.studio_compositor.action_receipts import emit_action_receipt
 from shared.action_receipt import ActionReceiptStatus
+from shared.config import MODELS
+from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+    BackgroundCapabilityAdmission,
+    admit_background_capability,
+)
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +47,12 @@ _STRUCTURAL_INTENT_JSONL = Path(
     os.path.expanduser("~/hapax-state/stream-experiment/structural-intent.jsonl")
 )
 _ACTION_RECEIPTS_JSONL = Path("/dev/shm/hapax-compositor/action-receipts.jsonl")
+STRUCTURAL_MODEL_ENV = "HAPAX_STRUCTURAL_MODEL"
+STRUCTURAL_LLM_ROUTE_ID_ENV = "HAPAX_STRUCTURAL_LLM_ROUTE_ID"
+STRUCTURAL_LOCAL_MODEL_ALIASES: frozenset[str] = frozenset({"local-fast"})
+STRUCTURAL_LOCAL_MODEL_IDS: frozenset[str] = frozenset(
+    {"appendix-fast", "local-research-instruct", "command-r-08-2024"}
+)
 
 SceneMode = Literal[
     "desk-work",
@@ -425,6 +437,21 @@ def _default_llm_fn(prompt: str) -> str:
 
     litellm_url = "http://localhost:4000/v1/chat/completions"
     try:
+        model_alias = os.environ.get(STRUCTURAL_MODEL_ENV, "local-fast")
+        admission = _admit_structural_llm(model_alias)
+        # Bind the alias frozen at admission — never re-resolve post-admission.
+        request_model = str(admission.request_model_alias or _request_structural_model(model_alias))
+        if not admission.admitted:
+            log.warning(
+                "Structural director admission denied route=%s reason=%s; "
+                "next_action=set %s and refresh route/resource/quota receipts before "
+                "enabling autonomous model use",
+                admission.route_id,
+                admission.denial_summary(),
+                BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+                extra={"background_capability": admission.metadata()},
+            )
+            return ""
         # Reuse the same key fetch as director_loop._get_litellm_key
         try:
             result = subprocess.run(
@@ -438,7 +465,7 @@ def _default_llm_fn(prompt: str) -> str:
             key = ""
         body = json.dumps(
             {
-                "model": os.environ.get("HAPAX_STRUCTURAL_MODEL", "local-fast"),
+                "model": request_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 320,
                 "temperature": 0.7,
@@ -452,9 +479,7 @@ def _default_llm_fn(prompt: str) -> str:
         started = time.time()
         # Publish LLM-in-flight marker so the ThinkingIndicator Cairo source
         # pulses while the structural tier is mid-call.
-        with _LLMInFlight(
-            tier="structural", model=os.environ.get("HAPAX_STRUCTURAL_MODEL", "local-fast")
-        ):
+        with _LLMInFlight(tier="structural", model=request_model):
             with urllib.request.urlopen(req, timeout=90) as resp:
                 data = json.loads(resp.read())
     finally:
@@ -470,6 +495,52 @@ def _default_llm_fn(prompt: str) -> str:
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):
         return ""
+
+
+def _admit_structural_llm(model_alias: str) -> BackgroundCapabilityAdmission:
+    expected_route, mutation_surface, quality_floor = _structural_admission_spec(model_alias)
+    configured_route = os.environ.get(STRUCTURAL_LLM_ROUTE_ID_ENV, expected_route)
+    resolved_model = _resolved_structural_model(model_alias)
+    if configured_route != expected_route:
+        return BackgroundCapabilityAdmission(
+            capability_name="studio.structural_director.llm",
+            route_id=configured_route,
+            model_alias=resolved_model,
+            admitted=False,
+            denied_reason=(
+                "structural_route_model_mismatch:"
+                f"model={resolved_model} expected_route={expected_route} "
+                f"configured_route={configured_route}"
+            ),
+            reason_codes=("structural_route_model_mismatch",),
+            mutation_surface=mutation_surface,
+            quality_floor=quality_floor,
+        )
+    return admit_background_capability(
+        capability_name="studio.structural_director.llm",
+        route_id=configured_route,
+        model_alias=resolved_model,
+        request_model_alias=_request_structural_model(model_alias),
+        mutation_surface=mutation_surface,
+        quality_floor=quality_floor,
+    )
+
+
+def _resolved_structural_model(model_alias: str) -> str:
+    if model_alias in STRUCTURAL_LOCAL_MODEL_ALIASES:
+        return "command-r-08-2024"
+    return MODELS.get(model_alias, model_alias)
+
+
+def _request_structural_model(model_alias: str) -> str:
+    return MODELS.get(model_alias, model_alias)
+
+
+def _structural_admission_spec(model_alias: str) -> tuple[str, str, str]:
+    resolved = _resolved_structural_model(model_alias)
+    if resolved in STRUCTURAL_LOCAL_MODEL_IDS:
+        return "local_tool.local.worker", "none", "deterministic_ok"
+    return "api.headless.provider_gateway", "provider_spend", "frontier_required"
 
 
 __all__ = [

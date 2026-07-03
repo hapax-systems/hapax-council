@@ -27,8 +27,13 @@ from agents.studio_compositor.programme_context import ProgrammeProvider
 from agents.studio_compositor.tts_client import DaimonionTtsClient
 from shared.claim import Claim
 from shared.claim_prompt import SURFACE_FLOORS, render_envelope
-from shared.config import LITELLM_KEY
+from shared.config import LITELLM_KEY, MODELS
 from shared.director_intent import CompositionalImpingement, DirectorIntent
+from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+    BackgroundCapabilityAdmission,
+    admit_background_capability,
+)
 from shared.persona_prompt_composer import compose_persona_prompt, role_scope_line
 from shared.stimmung import Stance
 
@@ -816,6 +821,11 @@ LITELLM_URL = "http://localhost:4000/v1/chat/completions"
 # (e.g. "fast"/gemini or "balanced"/claude), images are forwarded; otherwise
 # the director strips images before the call.
 DIRECTOR_MODEL = os.environ.get("HAPAX_DIRECTOR_MODEL", "local-fast")
+DIRECTOR_LLM_ROUTE_ID_ENV = "HAPAX_DIRECTOR_LLM_ROUTE_ID"
+DIRECTOR_LOCAL_MODEL_ALIASES: frozenset[str] = frozenset({"local-fast"})
+DIRECTOR_LOCAL_MODEL_IDS: frozenset[str] = frozenset(
+    {"appendix-fast", "local-research-instruct", "command-r-08-2024"}
+)
 
 # Director watchdog Phase 2 (§8.2): process-wide single-flight lock keyed on
 # the LLM route. Prevents director + structural-director (also `local-fast`
@@ -856,6 +866,52 @@ MULTIMODAL_ROUTES: frozenset[str] = frozenset(
         "long-context",
     }
 )
+
+
+def _admit_director_llm():
+    expected_route, mutation_surface, quality_floor = _director_admission_spec(DIRECTOR_MODEL)
+    configured_route = os.environ.get(DIRECTOR_LLM_ROUTE_ID_ENV, expected_route)
+    if configured_route != expected_route:
+        return BackgroundCapabilityAdmission(
+            capability_name="studio.director.llm",
+            route_id=configured_route,
+            model_alias=_resolved_director_model(DIRECTOR_MODEL),
+            admitted=False,
+            denied_reason=(
+                "director_route_model_mismatch:"
+                f"model={_resolved_director_model(DIRECTOR_MODEL)} "
+                f"expected_route={expected_route} configured_route={configured_route}"
+            ),
+            reason_codes=("director_route_model_mismatch",),
+            mutation_surface=mutation_surface,
+            quality_floor=quality_floor,
+        )
+    return admit_background_capability(
+        capability_name="studio.director.llm",
+        route_id=configured_route,
+        model_alias=_resolved_director_model(DIRECTOR_MODEL),
+        request_model_alias=_request_director_model(DIRECTOR_MODEL),
+        mutation_surface=mutation_surface,
+        quality_floor=quality_floor,
+    )
+
+
+def _resolved_director_model(model_alias: str) -> str:
+    if model_alias in DIRECTOR_LOCAL_MODEL_ALIASES:
+        return "command-r-08-2024"
+    return MODELS.get(model_alias, model_alias)
+
+
+def _request_director_model(model_alias: str) -> str:
+    return MODELS.get(model_alias, model_alias)
+
+
+def _director_admission_spec(model_alias: str) -> tuple[str, str, str]:
+    resolved = _resolved_director_model(model_alias)
+    if resolved in DIRECTOR_LOCAL_MODEL_IDS:
+        return "local_tool.local.worker", "none", "deterministic_ok"
+    return "api.headless.provider_gateway", "provider_spend", "frontier_required"
+
 
 # Narrative cadence. Epic 2 Phase E (2026-04-17) tightened 20.0 → 12.0 so
 # the stream feels like an engaged hot-house of pressure rather than a
@@ -4354,6 +4410,21 @@ class DirectorLoop:
         """Body of _call_activity_llm split out so the lock acquire/release
         wrap is unambiguous. All return paths from this method are still
         covered by the parent's try/finally release."""
+        admission = _admit_director_llm()
+        if not admission.admitted:
+            log.warning(
+                "director LLM admission denied route=%s reason=%s; "
+                "next_action=set %s and refresh route/resource/quota receipts",
+                admission.route_id,
+                admission.denial_summary(),
+                BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+            )
+            return ""
+        # Bind the alias frozen at admission — never re-resolve post-admission.
+        request_model = str(
+            admission.request_model_alias or _request_director_model(DIRECTOR_MODEL)
+        )
+
         content: list[dict] = []
         # Only forward images when the configured route is known multimodal.
         # Text-only routes (e.g. local Qwen3.5-9B) timeout or error when fed
@@ -4400,7 +4471,7 @@ class DirectorLoop:
         # not the cap raised.
         body = json.dumps(
             {
-                "model": DIRECTOR_MODEL,
+                "model": request_model,
                 "messages": messages,
                 "max_tokens": 512,
                 "temperature": 0.7,
@@ -4429,6 +4500,12 @@ class DirectorLoop:
                     "activity": self._activity,
                     "slot": str(self._active_slot),
                     "condition_id": _condition_id,
+                    "route_id": admission.route_id,
+                    "route_decision_id": admission.route_decision_id,
+                    "task_id": admission.task_id,
+                    "authority_case": admission.authority_case,
+                    "model_descriptor": admission.model_descriptor,
+                    "quota_evidence_refs": list(admission.quota_evidence_refs),
                 },
             )
             if hapax_span is not None
@@ -4446,7 +4523,7 @@ class DirectorLoop:
             llm_call_span = None  # type: ignore[assignment]
 
         metrics_ctx = (
-            llm_call_span(model=DIRECTOR_MODEL, route="director")
+            llm_call_span(model=request_model, route=admission.route_id)
             if llm_call_span is not None
             else nullcontext(None)
         )
@@ -4455,7 +4532,7 @@ class DirectorLoop:
             with (
                 span_ctx as span,
                 metrics_ctx as metrics_span,
-                _LLMInFlight(tier="narrative", model=DIRECTOR_MODEL),
+                _LLMInFlight(tier="narrative", model=request_model),
             ):
                 req = urllib.request.Request(
                     LITELLM_URL,
@@ -4565,7 +4642,7 @@ class DirectorLoop:
                         # not the cap raised.
                         reroll_body = json.dumps(
                             {
-                                "model": DIRECTOR_MODEL,
+                                "model": request_model,
                                 "messages": reroll_messages,
                                 "max_tokens": 512,
                                 "temperature": 0.7,

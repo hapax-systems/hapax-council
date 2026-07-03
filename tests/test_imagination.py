@@ -13,6 +13,7 @@ from agents.imagination import (
     publish_fragment,
 )
 from agents.imagination_loop import MAX_RECENT_FRAGMENTS, ImaginationLoop
+from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -29,6 +30,17 @@ def _make_fragment(**overrides) -> ImaginationFragment:
     }
     defaults.update(overrides)
     return ImaginationFragment(**defaults)
+
+
+def _admitted_imagination() -> BackgroundCapabilityAdmission:
+    return BackgroundCapabilityAdmission(
+        capability_name="imagination.loop.llm",
+        route_id="local_tool.local.worker",
+        model_alias="command-r-08-2024",
+        admitted=True,
+        mutation_surface="none",
+        quality_floor="deterministic_ok",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -775,7 +787,13 @@ class TestTickFenceStripFallback:
         loop._text_agent = _FencedJsonAgent()
 
         # Bypass cadence/visual observation reads; assemble_context still runs.
-        with unittest.mock.patch("agents.imagination_loop.assemble_context", return_value="ctx"):
+        with (
+            unittest.mock.patch(
+                "agents.imagination_loop._admit_imagination_llm",
+                return_value=_admitted_imagination(),
+            ),
+            unittest.mock.patch("agents.imagination_loop.assemble_context", return_value="ctx"),
+        ):
             frag = asyncio.run(loop.tick(observations=[], sensor_snapshot={}))
 
         assert frag is not None
@@ -822,7 +840,13 @@ class TestTickFenceStripFallback:
         loop._agent = _BlowupAgent()
         loop._text_agent = _ProseAgent()
 
-        with unittest.mock.patch("agents.imagination_loop.assemble_context", return_value="ctx"):
+        with (
+            unittest.mock.patch(
+                "agents.imagination_loop._admit_imagination_llm",
+                return_value=_admitted_imagination(),
+            ),
+            unittest.mock.patch("agents.imagination_loop.assemble_context", return_value="ctx"),
+        ):
             frag = asyncio.run(loop.tick(observations=[], sensor_snapshot={}))
 
         assert frag is not None
@@ -869,10 +893,121 @@ class TestTickFenceStripFallback:
         loop._agent = _StructuredAgent()
         loop._text_agent = _TextAgent()
 
-        with unittest.mock.patch("agents.imagination_loop.assemble_context", return_value="ctx"):
+        with (
+            unittest.mock.patch(
+                "agents.imagination_loop._admit_imagination_llm",
+                return_value=_admitted_imagination(),
+            ),
+            unittest.mock.patch("agents.imagination_loop.assemble_context", return_value="ctx"),
+        ):
             frag = asyncio.run(loop.tick(observations=[], sensor_snapshot={}))
 
         assert frag is not None
         assert frag.salience == 0.85
         assert frag.material == "fire"
         assert text_agent_called == [], "fallback agent ran on structured success"
+
+    def test_tick_refuses_before_agent_call_when_admission_denies(self, tmp_path: Path) -> None:
+        """Admission denial must prevent autonomous imagination model calls."""
+        import asyncio
+        import unittest.mock
+
+        from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
+
+        loop = ImaginationLoop(
+            current_path=tmp_path / "current.json",
+            stream_path=tmp_path / "stream.jsonl",
+            visual_observation_path=tmp_path / "obs.txt",
+        )
+
+        class _MustNotRunAgent:
+            async def run(self, _ctx):  # noqa: ANN001
+                raise AssertionError("imagination agent ran despite denied admission")
+
+        loop._agent = _MustNotRunAgent()
+        denied = BackgroundCapabilityAdmission(
+            capability_name="imagination.loop.llm",
+            route_id="local_tool.local.worker",
+            model_alias="command-r-08-2024",
+            admitted=False,
+            denied_reason="task_note_absent",
+            reason_codes=("task_note_absent",),
+            mutation_surface="none",
+            quality_floor="deterministic_ok",
+        )
+
+        with (
+            unittest.mock.patch(
+                "agents.imagination_loop._admit_imagination_llm", return_value=denied
+            ),
+            unittest.mock.patch("agents.imagination_loop.assemble_context") as assemble,
+        ):
+            frag = asyncio.run(loop.tick(observations=[], sensor_snapshot={}))
+
+        assert frag is None
+        assemble.assert_not_called()
+
+    def test_denied_admission_agent_construction_raises(self, tmp_path) -> None:
+        """_get_agent/_get_text_agent refuse to construct for a denied admission.
+
+        The construction path itself is the no-escape boundary — a denied route
+        must never bind a model descriptor, independent of whether callers
+        remember to check first.
+        """
+        import unittest.mock
+
+        import pytest
+
+        from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
+
+        loop = ImaginationLoop(
+            current_path=tmp_path / "current.json",
+            stream_path=tmp_path / "stream.jsonl",
+            visual_observation_path=tmp_path / "obs.txt",
+        )
+        denied = BackgroundCapabilityAdmission(
+            capability_name="imagination.loop.llm",
+            route_id="local_tool.local.worker",
+            model_alias="command-r-08-2024",
+            admitted=False,
+            denied_reason="task_note_absent",
+            reason_codes=("task_note_absent",),
+            mutation_surface="none",
+            quality_floor="deterministic_ok",
+        )
+
+        with unittest.mock.patch("agents._config.get_model") as mock_get_model:
+            with pytest.raises(RuntimeError, match="requires admitted capability"):
+                loop._get_agent(denied)
+            with pytest.raises(RuntimeError, match="requires admitted capability"):
+                loop._get_text_agent(denied)
+
+        mock_get_model.assert_not_called()
+        assert loop._agent is None
+        assert getattr(loop, "_text_agent", None) is None
+
+    def test_imagination_reasoning_alias_resolves_to_registered_local_leaf(self) -> None:
+        """The reasoning selector must bind to the registry local served leaf before admission."""
+        import unittest.mock
+
+        from agents import imagination_loop as mod
+        from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
+
+        with unittest.mock.patch("agents.imagination_loop.admit_background_capability") as gate:
+            gate.return_value = BackgroundCapabilityAdmission(
+                capability_name="imagination.loop.llm",
+                route_id="local_tool.local.worker",
+                model_alias="command-r-08-2024",
+                admitted=True,
+                mutation_surface="none",
+                quality_floor="deterministic_ok",
+            )
+            admission = mod._admit_imagination_llm()
+
+        assert admission.admitted is True
+        kwargs = gate.call_args.kwargs
+        assert kwargs["route_id"] == "local_tool.local.worker"
+        assert kwargs["model_alias"] == "command-r-08-2024"
+        assert kwargs["mutation_surface"] == "none"
+        assert kwargs["quality_floor"] == "deterministic_ok"
+        assert mod._request_imagination_model("reasoning") == "reasoning"

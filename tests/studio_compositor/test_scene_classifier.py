@@ -11,6 +11,7 @@ import pytest
 
 from agents.studio_compositor import preset_family_selector as pfs
 from agents.studio_compositor import scene_classifier as sc
+from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -50,6 +51,26 @@ def hero_snapshot(tmp_shm: Path) -> Path:
     return jpeg
 
 
+def _admission(*, admitted: bool = True) -> BackgroundCapabilityAdmission:
+    return BackgroundCapabilityAdmission(
+        capability_name="studio.scene_classifier.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias=sc.SCENE_MODEL,
+        admitted=admitted,
+        denied_reason=None if admitted else "route_policy_denied",
+        reason_codes=("policy_launch",) if admitted else ("provider_budget_receipt_absent",),
+        task_id="task-x",
+        authority_case="CASE-CAPACITY-ROUTING-001",
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        route_decision_id="rd-test",
+        model_descriptor={
+            "execution_descriptor": {"model_id": "gemini-3.1-pro-preview"},
+        },
+        quota_evidence_refs=("spend-gate:test",),
+    )
+
+
 @pytest.fixture(autouse=True)
 def _reset_memory():
     """Reset the preset family selector's non-repeat memory between tests."""
@@ -79,6 +100,7 @@ class TestClassifyOnce:
             override_path=hero_override,
             classification_path=tmp_shm / "scene-classification.json",
             call_llm=fake_llm,
+            admission_gate=lambda: _admission(),
         )
         result = clf.classify_once()
         assert result is not None
@@ -97,6 +119,7 @@ class TestClassifyOnce:
             call_llm=lambda _b64: json.dumps(
                 {"scene": "turntables-playing", "confidence": 0.9, "evidence": "vinyl"}
             ),
+            admission_gate=lambda: _admission(),
         )
         clf.classify_once()
         assert out.exists()
@@ -120,6 +143,7 @@ class TestClassifyOnce:
             classification_path=tmp_shm / "scene-classification.json",
             cache_ttl_s=5.0,
             call_llm=counting_llm,
+            admission_gate=lambda: _admission(),
         )
         first = clf.classify_once(now=100.0)
         second = clf.classify_once(now=102.0)  # within 5s TTL
@@ -141,6 +165,7 @@ class TestClassifyOnce:
             classification_path=tmp_shm / "scene-classification.json",
             cache_ttl_s=5.0,
             call_llm=counting_llm,
+            admission_gate=lambda: _admission(),
         )
         clf.classify_once(now=100.0)
         clf.classify_once(now=110.0)  # past 5s TTL
@@ -154,6 +179,7 @@ class TestClassifyOnce:
             override_path=hero_override,
             classification_path=tmp_shm / "scene-classification.json",
             call_llm=lambda _b64: "this is not JSON at all{",
+            admission_gate=lambda: _admission(),
         )
         with caplog.at_level("ERROR"):
             result = clf.classify_once()
@@ -173,6 +199,7 @@ class TestClassifyOnce:
             call_llm=lambda _b64: json.dumps(
                 {"scene": "bespoke-category-not-in-labels", "confidence": 0.5}
             ),
+            admission_gate=lambda: _admission(),
         )
         result = clf.classify_once()
         assert result is not None
@@ -189,10 +216,83 @@ class TestClassifyOnce:
             override_path=hero_override,
             classification_path=tmp_shm / "scene-classification.json",
             call_llm=raiser,
+            admission_gate=lambda: _admission(),
         )
         result = clf.classify_once()
         assert result is not None
         assert result.scene == sc.FALLBACK_SCENE
+
+    def test_admission_denial_skips_llm_and_publishes_route_evidence(
+        self, tmp_shm: Path, hero_override: Path, hero_snapshot: Path
+    ) -> None:
+        calls = {"n": 0}
+
+        def fake_llm(_b64: str) -> str:
+            calls["n"] += 1
+            return "{}"
+
+        out = tmp_shm / "scene-classification.json"
+        clf = sc.SceneClassifier(
+            shm_dir=tmp_shm,
+            override_path=hero_override,
+            classification_path=out,
+            call_llm=fake_llm,
+            admission_gate=lambda: _admission(admitted=False),
+        )
+        result = clf.classify_once(now=100.0)
+
+        assert result is not None
+        assert result.scene == sc.FALLBACK_SCENE
+        assert "provider_budget_receipt_absent" in result.evidence
+        assert calls["n"] == 0
+        payload = json.loads(out.read_text())
+        assert payload["route_id"] == "api.headless.provider_gateway"
+        assert payload["task_id"] == "task-x"
+        assert payload["authority_case"] == "CASE-CAPACITY-ROUTING-001"
+
+    def test_injected_llm_without_explicit_gate_still_requires_admission(
+        self, tmp_shm: Path, hero_override: Path, hero_snapshot: Path
+    ) -> None:
+        calls = {"n": 0}
+
+        def fake_llm(_b64: str) -> str:
+            calls["n"] += 1
+            return "{}"
+
+        with patch.object(sc, "_admit_scene_classifier", return_value=_admission(admitted=False)):
+            clf = sc.SceneClassifier(
+                shm_dir=tmp_shm,
+                override_path=hero_override,
+                classification_path=tmp_shm / "scene-classification.json",
+                call_llm=fake_llm,
+            )
+            result = clf.classify_once(now=100.0)
+
+        assert result is not None
+        assert result.scene == sc.FALLBACK_SCENE
+        assert calls["n"] == 0
+
+    def test_admission_success_calls_llm_and_publishes_quota_evidence(
+        self, tmp_shm: Path, hero_override: Path, hero_snapshot: Path
+    ) -> None:
+        out = tmp_shm / "scene-classification.json"
+        clf = sc.SceneClassifier(
+            shm_dir=tmp_shm,
+            override_path=hero_override,
+            classification_path=out,
+            call_llm=lambda _b64: json.dumps(
+                {"scene": "screen-only", "confidence": 0.7, "evidence": "monitor"}
+            ),
+            admission_gate=lambda: _admission(),
+        )
+        result = clf.classify_once(now=100.0)
+
+        assert result is not None
+        assert result.scene == "screen-only"
+        payload = json.loads(out.read_text())
+        assert payload["route_decision_id"] == "rd-test"
+        assert payload["quota_evidence_refs"] == ["spend-gate:test"]
+        assert payload["model_descriptor"]["execution_descriptor"]["model_id"].startswith("gemini")
 
     def test_no_hero_override_returns_none(self, tmp_shm: Path) -> None:
         clf = sc.SceneClassifier(
@@ -200,6 +300,7 @@ class TestClassifyOnce:
             override_path=tmp_shm / "does-not-exist.json",
             classification_path=tmp_shm / "scene-classification.json",
             call_llm=lambda _b64: "",
+            admission_gate=lambda: _admission(),
         )
         assert clf.classify_once() is None
 
@@ -210,6 +311,7 @@ class TestClassifyOnce:
             override_path=hero_override,
             classification_path=tmp_shm / "scene-classification.json",
             call_llm=lambda _b64: "",
+            admission_gate=lambda: _admission(),
         )
         assert clf.classify_once() is None
 
@@ -228,6 +330,7 @@ class TestClassifyOnce:
             override_path=hero_override,
             classification_path=tmp_shm / "scene-classification.json",
             call_llm=lambda _b64: fenced,
+            admission_gate=lambda: _admission(),
         )
         result = clf.classify_once()
         assert result is not None
@@ -241,6 +344,7 @@ class TestClassifyOnce:
             override_path=hero_override,
             classification_path=tmp_shm / "scene-classification.json",
             call_llm=lambda _b64: "```json\n{\n  ",
+            admission_gate=lambda: _admission(),
         )
         with caplog.at_level("WARNING"):
             result = clf.classify_once()

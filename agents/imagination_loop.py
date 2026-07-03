@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -29,6 +30,11 @@ from agents.imagination import (
     maybe_escalate,
     publish_fragment,
     reverberation_check,
+)
+from shared.fix_capabilities.background_admission import (
+    BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+    BackgroundCapabilityAdmission,
+    admit_background_capability,
 )
 
 log = logging.getLogger(__name__)
@@ -253,6 +259,12 @@ train of thought or let it go. Don't force continuation.\
 """
 
 MAX_RECENT_FRAGMENTS = 5
+IMAGINATION_MODEL_ENV = "HAPAX_IMAGINATION_MODEL"
+IMAGINATION_MODEL = os.environ.get(IMAGINATION_MODEL_ENV, "reasoning")
+IMAGINATION_LLM_ROUTE_ID_ENV = "HAPAX_IMAGINATION_LLM_ROUTE_ID"
+IMAGINATION_LOCAL_ROUTE_ID = "local_tool.local.worker"
+IMAGINATION_LOCAL_MODEL_ALIASES = frozenset({"reasoning", "local-fast"})
+IMAGINATION_LOCAL_MODEL_ID = "command-r-08-2024"
 
 
 def observations_are_fresh(*, published_at: float, cadence_s: float) -> bool:
@@ -303,21 +315,29 @@ class ImaginationLoop:
             return 0.0
         return self.recent_fragments[-1].salience
 
-    def _get_agent(self):
+    def _get_agent(self, admission: BackgroundCapabilityAdmission):
         """Lazy-init pydantic_ai Agent for imagination generation."""
+        if not admission.admitted:
+            raise RuntimeError("imagination agent construction requires admitted capability")
         if self._agent is None:
             from pydantic_ai import Agent
 
             from agents._config import get_model
 
+            # Bind the alias frozen at admission — never re-resolve here.
             self._agent = Agent(
-                get_model("reasoning"),
+                get_model(
+                    str(
+                        admission.request_model_alias
+                        or _request_imagination_model(IMAGINATION_MODEL)
+                    )
+                ),
                 output_type=ImaginationFragment,
                 system_prompt=IMAGINATION_SYSTEM_PROMPT,
             )
         return self._agent
 
-    def _get_text_agent(self):
+    def _get_text_agent(self, admission: BackgroundCapabilityAdmission):
         """Lazy-init pydantic-ai Agent *without* output_type constraint.
 
         Used as the markdown-fallback path when the structured agent's
@@ -326,13 +346,21 @@ class ImaginationLoop:
         every tick, fall back to a plain text call and salvage what we
         can via `_extract_fragment_from_markdown`.
         """
+        if not admission.admitted:
+            raise RuntimeError("imagination text-agent construction requires admitted capability")
         if getattr(self, "_text_agent", None) is None:
             from pydantic_ai import Agent
 
             from agents._config import get_model
 
+            # Bind the alias frozen at admission — never re-resolve here.
             self._text_agent = Agent(
-                get_model("reasoning"),
+                get_model(
+                    str(
+                        admission.request_model_alias
+                        or _request_imagination_model(IMAGINATION_MODEL)
+                    )
+                ),
                 system_prompt=IMAGINATION_SYSTEM_PROMPT,
             )
         return self._text_agent
@@ -403,6 +431,17 @@ class ImaginationLoop:
         self, observations: list[str], sensor_snapshot: dict
     ) -> ImaginationFragment | None:
         """Run one imagination tick: assemble context, call agent, process result."""
+        admission = _admit_imagination_llm()
+        if not admission.admitted:
+            log.warning(
+                "imagination admission denied route=%s reason=%s; next_action=set %s "
+                "and refresh local capability/resource receipts before imagination model use",
+                admission.route_id,
+                admission.denial_summary(),
+                BACKGROUND_CAPABILITY_TASK_NOTE_ENV,
+            )
+            self.freshness.mark_failed()
+            return None
         reverb = self._check_reverberation()
 
         context = assemble_context(observations, self.recent_fragments, sensor_snapshot)
@@ -414,7 +453,7 @@ class ImaginationLoop:
 
         fragment: ImaginationFragment | None = None
         try:
-            agent = self._get_agent()
+            agent = self._get_agent(admission)
             result = await agent.run(context)
             fragment = result.output
         except Exception as structured_exc:  # noqa: BLE001
@@ -437,7 +476,7 @@ class ImaginationLoop:
                 type(structured_exc).__name__,
             )
             try:
-                text_agent = self._get_text_agent()
+                text_agent = self._get_text_agent(admission)
                 text_result = await text_agent.run(context)
                 raw_text = str(getattr(text_result, "output", text_result) or "")
                 fragment = _extract_fragment_from_json(raw_text)
@@ -473,6 +512,56 @@ class ImaginationLoop:
         self._process_fragment(fragment)
         self.freshness.mark_published()
         return fragment
+
+
+def _resolved_imagination_model(model_alias: str) -> str:
+    if model_alias in IMAGINATION_LOCAL_MODEL_ALIASES:
+        return IMAGINATION_LOCAL_MODEL_ID
+    from agents._config import MODELS
+
+    return MODELS.get(model_alias, model_alias)
+
+
+def _request_imagination_model(model_alias: str) -> str:
+    from agents._config import MODELS
+
+    return MODELS.get(model_alias, model_alias)
+
+
+def _imagination_admission_spec(model_alias: str) -> tuple[str, str, str]:
+    resolved = _resolved_imagination_model(model_alias)
+    if resolved == IMAGINATION_LOCAL_MODEL_ID:
+        return IMAGINATION_LOCAL_ROUTE_ID, "none", "deterministic_ok"
+    return "api.headless.provider_gateway", "provider_spend", "frontier_required"
+
+
+def _admit_imagination_llm() -> BackgroundCapabilityAdmission:
+    expected_route, mutation_surface, quality_floor = _imagination_admission_spec(IMAGINATION_MODEL)
+    configured_route = os.environ.get(IMAGINATION_LLM_ROUTE_ID_ENV, expected_route)
+    resolved_model = _resolved_imagination_model(IMAGINATION_MODEL)
+    if configured_route != expected_route:
+        return BackgroundCapabilityAdmission(
+            capability_name="imagination.loop.llm",
+            route_id=configured_route,
+            model_alias=resolved_model,
+            admitted=False,
+            denied_reason=(
+                "imagination_route_model_mismatch:"
+                f"model={resolved_model} expected_route={expected_route} "
+                f"configured_route={configured_route}"
+            ),
+            reason_codes=("imagination_route_model_mismatch",),
+            mutation_surface=mutation_surface,
+            quality_floor=quality_floor,
+        )
+    return admit_background_capability(
+        capability_name="imagination.loop.llm",
+        route_id=configured_route,
+        model_alias=resolved_model,
+        request_model_alias=_request_imagination_model(IMAGINATION_MODEL),
+        mutation_surface=mutation_surface,
+        quality_floor=quality_floor,
+    )
 
 
 # ── Positive Feedback: Engagement → Imagination Acceleration ──────────────

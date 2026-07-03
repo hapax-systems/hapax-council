@@ -1,10 +1,18 @@
-"""Tests for health monitor v2 fix pipeline integration."""
+"""Tests for health monitor fix pipeline integration."""
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agents.health_monitor import HealthReport, Status, run_fixes_v2
+from agents.health_monitor import (
+    CheckResult,
+    GroupResult,
+    HealthReport,
+    Status,
+    run_fixes,
+    run_fixes_v2,
+)
+from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
 from shared.fix_capabilities.base import ExecutionResult, FixProposal
 from shared.fix_capabilities.pipeline import FixOutcome, PipelineResult
 
@@ -16,6 +24,22 @@ def _make_report(status: Status = Status.FAILED) -> HealthReport:
         hostname="test",
         overall_status=status,
         groups=[],
+    )
+
+
+def _make_fixable_report() -> HealthReport:
+    check = CheckResult(
+        name="runtime.demo",
+        group="runtime",
+        status=Status.FAILED,
+        message="demo failure",
+        remediation="echo fixed",
+    )
+    return HealthReport(
+        timestamp="2026-03-09T00:00:00Z",
+        hostname="test",
+        overall_status=Status.FAILED,
+        groups=[GroupResult(group="runtime", status=Status.FAILED, checks=[check])],
     )
 
 
@@ -33,6 +57,53 @@ def _proposal(
         rationale=rationale,
         safety=safety,
     )
+
+
+class TestLegacyRunFixesAdmission:
+    """Tests for the legacy shell-remediation admission gate."""
+
+    @pytest.mark.asyncio
+    async def test_legacy_fix_refuses_without_runtime_admission(self):
+        denied = BackgroundCapabilityAdmission(
+            capability_name="health_monitor.legacy_remediation_shell",
+            route_id="local_tool.local.worker",
+            admitted=False,
+            denied_reason="runtime_route_unconfigured",
+            reason_codes=("runtime_route_unconfigured",),
+            mutation_surface="runtime",
+            quality_floor="deterministic_ok",
+        )
+
+        with (
+            patch("agents.health_monitor.output._admit_legacy_runtime_fixes", return_value=denied),
+            patch("agents.health_monitor.output.run_cmd", new_callable=AsyncMock) as mock_run,
+        ):
+            count = await run_fixes(_make_fixable_report(), yes=True)
+
+        assert count == 0
+        mock_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_legacy_fix_runs_after_runtime_admission(self):
+        admitted = BackgroundCapabilityAdmission(
+            capability_name="health_monitor.legacy_remediation_shell",
+            route_id="local_tool.local.worker",
+            admitted=True,
+            mutation_surface="runtime",
+            quality_floor="deterministic_ok",
+        )
+
+        with (
+            patch(
+                "agents.health_monitor.output._admit_legacy_runtime_fixes", return_value=admitted
+            ),
+            patch("agents.health_monitor.output.run_cmd", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = (0, "fixed", "")
+            count = await run_fixes(_make_fixable_report(), yes=True)
+
+        assert count == 1
+        mock_run.assert_awaited_once()
 
 
 class TestRunFixesV2:

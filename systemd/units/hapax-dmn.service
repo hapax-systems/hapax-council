@@ -6,12 +6,14 @@ PartOf=hapax-visual-stack.target
 
 [Service]
 Type=simple
-ExecStart=/home/hapax/.local/bin/uv run python -m agents.dmn
-WorkingDirectory=/home/hapax/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.dmn
 Restart=on-failure
 RestartSec=10
 EnvironmentFile=/run/user/1000/hapax-secrets.env
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin
+Environment=HAPAX_SOURCE_ACTIVATION_WORKTREE=%h/.cache/hapax/source-activation/worktree
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin
 MemoryHigh=2G
 MemoryMax=4G
 

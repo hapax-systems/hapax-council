@@ -22,6 +22,7 @@ from agents.digest import (
     format_digest_md,
     send_notification,
 )
+from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
 
 # ── Schema tests ─────────────────────────────────────────────────────────────
 
@@ -351,15 +352,180 @@ class _FakeDigestResult:
     )
 
 
+def _admitted_digest_admission() -> BackgroundCapabilityAdmission:
+    return BackgroundCapabilityAdmission(
+        capability_name="agents.digest.synthesis",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        admitted=True,
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )
+
+
+def test_digest_admission_spec_classifies_local_and_provider_models():
+    """Digest model selection must drive the admission surface before policy reads."""
+    from agents.digest import _digest_admission_spec
+
+    assert _digest_admission_spec("local-fast") == (
+        "local_tool.local.worker",
+        "none",
+        "deterministic_ok",
+    )
+    assert _digest_admission_spec("gemini-flash") == (
+        "api.headless.provider_gateway",
+        "provider_spend",
+        "frontier_required",
+    )
+
+
+def test_digest_admission_refuses_configured_route_model_mismatch(monkeypatch):
+    """A configured route cannot override the route implied by the selected model.
+
+    The selected model is resolved through the agent-free selector seam (no
+    pre-instantiated agent to patch — admission must be computable with no
+    agent in existence).
+    """
+    from agents.digest import DIGEST_LLM_ROUTE_ID_ENV, _admit_digest_synthesis
+
+    monkeypatch.setenv(DIGEST_LLM_ROUTE_ID_ENV, "local_tool.local.worker")
+    with patch("agents.digest._selected_digest_model_id", return_value="gemini-flash"):
+        admission = _admit_digest_synthesis()
+
+    assert admission.admitted is False
+    assert admission.reason_codes == ("digest_route_model_mismatch",)
+    assert "expected_route=api.headless.provider_gateway" in (admission.denied_reason or "")
+
+
+def test_selected_digest_model_id_resolves_without_agent():
+    """Model selection goes through the adaptive resolver + MODELS, agent-free."""
+    from agents.digest import _selected_digest_model_id
+
+    with (
+        patch("shared.config.resolve_model_alias_adaptive", return_value="fast") as mock_resolve,
+        patch("agents.digest.MODELS", {"fast": "gemini-flash"}),
+        patch("agents.digest.Agent") as mock_agent_cls,
+    ):
+        assert _selected_digest_model_id() == "gemini-flash"
+
+    mock_resolve.assert_called_once()
+    mock_agent_cls.assert_not_called()
+
+
+def test_digest_denied_admission_construction_raises():
+    """_get_digest_agent refuses to bind a model for a denied admission."""
+    from agents.digest import _get_digest_agent
+
+    denied = BackgroundCapabilityAdmission(
+        capability_name="agents.digest.synthesis",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        admitted=False,
+        denied_reason="task_note_absent",
+        reason_codes=("task_note_absent",),
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )
+    with (
+        patch("agents.digest.get_model") as mock_get_model,
+        patch("agents.digest.Agent") as mock_agent_cls,
+        pytest.raises(RuntimeError, match="requires admitted capability"),
+    ):
+        _get_digest_agent(denied)
+
+    mock_get_model.assert_not_called()
+    mock_agent_cls.assert_not_called()
+
+
+def test_digest_admission_model_mismatch_fails_closed():
+    """Construction refuses to bind when the admission's frozen request alias
+    no longer normalizes to the admitted served-leaf identity (admit-A/bind-B)."""
+    from agents.digest import _get_digest_agent
+
+    mismatched = BackgroundCapabilityAdmission(
+        capability_name="agents.digest.synthesis",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        request_model_alias="some-other-model",
+        admitted=True,
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )
+    with (
+        patch("agents.digest.get_model") as mock_get_model,
+        pytest.raises(RuntimeError, match="digest_model_admission_mismatch"),
+    ):
+        _get_digest_agent(mismatched)
+
+    mock_get_model.assert_not_called()
+
+
+def test_digest_agent_binds_the_admission_frozen_alias():
+    """Construction binds get_model(admission.request_model_alias) verbatim —
+    never a re-resolved (stimmung/env mutable) alias — after verifying it still
+    normalizes to the admitted served-leaf identity."""
+    import agents.digest as digest_module
+    from agents.digest import _get_digest_agent
+
+    admission = BackgroundCapabilityAdmission(
+        capability_name="agents.digest.synthesis",
+        route_id="local_tool.local.worker",
+        model_alias="command-r-08-2024",
+        request_model_alias="local-fast",
+        admitted=True,
+        mutation_surface="none",
+        quality_floor="deterministic_ok",
+    )
+    with (
+        patch("agents.digest.get_model") as mock_get_model,
+        patch("agents.digest.Agent") as mock_agent_cls,
+        patch("agents.digest.get_context_tools", return_value=[]),
+        patch("agents.digest.get_axiom_tools", return_value=[]),
+        patch("agents.digest._selected_digest_model_id") as mock_selected,
+    ):
+        agent = _get_digest_agent(admission)
+
+    assert agent is mock_agent_cls.return_value
+    mock_get_model.assert_called_once_with("local-fast")
+    mock_selected.assert_not_called()  # no post-admission re-resolution
+    # reset the module cache so other tests construct fresh
+    digest_module._digest_agent = None
+    digest_module._digest_agent_model_id = None
+
+
+def test_digest_module_import_binds_no_model():
+    """Import purity: importing agents.digest constructs no Agent/model.
+
+    Regression for the review-blocking finding — the module previously bound a
+    model descriptor (and registered tools) at import, before any admission.
+    """
+    import importlib
+
+    import agents.digest as digest_module
+
+    with (
+        patch("pydantic_ai.Agent") as mock_agent_cls,
+        patch("shared.config.get_model") as mock_get_model,
+        patch("shared.config.get_model_adaptive") as mock_adaptive,
+    ):
+        reloaded = importlib.reload(digest_module)
+        assert reloaded._digest_agent is None
+        mock_agent_cls.assert_not_called()
+        mock_get_model.assert_not_called()
+        mock_adaptive.assert_not_called()
+    importlib.reload(digest_module)
+
+
 @pytest.mark.asyncio
 @patch("agents.digest.collect_recent_documents")
 @patch("agents.digest.collect_collection_stats")
-@patch("agents.digest.digest_agent")
+@patch("agents.digest._get_digest_agent")
 async def test_generate_digest_pipeline(
-    mock_agent,
+    mock_get_agent,
     mock_stats,
     mock_docs,
 ):
+    mock_agent = mock_get_agent.return_value  # the factory's constructed agent
     """End-to-end pipeline test with all I/O mocked."""
     from agents.digest import generate_digest
 
@@ -375,7 +541,8 @@ async def test_generate_digest_pipeline(
     mock_stats.return_value = {"documents": 1500, "profile-facts": 80}
     mock_agent.run = AsyncMock(return_value=_FakeDigestResult())
 
-    digest = await generate_digest(hours=24)
+    with patch("agents.digest._admit_digest_synthesis", return_value=_admitted_digest_admission()):
+        digest = await generate_digest(hours=24)
     assert digest.hours == 24
     assert digest.stats.new_documents == 1
     assert digest.stats.collection_sizes["documents"] == 1500
@@ -385,12 +552,13 @@ async def test_generate_digest_pipeline(
 @pytest.mark.asyncio
 @patch("agents.digest.collect_recent_documents")
 @patch("agents.digest.collect_collection_stats")
-@patch("agents.digest.digest_agent")
+@patch("agents.digest._get_digest_agent")
 async def test_generate_digest_empty_results(
-    mock_agent,
+    mock_get_agent,
     mock_stats,
     mock_docs,
 ):
+    mock_agent = mock_get_agent.return_value  # the factory's constructed agent
     """Pipeline handles no new content gracefully."""
     from agents.digest import generate_digest
 
@@ -398,7 +566,8 @@ async def test_generate_digest_empty_results(
     mock_stats.return_value = {"documents": 100}
     mock_agent.run = AsyncMock(return_value=_FakeDigestResult())
 
-    digest = await generate_digest(hours=24)
+    with patch("agents.digest._admit_digest_synthesis", return_value=_admitted_digest_admission()):
+        digest = await generate_digest(hours=24)
     assert digest.stats.new_documents == 0
 
     # Prompt should mention "No new documents"
@@ -409,12 +578,13 @@ async def test_generate_digest_empty_results(
 @pytest.mark.asyncio
 @patch("agents.digest.collect_recent_documents")
 @patch("agents.digest.collect_collection_stats")
-@patch("agents.digest.digest_agent")
+@patch("agents.digest._get_digest_agent")
 async def test_generate_digest_llm_failure_graceful(
-    mock_agent,
+    mock_get_agent,
     mock_stats,
     mock_docs,
 ):
+    mock_agent = mock_get_agent.return_value  # the factory's constructed agent
     """Pipeline handles LLM failure gracefully."""
     from agents.digest import generate_digest
 
@@ -422,7 +592,8 @@ async def test_generate_digest_llm_failure_graceful(
     mock_stats.return_value = {}
     mock_agent.run = AsyncMock(side_effect=Exception("LLM timeout"))
 
-    digest = await generate_digest(hours=24)
+    with patch("agents.digest._admit_digest_synthesis", return_value=_admitted_digest_admission()):
+        digest = await generate_digest(hours=24)
     assert "unavailable" in digest.headline.lower() or "error" in digest.headline.lower()
     assert digest.stats.new_documents == 0
 
@@ -430,12 +601,48 @@ async def test_generate_digest_llm_failure_graceful(
 @pytest.mark.asyncio
 @patch("agents.digest.collect_recent_documents")
 @patch("agents.digest.collect_collection_stats")
-@patch("agents.digest.digest_agent")
-async def test_generate_digest_prompt_includes_collection_stats(
-    mock_agent,
+@patch("agents.digest._get_digest_agent")
+async def test_generate_digest_admission_denial_skips_llm(
+    mock_get_agent,
     mock_stats,
     mock_docs,
 ):
+    mock_agent = mock_get_agent.return_value  # the factory's constructed agent
+    """Capability denial should degrade without invoking the digest agent."""
+    from agents.digest import generate_digest
+
+    mock_docs.return_value = []
+    mock_stats.return_value = {}
+    mock_agent.run = AsyncMock()
+    denied = BackgroundCapabilityAdmission(
+        capability_name="agents.digest.synthesis",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        admitted=False,
+        denied_reason="task_note_absent",
+        reason_codes=("task_note_absent",),
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )
+
+    with patch("agents.digest._admit_digest_synthesis", return_value=denied):
+        digest = await generate_digest(hours=24)
+
+    mock_agent.run.assert_not_called()
+    assert "unavailable" in digest.headline.lower()
+    assert "task_note_absent" in digest.summary
+
+
+@pytest.mark.asyncio
+@patch("agents.digest.collect_recent_documents")
+@patch("agents.digest.collect_collection_stats")
+@patch("agents.digest._get_digest_agent")
+async def test_generate_digest_prompt_includes_collection_stats(
+    mock_get_agent,
+    mock_stats,
+    mock_docs,
+):
+    mock_agent = mock_get_agent.return_value  # the factory's constructed agent
     """Pipeline includes collection size stats in prompt."""
     from agents.digest import generate_digest
 
@@ -443,7 +650,8 @@ async def test_generate_digest_prompt_includes_collection_stats(
     mock_stats.return_value = {"documents": 1500, "samples": 80, "claude-memory": 200}
     mock_agent.run = AsyncMock(return_value=_FakeDigestResult())
 
-    await generate_digest(hours=24)
+    with patch("agents.digest._admit_digest_synthesis", return_value=_admitted_digest_admission()):
+        await generate_digest(hours=24)
     prompt = mock_agent.run.call_args[0][0]
     assert "1500 points" in prompt
     assert "80 points" in prompt

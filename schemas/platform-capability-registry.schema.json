@@ -438,6 +438,7 @@
         "command-r-08-2024",
         "mistral-medium-3.5",
         "gemini-3.1-pro-preview",
+        "gemini-3.5-flash",
         "z_ai-glm-5",
         "unknown"
       ]
@@ -464,6 +465,23 @@
         "context_mode": {"$ref": "#/$defs/context_mode"},
         "fast_mode": {"$ref": "#/$defs/fast_mode"},
         "quantization": {"$ref": "#/$defs/quantization"}
+      }
+    },
+    "provider_model_alias": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alias", "model_id", "provider", "evidence_refs", "observed_at", "stale_after"],
+      "properties": {
+        "alias": {"type": "string", "minLength": 1},
+        "model_id": {"$ref": "#/$defs/model_id"},
+        "provider": {"type": "string", "minLength": 1},
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "observed_at": {"type": "string", "format": "date-time"},
+        "stale_after": {"$ref": "#/$defs/duration"}
       }
     },
     "descriptor_variant": {
@@ -542,6 +560,10 @@
           "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
         },
         "execution_descriptor": {"$ref": "#/$defs/execution_descriptor"},
+        "provider_model_aliases": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/provider_model_alias"}
+        },
         "descriptor_variants": {
           "type": "array",
           "items": {"$ref": "#/$defs/descriptor_variant"}

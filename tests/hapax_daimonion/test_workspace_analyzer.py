@@ -7,11 +7,28 @@ import pytest
 
 from agents.hapax_daimonion.screen_models import WorkspaceAnalysis
 from agents.hapax_daimonion.workspace_analyzer import WorkspaceAnalyzer
+from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
+
+
+def _admission(*, admitted: bool = True) -> BackgroundCapabilityAdmission:
+    return BackgroundCapabilityAdmission(
+        capability_name="hapax_daimonion.workspace_analyzer.vision",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        admitted=admitted,
+        denied_reason=None if admitted else "provider_gateway_evidence_absent",
+        reason_codes=("policy_launch",) if admitted else ("provider_gateway_evidence_absent",),
+        task_id="task-x",
+        authority_case="CASE-CAPACITY-ROUTING-001",
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+        route_decision_id="rd-test",
+    )
 
 
 @pytest.mark.asyncio
 async def test_analyzer_returns_workspace_analysis():
-    analyzer = WorkspaceAnalyzer(model="gemini-flash")
+    analyzer = WorkspaceAnalyzer(model="gemini-flash", admission_gate=lambda: _admission())
 
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
@@ -60,7 +77,7 @@ async def test_analyzer_returns_workspace_analysis():
 @pytest.mark.asyncio
 async def test_analyzer_works_with_screen_only():
     """Should work with just a screenshot (cameras unavailable)."""
-    analyzer = WorkspaceAnalyzer(model="gemini-flash")
+    analyzer = WorkspaceAnalyzer(model="gemini-flash", admission_gate=lambda: _admission())
 
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
@@ -89,7 +106,7 @@ async def test_analyzer_works_with_screen_only():
 
 @pytest.mark.asyncio
 async def test_analyzer_returns_none_on_failure():
-    analyzer = WorkspaceAnalyzer(model="gemini-flash")
+    analyzer = WorkspaceAnalyzer(model="gemini-flash", admission_gate=lambda: _admission())
 
     with patch("agents.hapax_daimonion.workspace_analyzer.AsyncOpenAI") as mock_cls:
         mock_client = MagicMock()
@@ -99,6 +116,20 @@ async def test_analyzer_returns_none_on_failure():
         result = await analyzer.analyze(screen_b64="data")
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_analyzer_denies_before_openai_client():
+    analyzer = WorkspaceAnalyzer(
+        model="gemini-flash",
+        admission_gate=lambda: _admission(admitted=False),
+    )
+
+    with patch("agents.hapax_daimonion.workspace_analyzer.AsyncOpenAI") as mock_cls:
+        result = await analyzer.analyze(screen_b64="data")
+
+    assert result is None
+    mock_cls.assert_not_called()
 
 
 def test_analyzer_builds_multi_image_messages():
@@ -149,7 +180,7 @@ def _make_mock_response(content: str) -> MagicMock:
 
 async def _run_analyze(content: str) -> object:
     """Helper: patch AsyncOpenAI, call analyze(), return result."""
-    analyzer = WorkspaceAnalyzer(model="gemini-flash")
+    analyzer = WorkspaceAnalyzer(model="gemini-flash", admission_gate=lambda: _admission())
     mock_response = _make_mock_response(content)
     with patch("agents.hapax_daimonion.workspace_analyzer.AsyncOpenAI") as mock_cls:
         mock_client = MagicMock()

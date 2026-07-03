@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.fix_capabilities.background_admission import BackgroundCapabilityAdmission
+
 
 @pytest.mark.asyncio
 async def test_observe_writes_observation(tmp_path: Path):
@@ -84,3 +86,28 @@ async def test_observe_tolerates_missing_imagination(tmp_path: Path):
     # Should have been called with empty narrative
     _, kwargs = mock_call.call_args
     assert kwargs.get("narrative") == "" or mock_call.call_args[0][1] == ""
+
+
+@pytest.mark.asyncio
+async def test_vision_model_call_refuses_without_admission():
+    """Provider vision calls must not construct a client unless admission passes."""
+    from agents.vision_observer.__main__ import _call_vision_model
+
+    denied = BackgroundCapabilityAdmission(
+        capability_name="vision_observer.surface_description.llm",
+        route_id="api.headless.provider_gateway",
+        model_alias="gemini-flash",
+        admitted=False,
+        denied_reason="provider_model_descriptor_mismatch",
+        reason_codes=("provider_model_descriptor_mismatch",),
+        mutation_surface="provider_spend",
+        quality_floor="frontier_required",
+    )
+    with (
+        patch("agents.vision_observer.__main__.admit_background_capability", return_value=denied),
+        patch("openai.AsyncOpenAI") as mock_client_cls,
+    ):
+        result = await _call_vision_model("ZmFrZQ==", "")
+
+    assert result == ""
+    mock_client_cls.assert_not_called()
