@@ -91,6 +91,7 @@ class CapabilityAction(StrEnum):
     ACTUATE = "actuate"
     OBSERVE = "observe"
     ORCHESTRATE = "orchestrate"
+    GROUND = "ground"
 
 
 class FreshnessState(StrEnum):
