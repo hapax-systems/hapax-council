@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -38,6 +39,7 @@ def _load_sweeper_module() -> ModuleType:
 
 from cc_hygiene import events as events_mod  # noqa: E402
 from cc_hygiene.checks import (  # noqa: E402
+    GHOST_CLAIM_GRACE_MINUTES,
     OFFERED_STALE_DAYS,
     RELAY_STALE_MIN,
     STALE_IN_PROGRESS_HOURS,
@@ -89,6 +91,14 @@ def _write_note(dirpath: Path, task_id: str, **frontmatter: Any) -> Path:
     path = dirpath / f"{task_id}-test.md"
     path.write_text("\n".join(body_lines), encoding="utf-8")
     return path
+
+
+def _age_past_ghost_grace(path: Path) -> None:
+    """Back-date a fixture note past ``GHOST_CLAIM_GRACE_MINUTES`` so the §2.2
+    ghost check sees it — freshly modified ghosts are skipped (mid-stamp claims
+    must not be reverted out from under a live lane)."""
+    ts = (_now() - timedelta(minutes=GHOST_CLAIM_GRACE_MINUTES + 1)).timestamp()
+    os.utime(path, (ts, ts))
 
 
 def _write_relay(relay_dir: Path, role: str, payload: dict[str, Any]) -> Path:
@@ -178,6 +188,41 @@ def test_ghost_claimed_legitimate_claim_does_not_fire() -> None:
     )
     events = check_ghost_claimed([note], now=_now())
     assert events == []
+
+
+def test_ghost_claimed_grace_window_skips_freshly_modified_note(tmp_path: Path) -> None:
+    """A ghost whose note file changed inside the grace window is NOT flagged —
+    reverting a mid-stamp claim killed a freshly launched live lane
+    (2026-07-01 eta/ndcvb-phase1 incident)."""
+    p = tmp_path / "fresh-ghost.md"
+    p.write_text("stub", encoding="utf-8")
+    ts = (_now() - timedelta(minutes=GHOST_CLAIM_GRACE_MINUTES - 1)).timestamp()
+    os.utime(p, (ts, ts))
+    note = TaskNote(
+        path=str(p),
+        task_id="cc-grace-1",
+        status="claimed",
+        assigned_to="unassigned",
+        claimed_at=None,
+    )
+    assert check_ghost_claimed([note], now=_now()) == []
+
+
+def test_ghost_claimed_fires_once_grace_window_passes(tmp_path: Path) -> None:
+    p = tmp_path / "old-ghost.md"
+    p.write_text("stub", encoding="utf-8")
+    ts = (_now() - timedelta(minutes=GHOST_CLAIM_GRACE_MINUTES + 1)).timestamp()
+    os.utime(p, (ts, ts))
+    note = TaskNote(
+        path=str(p),
+        task_id="cc-grace-2",
+        status="claimed",
+        assigned_to="unassigned",
+        claimed_at=None,
+    )
+    events = check_ghost_claimed([note], now=_now())
+    assert len(events) == 1
+    assert events[0].check_id == "ghost_claimed"
 
 
 # ----------------------------------------------------------------------------
@@ -1058,13 +1103,14 @@ def test_run_sweep_finds_ghost_claimed(tmp_path: Path) -> None:
     run_sweep = _load_sweeper_module().run_sweep
 
     vault = _build_vault(tmp_path)
-    _write_note(
+    ghost_path = _write_note(
         vault / "active",
         "cc-ghost",
         status="claimed",
         assigned_to="unassigned",
         claimed_at=None,
     )
+    _age_past_ghost_grace(ghost_path)
     relay = tmp_path / "relay"
     state = run_sweep(vault_root=vault, relay_root=relay, repo_root=tmp_path, now=_now())
     ghost_events = [e for e in state.events if e.check_id == "ghost_claimed"]
@@ -1164,6 +1210,7 @@ def test_main_auto_reverts_ghost_claimed(tmp_path: Path) -> None:
         assigned_to="epsilon",
         claimed_at=None,
     )
+    _age_past_ghost_grace(note_path)
     with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
         rc = sweeper.main(_main_args(tmp_path, vault))
     assert rc == 0
@@ -1178,13 +1225,14 @@ def test_main_ghost_claim_does_not_recur_after_heal(tmp_path: Path) -> None:
     """Storm-stop canary: sweep 1 detects + heals; sweep 2 finds NO ghost event."""
     sweeper = _load_sweeper_module()
     vault = _build_vault(tmp_path)
-    _write_note(
+    recur_ghost_path = _write_note(
         vault / "active",
         "cc-ghost",
         status="claimed",
         assigned_to="epsilon",
         claimed_at=None,
     )
+    _age_past_ghost_grace(recur_ghost_path)
     args = _main_args(tmp_path, vault)
     with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
         assert sweeper.main(args) == 0
@@ -1284,6 +1332,7 @@ def test_main_does_not_page_for_self_healed_ghost(tmp_path: Path) -> None:
         assigned_to="alpha",
         claimed_at=None,
     )
+    _age_past_ghost_grace(note_path)
     sender = MagicMock(return_value=True)
     with (
         patch("cc_hygiene.checks._gh_pr_list", return_value=[]),
@@ -1314,6 +1363,7 @@ def test_main_still_pages_unhealed_ghost_under_no_actions(tmp_path: Path) -> Non
         assigned_to="alpha",
         claimed_at=None,
     )
+    _age_past_ghost_grace(note_path)
     sender = MagicMock(return_value=True)
     with (
         patch("cc_hygiene.checks._gh_pr_list", return_value=[]),

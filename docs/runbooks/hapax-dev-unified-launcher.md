@@ -45,6 +45,17 @@ the tmux spawn, and the runtime exec all stay in `hapax-claude` /
   (`~/.cache/hapax/claude-headless/<name>/output.jsonl`). The claim/heartbeat
   checks mean a headless lane that holds a claim *without* a tmux session is
   still correctly seen as busy.
+  Claim-cache writers must also keep the matching
+  `~/.cache/hapax/cc-claim-epoch-<name>` sidecar in step, including
+  session-keyed variants. The sidecar is written before the claim cache and
+  stores `<epoch> <task_id>` so terminal checks can age unassigned claim-stamp
+  drift without trusting claim-file mtime.
+  Recheck a lane's sidecar contract with:
+  `for f in ~/.cache/hapax/cc-active-task-<name>*; do k=${f##*/cc-active-task-}; printf '%s -> %s :: ' "$f" "$(head -n1 "$f")"; head -n1 ~/.cache/hapax/cc-claim-epoch-"$k"; done`.
+  Emergency-only bypass: set `HAPAX_CLAIM_EPOCH_CHECK_BYPASS=1` only while
+  repairing a sidecar writer; unset it after recreating the matching
+  `cc-claim-epoch-*` files. The bypass does not override reassignment,
+  closed-note, or merged-PR terminal states.
 - **Explicit name** is honored as-is. A *free* greek claude role may be used
   **only** when named explicitly (`hapax-dev claude zeta`).
 - **Collisions are refused**: if the resolved name is already live, no second
