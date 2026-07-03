@@ -397,12 +397,11 @@ def _query_durable_chronicle(
     temporal_span_ref: str | None,
     limit: int,
 ) -> list[ChronicleEvent]:
-    try:
-        durable_file = DurableJsonlSink().path_for_stream("chronicle")
-        validate_chain(durable_file, stream_id="chronicle").raise_for_issues()
-        lines = durable_file.read_text(encoding="utf-8").splitlines()
-    except (OSError, ValueError):
+    durable_file = DurableJsonlSink().path_for_stream("chronicle")
+    validate_chain(durable_file, stream_id="chronicle").raise_for_issues()
+    if not durable_file.exists():
         return []
+    lines = durable_file.read_text(encoding="utf-8").splitlines()
 
     results: list[ChronicleEvent] = []
     for raw in reversed(lines):

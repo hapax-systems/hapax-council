@@ -845,6 +845,33 @@ class TestDurableSinkIntegration:
         with pytest.raises(sink_mod.DurableSinkChainError, match="next action"):
             query(since=0.0, source="gate_log")
 
+    def test_stage0_query_refuses_when_durable_root_disappears_before_volatile_loss(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shared.durable_jsonl_sink as sink_mod
+
+        durable_root, _chronicle_file = self._configure_durable_sink(tmp_path, monkeypatch)
+        stage0 = _make_event(source="gate_log", event_type="gate.allow", ts=time.time())
+        record(stage0)
+        shutil.rmtree(durable_root)
+
+        with pytest.raises(sink_mod.DurableSinkPathError, match="durable sink root is absent"):
+            query(since=0.0, source="gate_log")
+
+    def test_stage0_query_refuses_when_durable_root_disappears_after_volatile_loss(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shared.durable_jsonl_sink as sink_mod
+
+        durable_root, _chronicle_file = self._configure_durable_sink(tmp_path, monkeypatch)
+        stage0 = _make_event(source="gate_log", event_type="gate.allow", ts=time.time())
+        record(stage0)
+        chronicle_mod.CHRONICLE_FILE.unlink()
+        shutil.rmtree(durable_root)
+
+        with pytest.raises(sink_mod.DurableSinkPathError, match="durable sink root is absent"):
+            query(since=0.0, source="gate_log")
+
     def test_record_recreates_volatile_dir_after_reboot(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
