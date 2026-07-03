@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""hapax-capability-inventory — thin entry wrapper for shared.capability_inventory.main().
+
+The read-only capability inventory + validation report lives in shared/capability_inventory.py (the
+importable, unit-tested read-model). This script is the governed entry point.
+"""
+
+import sys
+
+from shared.capability_inventory import main
+
+if __name__ == "__main__":
+    sys.exit(main())
