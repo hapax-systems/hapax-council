@@ -816,6 +816,26 @@ class TestDurableSinkIntegration:
 
         assert [ev.event_id for ev in query(since=0.0)] == [non_stage0.event_id]
 
+    def test_broad_query_reads_empty_durable_stream_without_volatile_rows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._configure_durable_sink(tmp_path, monkeypatch)
+
+        assert query(since=0.0) == []
+
+    def test_broad_query_refuses_volatile_stage0_when_durable_root_disappears(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shared.durable_jsonl_sink as sink_mod
+
+        durable_root, _chronicle_file = self._configure_durable_sink(tmp_path, monkeypatch)
+        stage0 = _make_event(source="gate_log", event_type="gate.allow", ts=time.time())
+        record(stage0)
+        shutil.rmtree(durable_root)
+
+        with pytest.raises(sink_mod.DurableSinkPathError, match="durable sink root is absent"):
+            query(since=0.0)
+
     def test_durable_query_does_not_assume_timestamp_order(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

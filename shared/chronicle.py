@@ -548,11 +548,20 @@ def query(
                 if len(results) >= limit:
                     break  # Reverse walk produces newest-first; stop at limit.
 
-    if _should_query_durable_chronicle(
+    should_query_durable = _should_query_durable_chronicle(
         actual_path=actual_path,
         source=source,
         event_type=event_type,
+    )
+    if (
+        not should_query_durable
+        and actual_path == CHRONICLE_FILE
+        and (source is None or event_type is None)
+        and any(is_stage0_event(ev) for ev in results)
     ):
+        should_query_durable = True
+
+    if should_query_durable:
         seen_ids = {ev.event_id for ev in results}
         for ev in _query_durable_chronicle(
             since=since,
@@ -569,6 +578,7 @@ def query(
         ):
             if ev.event_id not in seen_ids:
                 results.append(ev)
+                seen_ids.add(ev.event_id)
         results.sort(key=lambda item: item.ts, reverse=True)
         results = results[:limit]
 
