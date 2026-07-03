@@ -1227,6 +1227,18 @@ def test_terminal_check_reaps_foreign_assignee_with_no_cache(tmp_path: Path) -> 
     assert rc == 0
 
 
+def test_terminal_check_reaps_unassigned_note_with_no_cache(tmp_path: Path) -> None:
+    result = _run_task_is_terminal_result(
+        tmp_path,
+        cache_task=None,
+        note_status="offered",
+        note_assigned="unassigned",
+    )
+    assert result.returncode == 0
+    assert "no matching claim cache" in result.stderr
+    assert "rerun cc-claim" in result.stderr
+
+
 def test_terminal_check_indeterminate_still_reaps_merged_pr(tmp_path: Path) -> None:
     """The drift-survival fall-through still honors the merged-PR terminal."""
     rc = _run_task_is_terminal(

@@ -481,6 +481,9 @@ task_is_terminal() {
           printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim cache age=%ss exceeds grace=%ss for task=%s — treating as terminal (stale unassigned claim); next action: re-run cc-claim to refresh ownership or clear the stale claim\n' "$$" "$claim_source" "$_cache_age" "$_stamp_grace" "$task" >&2
         fi
         return 0
+      else
+        printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned and no matching claim cache for role=%s task=%s — treating as terminal (claim cleared or task reoffered); next action: rerun cc-claim before relaunching this lane\n' "$$" "$ROLE" "$task" >&2
+        return 0
       fi
     fi
   fi
