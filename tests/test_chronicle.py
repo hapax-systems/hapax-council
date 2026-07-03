@@ -732,6 +732,10 @@ class TestDurableSinkIntegration:
                     "note": "provider key sk-ant-api03-ZZZZ1111222233334444 was seen",
                     "score": 42,
                 },
+                "items": [
+                    "authorization: Bearer abc.def.ghi-token-value",
+                    {"session_token": "session-secret-value"},
+                ],
             },
         )
         record(stage0)
@@ -745,6 +749,10 @@ class TestDurableSinkIntegration:
             durable_payload["nested"]["note"] == "provider key [REDACTED:provider_token] was seen"
         )
         assert durable_payload["nested"]["score"] == 42
+        assert durable_payload["items"] == [
+            "[REDACTED:authorization]",
+            {"session_token": "[REDACTED:secret_assignment]"},
+        ]
 
         volatile_payload = json.loads(chronicle_file.read_text(encoding="utf-8"))["payload"]
         assert volatile_payload == stage0.payload
