@@ -23,12 +23,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from shared.durable_jsonl_sink import DurableJsonlSink
+from shared.durable_jsonl_sink import DurableJsonlSink, validate_chain
+from shared.transcript_scrubber import scrub
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -51,6 +55,11 @@ STAGE0_SOURCES = frozenset(
 # producers have stable Stage0 source names, while generic emitters such as
 # engines classify durable rows through their event type.
 STAGE0_EVENT_TYPE_PREFIXES = ("apperception.", "gate.", "payment.", "speech.")
+_DURABLE_PAYLOAD_REDACTION = "[REDACTED:secret_assignment]"
+_SENSITIVE_PAYLOAD_KEY_RE = re.compile(
+    r"(?i)(secret|token|passwd|password|api[_-]?key|apikey|access[_-]?key|"
+    r"private[_-]?key|client[_-]?secret|auth|credential|bearer|session[_-]?key)"
+)
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -292,12 +301,35 @@ def is_stage0_event(event: ChronicleEvent) -> bool:
     return event.source in STAGE0_SOURCES or event.event_type.startswith(STAGE0_EVENT_TYPE_PREFIXES)
 
 
+def _scrub_durable_payload_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        scrubbed: dict[str, Any] = {}
+        for key, nested in value.items():
+            key_text = str(key)
+            if _SENSITIVE_PAYLOAD_KEY_RE.search(key_text):
+                scrubbed[key_text] = _DURABLE_PAYLOAD_REDACTION
+            else:
+                scrubbed[key_text] = _scrub_durable_payload_value(nested)
+        return scrubbed
+    if isinstance(value, list | tuple):
+        return [_scrub_durable_payload_value(item) for item in value]
+    if isinstance(value, str):
+        return scrub(value).text
+    return value
+
+
+def _durable_chronicle_payload(event: ChronicleEvent) -> dict[str, Any]:
+    payload = json.loads(event.to_json())
+    payload["payload"] = _scrub_durable_payload_value(payload.get("payload", {}))
+    return payload
+
+
 def _append_durable_chronicle_event(event: ChronicleEvent) -> None:
     DurableJsonlSink().append(
         stream_id="chronicle",
         data_class="chronicle_event",
         source_receipt_ref=f"chronicle:event:{event.event_id}",
-        payload=json.loads(event.to_json()),
+        payload=_durable_chronicle_payload(event),
         timestamp=time.strftime(
             "%Y-%m-%dT%H:%M:%SZ", time.gmtime(event.effective_transaction_time)
         ),
@@ -367,6 +399,7 @@ def _query_durable_chronicle(
 ) -> list[ChronicleEvent]:
     try:
         durable_file = DurableJsonlSink().path_for_stream("chronicle")
+        validate_chain(durable_file, stream_id="chronicle").raise_for_issues()
         lines = durable_file.read_text(encoding="utf-8").splitlines()
     except (OSError, ValueError):
         return []

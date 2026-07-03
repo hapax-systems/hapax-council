@@ -716,6 +716,39 @@ class TestDurableSinkIntegration:
         record(non_stage0)
         assert sink_mod.validate_chain(durable_path, stream_id="chronicle").row_count == 1
 
+    def test_record_scrubs_durable_payload_without_mutating_volatile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shared.durable_jsonl_sink as sink_mod
+
+        durable_root, chronicle_file = self._configure_durable_sink(tmp_path, monkeypatch)
+        stage0 = _make_event(
+            source="gate_log",
+            event_type="gate.allow",
+            payload={
+                "api_key": "plain-value-from-secret-shaped-key",
+                "bearer": "Bearer abc.def.ghi-token-value",
+                "nested": {
+                    "note": "provider key sk-ant-api03-ZZZZ1111222233334444 was seen",
+                    "score": 42,
+                },
+            },
+        )
+        record(stage0)
+
+        durable_path = sink_mod.DurableJsonlSink(durable_root).path_for_stream("chronicle")
+        durable_row = json.loads(durable_path.read_text(encoding="utf-8"))
+        durable_payload = durable_row["payload"]["payload"]
+        assert durable_payload["api_key"] == "[REDACTED:secret_assignment]"
+        assert durable_payload["bearer"] == "[REDACTED:secret_assignment]"
+        assert (
+            durable_payload["nested"]["note"] == "provider key [REDACTED:provider_token] was seen"
+        )
+        assert durable_payload["nested"]["score"] == 42
+
+        volatile_payload = json.loads(chronicle_file.read_text(encoding="utf-8"))["payload"]
+        assert volatile_payload == stage0.payload
+
     def test_missing_durable_root_refuses_before_volatile(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -783,14 +816,36 @@ class TestDurableSinkIntegration:
         durable_root, _chronicle_file = self._configure_durable_sink(tmp_path, monkeypatch)
         stage0 = _make_event(source="gate_log", event_type="gate.allow", ts=time.time())
         record(stage0)
-        durable_path = sink_mod.DurableJsonlSink(durable_root).path_for_stream("chronicle")
-        with durable_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"payload": []}) + "\n")
+        sink_mod.DurableJsonlSink(durable_root).append(
+            stream_id="chronicle",
+            data_class="chronicle_event",
+            source_receipt_ref="chronicle:event:malformed-payload",
+            payload={"not": "a chronicle event"},
+        )
 
         import shared.chronicle as chronicle_mod
 
         chronicle_mod.CHRONICLE_FILE.unlink()
         assert [ev.event_id for ev in query(since=0.0, source="gate_log")] == [stage0.event_id]
+
+    def test_query_validates_durable_chain_before_replay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shared.durable_jsonl_sink as sink_mod
+
+        durable_root, _chronicle_file = self._configure_durable_sink(tmp_path, monkeypatch)
+        stage0 = _make_event(source="gate_log", event_type="gate.allow", ts=time.time())
+        record(stage0)
+        durable_path = sink_mod.DurableJsonlSink(durable_root).path_for_stream("chronicle")
+        row = json.loads(durable_path.read_text(encoding="utf-8"))
+        row["payload"]["payload"] = {"tampered": True}
+        durable_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+        import shared.chronicle as chronicle_mod
+
+        chronicle_mod.CHRONICLE_FILE.unlink()
+        with pytest.raises(sink_mod.DurableSinkChainError, match="next action"):
+            query(since=0.0, source="gate_log")
 
     def test_record_recreates_volatile_dir_after_reboot(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
