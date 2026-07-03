@@ -52,6 +52,30 @@ from shared.sdlc_pressure_gate import admission_state
 log = logging.getLogger(__name__)
 
 
+# M4 2e — route-policy freshness-hold refusal markers. A dispatch that fails
+# because the freshness gate read stale receipts carries one of these in its
+# refusal reason (the SSOT is shared.dispatcher_policy._freshness_hold_reasons;
+# these text markers are the consumer-side mirror). A tick that dispatches at
+# least one task AND records no freshness refusal proves the holds have cleared,
+# so any freshness-cooled (task, lane) pairs are stale and get wiped via
+# DispatchRefusalLedger.invalidate_by_reason_predicate — they re-attempt against
+# the fresh receipts now, instead of waiting out up to a 1h backoff (the re-arm
+# wedge: a fresh receipt could not previously flip a cooled pair).
+_FRESHNESS_HOLD_MARKERS = frozenset(
+    {
+        "stale_or_unknown",
+        "account_live_quota_receipt_absent",
+        "cli_missing_or_unusable",
+    }
+)
+
+
+def _is_freshness_hold_reason(reason: str) -> bool:
+    """True if a dispatch refusal reason is a route-policy freshness hold."""
+    reason_lower = (reason or "").lower()
+    return any(marker in reason_lower for marker in _FRESHNESS_HOLD_MARKERS)
+
+
 def _positive_env_float(name: str, default: float) -> float:
     try:
         value = float(os.environ.get(name, str(default)))
@@ -281,6 +305,7 @@ class Coordinator:
         )
 
         dispatches = 0
+        freshness_refusal_this_tick = False
         idle_lanes = [
             l
             for l in lanes.values()
@@ -397,6 +422,8 @@ class Coordinator:
             else:
                 # Every failed dispatch is recorded — no silent retries.
                 self._refusal_ledger.record_refusal(task_id, role, refusal_reason, now=now_mono)
+                if _is_freshness_hold_reason(refusal_reason):
+                    freshness_refusal_this_tick = True
 
         state.dispatches_this_tick = dispatches
         state.lanes = {role: _lane_to_dict(l) for role, l in lanes.items()}
@@ -428,6 +455,16 @@ class Coordinator:
         )
         starvation_offered = (len(offered) - cooled_offered) if idle_lanes else 0
         self._refusal_ledger.tick_starvation(starvation_offered, dispatches, now=now_mono)
+
+        # M4 2e: a tick that dispatched >=1 task AND recorded no freshness
+        # refusal proves the route-policy freshness holds have cleared. Wipe any
+        # stale freshness-cooled pairs so they re-attempt against the fresh
+        # receipts now instead of waiting out up to a 1h backoff — the re-arm
+        # wedge that previously required a coordinator restart to clear.
+        if dispatches > 0 and not freshness_refusal_this_tick:
+            wiped = self._refusal_ledger.invalidate_by_reason_predicate(_is_freshness_hold_reason)
+            if wiped:
+                log.info("freshness receipts cleared; wiped %d stale refusal entries", wiped)
 
         # Surface refusal stats in SHM.
         refusal_stats = self._refusal_ledger.stats()
