@@ -318,6 +318,22 @@ def test_protocol_exception_retired_alias_assignment_is_still_invalid(
     assert "retired/excised RTE lane cannot be active" in payload["reasons"][0]
 
 
+@pytest.mark.parametrize("retired_rte", ["Antigrav", "Gemini-2", "VBE-1"])
+def test_mixed_case_retired_or_burst_assignment_is_invalid(
+    tmp_path: Path, retired_rte: str
+) -> None:
+    _write_tick(tmp_path / "relay", "green")
+    _write_assignment(tmp_path / "relay", rte=retired_rte)
+    _write_planning_feed(tmp_path / "planning-feed-state.json")
+
+    result = _run(tmp_path, "--json")
+
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "unknown"
+    assert payload["assignment"]["status"] == "invalid"
+
+
 def test_protocol_exception_vibe_assignment_can_be_active(tmp_path: Path) -> None:
     _write_tick(tmp_path / "relay", "green")
     _write_assignment(tmp_path / "relay", rte="vbe-1", protocol_exception=True)
@@ -435,6 +451,22 @@ def test_assign_rte_refuses_legacy_gemini_lane_with_exception(tmp_path: Path) ->
 
     assert result.returncode == 4
     assert "retired/excised" in result.stderr
+    assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
+
+
+@pytest.mark.parametrize("retired_lane", ["Antigrav", "Gemini-2", "VBE-1"])
+def test_assign_rte_refuses_mixed_case_retired_or_burst_explicit_lane(
+    tmp_path: Path, retired_lane: str
+) -> None:
+    result = _run_assign_rte(
+        tmp_path,
+        "--rte",
+        retired_lane,
+        "--originator",
+        "alpha",
+    )
+
+    assert result.returncode == 4
     assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
 
 

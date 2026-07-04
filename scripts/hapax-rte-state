@@ -183,8 +183,8 @@ def read_assignment() -> dict[str, Any]:
     if not ASSIGNMENT_FILE.exists():
         return {"status": "missing", "path": str(ASSIGNMENT_FILE)}
     parsed = read_tick(ASSIGNMENT_FILE)
-    rte = str(parsed.get("rte") or "").strip()
-    originator = str(parsed.get("originator") or "").strip()
+    rte = str(parsed.get("rte") or "").strip().lower()
+    originator = str(parsed.get("originator") or "").strip().lower()
     assigned_at_raw = str(parsed.get("assigned_at") or "").strip()
     expires_at_raw = str(parsed.get("expires_at") or "").strip()
     assigned_at = parse_optional_utc(assigned_at_raw)

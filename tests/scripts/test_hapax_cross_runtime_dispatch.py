@@ -222,6 +222,13 @@ def test_antigrav_is_not_cross_runtime_dispatchable(tmp_path: Path, retired_plat
     assert records_after == records
 
 
+def test_blocked_dispatch_receipt_dedup_is_flock_guarded() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert 'local lock="$LEDGER_DIR/dispatch-ledger.lock"' in source
+    assert 'flock "$lock" python3 - "$ledger"' in source
+
+
 @pytest.mark.parametrize(
     "retired_lane",
     ["agy", "agy-2", "antigrav", "antigravity", "antigravity-2", "gemini-cli", "gemini-cli-2"],

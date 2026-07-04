@@ -4528,7 +4528,7 @@ _WorkerAdapter.launch
 _SendCapableAdapter.send
 _BudgetAuthorityAdapter
 _ReviewSeatAdapter
-_RetiredAntigravFailureClassifier
+_retired_antigrav_failure_classifier_anchor = _RetiredAntigravFailureClassifier
 _ClaudeAdapter
 _CodexAdapter
 

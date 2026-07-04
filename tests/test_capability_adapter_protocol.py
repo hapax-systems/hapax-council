@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
-import shared.capability_adapter_protocol as adapter_protocol
 from shared.capability_adapter_protocol import (
     AuthorityViolation,
     BudgetAuthorityAdapter,
@@ -131,6 +131,7 @@ def test_review_seat_has_no_launch_or_send() -> None:
 
 
 def test_retired_antigrav_has_no_adapter_launch_or_send_surface() -> None:
+    adapter_protocol = sys.modules[_MOD]
     assert "AntigravAdapter" not in adapter_protocol.__all__
     assert not hasattr(adapter_protocol, "AntigravAdapter")
     assert not hasattr(RetiredAntigravFailureClassifier, "launch")

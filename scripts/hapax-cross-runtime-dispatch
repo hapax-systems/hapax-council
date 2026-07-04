@@ -143,6 +143,8 @@ is_retired_antigrav_lane() {
 write_blocked_dispatch_receipt() {
     local block_reason="$1"
     mkdir -p "$LEDGER_DIR"
+    local ledger="$LEDGER_DIR/dispatch-ledger.jsonl"
+    local lock="$LEDGER_DIR/dispatch-ledger.lock"
     local timestamp
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     TIMESTAMP="$timestamp" \
@@ -153,7 +155,7 @@ write_blocked_dispatch_receipt() {
     AUTHORITY_CASE_ID="$CASE_ID" \
     WORKSTREAM_MODE="$MODE" \
     BLOCK_REASON="$block_reason" \
-    python3 - "$LEDGER_DIR/dispatch-ledger.jsonl" <<'PY'
+    flock "$lock" python3 - "$ledger" <<'PY'
 from pathlib import Path
 from hashlib import sha256
 import json

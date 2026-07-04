@@ -144,7 +144,7 @@ def discover_active_lanes(*, now: datetime, stale_hours: float) -> dict[str, Lan
 
 
 def normalize_lane(lane: str) -> str:
-    return lane.strip()
+    return lane.strip().lower()
 
 
 def is_vibe_lane(lane: str) -> bool:
