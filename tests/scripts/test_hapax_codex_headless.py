@@ -415,6 +415,9 @@ exit 99
     )
 
     env = os.environ.copy()
+    # A governed lane running this suite carries its own dispatch task binding;
+    # the launcher would adopt it at CODEX_TASK init and skip the no-task guard.
+    env.pop("HAPAX_METHODOLOGY_DISPATCH_TASK", None)
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(primary)

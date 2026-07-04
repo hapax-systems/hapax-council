@@ -34,6 +34,13 @@ def _headless_env(home: Path, bin_dir: Path, pipe_dir: Path) -> dict[str, str]:
         "CLAUDE_ROLE",
         "HAPAX_WORKTREE_ROLE",
         "HAPAX_METHODOLOGY_DISPATCH_TASK",
+        "HAPAX_METHODOLOGY_DISPATCH_EXTERNAL",
+        "HAPAX_METHODOLOGY_DISPATCH_PROFILE",
+        "HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN",
+        "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID",
+        "HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF",
+        "HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE",
+        "HAPAX_METHODOLOGY_DISPATCH_PARENT_SPEC",
         "HAPAX_CLAUDE_BIN",
         "HAPAX_CLAUDE_BIN_PATH",
         "NPM_CONFIG_PREFIX",
@@ -93,7 +100,7 @@ def test_headless_source_contains_no_generic_work_pool_prompt() -> None:
     assert "HAPAX_METHODOLOGY_DISPATCH_TASK" in text
 
 
-def test_claude_headless_external_workdir_fails_closed_without_lifecycle_scripts(
+def test_claude_headless_external_workdir_fails_closed_without_redemption_binding(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -118,8 +125,43 @@ def test_claude_headless_external_workdir_fails_closed_without_lifecycle_scripts
         timeout=10,
     )
 
-    assert result.returncode == 14
-    assert f"missing cc-claim in {workdir}" in result.stderr
+    assert result.returncode == 17
+    assert "missing dispatch redemption binding env" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert not claude_called.exists()
+
+
+def test_claude_headless_external_workdir_requires_live_redemption_authority(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(workdir)
+    # A self-minted token with full binding env still fails closed: redemption
+    # happens at the fixed governor socket, which no caller can pre-create.
+    env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = "self-minted"
+    env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "019f-fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = "route-decision:fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE"] = "CASE-CAPACITY-ROUTING-001"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "dispatch redemption refused" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
     assert not claude_called.exists()
 
 
@@ -418,6 +460,9 @@ def test_headless_refuses_without_task_or_existing_claim(tmp_path: Path) -> None
     claude.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     claude.chmod(0o755)
     env = os.environ.copy()
+    # A governed lane running this suite carries its own dispatch task binding;
+    # the launcher would adopt it at CLAUDE_TASK init and skip the no-task guard.
+    env.pop("HAPAX_METHODOLOGY_DISPATCH_TASK", None)
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
     env["HAPAX_CLAUDE_HEADLESS_ALLOW"] = "1"

@@ -239,7 +239,108 @@ if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CLAUDE_TASK" ]]; then
   echo "hapax-claude-headless: refusing launch; role '$ROLE' already claims '$CLAIMED_TASK', not dispatch task '$CLAUDE_TASK'" >&2
   exit 13
 fi
-if [[ -z "$CLAIMED_TASK" ]]; then
+workdir_has_local_lifecycle_guards() {
+  [[ -x "$WORKDIR/scripts/cc-claim" && -x "$WORKDIR/scripts/cc-close" ]]
+}
+
+workdir_requires_dispatch_redemption() {
+  [[ "${HAPAX_METHODOLOGY_DISPATCH_EXTERNAL:-}" == "1" ]] && return 0
+  case "$WORKDIR" in
+    "$HOME/projects/hapax-council"|"$HOME/projects/hapax-council--"*) return 1 ;;
+    "$HOME/projects/"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_dispatch_redemption_authority() {
+  # Redemption parity with hapax-codex-headless: an external worktree has no
+  # local cc-claim/cc-close lifecycle, so admission comes from redeeming the
+  # dispatcher-issued one-time grant against the fixed governor socket. The
+  # verifier imports from this launcher's own council checkout, never from the
+  # (external) WORKDIR and never from the caller's cwd.
+  local council_dir profile="${HAPAX_METHODOLOGY_DISPATCH_PROFILE:-full}"
+  council_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  if ! python3 - "$council_dir" "$CLAUDE_TASK" "$ROLE" "$WORKDIR" claude headless "$profile" <<'PYEOF'
+import os
+import sys
+import time
+
+council_dir, task_id, lane, worktree, platform, mode, profile = sys.argv[1:]
+sys.path.insert(0, council_dir)
+
+try:
+    from shared.governance.dispatch_redemption import (
+        LaunchRedemptionContext,
+        LaunchRedemptionRequest,
+        redeem_launch_via_socket,
+    )
+except Exception as exc:  # noqa: BLE001
+    print(f"cannot import dispatch redemption verifier: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+token = os.environ.get("HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN", "").strip()
+message_id = os.environ.get("HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID", "").strip()
+route_decision_ref = os.environ.get(
+    "HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF", ""
+).strip()
+authority_case = os.environ.get("HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE", "").strip()
+parent_spec = os.environ.get("HAPAX_METHODOLOGY_DISPATCH_PARENT_SPEC", "").strip() or None
+
+missing = [
+    name
+    for name, value in (
+        ("HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN", token),
+        ("HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID", message_id),
+        ("HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF", route_decision_ref),
+        ("HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE", authority_case),
+    )
+    if not value
+]
+if missing:
+    print(
+        "missing dispatch redemption binding env: " + ", ".join(missing),
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+context = LaunchRedemptionContext(
+    task_id=task_id,
+    lane=lane,
+    platform=platform,
+    mode=mode,
+    profile=profile,
+    worktree=worktree,
+    purpose="external_launch",
+    dispatch_message_id=message_id,
+    route_decision_ref=route_decision_ref,
+    authority_case=authority_case,
+    parent_spec=parent_spec,
+)
+response = redeem_launch_via_socket(
+    LaunchRedemptionRequest(
+        token=token,
+        context=context,
+        wrapper="hapax-claude-headless",
+        wrapper_pid=os.getpid(),
+        observed_at=time.time(),
+    )
+)
+if not response.ok:
+    print(f"dispatch redemption refused: {response.reason}", file=sys.stderr)
+    raise SystemExit(1)
+PYEOF
+  then
+    echo "hapax-claude-headless: external workdir requires live methodology dispatch redemption; next action: launch external worktrees through hapax-methodology-dispatch with an active dispatch-redemption authority" >&2
+    exit 17
+  fi
+}
+
+DISPATCH_REDEEMED=0
+if workdir_requires_dispatch_redemption && ! workdir_has_local_lifecycle_guards; then
+  validate_dispatch_redemption_authority
+  DISPATCH_REDEEMED=1
+fi
+if [[ -z "$CLAIMED_TASK" && "$DISPATCH_REDEEMED" -eq 0 ]]; then
   [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-claude-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
   (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")
 fi
