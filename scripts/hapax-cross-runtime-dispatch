@@ -74,6 +74,7 @@ while [[ $# -gt 0 ]]; do
         *)            echo "error: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+PLATFORM="${PLATFORM,,}"
 
 # --- Freshness check ---
 check_lane_freshness() {

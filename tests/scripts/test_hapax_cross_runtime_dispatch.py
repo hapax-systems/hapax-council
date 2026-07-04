@@ -168,7 +168,10 @@ def test_vibe_delegates_to_methodology_dispatch(tmp_path: Path) -> None:
     assert "--platform\nvibe" in dispatcher_log.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("retired_platform", ["agy", "antigrav", "antigravity", "gemini-cli"])
+@pytest.mark.parametrize(
+    "retired_platform",
+    ["agy", "antigrav", "Antigrav", "antigravity", "gemini-cli"],
+)
 def test_antigrav_is_not_cross_runtime_dispatchable(tmp_path: Path, retired_platform: str) -> None:
     env, dispatcher_log = _env(tmp_path / "antigrav")
 
@@ -189,13 +192,14 @@ def test_antigrav_is_not_cross_runtime_dispatchable(tmp_path: Path, retired_plat
     )
 
     assert result.returncode == 10
-    assert f"platform '{retired_platform}' is retired/excised" in result.stderr
+    canonical_platform = retired_platform.lower()
+    assert f"platform '{canonical_platform}' is retired/excised" in result.stderr
     assert "measured agy supply-leaf intake" in result.stderr
     assert not dispatcher_log.exists()
     ledger_path = Path(env["HAPAX_ORCHESTRATION_LEDGER_DIR"]) / "dispatch-ledger.jsonl"
     records = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
     assert records[-1]["outcome"] == "blocked"
-    assert records[-1]["target_platform"] == retired_platform
+    assert records[-1]["target_platform"] == canonical_platform
     assert records[-1]["dispatch_id"].startswith("BLOCKED-")
     assert records[-1]["replay_key"]
     assert "measured agy supply-leaf intake" in records[-1]["reason"]
