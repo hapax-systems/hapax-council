@@ -16,6 +16,7 @@ from shared.p0_incident_intake import (
     DEFAULT_AUTHORITY_CASE,
     DEFAULT_PARENT_SPEC,
     classify_notification,
+    fingerprint_for_notification,
     record_notification,
     replace_id_for_fingerprint,
 )
@@ -450,16 +451,55 @@ def test_audio_topology_drift_alert_gets_technical_intake():
 
 
 def test_sdlc_dispatch_refusal_alert_gets_technical_intake():
+    # A dispatch refusal of a REAL (non-incident) task is a genuine incident worth
+    # minting: the underlying work is not getting dispatched and needs triage.
     classification = classify_notification(
         "SDLC: dispatch refusal circuit breaker",
-        "Task p0-incident-demo refused 3x on lane delta. Reason: dispatch_exit_16",
+        "Task segprep-g1-config-criterion-20260615 refused 3x on lane delta. Reason: dispatch_exit_16",
         priority="high",
         tags=["sdlc", "no-spin"],
     )
 
     assert classification.technical is True
     assert classification.kind == "sdlc_dispatch_refusal"
-    assert classification.fingerprint == "sdlc_dispatch_refusal:p0-incident-demo"
+    assert (
+        classification.fingerprint == "sdlc_dispatch_refusal:segprep-g1-config-criterion-20260615"
+    )
+
+
+def test_sdlc_dispatch_refusal_on_incident_task_does_not_remint():
+    # Self-amplification break (storm root cause): the circuit breaker fires when an
+    # AUTO-MINTED p0-incident-* task is itself refused (its preferred codex route is
+    # held). Minting another P0 would spawn a fresh p0-incident-* that is refused in
+    # turn -- an unbounded storm (intake state accreted dozens of
+    # sdlc_dispatch_refusal:p0-incident-* fingerprints). The no-spin ntfy already
+    # paged the operator; decline to mint a governed cc-task that can never reach its
+    # exit predicate. Mirrors the sdlc_task_stalled guard.
+    classification = classify_notification(
+        "SDLC: dispatch refusal circuit breaker",
+        "Task p0-incident-demo refused 3x on lane cx-p0. Reason: route policy hold",
+        priority="high",
+        tags=["sdlc", "no-spin"],
+    )
+
+    assert classification.technical is False
+    assert classification.reason == "dispatch_refusal_incident_task_no_remint"
+
+
+def test_fingerprint_for_notification_derives_identity_independent_of_mint_policy():
+    # classify_notification suppresses re-minting for a p0-incident-* dispatch refusal
+    # (technical False, empty fingerprint), but the desktop-drain must still be able to
+    # IDENTIFY the notification's incident to dismiss a page already consumed into state.
+    title = "SDLC: dispatch refusal circuit breaker"
+    message = "Task p0-incident-demo refused 3x on lane cx-p0. Reason: route policy hold"
+    suppressed = classify_notification(title, message, priority="high", tags=["sdlc", "no-spin"])
+    assert suppressed.technical is False
+    assert suppressed.fingerprint == ""
+
+    # Identity derivation is independent of the mint policy.
+    assert fingerprint_for_notification(title, message) == "sdlc_dispatch_refusal:p0-incident-demo"
+    # A title matching no technical pattern derives no fingerprint.
+    assert fingerprint_for_notification("Just a chat message", "hello") == ""
 
 
 def test_sdlc_task_stuck_on_normal_task_gets_technical_intake():
