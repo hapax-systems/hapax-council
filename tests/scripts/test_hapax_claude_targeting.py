@@ -253,7 +253,15 @@ def test_send_rejects_retired_antigrav_role_even_when_allowlisted(tmp_path: Path
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _fast_fail_targeting(bin_dir)
-    for role in ("agy", "agy-2", "antigrav", "antigravity", "antigravity-2"):
+    for role in (
+        "agy",
+        "agy-2",
+        "antigrav",
+        "antigravity",
+        "antigravity-2",
+        "gemini-cli",
+        "gemini-cli-2",
+    ):
         env = _env(tmp_path, bin_dir)
         env["HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST"] = f"alpha {role}"
         result = subprocess.run(
@@ -275,7 +283,7 @@ def test_send_rejects_retired_antigrav_role_even_when_allowlisted(tmp_path: Path
         )
         assert result.returncode == 2
         assert f"invalid role '{role}'" in result.stderr
-        assert "retired/excised Antigrav send targets cannot be allowlisted" in result.stderr
+        assert "retired/excised send targets cannot be allowlisted" in result.stderr
         assert "mint measured agy supply-leaf intake" in result.stderr
 
 

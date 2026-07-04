@@ -71,9 +71,9 @@ TMP_FILES=()
 
 ROLE_ALLOWLIST="${HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST:-alpha beta gamma delta epsilon zeta eta theta}"
 
-is_retired_antigrav_role() {
+is_retired_send_target_role() {
   local role="${1,,}"
-  [[ "$role" == "agy" || "$role" == agy-* || "$role" == "antigrav" || "$role" == antigrav-* || "$role" == "antigravity" || "$role" == antigravity-* ]]
+  [[ "$role" == "agy" || "$role" == agy-* || "$role" == "antigrav" || "$role" == antigrav-* || "$role" == "antigravity" || "$role" == antigravity-* || "$role" == "gemini-cli" || "$role" == gemini-cli-* ]]
 }
 
 # Default busy regex covers Claude Code's animated activity verbs and
@@ -185,8 +185,8 @@ if [ -z "$SESSION" ]; then
   exit 2
 fi
 
-if is_retired_antigrav_role "$SESSION"; then
-  echo "hapax-claude-send: invalid role '$SESSION' (retired/excised Antigrav send targets cannot be allowlisted; mint measured agy supply-leaf intake with route/resource/governance receipts)" >&2
+if is_retired_send_target_role "$SESSION"; then
+  echo "hapax-claude-send: invalid role '$SESSION' (retired/excised send targets cannot be allowlisted; mint measured agy supply-leaf intake with route/resource/governance receipts)" >&2
   exit 2
 fi
 
