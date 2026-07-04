@@ -143,10 +143,10 @@ validate_dispatch_redemption_authority() {
   # local cc-claim/cc-close lifecycle, so admission comes from redeeming the
   # governed-path one-time grant against the fixed governor socket. The
   # verifier imports from this launcher's physical council checkout, never from
-  # caller-controlled HAPAX_COUNCIL_DIR, PATH, the external WORKDIR, or cwd.
+  # caller-controlled HAPAX_COUNCIL_DIR, PATH, the external WORKDIR, cwd, or PYTHONPATH.
   local council_dir python_bin="/usr/bin/python3" profile="${HAPAX_METHODOLOGY_DISPATCH_PROFILE:-full}"
   council_dir="$(launcher_source_root)"
-  if ! "$python_bin" - "$council_dir" "$CLAUDE_TASK" "$ROLE" "$WORKDIR" claude headless "$profile" <<'PYEOF'
+  if ! "$python_bin" -I - "$council_dir" "$CLAUDE_TASK" "$ROLE" "$WORKDIR" claude headless "$profile" <<'PYEOF'
 import os
 import sys
 import time

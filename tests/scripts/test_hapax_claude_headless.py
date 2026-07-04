@@ -317,9 +317,18 @@ def test_claude_headless_redemption_ignores_python_override(tmp_path: Path) -> N
     bin_dir.mkdir()
     claude_called = tmp_path / "claude-called"
     _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    sitecustomize_marker = tmp_path / "sitecustomize-ran"
+    sitecustomize_dir = tmp_path / "pythonpath"
+    sitecustomize_dir.mkdir()
+    (sitecustomize_dir / "sitecustomize.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(sitecustomize_marker)!r}).write_text('ran\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
     env = _headless_env(home, bin_dir, tmp_path / "pipe")
     env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(workdir)
     env["HAPAX_REDEMPTION_PYTHON"] = "/bin/true"
+    env["PYTHONPATH"] = str(sitecustomize_dir)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
@@ -333,6 +342,7 @@ def test_claude_headless_redemption_ignores_python_override(tmp_path: Path) -> N
     assert result.returncode == 17
     assert "missing dispatch redemption binding env" in result.stderr
     assert "requires live methodology dispatch redemption" in result.stderr
+    assert not sitecustomize_marker.exists()
     assert not claude_called.exists()
 
 

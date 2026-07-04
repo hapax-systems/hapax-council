@@ -738,6 +738,14 @@ exit 0
 exit 0
 """,
     )
+    sitecustomize_marker = tmp_path / "sitecustomize-ran"
+    sitecustomize_dir = tmp_path / "pythonpath"
+    sitecustomize_dir.mkdir()
+    (sitecustomize_dir / "sitecustomize.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(sitecustomize_marker)!r}).write_text('ran\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
 
     env = os.environ.copy()
     env["HOME"] = str(home)
@@ -745,6 +753,7 @@ exit 0
     env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["PYTHONPATH"] = str(sitecustomize_dir)
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
@@ -759,6 +768,7 @@ exit 0
     assert "missing dispatch redemption binding env" in result.stderr
     assert "requires live methodology dispatch redemption" in result.stderr
     assert not fake_python_called.exists()
+    assert not sitecustomize_marker.exists()
     assert not codex_called.exists()
 
 
