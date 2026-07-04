@@ -369,6 +369,23 @@ def test_phase1_blocks_candidate_prose_evidence_refs() -> None:
     assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_CANDIDATE,)
 
 
+def test_phase1_blocks_candidate_non_string_evidence_ref() -> None:
+    freeze = _freeze()
+    candidate = _candidate().to_dict()
+    candidate["evidence_refs"] = ("candidate-witness:001", 42)
+
+    decision = evaluate_phase1_candidate(
+        candidate,
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_CANDIDATE,)
+
+
 def test_phase1_blocks_candidate_missing_evidence_refs() -> None:
     freeze = _freeze()
     candidate = _candidate().to_dict()

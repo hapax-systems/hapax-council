@@ -894,6 +894,8 @@ def _seq(value: Any) -> tuple[str, ...]:
         return ()
     if isinstance(value, str) or not isinstance(value, Sequence):
         raise ValueError("expected a sequence of strings")
+    if not all(isinstance(item, str) for item in value):
+        raise ValueError("expected a sequence of strings")
     return tuple(value)
 
 
