@@ -144,6 +144,32 @@ def test_promotion_gate_refuses_insufficient_held_set() -> None:
     assert any(code.startswith("judge_held_set_insufficient") for code in decision.reason_codes)
 
 
+def test_promotion_gate_refuses_excluded_rows_even_if_metrics_clear() -> None:
+    measure = measure_judge_health([*_healthy_pairs(), ("", "")])
+    assert measure.n_scored == 200
+    assert measure.n_excluded == 1
+    assert measure.agreement is not None and measure.agreement >= 0.90
+    assert measure.cohen_kappa is not None and measure.cohen_kappa >= 0.80
+
+    decision = judge_promotion_gate(measure)
+
+    assert decision.allowed is False
+    assert "judge_shadow_log_corrupt_rows:1>0" in decision.reason_codes
+
+
+def test_promotion_gate_refuses_degenerate_single_label_held_set() -> None:
+    measure = measure_judge_health([("A", "A")] * 200)
+    assert measure.n_scored == 200
+    assert measure.degenerate is True
+    assert measure.agreement == 1.0
+    assert measure.cohen_kappa == 0.0
+
+    decision = judge_promotion_gate(measure)
+
+    assert decision.allowed is False
+    assert decision.reason_codes == ("judge_held_set_degenerate:single_label",)
+
+
 def test_promotion_gate_refuses_missing_held_set() -> None:
     decision = judge_promotion_gate(measure_judge_health([]))
     assert decision.allowed is False
@@ -200,6 +226,23 @@ def test_load_shadow_pairs_counts_corrupt_lines_as_excluded(tmp_path: Path) -> N
     measure = measure_judge_health(pairs)
     assert measure.n_scored == 1
     assert measure.n_excluded == 2
+
+
+def test_authoritative_flip_gate_refuses_corrupt_shadow_log_even_when_metrics_clear(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "shadow.jsonl"
+    with log.open("w") as fh:
+        for local, authoritative in _healthy_pairs():
+            fh.write(json.dumps({"local": local, "authoritative": authoritative}) + "\n")
+        fh.write("not-json\n")
+
+    decision = authoritative_flip_allowed(log_path=log)
+
+    assert decision.allowed is False
+    assert decision.measure.n_scored == 200
+    assert decision.measure.n_excluded == 1
+    assert "judge_shadow_log_corrupt_rows:1>0" in decision.reason_codes
 
 
 def test_load_shadow_pairs_missing_log_is_empty(tmp_path: Path) -> None:

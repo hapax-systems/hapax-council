@@ -702,6 +702,7 @@ class JudgeHealthMeasure(_RouterModel):
     false_reject_count: int
     disagreement_count: int
     conservative_skewed: bool
+    degenerate: bool
 
 
 class JudgeHealthThresholds(_RouterModel):
@@ -730,7 +731,10 @@ class JudgePromotionDecision(_RouterModel):
 def _judge_cohen_kappa(gold: Sequence[str], pred: Sequence[str]) -> float:
     """Three-label Cohen's kappa, same convention as scripts/cost-offload/analyze.py
     (the harness behind the pinned validation report), so held-set reproductions
-    match the published numbers exactly."""
+    match the published numbers exactly for non-degenerate held sets.
+
+    A single-label held set makes kappa undefined. Promotion treats that as zero
+    agreement-beyond-chance credit and refuses via ``measure.degenerate``."""
     n = len(gold)
     po = sum(g == p for g, p in zip(gold, pred, strict=True)) / n
     pe = 0.0
@@ -738,9 +742,7 @@ def _judge_cohen_kappa(gold: Sequence[str], pred: Sequence[str]) -> float:
         gold_marginal = sum(1 for g in gold if g == label) / n
         pred_marginal = sum(1 for p in pred if p == label) / n
         pe += gold_marginal * pred_marginal
-    # pe == 1 requires both marginals concentrated on one label, which forces po == 1;
-    # analyze.py returns 1.0 for that degenerate case and we mirror it.
-    return (po - pe) / (1 - pe) if (1 - pe) else 1.0
+    return (po - pe) / (1 - pe) if (1 - pe) else 0.0
 
 
 def measure_judge_health(pairs: Iterable[tuple[str, str]]) -> JudgeHealthMeasure:
@@ -753,6 +755,9 @@ def measure_judge_health(pairs: Iterable[tuple[str, str]]) -> JudgeHealthMeasure
     ``conservative_skewed`` is False on an empty set (fail-closed) and otherwise
     requires false-accepts to be absent or strictly fewer than false-rejects —
     the validation report's operationalization (239 > 145 -> not met).
+    ``degenerate`` is True when the scored set has fewer than 2 distinct labels
+    (a single-label held set) — kappa is undefined there and the promotion gate
+    refuses on this field rather than crediting a vacuous kappa of 1.0.
     """
     all_pairs = tuple(pairs)
     scored = [
@@ -765,6 +770,9 @@ def measure_judge_health(pairs: Iterable[tuple[str, str]]) -> JudgeHealthMeasure
     false_reject = sum(1 for local, auth in scored if auth == "A" and local in ("B", "C"))
     disagreements = sum(1 for local, auth in scored if local != auth)
     agreement = (n_scored - disagreements) / n_scored if n_scored else None
+    # A single-label held set is non-discriminating; agreement/skew are vacuous.
+    distinct_labels = {label for pair in scored for label in pair}
+    degenerate = bool(n_scored) and len(distinct_labels) < 2
     kappa = (
         _judge_cohen_kappa(
             [auth for _, auth in scored],
@@ -783,6 +791,7 @@ def measure_judge_health(pairs: Iterable[tuple[str, str]]) -> JudgeHealthMeasure
         false_reject_count=false_reject,
         disagreement_count=disagreements,
         conservative_skewed=bool(n_scored) and (false_accept == 0 or false_accept < false_reject),
+        degenerate=degenerate,
     )
 
 
@@ -831,21 +840,26 @@ def judge_promotion_gate(
         reasons.append(
             f"judge_held_set_insufficient:{measure.n_scored}<{thresholds.min_scored_items}"
         )
+    if measure.n_excluded > 0:
+        reasons.append(f"judge_shadow_log_corrupt_rows:{measure.n_excluded}>0")
     if measure.n_scored > 0:
-        if measure.agreement is not None and measure.agreement < thresholds.min_agreement:
-            reasons.append(
-                f"judge_agreement_below_floor:{measure.agreement:.4f}<{thresholds.min_agreement}"
-            )
-        if measure.cohen_kappa is not None and measure.cohen_kappa < thresholds.min_kappa:
-            reasons.append(
-                f"judge_kappa_below_floor:{measure.cohen_kappa:.4f}<{thresholds.min_kappa}"
-            )
-        if thresholds.require_conservative_skew and not measure.conservative_skewed:
-            reasons.append(
-                "judge_not_conservative_skewed:"
-                f"false_accept={measure.false_accept_count}"
-                f">=false_reject={measure.false_reject_count}"
-            )
+        if measure.degenerate:
+            reasons.append("judge_held_set_degenerate:single_label")
+        else:
+            if measure.agreement is not None and measure.agreement < thresholds.min_agreement:
+                reasons.append(
+                    f"judge_agreement_below_floor:{measure.agreement:.4f}<{thresholds.min_agreement}"
+                )
+            if measure.cohen_kappa is not None and measure.cohen_kappa < thresholds.min_kappa:
+                reasons.append(
+                    f"judge_kappa_below_floor:{measure.cohen_kappa:.4f}<{thresholds.min_kappa}"
+                )
+            if thresholds.require_conservative_skew and not measure.conservative_skewed:
+                reasons.append(
+                    "judge_not_conservative_skewed:"
+                    f"false_accept={measure.false_accept_count}"
+                    f">=false_reject={measure.false_reject_count}"
+                )
     return JudgePromotionDecision(
         allowed=not reasons,
         reason_codes=tuple(reasons),
