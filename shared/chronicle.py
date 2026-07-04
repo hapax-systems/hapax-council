@@ -33,6 +33,7 @@ from typing import Any
 
 from shared.durable_jsonl_sink import (
     DurableJsonlSink,
+    DurableSinkPathError,
     configured_durable_sink_root,
     validate_chain,
 )
@@ -563,7 +564,7 @@ def query(
 
     if should_query_durable:
         seen_ids = {ev.event_id for ev in results}
-        for ev in _query_durable_chronicle(
+        durable_events = _query_durable_chronicle(
             since=since,
             effective_until=effective_until,
             source=source,
@@ -575,7 +576,17 @@ def query(
             evidence_class=evidence_class,
             temporal_span_ref=temporal_span_ref,
             limit=limit,
-        ):
+        )
+        durable_ids = {ev.event_id for ev in durable_events}
+        volatile_stage0_ids = {ev.event_id for ev in results if is_stage0_event(ev)}
+        missing_durable_stage0_ids = volatile_stage0_ids - durable_ids
+        if missing_durable_stage0_ids:
+            raise DurableSinkPathError(
+                "durable chronicle stream is missing volatile Stage0 event(s): "
+                f"{', '.join(sorted(missing_durable_stage0_ids))}; next action: "
+                "restore the durable chronicle stream or quarantine volatile Stage0 rows"
+            )
+        for ev in durable_events:
             if ev.event_id not in seen_ids:
                 results.append(ev)
                 seen_ids.add(ev.event_id)
