@@ -216,7 +216,12 @@ def _event_writer(events_path: Path) -> Callable[[LaunchRedemptionEvent], None]:
     return _write
 
 
-def serve(runtime_dir: Path, socket_path: Path, events_path: Path) -> int:
+def serve(
+    runtime_dir: Path,
+    socket_path: Path,
+    events_path: Path,
+    purge_interval_s: float = PURGE_INTERVAL_S,
+) -> int:
     check_runtime_dir(runtime_dir)
     stopping = False
 
@@ -237,7 +242,7 @@ def serve(runtime_dir: Path, socket_path: Path, events_path: Path) -> int:
 
     def _should_stop() -> bool:
         nonlocal last_purge
-        if time.monotonic() - last_purge >= PURGE_INTERVAL_S:
+        if time.monotonic() - last_purge >= purge_interval_s:
             last_purge = time.monotonic()
             purged = authority.purge_expired()
             if purged:
@@ -282,6 +287,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="TEST ONLY: token-free event ledger path (default ~/.cache/hapax/dispatch-redemption/events.jsonl)",
     )
+    parser.add_argument(
+        "--purge-interval",
+        type=float,
+        default=None,
+        help="TEST ONLY: seconds between expired/consumed grant purges (default 300)",
+    )
     args = parser.parse_args(argv)
 
     socket_path = args.socket_path or dispatch_launch_redemption_socket()
@@ -292,7 +303,12 @@ def main(argv: list[str] | None = None) -> int:
         receipt = runtime_receipt(runtime_dir, socket_path)
         print(json.dumps(receipt, sort_keys=True))
         return 0 if receipt["healthy"] else 1
-    return serve(runtime_dir, socket_path, events_path)
+    return serve(
+        runtime_dir,
+        socket_path,
+        events_path,
+        purge_interval_s=args.purge_interval if args.purge_interval is not None else PURGE_INTERVAL_S,
+    )
 
 
 if __name__ == "__main__":

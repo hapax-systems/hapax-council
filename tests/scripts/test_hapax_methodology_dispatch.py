@@ -1821,6 +1821,166 @@ printf '%s\\n' \\
     assert captured[7:10] == ["--task", "task-x", "--no-claim"]
 
 
+def test_claude_external_worktree_dispatch_exports_redemption_binding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    home = tmp_path / "home"
+    reins_worktree = home / "projects" / "reins"
+    reins_worktree.mkdir(parents=True)
+    launcher_env = tmp_path / "launcher-env.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-claude-headless"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' \\
+  "$HAPAX_CLAUDE_HEADLESS_WORKDIR" \\
+  "$HAPAX_METHODOLOGY_DISPATCH_EXTERNAL" \\
+  "$HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID" \\
+  "$HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF" \\
+  "$HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE" \\
+  "$HAPAX_METHODOLOGY_DISPATCH_PARENT_SPEC" \\
+  "${{HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN:-}}" \\
+  "$@" > {launcher_env}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(reins_worktree))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CLAUDE_HEADLESS", str(fake_launcher))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN", "opaque-token")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "status": "claimed",
+                "authority_case": "CASE-CAPACITY-ROUTING-001",
+                "parent_spec": "/tmp/spec.md",
+            },
+        ),
+    )
+    route_decision = type(
+        "RouteDecisionStub",
+        (),
+        {
+            "route_id": "claude.headless.full",
+            "selected_descriptor_leaf": "claude.headless.full",
+        },
+    )()
+
+    result = module.launch_claude_headless(
+        "task-x",
+        "beta",
+        "prompt",
+        module.PLATFORM_PATHS[("claude", "headless", "full")],
+        validation=validation,
+        route_decision=route_decision,
+        route_decision_receipt_path=tmp_path / "route-receipt.json",
+        durable_binding=module.DurableDispatchBinding(
+            True, False, "durable_mq_dispatch_bound", message_id="019f-message"
+        ),
+    )
+
+    assert result == 0
+    captured = launcher_env.read_text(encoding="utf-8").splitlines()
+    assert captured[:7] == [
+        str(reins_worktree),
+        "1",
+        "019f-message",
+        str(tmp_path / "route-receipt.json"),
+        "CASE-CAPACITY-ROUTING-001",
+        "/tmp/spec.md",
+        "opaque-token",
+    ]
+    assert captured[7:] == ["--task", "task-x", "beta", "prompt"]
+
+
+def test_claude_external_worktree_dispatch_fails_closed_without_task_binding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    home = tmp_path / "home"
+    reins_worktree = home / "projects" / "reins"
+    reins_worktree.mkdir(parents=True)
+    launcher_called = tmp_path / "launcher-called"
+    fake_launcher = tmp_path / "bin" / "hapax-claude-headless"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"#!/usr/bin/env bash\n: > {launcher_called}\n",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(reins_worktree))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CLAUDE_HEADLESS", str(fake_launcher))
+
+    result = module.launch_claude_headless(
+        "task-x",
+        "beta",
+        "prompt",
+        module.PLATFORM_PATHS[("claude", "headless", "full")],
+    )
+
+    assert result == 19
+    assert not launcher_called.exists()
+
+
+def test_claude_external_worktree_dispatch_fails_closed_on_mint_refusal(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    # No operator token and a route-decision receipt path that does not exist:
+    # whether or not a live governor is present, the mint is refused (absent
+    # socket -> socket_unavailable; live governor -> mint_policy
+    # route_decision_receipt_missing) and the dispatcher must not launch.
+    module = _dispatcher_module()
+    home = tmp_path / "home"
+    reins_worktree = home / "projects" / "reins"
+    reins_worktree.mkdir(parents=True)
+    launcher_called = tmp_path / "launcher-called"
+    fake_launcher = tmp_path / "bin" / "hapax-claude-headless"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"#!/usr/bin/env bash\n: > {launcher_called}\n",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(reins_worktree))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CLAUDE_HEADLESS", str(fake_launcher))
+    monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN", raising=False)
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "status": "claimed",
+                "authority_case": "CASE-CAPACITY-ROUTING-001",
+                "parent_spec": "/tmp/spec.md",
+            },
+        ),
+    )
+
+    result = module.launch_claude_headless(
+        "task-x",
+        "beta",
+        "prompt",
+        module.PLATFORM_PATHS[("claude", "headless", "full")],
+        validation=validation,
+        route_decision_receipt_path=tmp_path / "absent-route-receipt.json",
+        durable_binding=module.DurableDispatchBinding(
+            True, False, "durable_mq_dispatch_bound", message_id="019f-message"
+        ),
+    )
+
+    assert result == 19
+    assert not launcher_called.exists()
+    assert "fixed redemption governor refused mint" in capsys.readouterr().err
+
+
 def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: Path) -> None:
     worktree = _worktree(tmp_path / "worktree")
     (worktree / "scripts" / "cc-claim").chmod(0o755)
