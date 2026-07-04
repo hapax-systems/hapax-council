@@ -4,11 +4,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
 import jsonschema
 import pytest
 from pydantic import ValidationError
+
+from shared.capability_surface_delta import (
+    AuthorityCeiling as DeltaAuthorityCeiling,
+)
+from shared.capability_surface_delta import (
+    CapabilitySurfaceDelta,
+    DeltaKind,
+    FreshnessState,
+    RequiredIntakeAction,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = REPO_ROOT / "schemas" / "platform-capability-registry.schema.json"
@@ -17,6 +27,29 @@ REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 
 def _json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _surface_delta(surface_id: str) -> CapabilitySurfaceDelta:
+    return CapabilitySurfaceDelta(
+        delta_id=f"test:{surface_id}",
+        source="pytest",
+        observed_at="2026-07-04T01:50:00Z",
+        detected_by="test-platform-capability-registry-contract",
+        surface_id=surface_id,
+        delta_kind=DeltaKind.NEW_CAPABILITY,
+        prior_descriptor_ref=None,
+        observed_descriptor_ref=f"test-observed:{surface_id}",
+        evidence_refs=["test:surface-delta"],
+        authority_ceiling=DeltaAuthorityCeiling.FRONTIER_REVIEW_REQUIRED,
+        affected_resource_pools=["test_resource_pool"],
+        privacy_sensitive=False,
+        public_egress=False,
+        money_rail=False,
+        freshness_state=FreshnessState.DELTA_PENDING,
+        required_intake_action=RequiredIntakeAction.MINT_INTAKE_ITEM,
+        remediation_ref="cc-task:test-capability-surface-delta",
+        summary=f"test surface delta for {surface_id}",
+    )
 
 
 def test_platform_capability_schema_validates_seed_registry() -> None:
@@ -250,8 +283,6 @@ def test_seed_registry_excises_antigrav_live_route_but_records_deprecated_shape(
 
 def test_surface_delta_for_omitted_shape_holds_until_measurement() -> None:
     from shared.platform_capability_registry import (
-        CapabilityShapeClass,
-        CapabilitySurfaceDelta,
         CapabilitySurfaceDeltaAction,
         disposition_for_capability_surface_delta,
         load_platform_capability_registry,
@@ -260,13 +291,7 @@ def test_surface_delta_for_omitted_shape_holds_until_measurement() -> None:
     registry = load_platform_capability_registry()
     disposition = disposition_for_capability_surface_delta(
         registry,
-        CapabilitySurfaceDelta(
-            surface_id="publication_bus.public_event_surface.omg_weblog",
-            shape_class=CapabilityShapeClass.PUBLICATION_BUS,
-            carrier_family="publication_bus",
-            observed_at="2026-07-04T01:50:00Z",
-            evidence_refs=["test:surface-delta"],
-        ),
+        _surface_delta("publication_bus.public_event_surface.omg_weblog"),
     )
 
     assert disposition.action is CapabilitySurfaceDeltaAction.KNOWN_HOLD_FOR_MEASUREMENT
@@ -277,8 +302,6 @@ def test_surface_delta_for_omitted_shape_holds_until_measurement() -> None:
 
 def test_same_carrier_unknown_surface_delta_mints_intake_not_hold() -> None:
     from shared.platform_capability_registry import (
-        CapabilityShapeClass,
-        CapabilitySurfaceDelta,
         CapabilitySurfaceDeltaAction,
         disposition_for_capability_surface_delta,
         load_platform_capability_registry,
@@ -287,13 +310,7 @@ def test_same_carrier_unknown_surface_delta_mints_intake_not_hold() -> None:
     registry = load_platform_capability_registry()
     disposition = disposition_for_capability_surface_delta(
         registry,
-        CapabilitySurfaceDelta(
-            surface_id="openrouter.unregistered_new_surface",
-            shape_class=CapabilityShapeClass.MODEL_PROVIDER,
-            carrier_family="openrouter",
-            observed_at="2026-07-04T01:50:00Z",
-            evidence_refs=["test:surface-delta"],
-        ),
+        _surface_delta("openrouter.unregistered_new_surface"),
     )
 
     assert disposition.action is CapabilitySurfaceDeltaAction.MINT_INTAKE
@@ -302,8 +319,6 @@ def test_same_carrier_unknown_surface_delta_mints_intake_not_hold() -> None:
 
 def test_unknown_surface_delta_mints_intake_not_supply() -> None:
     from shared.platform_capability_registry import (
-        CapabilityShapeClass,
-        CapabilitySurfaceDelta,
         CapabilitySurfaceDeltaAction,
         disposition_for_capability_surface_delta,
         load_platform_capability_registry,
@@ -312,13 +327,7 @@ def test_unknown_surface_delta_mints_intake_not_supply() -> None:
     registry = load_platform_capability_registry()
     disposition = disposition_for_capability_surface_delta(
         registry,
-        CapabilitySurfaceDelta(
-            surface_id="new_provider.experimental_leaf",
-            shape_class=CapabilityShapeClass.MODEL_PROVIDER,
-            carrier_family="new_provider",
-            observed_at="2026-07-04T01:50:00Z",
-            evidence_refs=["test:surface-delta"],
-        ),
+        _surface_delta("new_provider.experimental_leaf"),
     )
 
     assert disposition.action is CapabilitySurfaceDeltaAction.MINT_INTAKE
@@ -329,8 +338,6 @@ def test_unknown_surface_delta_mints_intake_not_supply() -> None:
 
 def test_deprecated_surface_delta_refuses_live_supply() -> None:
     from shared.platform_capability_registry import (
-        CapabilityShapeClass,
-        CapabilitySurfaceDelta,
         CapabilitySurfaceDeltaAction,
         disposition_for_capability_surface_delta,
         load_platform_capability_registry,
@@ -339,19 +346,21 @@ def test_deprecated_surface_delta_refuses_live_supply() -> None:
     registry = load_platform_capability_registry()
     disposition = disposition_for_capability_surface_delta(
         registry,
-        CapabilitySurfaceDelta(
-            surface_id="antigrav.interactive.full",
-            shape_class=CapabilityShapeClass.ORCHESTRATOR,
-            carrier_family="antigrav",
-            observed_at="2026-07-04T01:50:00Z",
-            evidence_refs=["test:surface-delta"],
-        ),
+        _surface_delta("antigrav.interactive.full"),
     )
 
     assert disposition.action is CapabilitySurfaceDeltaAction.DEPRECATED_REFUSE
     assert disposition.demand_eligible is False
     assert disposition.descriptor_id == "antigrav.interactive.full"
     assert "capability_shape_deprecated" in disposition.reason_codes
+
+
+def test_surface_delta_disposition_consumes_canonical_sdlc_signal() -> None:
+    from shared.platform_capability_registry import disposition_for_capability_surface_delta
+
+    hints = get_type_hints(disposition_for_capability_surface_delta)
+
+    assert hints["delta"] is CapabilitySurfaceDelta
 
 
 def test_omitted_shape_cannot_be_marked_demand_eligible() -> None:

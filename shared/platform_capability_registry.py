@@ -19,6 +19,9 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from shared.capability_surface_delta import (
+    CapabilitySurfaceDelta as CapabilitySurfaceDeltaSignal,
+)
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -416,17 +419,6 @@ class CapabilityShapeDescriptor(StrictModel):
         if self.observed_at is not None and not self.evidence_refs:
             raise ValueError("observed capability shapes require evidence_refs")
         return self
-
-
-class CapabilitySurfaceDelta(StrictModel):
-    """Deterministic signal that a capability surface exists or materially changed."""
-
-    surface_id: str
-    shape_class: CapabilityShapeClass
-    carrier_family: str
-    observed_at: datetime
-    evidence_refs: list[str] = Field(min_length=1)
-    material_change: bool = True
 
 
 class CapabilitySurfaceDisposition(StrictModel):
@@ -929,21 +921,19 @@ def _normalize_surface_token(value: str) -> str:
 
 
 def _surface_matches_shape(
-    delta: CapabilitySurfaceDelta,
+    delta: CapabilitySurfaceDeltaSignal,
     shape: CapabilityShapeDescriptor,
 ) -> bool:
     surface = _normalize_surface_token(delta.surface_id)
     shape_id = _normalize_surface_token(shape.shape_id)
-    return delta.shape_class is shape.shape_class and (
-        surface == shape_id or surface.startswith(f"{shape_id}.")
-    )
+    return surface == shape_id or surface.startswith(f"{shape_id}.")
 
 
 def disposition_for_capability_surface_delta(
     registry: PlatformCapabilityRegistry,
-    delta: CapabilitySurfaceDelta,
+    delta: CapabilitySurfaceDeltaSignal,
 ) -> CapabilitySurfaceDisposition:
-    """Classify a deterministic capability-surface delta without admitting supply.
+    """Classify a canonical SDLC capability-surface delta without admitting supply.
 
     A known omitted shape still holds for measurement because the descriptor is evidence-only.
     An unknown surface mints intake. Deprecated shapes refuse as live supply while preserving
