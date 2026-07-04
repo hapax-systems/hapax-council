@@ -264,6 +264,34 @@ def test_event_writer_preserves_events_across_fresh_writer_instances(tmp_path: P
     assert "token" not in events_path.read_text(encoding="utf-8")
 
 
+def test_event_writer_raises_when_jsonl_append_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = _load_authority_script()
+    events_path = tmp_path / "ledger" / "events.jsonl"
+    writer = script._event_writer(events_path)
+    monkeypatch.setattr(script, "append_jsonl", lambda *_args, **_kwargs: False)
+
+    with pytest.raises(RuntimeError, match="event ledger append failed"):
+        writer(
+            LaunchRedemptionEvent(
+                event_type="wire_refused",
+                grant_id=None,
+                task_id=None,
+                lane=None,
+                platform=None,
+                mode=None,
+                profile=None,
+                dispatch_message_id=None,
+                route_decision_ref=None,
+                authority_case=None,
+                parent_spec=None,
+                reason="invalid_request:unsupported_schema",
+                observed_at=1000.0,
+            )
+        )
+
+
 # ── --receipt exit codes + live serve end-to-end ─────────────────────
 
 

@@ -245,6 +245,8 @@ def _event_writer(events_path: Path) -> Callable[[LaunchRedemptionEvent], None]:
             f"event {event.event_type} reason={event.reason} task={event.task_id} "
             f"lane={event.lane} grant={event.grant_id} ledger={'ok' if ok else 'FAILED'}"
         )
+        if not ok:
+            raise RuntimeError(f"dispatch redemption event ledger append failed: {events_path}")
 
     return _write
 

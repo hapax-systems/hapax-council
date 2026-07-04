@@ -26,6 +26,7 @@ from shared.governance.dispatch_redemption import (
     parse_redemption_response,
     redeem_launch_via_socket,
     redemption_event_payload,
+    redemption_request_payload,
 )
 
 
@@ -316,6 +317,83 @@ def test_authority_records_wire_refusal_for_malformed_mint_payload():
     assert [event.event_type for event in events] == ["wire_refused"]
     assert events[0].reason == "invalid_request:ValueError"
     assert events[0].requester is None
+
+
+def test_mint_fails_closed_when_event_sink_fails():
+    def failing_sink(_event):
+        raise RuntimeError("ledger down")
+
+    authority = DispatchLaunchRedemptionAuthority(
+        now=lambda: 1000.0,
+        event_sink=failing_sink,
+    )
+
+    response_payload = handle_authority_bytes(
+        authority,
+        _encoded_mint_request(_mint_request()),
+        peer=LaunchPeerCredentials(pid=os.getpid(), uid=os.getuid(), gid=os.getgid()),
+    )
+    response = parse_mint_response(response_payload)
+
+    assert response.ok is False
+    assert response.reason == "evidence_write_failed"
+    assert response.token is None
+    assert authority.events() == ()
+
+
+def test_mint_peer_refusal_fails_closed_when_event_sink_fails():
+    def failing_sink(_event):
+        raise RuntimeError("ledger down")
+
+    authority = DispatchLaunchRedemptionAuthority(
+        now=lambda: 1000.0,
+        event_sink=failing_sink,
+    )
+
+    response_payload = handle_authority_bytes(
+        authority,
+        _encoded_mint_request(_mint_request()),
+        peer=LaunchPeerCredentials(pid=os.getpid(), uid=os.getuid() + 1, gid=os.getgid()),
+        require_mint_peer=True,
+    )
+    response = parse_mint_response(response_payload)
+
+    assert response.ok is False
+    assert response.reason == "evidence_write_failed"
+    assert authority.events() == ()
+
+
+def test_redeem_fails_closed_and_rolls_back_when_event_sink_fails_once():
+    fail_redeem = True
+
+    def flaky_sink(event):
+        nonlocal fail_redeem
+        if fail_redeem and event.event_type == "grant_redeemed":
+            fail_redeem = False
+            raise RuntimeError("ledger down")
+
+    authority = DispatchLaunchRedemptionAuthority(
+        now=lambda: 1000.0,
+        event_sink=flaky_sink,
+    )
+    grant = authority.mint(_context(), ttl_s=60)
+
+    failed_payload = handle_authority_bytes(
+        authority,
+        _encoded_redemption_request(_request(grant.token)),
+    )
+    failed = parse_redemption_response(failed_payload)
+    retried_payload = handle_authority_bytes(
+        authority,
+        _encoded_redemption_request(_request(grant.token)),
+    )
+    retried = parse_redemption_response(retried_payload)
+
+    assert failed.ok is False
+    assert failed.reason == "evidence_write_failed"
+    assert retried.ok is True
+    assert retried.reason == "redeemed"
+    assert [event.event_type for event in authority.events()] == ["grant_minted", "grant_redeemed"]
 
 
 def test_authority_socket_mint_fails_closed_when_peer_credentials_unavailable():
@@ -722,6 +800,17 @@ def _encoded_mint_request(request: LaunchMintRequest) -> bytes:
         json.dumps(mint_request_payload(request), sort_keys=True, separators=(",", ":")).encode(
             "utf-8"
         )
+        + b"\n"
+    )
+
+
+def _encoded_redemption_request(request: LaunchRedemptionRequest) -> bytes:
+    return (
+        json.dumps(
+            redemption_request_payload(request),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
         + b"\n"
     )
 

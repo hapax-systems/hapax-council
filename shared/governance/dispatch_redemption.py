@@ -165,6 +165,10 @@ class LaunchMintRefusedError(RuntimeError):
     """Mint policy refused the launch context (recorded as a mint_refused event)."""
 
 
+class LaunchEvidenceWriteError(RuntimeError):
+    """Durable token-free event evidence could not be written."""
+
+
 @dataclass
 class _StoredGrant:
     grant_id: str
@@ -236,22 +240,27 @@ class DispatchLaunchRedemptionAuthority:
         token = secrets.token_urlsafe(32)
         grant_id = secrets.token_hex(16)
         expires_at = float(self._now()) + ttl_s
-        self._grants[_token_digest(token)] = _StoredGrant(
+        token_digest = _token_digest(token)
+        self._grants[token_digest] = _StoredGrant(
             grant_id=grant_id,
-            token_digest=_token_digest(token),
+            token_digest=token_digest,
             context=normalized,
             expires_at=expires_at,
         )
-        self._append_event(
-            "grant_minted",
-            grant_id=grant_id,
-            context=normalized,
-            reason="minted",
-            observed_at=float(self._now()),
-            peer=peer,
-            requester=requester,
-            requester_pid=requester_pid,
-        )
+        try:
+            self._append_event(
+                "grant_minted",
+                grant_id=grant_id,
+                context=normalized,
+                reason="minted",
+                observed_at=float(self._now()),
+                peer=peer,
+                requester=requester,
+                requester_pid=requester_pid,
+            )
+        except LaunchEvidenceWriteError:
+            self._grants.pop(token_digest, None)
+            raise
         return LaunchRedemptionGrant(grant_id=grant_id, token=token, expires_at=expires_at)
 
     def redeem(
@@ -339,15 +348,19 @@ class DispatchLaunchRedemptionAuthority:
                     wrapper_pid=request.wrapper_pid,
                 )
         stored.consumed_at = now
-        return self._response(
-            True,
-            "redeemed",
-            stored,
-            now,
-            peer=peer,
-            wrapper=request.wrapper,
-            wrapper_pid=request.wrapper_pid,
-        )
+        try:
+            return self._response(
+                True,
+                "redeemed",
+                stored,
+                now,
+                peer=peer,
+                wrapper=request.wrapper,
+                wrapper_pid=request.wrapper_pid,
+            )
+        except LaunchEvidenceWriteError:
+            stored.consumed_at = None
+            raise
 
     def events(self) -> tuple[LaunchRedemptionEvent, ...]:
         return tuple(self._events)
@@ -497,15 +510,14 @@ class DispatchLaunchRedemptionAuthority:
             wrapper=wrapper,
             wrapper_pid=wrapper_pid,
         )
-        self._events.append(event)
         if self._event_sink is not None:
-            # Evidence emission must never turn a mint/redeem decision into a
-            # crash (NEVER-FREEZE): sink failures are the sink's problem to
-            # surface (journal/stderr), not a reason to refuse a launch.
             try:
                 self._event_sink(event)
-            except Exception:  # noqa: BLE001 - witnessed by the daemon's own logging.
-                pass
+            except Exception as exc:  # noqa: BLE001 - fail closed on missing evidence.
+                raise LaunchEvidenceWriteError(
+                    f"token-free event sink failed for {event.event_type}"
+                ) from exc
+        self._events.append(event)
 
 
 class DispatchLaunchRedemptionServer:
@@ -809,9 +821,17 @@ def handle_redemption_payload(
         request = parse_redemption_request(payload)
     except Exception as exc:  # noqa: BLE001 - bad launch requests fail closed.
         reason = f"invalid_request:{type(exc).__name__}"
-        authority.record_wire_refusal(reason=reason, peer=peer)
+        try:
+            authority.record_wire_refusal(reason=reason, peer=peer)
+        except LaunchEvidenceWriteError:
+            reason = "evidence_write_failed"
         return redemption_response_payload(LaunchRedemptionResponse(ok=False, reason=reason))
-    return redemption_response_payload(authority.redeem(request, peer=peer))
+    try:
+        return redemption_response_payload(authority.redeem(request, peer=peer))
+    except LaunchEvidenceWriteError:
+        return redemption_response_payload(
+            LaunchRedemptionResponse(ok=False, reason="evidence_write_failed")
+        )
 
 
 def handle_redemption_bytes(
@@ -826,7 +846,10 @@ def handle_redemption_bytes(
             raise ValueError("redemption request must be a JSON object")
     except Exception as exc:  # noqa: BLE001 - malformed launch requests fail closed.
         reason = f"invalid_request:{type(exc).__name__}"
-        authority.record_wire_refusal(reason=reason, peer=peer)
+        try:
+            authority.record_wire_refusal(reason=reason, peer=peer)
+        except LaunchEvidenceWriteError:
+            reason = "evidence_write_failed"
         return redemption_response_payload(LaunchRedemptionResponse(ok=False, reason=reason))
     return handle_redemption_payload(authority, payload, peer=peer)
 
@@ -843,7 +866,10 @@ def handle_mint_payload(
         request = parse_mint_request(payload)
     except Exception as exc:  # noqa: BLE001 - bad mint requests fail closed.
         reason = f"invalid_request:{type(exc).__name__}"
-        authority.record_wire_refusal(reason=reason, peer=peer)
+        try:
+            authority.record_wire_refusal(reason=reason, peer=peer)
+        except LaunchEvidenceWriteError:
+            reason = "evidence_write_failed"
         return mint_response_payload(LaunchMintResponse(ok=False, reason=reason))
     peer_refusal = _mint_peer_refusal(
         request,
@@ -852,13 +878,18 @@ def handle_mint_payload(
         require_requester_process=require_requester_process,
     )
     if peer_refusal is not None:
-        authority.record_mint_refusal(
-            request.context,
-            reason=peer_refusal,
-            peer=peer,
-            requester=request.requester,
-            requester_pid=request.requester_pid,
-        )
+        try:
+            authority.record_mint_refusal(
+                request.context,
+                reason=peer_refusal,
+                peer=peer,
+                requester=request.requester,
+                requester_pid=request.requester_pid,
+            )
+        except LaunchEvidenceWriteError:
+            return mint_response_payload(
+                LaunchMintResponse(ok=False, reason="evidence_write_failed")
+            )
         return mint_response_payload(LaunchMintResponse(ok=False, reason=peer_refusal))
     try:
         grant = authority.mint(
@@ -868,6 +899,8 @@ def handle_mint_payload(
             requester=request.requester,
             requester_pid=request.requester_pid,
         )
+    except LaunchEvidenceWriteError:
+        return mint_response_payload(LaunchMintResponse(ok=False, reason="evidence_write_failed"))
     except LaunchMintRefusedError as exc:
         return mint_response_payload(
             LaunchMintResponse(ok=False, reason=f"mint_policy_refused:{exc}")
@@ -907,7 +940,10 @@ def handle_authority_bytes(
             raise ValueError("authority request must be a JSON object")
     except Exception as exc:  # noqa: BLE001 - malformed requests fail closed.
         reason = f"invalid_request:{type(exc).__name__}"
-        authority.record_wire_refusal(reason=reason, peer=peer)
+        try:
+            authority.record_wire_refusal(reason=reason, peer=peer)
+        except LaunchEvidenceWriteError:
+            reason = "evidence_write_failed"
         return redemption_response_payload(LaunchRedemptionResponse(ok=False, reason=reason))
     schema = payload.get("schema")
     if schema == "hapax.dispatch_launch_mint.v1":
@@ -921,7 +957,10 @@ def handle_authority_bytes(
     if schema == "hapax.dispatch_launch_redeem.v1":
         return handle_redemption_payload(authority, payload, peer=peer)
     reason = "invalid_request:unsupported_schema"
-    authority.record_wire_refusal(reason=reason, peer=peer)
+    try:
+        authority.record_wire_refusal(reason=reason, peer=peer)
+    except LaunchEvidenceWriteError:
+        reason = "evidence_write_failed"
     return redemption_response_payload(LaunchRedemptionResponse(ok=False, reason=reason))
 
 
