@@ -181,8 +181,8 @@ def test_dispatcher_cmd_uses_repo_sibling() -> None:
     # Trust ONLY the in-repo sibling — never env/PATH (those are bypass vectors).
     mod = _load()
     cmd = mod.dispatcher_cmd()
-    assert cmd[0] == mod.sys.executable
-    assert cmd[1] == str(mod._HERE / "hapax-methodology-dispatch")
+    assert cmd[:2] == ["/usr/bin/python3", "-I"]
+    assert cmd[2] == str(mod._HERE / "hapax-methodology-dispatch")
 
 
 def test_dispatcher_cmd_ignores_hostile_env(monkeypatch) -> None:
@@ -191,7 +191,8 @@ def test_dispatcher_cmd_ignores_hostile_env(monkeypatch) -> None:
     monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_BIN", "/bin/true")
     cmd = mod.dispatcher_cmd()
     assert cmd != ["/bin/true"]
-    assert cmd[1] == str(mod._HERE / "hapax-methodology-dispatch")
+    assert cmd[:2] == ["/usr/bin/python3", "-I"]
+    assert cmd[2] == str(mod._HERE / "hapax-methodology-dispatch")
 
 
 def test_dispatcher_cmd_missing_sibling_exits(monkeypatch, tmp_path) -> None:

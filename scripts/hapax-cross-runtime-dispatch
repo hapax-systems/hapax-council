@@ -357,10 +357,7 @@ if [[ -x "$METHODOLOGY_DISPATCH" ]]; then
         echo "error: require --task and methodology dispatch for governed lane dispatch" >&2
         exit 2
     fi
-    METHODOLOGY_CMD=("$METHODOLOGY_DISPATCH")
-    if [[ -z "$METHODOLOGY_DISPATCH_ENV" ]] && command -v uv >/dev/null 2>&1; then
-        METHODOLOGY_CMD=(uv run python "$METHODOLOGY_DISPATCH")
-    fi
+    METHODOLOGY_CMD=(/usr/bin/python3 -I "$METHODOLOGY_DISPATCH")
     DELEGATE_ARGS=(
         --task "$TASK"
         --lane "$LANE"
@@ -376,9 +373,6 @@ if [[ -x "$METHODOLOGY_DISPATCH" ]]; then
         DELEGATE_ARGS+=(--policy-rollback)
     fi
     echo "  delegating: ${METHODOLOGY_CMD[*]} ${DELEGATE_ARGS[*]}"
-    if [[ -z "$METHODOLOGY_DISPATCH_ENV" ]]; then
-        export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/packages/agentgov/src:${PYTHONPATH:-}"
-    fi
     exec "${METHODOLOGY_CMD[@]}" "${DELEGATE_ARGS[@]}"
 fi
 

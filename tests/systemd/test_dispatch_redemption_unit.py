@@ -11,7 +11,6 @@ ACTIVATION_DAEMON = (
 ACTIVATION_DISPATCHER = (
     "/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-methodology-dispatch"
 )
-CANONICAL_REPO_DISPATCHER = "/home/hapax/projects/hapax-council/scripts/hapax-methodology-dispatch"
 
 
 def test_unit_is_system_scoped_governor() -> None:
@@ -36,8 +35,7 @@ def test_unit_provisions_fixed_namespace_with_deliberate_mode() -> None:
         "Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER=hapax-methodology-dispatch"
     ) in body
     assert (
-        "Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS="
-        f"{ACTIVATION_DISPATCHER}:{CANONICAL_REPO_DISPATCHER}"
+        f"Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS={ACTIVATION_DISPATCHER}"
     ) in body
     directives = [
         line for line in body.splitlines() if line.strip() and not line.strip().startswith("#")

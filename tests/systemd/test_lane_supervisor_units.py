@@ -94,3 +94,4 @@ def test_claude_lane_unit_still_binds_per_lane_task_env() -> None:
     raw = CLAUDE_LANE.read_text(encoding="utf-8")
     assert "HAPAX_DISPATCH_TASK" in raw
     assert "EnvironmentFile" in raw
+    assert '/usr/bin/python3 -I "$HOME/.local/bin/hapax-methodology-dispatch"' in raw

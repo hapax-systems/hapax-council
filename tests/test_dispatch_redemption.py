@@ -339,7 +339,7 @@ def test_requester_path_witness_rejects_argv_shape_forgery(tmp_path):
 
     assert redemption._trusted_python_process_is_running_script(
         trusted_python,
-        (str(trusted_python), str(dispatcher), "--task", "task-1"),
+        (str(trusted_python), "-I", str(dispatcher), "--task", "task-1"),
         expected_paths,
     )
     assert not redemption._trusted_python_process_is_running_script(
@@ -348,8 +348,13 @@ def test_requester_path_witness_rejects_argv_shape_forgery(tmp_path):
         expected_paths,
     )
     assert not redemption._trusted_python_process_is_running_script(
-        Path("/bin/true"),
+        trusted_python,
         (str(trusted_python), str(dispatcher), "--task", "task-1"),
+        expected_paths,
+    )
+    assert not redemption._trusted_python_process_is_running_script(
+        Path("/bin/true"),
+        (str(trusted_python), "-I", str(dispatcher), "--task", "task-1"),
         expected_paths,
     )
 
@@ -410,7 +415,7 @@ def _run_dispatcher_mint_with_retry(dispatcher: Path, socket_path: Path, worktre
     last = None
     for _ in range(100):
         result = subprocess.run(
-            ["/usr/bin/python3", str(dispatcher), str(socket_path), str(worktree)],
+            ["/usr/bin/python3", "-I", str(dispatcher), str(socket_path), str(worktree)],
             capture_output=True,
             text=True,
             timeout=5,

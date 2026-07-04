@@ -1036,14 +1036,14 @@ def _trusted_python_process_is_running_script(
 ) -> bool:
     if not _trusted_python_executable(exe):
         return False
-    if len(cmdline) < 2:
+    if len(cmdline) < 3:
         return False
-    if Path(cmdline[1]).name.startswith("-"):
+    if cmdline[1] != "-I":
         return False
     try:
-        observed = Path(cmdline[1]).expanduser().resolve(strict=True)
+        observed = Path(cmdline[2]).expanduser().resolve(strict=True)
     except OSError:
-        observed = Path(cmdline[1]).expanduser().resolve(strict=False)
+        observed = Path(cmdline[2]).expanduser().resolve(strict=False)
     return observed in expected_paths
 
 

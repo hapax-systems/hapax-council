@@ -60,7 +60,7 @@ def dispatcher_cmd() -> list[str]:
             file=sys.stderr,
         )
         raise SystemExit(3)
-    return [sys.executable, str(sibling)]
+    return ["/usr/bin/python3", "-I", str(sibling)]
 
 
 def print_list() -> int:
