@@ -200,6 +200,44 @@ def test_claude_headless_external_workdir_redeems_before_spoofed_lifecycle_scrip
     assert not claude_called.exists()
 
 
+def test_claude_headless_council_symlink_to_external_tree_still_requires_redemption(
+    tmp_path: Path,
+) -> None:
+    # A council-prefixed SPELLING of an external tree must classify by what it
+    # resolves to (pwd -P), matching dispatcher-side is_external_project_worktree:
+    # the symlink name must not exempt the launch from redemption.
+    home = tmp_path / "home"
+    real_workdir = home / "projects" / "reins"
+    real_workdir.mkdir(parents=True)
+    council_spelling = home / "projects" / "hapax-council--reins"
+    council_spelling.symlink_to(real_workdir)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(council_spelling)
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = "self-minted"
+    env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "019f-fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = "route-decision:fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE"] = "CASE-CAPACITY-ROUTING-001"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "dispatch redemption refused" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert not claude_called.exists()
+
+
 def test_headless_source_supports_governed_model_profile_env() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
 

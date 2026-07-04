@@ -397,7 +397,11 @@ if [[ ! -d "$WORKDIR" && "$WORKDIR_EXPLICIT" -eq 0 ]]; then
   WORKDIR="$COUNCIL_DIR"
 fi
 [[ -d "$WORKDIR" ]] || { echo "hapax-codex-headless: worktree not found: $WORKDIR" >&2; exit 3; }
-WORKDIR="$(cd "$WORKDIR" && pwd)"
+# Physical resolution (-P): redemption classification must see what the path
+# RESOLVES to, matching dispatcher-side is_external_project_worktree. A
+# council-prefixed symlink or /../ spelling of an external tree must not be
+# exempted by its textual name.
+WORKDIR="$(cd "$WORKDIR" && pwd -P)"
 
 HOOK="$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"
 [[ -x "$HOOK" ]] || { echo "hapax-codex-headless: hook adapter not executable: $HOOK" >&2; exit 6; }

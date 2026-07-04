@@ -485,6 +485,55 @@ exit 0
     assert not codex_called.exists()
 
 
+def test_codex_headless_council_symlink_to_external_tree_still_requires_redemption(
+    tmp_path: Path,
+) -> None:
+    # A council-prefixed SPELLING of an external tree must classify by what it
+    # resolves to (pwd -P), matching dispatcher-side is_external_project_worktree:
+    # the symlink name must not exempt the launch from redemption.
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    real_workdir = home / "projects" / "reins"
+    real_workdir.mkdir(parents=True)
+    council_spelling = home / "projects" / "hapax-council--reins"
+    council_spelling.symlink_to(real_workdir)
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(council_spelling)
+    env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = "self-minted"
+    env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "019f-fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = "route-decision:fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE"] = "CASE-CAPACITY-ROUTING-001"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert "dispatch redemption refused" in result.stderr
+    assert not codex_called.exists()
+
+
 def test_codex_headless_redemption_verifier_imports_from_launcher_checkout(
     tmp_path: Path,
 ) -> None:
