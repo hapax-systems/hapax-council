@@ -297,11 +297,19 @@ class SdlcRouter:
         activation_evidence: Mapping[str, ClassActivationEvidence] | None = None,
         thompson_sampler: Callable[[ActivationState], float] | None = None,
         gamma: float = DEFAULT_THOMPSON_GAMMA,
+        judge_promotion: JudgePromotionDecision | None = None,
     ) -> None:
         self.state = state or SdlcRouterState()
         self.activation_evidence = dict(activation_evidence or {})
         self._thompson_sampler = thompson_sampler or (lambda state: state.thompson_sample())
         self.gamma = gamma
+        # Judge-health promotion evidence (cost-capture phase 0). Default None is
+        # the FAIL-CLOSED state: with no cleared JudgePromotionDecision, verdicts
+        # from the LLM acceptor judge may never move Thompson posteriors — the
+        # measured false-accept skew (docs/research/2026-06-14-local-judge-validation.md:
+        # 239 false-accepts vs 145 false-rejects, kappa 0.703) would otherwise
+        # systematically inflate route posteriors toward promotion.
+        self.judge_promotion = judge_promotion
 
     @classmethod
     def load(
@@ -427,6 +435,15 @@ class SdlcRouter:
     def record_gate_event(self, event: GateEvent) -> bool:
         """Update posteriors from a witnessed gate result, never from selection."""
 
+        if event.gate_type == "llm_acceptor" and not (
+            self.judge_promotion is not None and self.judge_promotion.allowed
+        ):
+            # Refusal path (costcap phase 0 AC): an UNVALIDATED judge's verdicts are
+            # noise in BOTH directions (accept AND reject) — neither may move a
+            # posterior until the judge-health gate clears on a council-distribution
+            # held set. Deterministic/gold_verifier/frontier_review gates are not
+            # the LLM judge and learn as before.
+            return False
         if (
             event.gate_type not in LEARNING_GATE_TYPES
             or event.gate_result not in LEARNING_GATE_RESULTS
@@ -648,3 +665,202 @@ def _requirement_evidence_refs_from_supply(supply: SupplyVector) -> tuple[str, .
             if dimension in raw_scores:
                 refs.extend(raw_scores[dimension].get("evidence_refs") or [])
     return tuple(dict.fromkeys(refs))
+
+
+# --- judge health — cost-capture phase 0 (false-accept skew gate) ---------------------
+# Task 20260628-costcap-phase0-fix-judge-validation-skew-false-accept. The local
+# answer-verification judge (CompassVerifier-7B, shared/local_judge.py) measured
+# NON-conservative on the VerifierBench held set: 239 false-accepts (judge says
+# CORRECT where the authoritative reference says INCORRECT/INVALID — the dangerous
+# direction for a gate) vs 145 false-rejects, agreement 83.8%, Cohen's kappa 0.703
+# (docs/research/2026-06-14-local-judge-validation.md). Every shadow->authoritative
+# offload flip (costcap phase 1) MUST pass ``authoritative_flip_allowed`` first; the
+# gate holds fail-closed until the AC3 request threshold clears on the judge's own
+# council-distribution shadow traffic.
+
+#: The shadow log ``shared.local_judge.shadow_compare`` appends to — the
+#: council-distribution held set the promotion gate is evaluated from.
+DEFAULT_JUDGE_SHADOW_LOG = Path(
+    os.environ.get(
+        "HAPAX_JUDGE_SHADOW_LOG",
+        str(Path.home() / ".cache" / "hapax" / "local-judge-shadow.jsonl"),
+    )
+)
+
+_JUDGE_LABELS = ("A", "B", "C")
+
+
+class JudgeHealthMeasure(_RouterModel):
+    """False-accept/false-reject measurement over a held set of verdict pairs."""
+
+    n_pairs: int
+    n_scored: int
+    n_excluded: int
+    agreement: float | None
+    cohen_kappa: float | None
+    false_accept_count: int
+    false_reject_count: int
+    disagreement_count: int
+    conservative_skewed: bool
+
+
+class JudgeHealthThresholds(_RouterModel):
+    """The AC3 request threshold (REQ-20260613-sdlc-cost-offload-program, carried by
+    REQ-20260628-internal-cost-capture-dogfood): >=150 council-distribution items,
+    agreement >=90%, Cohen's kappa >=0.80, disagreements conservative-skewed."""
+
+    min_scored_items: int = 150
+    min_agreement: float = 0.90
+    min_kappa: float = 0.80
+    require_conservative_skew: bool = True
+
+
+DEFAULT_JUDGE_HEALTH_THRESHOLDS = JudgeHealthThresholds()
+
+
+class JudgePromotionDecision(_RouterModel):
+    """The fail-closed verdict on whether judge verdicts may carry authority."""
+
+    allowed: bool
+    reason_codes: tuple[str, ...]
+    measure: JudgeHealthMeasure
+    thresholds: JudgeHealthThresholds
+
+
+def _judge_cohen_kappa(gold: Sequence[str], pred: Sequence[str]) -> float:
+    """Three-label Cohen's kappa, same convention as scripts/cost-offload/analyze.py
+    (the harness behind the pinned validation report), so held-set reproductions
+    match the published numbers exactly."""
+    n = len(gold)
+    po = sum(g == p for g, p in zip(gold, pred, strict=True)) / n
+    pe = 0.0
+    for label in _JUDGE_LABELS:
+        gold_marginal = sum(1 for g in gold if g == label) / n
+        pred_marginal = sum(1 for p in pred if p == label) / n
+        pe += gold_marginal * pred_marginal
+    # pe == 1 requires both marginals concentrated on one label, which forces po == 1;
+    # analyze.py returns 1.0 for that degenerate case and we mirror it.
+    return (po - pe) / (1 - pe) if (1 - pe) else 1.0
+
+
+def measure_judge_health(pairs: Iterable[tuple[str, str]]) -> JudgeHealthMeasure:
+    """Measure agreement, kappa, and the false-accept/false-reject split over a held
+    set of ``(local, authoritative)`` verdict pairs (the ``shadow_compare`` schema).
+
+    A pair with either label outside A/B/C is EXCLUDED from the metrics (an
+    unparseable local verdict is a judge failure/escalation, not agreement) but
+    stays visible in ``n_pairs``/``n_excluded`` — exclusion is counted, never silent.
+    ``conservative_skewed`` is False on an empty set (fail-closed) and otherwise
+    requires false-accepts to be absent or strictly fewer than false-rejects —
+    the validation report's operationalization (239 > 145 -> not met).
+    """
+    all_pairs = tuple(pairs)
+    scored = [
+        (local, authoritative)
+        for local, authoritative in all_pairs
+        if local in _JUDGE_LABELS and authoritative in _JUDGE_LABELS
+    ]
+    n_scored = len(scored)
+    false_accept = sum(1 for local, auth in scored if local == "A" and auth in ("B", "C"))
+    false_reject = sum(1 for local, auth in scored if auth == "A" and local in ("B", "C"))
+    disagreements = sum(1 for local, auth in scored if local != auth)
+    agreement = (n_scored - disagreements) / n_scored if n_scored else None
+    kappa = (
+        _judge_cohen_kappa(
+            [auth for _, auth in scored],
+            [local for local, _ in scored],
+        )
+        if n_scored
+        else None
+    )
+    return JudgeHealthMeasure(
+        n_pairs=len(all_pairs),
+        n_scored=n_scored,
+        n_excluded=len(all_pairs) - n_scored,
+        agreement=agreement,
+        cohen_kappa=kappa,
+        false_accept_count=false_accept,
+        false_reject_count=false_reject,
+        disagreement_count=disagreements,
+        conservative_skewed=bool(n_scored) and (false_accept == 0 or false_accept < false_reject),
+    )
+
+
+def load_judge_shadow_pairs(path: Path | str | None = None) -> tuple[tuple[str, str], ...]:
+    """Read ``(local, authoritative)`` pairs from the shadow-compare jsonl log.
+
+    A corrupt or malformed row becomes an excluded ``("", "")`` pair — it degrades
+    the measure visibly instead of silently shrinking the held set. A missing log
+    yields no pairs (and the promotion gate then refuses on the empty set)."""
+    target = Path(os.path.expanduser(str(path if path is not None else DEFAULT_JUDGE_SHADOW_LOG)))
+    if not target.exists():
+        return ()
+    out: list[tuple[str, str]] = []
+    with target.open(encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                out.append(("", ""))
+                continue
+            local = row.get("local") if isinstance(row, Mapping) else None
+            authoritative = row.get("authoritative") if isinstance(row, Mapping) else None
+            if isinstance(local, str) and isinstance(authoritative, str):
+                out.append((local, authoritative))
+            else:
+                out.append(("", ""))
+    return tuple(out)
+
+
+def judge_promotion_gate(
+    measure: JudgeHealthMeasure,
+    thresholds: JudgeHealthThresholds = DEFAULT_JUDGE_HEALTH_THRESHOLDS,
+) -> JudgePromotionDecision:
+    """Evaluate a held-set measure against the request threshold — fail-closed.
+
+    Every failing bar is surfaced as its own reason code so an operator can see
+    exactly which promotion requirement is unmet (executive_function: errors
+    include next actions — the reason names the floor and the measured value)."""
+    reasons: list[str] = []
+    if measure.n_scored == 0:
+        reasons.append("judge_held_set_missing")
+    elif measure.n_scored < thresholds.min_scored_items:
+        reasons.append(
+            f"judge_held_set_insufficient:{measure.n_scored}<{thresholds.min_scored_items}"
+        )
+    if measure.n_scored > 0:
+        if measure.agreement is not None and measure.agreement < thresholds.min_agreement:
+            reasons.append(
+                f"judge_agreement_below_floor:{measure.agreement:.4f}<{thresholds.min_agreement}"
+            )
+        if measure.cohen_kappa is not None and measure.cohen_kappa < thresholds.min_kappa:
+            reasons.append(
+                f"judge_kappa_below_floor:{measure.cohen_kappa:.4f}<{thresholds.min_kappa}"
+            )
+        if thresholds.require_conservative_skew and not measure.conservative_skewed:
+            reasons.append(
+                "judge_not_conservative_skewed:"
+                f"false_accept={measure.false_accept_count}"
+                f">=false_reject={measure.false_reject_count}"
+            )
+    return JudgePromotionDecision(
+        allowed=not reasons,
+        reason_codes=tuple(reasons),
+        measure=measure,
+        thresholds=thresholds,
+    )
+
+
+def authoritative_flip_allowed(
+    *,
+    log_path: Path | str | None = None,
+    thresholds: JudgeHealthThresholds = DEFAULT_JUDGE_HEALTH_THRESHOLDS,
+) -> JudgePromotionDecision:
+    """THE gate a shadow->authoritative offload flip must pass (costcap phase 1).
+
+    Fail-closed end to end: a missing/empty/corrupt shadow log, an insufficient
+    held set, or any unmet bar refuses the flip with explicit reason codes."""
+    return judge_promotion_gate(measure_judge_health(load_judge_shadow_pairs(log_path)), thresholds)
