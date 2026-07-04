@@ -21,7 +21,7 @@
 # Witness owner/mode + live protocol afterwards (token-free receipt):
 #   scripts/hapax-dispatch-redemption-authority --receipt
 Description=Hapax dispatch launch redemption governor (fixed-socket mint/redeem authority)
-Documentation=file:/home/hapax/Documents/Personal/30-areas/hapax/dispatch-launch-redemption-service-design-2026-07-01.md
+Documentation=file:/home/hapax/.cache/hapax/source-activation/worktree/docs/methodology/emergency-bypass.md
 ConditionPathExists=/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-dispatch-redemption-authority
 
 [Service]
@@ -34,7 +34,9 @@ Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS=/home/hapax/.cache
 Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_SHA256=57aefbdab1fd1f3bee65ab04bc1abb90481ddbcb70054e8aa4589a92e1b15a12
 RuntimeDirectory=hapax/coord
 RuntimeDirectoryMode=0750
-ExecStart=/usr/bin/python3 /home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-dispatch-redemption-authority --serve
+StateDirectory=hapax/dispatch-redemption
+StateDirectoryMode=0750
+ExecStart=/usr/bin/python3 /home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-dispatch-redemption-authority --serve --events-path /var/lib/hapax/dispatch-redemption/events.jsonl
 Restart=on-failure
 RestartSec=2s
 NoNewPrivileges=true

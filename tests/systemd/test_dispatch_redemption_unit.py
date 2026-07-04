@@ -14,6 +14,7 @@ ACTIVATION_DISPATCHER = (
     "/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-methodology-dispatch"
 )
 DISPATCHER = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
+EVENTS_PATH = "/var/lib/hapax/dispatch-redemption/events.jsonl"
 
 
 def test_unit_is_system_scoped_governor() -> None:
@@ -31,6 +32,8 @@ def test_unit_provisions_fixed_namespace_with_deliberate_mode() -> None:
 
     assert "RuntimeDirectory=hapax/coord" in body
     assert "RuntimeDirectoryMode=0750" in body
+    assert "StateDirectory=hapax/dispatch-redemption" in body
+    assert "StateDirectoryMode=0750" in body
     assert "User=root" in body
     assert "Group=hapax" in body
     assert "Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_USER=hapax" in body
@@ -53,8 +56,12 @@ def test_unit_provisions_fixed_namespace_with_deliberate_mode() -> None:
 def test_unit_runs_activated_source_and_fails_closed_pre_activation() -> None:
     body = UNIT.read_text(encoding="utf-8")
 
-    assert f"ExecStart=/usr/bin/python3 {ACTIVATION_DAEMON} --serve" in body
+    assert (
+        f"ExecStart=/usr/bin/python3 {ACTIVATION_DAEMON} --serve --events-path {EVENTS_PATH}"
+        in body
+    )
     assert f"ConditionPathExists={ACTIVATION_DAEMON}" in body
+    assert "/Documents/Personal/" not in body
     # The governor must not run from a mutable lane worktree.
     runtime_directives = [
         line

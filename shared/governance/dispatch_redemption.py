@@ -141,6 +141,8 @@ class LaunchRedemptionEvent:
     profile: str | None
     dispatch_message_id: str | None
     route_decision_ref: str | None
+    authority_case: str | None
+    parent_spec: str | None
     reason: str
     observed_at: float
     peer_pid: int | None = None
@@ -210,6 +212,20 @@ class DispatchLaunchRedemptionAuthority:
                     requester_pid=requester_pid,
                 )
                 raise LaunchMintRefusedError(refusal)
+        now = float(self._now())
+        duplicate = self._active_grant_for_context(normalized, now=now)
+        if duplicate is not None:
+            self._append_event(
+                "mint_refused",
+                grant_id=duplicate.grant_id,
+                context=normalized,
+                reason="duplicate_active_context",
+                observed_at=now,
+                peer=peer,
+                requester=requester,
+                requester_pid=requester_pid,
+            )
+            raise LaunchMintRefusedError("duplicate_active_context")
         token = secrets.token_urlsafe(32)
         grant_id = secrets.token_hex(16)
         expires_at = float(self._now()) + ttl_s
@@ -329,6 +345,18 @@ class DispatchLaunchRedemptionAuthority:
     def events(self) -> tuple[LaunchRedemptionEvent, ...]:
         return tuple(self._events)
 
+    def _active_grant_for_context(
+        self, context: LaunchRedemptionContext, *, now: float
+    ) -> _StoredGrant | None:
+        for stored in self._grants.values():
+            if (
+                stored.consumed_at is None
+                and now <= stored.expires_at
+                and stored.context == context
+            ):
+                return stored
+        return None
+
     def purge_expired(self) -> int:
         """Drop expired or consumed grants from the in-memory table.
 
@@ -429,6 +457,8 @@ class DispatchLaunchRedemptionAuthority:
             profile=context.profile if context else None,
             dispatch_message_id=context.dispatch_message_id if context else None,
             route_decision_ref=context.route_decision_ref if context else None,
+            authority_case=context.authority_case if context else None,
+            parent_spec=context.parent_spec if context else None,
             reason=reason,
             observed_at=observed_at,
             peer_pid=peer.pid if peer else None,
@@ -621,8 +651,11 @@ def redemption_response_payload(response: LaunchRedemptionResponse) -> dict[str,
 def parse_redemption_response(payload: dict[str, object]) -> LaunchRedemptionResponse:
     if payload.get("schema") != "hapax.dispatch_launch_redeem_response.v1":
         raise ValueError("unsupported dispatch launch redemption response schema")
+    ok = payload.get("ok", False)
+    if not isinstance(ok, bool):
+        raise ValueError("dispatch launch redemption response ok must be boolean")
     return LaunchRedemptionResponse(
-        ok=bool(payload.get("ok", False)),
+        ok=ok,
         reason=str(payload.get("reason", "")),
         grant_id=_optional_str(payload.get("grant_id")),
         consumed_at=_optional_float(payload.get("consumed_at")),
@@ -700,8 +733,11 @@ def mint_response_payload(response: LaunchMintResponse) -> dict[str, object]:
 def parse_mint_response(payload: dict[str, object]) -> LaunchMintResponse:
     if payload.get("schema") != "hapax.dispatch_launch_mint_response.v1":
         raise ValueError("unsupported dispatch launch mint response schema")
+    ok = payload.get("ok", False)
+    if not isinstance(ok, bool):
+        raise ValueError("dispatch launch mint response ok must be boolean")
     return LaunchMintResponse(
-        ok=bool(payload.get("ok", False)),
+        ok=ok,
         reason=str(payload.get("reason", "")),
         grant_id=_optional_str(payload.get("grant_id")),
         token=_optional_str(payload.get("token")),
@@ -721,6 +757,8 @@ def redemption_event_payload(event: LaunchRedemptionEvent) -> dict[str, object]:
         "profile": event.profile,
         "dispatch_message_id": event.dispatch_message_id,
         "route_decision_ref": event.route_decision_ref,
+        "authority_case": event.authority_case,
+        "parent_spec": event.parent_spec,
         "reason": event.reason,
         "observed_at": event.observed_at,
         "peer_pid": event.peer_pid,

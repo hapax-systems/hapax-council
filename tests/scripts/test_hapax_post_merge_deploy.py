@@ -624,6 +624,54 @@ def test_dispatch_redemption_system_unit_invokes_dedicated_installer(
     assert record["deploy_groups"]["systemd_system_units"] == [unit_path]
 
 
+def test_dispatch_redemption_requester_change_reruns_dedicated_installer(
+    tmp_path: Path,
+) -> None:
+    dispatcher_path = "scripts/hapax-methodology-dispatch"
+    installer_path = "scripts/hapax-dispatch-redemption-service-install"
+    installer_calls = tmp_path / "dispatch-redemption-installer-calls.txt"
+    repo, sha = _repo_with_linear_commit(
+        tmp_path,
+        {
+            dispatcher_path: "#!/usr/bin/env bash\necho dispatch v2\n",
+            installer_path: (
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                f'printf "%s\\n" "$*" >> "{installer_calls}"\n'
+                'printf "HAPAX_COUNCIL_DIR=%s\\n" "${HAPAX_COUNCIL_DIR:-}" '
+                f'>> "{installer_calls}"\n'
+            ),
+        },
+    )
+    home = tmp_path / "home"
+    bin_dir, _systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "after requester change" in result.stdout
+    assert installer_calls.read_text(encoding="utf-8").splitlines() == [
+        "--install",
+        f"HAPAX_COUNCIL_DIR={repo}",
+    ]
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["deploy_groups"]["hapax_scripts"] == [installer_path, dispatcher_path]
+
+
 def test_user_scoped_units_still_deploy_to_user_dir(tmp_path: Path) -> None:
     unit_path = "systemd/units/hapax-user-demo.service"
     repo, sha = _repo_with_linear_commit(

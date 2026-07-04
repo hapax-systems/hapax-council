@@ -55,7 +55,9 @@ from shared.governance.dispatch_redemption import (  # noqa: E402
 )
 from shared.jsonl_append import append_jsonl  # noqa: E402
 
-DEFAULT_EVENTS_PATH = Path.home() / ".cache" / "hapax" / "dispatch-redemption" / "events.jsonl"
+DEFAULT_EVENTS_PATH = Path("/var/lib/hapax/dispatch-redemption/events.jsonl")
+EVENT_LEDGER_DIR_MODE = 0o750
+EVENT_LEDGER_FILE_MODE = 0o640
 PRODUCTION_RUNTIME_OWNER = "root"
 PRODUCTION_RUNTIME_GROUP = "hapax"
 # Purge cadence for expired/consumed grants. Purging maps a replayed token to
@@ -233,7 +235,7 @@ def mint_policy(context: LaunchRedemptionContext) -> str | None:
 
 
 def _event_writer(events_path: Path) -> Callable[[LaunchRedemptionEvent], None]:
-    events_path.parent.mkdir(parents=True, exist_ok=True)
+    _prepare_event_ledger(events_path)
 
     def _write(event: LaunchRedemptionEvent) -> None:
         payload = redemption_event_payload(event)
@@ -244,6 +246,20 @@ def _event_writer(events_path: Path) -> Callable[[LaunchRedemptionEvent], None]:
         )
 
     return _write
+
+
+def _prepare_event_ledger(events_path: Path) -> None:
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        events_path.parent.chmod(EVENT_LEDGER_DIR_MODE)
+    except OSError:
+        pass
+    for path in (events_path, events_path.with_name(events_path.name + ".lock")):
+        path.touch(exist_ok=True)
+        try:
+            path.chmod(EVENT_LEDGER_FILE_MODE)
+        except OSError:
+            pass
 
 
 def serve(
@@ -319,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
         "--events-path",
         type=Path,
         default=None,
-        help="TEST ONLY: token-free event ledger path (default ~/.cache/hapax/dispatch-redemption/events.jsonl)",
+        help="token-free event ledger path (default /var/lib/hapax/dispatch-redemption/events.jsonl)",
     )
     parser.add_argument(
         "--purge-interval",

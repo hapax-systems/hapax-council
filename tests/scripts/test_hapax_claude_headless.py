@@ -100,6 +100,21 @@ def test_headless_source_contains_no_generic_work_pool_prompt() -> None:
     assert "HAPAX_METHODOLOGY_DISPATCH_TASK" in text
 
 
+def test_claude_headless_scrubs_dispatch_redemption_binding_after_redeem() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert "scrub_dispatch_redemption_binding_env()" in text
+    assert "validate_dispatch_redemption_authority\n  scrub_dispatch_redemption_binding_env" in text
+    for name in (
+        "HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN",
+        "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID",
+        "HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF",
+        "HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE",
+        "HAPAX_METHODOLOGY_DISPATCH_PARENT_SPEC",
+    ):
+        assert f"unset {name}" in text
+
+
 def test_claude_headless_external_workdir_fails_closed_without_redemption_binding(
     tmp_path: Path,
 ) -> None:

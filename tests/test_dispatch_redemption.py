@@ -102,27 +102,47 @@ def test_mint_redeems_once_and_records_token_free_events():
     assert grant.token not in repr(events)
     payload = redemption_event_payload(events[0])
     assert payload["schema"] == "hapax.dispatch_launch_redemption_event.v1"
+    assert payload["authority_case"] == "CASE-CAPACITY-ROUTING-001"
+    assert payload["parent_spec"] == "/tmp/spec.md"
     assert "token" not in payload
 
 
 def test_purge_expired_drops_dead_grants_without_changing_outcomes():
     now = [1000.0]
     authority = DispatchLaunchRedemptionAuthority(now=lambda: now[0])
-    consumed = authority.mint(_context(), ttl_s=60)
-    expired = authority.mint(_context(), ttl_s=10)
-    live = authority.mint(_context(), ttl_s=600)
-    assert authority.redeem(_request(consumed.token)).ok is True
+    consumed_context = _context(dispatch_message_id="019f-consumed")
+    expired_context = _context(dispatch_message_id="019f-expired")
+    live_context = _context(dispatch_message_id="019f-live")
+    consumed = authority.mint(consumed_context, ttl_s=60)
+    expired = authority.mint(expired_context, ttl_s=10)
+    live = authority.mint(live_context, ttl_s=600)
+    assert authority.redeem(_request(consumed.token, consumed_context)).ok is True
 
     now[0] = 1030.0
     purged = authority.purge_expired()
 
     assert purged == 2
     # Purge maps replay/expiry to "unknown_token" — still fails closed.
-    assert authority.redeem(_request(consumed.token)).reason == "unknown_token"
-    assert authority.redeem(_request(expired.token)).reason == "unknown_token"
-    live_response = authority.redeem(_request(live.token))
+    assert authority.redeem(_request(consumed.token, consumed_context)).reason == "unknown_token"
+    assert authority.redeem(_request(expired.token, expired_context)).reason == "unknown_token"
+    live_response = authority.redeem(_request(live.token, live_context))
     assert live_response.ok is True
     assert authority.purge_expired() == 1
+
+
+def test_mint_refuses_duplicate_active_context_without_issuing_second_token():
+    now = [1000.0]
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: now[0])
+    first = authority.mint(_context(), ttl_s=60)
+
+    with pytest.raises(redemption.LaunchMintRefusedError) as excinfo:
+        authority.mint(_context(), ttl_s=60)
+
+    assert str(excinfo.value) == "duplicate_active_context"
+    events = authority.events()
+    assert [event.event_type for event in events] == ["grant_minted", "mint_refused"]
+    assert events[1].grant_id == first.grant_id
+    assert events[1].reason == "duplicate_active_context"
 
 
 def test_redeem_refuses_context_mismatch_and_policy_drift():
@@ -213,6 +233,8 @@ def test_socket_mint_and_redeem_roundtrip_records_peer_metadata(tmp_path):
     assert payload["peer_uid"] == os.getuid()
     assert payload["requester"] == "hapax-methodology-dispatch"
     assert payload["requester_pid"] == os.getpid()
+    assert payload["authority_case"] == "CASE-CAPACITY-ROUTING-001"
+    assert payload["parent_spec"] == "/tmp/spec.md"
     assert mint_response.token not in repr(payload)
 
 
@@ -656,3 +678,22 @@ def test_parse_bad_response_schema_raises():
         assert "unsupported dispatch launch redemption response schema" in str(exc)
     else:
         raise AssertionError("bad response schema should fail")
+
+
+def test_parse_responses_reject_non_bool_ok_fields():
+    with pytest.raises(ValueError, match="redemption response ok must be boolean"):
+        parse_redemption_response(
+            {
+                "schema": "hapax.dispatch_launch_redeem_response.v1",
+                "ok": "false",
+                "reason": "malformed",
+            }
+        )
+    with pytest.raises(ValueError, match="mint response ok must be boolean"):
+        parse_mint_response(
+            {
+                "schema": "hapax.dispatch_launch_mint_response.v1",
+                "ok": "false",
+                "reason": "malformed",
+            }
+        )

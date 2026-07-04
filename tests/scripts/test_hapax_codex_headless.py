@@ -108,6 +108,21 @@ exit 0
     )
 
 
+def test_codex_headless_scrubs_dispatch_redemption_binding_after_redeem() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert "scrub_dispatch_redemption_binding_env()" in text
+    assert "validate_dispatch_redemption_authority\n  scrub_dispatch_redemption_binding_env" in text
+    for name in (
+        "HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN",
+        "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID",
+        "HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF",
+        "HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE",
+        "HAPAX_METHODOLOGY_DISPATCH_PARENT_SPEC",
+    ):
+        assert f"unset {name}" in text
+
+
 def _init_primary_council_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     subprocess.run(

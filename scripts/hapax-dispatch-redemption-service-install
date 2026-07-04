@@ -8,6 +8,8 @@ ROOT=""
 UNIT_NAME="hapax-dispatch-redemption.service"
 UNIT_SRC="$REPO_DIR/systemd/units/$UNIT_NAME"
 DAEMON_SRC="$REPO_DIR/scripts/hapax-dispatch-redemption-authority"
+STATE_DIR="/var/lib/hapax/dispatch-redemption"
+EVENTS_PATH="$STATE_DIR/events.jsonl"
 
 usage() {
   cat <<'EOF'
@@ -105,9 +107,22 @@ require_source_contract() {
     echo "unit does not exec hapax-dispatch-redemption-authority --serve: $UNIT_SRC" >&2
     exit 1
   }
+  grep -q -- "--events-path $EVENTS_PATH" "$UNIT_SRC" || {
+    echo "unit does not pin dispatch redemption events ledger path: $UNIT_SRC" >&2
+    exit 1
+  }
 }
 
 UNIT_DST="$(system_path "/etc/systemd/system/$UNIT_NAME")"
+STATE_DIR_DST="$(system_path "$STATE_DIR")"
+
+prepare_state_dir() {
+  if [[ -n "$ROOT" ]]; then
+    install -d -m 0750 "$STATE_DIR_DST"
+    return
+  fi
+  run_privileged install -d -o root -g hapax -m 0750 "$STATE_DIR_DST"
+}
 
 require_source_contract
 
@@ -117,6 +132,7 @@ case "$MODE" in
     echo "would run: systemctl daemon-reload"
     echo "would run: systemctl enable $UNIT_NAME"
     echo "would run: systemctl restart $UNIT_NAME"
+    echo "would ensure root:hapax 0750 $STATE_DIR_DST"
     if [[ "$SKIP_RECEIPT" -eq 0 && -z "$ROOT" ]]; then
       echo "would run: $DAEMON_SRC --receipt"
     fi
@@ -146,6 +162,7 @@ case "$MODE" in
     exit "$status"
     ;;
   install)
+    prepare_state_dir
     run_privileged install -Dm 0644 "$UNIT_SRC" "$UNIT_DST"
     echo "wrote $UNIT_DST"
     if [[ -z "$ROOT" ]]; then

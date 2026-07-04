@@ -76,6 +76,10 @@ def test_runtime_receipt_requires_live_governor_protocol(tmp_path: Path) -> None
     )
     thread = threading.Thread(target=server.serve_once, kwargs={"timeout_s": 5.0})
     thread.start()
+    for _ in range(100):
+        if socket_path.exists():
+            break
+        time.sleep(0.01)
 
     receipt = _receipt_with_retry(script, runtime_dir, socket_path)
     thread.join(timeout=5)
@@ -192,6 +196,8 @@ def test_event_writer_appends_token_free_jsonl(tmp_path: Path) -> None:
             profile="full",
             dispatch_message_id="019f-test",
             route_decision_ref="route-decision:test",
+            authority_case="CASE-CAPACITY-ROUTING-001",
+            parent_spec="/tmp/spec.md",
             reason="minted",
             observed_at=1000.0,
         )
@@ -201,7 +207,10 @@ def test_event_writer_appends_token_free_jsonl(tmp_path: Path) -> None:
     payload = json.loads(lines[0])
     assert payload["event_type"] == "grant_minted"
     assert payload["grant_id"] == "grant-1"
+    assert payload["authority_case"] == "CASE-CAPACITY-ROUTING-001"
+    assert payload["parent_spec"] == "/tmp/spec.md"
     assert "token" not in payload
+    assert stat.S_IMODE(events_path.stat().st_mode) == 0o640
 
 
 # ── --receipt exit codes + live serve end-to-end ─────────────────────

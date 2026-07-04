@@ -344,9 +344,18 @@ PYEOF
   fi
 }
 
+scrub_dispatch_redemption_binding_env() {
+  unset HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN
+  unset HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID
+  unset HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF
+  unset HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE
+  unset HAPAX_METHODOLOGY_DISPATCH_PARENT_SPEC
+}
+
 DISPATCH_REDEEMED=0
 if workdir_requires_dispatch_redemption; then
   validate_dispatch_redemption_authority
+  scrub_dispatch_redemption_binding_env
   DISPATCH_REDEEMED=1
 fi
 if [[ -z "$CLAIMED_TASK" && "$DISPATCH_REDEEMED" -eq 0 ]]; then

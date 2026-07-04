@@ -156,6 +156,7 @@ LAST_DEPLOYED_SHA_PATH="${HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH:-$(dirname "$T
 RECOVERY_INSTALLER_PATH="scripts/hapax-recovery-plane-install"
 DISPATCH_REDEMPTION_UNIT_PATH="systemd/units/hapax-dispatch-redemption.service"
 DISPATCH_REDEMPTION_INSTALLER_PATH="scripts/hapax-dispatch-redemption-service-install"
+DISPATCH_REDEMPTION_REQUESTER_PATH="scripts/hapax-methodology-dispatch"
 RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
 RECOVERY_BUNDLE_SOURCE_FILES=(
     scripts/hapax-p0-incident-intake
@@ -543,6 +544,7 @@ GATE_CLOSURE=()
 SYSTEMD_UNCLASSIFIED=()
 AUDIO_SAFE_RESTARTS=()
 RECOVERY_BUNDLE_SELF_HEAL=0
+DISPATCH_REDEMPTION_INSTALL_NEEDED=0
 DID_ANYTHING=0
 GOVERNED_INTAKE_PRESET_UNIT_SETS=(
     "hapax-request-decompose.timer hapax-request-decompose.service"
@@ -819,7 +821,12 @@ while IFS= read -r f; do
             GATE_CLOSURE+=("$f") ;;
         assets/quake/maps/*|assets/quake/qc/*|assets/quake/csqc/*|assets/quake/models/*|assets/quake/sound/*|assets/quake/glsl/*|assets/quake/scripts/*|assets/quake/config/*|assets/quake/darkplaces/*)
             QUAKE_ASSETS+=("$f") ;;
-        scripts/hapax-*)                  SCRIPTS+=("$f") ;;
+        scripts/hapax-*)
+            SCRIPTS+=("$f")
+            if [ "$f" = "$DISPATCH_REDEMPTION_REQUESTER_PATH" ]; then
+                DISPATCH_REDEMPTION_INSTALL_NEEDED=1
+            fi
+            ;;
         scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
         systemd/expected-timers.yaml)     ;; # frozen-baseline doc, not deployable
         systemd/README.md)                ;; # docs
@@ -1321,6 +1328,18 @@ if [ "${#SCRIPTS[@]}" -gt 0 ]; then
             fi
         done
     done
+    DID_ANYTHING=1
+fi
+
+if [ "$DISPATCH_REDEMPTION_INSTALL_NEEDED" -eq 1 ]; then
+    installer="$REPO/$DISPATCH_REDEMPTION_INSTALLER_PATH"
+    if [ ! -f "$installer" ]; then
+        echo "hapax-post-merge-deploy: missing dispatch redemption service installer at $installer" >&2
+        echo "  next action: ensure $DISPATCH_REDEMPTION_INSTALLER_PATH exists in the active source, then rerun hapax-post-merge-deploy for this merge" >&2
+        exit 1
+    fi
+    echo "activating dispatch redemption governor after requester change via $DISPATCH_REDEMPTION_INSTALLER_PATH"
+    HAPAX_COUNCIL_DIR="$REPO" bash "$installer" --install
     DID_ANYTHING=1
 fi
 
