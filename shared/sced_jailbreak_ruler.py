@@ -46,6 +46,7 @@ from shared.mdlc_measure import MonDLCLadder
 SCED_RULER_NAME: Final = "sced_jailbreak_ruler"
 SCED_RULER_VERSION: Final = 1
 SCED_RULER_SCHEMA: Final = "sced_jailbreak_ruler/1"
+_REF_NAMESPACE_SEPARATOR: Final = ":"
 
 
 class SCEDCollectionRefusalReason(StrEnum):
@@ -116,7 +117,7 @@ class HeldOutRefusalSet:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "set_id", _required_string(self.set_id, field="set_id"))
-        refs = _ref_tuple(self.prompt_refs, field="prompt_refs")
+        refs = _durable_ref_tuple(self.prompt_refs, field="prompt_refs")
         if not refs:
             raise ValueError("held-out refusal set requires at least one prompt ref")
         object.__setattr__(self, "prompt_refs", refs)
@@ -182,7 +183,7 @@ class NoveltyCriterion:
         object.__setattr__(
             self,
             "known_technique_refs",
-            _ref_tuple(self.known_technique_refs, field="known_technique_refs"),
+            _durable_ref_tuple(self.known_technique_refs, field="known_technique_refs"),
         )
         similarity = _finite_float(self.max_duplicate_similarity, field="max_duplicate_similarity")
         if not 0.0 <= similarity <= 1.0:
@@ -497,6 +498,14 @@ def verify_collection_admission(
                 ruler_hash_commit=commit,
             )
 
+    if artifact is None and _raw_m2_ladder_mismatch(m2_raw, ruler, expected):
+        return _refused(
+            SCEDCollectionRefusalReason.M2_LADDER_MISMATCH,
+            ruler=ruler,
+            ruler_hash=expected,
+            ruler_hash_commit=commit,
+        )
+
     m2 = verify_m2_freeze_artifact(
         artifact if artifact is not None else m2_raw,
         ruler_hash_commit=ruler_hash_commit,
@@ -575,6 +584,25 @@ def _ladder_matches_ruler(ladder: MonDLCLadder, ruler: SCEDJailbreakRuler) -> bo
         and ladder.freshness_ttl_seconds == ruler.freshness_ttl_seconds
         and ladder.positive_threshold == ruler.positive_threshold
         and ladder.negative_threshold == ruler.negative_threshold
+    )
+
+
+def _raw_m2_ladder_mismatch(value: Any, ruler: SCEDJailbreakRuler, expected_hash: str) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    if value.get("ruler_hash") != expected_hash:
+        return False
+    ladder = value.get("ladder")
+    if not isinstance(ladder, Mapping) or ladder.get("ruler_hash") != expected_hash:
+        return False
+    return any(
+        ladder.get(field) != getattr(ruler, field)
+        for field in (
+            "min_corroboration_count",
+            "freshness_ttl_seconds",
+            "positive_threshold",
+            "negative_threshold",
+        )
     )
 
 
@@ -677,6 +705,16 @@ def _ref_tuple(value: Any, *, field: str) -> tuple[str, ...]:
         if ref:
             refs.append(ref)
     return tuple(dict.fromkeys(refs))
+
+
+def _durable_ref_tuple(value: Any, *, field: str) -> tuple[str, ...]:
+    refs = _ref_tuple(value, field=field)
+    for ref in refs:
+        if _REF_NAMESPACE_SEPARATOR not in ref or any(char.isspace() for char in ref):
+            raise ValueError(
+                f"{field} must contain durable reference tokens, not prompt/prose text"
+            )
+    return refs
 
 
 def _seq(value: Any) -> tuple[str, ...]:
