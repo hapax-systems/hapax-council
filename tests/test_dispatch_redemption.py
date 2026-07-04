@@ -379,6 +379,24 @@ def test_mint_invalid_context_records_refusal_without_issuing_token():
     events = authority.events()
     assert [event.event_type for event in events] == ["mint_refused"]
     assert events[0].reason == "invalid_context:ValueError"
+    assert events[0].task_id == ""
+    assert events[0].lane == "cx-test"
+    assert events[0].platform == "codex"
+    assert events[0].dispatch_message_id == "019f-test"
+    assert events[0].authority_case == "CASE-CAPACITY-ROUTING-001"
+
+
+def test_mint_refusal_logging_falls_back_when_context_normalization_fails():
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+
+    authority.record_mint_refusal(
+        _context(worktree=object()),
+        reason="invalid_context:TypeError",
+    )
+
+    events = authority.events()
+    assert [event.event_type for event in events] == ["mint_refused"]
+    assert events[0].reason == "invalid_context:TypeError"
     assert events[0].task_id is None
 
 

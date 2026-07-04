@@ -407,9 +407,14 @@ class DispatchLaunchRedemptionAuthority:
         if context is not None:
             try:
                 normalized = context.normalized()
-                normalized.validate()
-            except ValueError:
+            except Exception:  # noqa: BLE001 - refusal evidence must survive bad context.
                 normalized = None
+            else:
+                try:
+                    normalized.validate()
+                except ValueError:
+                    # Preserve normalized fields for audit even when the context is invalid.
+                    pass
         self._append_event(
             "mint_refused",
             grant_id=None,
