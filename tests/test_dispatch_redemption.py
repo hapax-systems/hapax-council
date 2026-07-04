@@ -396,6 +396,29 @@ def test_redeem_fails_closed_and_rolls_back_when_event_sink_fails_once():
     assert [event.event_type for event in authority.events()] == ["grant_minted", "grant_redeemed"]
 
 
+def test_redeem_refusal_fails_closed_when_event_sink_fails():
+    def failing_refusal_sink(event):
+        if event.event_type == "grant_refused":
+            raise RuntimeError("ledger down")
+
+    authority = DispatchLaunchRedemptionAuthority(
+        now=lambda: 1000.0,
+        event_sink=failing_refusal_sink,
+    )
+    grant = authority.mint(_context(), ttl_s=60)
+    first = parse_redemption_response(
+        handle_authority_bytes(authority, _encoded_redemption_request(_request(grant.token)))
+    )
+    refused = parse_redemption_response(
+        handle_authority_bytes(authority, _encoded_redemption_request(_request(grant.token)))
+    )
+
+    assert first.ok is True
+    assert refused.ok is False
+    assert refused.reason == "evidence_write_failed"
+    assert [event.event_type for event in authority.events()] == ["grant_minted", "grant_redeemed"]
+
+
 def test_authority_socket_mint_fails_closed_when_peer_credentials_unavailable():
     authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
 
