@@ -906,9 +906,20 @@ def handle_mint_payload(
             LaunchMintResponse(ok=False, reason=f"mint_policy_refused:{exc}")
         )
     except Exception as exc:  # noqa: BLE001 - invalid contexts fail closed.
-        return mint_response_payload(
-            LaunchMintResponse(ok=False, reason=f"invalid_context:{type(exc).__name__}")
-        )
+        reason = f"invalid_context:{type(exc).__name__}"
+        try:
+            authority.record_mint_refusal(
+                request.context,
+                reason=reason,
+                peer=peer,
+                requester=request.requester,
+                requester_pid=request.requester_pid,
+            )
+        except LaunchEvidenceWriteError:
+            return mint_response_payload(
+                LaunchMintResponse(ok=False, reason="evidence_write_failed")
+            )
+        return mint_response_payload(LaunchMintResponse(ok=False, reason=reason))
     return mint_response_payload(
         LaunchMintResponse(
             ok=True,

@@ -363,6 +363,46 @@ def test_mint_peer_refusal_fails_closed_when_event_sink_fails():
     assert authority.events() == ()
 
 
+def test_mint_invalid_context_records_refusal_without_issuing_token():
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+
+    response_payload = handle_authority_bytes(
+        authority,
+        _encoded_mint_request(_mint_request(_context(task_id=" "))),
+        peer=LaunchPeerCredentials(pid=os.getpid(), uid=os.getuid(), gid=os.getgid()),
+    )
+    response = parse_mint_response(response_payload)
+
+    assert response.ok is False
+    assert response.reason == "invalid_context:ValueError"
+    assert response.token is None
+    events = authority.events()
+    assert [event.event_type for event in events] == ["mint_refused"]
+    assert events[0].reason == "invalid_context:ValueError"
+    assert events[0].task_id is None
+
+
+def test_mint_invalid_context_fails_closed_when_event_sink_fails():
+    def failing_sink(_event):
+        raise RuntimeError("ledger down")
+
+    authority = DispatchLaunchRedemptionAuthority(
+        now=lambda: 1000.0,
+        event_sink=failing_sink,
+    )
+
+    response_payload = handle_authority_bytes(
+        authority,
+        _encoded_mint_request(_mint_request(_context(task_id=" "))),
+    )
+    response = parse_mint_response(response_payload)
+
+    assert response.ok is False
+    assert response.reason == "evidence_write_failed"
+    assert response.token is None
+    assert authority.events() == ()
+
+
 def test_redeem_fails_closed_and_rolls_back_when_event_sink_fails_once():
     fail_redeem = True
 
