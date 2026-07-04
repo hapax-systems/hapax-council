@@ -1,6 +1,6 @@
 [Unit]
 Description=Hapax Claude headless lane %i (methodology-dispatched)
-Documentation=file:///home/hapax/projects/hapax-council/scripts/hapax-methodology-dispatch
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-methodology-dispatch
 ConditionPathExists=%h/.cache/hapax/enable-claude-headless
 # FM-11 (coordination-reform 2026-05-30 Phase 6): a dead lane must always
 # auto-restart, bounded by a StartLimit so a crashloop backs off (enters

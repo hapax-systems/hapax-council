@@ -82,6 +82,9 @@ def test_claude_lane_dispatcher_matches_governor_allowlist() -> None:
         f"Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS={ACTIVATION_DISPATCHER}"
     ) in governor
     activation_from_home = ACTIVATION_DISPATCHER.replace("/home/hapax", "$HOME", 1)
+    activation_from_percent_h = ACTIVATION_DISPATCHER.replace("/home/hapax", "%h", 1)
+    assert f"Documentation=file://{activation_from_percent_h}" in lane
+    assert "/home/hapax/projects/hapax-council/scripts/hapax-methodology-dispatch" not in lane
     assert f'/usr/bin/python3 -I "{activation_from_home}"' in lane
     expected_digest = hashlib.sha256(DISPATCHER.read_bytes()).hexdigest()
     assert (

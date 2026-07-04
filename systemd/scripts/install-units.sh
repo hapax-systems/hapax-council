@@ -169,6 +169,11 @@ timer_enable_only() {
     return 0
 }
 
+system_install_scope() {
+    local unit_file="$1"
+    grep -Eiq '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system[[:space:]]*$' "$unit_file"
+}
+
 changed=0
 new_timers=()
 for retired_unit in "${DECOMMISSIONED_UNITS[@]}"; do
@@ -183,6 +188,16 @@ for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REP
     dest="$DEST_DIR/$name"
     if is_decommissioned_unit "$name"; then
         echo "skipped decommissioned unit: $name"
+        continue
+    fi
+    if system_install_scope "$unit"; then
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            rm -f "$dest"
+            echo "removed system-scoped user shadow: $name"
+            changed=$((changed + 1))
+        else
+            echo "skipped system-scoped unit: $name"
+        fi
         continue
     fi
     # Already a correct symlink — skip
@@ -296,6 +311,10 @@ if [ "${SKIP_TIMER_ENABLE:-0}" != "1" ]; then
             echo "WARN: $service_name is in DECOMMISSIONED_UNITS; not auto-enabling" >&2
             continue
         fi
+        if system_install_scope "$REPO_DIR/$service_name"; then
+            echo "WARN: $service_name is system-scoped; not auto-enabling as a user unit" >&2
+            continue
+        fi
         if systemctl --user enable --now "$service_name" 2>/dev/null; then
             echo "auto-enabled: $service_name"
             services_enabled=$((services_enabled + 1))
@@ -322,6 +341,10 @@ if [ "${SKIP_TIMER_ENABLE:-0}" != "1" ]; then
         fi
         if is_decommissioned_unit "$path_name"; then
             echo "WARN: $path_name is in DECOMMISSIONED_UNITS; not auto-enabling" >&2
+            continue
+        fi
+        if system_install_scope "$REPO_DIR/$path_name"; then
+            echo "WARN: $path_name is system-scoped; not auto-enabling as a user unit" >&2
             continue
         fi
         if systemctl --user enable --now "$path_name" 2>/dev/null; then
@@ -357,6 +380,10 @@ dropin_changed=0
 for dropin_dir in "$REPO_DIR"/*.service.d; do
     [ -d "$dropin_dir" ] || continue
     svc_name="$(basename "$dropin_dir")"
+    if [ -f "$REPO_DIR/$svc_name" ] && system_install_scope "$REPO_DIR/$svc_name"; then
+        echo "skipped system-scoped drop-ins: $svc_name"
+        continue
+    fi
     dest_dropin_dir="$DEST_DIR/$svc_name"
     mkdir -p "$dest_dropin_dir"
     for conf in "$dropin_dir"/*.conf; do
