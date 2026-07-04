@@ -43,6 +43,68 @@ def test_methodology_dispatch_bootstraps_imports_under_isolated_python() -> None
     assert "hapax-methodology-dispatch" in result.stdout
 
 
+def test_direct_launch_reexec_argv_uses_isolated_python() -> None:
+    mod = _dispatcher_module()
+
+    assert mod.isolated_launch_reexec_argv(
+        ["--task", "task-1", "--launch"],
+        isolated=False,
+        script_path=SCRIPT,
+    ) == ["/usr/bin/python3", "-I", str(SCRIPT.resolve()), "--task", "task-1", "--launch"]
+    assert (
+        mod.isolated_launch_reexec_argv(
+            ["--task", "task-1", "--launch"],
+            isolated=True,
+            script_path=SCRIPT,
+        )
+        is None
+    )
+    assert (
+        mod.isolated_launch_reexec_argv(
+            ["--task", "task-1"],
+            isolated=False,
+            script_path=SCRIPT,
+        )
+        is None
+    )
+
+
+def test_commandline_launch_reexecs_before_dispatch(monkeypatch) -> None:
+    mod = _dispatcher_module()
+    original_argv = [str(SCRIPT), "--task", "task-1", "--launch"]
+    called: dict[str, object] = {}
+
+    class ReexecCalled(Exception):
+        pass
+
+    def fake_execv(path: str, argv: list[str]) -> None:
+        called["path"] = path
+        called["argv"] = argv
+        raise ReexecCalled
+
+    monkeypatch.setattr(mod.sys, "argv", original_argv)
+    monkeypatch.setattr(mod.os, "execv", fake_execv)
+
+    try:
+        mod.reexec_commandline_launch_under_isolated_python()
+    except ReexecCalled:
+        pass
+    else:
+        raise AssertionError("direct --launch did not reexec under python -I")
+
+    assert called == {
+        "path": "/usr/bin/python3",
+        "argv": [
+            "/usr/bin/python3",
+            "-I",
+            str(SCRIPT.resolve()),
+            "--task",
+            "task-1",
+            "--launch",
+        ],
+    }
+
+
 def _fresh_registry(tmp_path: Path) -> Path:
     payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
     checked_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")

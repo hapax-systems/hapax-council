@@ -114,6 +114,46 @@ DEFAULT_P0_CODEX_DRAIN_LANES = ("cx-p0", "cx-crit")
 DEFAULT_INVARIANT_MANIFEST = REPO_ROOT_FOR_IMPORTS / "config" / "invariant-manifest.yaml"
 
 
+def isolated_launch_reexec_argv(
+    argv: list[str],
+    *,
+    isolated: bool,
+    script_path: Path,
+    python_path: Path = Path("/usr/bin/python3"),
+) -> list[str] | None:
+    """Return an isolated argv for direct command-line --launch, if needed."""
+
+    if isolated or "--launch" not in argv:
+        return None
+    return [str(python_path), "-I", str(script_path.resolve()), *argv]
+
+
+def reexec_commandline_launch_under_isolated_python() -> None:
+    """Make `scripts/hapax-methodology-dispatch --launch` witness as python -I.
+
+    The dispatch redemption governor pins the requester process to the
+    activation dispatcher running under `/usr/bin/python3 -I <script>`. This
+    preserves the documented direct command while keeping the stricter process
+    witness instead of widening the governor to arbitrary shebang execution.
+    """
+
+    reexec_argv = isolated_launch_reexec_argv(
+        sys.argv[1:],
+        isolated=bool(sys.flags.isolated),
+        script_path=Path(__file__),
+    )
+    if reexec_argv is None:
+        return
+    python = Path(reexec_argv[0])
+    if not python.exists():
+        print(
+            f"BLOCKED: direct --launch requires {python} for isolated redemption witness",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    os.execv(str(python), reexec_argv)
+
+
 @dataclass(frozen=True)
 class PlatformPath:
     platform: str
@@ -2136,6 +2176,9 @@ def run_system_drain(args: argparse.Namespace, task_root: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        reexec_commandline_launch_under_isolated_python()
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", help="Explicit cc-task id to dispatch")
     parser.add_argument("--lane", help="Target lane, e.g. beta or cx-red")
