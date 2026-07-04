@@ -93,6 +93,36 @@ def test_headless_source_contains_no_generic_work_pool_prompt() -> None:
     assert "HAPAX_METHODOLOGY_DISPATCH_TASK" in text
 
 
+def test_claude_headless_external_workdir_fails_closed_without_lifecycle_scripts(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+    fake_capability = tmp_path / "same-user-capability.json"
+    fake_capability.write_text('{"kind":"dispatch","capability_id":"fake"}\n', encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_METHODOLOGY_DISPATCH_CAPABILITY"] = str(fake_capability)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 14
+    assert f"missing cc-claim in {workdir}" in result.stderr
+    assert not claude_called.exists()
+
+
 def test_headless_source_supports_governed_model_profile_env() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
 
