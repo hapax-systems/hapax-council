@@ -567,6 +567,15 @@ class TestRecipientExpansion(unittest.TestCase):
             self.assertNotIn("agy", result)
             self.assertNotIn("gemini-cli", result)
 
+    def test_expand_broadcast_all_filters_mixed_case_retired_peers(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            relay_dir = _make_relay_dir(
+                Path(td),
+                ["alpha", "Antigrav", "AGY", "Gemini-CLI", "Gemini-CLI-2"],
+            )
+            result = expand_recipients("*:all", relay_dir)
+            self.assertEqual(result, ["alpha"])
+
     def test_expand_broadcast_coordinators(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             relay_dir = _make_relay_dir(Path(td), ["alpha", "beta", "rte", "antigravity"])
@@ -574,6 +583,12 @@ class TestRecipientExpansion(unittest.TestCase):
             self.assertIn("alpha", result)
             self.assertNotIn("rte", result)
             self.assertNotIn("antigravity", result)
+
+    def test_expand_broadcast_coordinators_filters_mixed_case_retired_peers(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            relay_dir = _make_relay_dir(Path(td), ["alpha", "Antigravity", "AGY"])
+            result = expand_recipients("*:coordinators", relay_dir)
+            self.assertEqual(result, ["alpha"])
 
     def test_expand_broadcast_claude(self) -> None:
         with tempfile.TemporaryDirectory() as td:

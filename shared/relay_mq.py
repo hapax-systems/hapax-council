@@ -190,7 +190,8 @@ def _is_codex_lane(peer: str) -> bool:
 
 
 def _is_retired_antigrav_lane(peer: str) -> bool:
-    return peer == "gemini-cli" or peer.startswith(("agy", "antigrav", "gemini-cli-"))
+    normalized = _normalize_role(peer)
+    return normalized == "gemini-cli" or normalized.startswith(("agy", "antigrav", "gemini-cli-"))
 
 
 def _is_vibe_lane(peer: str) -> bool:
