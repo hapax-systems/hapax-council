@@ -502,6 +502,47 @@ def test_fingerprint_for_notification_derives_identity_independent_of_mint_polic
     assert fingerprint_for_notification("Just a chat message", "hello") == ""
 
 
+def test_suppressed_incident_refusal_returns_existing_intake_identity(tmp_path):
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+    task_root = tmp_path / "tasks"
+    task_path = task_root / "active" / "p0-incident-refusal-demo.md"
+    task_path.parent.mkdir(parents=True)
+    task_path.write_text("---\ntype: cc-task\ntask_id: p0-incident-refusal-demo\n---\n")
+    state_path.write_text(
+        json.dumps(
+            {
+                "incidents": {
+                    "sdlc_dispatch_refusal:p0-incident-demo": {
+                        "fingerprint": "sdlc_dispatch_refusal:p0-incident-demo",
+                        "task_id": "p0-incident-refusal-demo",
+                        "task_path": str(task_path),
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = record_notification(
+        "SDLC: dispatch refusal circuit breaker",
+        "Task p0-incident-demo refused 3x on lane cx-p0. Reason: route policy hold",
+        priority="high",
+        tags=["sdlc", "no-spin"],
+        task_root=task_root,
+        state_path=state_path,
+        ledger_path=ledger_path,
+    )
+
+    assert result.technical is False
+    assert result.reason == "dispatch_refusal_incident_task_no_remint"
+    assert result.fingerprint == "sdlc_dispatch_refusal:p0-incident-demo"
+    assert result.task_id == "p0-incident-refusal-demo"
+    assert result.task_path == task_path
+    assert result.replace_id == replace_id_for_fingerprint(result.fingerprint)
+    assert not ledger_path.exists()
+
+
 def test_sdlc_task_stuck_on_normal_task_gets_technical_intake():
     classification = classify_notification(
         "SDLC: task stuck, blocked",

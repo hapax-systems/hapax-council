@@ -233,7 +233,34 @@ def record_notification(
         technical=technical,
     )
     if not classification.technical:
-        return IntakeResult(technical=False, reason=classification.reason)
+        result = IntakeResult(technical=False, reason=classification.reason)
+        if classification.reason not in NO_REMINT_REASONS:
+            return result
+        fingerprint = fingerprint_for_notification(title, message)
+        if not fingerprint:
+            return result
+        with _state_file_lock(state_path):
+            state = _load_state(state_path)
+        incidents = state.get("incidents")
+        if not isinstance(incidents, dict):
+            return result
+        existing = incidents.get(fingerprint)
+        if not isinstance(existing, dict):
+            return result
+        task_id = str(existing.get("task_id") or existing.get("base_task_id") or "").strip()
+        if not task_id:
+            return result
+        task_path_raw = str(existing.get("task_path") or "").strip()
+        task_path = Path(task_path_raw) if task_path_raw else None
+        return IntakeResult(
+            technical=False,
+            task_id=task_id,
+            task_path=task_path,
+            fingerprint=fingerprint,
+            replace_id=replace_id_for_fingerprint(fingerprint),
+            click_url=obsidian_task_uri(task_path) if task_path is not None else None,
+            reason=classification.reason,
+        )
 
     with _state_file_lock(state_path):
         return _record_notification_locked(
