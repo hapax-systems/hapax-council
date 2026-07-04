@@ -231,6 +231,23 @@ class DispatchLaunchRedemptionAuthority:
     def events(self) -> tuple[LaunchRedemptionEvent, ...]:
         return tuple(self._events)
 
+    def purge_expired(self) -> int:
+        """Drop expired or consumed grants from the in-memory table.
+
+        Redemption outcomes are unchanged (redeem checks expiry itself);
+        this only bounds table growth in a long-running authority.
+        """
+
+        now = float(self._now())
+        dead = [
+            digest
+            for digest, stored in self._grants.items()
+            if stored.consumed_at is not None or now > stored.expires_at
+        ]
+        for digest in dead:
+            del self._grants[digest]
+        return len(dead)
+
     def _response(
         self, ok: bool, reason: str, stored: _StoredGrant | None, observed_at: float
     ) -> LaunchRedemptionResponse:

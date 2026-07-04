@@ -79,6 +79,26 @@ def test_mint_redeems_once_and_records_token_free_events():
     assert "token" not in payload
 
 
+def test_purge_expired_drops_dead_grants_without_changing_outcomes():
+    now = [1000.0]
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: now[0])
+    consumed = authority.mint(_context(), ttl_s=60)
+    expired = authority.mint(_context(), ttl_s=10)
+    live = authority.mint(_context(), ttl_s=600)
+    assert authority.redeem(_request(consumed.token)).ok is True
+
+    now[0] = 1030.0
+    purged = authority.purge_expired()
+
+    assert purged == 2
+    # Purge maps replay/expiry to "unknown_token" — still fails closed.
+    assert authority.redeem(_request(consumed.token)).reason == "unknown_token"
+    assert authority.redeem(_request(expired.token)).reason == "unknown_token"
+    live_response = authority.redeem(_request(live.token))
+    assert live_response.ok is True
+    assert authority.purge_expired() == 1
+
+
 def test_redeem_refuses_context_mismatch_and_policy_drift():
     authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
     grant = authority.mint(_context(), ttl_s=60)
