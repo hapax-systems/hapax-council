@@ -133,7 +133,13 @@ class LaunchPeerCredentials:
 
 @dataclass(frozen=True)
 class LaunchRedemptionEvent:
-    event_type: Literal["grant_minted", "grant_redeemed", "grant_refused", "mint_refused"]
+    event_type: Literal[
+        "grant_minted",
+        "grant_redeemed",
+        "grant_refused",
+        "mint_refused",
+        "wire_refused",
+    ]
     grant_id: str | None
     task_id: str | None
     lane: str | None
@@ -402,6 +408,21 @@ class DispatchLaunchRedemptionAuthority:
             requester_pid=requester_pid,
         )
 
+    def record_wire_refusal(
+        self,
+        *,
+        reason: str,
+        peer: LaunchPeerCredentials | None = None,
+    ) -> None:
+        self._append_event(
+            "wire_refused",
+            grant_id=None,
+            context=None,
+            reason=reason,
+            observed_at=float(self._now()),
+            peer=peer,
+        )
+
     def _response(
         self,
         ok: bool,
@@ -436,7 +457,13 @@ class DispatchLaunchRedemptionAuthority:
 
     def _append_event(
         self,
-        event_type: Literal["grant_minted", "grant_redeemed", "grant_refused", "mint_refused"],
+        event_type: Literal[
+            "grant_minted",
+            "grant_redeemed",
+            "grant_refused",
+            "mint_refused",
+            "wire_refused",
+        ],
         *,
         grant_id: str | None,
         context: LaunchRedemptionContext | None,
@@ -781,9 +808,9 @@ def handle_redemption_payload(
     try:
         request = parse_redemption_request(payload)
     except Exception as exc:  # noqa: BLE001 - bad launch requests fail closed.
-        return redemption_response_payload(
-            LaunchRedemptionResponse(ok=False, reason=f"invalid_request:{type(exc).__name__}")
-        )
+        reason = f"invalid_request:{type(exc).__name__}"
+        authority.record_wire_refusal(reason=reason, peer=peer)
+        return redemption_response_payload(LaunchRedemptionResponse(ok=False, reason=reason))
     return redemption_response_payload(authority.redeem(request, peer=peer))
 
 
@@ -798,9 +825,9 @@ def handle_redemption_bytes(
         if not isinstance(payload, dict):
             raise ValueError("redemption request must be a JSON object")
     except Exception as exc:  # noqa: BLE001 - malformed launch requests fail closed.
-        return redemption_response_payload(
-            LaunchRedemptionResponse(ok=False, reason=f"invalid_request:{type(exc).__name__}")
-        )
+        reason = f"invalid_request:{type(exc).__name__}"
+        authority.record_wire_refusal(reason=reason, peer=peer)
+        return redemption_response_payload(LaunchRedemptionResponse(ok=False, reason=reason))
     return handle_redemption_payload(authority, payload, peer=peer)
 
 
@@ -815,9 +842,9 @@ def handle_mint_payload(
     try:
         request = parse_mint_request(payload)
     except Exception as exc:  # noqa: BLE001 - bad mint requests fail closed.
-        return mint_response_payload(
-            LaunchMintResponse(ok=False, reason=f"invalid_request:{type(exc).__name__}")
-        )
+        reason = f"invalid_request:{type(exc).__name__}"
+        authority.record_wire_refusal(reason=reason, peer=peer)
+        return mint_response_payload(LaunchMintResponse(ok=False, reason=reason))
     peer_refusal = _mint_peer_refusal(
         request,
         peer,
@@ -879,9 +906,9 @@ def handle_authority_bytes(
         if not isinstance(payload, dict):
             raise ValueError("authority request must be a JSON object")
     except Exception as exc:  # noqa: BLE001 - malformed requests fail closed.
-        return redemption_response_payload(
-            LaunchRedemptionResponse(ok=False, reason=f"invalid_request:{type(exc).__name__}")
-        )
+        reason = f"invalid_request:{type(exc).__name__}"
+        authority.record_wire_refusal(reason=reason, peer=peer)
+        return redemption_response_payload(LaunchRedemptionResponse(ok=False, reason=reason))
     schema = payload.get("schema")
     if schema == "hapax.dispatch_launch_mint.v1":
         return handle_mint_payload(
@@ -893,9 +920,9 @@ def handle_authority_bytes(
         )
     if schema == "hapax.dispatch_launch_redeem.v1":
         return handle_redemption_payload(authority, payload, peer=peer)
-    return redemption_response_payload(
-        LaunchRedemptionResponse(ok=False, reason="invalid_request:unsupported_schema")
-    )
+    reason = "invalid_request:unsupported_schema"
+    authority.record_wire_refusal(reason=reason, peer=peer)
+    return redemption_response_payload(LaunchRedemptionResponse(ok=False, reason=reason))
 
 
 def mint_launch_via_socket(

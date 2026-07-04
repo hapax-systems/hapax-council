@@ -263,6 +263,61 @@ def test_socket_mint_refuses_requester_pid_that_is_not_peer(tmp_path):
     assert events[0].peer_pid == os.getpid()
 
 
+def test_authority_records_wire_refusal_for_malformed_json():
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+
+    response_payload = handle_authority_bytes(
+        authority,
+        b"{",
+        peer=LaunchPeerCredentials(pid=123, uid=456, gid=789),
+    )
+    response = parse_redemption_response(response_payload)
+
+    assert response.ok is False
+    assert response.reason == "invalid_request:JSONDecodeError"
+    events = authority.events()
+    assert [event.event_type for event in events] == ["wire_refused"]
+    assert events[0].reason == "invalid_request:JSONDecodeError"
+    assert events[0].task_id is None
+    assert events[0].peer_pid == 123
+    assert events[0].peer_uid == 456
+    assert events[0].peer_gid == 789
+
+
+def test_authority_records_wire_refusal_for_unsupported_schema():
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+
+    response_payload = handle_authority_bytes(
+        authority,
+        json.dumps({"schema": "hapax.dispatch_launch_probe.v1"}).encode() + b"\n",
+    )
+    response = parse_redemption_response(response_payload)
+
+    assert response.ok is False
+    assert response.reason == "invalid_request:unsupported_schema"
+    events = authority.events()
+    assert [event.event_type for event in events] == ["wire_refused"]
+    assert events[0].reason == "invalid_request:unsupported_schema"
+    assert events[0].task_id is None
+
+
+def test_authority_records_wire_refusal_for_malformed_mint_payload():
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+
+    response_payload = handle_authority_bytes(
+        authority,
+        json.dumps({"schema": "hapax.dispatch_launch_mint.v1"}).encode() + b"\n",
+    )
+    response = parse_mint_response(response_payload)
+
+    assert response.ok is False
+    assert response.reason == "invalid_request:ValueError"
+    events = authority.events()
+    assert [event.event_type for event in events] == ["wire_refused"]
+    assert events[0].reason == "invalid_request:ValueError"
+    assert events[0].requester is None
+
+
 def test_authority_socket_mint_fails_closed_when_peer_credentials_unavailable():
     authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
 
