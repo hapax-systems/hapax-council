@@ -39,6 +39,7 @@ from shared.dispatcher_policy import LOCAL_DEV_TARGET
 from shared.jsonl_append import append_jsonl
 from shared.notify import send_notification
 from shared.recovery_governor import converge_action_cap
+from shared.relay_lifecycle import relay_value_is_retired
 from shared.relay_mq import send_message
 from shared.relay_mq_envelope import Envelope
 from shared.route_metadata_schema import (
@@ -1223,22 +1224,14 @@ def _claim_from_relay(relay: dict) -> str | None:
     return None
 
 
-_RETIRED_RELAY_STATUS_PREFIXES = (
-    "retired",
-    "idle-wound-down",
-    "wind-down-idle",
-    "wound-down",
-    "wind-down",
-    "winding-down",
-)
-
-
 def _relay_status_is_retired(value: object) -> bool:
-    status = _normalized_status(value)
-    return bool(status) and any(
-        status == retired or status.startswith(f"{retired}-")
-        for retired in _RETIRED_RELAY_STATUS_PREFIXES
-    )
+    # Delegate to the single-source predicate (shared.relay_lifecycle) so the
+    # coordinator's capacity projection agrees with the dispatch gate and the
+    # launcher. Closes the SUPERSEDED/CLOSED/ANTIGRAVITY_TAKEOVER vocabulary gap
+    # the coordinator previously missed (it routed them -> launcher refused ->
+    # rc=6) and unifies the canonicalization. See shared/relay_lifecycle +
+    # design-of-record non-boutique-codex-auth-and-lane-liveness-design-2026-07-03.md.
+    return relay_value_is_retired(value)
 
 
 def _relay_status_is_idle(value: object) -> bool | None:

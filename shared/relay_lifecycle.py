@@ -7,13 +7,19 @@ launcher share a single predicate. It reconciles the three divergences that
 produced rc=6 dispatch refusals (verified design-of-record,
 ``non-boutique-codex-auth-and-lane-liveness-design-2026-07-03.md``):
 
-1. VOCABULARY — the launcher matched nine prefixes (RETIRED, SUPERSEDED, CLOSED,
-   IDLE_WOUND_DOWN, WIND_DOWN_IDLE, WOUND_DOWN, WIND_DOWN, WINDING_DOWN,
-   ANTIGRAVITY_TAKEOVER); the coordinator's ``_RETIRED_RELAY_STATUS_PREFIXES``
-   matched only six (missing SUPERSEDED, CLOSED, ANTIGRAVITY_TAKEOVER). A
-   SUPERSEDED/CLOSED relay was therefore routed by the coordinator and refused
-   by the launcher -> rc=6. The launcher's full set is the authority here: it is
-   the strict superset and the actual refusal surface.
+1. VOCABULARY — the coordinator's six wind-down/retired prefixes are the
+   intentional, correct lane-retirement vocabulary; the launcher's awk
+   additionally matched SUPERSEDED/CLOSED/ANTIGRAVITY_TAKEOVER. Of those three,
+   only ANTIGRAVITY_TAKEOVER is a genuine lane-terminal marker (antigrav
+   takeover — the hapax-codex comment + cc_hygiene confirm it); SUPERSEDED and
+   CLOSED are TASK/CLAIM terminal states (triage_officer/core.py:267
+   {"done","closed","withdrawn","superseded"}) that leaked into the launcher's
+   relay-vocabulary and are NOT lane retirement. So a SUPERSEDED/CLOSED relay
+   was OVER-REFUSED by the launcher (not under-recognized by the coordinator)
+   -> rc=6; the prior map's "broaden the coordinator" direction was inverted.
+   The reconciled set is the coordinator's six + ANTIGRAVITY_TAKEOVER (seven).
+   The launcher thinning (slice 2b) narrows its awk to match; until then the
+   gate (this predicate) is authoritative and agrees with the coordinator.
 
 2. FILE RESOLUTION — the launcher read one file (``{role}.yaml``); the
    coordinator read the freshest of five candidate files. A lane whose
@@ -50,14 +56,16 @@ __all__ = [
     "relay_values_are_retired",
 ]
 
-# The full retirement vocabulary — the launcher's set (strict superset of the
-# coordinator's six). ANTIGRAVITY_TAKEOVER is the terminal takeover marker; the
-# broad ANTIGRAVITY* glob is intentionally NOT included (antigrav is a live
-# interface — coordination reform Phase 1, per scripts/hapax-codex).
+# The reconciled retirement vocabulary: the coordinator's six wind-down/retired
+# prefixes + ANTIGRAVITY_TAKEOVER (the genuine lane-terminal marker; the broad
+# ANTIGRAVITY* glob stays out — antigrav is a live interface, coordination
+# reform Phase 1). SUPERSEDED/CLOSED are EXCLUDED — they are task/claim terminal
+# states (triage_officer/core.py:267), not lane retirement; the launcher's awk
+# over-refused them (the bug slice 2b thins). Confirmed by the
+# test_reconciled_vocabulary_drops_task_claim_states test + the coordinator's own
+# test_retired_relay_status_variants_normalize_and_suppress_claim.
 RETIRED_PREFIXES: tuple[str, ...] = (
     "RETIRED",
-    "SUPERSEDED",
-    "CLOSED",
     "IDLE_WOUND_DOWN",
     "WIND_DOWN_IDLE",
     "WOUND_DOWN",
