@@ -367,6 +367,9 @@ class QueueTask:
     wsjf: float
     platform_suitability: tuple[str, ...]
     age_s: float = 0.0
+    # Demand-shape for the SdlcRouter shadow scorer (None = honest-DARK).
+    requirement_vector: dict[str, int] | None = None
+    routing_class: str | None = None
 
 
 @dataclass(frozen=True)

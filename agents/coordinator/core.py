@@ -174,6 +174,13 @@ class Task:
     priority: str = ""
     kind: str = ""
     tags: tuple[str, ...] = ()
+    # Demand-shape for intake fit-routing (the (1)<->(2) loop). Written by the
+    # decomposer (request_decomposer/writer.py), read by the SdlcRouter shadow
+    # scorer. None = absent/unparsed -> honest-DARK (no fit influence).
+    requirement_vector: dict[str, int] | None = None
+    routing_class: str | None = None
+    mutation_surface: str | None = None
+    authority_level: str | None = None
 
 
 @dataclass
@@ -353,6 +360,8 @@ class Coordinator:
                 wsjf=t.wsjf,
                 platform_suitability=t.platform_suitability,
                 age_s=max(0.0, state.timestamp - t.created_at) if t.created_at else 0.0,
+                requirement_vector=t.requirement_vector,
+                routing_class=t.routing_class,
             )
             for t in offered
         ]
@@ -870,7 +879,28 @@ def _parse_task(path: Path) -> Task | None:
         priority=(_frontmatter_text(meta.get("priority")) or "").lower(),
         kind=(_frontmatter_text(meta.get("kind")) or "").lower(),
         tags=_frontmatter_tags(meta.get("tags")),
+        requirement_vector=_parse_requirement_vector(meta.get("requirement_vector")),
+        routing_class=_frontmatter_text(meta.get("routing_class")),
+        mutation_surface=_frontmatter_text(meta.get("mutation_surface")),
+        authority_level=_frontmatter_text(meta.get("authority_level")),
     )
+
+
+def _parse_requirement_vector(value: object) -> dict[str, int] | None:
+    """Parse the decomposer-written requirement_vector (8-dim, strict int 0..5).
+
+    Returns None when absent/invalid so the fit-scorer treats it as honest-DARK
+    (no fit influence). Strict-int validation mirrors SdlcRoutingRequest's own
+    validator — a bool or non-int score is rejected (not coerced).
+    """
+    if not isinstance(value, dict) or not value:
+        return None
+    parsed: dict[str, int] = {}
+    for key, score in value.items():
+        if not isinstance(key, str) or isinstance(score, bool) or not isinstance(score, int):
+            return None
+        parsed[key] = score
+    return parsed
 
 
 def _frontmatter_text(value: object) -> str | None:
