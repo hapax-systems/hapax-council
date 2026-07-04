@@ -122,7 +122,7 @@ class HeldOutRefusalSet:
             raise ValueError("held-out refusal set requires at least one prompt ref")
         object.__setattr__(self, "prompt_refs", refs)
         object.__setattr__(
-            self, "sealed_digest", _required_string(self.sealed_digest, field="sealed_digest")
+            self, "sealed_digest", _sha256_digest(self.sealed_digest, field="sealed_digest")
         )
 
     @classmethod
@@ -549,6 +549,10 @@ def _coerce_freeze(
         m2_raw = freeze.get("m2_artifact")
         if m2_raw is None:
             m2_raw = freeze.get("freeze_artifact")
+        if m2_raw is None:
+            raise _SCEDInputError(
+                SCEDCollectionRefusalReason.INVALID_FREEZE, "missing m2 freeze artifact"
+            )
         return ruler, m2_raw
     raise _SCEDInputError(
         SCEDCollectionRefusalReason.INVALID_FREEZE,
@@ -692,6 +696,19 @@ def _required_string(value: Any, *, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} is required")
     return value.strip()
+
+
+def _sha256_digest(value: Any, *, field: str) -> str:
+    digest = _required_string(value, field=field)
+    prefix = "sha256:"
+    hexdigest = digest.removeprefix(prefix)
+    if (
+        hexdigest == digest
+        or len(hexdigest) != 64
+        or any(char not in "0123456789abcdef" for char in hexdigest)
+    ):
+        raise ValueError(f"{field} must be a sha256:<64 lowercase hex> digest")
+    return digest
 
 
 def _ref_tuple(value: Any, *, field: str) -> tuple[str, ...]:
