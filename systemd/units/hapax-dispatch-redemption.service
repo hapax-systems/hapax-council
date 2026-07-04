@@ -1,0 +1,34 @@
+[Unit]
+# Hapax-Install-Scope: system
+#
+# System-scoped on purpose (scout audit, cc-task-dispatch-redemption-runtime-governor-20260704):
+# the fixed governor socket lives under system /run (/run/hapax/coord), which a
+# user unit cannot own — user units get /run/user/<uid>, and a caller-writable
+# /run/user path is exactly the same-UID surface the redemption design forbids.
+# RuntimeDirectory= below makes the system manager provision the namespace with
+# deliberate owner/mode (no ad hoc mkdir), and remove it when the governor
+# stops, so wrappers fail closed on connect instead of trusting a stale inode.
+#
+# Install (one-time; system scope is excluded from hapax-post-merge-deploy):
+#   sudo cp systemd/units/hapax-dispatch-redemption.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now hapax-dispatch-redemption.service
+# Witness owner/mode afterwards (token-free receipt):
+#   scripts/hapax-dispatch-redemption-authority --receipt
+Description=Hapax dispatch launch redemption governor (fixed-socket mint/redeem authority)
+Documentation=file:/home/hapax/Documents/Personal/30-areas/hapax/dispatch-launch-redemption-service-design-2026-07-01.md
+ConditionPathExists=/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-dispatch-redemption-authority
+
+[Service]
+Type=simple
+User=hapax
+Group=hapax
+RuntimeDirectory=hapax/coord
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/python3 /home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-dispatch-redemption-authority --serve
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
