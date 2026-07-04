@@ -20,7 +20,7 @@ dependencies = [
     "httpx>=0.28.0",
     "ollama>=0.6.2",
     "pydantic>=2.13.4",
-    "pydantic-ai>=2.4.0,<3",
+    "pydantic-ai>=1.99.0,<2",
     "pyyaml>=6.0",
     "qdrant-client>=1.18.0",
     "opentelemetry-api>=1.39.0",
@@ -28,7 +28,7 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.39.0",
     "opentelemetry-instrumentation-httpx>=0.50b0",
     "opentelemetry-instrumentation-logging>=0.50b0",
-    "python-json-logger>=4.1.0",
+    "python-json-logger>=3.3.0,<4",
     "openwakeword>=0.4.0",
     "litellm>=1.90.3",
     "kokoro>=0.9",
@@ -37,7 +37,7 @@ dependencies = [
     # The torch>=2.10,<2.11 override in [tool.uv] erases torchvision's own exact
     # torch pin during resolution, so this floor is what keeps the pair
     # ABI-matched. Bump together with the torch override.
-    "torchvision>=0.27.1",
+    "torchvision>=0.25,<0.26",
     "mistralai>=2.5.2",
     "python-toon>=0.1.3",
     "model2vec>=0.8.2",
@@ -50,7 +50,7 @@ dependencies = [
     "pyte>=0.8.2",
     "fastapi>=0.139.0",
     "werkzeug>=3.1.8",
-    "opencv-python-headless>=5.0.0.93",
+    "opencv-python-headless>=4.13.0.92,<5",
     "chat-downloader>=0.2.8",
     "sdnotify>=0.3.2",
     "imagehash>=4.3.2",
@@ -68,8 +68,8 @@ dependencies = [
 logos-api = [
     "fastapi>=0.139.0",
     "jinja2>=3.1",
-    "langfuse>=4.13.0",
-    "sse-starlette>=3.4.5",
+    "langfuse>=3.14.5,<4",
+    "sse-starlette>=2.0.0,<3",
     "uvicorn>=0.49.0",
     "watchdog>=6.0.0",
     "opentelemetry-instrumentation-fastapi>=0.50b0",
@@ -78,7 +78,7 @@ logos-api = [
 sync-pipeline = [
     "google-api-python-client>=2.198.0",
     "google-auth-oauthlib>=1.4.0",
-    "langfuse>=4.13.0",
+    "langfuse>=3.14.5,<4",
 ]
 mail-monitor = [
     # cc-tasks mail-monitor-002 / -004 / -005 — gmail.modify-scoped
@@ -93,7 +93,7 @@ mail-monitor = [
 audio = [
     "faster-whisper>=1.1.0",
     "mediapipe>=0.10.35",
-    "opencv-python-headless>=5.0.0.93",
+    "opencv-python-headless>=4.10.0,<5",
     "panns-inference>=0.1.1",
     "pipecat-ai[silero,openai]>=1.4.0",
     # pyannote 3.x imports torchaudio.AudioMetaData, which torchaudio >=2.9
@@ -123,13 +123,13 @@ audio = [
     # [tool.uv] erases any torch coupling during resolution, so this pin is
     # what keeps the pair matched. Bump together with the torch override.
     # Runtime needs FFmpeg 4-8 shared libs on the host (appendix: n8.1.1).
-    "torchcodec==0.14.*",
+    "torchcodec==0.10.*",
     "mido>=1.3.0",
     "python-rtmidi>=1.5.0",
     "obsws-python>=1.7.0",
     "hsemotion-onnx>=0.3",
     "praat-parselmouth>=0.4.5",
-    "essentia<=2.1b6.dev1438,>=2.1b6.dev1438",
+    "essentia>=2.1b6.dev1091,<=2.1b6.dev1389",
     # laion-clap: install separately — pins numpy<2.0.0 which conflicts with qdrant-client on 3.14
     #   uv pip install 'laion-clap>=1.1.6' --no-deps
     #   uv pip install transformers ftfy h5py braceexpand webdataset wget --no-deps
@@ -173,7 +173,7 @@ ci = [
     # typing-spec conformance gap is mostly moot. pyright kept in
     # [dependency-groups] dev for local IDE use + weekly
     # .github/workflows/pyright-safety-net.yml coverage.
-    "pyrefly>=1.1.1",
+    "pyrefly>=0.62,<1",
     "vulture>=2.16",
 ]
 studio = [
@@ -181,7 +181,7 @@ studio = [
     "ultralytics>=8.4.87",
 ]
 tui = [
-    "textual>=8.2.8",
+    "textual>=3.0,<4",
 ]
 host = [
     # Everything — for local development on the host machine
