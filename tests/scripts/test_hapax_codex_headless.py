@@ -108,6 +108,39 @@ exit 0
     )
 
 
+def _write_activation_redemption_stub(home: Path, marker: Path) -> None:
+    stub = (
+        home
+        / ".cache"
+        / "hapax"
+        / "source-activation"
+        / "worktree"
+        / "shared"
+        / "governance"
+        / "dispatch_redemption.py"
+    )
+    stub.parent.mkdir(parents=True)
+    (stub.parents[1] / "__init__.py").write_text("", encoding="utf-8")
+    (stub.parent / "__init__.py").write_text("", encoding="utf-8")
+    stub.write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        "Path(os.environ['HAPAX_TEST_ACTIVATION_IMPORT_MARKER']).write_text("
+        "'imported\\n', encoding='utf-8')\n"
+        "class LaunchRedemptionContext:\n"
+        "    def __init__(self, **kwargs): pass\n"
+        "class LaunchRedemptionRequest:\n"
+        "    def __init__(self, **kwargs): pass\n"
+        "class Response:\n"
+        "    ok = False\n"
+        "    reason = 'socket_unavailable:test'\n"
+        "def redeem_launch_via_socket(_request):\n"
+        "    return Response()\n",
+        encoding="utf-8",
+    )
+    marker.parent.mkdir(parents=True, exist_ok=True)
+
+
 def test_codex_headless_scrubs_dispatch_redemption_binding_after_redeem() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
 
@@ -644,6 +677,57 @@ exit 0
     assert "missing dispatch redemption binding env" in result.stderr
     assert "requires live methodology dispatch redemption" in result.stderr
     assert not fake_python_called.exists()
+    assert not codex_called.exists()
+
+
+def test_codex_headless_plain_copy_uses_source_activation_verifier(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+    deployed = home / ".local" / "bin" / "hapax-codex-headless"
+    deployed.parent.mkdir(parents=True)
+    deployed.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    deployed.chmod(0o755)
+    marker = tmp_path / "activation-imported"
+    _write_activation_redemption_stub(home, marker)
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_TEST_ACTIVATION_IMPORT_MARKER"] = str(marker)
+    env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = "self-minted"
+    env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "019f-fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = "route-decision:fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE"] = "CASE-CAPACITY-ROUTING-001"
+
+    result = subprocess.run(
+        [str(deployed), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert marker.read_text(encoding="utf-8") == "imported\n"
+    assert "cannot import dispatch redemption verifier" not in result.stderr
+    assert "dispatch redemption refused: socket_unavailable:test" in result.stderr
     assert not codex_called.exists()
 
 

@@ -4,7 +4,7 @@
 Runtime owner for /run/hapax/coord/dispatch-redemption.sock. Runs the
 DispatchLaunchRedemptionAuthority mint/redeem grant table behind the fixed
 governor socket so external-worktree wrapper launches redeem a live,
-dispatcher-issued one-time grant instead of trusting same-UID files.
+governed-path one-time grant instead of trusting same-UID files.
 
 Trust boundary (keep this honest): this is governed-path admission and
 deviation witnessability in a single-operator system, NOT user auth. A

@@ -58,6 +58,39 @@ def _headless_env(home: Path, bin_dir: Path, pipe_dir: Path) -> dict[str, str]:
     return env
 
 
+def _write_activation_redemption_stub(home: Path, marker: Path) -> None:
+    stub = (
+        home
+        / ".cache"
+        / "hapax"
+        / "source-activation"
+        / "worktree"
+        / "shared"
+        / "governance"
+        / "dispatch_redemption.py"
+    )
+    stub.parent.mkdir(parents=True)
+    (stub.parents[1] / "__init__.py").write_text("", encoding="utf-8")
+    (stub.parent / "__init__.py").write_text("", encoding="utf-8")
+    stub.write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        "Path(os.environ['HAPAX_TEST_ACTIVATION_IMPORT_MARKER']).write_text("
+        "'imported\\n', encoding='utf-8')\n"
+        "class LaunchRedemptionContext:\n"
+        "    def __init__(self, **kwargs): pass\n"
+        "class LaunchRedemptionRequest:\n"
+        "    def __init__(self, **kwargs): pass\n"
+        "class Response:\n"
+        "    ok = False\n"
+        "    reason = 'socket_unavailable:test'\n"
+        "def redeem_launch_via_socket(_request):\n"
+        "    return Response()\n",
+        encoding="utf-8",
+    )
+    marker.parent.mkdir(parents=True, exist_ok=True)
+
+
 def test_headless_defaults_to_disabled_without_governed_enable(tmp_path: Path) -> None:
     home = tmp_path / "home"
     (home / "projects" / "hapax-council--beta").mkdir(parents=True)
@@ -239,6 +272,45 @@ def test_claude_headless_redemption_ignores_python_override(tmp_path: Path) -> N
     assert result.returncode == 17
     assert "missing dispatch redemption binding env" in result.stderr
     assert "requires live methodology dispatch redemption" in result.stderr
+    assert not claude_called.exists()
+
+
+def test_claude_headless_plain_copy_uses_source_activation_verifier(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+    deployed = home / ".local" / "bin" / "hapax-claude-headless"
+    deployed.parent.mkdir(parents=True)
+    deployed.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    deployed.chmod(0o755)
+    marker = tmp_path / "activation-imported"
+    _write_activation_redemption_stub(home, marker)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_COUNCIL_DIR"] = str(tmp_path / "attacker-council")
+    env["HAPAX_TEST_ACTIVATION_IMPORT_MARKER"] = str(marker)
+    env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = "self-minted"
+    env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "019f-fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = "route-decision:fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE"] = "CASE-CAPACITY-ROUTING-001"
+
+    result = subprocess.run(
+        [str(deployed), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert marker.read_text(encoding="utf-8") == "imported\n"
+    assert "cannot import dispatch redemption verifier" not in result.stderr
+    assert "dispatch redemption refused: socket_unavailable:test" in result.stderr
     assert not claude_called.exists()
 
 

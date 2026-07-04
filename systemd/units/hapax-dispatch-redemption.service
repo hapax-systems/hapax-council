@@ -31,6 +31,9 @@ Group=hapax
 Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_USER=hapax
 Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER=hapax-methodology-dispatch
 Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS=/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-methodology-dispatch
+# Refresh this digest whenever scripts/hapax-methodology-dispatch changes;
+# tests/systemd/test_dispatch_redemption_unit.py enforces the repo-side match,
+# and hapax-post-merge-deploy reruns this installer on requester changes.
 Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_SHA256=57aefbdab1fd1f3bee65ab04bc1abb90481ddbcb70054e8aa4589a92e1b15a12
 RuntimeDirectory=hapax/coord
 RuntimeDirectoryMode=0750

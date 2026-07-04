@@ -126,11 +126,21 @@ dispatch_host_is_local() {
 }
 
 launcher_source_root() {
-  local launcher="${BASH_SOURCE[0]}"
+  local launcher="${BASH_SOURCE[0]}" root="" activation_root="$HOME/.cache/hapax/source-activation/worktree"
   if [[ -x /usr/bin/readlink ]]; then
     launcher="$(/usr/bin/readlink -f "$launcher" 2>/dev/null || printf '%s' "$launcher")"
   fi
-  (cd "$(dirname "$launcher")/.." && pwd -P)
+  if root="$(cd "$(dirname "$launcher")/.." 2>/dev/null && pwd -P)"; then
+    if [[ -r "$root/shared/governance/dispatch_redemption.py" ]]; then
+      printf '%s\n' "$root"
+      return 0
+    fi
+  fi
+  if [[ -r "$activation_root/shared/governance/dispatch_redemption.py" ]]; then
+    (cd "$activation_root" && pwd -P)
+    return 0
+  fi
+  printf '%s\n' "$root"
 }
 
 remote_python_command() {
@@ -480,7 +490,7 @@ import sys
 import time
 
 council_dir, task_id, lane, worktree, platform, mode, profile = sys.argv[1:]
-sys.path.insert(0, council_dir)
+sys.path = [council_dir] + [p for p in sys.path if p not in ("", os.getcwd())]
 
 try:
     from shared.governance.dispatch_redemption import (

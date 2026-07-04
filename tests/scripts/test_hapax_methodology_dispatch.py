@@ -30,6 +30,19 @@ def _dispatcher_module() -> ModuleType:
     return module
 
 
+def test_methodology_dispatch_bootstraps_imports_under_isolated_python() -> None:
+    result = subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), "--help"],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "hapax-methodology-dispatch" in result.stdout
+
+
 def _fresh_registry(tmp_path: Path) -> Path:
     payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
     checked_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")

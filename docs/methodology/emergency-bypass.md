@@ -41,6 +41,8 @@ If the governor is unavailable or wedged during an incident:
    `scripts/hapax-dispatch-redemption-service-install --install`
 3. Verify the fixed socket and protocol:
    `scripts/hapax-dispatch-redemption-authority --receipt`
+   This receipt performs a live protocol probe; a present socket alone is not
+   sufficient evidence that the governor is serving.
 4. Verify the runtime namespace owner/mode independently:
    `stat -c '%U:%G %a %n' /run/hapax/coord /run/hapax/coord/dispatch-redemption.sock`
 5. Retry the external launch through `scripts/hapax-methodology-dispatch`.
