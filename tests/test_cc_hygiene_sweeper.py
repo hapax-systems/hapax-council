@@ -451,6 +451,58 @@ def test_orphan_pr_too_young_suppresses(tmp_path: Path) -> None:
     assert events == []
 
 
+def test_orphan_pr_bot_author_is_bot_suppresses(tmp_path: Path) -> None:
+    """Dependabot-style PRs (author.is_bot) are never cc-task-linked → not orphans.
+
+    Regression pin for P0 incident ``cc_hygiene_violation:orphan_pr:4408``.
+    """
+    now = _now()
+    fake_prs = [
+        {
+            "number": 4408,
+            "headRefName": "dependabot/npm_and_yarn/hapax-logos/hapax-logos-prod-a241cf381b",
+            "createdAt": (now - timedelta(hours=8)).isoformat(),
+            "author": {"is_bot": True, "login": "app/dependabot"},
+        }
+    ]
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=fake_prs):
+        events = check_orphan_pr([], tmp_path, now=now)
+    assert events == []
+
+
+def test_orphan_pr_bot_login_suffix_suppresses(tmp_path: Path) -> None:
+    """Bots surfaced only via the `[bot]` login suffix (no is_bot) are still skipped."""
+    now = _now()
+    fake_prs = [
+        {
+            "number": 5001,
+            "headRefName": "renovate/some-dep",
+            "createdAt": (now - timedelta(hours=8)).isoformat(),
+            "author": {"login": "renovate[bot]"},
+        }
+    ]
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=fake_prs):
+        events = check_orphan_pr([], tmp_path, now=now)
+    assert events == []
+
+
+def test_orphan_pr_human_author_still_fires(tmp_path: Path) -> None:
+    """A non-bot author with an old unlinked PR must still be flagged (no over-suppression)."""
+    now = _now()
+    fake_prs = [
+        {
+            "number": 6002,
+            "headRefName": "epsilon/some-feature",
+            "createdAt": (now - timedelta(hours=4)).isoformat(),
+            "author": {"is_bot": False, "login": "ryanklee"},
+        }
+    ]
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=fake_prs):
+        events = check_orphan_pr([], tmp_path, now=now)
+    assert len(events) == 1
+    assert events[0].metadata["pr"] == "6002"
+
+
 # ----------------------------------------------------------------------------
 # check_relay_yaml_staleness (§2.5)
 # ----------------------------------------------------------------------------
