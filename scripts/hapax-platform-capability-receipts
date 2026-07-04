@@ -389,7 +389,11 @@ def main(argv: list[str] | None = None) -> int:
     observed_at = parse_utc(args.now) if args.now else datetime.now(UTC).replace(microsecond=0)
     registry = load_platform_capability_registry(args.registry)
     routes_by_platform = platform_routes(registry.routes)
-    selected = sorted(routes_by_platform) if args.all or not args.platform else args.platform
+    selected = (
+        sorted(routes_by_platform)
+        if args.all or not args.platform
+        else [platform.lower() for platform in args.platform]
+    )
     unknown = sorted(set(selected) - set(routes_by_platform))
     if unknown:
         retired = [platform for platform in unknown if platform in RETIRED_ANTIGRAV_PLATFORMS]

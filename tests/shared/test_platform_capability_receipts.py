@@ -219,7 +219,7 @@ def test_antigrav_agy_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -
     wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
 
-    for platform in ("agy", "antigrav", "antigravity", "gemini-cli"):
+    for platform in ("agy", "antigrav", "Antigrav", "antigravity", "gemini-cli"):
         result = _run_receipts(
             tmp_path,
             env={"PATH": str(bin_dir), "HOME": str(tmp_path / "home")},
@@ -227,7 +227,7 @@ def test_antigrav_agy_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -
         )
 
         assert result.returncode == 2
-        assert f"platform '{platform}' is retired/excised" in result.stderr
+        assert f"platform '{platform.lower()}' is retired/excised" in result.stderr
         assert "measured agy supply-leaf intake" in result.stderr
         assert not (tmp_path / f"{platform}.json").exists()
 
