@@ -87,6 +87,12 @@ def test_resolve_deprecated_antigrav_alias_fails_closed() -> None:
     assert "measured agy supply leaves" in full_word.reason
     assert full_word.route_id is None
 
+    gemini_cli = resolve_capability("gemini-cli", valid_route_ids=VALID)
+    assert not gemini_cli.ok
+    assert "retired" in gemini_cli.reason.lower()
+    assert "measured agy supply leaves" in gemini_cli.reason
+    assert gemini_cli.route_id is None
+
 
 def test_resolve_unknown_capability() -> None:
     res = resolve_capability("nope", valid_route_ids=VALID)

@@ -1883,6 +1883,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--platform",
         default="claude",
+        type=str.lower,
         choices=[
             "agy",
             "antigrav",

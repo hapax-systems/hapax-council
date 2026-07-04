@@ -88,7 +88,7 @@ class TestTeamRegistry:
             json.dumps(
                 {
                     "lane_id": "antigrav",
-                    "platform": "gemini-cli",
+                    "platform": "Gemini-CLI",
                     "model_id": "gemini-3.1-pro-preview",
                     "context_window": 1_000_000,
                     "tools_available": ["Bash"],
@@ -109,7 +109,7 @@ class TestTeamRegistry:
     def test_all_lanes_skips_retired_antigrav_platform(self, tmp_path: Path, caplog) -> None:
         reg = TeamRegistry(tmp_path)
         reg.write(_make_meta("alpha", last_probe=time.time()))
-        for platform in ("agy", "antigrav", "antigravity"):
+        for platform in ("agy", "Antigrav", "antigravity"):
             (tmp_path / f"{platform}.json").write_text(
                 json.dumps(
                     {
@@ -160,7 +160,7 @@ class TestTeamRegistry:
 
     def test_check_freshness_reports_retired_platform_reason(self, tmp_path: Path) -> None:
         reg = TeamRegistry(tmp_path)
-        for platform in ("agy", "antigrav", "antigravity"):
+        for platform in ("agy", "Antigrav", "antigravity"):
             (tmp_path / f"{platform}.json").write_text(
                 json.dumps(
                     {
@@ -180,7 +180,7 @@ class TestTeamRegistry:
 
             assert receipt.result == "blocked"
             assert receipt.platform == "retired"
-            expected = f"retired platform {platform} ignored as live capacity"
+            expected = f"retired platform {platform.lower()} ignored as live capacity"
             assert receipt.blockers == [expected]
             assert receipt.notes == expected
 

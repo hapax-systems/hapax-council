@@ -31,17 +31,20 @@ def _normalize_legacy_payload(raw: str) -> tuple[str, bool]:
 
     payload = json.loads(raw)
     normalized = False
-    if payload.get("platform") in RETIRED_PLATFORMS:
+    platform = str(payload.get("platform") or "").strip().lower()
+    if platform in RETIRED_PLATFORMS:
         note = str(payload.get("notes") or "").strip()
-        legacy_note = f"retired platform {payload.get('platform')} ignored as live capacity"
+        legacy_note = f"retired platform {platform} ignored as live capacity"
         payload["notes"] = f"{note}; {legacy_note}" if note else legacy_note
+        payload["platform"] = platform
         normalized = True
     return json.dumps(payload), normalized
 
 
 def _retired_platform_note(payload: str) -> str | None:
     data = json.loads(payload)
-    if data.get("platform") not in RETIRED_PLATFORMS:
+    platform = str(data.get("platform") or "").strip().lower()
+    if platform not in RETIRED_PLATFORMS:
         return None
     return str(data.get("notes") or "")
 

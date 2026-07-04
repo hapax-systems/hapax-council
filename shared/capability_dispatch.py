@@ -81,6 +81,7 @@ UNROUTED_POINTERS: dict[str, str] = {
     "antigrav": "Antigrav is deprecated/excised; define measured agy supply leaves with route/resource/governance receipts before dispatch.",
     "antigravity": "Antigrav is deprecated/excised; define measured agy supply leaves with route/resource/governance receipts before dispatch.",
     "antigrav.interactive.full": "Antigrav is deprecated/excised; define measured agy supply leaves with route/resource/governance receipts before dispatch.",
+    "gemini-cli": "Gemini CLI is retired/excised; define measured agy supply leaves with route/resource/governance receipts before dispatch.",
     "fugu": "no route yet — P2: define codex.headless.fugu (codex -p fugu / Sakana). See RESUME §P2.",
     "fugu-ultra": "no route yet — P2: define codex.headless.fugu_ultra. See RESUME §P2.",
     "gemini": "Gemini/agy is a provider or carrier label, not capability supply; mint measured model/profile/context/tool leaves before dispatch.",

@@ -2891,7 +2891,7 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
 
 
 def test_antigrav_platform_is_not_dispatchable(tmp_path: Path) -> None:
-    for platform in ("agy", "antigrav", "antigravity", "gemini-cli"):
+    for platform in ("agy", "antigrav", "Antigrav", "antigravity", "gemini-cli"):
         result = _run(
             tmp_path,
             "--task",
@@ -2905,7 +2905,7 @@ def test_antigrav_platform_is_not_dispatchable(tmp_path: Path) -> None:
         )
 
         assert result.returncode == 10
-        assert f"platform '{platform}' is retired/excised" in result.stderr
+        assert f"platform '{platform.lower()}' is retired/excised" in result.stderr
         assert "measured agy supply-leaf intake" in result.stderr
 
 
