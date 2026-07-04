@@ -33,6 +33,7 @@ CURRENT_FILE = RELAY_DIR / ".rte-current"
 DEFAULT_STALE_HOURS = float(os.environ.get("HAPAX_RTE_STALE_HOURS", "24"))
 DEFAULT_ASSIGNMENT_HOURS = float(os.environ.get("HAPAX_RTE_ASSIGNMENT_HOURS", "24"))
 
+AUTO_ELIGIBLE_GREEK_LANES = frozenset({"alpha", "beta", "gamma", "delta", "epsilon", "zeta"})
 AUTO_PREFERRED_LANES = (
     "beta",
     "alpha",
@@ -40,10 +41,6 @@ AUTO_PREFERRED_LANES = (
     "delta",
     "epsilon",
     "zeta",
-    "iota",
-    "kappa",
-    "lambda",
-    "mu",
     "cx-red",
     "cx-blue",
     "cx-green",
@@ -167,18 +164,7 @@ def is_auto_eligible(lane: str, *, originator: str) -> bool:
         return False
     if is_vibe_lane(lane) or is_antigrav_lane(lane) or is_gemini_lane(lane):
         return False
-    return lane.startswith("cx-") or lane in {
-        "alpha",
-        "beta",
-        "gamma",
-        "delta",
-        "epsilon",
-        "zeta",
-        "iota",
-        "kappa",
-        "lambda",
-        "mu",
-    }
+    return lane.startswith("cx-") or lane in AUTO_ELIGIBLE_GREEK_LANES
 
 
 def validate_explicit_rte(rte: str, *, originator: str, allow_protocol_exception: bool) -> None:

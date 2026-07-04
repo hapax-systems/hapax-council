@@ -402,6 +402,25 @@ def test_assign_rte_auto_returns_distinct_failure_when_no_candidate_exists(
     assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
 
 
+def test_assign_rte_auto_ignores_retired_greek_relay_files(tmp_path: Path) -> None:
+    relay = tmp_path / "relay"
+    for lane in ("iota", "kappa", "lambda", "mu"):
+        _write_lane(relay, lane)
+
+    result = _run_assign_rte(
+        tmp_path,
+        "--auto",
+        "--originator",
+        "alpha",
+        "--json",
+        extra_env={"HAPAX_RTE_STALE_HOURS": "9000"},
+    )
+
+    assert result.returncode == 5
+    assert "no eligible RTE candidate found" in result.stderr
+    assert not (relay / "rte-assignment.yaml").exists()
+
+
 def test_assign_rte_refuses_originator_as_rte(tmp_path: Path) -> None:
     result = _run_assign_rte(tmp_path, "--rte", "alpha", "--originator", "alpha")
 
