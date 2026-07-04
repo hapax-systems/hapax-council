@@ -10,15 +10,12 @@
 set -euo pipefail
 
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
-ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
-if [ -f "$ROLE_HELPER" ]; then
-  # shellcheck source=../hooks/scripts/agent-role.sh
-  # shellcheck disable=SC1091
-  . "$ROLE_HELPER"
-fi
 if ! declare -F hapax_agent_is_codex_name >/dev/null 2>&1; then
   hapax_agent_is_codex_name() {
-    [[ "${1:-}" =~ ^cx-[a-z][a-z-]*$ ]]
+    case "${1:-}" in
+      cx-[a-z]*) return 0 ;;
+      *) return 1 ;;
+    esac
   }
 fi
 

@@ -742,7 +742,12 @@ def test_codex_headless_redemption_ignores_caller_council_dir_stub(
     workdir.mkdir(parents=True)
     attacker_root = tmp_path / "attacker-council"
     attacker_imported = tmp_path / "attacker-redemption-imported"
+    agent_role_sourced = tmp_path / "attacker-agent-role-sourced"
     _write_executable(attacker_root / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
+    _write_executable(
+        attacker_root / "hooks" / "scripts" / "agent-role.sh",
+        f': > "{agent_role_sourced}"\n',
+    )
     stub = attacker_root / "shared" / "governance" / "dispatch_redemption.py"
     stub.parent.mkdir(parents=True)
     stub.write_text(
@@ -792,6 +797,7 @@ exit 0
     assert result.returncode == 17
     assert "dispatch redemption refused" in result.stderr
     assert "requires live methodology dispatch redemption" in result.stderr
+    assert not agent_role_sourced.exists()
     assert not attacker_imported.exists()
     assert not codex_called.exists()
 
