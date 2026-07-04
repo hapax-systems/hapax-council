@@ -103,8 +103,26 @@ class LaunchRedemptionResponse:
 
 
 @dataclass(frozen=True)
+class LaunchMintRequest:
+    context: LaunchRedemptionContext
+    requester: str
+    requester_pid: int
+    ttl_s: float
+    observed_at: float
+
+
+@dataclass(frozen=True)
+class LaunchMintResponse:
+    ok: bool
+    reason: str
+    grant_id: str | None = None
+    token: str | None = None
+    expires_at: float | None = None
+
+
+@dataclass(frozen=True)
 class LaunchRedemptionEvent:
-    event_type: Literal["grant_minted", "grant_redeemed", "grant_refused"]
+    event_type: Literal["grant_minted", "grant_redeemed", "grant_refused", "mint_refused"]
     grant_id: str | None
     task_id: str | None
     lane: str | None
@@ -115,6 +133,10 @@ class LaunchRedemptionEvent:
     route_decision_ref: str | None
     reason: str
     observed_at: float
+
+
+class LaunchMintRefusedError(RuntimeError):
+    """Mint policy refused the launch context (recorded as a mint_refused event)."""
 
 
 @dataclass
@@ -134,9 +156,13 @@ class DispatchLaunchRedemptionAuthority:
         *,
         now: Callable[[], float] | None = None,
         policy_check: Callable[[LaunchRedemptionContext], str | None] | None = None,
+        mint_policy_check: Callable[[LaunchRedemptionContext], str | None] | None = None,
+        event_sink: Callable[[LaunchRedemptionEvent], None] | None = None,
     ) -> None:
         self._now = now or time.time
         self._policy_check = policy_check
+        self._mint_policy_check = mint_policy_check
+        self._event_sink = event_sink
         self._grants: dict[str, _StoredGrant] = {}
         self._events: list[LaunchRedemptionEvent] = []
 
@@ -147,6 +173,17 @@ class DispatchLaunchRedemptionAuthority:
             raise ValueError("ttl_s must be positive")
         normalized = context.normalized()
         normalized.validate()
+        if self._mint_policy_check is not None:
+            refusal = self._mint_policy_check(normalized)
+            if refusal:
+                self._append_event(
+                    "mint_refused",
+                    grant_id=None,
+                    context=normalized,
+                    reason=f"mint_policy_refused:{refusal}",
+                    observed_at=float(self._now()),
+                )
+                raise LaunchMintRefusedError(refusal)
         token = secrets.token_urlsafe(32)
         grant_id = secrets.token_hex(16)
         expires_at = float(self._now()) + ttl_s
@@ -216,28 +253,35 @@ class DispatchLaunchRedemptionAuthority:
 
     def _append_event(
         self,
-        event_type: Literal["grant_minted", "grant_redeemed", "grant_refused"],
+        event_type: Literal["grant_minted", "grant_redeemed", "grant_refused", "mint_refused"],
         *,
         grant_id: str | None,
         context: LaunchRedemptionContext | None,
         reason: str,
         observed_at: float,
     ) -> None:
-        self._events.append(
-            LaunchRedemptionEvent(
-                event_type=event_type,
-                grant_id=grant_id,
-                task_id=context.task_id if context else None,
-                lane=context.lane if context else None,
-                platform=context.platform if context else None,
-                mode=context.mode if context else None,
-                profile=context.profile if context else None,
-                dispatch_message_id=context.dispatch_message_id if context else None,
-                route_decision_ref=context.route_decision_ref if context else None,
-                reason=reason,
-                observed_at=observed_at,
-            )
+        event = LaunchRedemptionEvent(
+            event_type=event_type,
+            grant_id=grant_id,
+            task_id=context.task_id if context else None,
+            lane=context.lane if context else None,
+            platform=context.platform if context else None,
+            mode=context.mode if context else None,
+            profile=context.profile if context else None,
+            dispatch_message_id=context.dispatch_message_id if context else None,
+            route_decision_ref=context.route_decision_ref if context else None,
+            reason=reason,
+            observed_at=observed_at,
         )
+        self._events.append(event)
+        if self._event_sink is not None:
+            # Evidence emission must never turn a mint/redeem decision into a
+            # crash (NEVER-FREEZE): sink failures are the sink's problem to
+            # surface (journal/stderr), not a reason to refuse a launch.
+            try:
+                self._event_sink(event)
+            except Exception:  # noqa: BLE001 - witnessed by the daemon's own logging.
+                pass
 
 
 class DispatchLaunchRedemptionServer:
@@ -268,6 +312,48 @@ class DispatchLaunchRedemptionServer:
                     self._authority, _recv_line(conn, max_bytes=65536)
                 )
                 conn.sendall(_encode_payload(response))
+
+    def serve_forever(
+        self,
+        *,
+        should_stop: Callable[[], bool] | None = None,
+        poll_timeout_s: float = 1.0,
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> None:
+        """Bind the fixed socket once and answer mint/redeem requests until stopped.
+
+        Per-connection failures are contained (reported via ``on_error``) so one
+        malformed caller cannot take the grant authority down; the socket is
+        unlinked on exit so wrappers fail closed on connect instead of talking
+        to a dead inode.
+        """
+
+        with self._bound_socket(timeout_s=poll_timeout_s) as server:
+            try:
+                while not (should_stop is not None and should_stop()):
+                    try:
+                        conn, _addr = server.accept()
+                    except TimeoutError:
+                        continue
+                    except OSError as exc:
+                        if on_error is not None:
+                            on_error(exc)
+                        continue
+                    try:
+                        with conn:
+                            conn.settimeout(poll_timeout_s)
+                            response = handle_authority_bytes(
+                                self._authority, _recv_line(conn, max_bytes=65536)
+                            )
+                            conn.sendall(_encode_payload(response))
+                    except Exception as exc:  # noqa: BLE001 - one bad conn must not kill the authority.
+                        if on_error is not None:
+                            on_error(exc)
+            finally:
+                try:
+                    self._socket_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _bound_socket(self, *, timeout_s: float | None = None) -> socket.socket:
         _prepare_socket_path(self._socket_path, directory_mode=self._directory_mode)
@@ -361,6 +447,84 @@ def parse_redemption_response(payload: dict[str, object]) -> LaunchRedemptionRes
     )
 
 
+def mint_request_payload(request: LaunchMintRequest) -> dict[str, object]:
+    context = request.context.normalized()
+    return {
+        "schema": "hapax.dispatch_launch_mint.v1",
+        "task_id": context.task_id,
+        "lane": context.lane,
+        "platform": context.platform,
+        "mode": context.mode,
+        "profile": context.profile,
+        "worktree": context.worktree,
+        "purpose": context.purpose,
+        "dispatch_message_id": context.dispatch_message_id,
+        "route_decision_ref": context.route_decision_ref,
+        "authority_case": context.authority_case,
+        "parent_spec": context.parent_spec,
+        "requester": request.requester,
+        "requester_pid": request.requester_pid,
+        "ttl_s": request.ttl_s,
+        "observed_at": request.observed_at,
+    }
+
+
+def parse_mint_request(payload: dict[str, object]) -> LaunchMintRequest:
+    if payload.get("schema") != "hapax.dispatch_launch_mint.v1":
+        raise ValueError("unsupported dispatch launch mint schema")
+    requester = str(payload.get("requester", "")).strip()
+    requester_pid = int(payload.get("requester_pid", 0) or 0)
+    if not requester:
+        raise ValueError("launch mint request missing requester")
+    if requester_pid <= 0:
+        raise ValueError("launch mint request missing requester_pid")
+    ttl_s = float(payload.get("ttl_s", 0.0) or 0.0)
+    if ttl_s <= 0:
+        raise ValueError("launch mint request missing ttl_s")
+    return LaunchMintRequest(
+        context=LaunchRedemptionContext(
+            task_id=str(payload.get("task_id", "")),
+            lane=str(payload.get("lane", "")),
+            platform=str(payload.get("platform", "")),
+            mode=str(payload.get("mode", "")),
+            profile=str(payload.get("profile", "")),
+            worktree=str(payload.get("worktree", "")),
+            purpose=_purpose(str(payload.get("purpose", ""))),
+            dispatch_message_id=str(payload.get("dispatch_message_id", "")),
+            route_decision_ref=str(payload.get("route_decision_ref", "")),
+            authority_case=str(payload.get("authority_case", "")),
+            parent_spec=_optional_str(payload.get("parent_spec")),
+        ),
+        requester=requester,
+        requester_pid=requester_pid,
+        ttl_s=ttl_s,
+        observed_at=float(payload.get("observed_at", 0.0) or 0.0),
+    )
+
+
+def mint_response_payload(response: LaunchMintResponse) -> dict[str, object]:
+    return {
+        "schema": "hapax.dispatch_launch_mint_response.v1",
+        "ok": response.ok,
+        "reason": response.reason,
+        "grant_id": response.grant_id,
+        "token": response.token,
+        "expires_at": response.expires_at,
+    }
+
+
+def parse_mint_response(payload: dict[str, object]) -> LaunchMintResponse:
+    if payload.get("schema") != "hapax.dispatch_launch_mint_response.v1":
+        raise ValueError("unsupported dispatch launch mint response schema")
+    return LaunchMintResponse(
+        ok=bool(payload.get("ok", False)),
+        reason=str(payload.get("reason", "")),
+        grant_id=_optional_str(payload.get("grant_id")),
+        token=_optional_str(payload.get("token")),
+        expires_at=_optional_float(payload.get("expires_at")),
+    )
+
+
 def redemption_event_payload(event: LaunchRedemptionEvent) -> dict[str, object]:
     return {
         "schema": "hapax.dispatch_launch_redemption_event.v1",
@@ -402,6 +566,88 @@ def handle_redemption_bytes(
             LaunchRedemptionResponse(ok=False, reason=f"invalid_request:{type(exc).__name__}")
         )
     return handle_redemption_payload(authority, payload)
+
+
+def handle_mint_payload(
+    authority: DispatchLaunchRedemptionAuthority, payload: dict[str, object]
+) -> dict[str, object]:
+    try:
+        request = parse_mint_request(payload)
+    except Exception as exc:  # noqa: BLE001 - bad mint requests fail closed.
+        return mint_response_payload(
+            LaunchMintResponse(ok=False, reason=f"invalid_request:{type(exc).__name__}")
+        )
+    try:
+        grant = authority.mint(request.context, ttl_s=request.ttl_s)
+    except LaunchMintRefusedError as exc:
+        return mint_response_payload(
+            LaunchMintResponse(ok=False, reason=f"mint_policy_refused:{exc}")
+        )
+    except Exception as exc:  # noqa: BLE001 - invalid contexts fail closed.
+        return mint_response_payload(
+            LaunchMintResponse(ok=False, reason=f"invalid_context:{type(exc).__name__}")
+        )
+    return mint_response_payload(
+        LaunchMintResponse(
+            ok=True,
+            reason="minted",
+            grant_id=grant.grant_id,
+            token=grant.token,
+            expires_at=grant.expires_at,
+        )
+    )
+
+
+def handle_authority_bytes(
+    authority: DispatchLaunchRedemptionAuthority, data: bytes
+) -> dict[str, object]:
+    """Route one wire request (mint or redeem) to the authority, failing closed.
+
+    The mint response is the ONLY surface where a token value crosses the wire;
+    it goes back to the requesting dispatcher and never into events or ledgers.
+    """
+
+    try:
+        payload = json.loads(data.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("authority request must be a JSON object")
+    except Exception as exc:  # noqa: BLE001 - malformed requests fail closed.
+        return redemption_response_payload(
+            LaunchRedemptionResponse(ok=False, reason=f"invalid_request:{type(exc).__name__}")
+        )
+    schema = payload.get("schema")
+    if schema == "hapax.dispatch_launch_mint.v1":
+        return handle_mint_payload(authority, payload)
+    if schema == "hapax.dispatch_launch_redeem.v1":
+        return handle_redemption_payload(authority, payload)
+    return redemption_response_payload(
+        LaunchRedemptionResponse(ok=False, reason="invalid_request:unsupported_schema")
+    )
+
+
+def mint_launch_via_socket(
+    request: LaunchMintRequest,
+    *,
+    socket_path: Path | None = None,
+    timeout_s: float = 2.0,
+) -> LaunchMintResponse:
+    """Ask the fixed governor to mint a one-time launch grant.
+
+    Only the governed dispatcher should call this; the returned token is handed
+    to the wrapper via env and redeemed exactly once. Fails closed on any
+    socket/parse error so an absent or unhealthy governor refuses launches.
+    """
+
+    path = socket_path or dispatch_launch_redemption_socket()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(timeout_s)
+            client.connect(str(path))
+            client.sendall(_encode_payload(mint_request_payload(request)))
+            data = _recv_line(client, max_bytes=65536)
+        return parse_mint_response(json.loads(data.decode("utf-8")))
+    except Exception as exc:  # noqa: BLE001 - mint fails closed.
+        return LaunchMintResponse(ok=False, reason=f"socket_unavailable:{type(exc).__name__}")
 
 
 def redeem_launch_via_socket(
@@ -509,14 +755,24 @@ def _optional_float(value: object) -> float | None:
 __all__ = [
     "DispatchLaunchRedemptionAuthority",
     "DispatchLaunchRedemptionServer",
+    "LaunchMintRefusedError",
+    "LaunchMintRequest",
+    "LaunchMintResponse",
     "LaunchRedemptionContext",
     "LaunchRedemptionEvent",
     "LaunchRedemptionGrant",
     "LaunchRedemptionRequest",
     "LaunchRedemptionResponse",
     "dispatch_launch_redemption_socket",
+    "handle_authority_bytes",
+    "handle_mint_payload",
     "handle_redemption_bytes",
     "handle_redemption_payload",
+    "mint_launch_via_socket",
+    "mint_request_payload",
+    "mint_response_payload",
+    "parse_mint_request",
+    "parse_mint_response",
     "parse_redemption_request",
     "parse_redemption_response",
     "redeem_launch_via_socket",
