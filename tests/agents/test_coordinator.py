@@ -1150,8 +1150,10 @@ current_claim: stale-task-{index}
                 assert state.dispatchable is False
 
         assert _relay_status_is_retired("retiring") is False
-        assert _relay_status_is_retired("superseded-by-cx-blue") is False
-        assert _relay_status_is_retired("closed-by-operator") is False
+        # SUPERSEDED/CLOSED are now retired (broad-9: the launcher is the refusal
+        # surface; the coordinator previously under-refused these -> routed -> rc=6).
+        assert _relay_status_is_retired("superseded-by-cx-blue") is True
+        assert _relay_status_is_retired("closed-by-operator") is True
 
     def test_active_task_file_still_beats_retired_role_status(self, tmp_path: Path):
         role = "ut-role"

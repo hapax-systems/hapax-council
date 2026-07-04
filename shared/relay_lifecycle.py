@@ -7,19 +7,18 @@ launcher share a single predicate. It reconciles the three divergences that
 produced rc=6 dispatch refusals (verified design-of-record,
 ``non-boutique-codex-auth-and-lane-liveness-design-2026-07-03.md``):
 
-1. VOCABULARY — the coordinator's six wind-down/retired prefixes are the
-   intentional, correct lane-retirement vocabulary; the launcher's awk
-   additionally matched SUPERSEDED/CLOSED/ANTIGRAVITY_TAKEOVER. Of those three,
-   only ANTIGRAVITY_TAKEOVER is a genuine lane-terminal marker (antigrav
-   takeover — the hapax-codex comment + cc_hygiene confirm it); SUPERSEDED and
-   CLOSED are TASK/CLAIM terminal states (triage_officer/core.py:267
-   {"done","closed","withdrawn","superseded"}) that leaked into the launcher's
-   relay-vocabulary and are NOT lane retirement. So a SUPERSEDED/CLOSED relay
-   was OVER-REFUSED by the launcher (not under-recognized by the coordinator)
-   -> rc=6; the prior map's "broaden the coordinator" direction was inverted.
-   The reconciled set is the coordinator's six + ANTIGRAVITY_TAKEOVER (seven).
-   The launcher thinning (slice 2b) narrows its awk to match; until then the
-   gate (this predicate) is authoritative and agrees with the coordinator.
+1. VOCABULARY — the launcher matched nine prefixes (RETIRED, SUPERSEDED, CLOSED,
+   IDLE_WOUND_DOWN, WIND_DOWN_IDLE, WOUND_DOWN, WIND_DOWN, WINDING_DOWN,
+   ANTIGRAVITY_TAKEOVER); the coordinator's ``_RETIRED_RELAY_STATUS_PREFIXES``
+   matched only six (missing SUPERSEDED, CLOSED, ANTIGRAVITY_TAKEOVER). A
+   SUPERSEDED/CLOSED relay was therefore routed by the coordinator and refused
+   by the launcher -> rc=6. The launcher's full set is the authority here: the
+   launcher IS the refusal surface (its exit 6 is rc=6), so to eliminate rc=6
+   the gate and the coordinator must agree with it. (Confirmed by
+   test_current_session_relay_retirement_blocks_without_force: SUPERSEDED -> rc=6.
+   Production lane relays only carry `status: retired` via hapax-relay-retire, so
+   superseded/closed are defensive — but the unified predicate matches the
+   launcher to end rc=6.)
 
 2. FILE RESOLUTION — the launcher read one file (``{role}.yaml``); the
    coordinator read the freshest of five candidate files. A lane whose
@@ -40,6 +39,7 @@ this is the strict union).
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -56,16 +56,24 @@ __all__ = [
     "relay_values_are_retired",
 ]
 
-# The reconciled retirement vocabulary: the coordinator's six wind-down/retired
-# prefixes + ANTIGRAVITY_TAKEOVER (the genuine lane-terminal marker; the broad
-# ANTIGRAVITY* glob stays out — antigrav is a live interface, coordination
-# reform Phase 1). SUPERSEDED/CLOSED are EXCLUDED — they are task/claim terminal
-# states (triage_officer/core.py:267), not lane retirement; the launcher's awk
-# over-refused them (the bug slice 2b thins). Confirmed by the
-# test_reconciled_vocabulary_drops_task_claim_states test + the coordinator's own
-# test_retired_relay_status_variants_normalize_and_suppress_claim.
+# The full retirement vocabulary — the launcher's set. The launcher is the
+# REFUSAL surface (its exit 6 IS rc=6): to eliminate rc=6 the dispatch gate and
+# the coordinator must AGREE with the launcher, so its vocabulary is the
+# authority (not the coordinator's narrower six, which under-refused SUPERSEDED/
+# CLOSED/ANTIGRAVITY_TAKEOVER and routed such lanes into rc=6). ANTIGRAVITY_TAKEOVER
+# is the terminal takeover marker; the broad ANTIGRAVITY* glob stays out (antigrav
+# is a live interface — coordination reform Phase 1, per scripts/hapax-codex).
+# NOTE: this was briefly narrowed to 7 on the coordinator-test/triage_officer
+# reading, then re-broadened to 9 — the launcher tests
+# (test_launcher_blocks_suffixed_terminal_relay_state_without_force,
+# test_current_session_relay_retirement_blocks_without_force) confirm SUPERSEDED
+# IS retirement for the refusal surface. (Production lane relays only ever carry
+# `status: retired` via hapax-relay-retire, so the superseded/closed cases are
+# defensive — but the unified predicate must match the launcher to end rc=6.)
 RETIRED_PREFIXES: tuple[str, ...] = (
     "RETIRED",
+    "SUPERSEDED",
+    "CLOSED",
     "IDLE_WOUND_DOWN",
     "WIND_DOWN_IDLE",
     "WOUND_DOWN",
@@ -176,6 +184,21 @@ def relay_status_values(relay: dict) -> list[str]:
     return values
 
 
+def _effective_relay_dir(relay_dir: Path | None) -> Path:
+    """Resolve the relay directory: explicit arg > ``$HAPAX_RELAY_DIR`` > default.
+
+    The launcher (hapax-codex), the RTE scripts (hapax-rte-state, assign-rte),
+    and the launcher tests set ``HAPAX_RELAY_DIR``; ``lane_is_retired`` honors it
+    so the dispatch gate, the coordinator, and the launcher all read the SAME
+    relay store (the prior launcher read ``$HAPAX_RELAY_DIR`` directly).
+    """
+
+    if relay_dir is not None:
+        return relay_dir
+    env_dir = os.environ.get("HAPAX_RELAY_DIR")
+    return Path(env_dir) if env_dir else DEFAULT_RELAY_DIR
+
+
 def lane_is_retired(
     role: str,
     session: str = "",
@@ -191,7 +214,7 @@ def lane_is_retired(
     routed to and a resumed lane is never stuck retired.
     """
 
-    relay = _load_freshest_relay(role, session, relay_dir or DEFAULT_RELAY_DIR)
+    relay = _load_freshest_relay(role, session, _effective_relay_dir(relay_dir))
     if not relay:
         return False
     return relay_values_are_retired(relay_status_values(relay))

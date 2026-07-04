@@ -86,14 +86,14 @@ def test_coordinator_relay_retired_delegates_to_shared_predicate() -> None:
     # previously missed (it routed them -> launcher refused -> rc=6).
     from agents.coordinator.core import _relay_status_is_retired
 
-    # Reconciled vocabulary: wind-down family + ANTIGRAVITY_TAKEOVER are retirement;
-    # SUPERSEDED/CLOSED are task/claim terminal states, NOT lane retirement.
+    # Broad-9 vocabulary (the launcher's — the refusal surface): the coordinator
+    # previously missed SUPERSEDED/CLOSED/ANTIGRAVITY_TAKEOVER -> routed -> rc=6.
     assert _relay_status_is_retired("retired") is True
     assert _relay_status_is_retired("wound-down") is True
+    assert _relay_status_is_retired("superseded") is True
+    assert _relay_status_is_retired("superseded-by-cx-blue") is True
+    assert _relay_status_is_retired("closed") is True
+    assert _relay_status_is_retired("closed-by-operator") is True
     assert _relay_status_is_retired("antigravity_takeover") is True
-    assert _relay_status_is_retired("superseded") is False
-    assert _relay_status_is_retired("superseded-by-cx-blue") is False
-    assert _relay_status_is_retired("closed") is False
-    assert _relay_status_is_retired("closed-by-operator") is False
     assert _relay_status_is_retired("active") is False
     assert _relay_status_is_retired(None) is False

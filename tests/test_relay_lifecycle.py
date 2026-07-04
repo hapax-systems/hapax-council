@@ -38,17 +38,16 @@ def test_each_retired_prefix_matches() -> None:
         assert relay_value_is_retired(prefix.lower()) is True, prefix
 
 
-def test_reconciled_vocabulary_drops_task_claim_states() -> None:
-    # SUPERSEDED/CLOSED are TASK/CLAIM terminal states (triage_officer/core.py
-    # {"done","closed","withdrawn","superseded"}), NOT lane retirement — they
-    # leaked into the launcher's awk and are excluded. Only ANTIGRAVITY_TAKEOVER
-    # of the launcher's extra three is a genuine lane-terminal marker.
-    assert relay_value_is_retired("superseded") is False
-    assert relay_value_is_retired("superseded-by-cx-blue") is False
-    assert relay_value_is_retired("closed") is False
-    assert relay_value_is_retired("closed-by-operator") is False
-    assert relay_value_is_retired("CLOSED — merged to main") is False
-    assert relay_value_is_retired("antigravity_takeover") is True  # genuine terminal
+def test_coordinator_missed_prefixes_now_match() -> None:
+    # SUPERSEDED, CLOSED, ANTIGRAVITY_TAKEOVER were absent from the coordinator's
+    # six-prefix set -> it routed them -> launcher refused -> rc=6. The unified
+    # predicate (the launcher's vocabulary — the refusal surface) includes them.
+    assert relay_value_is_retired("superseded") is True
+    assert relay_value_is_retired("superseded-by-cx-blue") is True
+    assert relay_value_is_retired("closed") is True
+    assert relay_value_is_retired("closed-by-operator") is True
+    assert relay_value_is_retired("CLOSED — merged to main") is True
+    assert relay_value_is_retired("antigravity_takeover") is True
 
 
 def test_non_retired_statuses_do_not_match() -> None:
@@ -178,11 +177,11 @@ def test_duplicate_key_last_wins_retired(tmp_path: Path) -> None:
 # ----------------------------------------------------------------- vocabulary
 
 
-def test_superseded_is_task_claim_state_not_lane_retirement(tmp_path: Path) -> None:
-    # SUPERSEDED/CLOSED are task/claim terminal states, not lane retirement — the
-    # launcher's awk over-refused them (the bug slice 2b thins). The reconciled
-    # predicate does NOT retire them.
+def test_superseded_in_status_field_routes_correctly(tmp_path: Path) -> None:
+    # The vocabulary gap that produced rc=6: a SUPERSEDED relay the coordinator
+    # did not recognize as retired -> routed -> launcher refused. The unified
+    # broad-9 predicate (the launcher's vocabulary) retires it.
     _write(tmp_path / "cx-super.yaml", "status: superseded\n", mtime_offset=0.0)
-    assert lane_is_retired("cx-super", relay_dir=tmp_path) is False
+    assert lane_is_retired("cx-super", relay_dir=tmp_path) is True
     _write(tmp_path / "cx-closed.yaml", "status: closed-by-operator\n", mtime_offset=0.0)
-    assert lane_is_retired("cx-closed", relay_dir=tmp_path) is False
+    assert lane_is_retired("cx-closed", relay_dir=tmp_path) is True
