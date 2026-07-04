@@ -207,6 +207,36 @@ def test_claude_headless_outside_projects_workdir_fails_closed_without_redemptio
     assert not claude_called.exists()
 
 
+def test_claude_headless_primary_council_subdir_does_not_require_redemption(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-beta").write_text("task-x\n", encoding="utf-8")
+    workdir = home / "projects" / "hapax-council" / "scripts"
+    workdir.mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "missing dispatch redemption binding env" not in result.stderr
+    assert claude_called.exists()
+
+
 def test_claude_headless_external_workdir_requires_live_redemption_authority(
     tmp_path: Path,
 ) -> None:
