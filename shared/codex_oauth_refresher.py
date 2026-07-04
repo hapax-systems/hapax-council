@@ -127,6 +127,7 @@ def publish_access_token(token: str, publish_dir: Path = DEFAULT_PUBLISH_DIR) ->
         try:
             os.unlink(tmp_name)
         except OSError:
+            # Preserve the original publish failure; stale temp cleanup is best-effort.
             pass
         raise
     return target
