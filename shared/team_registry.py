@@ -20,8 +20,10 @@ from pydantic import BaseModel, Field
 REGISTRY_DIR = Path.home() / ".cache" / "hapax" / "team-registry"
 LOG = logging.getLogger(__name__)
 
-Platform = Literal["claude-code", "codex", "vibe", "antigrav"]
+Platform = Literal["claude-code", "codex", "vibe"]
+FreshnessPlatform = Literal["claude-code", "codex", "vibe", "retired"]
 FreshnessResult = Literal["fresh", "stale", "unknown", "blocked"]
+RETIRED_PLATFORMS = frozenset({"agy", "antigrav", "antigravity", "gemini-cli"})
 
 
 def _normalize_legacy_payload(raw: str) -> tuple[str, bool]:
@@ -29,13 +31,19 @@ def _normalize_legacy_payload(raw: str) -> tuple[str, bool]:
 
     payload = json.loads(raw)
     normalized = False
-    if payload.get("platform") == "gemini-cli":
-        payload["platform"] = "antigrav"
+    if payload.get("platform") in RETIRED_PLATFORMS:
         note = str(payload.get("notes") or "").strip()
-        legacy_note = "legacy platform gemini-cli normalized to antigrav"
+        legacy_note = f"retired platform {payload.get('platform')} ignored as live capacity"
         payload["notes"] = f"{note}; {legacy_note}" if note else legacy_note
         normalized = True
     return json.dumps(payload), normalized
+
+
+def _retired_platform_note(payload: str) -> str | None:
+    data = json.loads(payload)
+    if data.get("platform") not in RETIRED_PLATFORMS:
+        return None
+    return str(data.get("notes") or "")
 
 
 class LaneMetadata(BaseModel):
@@ -82,7 +90,7 @@ class FreshnessReceipt(BaseModel):
     """Machine-checkable receipt from a metadata freshness check."""
 
     lane_id: str
-    platform: Platform
+    platform: FreshnessPlatform
     model_id: str
     checked_at: float
     checked_by: str = Field(description="Session or script that probed")
@@ -102,6 +110,18 @@ class TeamRegistry:
     def _path(self, lane_id: str) -> Path:
         return self._dir / f"{lane_id}.json"
 
+    def _retired_note(self, lane_id: str) -> str | None:
+        path = self._path(lane_id)
+        if not path.exists():
+            return None
+        try:
+            payload, normalized = _normalize_legacy_payload(path.read_text())
+        except Exception:
+            return None
+        if not normalized:
+            return None
+        return _retired_platform_note(payload)
+
     def write(self, meta: LaneMetadata) -> Path:
         path = self._path(meta.lane_id)
         path.write_text(meta.model_dump_json(indent=2))
@@ -114,7 +134,14 @@ class TeamRegistry:
         try:
             payload, normalized = _normalize_legacy_payload(path.read_text())
             if normalized:
-                LOG.warning("normalized legacy team-registry platform in %s", path)
+                retired_note = _retired_platform_note(payload)
+                LOG.warning(
+                    "ignored retired team-registry platform in %s: %s",
+                    path,
+                    retired_note or json.loads(payload).get("notes", ""),
+                )
+                if retired_note is not None:
+                    return None
             return LaneMetadata.model_validate_json(payload)
         except Exception:
             return None
@@ -125,7 +152,14 @@ class TeamRegistry:
             try:
                 payload, normalized = _normalize_legacy_payload(p.read_text())
                 if normalized:
-                    LOG.warning("normalized legacy team-registry platform in %s", p)
+                    retired_note = _retired_platform_note(payload)
+                    LOG.warning(
+                        "ignored retired team-registry platform in %s: %s",
+                        p,
+                        retired_note or json.loads(payload).get("notes", ""),
+                    )
+                    if retired_note is not None:
+                        continue
                 lanes.append(LaneMetadata.model_validate_json(payload))
             except Exception:
                 continue
@@ -144,6 +178,19 @@ class TeamRegistry:
         now: float | None = None,
     ) -> FreshnessReceipt:
         ts = now if now is not None else time.time()
+        retired_note = self._retired_note(lane_id)
+        if retired_note is not None:
+            return FreshnessReceipt(
+                lane_id=lane_id,
+                platform="retired",
+                model_id="unknown",
+                checked_at=ts,
+                checked_by=checked_by,
+                result="blocked",
+                stale_after=ts,
+                blockers=[retired_note],
+                notes=retired_note,
+            )
         meta = self.read(lane_id)
         if meta is None:
             return FreshnessReceipt(

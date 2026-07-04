@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 import jsonschema
+import pytest
+from pydantic import ValidationError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = REPO_ROOT / "schemas" / "platform-capability-registry.schema.json"
@@ -26,6 +28,18 @@ def test_platform_capability_schema_validates_seed_registry() -> None:
 
     assert schema["title"] == "PlatformCapabilityRegistry"
     assert registry["registry_schema"] == 1
+
+
+def test_platform_capability_schema_rejects_antigrav_route_platform() -> None:
+    schema = _json(SCHEMA)
+    registry = _json(REGISTRY)
+    poisoned = {
+        **registry,
+        "routes": [{**registry["routes"][0], "platform": "antigrav"}, *registry["routes"][1:]],
+    }
+
+    with pytest.raises(jsonschema.ValidationError, match="antigrav"):
+        jsonschema.Draft202012Validator(schema).validate(poisoned)
 
 
 def test_schema_pins_r2_route_fields_and_enums() -> None:
@@ -72,12 +86,17 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
         "codex",
         "gemini",
         "vibe",
-        "antigrav",
         "local_tool",
         "api",
     }
+    assert "antigrav" not in schema["$defs"]["platform"]["enum"]
     assert "paid_provider" in route["properties"]
     assert "paid_profile" in route["properties"]
+    assert "omitted_capability_shapes" in schema["required"]
+    assert schema["properties"]["omitted_capability_shapes"]["minItems"] == 1
+    assert schema["properties"]["omitted_capability_shapes"]["items"] == {
+        "$ref": "#/$defs/capability_shape_descriptor"
+    }
     assert set(schema["$defs"]["authority_ceiling"]["enum"]) == {
         "authoritative",
         "frontier_review_required",
@@ -176,6 +195,238 @@ def test_seed_registry_records_dimensional_scores_with_evidence() -> None:
             assert score["evidence_refs"]
             assert score["stale_after"]
         assert route["tool_state"]
+
+
+def test_seed_registry_records_omitted_shapes_as_evidence_only_non_supply() -> None:
+    from shared.platform_capability_registry import load_platform_capability_registry
+
+    registry = _json(REGISTRY)
+    shapes = {shape["shape_id"]: shape for shape in registry["omitted_capability_shapes"]}
+    typed_registry = load_platform_capability_registry()
+    typed_shapes = {shape.shape_id: shape for shape in typed_registry.omitted_capability_shapes}
+
+    required_classes = {
+        "model_provider",
+        "local_compute",
+        "publication_bus",
+        "money_rail",
+        "mcp_connector",
+        "orchestrator",
+        "subagent",
+        "cockpit_command",
+        "cctv_runner",
+        "self_inline",
+    }
+    assert required_classes <= {shape["shape_class"] for shape in shapes.values()}
+    assert set(typed_shapes) == set(shapes)
+
+    for shape in shapes.values():
+        assert shape["demand_eligible"] is False
+        assert shape["route_ids"] == []
+        assert shape["measurement_plan_refs"]
+        assert shape["remediation_refs"]
+        assert shape["surface_delta_signal"].startswith("capability_surface_delta:")
+        assert shape["observed_at"] or shape["blocked_reasons"]
+
+    publication = shapes["publication_bus.public_event_surface"]
+    assert "public_claim_disposition_required" in publication["blocked_reasons"]
+    assert any("rdlc" in ref for ref in publication["remediation_refs"])
+
+    antigrav = shapes["antigrav.interactive.full"]
+    assert antigrav["shape_state"] == "deprecated"
+    assert antigrav["route_ids"] == []
+    assert any(ref == "refuse:antigrav-live-route" for ref in antigrav["remediation_refs"])
+
+
+def test_seed_registry_excises_antigrav_live_route_but_records_deprecated_shape() -> None:
+    registry = _json(REGISTRY)
+    routes = {route["route_id"]: route for route in registry["routes"]}
+    shapes = {shape["shape_id"]: shape for shape in registry["omitted_capability_shapes"]}
+
+    assert "antigrav.interactive.full" not in registry["required_route_ids"]
+    assert "antigrav.interactive.full" not in routes
+    assert shapes["antigrav.interactive.full"]["shape_state"] == "deprecated"
+
+
+def test_surface_delta_for_omitted_shape_holds_until_measurement() -> None:
+    from shared.platform_capability_registry import (
+        CapabilityShapeClass,
+        CapabilitySurfaceDelta,
+        CapabilitySurfaceDeltaAction,
+        disposition_for_capability_surface_delta,
+        load_platform_capability_registry,
+    )
+
+    registry = load_platform_capability_registry()
+    disposition = disposition_for_capability_surface_delta(
+        registry,
+        CapabilitySurfaceDelta(
+            surface_id="publication_bus.public_event_surface.omg_weblog",
+            shape_class=CapabilityShapeClass.PUBLICATION_BUS,
+            carrier_family="publication_bus",
+            observed_at="2026-07-04T01:50:00Z",
+            evidence_refs=["test:surface-delta"],
+        ),
+    )
+
+    assert disposition.action is CapabilitySurfaceDeltaAction.KNOWN_HOLD_FOR_MEASUREMENT
+    assert disposition.demand_eligible is False
+    assert disposition.descriptor_id == "publication_bus.public_event_surface"
+    assert "evidence_only_not_dispatch_supply" in disposition.reason_codes
+
+
+def test_same_carrier_unknown_surface_delta_mints_intake_not_hold() -> None:
+    from shared.platform_capability_registry import (
+        CapabilityShapeClass,
+        CapabilitySurfaceDelta,
+        CapabilitySurfaceDeltaAction,
+        disposition_for_capability_surface_delta,
+        load_platform_capability_registry,
+    )
+
+    registry = load_platform_capability_registry()
+    disposition = disposition_for_capability_surface_delta(
+        registry,
+        CapabilitySurfaceDelta(
+            surface_id="openrouter.unregistered_new_surface",
+            shape_class=CapabilityShapeClass.MODEL_PROVIDER,
+            carrier_family="openrouter",
+            observed_at="2026-07-04T01:50:00Z",
+            evidence_refs=["test:surface-delta"],
+        ),
+    )
+
+    assert disposition.action is CapabilitySurfaceDeltaAction.MINT_INTAKE
+    assert disposition.descriptor_id is None
+
+
+def test_unknown_surface_delta_mints_intake_not_supply() -> None:
+    from shared.platform_capability_registry import (
+        CapabilityShapeClass,
+        CapabilitySurfaceDelta,
+        CapabilitySurfaceDeltaAction,
+        disposition_for_capability_surface_delta,
+        load_platform_capability_registry,
+    )
+
+    registry = load_platform_capability_registry()
+    disposition = disposition_for_capability_surface_delta(
+        registry,
+        CapabilitySurfaceDelta(
+            surface_id="new_provider.experimental_leaf",
+            shape_class=CapabilityShapeClass.MODEL_PROVIDER,
+            carrier_family="new_provider",
+            observed_at="2026-07-04T01:50:00Z",
+            evidence_refs=["test:surface-delta"],
+        ),
+    )
+
+    assert disposition.action is CapabilitySurfaceDeltaAction.MINT_INTAKE
+    assert disposition.demand_eligible is False
+    assert disposition.descriptor_id is None
+    assert "capability_surface_delta_unknown_shape" in disposition.reason_codes
+
+
+def test_deprecated_surface_delta_refuses_live_supply() -> None:
+    from shared.platform_capability_registry import (
+        CapabilityShapeClass,
+        CapabilitySurfaceDelta,
+        CapabilitySurfaceDeltaAction,
+        disposition_for_capability_surface_delta,
+        load_platform_capability_registry,
+    )
+
+    registry = load_platform_capability_registry()
+    disposition = disposition_for_capability_surface_delta(
+        registry,
+        CapabilitySurfaceDelta(
+            surface_id="antigrav.interactive.full",
+            shape_class=CapabilityShapeClass.ORCHESTRATOR,
+            carrier_family="antigrav",
+            observed_at="2026-07-04T01:50:00Z",
+            evidence_refs=["test:surface-delta"],
+        ),
+    )
+
+    assert disposition.action is CapabilitySurfaceDeltaAction.DEPRECATED_REFUSE
+    assert disposition.demand_eligible is False
+    assert disposition.descriptor_id == "antigrav.interactive.full"
+    assert "capability_shape_deprecated" in disposition.reason_codes
+
+
+def test_omitted_shape_cannot_be_marked_demand_eligible() -> None:
+    from shared.platform_capability_registry import CapabilityShapeDescriptor
+
+    shape = _json(REGISTRY)["omitted_capability_shapes"][0]
+    poisoned = {**shape, "demand_eligible": True}
+
+    with pytest.raises(ValidationError, match="cannot be demand_eligible"):
+        CapabilityShapeDescriptor.model_validate(poisoned)
+
+
+def test_omitted_shape_cannot_carry_route_ids() -> None:
+    from shared.platform_capability_registry import CapabilityShapeDescriptor
+
+    shape = _json(REGISTRY)["omitted_capability_shapes"][0]
+    poisoned = {**shape, "route_ids": ["codex.headless.full"]}
+
+    with pytest.raises(ValidationError, match="cannot carry route_ids"):
+        CapabilityShapeDescriptor.model_validate(poisoned)
+
+
+def test_deprecated_omitted_shape_requires_retired_blocker() -> None:
+    from shared.platform_capability_registry import CapabilityShapeDescriptor
+
+    shape = next(
+        shape
+        for shape in _json(REGISTRY)["omitted_capability_shapes"]
+        if shape["shape_id"] == "antigrav.interactive.full"
+    )
+    poisoned = {**shape, "blocked_reasons": ["measured_supply_leaf_absent"]}
+
+    with pytest.raises(ValidationError, match="deprecated/retired blocker"):
+        CapabilityShapeDescriptor.model_validate(poisoned)
+
+
+def test_unobserved_omitted_shape_requires_blocker() -> None:
+    from shared.platform_capability_registry import CapabilityShapeDescriptor
+
+    shape = _json(REGISTRY)["omitted_capability_shapes"][0]
+    poisoned = {**shape, "observed_at": None, "blocked_reasons": []}
+
+    with pytest.raises(ValidationError, match="unobserved capability shapes require"):
+        CapabilityShapeDescriptor.model_validate(poisoned)
+
+
+def test_observed_omitted_shape_requires_evidence_refs() -> None:
+    from shared.platform_capability_registry import CapabilityShapeDescriptor
+
+    shape = _json(REGISTRY)["omitted_capability_shapes"][0]
+    poisoned = {**shape, "evidence_refs": []}
+
+    with pytest.raises(ValidationError, match="observed capability shapes require"):
+        CapabilityShapeDescriptor.model_validate(poisoned)
+
+
+def test_runtime_registry_requires_omitted_shapes() -> None:
+    from shared.platform_capability_registry import PlatformCapabilityRegistry
+
+    payload = _json(REGISTRY)
+    del payload["omitted_capability_shapes"]
+
+    with pytest.raises(ValidationError, match="Field required"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_runtime_registry_rejects_extra_route_rows_not_declared() -> None:
+    from shared.platform_capability_registry import PlatformCapabilityRegistry
+
+    payload = _json(REGISTRY)
+    extra_route = {**payload["routes"][0], "route_id": "api.headless.full", "profile": "full"}
+    payload["routes"] = [*payload["routes"], extra_route]
+
+    with pytest.raises(ValidationError, match="not declared in required_route_ids"):
+        PlatformCapabilityRegistry.model_validate(payload)
 
 
 def test_supply_history_contract_projects_benchmark_overhead_and_calibration_fields() -> None:

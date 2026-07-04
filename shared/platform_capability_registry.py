@@ -45,7 +45,6 @@ CAPACITY_INVARIANT = (
 
 REQUIRED_ROUTE_IDS = frozenset(
     {
-        "antigrav.interactive.full",
         "api.headless.api_frontier",
         "api.headless.provider_gateway",
         "claude.headless.full",
@@ -169,6 +168,40 @@ class ModelId(StrEnum):
 class RouteState(StrEnum):
     ACTIVE = "active"
     BLOCKED = "blocked"
+
+
+class CapabilityShapeClass(StrEnum):
+    MODEL_PROVIDER = "model_provider"
+    LOCAL_COMPUTE = "local_compute"
+    PUBLICATION_BUS = "publication_bus"
+    MONEY_RAIL = "money_rail"
+    MCP_CONNECTOR = "mcp_connector"
+    ORCHESTRATOR = "orchestrator"
+    SUBAGENT = "subagent"
+    COCKPIT_COMMAND = "cockpit_command"
+    CCTV_RUNNER = "cctv_runner"
+    SELF_INLINE = "self_inline"
+
+
+class CapabilityShapeState(StrEnum):
+    EVIDENCE_ONLY = "evidence_only"
+    INTAKE_REQUIRED = "intake_required"
+    MEASUREMENT_PENDING = "measurement_pending"
+    DEPRECATED = "deprecated"
+
+
+class CapabilitySurfaceDeltaAction(StrEnum):
+    KNOWN_HOLD_FOR_MEASUREMENT = "known_hold_for_measurement"
+    MINT_INTAKE = "mint_intake"
+    DEPRECATED_REFUSE = "deprecated_refuse"
+
+
+class CapabilityShapeFreshnessState(StrEnum):
+    FRESH = "fresh"
+    STALE = "stale"
+    MISSING = "missing"
+    ASSERTED_ONLY = "asserted_only"
+    CONTRADICTORY = "contradictory"
 
 
 class AuthSurface(StrEnum):
@@ -325,6 +358,84 @@ class DescriptorVariant(StrictModel):
     score_delta: dict[str, int] = Field(default_factory=dict)
     scores_inherited_from: str | None = None
     blocked_reasons: list[str] = Field(default_factory=list)
+
+
+class CapabilityShapeDescriptor(StrictModel):
+    """Evidence-only descriptor for an observed but not-yet-admitted capability surface.
+
+    These records intentionally do not extend ``routes``. They let deterministic surface
+    deltas create intake/remediation work without letting carrier labels such as
+    "publication bus" or "OpenRouter" satisfy demand before measured supply leaves and
+    receipts exist.
+    """
+
+    descriptor_schema: Literal[1] = 1
+    shape_id: str
+    shape_class: CapabilityShapeClass
+    carrier_family: str
+    summary: str
+    harness_shape: str
+    authority_ceiling: AuthorityCeiling
+    shape_state: CapabilityShapeState
+    demand_eligible: bool = False
+    route_ids: list[str] = Field(default_factory=list)
+    resource_semantics: list[str] = Field(min_length=1)
+    spend_semantics: list[str] = Field(min_length=1)
+    observability: list[str] = Field(min_length=1)
+    failure_classes: list[str] = Field(min_length=1)
+    measurement_plan_refs: list[str] = Field(min_length=1)
+    remediation_refs: list[str] = Field(min_length=1)
+    surface_delta_signal: str
+    observed_at: datetime | None
+    stale_after: str
+    freshness_state: CapabilityShapeFreshnessState
+    evidence_refs: list[str] = Field(default_factory=list)
+    blocked_reasons: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _omitted_shape_is_not_supply(self) -> Self:
+        parse_duration_spec(self.stale_after)
+        if self.demand_eligible:
+            raise ValueError(
+                "omitted capability shape descriptors cannot be demand_eligible; "
+                "admit measured supply as a route leaf instead"
+            )
+        if self.route_ids:
+            raise ValueError(
+                "omitted capability shape descriptors cannot carry route_ids; link them "
+                "through remediation/measurement refs until admitted supply exists"
+            )
+        if self.shape_state is CapabilityShapeState.DEPRECATED and not any(
+            "deprecated" in reason or "retired" in reason for reason in self.blocked_reasons
+        ):
+            raise ValueError(
+                "deprecated capability shapes must declare a deprecated/retired blocker"
+            )
+        if self.observed_at is None and not self.blocked_reasons:
+            raise ValueError("unobserved capability shapes require blocked_reasons")
+        if self.observed_at is not None and not self.evidence_refs:
+            raise ValueError("observed capability shapes require evidence_refs")
+        return self
+
+
+class CapabilitySurfaceDelta(StrictModel):
+    """Deterministic signal that a capability surface exists or materially changed."""
+
+    surface_id: str
+    shape_class: CapabilityShapeClass
+    carrier_family: str
+    observed_at: datetime
+    evidence_refs: list[str] = Field(min_length=1)
+    material_change: bool = True
+
+
+class CapabilitySurfaceDisposition(StrictModel):
+    surface_id: str
+    action: CapabilitySurfaceDeltaAction
+    demand_eligible: Literal[False] = False
+    descriptor_id: str | None = None
+    reason_codes: tuple[str, ...]
+    remediation_refs: tuple[str, ...]
 
 
 class QualityEnvelope(StrictModel):
@@ -702,6 +813,7 @@ class PlatformCapabilityRegistry(StrictModel):
     capacity_invariant: str
     generated_from: list[str] = Field(min_length=1)
     required_route_ids: list[str] = Field(min_length=1)
+    omitted_capability_shapes: list[CapabilityShapeDescriptor] = Field(min_length=1)
     routes: list[PlatformCapabilityRoute] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -724,8 +836,29 @@ class PlatformCapabilityRegistry(StrictModel):
         if missing_routes:
             raise ValueError(f"missing required platform routes: {sorted(missing_routes)}")
 
+        extra_routes = set(route_ids) - required
+        if extra_routes:
+            raise ValueError(f"routes not declared in required_route_ids: {sorted(extra_routes)}")
+
         if self.capacity_invariant != CAPACITY_INVARIANT:
             raise ValueError("capacity invariant drifted from governed dispatch invariant")
+
+        shape_ids = [shape.shape_id for shape in self.omitted_capability_shapes]
+        duplicate_shapes = sorted(
+            {shape_id for shape_id in shape_ids if shape_ids.count(shape_id) > 1}
+        )
+        if duplicate_shapes:
+            raise ValueError(f"duplicate omitted capability shape ids: {duplicate_shapes}")
+
+        reserved_route_ids = set(route_ids)
+        route_like_shapes = sorted(
+            shape_id for shape_id in shape_ids if shape_id in reserved_route_ids
+        )
+        if route_like_shapes:
+            raise ValueError(
+                "omitted capability shape ids must not collide with admitted route ids: "
+                f"{route_like_shapes}"
+            )
 
         # descriptor variant provenance is a cross-route reference; only the registry can
         # verify it resolves (the per-route validator cannot see sibling routes).
@@ -789,6 +922,82 @@ class RegistryFreshnessCheck:
 
 def normalize_route_id(route_id: str) -> str:
     return route_id.strip().replace("/", ".")
+
+
+def _normalize_surface_token(value: str) -> str:
+    return value.strip().lower().replace("/", ".").replace(" ", "_")
+
+
+def _surface_matches_shape(
+    delta: CapabilitySurfaceDelta,
+    shape: CapabilityShapeDescriptor,
+) -> bool:
+    surface = _normalize_surface_token(delta.surface_id)
+    shape_id = _normalize_surface_token(shape.shape_id)
+    return delta.shape_class is shape.shape_class and (
+        surface == shape_id or surface.startswith(f"{shape_id}.")
+    )
+
+
+def disposition_for_capability_surface_delta(
+    registry: PlatformCapabilityRegistry,
+    delta: CapabilitySurfaceDelta,
+) -> CapabilitySurfaceDisposition:
+    """Classify a deterministic capability-surface delta without admitting supply.
+
+    A known omitted shape still holds for measurement because the descriptor is evidence-only.
+    An unknown surface mints intake. Deprecated shapes refuse as live supply while preserving
+    provenance/remediation refs for Reins and operators.
+    """
+
+    matches = [
+        shape
+        for shape in registry.omitted_capability_shapes
+        if _surface_matches_shape(delta, shape)
+    ]
+    if not matches:
+        return CapabilitySurfaceDisposition(
+            surface_id=delta.surface_id,
+            action=CapabilitySurfaceDeltaAction.MINT_INTAKE,
+            descriptor_id=None,
+            reason_codes=(
+                "capability_surface_delta_unknown_shape",
+                "measured_supply_leaf_absent",
+                "route_resource_governance_receipts_absent",
+            ),
+            remediation_refs=(
+                "mint:cc-task:capability-surface-intake",
+                "require:descriptor",
+                "require:measurement_plan",
+                "require:route_resource_governance_receipts",
+            ),
+        )
+
+    shape = sorted(matches, key=lambda item: item.shape_id)[0]
+    if shape.shape_state is CapabilityShapeState.DEPRECATED:
+        return CapabilitySurfaceDisposition(
+            surface_id=delta.surface_id,
+            action=CapabilitySurfaceDeltaAction.DEPRECATED_REFUSE,
+            descriptor_id=shape.shape_id,
+            reason_codes=(
+                "capability_shape_deprecated",
+                "live_route_identity_refused",
+                "measured_supply_leaf_absent",
+            ),
+            remediation_refs=tuple(shape.remediation_refs),
+        )
+
+    return CapabilitySurfaceDisposition(
+        surface_id=delta.surface_id,
+        action=CapabilitySurfaceDeltaAction.KNOWN_HOLD_FOR_MEASUREMENT,
+        descriptor_id=shape.shape_id,
+        reason_codes=(
+            "known_omitted_capability_shape",
+            "evidence_only_not_dispatch_supply",
+            "measured_supply_leaf_absent",
+        ),
+        remediation_refs=tuple(shape.remediation_refs),
+    )
 
 
 def parse_duration_spec(spec: str) -> timedelta:
@@ -1454,8 +1663,10 @@ _DYNAMIC_ENTRYPOINTS = (
     SupplyFreshness._freshness_duration_is_valid,
     FreshnessSurfaceEvidence._has_evidence_or_blocker,
     Freshness._duration_specs_are_valid,
+    CapabilityShapeDescriptor._omitted_shape_is_not_supply,
     PlatformCapabilityRoute._route_contract_fails_closed,
     PlatformCapabilityRegistry._route_set_matches_contract,
+    disposition_for_capability_surface_delta,
     build_supply_vector,
     check_registry_freshness,
     load_platform_capability_registry,

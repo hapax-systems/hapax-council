@@ -82,7 +82,7 @@ class TestTeamRegistry:
         reg = TeamRegistry(tmp_path)
         assert reg.read("nonexistent") is None
 
-    def test_read_normalizes_legacy_gemini_cli_platform(self, tmp_path: Path, caplog) -> None:
+    def test_read_ignores_legacy_gemini_cli_platform(self, tmp_path: Path, caplog) -> None:
         reg = TeamRegistry(tmp_path)
         (tmp_path / "antigrav.json").write_text(
             json.dumps(
@@ -102,10 +102,35 @@ class TestTeamRegistry:
 
         loaded = reg.read("antigrav")
 
-        assert loaded is not None
-        assert loaded.platform == "antigrav"
-        assert "gemini-cli normalized to antigrav" in loaded.notes
-        assert "normalized legacy team-registry platform" in caplog.text
+        assert loaded is None
+        assert "retired platform gemini-cli ignored as live capacity" in caplog.text
+        assert "ignored retired team-registry platform" in caplog.text
+
+    def test_all_lanes_skips_retired_antigrav_platform(self, tmp_path: Path, caplog) -> None:
+        reg = TeamRegistry(tmp_path)
+        reg.write(_make_meta("alpha", last_probe=time.time()))
+        for platform in ("agy", "antigrav", "antigravity"):
+            (tmp_path / f"{platform}.json").write_text(
+                json.dumps(
+                    {
+                        "lane_id": platform,
+                        "platform": platform,
+                        "model_id": "google-antigravity-cli-agy",
+                        "context_window": 200_000,
+                        "tools_available": ["Bash"],
+                        "last_probe_utc": time.time(),
+                        "freshness_ttl_s": 3600.0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        lanes = reg.all_lanes()
+
+        assert [lane.lane_id for lane in lanes] == ["alpha"]
+        assert "retired platform agy ignored as live capacity" in caplog.text
+        assert "retired platform antigrav ignored as live capacity" in caplog.text
+        assert "retired platform antigravity ignored as live capacity" in caplog.text
 
     def test_all_lanes(self, tmp_path: Path) -> None:
         reg = TeamRegistry(tmp_path)
@@ -132,6 +157,32 @@ class TestTeamRegistry:
         receipt = reg.check_freshness("missing")
         assert receipt.result == "unknown"
         assert "no metadata file" in receipt.blockers
+
+    def test_check_freshness_reports_retired_platform_reason(self, tmp_path: Path) -> None:
+        reg = TeamRegistry(tmp_path)
+        for platform in ("agy", "antigrav", "antigravity"):
+            (tmp_path / f"{platform}.json").write_text(
+                json.dumps(
+                    {
+                        "lane_id": platform,
+                        "platform": platform,
+                        "model_id": "google-antigravity-cli-agy",
+                        "context_window": 200_000,
+                        "tools_available": ["Bash"],
+                        "last_probe_utc": time.time(),
+                        "freshness_ttl_s": 3600.0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            receipt = reg.check_freshness(platform)
+
+            assert receipt.result == "blocked"
+            assert receipt.platform == "retired"
+            expected = f"retired platform {platform} ignored as live capacity"
+            assert receipt.blockers == [expected]
+            assert receipt.notes == expected
 
     def test_check_freshness_fresh(self, tmp_path: Path) -> None:
         now = time.time()

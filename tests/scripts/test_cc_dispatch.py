@@ -17,7 +17,6 @@ _CC_PATH = Path(__file__).resolve().parents[2] / "scripts" / "cc-dispatch"
 # silently narrower than the real registry exposes.
 VALID = frozenset(
     {
-        "antigrav.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
         "claude.headless.full",
@@ -52,7 +51,8 @@ def test_list(monkeypatch, capsys) -> None:
     _patch_valid(monkeypatch, mod)
     assert mod.main(["--list"]) == 0
     out = capsys.readouterr().out
-    assert "agy" in out and "antigrav.interactive.full" in out
+    assert "codex" in out and "codex.headless.full" in out
+    assert "agy" not in out and "antigrav.interactive.full" not in out
     assert "glmcp-review" not in out  # non-spawnable excluded
 
 
@@ -72,12 +72,34 @@ def test_utilization(monkeypatch, capsys) -> None:
     assert "codex.headless.full" in out
 
 
-def test_unrouted_fails_closed(monkeypatch, capsys) -> None:
+def test_deprecated_antigrav_alias_fails_closed(monkeypatch, capsys) -> None:
     mod = _load()
     _patch_valid(monkeypatch, mod)
-    assert mod.main(["fugu", "cc-task-x"]) == 2
+    assert mod.main(["agy", "cc-task-x"]) == 2
     err = capsys.readouterr().err
-    assert "cannot dispatch 'fugu'" in err and "P2" in err
+    assert "cannot dispatch 'agy'" in err and "deprecated" in err.lower()
+    assert "measured agy supply leaves" in err
+
+
+def test_literal_antigrav_capability_fails_with_retired_next_action(monkeypatch, capsys) -> None:
+    mod = _load()
+    _patch_valid(monkeypatch, mod)
+    assert mod.main(["antigrav", "cc-task-x"]) == 2
+    err = capsys.readouterr().err
+    assert "cannot dispatch 'antigrav'" in err
+    assert "deprecated/excised" in err
+    assert "measured agy supply leaves" in err
+
+    assert mod.main(["antigravity", "cc-task-x"]) == 2
+    err = capsys.readouterr().err
+    assert "cannot dispatch 'antigravity'" in err
+    assert "deprecated/excised" in err
+    assert "measured agy supply leaves" in err
+
+    assert mod.main(["antigrav.interactive.full", "cc-task-x"]) == 2
+    err = capsys.readouterr().err
+    assert "cannot dispatch 'antigrav.interactive.full'" in err
+    assert "deprecated/excised" in err
 
 
 def test_unknown_fails_closed(monkeypatch, capsys) -> None:
@@ -97,13 +119,13 @@ def test_dispatch_validate_builds_correct_cmd(monkeypatch) -> None:
         "run",
         lambda cmd, *a, **k: (calls.append(cmd), SimpleNamespace(returncode=0))[1],
     )
-    assert mod.main(["agy", "cc-task-x", "--lane", "agy-1"]) == 0
+    assert mod.main(["codex", "cc-task-x", "--lane", "cx-red"]) == 0
     cmd = calls[0]
     assert cmd[:1] == ["DISPATCH"]
     assert "--task" in cmd and "cc-task-x" in cmd
-    assert cmd[cmd.index("--lane") + 1] == "agy-1"  # dispatcher requires --task AND --lane
-    assert cmd[cmd.index("--platform") + 1] == "antigrav"
-    assert cmd[cmd.index("--mode") + 1] == "interactive"
+    assert cmd[cmd.index("--lane") + 1] == "cx-red"  # dispatcher requires --task AND --lane
+    assert cmd[cmd.index("--platform") + 1] == "codex"
+    assert cmd[cmd.index("--mode") + 1] == "headless"
     assert cmd[cmd.index("--profile") + 1] == "full"
     assert "--launch" not in cmd  # validate-only by default
 
@@ -118,7 +140,7 @@ def test_dispatch_launch_passes_launch_flag(monkeypatch) -> None:
         "run",
         lambda cmd, *a, **k: (calls.append(cmd), SimpleNamespace(returncode=0))[1],
     )
-    assert mod.main(["agy", "cc-task-x", "--lane", "agy-1", "--launch"]) == 0
+    assert mod.main(["codex", "cc-task-x", "--lane", "cx-red", "--launch"]) == 0
     assert "--launch" in calls[0]
 
 
@@ -133,10 +155,10 @@ def test_safe_flags_forwarded(monkeypatch) -> None:
         lambda cmd, *a, **k: (calls.append(cmd), SimpleNamespace(returncode=0))[1],
     )
     argv = [
-        "agy",
+        "codex",
         "cc-task-x",
         "--lane",
-        "agy-1",
+        "cx-red",
         "--mq-message-id",
         "M1",
         "--idempotency-key",
@@ -160,7 +182,7 @@ def test_reserved_flags_rejected(monkeypatch) -> None:
         ["--skip-worktree-check"],
     ):
         with pytest.raises(SystemExit):
-            mod.main(["agy", "cc-task-x", "--lane", "agy-1", *bad])
+            mod.main(["codex", "cc-task-x", "--lane", "cx-red", *bad])
 
 
 def test_missing_args_errors(monkeypatch) -> None:
@@ -174,7 +196,15 @@ def test_missing_lane_errors(monkeypatch) -> None:
     mod = _load()
     _patch_valid(monkeypatch, mod)
     with pytest.raises(SystemExit):
-        mod.main(["agy", "cc-task-x"])  # no --lane -> the dispatcher would reject; we fail early
+        mod.main(["codex", "cc-task-x"])  # no --lane -> the dispatcher would reject; we fail early
+
+
+def test_unrouted_fails_closed(monkeypatch, capsys) -> None:
+    mod = _load()
+    _patch_valid(monkeypatch, mod)
+    assert mod.main(["fugu", "cc-task-x"]) == 2
+    err = capsys.readouterr().err
+    assert "cannot dispatch 'fugu'" in err and "P2" in err
 
 
 def test_dispatcher_cmd_uses_repo_sibling() -> None:
@@ -276,5 +306,5 @@ def test_dispatch_unreadable_registry_returns_1(monkeypatch, capsys) -> None:
     mod = _load()
     monkeypatch.setattr(mod, "load_valid_route_ids", lambda *a, **k: frozenset())
     monkeypatch.setattr(mod, "registry_error", lambda *a, **k: "registry malformed JSON: x")
-    assert mod.main(["agy", "cc-task-x", "--lane", "agy-1"]) == 1
+    assert mod.main(["codex", "cc-task-x", "--lane", "cx-red"]) == 1
     assert "cannot read the route registry" in capsys.readouterr().err

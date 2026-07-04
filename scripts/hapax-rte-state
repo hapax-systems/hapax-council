@@ -6,9 +6,9 @@ tool reads the most recent one and emits the current status (green/yellow/red/
 ops-distress) plus a normalized JSON summary.
 
 Used by:
-  * send-scripts (hapax-claude-send, hapax-codex-send, hapax-vibe-send,
-    hapax-antigrav-send) as a pre-flight gate — refuse non-essential
-    dispatches when status is red/ops-distress
+  * admitted send-scripts (hapax-claude-send, hapax-codex-send, hapax-vibe-send)
+    as a pre-flight gate — refuse non-essential dispatches when status is
+    red/ops-distress
   * peer/codex/vibe lane sessions as a self-poll — check on every wake before
     starting substantive work
   * humans (operator, alpha) for at-a-glance status
@@ -216,10 +216,17 @@ def read_assignment() -> dict[str, Any]:
         status = "invalid"
         reasons.append("Vibe burst lane requires protocol_exception")
     if (
-        rte in {"antigrav", "gemini"} or rte.startswith("antigrav-") or rte.startswith("gemini-")
-    ) and not protocol_exception:
+        rte in {"agy", "antigrav", "antigravity", "gemini"}
+        or rte.startswith("agy-")
+        or rte.startswith("antigrav-")
+        or rte.startswith("antigravity-")
+        or rte.startswith("gemini-")
+    ):
         status = "invalid"
-        reasons.append("restricted RTE lane requires protocol_exception")
+        reasons.append(
+            "retired/excised RTE lane cannot be active; use admitted frontier lanes or "
+            "measured agy supply-leaf intake with route/resource/governance receipts"
+        )
     if expires_at is not None and expires_at <= now_dt:
         status = "expired"
         reasons.append("assignment expired")

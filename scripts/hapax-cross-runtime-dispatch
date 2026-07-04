@@ -29,8 +29,8 @@ usage() {
 hapax-cross-runtime-dispatch — cross-runtime dispatch with orchestration receipts
 
 Options:
-  --lane LANE          Target lane (e.g., beta, cx-red, antigrav)
-  --platform PLATFORM  Target platform (claude, codex, vibe, antigrav)
+  --lane LANE          Target lane (e.g., beta, cx-red, vbe-1)
+  --platform PLATFORM  Target platform (claude, codex, vibe)
   --task TASK_ID       cc-task to dispatch
   --case CASE_ID       AuthorityCase reference (optional)
   --mq-message-id ID   Durable relay MQ dispatch message id
@@ -135,6 +135,86 @@ check_duplicate() {
     return 0
 }
 
+is_retired_antigrav_lane() {
+    local lane="${1,,}"
+    [[ "$lane" == "agy" || "$lane" == agy-* || "$lane" == "antigrav" || "$lane" == antigrav-* || "$lane" == "antigravity" || "$lane" == antigravity-* || "$lane" == "gemini-cli" || "$lane" == gemini-cli-* ]]
+}
+
+write_blocked_dispatch_receipt() {
+    local block_reason="$1"
+    mkdir -p "$LEDGER_DIR"
+    local timestamp
+    timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    TIMESTAMP="$timestamp" \
+    DISPATCHER_VALUE="$DISPATCHER" \
+    TARGET_LANE="$LANE" \
+    TARGET_PLATFORM="$PLATFORM" \
+    TASK_ID="$TASK" \
+    AUTHORITY_CASE_ID="$CASE_ID" \
+    WORKSTREAM_MODE="$MODE" \
+    BLOCK_REASON="$block_reason" \
+    python3 - "$LEDGER_DIR/dispatch-ledger.jsonl" <<'PY'
+from pathlib import Path
+from hashlib import sha256
+import json
+import os
+import sys
+
+ledger_path = Path(sys.argv[1])
+replay_key = "|".join(
+    [
+        os.environ["DISPATCHER_VALUE"],
+        os.environ["TARGET_LANE"],
+        os.environ["TARGET_PLATFORM"],
+        os.environ["TASK_ID"] or "",
+        os.environ["AUTHORITY_CASE_ID"] or "",
+        os.environ["WORKSTREAM_MODE"],
+        os.environ["BLOCK_REASON"],
+        "blocked",
+    ]
+)
+if ledger_path.exists():
+    for line in ledger_path.read_text(encoding="utf-8").splitlines():
+        try:
+            existing = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if existing.get("replay_key") == replay_key:
+            sys.exit(0)
+        if (
+            existing.get("outcome") == "blocked"
+            and existing.get("dispatcher") == os.environ["DISPATCHER_VALUE"]
+            and existing.get("target_lane") == os.environ["TARGET_LANE"]
+            and existing.get("target_platform") == os.environ["TARGET_PLATFORM"]
+            and (existing.get("task_id") or "") == (os.environ["TASK_ID"] or "")
+            and (existing.get("authority_case_id") or "")
+            == (os.environ["AUTHORITY_CASE_ID"] or "")
+            and existing.get("workstream_mode") == os.environ["WORKSTREAM_MODE"]
+            and existing.get("reason") == os.environ["BLOCK_REASON"]
+        ):
+            sys.exit(0)
+
+receipt = {
+    "dispatch_id": "BLOCKED-" + sha256(replay_key.encode("utf-8")).hexdigest()[:24],
+    "replay_key": replay_key,
+    "timestamp": os.environ["TIMESTAMP"],
+    "dispatcher": os.environ["DISPATCHER_VALUE"],
+    "target_lane": os.environ["TARGET_LANE"],
+    "target_platform": os.environ["TARGET_PLATFORM"],
+    "task_id": os.environ["TASK_ID"] or None,
+    "authority_case_id": os.environ["AUTHORITY_CASE_ID"] or None,
+    "durable_mq_dispatch_bound": False,
+    "advisory_only": True,
+    "durable_mq_reason": "blocked_before_runtime_dispatch",
+    "workstream_mode": os.environ["WORKSTREAM_MODE"],
+    "reason": os.environ["BLOCK_REASON"],
+    "outcome": "blocked",
+}
+with ledger_path.open("a", encoding="utf-8") as f:
+    f.write(json.dumps(receipt) + "\n")
+PY
+}
+
 check_durable_mq_binding() {
     local lane="$1" task="$2" case_id="$3" message_id="$4"
     local db_path="${HAPAX_RELAY_MQ_DB:-$HOME/.cache/hapax/relay/messages.db}"
@@ -229,11 +309,14 @@ if $LIST_ELIGIBLE; then
         [[ -f "$meta_file" ]] || continue
         lane=$(basename "$meta_file" .json)
         platform=$(python3 -c "import json; print(json.load(open('$meta_file')).get('platform','?'))" 2>/dev/null)
+        if is_retired_antigrav_lane "$lane" || is_retired_antigrav_lane "$platform"; then
+            continue
+        fi
         freshness=$(check_lane_freshness "$lane" 2>&1) || true
         protection=$(check_protection "$lane" 2>&1) || true
-        status="eligible"
+        status="unknown"
+        [[ "$freshness" == FRESH* ]] && status="eligible"
         [[ "$freshness" == STALE* ]] && status="stale"
-        [[ "$freshness" == UNKNOWN* ]] && status="unknown"
         [[ "$protection" == PROTECTED* ]] && status="protected"
         printf "  %-12s %-12s %-8s  %s\n" "$lane" "$platform" "$status" "$freshness"
     done
@@ -254,12 +337,29 @@ if [[ -z "$LANE" || -z "$PLATFORM" ]]; then
     exit 2
 fi
 case "$PLATFORM" in
-    claude|codex|vibe|antigrav) ;;
+    claude|codex|vibe) ;;
+    agy|antigrav|antigravity|gemini-cli)
+        reason="platform '$PLATFORM' is retired/excised; mint measured agy supply-leaf intake with route/resource/governance receipts before any future interactive worker path"
+        if ! $DRY_RUN; then
+            write_blocked_dispatch_receipt "$reason"
+        fi
+        echo "BLOCKED: $reason" >&2
+        exit 10
+        ;;
     *)
         echo "error: unsupported platform: $PLATFORM" >&2
         exit 2
         ;;
 esac
+
+if is_retired_antigrav_lane "$LANE"; then
+    reason="lane '$LANE' is retired/excised; mint measured agy supply-leaf intake with route/resource/governance receipts before any future interactive worker path"
+    if ! $DRY_RUN; then
+        write_blocked_dispatch_receipt "$reason"
+    fi
+    echo "BLOCKED: $reason" >&2
+    exit 10
+fi
 
 echo "--- Pre-dispatch checks for $LANE ($PLATFORM) ---"
 
@@ -395,11 +495,6 @@ case "$PLATFORM" in
         ;;
     vibe)
         LAUNCHER="$SCRIPT_DIR/hapax-vibe"
-        ARGS=(--session "$LANE" --terminal tmux)
-        [[ -n "$TASK" ]] && ARGS+=(--task "$TASK")
-        ;;
-    antigrav)
-        LAUNCHER="$SCRIPT_DIR/hapax-antigrav"
         ARGS=(--session "$LANE" --terminal tmux)
         [[ -n "$TASK" ]] && ARGS+=(--task "$TASK")
         ;;

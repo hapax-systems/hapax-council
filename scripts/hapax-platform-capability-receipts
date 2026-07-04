@@ -40,29 +40,18 @@ from shared.platform_capability_registry import (  # noqa: E402
 )
 
 BINARY_BY_PLATFORM = {
-    "antigrav": "agy",
     "api": "python3",
     "claude": "claude",
     "codex": "codex",
     "vibe": "vibe",
 }
 VERSION_ARGS_BY_PLATFORM = {
-    "antigrav": ["--version"],
     "api": ["--version"],
     "claude": ["--version"],
     "codex": ["--version"],
     "vibe": ["--version"],
 }
 CONFIG_REFS_BY_PLATFORM = {
-    "antigrav": [
-        "~/.cache/hapax/relay/onboarding-antigrav.md",
-        "~/.gemini/antigravity-cli/settings.json",
-        "~/.gemini/antigravity/global_workflows",
-        ".agents/rules",
-        ".agents/workflows",
-        ".agents/mcp_config.json",
-        ".agent",
-    ],
     "api": [
         "~/llm-stack/litellm-config.yaml",
         "~/llm-stack/docker-compose.yml",
@@ -79,6 +68,7 @@ CONFIG_REFS_BY_PLATFORM = {
     ],
 }
 SECRETISH_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|credential)([=:])(\S+)")
+RETIRED_ANTIGRAV_PLATFORMS = frozenset({"agy", "antigrav", "antigravity", "gemini-cli"})
 
 
 def parse_utc(value: str) -> datetime:
@@ -142,9 +132,7 @@ def sha256_file(path: Path) -> str | None:
 def candidate_binaries(platform: str) -> list[str]:
     override = os.environ.get(f"HAPAX_{platform.upper()}_BIN", "").strip()
     candidates = [BINARY_BY_PLATFORM[platform]]
-    if platform == "antigrav":
-        candidates.extend(["/usr/bin/agy"])
-    if override and (platform != "antigrav" or Path(override).name == "agy"):
+    if override:
         candidates.insert(0, override)
     return list(dict.fromkeys(candidates))
 
@@ -284,9 +272,7 @@ def build_receipt(
     )
     resource_status = EvidenceStatus.OBSERVED if wrapper.exists else EvidenceStatus.MISSING
     resource_refs = [f"local:{wrapper.path}:exists:{str(wrapper.exists).lower()}"]
-    quota_reason = (
-        "quota_telemetry_unknown" if platform == "antigrav" else "account_live_quota_receipt_absent"
-    )
+    quota_reason = "account_live_quota_receipt_absent"
     quota = surface_evidence(
         status=EvidenceStatus.UNOBSERVABLE,
         source="local_receipt_probe",
@@ -406,7 +392,19 @@ def main(argv: list[str] | None = None) -> int:
     selected = sorted(routes_by_platform) if args.all or not args.platform else args.platform
     unknown = sorted(set(selected) - set(routes_by_platform))
     if unknown:
-        print(f"unknown platform(s): {', '.join(unknown)}", file=sys.stderr)
+        retired = [platform for platform in unknown if platform in RETIRED_ANTIGRAV_PLATFORMS]
+        for platform in retired:
+            print(
+                f"platform '{platform}' is retired/excised; mint measured agy supply-leaf "
+                "intake with route/resource/governance receipts before any future "
+                "interactive worker path",
+                file=sys.stderr,
+            )
+        if retired:
+            retired_set = set(retired)
+            unknown = [platform for platform in unknown if platform not in retired_set]
+        if unknown:
+            print(f"unknown platform(s): {', '.join(unknown)}", file=sys.stderr)
         return 2
 
     outputs: list[dict[str, Any]] = []

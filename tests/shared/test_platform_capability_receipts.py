@@ -210,7 +210,7 @@ def test_fresh_subscription_receipt_allows_dispatch_without_rollback(
     assert decision.registry_freshness_green is True
 
 
-def test_antigrav_agy_receipt_clears_unobservable_quota_catch22(tmp_path: Path) -> None:
+def test_antigrav_agy_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "agy", "1.0.0")
@@ -219,24 +219,17 @@ def test_antigrav_agy_receipt_clears_unobservable_quota_catch22(tmp_path: Path) 
     wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
 
-    result = _run_receipts(
-        tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(tmp_path / "home")},
-        platform="antigrav",
-    )
+    for platform in ("agy", "antigrav", "antigravity", "gemini-cli"):
+        result = _run_receipts(
+            tmp_path,
+            env={"PATH": str(bin_dir), "HOME": str(tmp_path / "home")},
+            platform=platform,
+        )
 
-    assert result.returncode == 0, result.stderr
-    receipt = json.loads((tmp_path / "antigrav.json").read_text(encoding="utf-8"))
-    assert receipt["cli"]["binary"] == "agy"
-    assert receipt["cli"]["available"] is True
-    assert "quota_telemetry_unknown" in receipt["quota"]["reason_codes"]
-
-    registry = load_platform_capability_registry(REGISTRY, receipt_dir=tmp_path, now=NOW_DT)
-    route = registry.require("antigrav.interactive.full")
-
-    assert route.route_state.value == "active"
-    assert "quota_telemetry_unknown" not in route.blocked_reasons
-    assert "quota_telemetry_unknown" not in route.freshness.evidence.quota.blocked_reasons
+        assert result.returncode == 2
+        assert f"platform '{platform}' is retired/excised" in result.stderr
+        assert "measured agy supply-leaf intake" in result.stderr
+        assert not (tmp_path / f"{platform}.json").exists()
 
 
 def test_api_provider_gateway_receipt_allows_paid_gateway_dispatch(

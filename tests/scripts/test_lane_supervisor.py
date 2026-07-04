@@ -6,8 +6,9 @@ split from dispatch: the supervisor guarantees the process exists; the launcher
 (dispatcher) decides what it does — so respawning a quota-walled or task-less
 lane into idle-await is correct, not spam.
 
-Coverage spans all runtimes: claude (greek, headless pidfile model), codex
-(cx-*, tmux model), and antigrav (tmux model).
+Coverage spans active admitted runtimes: claude (greek, headless pidfile model)
+and codex (cx-*, tmux model). Antigrav roster configuration is refused because
+agy is no longer admitted live supply.
 """
 
 from __future__ import annotations
@@ -84,7 +85,15 @@ def _base(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path]:
 
     env = os.environ.copy()
     # Strip any inherited lane identity so it cannot leak into the subprocess.
-    for leaky in ("CLAUDE_ROLE", "HAPAX_AGENT_NAME", "HAPAX_AGENT_ROLE", "TMUX_LIVE"):
+    for leaky in (
+        "CLAUDE_ROLE",
+        "HAPAX_AGENT_NAME",
+        "HAPAX_AGENT_ROLE",
+        "HAPAX_AGENT_SLOT",
+        "HAPAX_WORKTREE_ROLE",
+        "HAPAX_SESSION_ID",
+        "TMUX_LIVE",
+    ):
         env.pop(leaky, None)
     env.update(
         {
@@ -644,7 +653,7 @@ def test_supervisor_skips_live_claude_lane_via_tmux(tmp_path: Path) -> None:
     assert _reads(calls, "claude-headless.txt") == ""
 
 
-# ─── cx-*/antigrav coverage (criterion: not greek-only) ────────────────────────
+# ─── cx-* coverage (criterion: not greek-only) ─────────────────────────────────
 
 
 def test_supervisor_respawns_dead_codex_lane(tmp_path: Path) -> None:
@@ -893,15 +902,20 @@ def test_supervisor_skips_live_codex_lane(tmp_path: Path) -> None:
     assert _reads(calls, "codex.txt") == ""
 
 
-def test_supervisor_respawns_dead_antigrav_lane(tmp_path: Path) -> None:
+def test_supervisor_ignores_retired_antigrav_roster_without_stopping_admitted_lanes(
+    tmp_path: Path,
+) -> None:
     env, calls = _base(tmp_path, HAPAX_SUPERVISOR_ANTIGRAV_LANES="antigrav")
+    env["HAPAX_SUPERVISOR_CODEX_LANES"] = "cx-amber"
     _make_worktree(env, "antigrav")
+    _make_worktree(env, "cx-amber")
 
     result = _run(env)
 
     assert result.returncode == 0, result.stderr
-    antigrav = _reads(calls, "antigrav.txt")
-    assert "--session antigrav" in antigrav
+    assert "HAPAX_SUPERVISOR_ANTIGRAV_LANES is retired" in result.stderr
+    assert _reads(calls, "antigrav.txt") == ""
+    assert "--session cx-amber" in _reads(calls, "codex.txt")
 
 
 # ─── guardrails: cooldown, worktree presence, dry-run, burst ───────────────────

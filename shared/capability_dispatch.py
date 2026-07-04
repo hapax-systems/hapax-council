@@ -52,7 +52,6 @@ LAUNCHABLE_PATHS: frozenset[tuple[str, str]] = frozenset(
         ("claude", "interactive"),
         ("codex", "headless"),
         ("vibe", "headless"),
-        ("antigrav", "interactive"),
     }
 )
 
@@ -60,8 +59,6 @@ LAUNCHABLE_PATHS: frozenset[tuple[str, str]] = frozenset(
 # in the registry's required_route_ids (resolve validates this). Ergonomic aliases
 # only; the route_id (``<platform>.<mode>.<profile>``) is the authority.
 CAPABILITY_ALIASES: dict[str, str] = {
-    "agy": "antigrav.interactive.full",
-    "gemini": "antigrav.interactive.full",
     "codex": "codex.headless.full",
     "codex-spark": "codex.headless.spark",
     "claude": "claude.headless.full",
@@ -80,8 +77,13 @@ CAPABILITY_ALIASES: dict[str, str] = {
 # Capabilities the operator names that have NO governed route yet — fail CLOSED
 # with the exact follow-on that defines them (never a silent bypass).
 UNROUTED_POINTERS: dict[str, str] = {
+    "agy": "Antigrav is deprecated/excised; define measured agy supply leaves with route/resource/governance receipts before dispatch.",
+    "antigrav": "Antigrav is deprecated/excised; define measured agy supply leaves with route/resource/governance receipts before dispatch.",
+    "antigravity": "Antigrav is deprecated/excised; define measured agy supply leaves with route/resource/governance receipts before dispatch.",
+    "antigrav.interactive.full": "Antigrav is deprecated/excised; define measured agy supply leaves with route/resource/governance receipts before dispatch.",
     "fugu": "no route yet — P2: define codex.headless.fugu (codex -p fugu / Sakana). See RESUME §P2.",
     "fugu-ultra": "no route yet — P2: define codex.headless.fugu_ultra. See RESUME §P2.",
+    "gemini": "Gemini/agy is a provider or carrier label, not capability supply; mint measured model/profile/context/tool leaves before dispatch.",
     "sakana": "= fugu (Sakana); no route yet — P2 (codex.headless.fugu) / P4 design. See RESUME.",
     "glmcp": "worker route not minted — P3: glmcp-workhorse-bakeoff must emit promote_to_dispatch_shadow first.",
     "glm": "worker route not minted — P3: glmcp-workhorse-bakeoff (review seat = 'glmcp-review').",

@@ -12,8 +12,9 @@
 
 The workspace runs a cap of **twenty visible session worktrees**, matching
 the threshold enforced by `hooks/scripts/no-stale-branches.sh`. The floor is
-~15 steady-state slots (1 primary + 4 Claude peers + 7 Codex lanes + 2 Vibe +
-1 Antigrav = 15), leaving ~5 spontaneous slots. (An earlier draft of this doc
+~14 steady-state slots (1 primary + 4 Claude peers + 7 Codex lanes + 2 Vibe),
+leaving ~6 spontaneous slots. Retired Antigrav/agy worker surfaces are not
+counted as live worktree capacity. (An earlier draft of this doc
 and the audit tool said "eight"; that transition target diverged from the
 enforced hook and is retired — the two MUST stay in sync.)
 

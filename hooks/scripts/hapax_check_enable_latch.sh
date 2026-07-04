@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # hapax_check_enable_latch.sh — shared governed enable-latch check (capability-adapter glue).
 #
-# Sourced by interactive worker launchers (scripts/hapax-antigrav) so they honor the same
-# DEFAULT_DENY_ENABLE_LATCH posture as the headless launchers (hapax-claude-headless /
-# hapax-codex-headless, which use ENABLE_FILE/DISABLE_FILE/headless_allowed): a runtime may launch
-# only when explicitly enabled, and never when explicitly disabled.
+# Sourced by governed launchers that need the DEFAULT_DENY_ENABLE_LATCH posture used by the
+# headless launchers (hapax-claude-headless / hapax-codex-headless, which use
+# ENABLE_FILE/DISABLE_FILE/headless_allowed): a runtime may launch only when explicitly enabled,
+# and never when explicitly disabled.
 #
 #   hapax_check_enable_latch <runtime>
 #
