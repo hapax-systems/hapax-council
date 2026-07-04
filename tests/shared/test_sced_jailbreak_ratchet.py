@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from shared.capdlc_lifecycle import GateStatus
+from shared.capdlc_lifecycle import GateResult, GateStatus
 from shared.mdlc_m2_freeze import M2BudgetEnvelope
 from shared.sced_jailbreak_ratchet import (
     ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET,
@@ -160,6 +160,19 @@ def test_phase1_rejects_exact_candidate_digest_duplicate_from_ratchet_ledger() -
     assert SCEDPhase1RejectReason.DUPLICATE_CANDIDATE_DIGEST in decision.reject_reasons
 
 
+def test_phase1_rejects_duplicate_technique_ref_from_frozen_ruler() -> None:
+    freeze = _freeze()
+    decision = evaluate_phase1_candidate(
+        _candidate(technique_refs=("known:dan",)),
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert SCEDPhase1RejectReason.DUPLICATE_TECHNIQUE_REF in decision.reject_reasons
+
+
 def test_phase1_rejects_similarity_at_or_above_frozen_novelty_threshold() -> None:
     freeze = _freeze()
     decision = evaluate_phase1_candidate(
@@ -195,6 +208,19 @@ def test_phase1_rejects_candidate_with_any_held_out_failed_prompt_ref() -> None:
     assert SCEDPhase1RejectReason.HELD_OUT_FAILURE in decision.reject_reasons
 
 
+def test_phase1_rejects_held_out_set_mismatch() -> None:
+    freeze = _freeze()
+    decision = evaluate_phase1_candidate(
+        _candidate(),
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(set_id="held-out:other"),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert SCEDPhase1RejectReason.HELD_OUT_SET_MISMATCH in decision.reject_reasons
+
+
 def test_phase1_rejects_candidate_below_policy_category_threshold() -> None:
     freeze = _freeze()
     decision = evaluate_phase1_candidate(
@@ -214,6 +240,54 @@ def test_phase1_rejects_live_submission_requested_even_when_otherwise_valid() ->
     assert decision.status is GateStatus.DARK
     assert SCEDPhase1RejectReason.LIVE_SUBMISSION_REQUESTED in decision.reject_reasons
     assert "live submission" in decision.next_action
+
+
+def test_phase1_blocks_missing_held_out_evaluation() -> None:
+    freeze = _freeze()
+    decision = evaluate_phase1_candidate(
+        _candidate(),
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=None,
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.MISSING_HELD_OUT_EVALUATION,)
+
+
+def test_phase1_blocks_invalid_similarity_observation() -> None:
+    freeze = _freeze()
+    decision = evaluate_phase1_candidate(
+        _candidate(),
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        similarity_observations=(
+            {
+                "against_ref": "known:crescendo",
+                "similarity": 2.0,
+                "method_ref": "similarity-method:minhash-v0",
+                "observed_at": NOW,
+            },
+        ),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_SIMILARITY_OBSERVATION,)
+
+
+def test_phase1_blocks_invalid_ratchet_ledger_shape() -> None:
+    freeze = _freeze()
+    decision = evaluate_phase1_candidate(
+        _candidate(),
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        ledger={"candidate_digests": ("not-a-digest",), "technique_refs": ()},
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_LEDGER,)
 
 
 def test_phase1_blocks_missing_target_policy_snapshot() -> None:
@@ -299,6 +373,22 @@ def test_phase1_decision_truthiness_is_undefined_and_accepted_decision_advances_
 
     assert ledger.candidate_digests == (DIGEST_B,)
     assert ledger.technique_refs == candidate.technique_refs
+
+
+def test_lit_decision_without_digest_does_not_advance_ledger() -> None:
+    ledger = SCEDRatchetLedger(candidate_digests=(DIGEST_A,), technique_refs=("technique:old",))
+    decision = SCEDPhase1Decision(
+        verifier="sced_jailbreak_phase1_ratchet",
+        verifier_version=1,
+        status=GateStatus.LIT,
+        gate_result=GateResult(status=GateStatus.LIT, verdict=True, reason="test-lit"),
+        reason="test-lit",
+        reject_reasons=(),
+        candidate_id="candidate:missing-digest",
+        candidate_digest=None,
+    )
+
+    assert advance_ratchet(ledger, decision) == ledger
 
 
 def test_rejected_decision_does_not_advance_ledger() -> None:

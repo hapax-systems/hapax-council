@@ -44,6 +44,7 @@ class SCEDPhase1RejectReason(StrEnum):
 
     COLLECTION_NOT_ADMITTED = "collection_not_admitted"
     INVALID_CANDIDATE = "invalid_candidate"
+    INVALID_LEDGER = "invalid_ledger"
     INVALID_TARGET_POLICY = "invalid_target_policy"
     MISSING_TARGET_POLICY = "missing_target_policy"
     LIVE_SUBMISSION_REQUESTED = "live_submission_requested"
@@ -64,6 +65,9 @@ _NEXT_ACTIONS: Final[dict[SCEDPhase1RejectReason, str]] = {
     ),
     SCEDPhase1RejectReason.INVALID_CANDIDATE: (
         "repair the candidate record using durable refs and a sha256 digest"
+    ),
+    SCEDPhase1RejectReason.INVALID_LEDGER: (
+        "repair the ratchet ledger using candidate digests and durable technique refs"
     ),
     SCEDPhase1RejectReason.INVALID_TARGET_POLICY: (
         "repair the target policy snapshot refs and dates"
@@ -645,9 +649,9 @@ def _coerce_ledger(value: SCEDRatchetLedger | Mapping[str, Any] | None) -> SCEDR
         try:
             return SCEDRatchetLedger.from_mapping(value)
         except (TypeError, ValueError) as exc:
-            raise _Phase1InputError(SCEDPhase1RejectReason.INVALID_CANDIDATE, str(exc)) from exc
+            raise _Phase1InputError(SCEDPhase1RejectReason.INVALID_LEDGER, str(exc)) from exc
     raise _Phase1InputError(
-        SCEDPhase1RejectReason.INVALID_CANDIDATE,
+        SCEDPhase1RejectReason.INVALID_LEDGER,
         "ledger must be a SCEDRatchetLedger or mapping",
     )
 
