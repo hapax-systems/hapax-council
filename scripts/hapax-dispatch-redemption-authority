@@ -7,10 +7,11 @@ governor socket so external-worktree wrapper launches redeem a live,
 governed-path one-time grant instead of trusting same-UID files.
 
 Trust boundary (keep this honest): this is governed-path admission and
-deviation witnessability in a single-operator system, NOT user auth. A
-same-UID operator can stop or replace their own services; what this daemon
-guarantees is that the governed launch path is the easy path, wrappers fail
-closed without it, and every mint/redeem/refusal is witnessed token-free.
+deviation witnessability in a single-operator system, NOT user auth and NOT
+same-UID non-forgeability. A same-UID operator can stop or replace their own
+services; what this daemon guarantees is that the governed launch path is the
+easy path, wrappers fail closed without it, and every mint/redeem/refusal is
+witnessed token-free.
 
 Modes:
   --serve     run the governor (default under systemd)

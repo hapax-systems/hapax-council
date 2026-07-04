@@ -213,6 +213,57 @@ def test_event_writer_appends_token_free_jsonl(tmp_path: Path) -> None:
     assert stat.S_IMODE(events_path.stat().st_mode) == 0o640
 
 
+def test_event_writer_preserves_events_across_fresh_writer_instances(tmp_path: Path) -> None:
+    script = _load_authority_script()
+    events_path = tmp_path / "ledger" / "events.jsonl"
+
+    first_writer = script._event_writer(events_path)
+    first_writer(
+        LaunchRedemptionEvent(
+            event_type="grant_minted",
+            grant_id="grant-1",
+            task_id="task-x",
+            lane="cx-amber",
+            platform="codex",
+            mode="headless",
+            profile="full",
+            dispatch_message_id="019f-test-1",
+            route_decision_ref="route-decision:test-1",
+            authority_case="CASE-CAPACITY-ROUTING-001",
+            parent_spec="/tmp/spec.md",
+            reason="minted",
+            observed_at=1000.0,
+        )
+    )
+
+    restarted_writer = script._event_writer(events_path)
+    restarted_writer(
+        LaunchRedemptionEvent(
+            event_type="grant_refused",
+            grant_id="grant-1",
+            task_id="task-x",
+            lane="cx-amber",
+            platform="codex",
+            mode="headless",
+            profile="full",
+            dispatch_message_id="019f-test-2",
+            route_decision_ref="route-decision:test-2",
+            authority_case="CASE-CAPACITY-ROUTING-001",
+            parent_spec="/tmp/spec.md",
+            reason="already_consumed",
+            observed_at=1001.0,
+        )
+    )
+
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert [event["event_type"] for event in events] == ["grant_minted", "grant_refused"]
+    assert [event["dispatch_message_id"] for event in events] == [
+        "019f-test-1",
+        "019f-test-2",
+    ]
+    assert "token" not in events_path.read_text(encoding="utf-8")
+
+
 # ── --receipt exit codes + live serve end-to-end ─────────────────────
 
 

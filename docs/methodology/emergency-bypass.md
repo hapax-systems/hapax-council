@@ -32,6 +32,12 @@ External-project launches, including Reins worktrees, require the fixed
 does not create or bypass a redemption token, because that would turn emergency
 mode into an unwitnessed external-launch path.
 
+The governor is a governed-path and witnessability boundary, not same-UID user
+authentication. Its process-image checks reject ordinary requester mismatches
+and native-loader injection, and its token-free ledger witnesses every
+mint/redeem/refusal, but it does not claim cryptographic non-forgeability
+against the single operator account.
+
 If the governor is unavailable or wedged during an incident:
 
 1. Set `HAPAX_METHODOLOGY_EMERGENCY=1` and `HAPAX_EMERGENCY_REASON` with the

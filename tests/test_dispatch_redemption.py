@@ -79,6 +79,12 @@ def test_fixed_socket_path_is_not_caller_env_selected(monkeypatch):
     assert "/run/user/" not in str(dispatch_launch_redemption_socket())
 
 
+def test_module_boundary_disclaims_same_uid_nonforgeability():
+    assert redemption.__doc__ is not None
+    assert "does not claim user authentication" in redemption.__doc__
+    assert "same-UID non-forgeability" in redemption.__doc__
+
+
 def test_mint_redeems_once_and_records_token_free_events():
     now = [1000.0]
     authority = DispatchLaunchRedemptionAuthority(now=lambda: now[0])
@@ -431,7 +437,11 @@ def test_authority_socket_mint_rejects_native_loader_injection(tmp_path, monkeyp
     not (Path("/usr/bin/python3").exists() and hasattr(socket, "SCM_CREDENTIALS")),
     reason="requires trusted system python and Unix per-message credentials",
 )
-def test_authority_socket_mint_rejects_fork_exec_fd_sender_race(tmp_path, monkeypatch):
+def test_authority_socket_mint_rejects_forked_sender_claiming_parent_pid(tmp_path, monkeypatch):
+    # This covers the enforceable kernel-credential predicate only: the process
+    # that sends the mint bytes must match requester_pid. It intentionally does
+    # not claim to close the same-UID parent-send-then-exec TOCTOU; that residual
+    # is documented as witnessability, not non-forgeability.
     authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
     socket_path = tmp_path / "coord" / "dispatch-redemption.sock"
     server = DispatchLaunchRedemptionServer(
@@ -497,7 +507,9 @@ def test_authority_socket_mint_rejects_fork_exec_fd_sender_race(tmp_path, monkey
     stdout, stderr = proc.communicate(timeout=5)
 
     assert stderr == ""
-    assert '"ok":false' in stdout.replace(" ", "")
+    payload = json.loads(stdout)
+    assert payload["ok"] is False
+    assert str(payload["reason"]).startswith("peer_pid_mismatch:")
     events = authority.events()
     assert [event.event_type for event in events] == ["mint_refused"]
     assert events[0].reason.startswith("peer_pid_mismatch:")

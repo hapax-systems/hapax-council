@@ -56,6 +56,9 @@ def test_unit_provisions_fixed_namespace_with_deliberate_mode() -> None:
 def test_unit_runs_activated_source_and_fails_closed_pre_activation() -> None:
     body = UNIT.read_text(encoding="utf-8")
 
+    assert "canonical single-operator" in body
+    assert "`/home/hapax/.cache/hapax/source-activation/worktree`" in body
+    assert "Alternate users/hosts must regenerate this unit via the installer" in body
     assert (
         f"ExecStart=/usr/bin/python3 {ACTIVATION_DAEMON} --serve --events-path {EVENTS_PATH}"
         in body
@@ -91,6 +94,8 @@ def test_unit_names_governed_activation_installer() -> None:
 
     assert "scripts/hapax-dispatch-redemption-service-install --install" in body
     assert "hapax-post-merge-deploy invokes that installer automatically" in body
+    assert f"sha256sum {ACTIVATION_DISPATCHER}" in body
+    assert "requester/runtime changes" in body
     assert "sudo cp systemd/units/hapax-dispatch-redemption.service" not in body
 
 

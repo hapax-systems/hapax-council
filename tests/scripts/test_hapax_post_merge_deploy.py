@@ -8,6 +8,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-post-merge-deploy"
 RECOVERY_BUNDLE_SOURCE_FILES = {
@@ -624,25 +626,50 @@ def test_dispatch_redemption_system_unit_invokes_dedicated_installer(
     assert record["deploy_groups"]["systemd_system_units"] == [unit_path]
 
 
-def test_dispatch_redemption_requester_change_reruns_dedicated_installer(
+@pytest.mark.parametrize(
+    ("changed_path", "body"),
+    [
+        ("scripts/hapax-methodology-dispatch", "#!/usr/bin/env bash\necho dispatch v2\n"),
+        (
+            "scripts/hapax-dispatch-redemption-authority",
+            "#!/usr/bin/env python3\nprint('daemon v2')\n",
+        ),
+        (
+            "shared/governance/dispatch_redemption.py",
+            "DISPATCH_REDEMPTION_TEST_SENTINEL = 'v2'\n",
+        ),
+    ],
+)
+def test_dispatch_redemption_source_change_reruns_dedicated_installer(
     tmp_path: Path,
+    changed_path: str,
+    body: str,
 ) -> None:
-    dispatcher_path = "scripts/hapax-methodology-dispatch"
     installer_path = "scripts/hapax-dispatch-redemption-service-install"
     installer_calls = tmp_path / "dispatch-redemption-installer-calls.txt"
-    repo, sha = _repo_with_linear_commit(
-        tmp_path,
-        {
-            dispatcher_path: "#!/usr/bin/env bash\necho dispatch v2\n",
-            installer_path: (
-                "#!/usr/bin/env bash\n"
-                "set -euo pipefail\n"
-                f'printf "%s\\n" "$*" >> "{installer_calls}"\n'
-                'printf "HAPAX_COUNCIL_DIR=%s\\n" "${HAPAX_COUNCIL_DIR:-}" '
-                f'>> "{installer_calls}"\n'
-            ),
-        },
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    installer = repo / installer_path
+    installer.parent.mkdir(parents=True)
+    installer.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f'printf "%s\\n" "$*" >> "{installer_calls}"\n'
+        'printf "HAPAX_COUNCIL_DIR=%s\\n" "${HAPAX_COUNCIL_DIR:-}" '
+        f'>> "{installer_calls}"\n',
+        encoding="utf-8",
     )
+    _git(repo, "add", "scripts/hapax-dispatch-redemption-service-install")
+    _git(repo, "commit", "-m", "base with dispatch redemption installer")
+    changed = repo / changed_path
+    changed.parent.mkdir(parents=True, exist_ok=True)
+    changed.write_text(body, encoding="utf-8")
+    _git(repo, "add", changed_path)
+    _git(repo, "commit", "-m", "change dispatch redemption source")
+    sha = _git(repo, "rev-parse", "HEAD")
     home = tmp_path / "home"
     bin_dir, _systemctl_calls = _fake_systemctl(tmp_path)
     trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
@@ -663,13 +690,17 @@ def test_dispatch_redemption_requester_change_reruns_dedicated_installer(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "after requester change" in result.stdout
+    assert "after source change" in result.stdout
     assert installer_calls.read_text(encoding="utf-8").splitlines() == [
         "--install",
         f"HAPAX_COUNCIL_DIR={repo}",
     ]
     record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
-    assert record["deploy_groups"]["hapax_scripts"] == [installer_path, dispatcher_path]
+    deploy_groups = record["deploy_groups"]
+    if changed_path.startswith("scripts/"):
+        assert deploy_groups["hapax_scripts"] == [changed_path]
+    else:
+        assert deploy_groups["hapax_scripts"] == []
 
 
 def test_user_scoped_units_still_deploy_to_user_dir(tmp_path: Path) -> None:

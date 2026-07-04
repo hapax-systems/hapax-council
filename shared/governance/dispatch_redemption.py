@@ -1,9 +1,10 @@
 """Dispatch launch redemption substrate.
 
 This module replaces wrapper-side trust in same-user launch files with a live
-authority check. It does not claim user authentication; the boundary is that a
-governed dispatcher or coordinator owns an in-memory one-time grant table and
-the wrapper redeems an opaque token over a fixed socket.
+authority check. It does not claim user authentication or same-UID non-forgeability;
+the boundary is that the governed path owns an in-memory
+one-time grant table, wrappers fail closed without redeeming through the fixed
+socket, and all mint/redeem/refusal activity is witnessed in token-free events.
 """
 
 from __future__ import annotations
@@ -1034,6 +1035,10 @@ def _mint_peer_refusal(
     if request.requester_pid != peer.pid:
         return f"peer_pid_mismatch:{request.requester_pid}!={peer.pid}"
     if require_requester_process:
+        # Defense-in-depth witness, not same-UID auth: /proc is observed after
+        # bytes arrive, so a single operator can still win a send-before-exec
+        # race. The durable guarantee is fail-closed wrapper redemption plus a
+        # token-free event trail, not cryptographic origin proof.
         requester_refusal = _requester_process_refusal(peer.pid, request.requester)
         if requester_refusal is not None:
             return requester_refusal
