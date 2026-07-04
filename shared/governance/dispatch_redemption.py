@@ -1042,12 +1042,6 @@ def _allowed_requester_paths(requester_name: str) -> frozenset[Path]:
     return frozenset(paths)
 
 
-def _trusted_python_process_is_running_script(
-    exe: Path, cmdline: tuple[str, ...], expected_paths: frozenset[Path]
-) -> bool:
-    return _trusted_python_process_script_path(exe, cmdline, expected_paths) is not None
-
-
 def _trusted_python_process_script_path(
     exe: Path, cmdline: tuple[str, ...], expected_paths: frozenset[Path]
 ) -> Path | None:

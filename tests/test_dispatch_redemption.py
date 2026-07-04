@@ -413,25 +413,37 @@ def test_requester_path_witness_rejects_argv_shape_forgery(tmp_path):
     expected_paths = frozenset({dispatcher.resolve()})
     trusted_python = Path("/usr/bin/python3").resolve()
 
-    assert redemption._trusted_python_process_is_running_script(
-        trusted_python,
-        (str(trusted_python), "-I", str(dispatcher), "--task", "task-1"),
-        expected_paths,
+    assert (
+        redemption._trusted_python_process_script_path(
+            trusted_python,
+            (str(trusted_python), "-I", str(dispatcher), "--task", "task-1"),
+            expected_paths,
+        )
+        == dispatcher.resolve()
     )
-    assert not redemption._trusted_python_process_is_running_script(
-        trusted_python,
-        (str(trusted_python), "-c", "print('forged')", str(dispatcher)),
-        expected_paths,
+    assert (
+        redemption._trusted_python_process_script_path(
+            trusted_python,
+            (str(trusted_python), "-c", "print('forged')", str(dispatcher)),
+            expected_paths,
+        )
+        is None
     )
-    assert not redemption._trusted_python_process_is_running_script(
-        trusted_python,
-        (str(trusted_python), str(dispatcher), "--task", "task-1"),
-        expected_paths,
+    assert (
+        redemption._trusted_python_process_script_path(
+            trusted_python,
+            (str(trusted_python), str(dispatcher), "--task", "task-1"),
+            expected_paths,
+        )
+        is None
     )
-    assert not redemption._trusted_python_process_is_running_script(
-        Path("/bin/true"),
-        (str(trusted_python), "-I", str(dispatcher), "--task", "task-1"),
-        expected_paths,
+    assert (
+        redemption._trusted_python_process_script_path(
+            Path("/bin/true"),
+            (str(trusted_python), "-I", str(dispatcher), "--task", "task-1"),
+            expected_paths,
+        )
+        is None
     )
 
 
