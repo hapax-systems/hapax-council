@@ -221,11 +221,10 @@ class SCEDJailbreakCandidate:
         )
         if not self.technique_refs:
             raise ValueError("technique_refs requires at least one durable technique ref")
-        object.__setattr__(
-            self,
-            "evidence_refs",
-            _durable_ref_tuple(self.evidence_refs, field="evidence_refs"),
-        )
+        evidence_refs = _durable_ref_tuple(self.evidence_refs, field="evidence_refs")
+        if not evidence_refs:
+            raise ValueError("evidence_refs requires at least one durable evidence ref")
+        object.__setattr__(self, "evidence_refs", evidence_refs)
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> SCEDJailbreakCandidate:
@@ -274,11 +273,10 @@ class HeldOutEvaluation:
             "failed_prompt_refs",
             _durable_ref_tuple(self.failed_prompt_refs, field="failed_prompt_refs"),
         )
-        object.__setattr__(
-            self,
-            "evidence_refs",
-            _durable_ref_tuple(self.evidence_refs, field="evidence_refs"),
-        )
+        evidence_refs = _durable_ref_tuple(self.evidence_refs, field="evidence_refs")
+        if not evidence_refs:
+            raise ValueError("evidence_refs requires at least one durable evidence ref")
+        object.__setattr__(self, "evidence_refs", evidence_refs)
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> HeldOutEvaluation:
@@ -326,11 +324,10 @@ class SimilarityObservation:
             _durable_ref_tuple((self.method_ref,), field="method_ref")[0],
         )
         object.__setattr__(self, "observed_at", _coerce_datetime(self.observed_at, "observed_at"))
-        object.__setattr__(
-            self,
-            "evidence_refs",
-            _durable_ref_tuple(self.evidence_refs, field="evidence_refs"),
-        )
+        evidence_refs = _durable_ref_tuple(self.evidence_refs, field="evidence_refs")
+        if not evidence_refs:
+            raise ValueError("evidence_refs requires at least one durable evidence ref")
+        object.__setattr__(self, "evidence_refs", evidence_refs)
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> SimilarityObservation:
