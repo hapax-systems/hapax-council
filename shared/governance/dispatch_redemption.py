@@ -927,7 +927,8 @@ def _prepare_socket_path(path: Path, *, directory_mode: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.parent.chmod(directory_mode)
     try:
-        mode = path.stat().st_mode
+        existing = path.stat()
+        mode = existing.st_mode
     except FileNotFoundError:
         return
     if not stat.S_ISSOCK(mode):
@@ -937,6 +938,12 @@ def _prepare_socket_path(path: Path, *, directory_mode: int) -> None:
             probe.settimeout(0.05)
             probe.connect(str(path))
     except OSError:
+        try:
+            current = path.stat()
+        except FileNotFoundError:
+            return
+        if (current.st_dev, current.st_ino) != (existing.st_dev, existing.st_ino):
+            raise OSError(f"redemption socket changed during stale probe: {path}") from None
         path.unlink()
         return
     raise OSError(f"redemption socket already active: {path}")

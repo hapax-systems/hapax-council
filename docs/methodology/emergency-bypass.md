@@ -41,7 +41,9 @@ If the governor is unavailable or wedged during an incident:
    `scripts/hapax-dispatch-redemption-service-install --install`
 3. Verify the fixed socket and protocol:
    `scripts/hapax-dispatch-redemption-authority --receipt`
-4. Retry the external launch through `scripts/hapax-methodology-dispatch`.
+4. Verify the runtime namespace owner/mode independently:
+   `stat -c '%U:%G %a %n' /run/hapax/coord /run/hapax/coord/dispatch-redemption.sock`
+5. Retry the external launch through `scripts/hapax-methodology-dispatch`.
 
 If an external project itself needs emergency edits before the governor can be
 repaired, perform that manual work only under the same emergency ledger and open

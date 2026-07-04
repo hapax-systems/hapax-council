@@ -5,6 +5,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNIT = REPO_ROOT / "systemd" / "units" / "hapax-dispatch-redemption.service"
+CLAUDE_LANE_UNIT = REPO_ROOT / "systemd" / "units" / "hapax-claude-lane@.service"
 ACTIVATION_DAEMON = (
     "/home/hapax/.cache/hapax/source-activation/worktree/scripts/"
     "hapax-dispatch-redemption-authority"
@@ -61,6 +62,21 @@ def test_unit_runs_activated_source_and_fails_closed_pre_activation() -> None:
         if line.startswith(("ExecStart=", "ConditionPathExists="))
     ]
     assert not [line for line in runtime_directives if "/projects/hapax-council" in line]
+
+
+def test_claude_lane_dispatcher_matches_governor_allowlist() -> None:
+    governor = UNIT.read_text(encoding="utf-8")
+    lane = CLAUDE_LANE_UNIT.read_text(encoding="utf-8")
+
+    assert (
+        f"Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS={ACTIVATION_DISPATCHER}"
+    ) in governor
+    activation_from_home = ACTIVATION_DISPATCHER.replace("/home/hapax", "$HOME", 1)
+    assert f'/usr/bin/python3 -I "{activation_from_home}"' in lane
+    expected_digest = hashlib.sha256(DISPATCHER.read_bytes()).hexdigest()
+    assert (
+        f"Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_SHA256={expected_digest}"
+    ) in governor
 
 
 def test_unit_names_governed_activation_installer() -> None:
