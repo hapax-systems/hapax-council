@@ -291,6 +291,33 @@ def test_validated_judge_llm_acceptor_events_move_posteriors() -> None:
     assert posterior.ts_alpha > 2.0
 
 
+def test_flip_check_cli_exits_refused_on_missing_log(tmp_path: Path, capsys) -> None:
+    # the __main__ probe (python -m shared.sdlc_router --shadow-log ...) is the
+    # static operator/phase-1 entrypoint for the flip gate: exit 0 = flip allowed,
+    # exit 2 = refused, decision JSON on stdout either way.
+    from shared.sdlc_router import _judge_flip_check_main
+
+    exit_code = _judge_flip_check_main(["--shadow-log", str(tmp_path / "absent.jsonl")])
+    assert exit_code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["allowed"] is False
+    assert "judge_held_set_missing" in payload["reason_codes"]
+
+
+def test_flip_check_cli_exits_zero_on_healthy_log(tmp_path: Path, capsys) -> None:
+    from shared.sdlc_router import _judge_flip_check_main
+
+    log = tmp_path / "shadow.jsonl"
+    with log.open("w") as fh:
+        for local, authoritative in _healthy_pairs():
+            fh.write(json.dumps({"local": local, "authoritative": authoritative}) + "\n")
+    exit_code = _judge_flip_check_main(["--shadow-log", str(log)])
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["allowed"] is True
+    assert payload["measure"]["n_scored"] == 200
+
+
 def test_non_judge_gate_types_learn_without_judge_promotion() -> None:
     # deterministic / gold_verifier / frontier_review verdicts are not the LLM
     # judge — the judge-health gate must not block them.

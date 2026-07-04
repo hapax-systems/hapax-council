@@ -864,3 +864,31 @@ def authoritative_flip_allowed(
     Fail-closed end to end: a missing/empty/corrupt shadow log, an insufficient
     held set, or any unmet bar refuses the flip with explicit reason codes."""
     return judge_promotion_gate(measure_judge_health(load_judge_shadow_pairs(log_path)), thresholds)
+
+
+def _judge_flip_check_main(argv: Sequence[str] | None = None) -> int:
+    """Operator/phase-1 probe for the flip gate:
+    ``python -m shared.sdlc_router [--shadow-log PATH]``.
+
+    Prints the JudgePromotionDecision as JSON; exit 0 = flip allowed, exit 2 =
+    refused (reason codes name each unmet bar). The static entrypoint for
+    ``authoritative_flip_allowed`` — every phase-1 shadow->authoritative flip
+    must carry this decision as evidence."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Judge-health flip gate: may shadow offload moves go authoritative?"
+    )
+    parser.add_argument(
+        "--shadow-log",
+        default=None,
+        help=f"shadow_compare jsonl held set (default: {DEFAULT_JUDGE_SHADOW_LOG})",
+    )
+    args = parser.parse_args(argv)
+    decision = authoritative_flip_allowed(log_path=args.shadow_log)
+    print(decision.model_dump_json(indent=2))
+    return 0 if decision.allowed else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(_judge_flip_check_main())
