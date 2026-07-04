@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -11,6 +12,7 @@ ACTIVATION_DAEMON = (
 ACTIVATION_DISPATCHER = (
     "/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-methodology-dispatch"
 )
+DISPATCHER = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 
 
 def test_unit_is_system_scoped_governor() -> None:
@@ -36,6 +38,10 @@ def test_unit_provisions_fixed_namespace_with_deliberate_mode() -> None:
     ) in body
     assert (
         f"Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS={ACTIVATION_DISPATCHER}"
+    ) in body
+    expected_digest = hashlib.sha256(DISPATCHER.read_bytes()).hexdigest()
+    assert (
+        f"Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_SHA256={expected_digest}"
     ) in body
     directives = [
         line for line in body.splitlines() if line.strip() and not line.strip().startswith("#")

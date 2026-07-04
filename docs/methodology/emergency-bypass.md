@@ -25,6 +25,29 @@ All bypassed actions are logged to:
 Each log entry records: timestamp, session, tool call, paths affected,
 and the bypass reason (if provided via `HAPAX_EMERGENCY_REASON`).
 
+## Dispatch redemption governor recovery
+
+External-project launches, including Reins worktrees, require the fixed
+`hapax-dispatch-redemption.service` governor. `HAPAX_METHODOLOGY_EMERGENCY=1`
+does not create or bypass a redemption token, because that would turn emergency
+mode into an unwitnessed external-launch path.
+
+If the governor is unavailable or wedged during an incident:
+
+1. Set `HAPAX_METHODOLOGY_EMERGENCY=1` and `HAPAX_EMERGENCY_REASON` with the
+   incident reason.
+2. Do the recovery from a council worktree, which does not require external
+   launch redemption:
+   `scripts/hapax-dispatch-redemption-service-install --install`
+3. Verify the fixed socket and protocol:
+   `scripts/hapax-dispatch-redemption-authority --receipt`
+4. Retry the external launch through `scripts/hapax-methodology-dispatch`.
+
+If an external project itself needs emergency edits before the governor can be
+repaired, perform that manual work only under the same emergency ledger and open
+the required retrospective AuthorityCase within the post-emergency windows
+below. Do not mint or hand-edit redemption tokens.
+
 ## Post-emergency requirements
 
 1. **Within 1 hour**: create a retrospective AuthorityCase at stage S0

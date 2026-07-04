@@ -236,12 +236,14 @@ class DispatchLaunchRedemptionAuthority:
     ) -> LaunchRedemptionResponse:
         now = float(self._now())
         token = request.token.strip()
+        presented_context = _validated_context_or_none(request.context)
         if not token:
             return self._response(
                 False,
                 "missing_token",
                 None,
                 now,
+                context=presented_context,
                 peer=peer,
                 wrapper=request.wrapper,
                 wrapper_pid=request.wrapper_pid,
@@ -253,6 +255,7 @@ class DispatchLaunchRedemptionAuthority:
                 "unknown_token",
                 None,
                 now,
+                context=presented_context,
                 peer=peer,
                 wrapper=request.wrapper,
                 wrapper_pid=request.wrapper_pid,
@@ -377,6 +380,7 @@ class DispatchLaunchRedemptionAuthority:
         stored: _StoredGrant | None,
         observed_at: float,
         *,
+        context: LaunchRedemptionContext | None = None,
         peer: LaunchPeerCredentials | None = None,
         wrapper: str | None = None,
         wrapper_pid: int | None = None,
@@ -392,7 +396,7 @@ class DispatchLaunchRedemptionAuthority:
         self._append_event(
             "grant_redeemed" if ok else "grant_refused",
             grant_id=response.grant_id,
-            context=stored.context if stored else None,
+            context=stored.context if stored else context,
             reason=reason,
             observed_at=observed_at,
             peer=peer,
@@ -998,8 +1002,15 @@ def _requester_process_refusal(pid: int, requester: str) -> str | None:
         return f"peer_requester_unwitnessed:{requester}"
     expected_paths = _allowed_requester_paths(requester_name)
     if expected_paths:
-        if not _trusted_python_process_is_running_script(exe, cmdline, expected_paths):
+        observed_script = _trusted_python_process_script_path(exe, cmdline, expected_paths)
+        if observed_script is None:
             return f"peer_requester_mismatch:{requester}"
+        digest_refusal = _requester_script_digest_refusal(observed_script)
+        if digest_refusal is not None:
+            return digest_refusal
+        native_refusal = _process_native_injection_refusal(pid)
+        if native_refusal is not None:
+            return native_refusal
         return None
     if exe.name == requester_name:
         return None
@@ -1034,17 +1045,25 @@ def _allowed_requester_paths(requester_name: str) -> frozenset[Path]:
 def _trusted_python_process_is_running_script(
     exe: Path, cmdline: tuple[str, ...], expected_paths: frozenset[Path]
 ) -> bool:
+    return _trusted_python_process_script_path(exe, cmdline, expected_paths) is not None
+
+
+def _trusted_python_process_script_path(
+    exe: Path, cmdline: tuple[str, ...], expected_paths: frozenset[Path]
+) -> Path | None:
     if not _trusted_python_executable(exe):
-        return False
+        return None
     if len(cmdline) < 3:
-        return False
+        return None
     if cmdline[1] != "-I":
-        return False
+        return None
     try:
         observed = Path(cmdline[2]).expanduser().resolve(strict=True)
     except OSError:
         observed = Path(cmdline[2]).expanduser().resolve(strict=False)
-    return observed in expected_paths
+    if observed not in expected_paths:
+        return None
+    return observed
 
 
 def _trusted_python_executable(exe: Path) -> bool:
@@ -1059,8 +1078,95 @@ def _trusted_python_executable(exe: Path) -> bool:
     return not bool(st.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
 
 
+def _requester_script_digest_refusal(script: Path) -> str | None:
+    expected = os.environ.get("HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_SHA256", "").strip()
+    if not expected:
+        return None
+    if expected.startswith("sha256:"):
+        expected = expected.removeprefix("sha256:")
+    try:
+        observed = hashlib.sha256(script.read_bytes()).hexdigest()
+    except OSError:
+        return f"peer_requester_digest_unreadable:{script}"
+    if observed != expected:
+        return f"peer_requester_digest_mismatch:{script}"
+    return None
+
+
+def _process_native_injection_refusal(pid: int) -> str | None:
+    try:
+        environ = _proc_environ(pid)
+    except OSError:
+        return "peer_requester_environ_unwitnessed"
+    for name in ("LD_AUDIT", "LD_PRELOAD"):
+        value = environ.get(name, "").strip()
+        if value:
+            return f"peer_requester_native_env:{name}"
+    try:
+        mappings = _proc_executable_mappings(pid)
+    except OSError:
+        return "peer_requester_maps_unwitnessed"
+    for mapped in mappings:
+        mapping_refusal = _mapped_executable_refusal(mapped)
+        if mapping_refusal is not None:
+            return mapping_refusal
+    return None
+
+
+def _proc_environ(pid: int) -> dict[str, str]:
+    raw = Path(f"/proc/{pid}/environ").read_bytes()
+    environ: dict[str, str] = {}
+    for part in raw.split(b"\0"):
+        if not part or b"=" not in part:
+            continue
+        key, value = part.split(b"=", 1)
+        environ[key.decode("utf-8", "replace")] = value.decode("utf-8", "replace")
+    return environ
+
+
+def _proc_executable_mappings(pid: int) -> tuple[Path, ...]:
+    paths: set[Path] = set()
+    for line in (
+        Path(f"/proc/{pid}/maps").read_text(encoding="utf-8", errors="replace").splitlines()
+    ):
+        parts = line.split(maxsplit=5)
+        if len(parts) < 6:
+            continue
+        perms = parts[1]
+        raw_path = parts[5]
+        if "x" not in perms or not raw_path.startswith("/"):
+            continue
+        if raw_path.endswith(" (deleted)"):
+            raw_path = raw_path.removesuffix(" (deleted)")
+        paths.add(Path(raw_path))
+    return tuple(sorted(paths))
+
+
+def _mapped_executable_refusal(path: Path) -> str | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return f"peer_requester_native_mapping_unwitnessed:{path}"
+    if st.st_uid != 0:
+        return f"peer_requester_native_mapping_untrusted_owner:{path}"
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return f"peer_requester_native_mapping_writable:{path}"
+    return None
+
+
 def _cmdline_contains_basename(cmdline: tuple[str, ...], expected_name: str) -> bool:
     return any(Path(part).name == expected_name for part in cmdline)
+
+
+def _validated_context_or_none(
+    context: LaunchRedemptionContext,
+) -> LaunchRedemptionContext | None:
+    try:
+        normalized = context.normalized()
+        normalized.validate()
+    except ValueError:
+        return None
+    return normalized
 
 
 def _token_digest(token: str) -> str:

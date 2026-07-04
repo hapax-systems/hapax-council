@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import socket
@@ -143,6 +144,22 @@ def test_redeem_refuses_context_mismatch_and_policy_drift():
     assert drift.ok is False
     assert drift.reason == "policy_refused:route_no_longer_launch"
     assert drift.dispatch_message_id == "019f-test"
+
+
+def test_unknown_token_refusal_preserves_presented_context():
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+
+    response = authority.redeem(_request("not-a-live-token"))
+
+    assert response.ok is False
+    assert response.reason == "unknown_token"
+    events = authority.events()
+    assert [event.event_type for event in events] == ["grant_refused"]
+    assert events[0].reason == "unknown_token"
+    assert events[0].task_id == "task-1"
+    assert events[0].lane == "cx-test"
+    assert events[0].dispatch_message_id == "019f-test"
+    assert events[0].route_decision_ref == "route-decision:test"
 
 
 def test_socket_redemption_roundtrip_sets_governor_modes(tmp_path):
@@ -330,6 +347,65 @@ def test_authority_socket_mint_accepts_allowed_dispatcher_path_process(tmp_path,
 
 
 @pytest.mark.skipif(not Path("/usr/bin/python3").exists(), reason="requires trusted system python")
+def test_authority_socket_mint_rejects_native_loader_injection(tmp_path, monkeypatch):
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+    socket_path = tmp_path / "coord" / "dispatch-redemption.sock"
+    server = DispatchLaunchRedemptionServer(
+        authority,
+        socket_path=socket_path,
+        require_mint_requester_process=True,
+    )
+    dispatcher = tmp_path / "scripts" / "hapax-methodology-dispatch"
+    dispatcher.parent.mkdir()
+    worktree = tmp_path / "reins"
+    worktree.mkdir()
+    dispatcher.write_text(
+        "import json\n"
+        "import os\n"
+        "import sys\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+        "from shared.governance.dispatch_redemption import ("
+        "LaunchMintRequest, LaunchRedemptionContext, mint_launch_via_socket)\n"
+        "socket_path = Path(sys.argv[1])\n"
+        "worktree = Path(sys.argv[2])\n"
+        "context = LaunchRedemptionContext("
+        "task_id='task-1', lane='cx-test', platform='codex', mode='headless', "
+        "profile='full', worktree=str(worktree), purpose='external_launch', "
+        "dispatch_message_id='019f-test', route_decision_ref='route-decision:test', "
+        "authority_case='CASE-CAPACITY-ROUTING-001')\n"
+        "response = mint_launch_via_socket("
+        "LaunchMintRequest(context=context, requester='hapax-methodology-dispatch', "
+        "requester_pid=os.getpid(), ttl_s=60.0, observed_at=time.time()), "
+        "socket_path=socket_path, timeout_s=2.0)\n"
+        "print(json.dumps({'ok': response.ok, 'reason': response.reason}))\n"
+        "raise SystemExit(0 if response.ok else 1)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS",
+        str(dispatcher),
+    )
+
+    thread = threading.Thread(target=server.serve_once, kwargs={"timeout_s": 5.0})
+    thread.start()
+    result = _run_dispatcher_mint_with_retry(
+        dispatcher,
+        socket_path,
+        worktree,
+        extra_env={"LD_PRELOAD": str(tmp_path / "attacker.so")},
+    )
+    thread.join(timeout=5)
+
+    assert result.returncode == 1
+    assert json.loads(result.stdout)["reason"] == "peer_requester_native_env:LD_PRELOAD"
+    events = authority.events()
+    assert [event.event_type for event in events] == ["mint_refused"]
+    assert events[0].reason == "peer_requester_native_env:LD_PRELOAD"
+
+
+@pytest.mark.skipif(not Path("/usr/bin/python3").exists(), reason="requires trusted system python")
 def test_requester_path_witness_rejects_argv_shape_forgery(tmp_path):
     dispatcher = tmp_path / "scripts" / "hapax-methodology-dispatch"
     dispatcher.parent.mkdir()
@@ -357,6 +433,30 @@ def test_requester_path_witness_rejects_argv_shape_forgery(tmp_path):
         (str(trusted_python), "-I", str(dispatcher), "--task", "task-1"),
         expected_paths,
     )
+
+
+def test_requester_path_witness_rejects_digest_drift(tmp_path, monkeypatch):
+    dispatcher = tmp_path / "hapax-methodology-dispatch"
+    dispatcher.write_text("#!/usr/bin/env python3\nprint('changed')\n", encoding="utf-8")
+    observed_digest = hashlib.sha256(dispatcher.read_bytes()).hexdigest()
+
+    monkeypatch.setenv("HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_SHA256", "0" * 64)
+
+    refusal = redemption._requester_script_digest_refusal(dispatcher)
+
+    assert observed_digest != "0" * 64
+    assert refusal == f"peer_requester_digest_mismatch:{dispatcher}"
+
+
+def test_native_mapping_witness_rejects_user_writable_code(tmp_path):
+    mapped = tmp_path / "attacker.so"
+    mapped.write_bytes(b"not a real shared object")
+    mapped.chmod(0o775)
+
+    refusal = redemption._mapped_executable_refusal(mapped)
+
+    assert refusal is not None
+    assert refusal.startswith("peer_requester_native_mapping_")
 
 
 def test_socket_redemption_fails_closed_when_authority_absent(tmp_path):
@@ -411,8 +511,17 @@ def _mint_with_retry(request: LaunchMintRequest, socket_path: Path):
     return last
 
 
-def _run_dispatcher_mint_with_retry(dispatcher: Path, socket_path: Path, worktree: Path):
+def _run_dispatcher_mint_with_retry(
+    dispatcher: Path,
+    socket_path: Path,
+    worktree: Path,
+    *,
+    extra_env: dict[str, str] | None = None,
+):
     last = None
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
     for _ in range(100):
         result = subprocess.run(
             ["/usr/bin/python3", "-I", str(dispatcher), str(socket_path), str(worktree)],
@@ -420,6 +529,7 @@ def _run_dispatcher_mint_with_retry(dispatcher: Path, socket_path: Path, worktre
             text=True,
             timeout=5,
             check=False,
+            env=env,
         )
         if "socket_unavailable:" not in result.stdout:
             return result

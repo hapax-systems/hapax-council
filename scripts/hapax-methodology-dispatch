@@ -595,7 +595,11 @@ def _apply_external_launch_redemption_env(
     Sets the launch-context env the wrapper presents at redemption time, then
     obtains the one-time token: an operator-provided env token wins (break-glass
     stays witnessable wrapper-side), otherwise mint from the fixed governor
-    socket. Returns a refusal message (fail closed, do not launch) or None.
+    socket. If the governor is wedged, the emergency path is documented in
+    docs/methodology/emergency-bypass.md: log emergency mode, repair the
+    governor from a council worktree, verify the receipt, then retry the
+    external launch. Returns a refusal message (fail closed, do not launch) or
+    None.
     """
 
     assert validation.task is not None
@@ -666,7 +670,10 @@ def _apply_external_launch_redemption_env(
             return (
                 f"fixed redemption governor refused mint: {response.reason}; "
                 "next action: verify hapax-dispatch-redemption.service is active "
-                "(scripts/hapax-dispatch-redemption-authority --receipt)"
+                "(scripts/hapax-dispatch-redemption-authority --receipt); "
+                "emergency recovery: follow docs/methodology/emergency-bypass.md "
+                "and repair the governor from a council worktree before retrying "
+                "the external launch"
             )
         token = response.token
     env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = token

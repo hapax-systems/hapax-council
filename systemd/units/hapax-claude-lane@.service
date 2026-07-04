@@ -14,7 +14,7 @@ StartLimitBurst=5
 Type=simple
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=-%h/.cache/hapax/claude-headless/%i.env
-ExecStart=/usr/bin/env bash -lc 'exec /usr/bin/python3 -I "$HOME/.local/bin/hapax-methodology-dispatch" --lane "%i" --platform claude --mode headless --task "${HAPAX_DISPATCH_TASK:?HAPAX_DISPATCH_TASK required in per-lane env}" --launch'
+ExecStart=/usr/bin/env bash -lc 'exec /usr/bin/python3 -I "$HOME/.cache/hapax/source-activation/worktree/scripts/hapax-methodology-dispatch" --lane "%i" --platform claude --mode headless --task "${HAPAX_DISPATCH_TASK:?HAPAX_DISPATCH_TASK required in per-lane env}" --launch'
 Restart=always
 RestartSec=10
 
