@@ -460,6 +460,10 @@ workdir_requires_dispatch_redemption() {
 }
 
 validate_dispatch_redemption_authority() {
+  # Redemption parity with hapax-claude-headless: the verifier imports from
+  # this launcher's council checkout ($COUNCIL_DIR, already trusted for
+  # agent-role.sh), never from the (external) WORKDIR and never from the
+  # caller's cwd (`python3 -` puts cwd at sys.path[0]).
   local council_dir="$COUNCIL_DIR" profile="${HAPAX_METHODOLOGY_DISPATCH_PROFILE:-full}"
   if ! python3 - "$council_dir" "$CODEX_TASK" "$SESSION" "$WORKDIR" codex headless "$profile" <<'PYEOF'
 import os

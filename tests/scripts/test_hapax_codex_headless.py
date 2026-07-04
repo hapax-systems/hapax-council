@@ -485,6 +485,55 @@ exit 0
     assert not codex_called.exists()
 
 
+def test_codex_headless_redemption_verifier_imports_from_launcher_checkout(
+    tmp_path: Path,
+) -> None:
+    # The verifier must import shared.governance.dispatch_redemption from the
+    # launcher's own council checkout, never from the caller's cwd (`python3 -`
+    # puts cwd at sys.path[0]). From a non-council cwd the launch must reach
+    # the redemption verdict (socket refusal), not an import failure.
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = "self-minted"
+    env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "019f-fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = "route-decision:fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE"] = "CASE-CAPACITY-ROUTING-001"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "cannot import dispatch redemption verifier" not in result.stderr
+    assert "dispatch redemption refused" in result.stderr
+    assert not codex_called.exists()
+
+
 def test_codex_headless_external_claim_task_redeems_before_local_claim(
     tmp_path: Path,
 ) -> None:
