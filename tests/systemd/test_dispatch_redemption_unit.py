@@ -11,6 +11,7 @@ ACTIVATION_DAEMON = (
 ACTIVATION_DISPATCHER = (
     "/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-methodology-dispatch"
 )
+CANONICAL_REPO_DISPATCHER = "/home/hapax/projects/hapax-council/scripts/hapax-methodology-dispatch"
 
 
 def test_unit_is_system_scoped_governor() -> None:
@@ -35,7 +36,8 @@ def test_unit_provisions_fixed_namespace_with_deliberate_mode() -> None:
         "Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER=hapax-methodology-dispatch"
     ) in body
     assert (
-        f"Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATH={ACTIVATION_DISPATCHER}"
+        "Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS="
+        f"{ACTIVATION_DISPATCHER}:{CANONICAL_REPO_DISPATCHER}"
     ) in body
     directives = [
         line for line in body.splitlines() if line.strip() and not line.strip().startswith("#")
@@ -49,7 +51,12 @@ def test_unit_runs_activated_source_and_fails_closed_pre_activation() -> None:
     assert f"ExecStart=/usr/bin/python3 {ACTIVATION_DAEMON} --serve" in body
     assert f"ConditionPathExists={ACTIVATION_DAEMON}" in body
     # The governor must not run from a mutable lane worktree.
-    assert "/projects/hapax-council" not in body
+    runtime_directives = [
+        line
+        for line in body.splitlines()
+        if line.startswith(("ExecStart=", "ConditionPathExists="))
+    ]
+    assert not [line for line in runtime_directives if "/projects/hapax-council" in line]
 
 
 def test_unit_names_governed_activation_installer() -> None:

@@ -2,12 +2,14 @@ import json
 import os
 import socket
 import stat
+import subprocess
 import threading
 import time
 from pathlib import Path
 
 import pytest
 
+import shared.governance.dispatch_redemption as redemption
 from shared.governance.dispatch_redemption import (
     DispatchLaunchRedemptionAuthority,
     DispatchLaunchRedemptionServer,
@@ -273,6 +275,85 @@ def test_authority_socket_mint_refuses_unwitnessed_requester_process():
     assert events[0].peer_pid == os.getpid()
 
 
+@pytest.mark.skipif(not Path("/usr/bin/python3").exists(), reason="requires trusted system python")
+def test_authority_socket_mint_accepts_allowed_dispatcher_path_process(tmp_path, monkeypatch):
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+    socket_path = tmp_path / "coord" / "dispatch-redemption.sock"
+    server = DispatchLaunchRedemptionServer(
+        authority,
+        socket_path=socket_path,
+        require_mint_requester_process=True,
+    )
+    dispatcher = tmp_path / "scripts" / "hapax-methodology-dispatch"
+    dispatcher.parent.mkdir()
+    worktree = tmp_path / "reins"
+    worktree.mkdir()
+    dispatcher.write_text(
+        "import json\n"
+        "import os\n"
+        "import sys\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+        "from shared.governance.dispatch_redemption import ("
+        "LaunchMintRequest, LaunchRedemptionContext, mint_launch_via_socket)\n"
+        "socket_path = Path(sys.argv[1])\n"
+        "worktree = Path(sys.argv[2])\n"
+        "context = LaunchRedemptionContext("
+        "task_id='task-1', lane='cx-test', platform='codex', mode='headless', "
+        "profile='full', worktree=str(worktree), purpose='external_launch', "
+        "dispatch_message_id='019f-test', route_decision_ref='route-decision:test', "
+        "authority_case='CASE-CAPACITY-ROUTING-001')\n"
+        "response = mint_launch_via_socket("
+        "LaunchMintRequest(context=context, requester='hapax-methodology-dispatch', "
+        "requester_pid=os.getpid(), ttl_s=60.0, observed_at=time.time()), "
+        "socket_path=socket_path, timeout_s=2.0)\n"
+        "print(json.dumps({'ok': response.ok, 'reason': response.reason}))\n"
+        "raise SystemExit(0 if response.ok else 1)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS",
+        str(dispatcher),
+    )
+
+    thread = threading.Thread(target=server.serve_once, kwargs={"timeout_s": 5.0})
+    thread.start()
+    result = _run_dispatcher_mint_with_retry(dispatcher, socket_path, worktree)
+    thread.join(timeout=5)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["reason"] == "minted"
+    events = authority.events()
+    assert [event.event_type for event in events] == ["grant_minted"]
+    assert events[0].requester == "hapax-methodology-dispatch"
+
+
+@pytest.mark.skipif(not Path("/usr/bin/python3").exists(), reason="requires trusted system python")
+def test_requester_path_witness_rejects_argv_shape_forgery(tmp_path):
+    dispatcher = tmp_path / "scripts" / "hapax-methodology-dispatch"
+    dispatcher.parent.mkdir()
+    dispatcher.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    expected_paths = frozenset({dispatcher.resolve()})
+    trusted_python = Path("/usr/bin/python3").resolve()
+
+    assert redemption._trusted_python_process_is_running_script(
+        trusted_python,
+        (str(trusted_python), str(dispatcher), "--task", "task-1"),
+        expected_paths,
+    )
+    assert not redemption._trusted_python_process_is_running_script(
+        trusted_python,
+        (str(trusted_python), "-c", "print('forged')", str(dispatcher)),
+        expected_paths,
+    )
+    assert not redemption._trusted_python_process_is_running_script(
+        Path("/bin/true"),
+        (str(trusted_python), str(dispatcher), "--task", "task-1"),
+        expected_paths,
+    )
+
+
 def test_socket_redemption_fails_closed_when_authority_absent(tmp_path):
     response = redeem_launch_via_socket(_request("anything"), socket_path=tmp_path / "missing.sock")
 
@@ -320,6 +401,24 @@ def _mint_with_retry(request: LaunchMintRequest, socket_path: Path):
         if not response.reason.startswith("socket_unavailable:"):
             return response
         last = response
+        time.sleep(0.01)
+    assert last is not None
+    return last
+
+
+def _run_dispatcher_mint_with_retry(dispatcher: Path, socket_path: Path, worktree: Path):
+    last = None
+    for _ in range(100):
+        result = subprocess.run(
+            ["/usr/bin/python3", str(dispatcher), str(socket_path), str(worktree)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if "socket_unavailable:" not in result.stdout:
+            return result
+        last = result
         time.sleep(0.01)
     assert last is not None
     return last

@@ -30,7 +30,7 @@ User=root
 Group=hapax
 Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_USER=hapax
 Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER=hapax-methodology-dispatch
-Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATH=/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-methodology-dispatch
+Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS=/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-methodology-dispatch:/home/hapax/projects/hapax-council/scripts/hapax-methodology-dispatch
 RuntimeDirectory=hapax/coord
 RuntimeDirectoryMode=0750
 ExecStart=/usr/bin/python3 /home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-dispatch-redemption-authority --serve

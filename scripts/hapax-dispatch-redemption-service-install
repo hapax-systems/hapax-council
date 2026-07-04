@@ -97,6 +97,10 @@ require_source_contract() {
     echo "unit does not permit the hapax caller user explicitly: $UNIT_SRC" >&2
     exit 1
   }
+  grep -q "^Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS=" "$UNIT_SRC" || {
+    echo "unit does not pin allowed methodology-dispatch requester paths: $UNIT_SRC" >&2
+    exit 1
+  }
   grep -q "hapax-dispatch-redemption-authority --serve" "$UNIT_SRC" || {
     echo "unit does not exec hapax-dispatch-redemption-authority --serve: $UNIT_SRC" >&2
     exit 1

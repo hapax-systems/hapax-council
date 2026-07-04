@@ -996,9 +996,9 @@ def _requester_process_refusal(pid: int, requester: str) -> str | None:
         cmdline = _proc_cmdline(pid)
     except OSError:
         return f"peer_requester_unwitnessed:{requester}"
-    expected_path = _allowed_requester_path()
-    if expected_path is not None:
-        if not _python_process_is_running_script(cmdline, expected_path):
+    expected_paths = _allowed_requester_paths(requester_name)
+    if expected_paths:
+        if not _trusted_python_process_is_running_script(exe, cmdline, expected_paths):
             return f"peer_requester_mismatch:{requester}"
         return None
     if exe.name == requester_name:
@@ -1013,24 +1013,50 @@ def _proc_cmdline(pid: int) -> tuple[str, ...]:
     return tuple(part.decode("utf-8", "replace") for part in raw.split(b"\0") if part)
 
 
-def _allowed_requester_path() -> Path | None:
-    raw = os.environ.get("HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATH", "").strip()
+def _allowed_requester_paths(requester_name: str) -> frozenset[Path]:
+    raw = os.environ.get("HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS", "").strip()
     if not raw:
-        return None
-    try:
-        return Path(raw).expanduser().resolve(strict=True)
-    except OSError:
-        return Path(raw).expanduser().resolve(strict=False)
+        raw = os.environ.get("HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATH", "").strip()
+    if not raw and requester_name == "hapax-methodology-dispatch":
+        raw = str(Path(__file__).resolve().parents[2] / "scripts" / requester_name)
+    paths: set[Path] = set()
+    for part in raw.split(os.pathsep):
+        value = part.strip()
+        if not value:
+            continue
+        try:
+            paths.add(Path(value).expanduser().resolve(strict=True))
+        except OSError:
+            paths.add(Path(value).expanduser().resolve(strict=False))
+    return frozenset(paths)
 
 
-def _python_process_is_running_script(cmdline: tuple[str, ...], expected_path: Path) -> bool:
+def _trusted_python_process_is_running_script(
+    exe: Path, cmdline: tuple[str, ...], expected_paths: frozenset[Path]
+) -> bool:
+    if not _trusted_python_executable(exe):
+        return False
     if len(cmdline) < 2:
+        return False
+    if Path(cmdline[1]).name.startswith("-"):
         return False
     try:
         observed = Path(cmdline[1]).expanduser().resolve(strict=True)
     except OSError:
         observed = Path(cmdline[1]).expanduser().resolve(strict=False)
-    return observed == expected_path
+    return observed in expected_paths
+
+
+def _trusted_python_executable(exe: Path) -> bool:
+    if not exe.name.startswith("python"):
+        return False
+    try:
+        st = exe.stat()
+    except OSError:
+        return False
+    if st.st_uid != 0:
+        return False
+    return not bool(st.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
 
 
 def _cmdline_contains_basename(cmdline: tuple[str, ...], expected_name: str) -> bool:
