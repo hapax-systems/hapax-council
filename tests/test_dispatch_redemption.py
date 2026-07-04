@@ -12,10 +12,14 @@ from shared.governance.dispatch_redemption import (
     DispatchLaunchRedemptionAuthority,
     DispatchLaunchRedemptionServer,
     LaunchMintRequest,
+    LaunchPeerCredentials,
     LaunchRedemptionContext,
     LaunchRedemptionRequest,
     dispatch_launch_redemption_socket,
+    handle_authority_bytes,
     mint_launch_via_socket,
+    mint_request_payload,
+    parse_mint_response,
     parse_redemption_response,
     redeem_launch_via_socket,
     redemption_event_payload,
@@ -206,6 +210,41 @@ def test_socket_mint_refuses_requester_pid_that_is_not_peer(tmp_path):
     assert events[0].peer_pid == os.getpid()
 
 
+def test_authority_socket_mint_fails_closed_when_peer_credentials_unavailable():
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+
+    response_payload = handle_authority_bytes(
+        authority,
+        _encoded_mint_request(_mint_request()),
+        require_mint_peer=True,
+    )
+    response = parse_mint_response(response_payload)
+
+    assert response.ok is False
+    assert response.reason == "peer_unavailable"
+    events = authority.events()
+    assert [event.event_type for event in events] == ["mint_refused"]
+    assert events[0].reason == "peer_unavailable"
+
+
+def test_authority_socket_mint_refuses_peer_uid_mismatch():
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+
+    response_payload = handle_authority_bytes(
+        authority,
+        _encoded_mint_request(_mint_request()),
+        peer=LaunchPeerCredentials(pid=os.getpid(), uid=os.getuid() + 1, gid=os.getgid()),
+        require_mint_peer=True,
+    )
+    response = parse_mint_response(response_payload)
+
+    assert response.ok is False
+    assert response.reason == f"peer_uid_mismatch:{os.getuid() + 1}"
+    events = authority.events()
+    assert [event.event_type for event in events] == ["mint_refused"]
+    assert events[0].peer_uid == os.getuid() + 1
+
+
 def test_socket_redemption_fails_closed_when_authority_absent(tmp_path):
     response = redeem_launch_via_socket(_request("anything"), socket_path=tmp_path / "missing.sock")
 
@@ -256,6 +295,15 @@ def _mint_with_retry(request: LaunchMintRequest, socket_path: Path):
         time.sleep(0.01)
     assert last is not None
     return last
+
+
+def _encoded_mint_request(request: LaunchMintRequest) -> bytes:
+    return (
+        json.dumps(mint_request_payload(request), sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        + b"\n"
+    )
 
 
 def _serve_raw_response(socket_path: Path, raw_response: dict[str, object]) -> None:

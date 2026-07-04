@@ -445,18 +445,12 @@ if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CODEX_TASK" ]]; then
   echo "hapax-codex-headless: refusing launch; '$SESSION' already claims '$CLAIMED_TASK', not dispatch task '$CODEX_TASK'" >&2
   exit 13
 fi
-if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
-  [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
-  (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
-fi
-export HAPAX_METHODOLOGY_DISPATCH_TASK="$CODEX_TASK"
 
 workdir_has_local_lifecycle_guards() {
   [[ -x "$WORKDIR/scripts/cc-claim" && -x "$WORKDIR/scripts/cc-close" ]]
 }
 
 workdir_requires_dispatch_redemption() {
-  [[ "$CLAIM_TASK" -eq 0 ]] || return 1
   [[ "${HAPAX_METHODOLOGY_DISPATCH_EXTERNAL:-}" == "1" ]] && return 0
   case "$WORKDIR" in
     "$HOME/projects/hapax-council"|"$HOME/projects/hapax-council--"*) return 1 ;;
@@ -536,14 +530,21 @@ if not response.ok:
     raise SystemExit(1)
 PYEOF
   then
-    echo "hapax-codex-headless: external --no-claim workdir requires live methodology dispatch redemption; next action: launch external worktrees through hapax-methodology-dispatch with an active dispatch-redemption authority" >&2
+    echo "hapax-codex-headless: external workdir requires live methodology dispatch redemption; next action: launch external worktrees through hapax-methodology-dispatch with an active dispatch-redemption authority" >&2
     exit 17
   fi
 }
 
+DISPATCH_REDEEMED=0
 if workdir_requires_dispatch_redemption && ! workdir_has_local_lifecycle_guards; then
   validate_dispatch_redemption_authority
+  DISPATCH_REDEEMED=1
 fi
+if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 && "$DISPATCH_REDEEMED" -eq 0 ]]; then
+  [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
+  (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
+fi
+export HAPAX_METHODOLOGY_DISPATCH_TASK="$CODEX_TASK"
 
 # Keep the lane from becoming a credential sink (same scrub as hapax-codex).
 unset GITHUB_PERSONAL_ACCESS_TOKEN

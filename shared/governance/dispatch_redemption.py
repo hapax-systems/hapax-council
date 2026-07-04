@@ -383,6 +383,7 @@ class DispatchLaunchRedemptionServer:
                     self._authority,
                     _recv_line(conn, max_bytes=65536),
                     peer=_peer_credentials(conn),
+                    require_mint_peer=True,
                 )
                 conn.sendall(_encode_payload(response))
 
@@ -420,6 +421,7 @@ class DispatchLaunchRedemptionServer:
                                 self._authority,
                                 _recv_line(conn, max_bytes=65536),
                                 peer=peer,
+                                require_mint_peer=True,
                             )
                             conn.sendall(_encode_payload(response))
                     except Exception as exc:  # noqa: BLE001 - one bad conn must not kill the authority.
@@ -435,6 +437,8 @@ class DispatchLaunchRedemptionServer:
         _prepare_socket_path(self._socket_path, directory_mode=self._directory_mode)
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
+            if hasattr(socket, "SO_PASSCRED"):
+                server.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
             server.bind(str(self._socket_path))
             self._socket_path.chmod(self._socket_mode)
             server.listen(32)
@@ -658,6 +662,7 @@ def handle_mint_payload(
     payload: dict[str, object],
     *,
     peer: LaunchPeerCredentials | None = None,
+    require_peer: bool = False,
 ) -> dict[str, object]:
     try:
         request = parse_mint_request(payload)
@@ -665,7 +670,7 @@ def handle_mint_payload(
         return mint_response_payload(
             LaunchMintResponse(ok=False, reason=f"invalid_request:{type(exc).__name__}")
         )
-    peer_refusal = _mint_peer_refusal(request, peer)
+    peer_refusal = _mint_peer_refusal(request, peer, require_peer=require_peer)
     if peer_refusal is not None:
         authority.record_mint_refusal(request.context, reason=peer_refusal, peer=peer)
         return mint_response_payload(LaunchMintResponse(ok=False, reason=peer_refusal))
@@ -695,6 +700,7 @@ def handle_authority_bytes(
     data: bytes,
     *,
     peer: LaunchPeerCredentials | None = None,
+    require_mint_peer: bool = False,
 ) -> dict[str, object]:
     """Route one wire request (mint or redeem) to the authority, failing closed.
 
@@ -712,7 +718,7 @@ def handle_authority_bytes(
         )
     schema = payload.get("schema")
     if schema == "hapax.dispatch_launch_mint.v1":
-        return handle_mint_payload(authority, payload, peer=peer)
+        return handle_mint_payload(authority, payload, peer=peer, require_peer=require_mint_peer)
     if schema == "hapax.dispatch_launch_redeem.v1":
         return handle_redemption_payload(authority, payload, peer=peer)
     return redemption_response_payload(
@@ -815,10 +821,18 @@ def _peer_credentials(client: socket.socket) -> LaunchPeerCredentials | None:
 
 
 def _mint_peer_refusal(
-    request: LaunchMintRequest, peer: LaunchPeerCredentials | None
+    request: LaunchMintRequest,
+    peer: LaunchPeerCredentials | None,
+    *,
+    require_peer: bool = False,
 ) -> str | None:
     if peer is None:
+        if require_peer:
+            return "peer_unavailable"
         return None
+    # This is provenance/witnessing, not user authentication: same-UID callers
+    # can still speak the socket protocol, but they cannot claim a different
+    # requester pid/uid without a token-free refusal event.
     if peer.uid != os.getuid():
         return f"peer_uid_mismatch:{peer.uid}"
     if request.requester_pid != peer.pid:
