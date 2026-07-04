@@ -27,12 +27,13 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
+
+from shared.registry import Registry
 
 Status = Literal["infra", "active", "merging", "abandoned", "done"]
 
@@ -114,6 +115,41 @@ def record_path(path: str) -> Path:
     return registry_dir() / f"{_slug(path)}.json"
 
 
+class WorktreeRegistry(Registry[WorktreeRecord, str]):
+    """Internal delegate that routes worktree_registry's per-object STORE MECHANICS (atomic write,
+    ABSENT-vs-CORRUPT read, corruption-isolated listing) through the KIND-0 Registry framework. NOT the
+    public face: the module-level functions + the free ``classify``/``is_reapable`` reaper predicates
+    remain the API the CLI + tests bind. The classify/is_reapable methods here are thin ABC-satisfying
+    shims that delegate to the free functions; the reaper never calls them (it calls the free functions
+    directly), they exist only so this ABC subclass is instantiable."""
+
+    def to_json(self, record: WorktreeRecord) -> str:
+        return _record_to_json(record)
+
+    def from_json(self, raw: str) -> WorktreeRecord:
+        return _record_from_json(raw)
+
+    def key_of(self, record: WorktreeRecord) -> str:
+        return record.path
+
+    def slug(self, key: str) -> str:
+        return _slug(key)
+
+    def classify(self, record: WorktreeRecord, **signals: object) -> str:  # noqa: ARG002
+        return classify(**signals)  # type: ignore[arg-type]  # shim only; the reaper calls free classify()
+
+    def is_reapable(self, status: str, **signals: object) -> bool:
+        return is_reapable(status, bool(signals["clean"]), live=bool(signals.get("live", False)))
+
+
+def _reg() -> WorktreeRegistry:
+    """A FRESH delegate per call — reproduces the module's LAZY per-operation env re-read + mkdir
+    (``registry_dir()`` re-reads ``HAPAX_WORKTREE_REGISTRY_DIR``). NEVER a module-level singleton: a
+    frozen root would ignore a per-test/per-run env override and make the production reaper read the
+    wrong dir (worktrees re-accumulate -> dispatch blocked)."""
+    return WorktreeRegistry(registry_dir())
+
+
 class CorruptRecordError(Exception):
     """A registry record file EXISTS but cannot be parsed. Callers must FAIL CLOSED on it: never
     overwrite it with a derived status (that would silently drop a pin) and never treat the worktree as
@@ -149,16 +185,9 @@ def load(path: str) -> WorktreeRecord | None:
 
 
 def save(rec: WorktreeRecord) -> None:
-    rp = record_path(rec.path)
-    data = _record_to_json(rec)
-    fd, tmp = tempfile.mkstemp(dir=str(rp.parent), prefix=".wt-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(data)
-        os.replace(tmp, rp)
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+    """Atomic per-object write via the KIND-0 Registry framework (WorktreeRegistry.save -> tempfile +
+    os.replace into the same ``registry_dir()/<slug>.json`` slot)."""
+    _reg().save(rec)
 
 
 def register(
@@ -238,35 +267,14 @@ def set_status(path: str, status: Status, *, pinned: bool = True) -> WorktreeRec
 
 
 def deregister(path: str) -> None:
-    rp = record_path(path)
-    try:
-        rp.unlink()
-    except FileNotFoundError:
-        pass
+    _reg().deregister(path)
 
 
 def list_records() -> list[WorktreeRecord]:
-    """All parseable records. Corrupt files are skipped with a per-file warning AND an aggregate count
-    (not silently), so a corrupt record is never invisible to a caller of this function — callers that
+    """All parseable records, via the KIND-0 Registry framework — corrupt files are skipped with a
+    per-file warning AND an aggregate count (a corrupt record is never silently invisible); callers that
     must *act* on corruption use ``_read_record`` per path."""
-    out: list[WorktreeRecord] = []
-    corrupt = 0
-    for fp in sorted(registry_dir().glob("*.json")):
-        try:
-            out.append(_record_from_json(fp.read_text(encoding="utf-8")))
-        except Exception as exc:
-            corrupt += 1
-            print(
-                f"hapax-worktree-registry: WARN skipping corrupt record {fp}: {exc}",
-                file=sys.stderr,
-            )
-    if corrupt:
-        print(
-            f"hapax-worktree-registry: WARN list_records skipped {corrupt} corrupt record(s) "
-            f"(fail-closed: they stay protected; repair with `rm` + `backfill`)",
-            file=sys.stderr,
-        )
-    return out
+    return _reg().list_records()
 
 
 # --- pure classifiers (the heart; unit-tested without touching git/proc) ------------------------------
