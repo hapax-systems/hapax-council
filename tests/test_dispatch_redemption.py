@@ -185,9 +185,15 @@ def test_socket_mint_and_redeem_roundtrip_records_peer_metadata(tmp_path):
     assert [event.event_type for event in events] == ["grant_minted", "grant_redeemed"]
     assert events[0].peer_pid == os.getpid()
     assert events[0].peer_uid == os.getuid()
+    assert events[0].requester == "hapax-methodology-dispatch"
+    assert events[0].requester_pid == os.getpid()
+    assert events[1].wrapper == "hapax-codex-headless"
+    assert events[1].wrapper_pid == 123
     payload = redemption_event_payload(events[0])
     assert payload["peer_pid"] == os.getpid()
     assert payload["peer_uid"] == os.getuid()
+    assert payload["requester"] == "hapax-methodology-dispatch"
+    assert payload["requester_pid"] == os.getpid()
     assert mint_response.token not in repr(payload)
 
 
@@ -225,6 +231,7 @@ def test_authority_socket_mint_fails_closed_when_peer_credentials_unavailable():
     events = authority.events()
     assert [event.event_type for event in events] == ["mint_refused"]
     assert events[0].reason == "peer_unavailable"
+    assert events[0].requester == "hapax-methodology-dispatch"
 
 
 def test_authority_socket_mint_refuses_peer_uid_mismatch():
@@ -243,6 +250,7 @@ def test_authority_socket_mint_refuses_peer_uid_mismatch():
     events = authority.events()
     assert [event.event_type for event in events] == ["mint_refused"]
     assert events[0].peer_uid == os.getuid() + 1
+    assert events[0].requester_pid == os.getpid()
 
 
 def test_socket_redemption_fails_closed_when_authority_absent(tmp_path):

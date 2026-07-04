@@ -145,6 +145,10 @@ class LaunchRedemptionEvent:
     peer_pid: int | None = None
     peer_uid: int | None = None
     peer_gid: int | None = None
+    requester: str | None = None
+    requester_pid: int | None = None
+    wrapper: str | None = None
+    wrapper_pid: int | None = None
 
 
 class LaunchMintRefusedError(RuntimeError):
@@ -184,6 +188,8 @@ class DispatchLaunchRedemptionAuthority:
         *,
         ttl_s: float = 600.0,
         peer: LaunchPeerCredentials | None = None,
+        requester: str | None = None,
+        requester_pid: int | None = None,
     ) -> LaunchRedemptionGrant:
         if ttl_s <= 0:
             raise ValueError("ttl_s must be positive")
@@ -199,6 +205,8 @@ class DispatchLaunchRedemptionAuthority:
                     reason=f"mint_policy_refused:{refusal}",
                     observed_at=float(self._now()),
                     peer=peer,
+                    requester=requester,
+                    requester_pid=requester_pid,
                 )
                 raise LaunchMintRefusedError(refusal)
         token = secrets.token_urlsafe(32)
@@ -217,6 +225,8 @@ class DispatchLaunchRedemptionAuthority:
             reason="minted",
             observed_at=float(self._now()),
             peer=peer,
+            requester=requester,
+            requester_pid=requester_pid,
         )
         return LaunchRedemptionGrant(grant_id=grant_id, token=token, expires_at=expires_at)
 
@@ -226,27 +236,91 @@ class DispatchLaunchRedemptionAuthority:
         now = float(self._now())
         token = request.token.strip()
         if not token:
-            return self._response(False, "missing_token", None, now, peer=peer)
+            return self._response(
+                False,
+                "missing_token",
+                None,
+                now,
+                peer=peer,
+                wrapper=request.wrapper,
+                wrapper_pid=request.wrapper_pid,
+            )
         stored = self._grants.get(_token_digest(token))
         if stored is None:
-            return self._response(False, "unknown_token", None, now, peer=peer)
+            return self._response(
+                False,
+                "unknown_token",
+                None,
+                now,
+                peer=peer,
+                wrapper=request.wrapper,
+                wrapper_pid=request.wrapper_pid,
+            )
         if stored.consumed_at is not None:
-            return self._response(False, "already_consumed", stored, now, peer=peer)
+            return self._response(
+                False,
+                "already_consumed",
+                stored,
+                now,
+                peer=peer,
+                wrapper=request.wrapper,
+                wrapper_pid=request.wrapper_pid,
+            )
         if now > stored.expires_at:
-            return self._response(False, "expired_token", stored, now, peer=peer)
+            return self._response(
+                False,
+                "expired_token",
+                stored,
+                now,
+                peer=peer,
+                wrapper=request.wrapper,
+                wrapper_pid=request.wrapper_pid,
+            )
         try:
             observed = request.context.normalized()
             observed.validate()
         except ValueError:
-            return self._response(False, "invalid_context", stored, now, peer=peer)
+            return self._response(
+                False,
+                "invalid_context",
+                stored,
+                now,
+                peer=peer,
+                wrapper=request.wrapper,
+                wrapper_pid=request.wrapper_pid,
+            )
         if observed != stored.context:
-            return self._response(False, "context_mismatch", stored, now, peer=peer)
+            return self._response(
+                False,
+                "context_mismatch",
+                stored,
+                now,
+                peer=peer,
+                wrapper=request.wrapper,
+                wrapper_pid=request.wrapper_pid,
+            )
         if self._policy_check is not None:
             refusal = self._policy_check(stored.context)
             if refusal:
-                return self._response(False, f"policy_refused:{refusal}", stored, now, peer=peer)
+                return self._response(
+                    False,
+                    f"policy_refused:{refusal}",
+                    stored,
+                    now,
+                    peer=peer,
+                    wrapper=request.wrapper,
+                    wrapper_pid=request.wrapper_pid,
+                )
         stored.consumed_at = now
-        return self._response(True, "redeemed", stored, now, peer=peer)
+        return self._response(
+            True,
+            "redeemed",
+            stored,
+            now,
+            peer=peer,
+            wrapper=request.wrapper,
+            wrapper_pid=request.wrapper_pid,
+        )
 
     def events(self) -> tuple[LaunchRedemptionEvent, ...]:
         return tuple(self._events)
@@ -274,6 +348,8 @@ class DispatchLaunchRedemptionAuthority:
         *,
         reason: str,
         peer: LaunchPeerCredentials | None = None,
+        requester: str | None = None,
+        requester_pid: int | None = None,
     ) -> None:
         normalized: LaunchRedemptionContext | None = None
         if context is not None:
@@ -289,6 +365,8 @@ class DispatchLaunchRedemptionAuthority:
             reason=reason,
             observed_at=float(self._now()),
             peer=peer,
+            requester=requester,
+            requester_pid=requester_pid,
         )
 
     def _response(
@@ -299,6 +377,8 @@ class DispatchLaunchRedemptionAuthority:
         observed_at: float,
         *,
         peer: LaunchPeerCredentials | None = None,
+        wrapper: str | None = None,
+        wrapper_pid: int | None = None,
     ) -> LaunchRedemptionResponse:
         response = LaunchRedemptionResponse(
             ok=ok,
@@ -315,6 +395,8 @@ class DispatchLaunchRedemptionAuthority:
             reason=reason,
             observed_at=observed_at,
             peer=peer,
+            wrapper=wrapper,
+            wrapper_pid=wrapper_pid,
         )
         return response
 
@@ -327,6 +409,10 @@ class DispatchLaunchRedemptionAuthority:
         reason: str,
         observed_at: float,
         peer: LaunchPeerCredentials | None = None,
+        requester: str | None = None,
+        requester_pid: int | None = None,
+        wrapper: str | None = None,
+        wrapper_pid: int | None = None,
     ) -> None:
         event = LaunchRedemptionEvent(
             event_type=event_type,
@@ -343,6 +429,10 @@ class DispatchLaunchRedemptionAuthority:
             peer_pid=peer.pid if peer else None,
             peer_uid=peer.uid if peer else None,
             peer_gid=peer.gid if peer else None,
+            requester=requester,
+            requester_pid=requester_pid,
+            wrapper=wrapper,
+            wrapper_pid=wrapper_pid,
         )
         self._events.append(event)
         if self._event_sink is not None:
@@ -622,6 +712,10 @@ def redemption_event_payload(event: LaunchRedemptionEvent) -> dict[str, object]:
         "peer_pid": event.peer_pid,
         "peer_uid": event.peer_uid,
         "peer_gid": event.peer_gid,
+        "requester": event.requester,
+        "requester_pid": event.requester_pid,
+        "wrapper": event.wrapper,
+        "wrapper_pid": event.wrapper_pid,
     }
 
 
@@ -672,10 +766,22 @@ def handle_mint_payload(
         )
     peer_refusal = _mint_peer_refusal(request, peer, require_peer=require_peer)
     if peer_refusal is not None:
-        authority.record_mint_refusal(request.context, reason=peer_refusal, peer=peer)
+        authority.record_mint_refusal(
+            request.context,
+            reason=peer_refusal,
+            peer=peer,
+            requester=request.requester,
+            requester_pid=request.requester_pid,
+        )
         return mint_response_payload(LaunchMintResponse(ok=False, reason=peer_refusal))
     try:
-        grant = authority.mint(request.context, ttl_s=request.ttl_s, peer=peer)
+        grant = authority.mint(
+            request.context,
+            ttl_s=request.ttl_s,
+            peer=peer,
+            requester=request.requester,
+            requester_pid=request.requester_pid,
+        )
     except LaunchMintRefusedError as exc:
         return mint_response_payload(
             LaunchMintResponse(ok=False, reason=f"mint_policy_refused:{exc}")

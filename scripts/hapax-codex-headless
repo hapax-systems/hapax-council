@@ -460,13 +460,14 @@ workdir_requires_dispatch_redemption() {
 }
 
 validate_dispatch_redemption_authority() {
-  local profile="${HAPAX_METHODOLOGY_DISPATCH_PROFILE:-full}"
-  if ! python3 - "$CODEX_TASK" "$SESSION" "$WORKDIR" codex headless "$profile" <<'PYEOF'
+  local council_dir="$COUNCIL_DIR" profile="${HAPAX_METHODOLOGY_DISPATCH_PROFILE:-full}"
+  if ! python3 - "$council_dir" "$CODEX_TASK" "$SESSION" "$WORKDIR" codex headless "$profile" <<'PYEOF'
 import os
 import sys
 import time
 
-task_id, lane, worktree, platform, mode, profile = sys.argv[1:]
+council_dir, task_id, lane, worktree, platform, mode, profile = sys.argv[1:]
+sys.path.insert(0, council_dir)
 
 try:
     from shared.governance.dispatch_redemption import (

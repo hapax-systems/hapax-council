@@ -516,6 +516,7 @@ exit 0
         capture_output=True,
         text=True,
         env=env,
+        cwd=tmp_path,
         timeout=10,
     )
 

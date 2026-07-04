@@ -34,6 +34,7 @@ import json
 import os
 import pwd
 import signal
+import socket
 import stat
 import sys
 import time
@@ -94,20 +95,66 @@ def _path_receipt(path: Path, *, expect_socket: bool = False) -> dict[str, objec
     return receipt
 
 
+def _protocol_probe(socket_path: Path, *, timeout_s: float = 0.5) -> dict[str, object]:
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(timeout_s)
+            client.connect(str(socket_path))
+            client.sendall(
+                json.dumps(
+                    {"schema": "hapax.dispatch_launch_probe.v1"},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                + b"\n"
+            )
+            data = client.recv(65536)
+    except Exception as exc:  # noqa: BLE001 - receipt must report drift, not crash.
+        return {"ok": False, "reason": f"{type(exc).__name__}:{exc}"}
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - malformed probe response is unhealthy.
+        return {"ok": False, "reason": f"malformed_response:{type(exc).__name__}"}
+    ok = (
+        isinstance(payload, dict)
+        and payload.get("schema") == "hapax.dispatch_launch_redeem_response.v1"
+        and payload.get("ok") is False
+        and payload.get("reason") == "invalid_request:unsupported_schema"
+    )
+    return {
+        "ok": ok,
+        "reason": "protocol_witnessed" if ok else "unexpected_response",
+    }
+
+
 def runtime_receipt(runtime_dir: Path, socket_path: Path) -> dict[str, object]:
     dir_receipt = _path_receipt(runtime_dir)
     sock_receipt = _path_receipt(socket_path, expect_socket=True)
+    protocol_probe = (
+        _protocol_probe(socket_path)
+        if sock_receipt.get("present") and sock_receipt.get("is_socket")
+        else {"ok": False, "reason": "socket_absent"}
+    )
+    user = pwd.getpwuid(os.getuid()).pw_name
+    group = grp.getgrgid(os.getgid()).gr_name
     healthy = bool(
         dir_receipt.get("present")
-        and dir_receipt.get("owner") == pwd.getpwuid(os.getuid()).pw_name
+        and dir_receipt.get("owner") == user
+        and dir_receipt.get("group") == group
+        and dir_receipt.get("mode") == "0750"
         and sock_receipt.get("present")
         and sock_receipt.get("is_socket")
+        and sock_receipt.get("owner") == user
+        and sock_receipt.get("group") == group
+        and sock_receipt.get("mode") == "0660"
+        and protocol_probe.get("ok") is True
     )
     return {
         "schema": "hapax.dispatch_redemption_runtime_receipt.v1",
         "observed_at": time.time(),
         "runtime_dir": dir_receipt,
         "socket": sock_receipt,
+        "protocol_probe": protocol_probe,
         "healthy": healthy,
     }
 
