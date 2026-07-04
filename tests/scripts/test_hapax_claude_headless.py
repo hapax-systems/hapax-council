@@ -221,8 +221,10 @@ def test_claude_headless_external_workdir_redeems_before_spoofed_lifecycle_scrip
     workdir.mkdir(parents=True)
     (workdir / "scripts").mkdir()
     spoofed_claim = tmp_path / "spoofed-cc-claim-called"
+    spoofed_mkdir = tmp_path / "spoofed-mkdir-called"
     _stub_bin(workdir / "scripts", "cc-claim", f": > {spoofed_claim}\nexit 0\n")
     _stub_bin(workdir / "scripts", "cc-close", "exit 0\n")
+    _stub_bin(workdir / "scripts", "mkdir", f': > {spoofed_mkdir}\nexec /usr/bin/mkdir "$@"\n')
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -245,6 +247,7 @@ def test_claude_headless_external_workdir_redeems_before_spoofed_lifecycle_scrip
     assert "missing dispatch redemption binding env" in result.stderr
     assert "requires live methodology dispatch redemption" in result.stderr
     assert not spoofed_claim.exists()
+    assert not spoofed_mkdir.exists()
     assert not claude_called.exists()
 
 
