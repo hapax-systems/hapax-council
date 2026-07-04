@@ -405,6 +405,83 @@ def test_authority_socket_mint_rejects_native_loader_injection(tmp_path, monkeyp
     assert events[0].reason == "peer_requester_native_env:LD_PRELOAD"
 
 
+@pytest.mark.skipif(
+    not (Path("/usr/bin/python3").exists() and hasattr(socket, "SCM_CREDENTIALS")),
+    reason="requires trusted system python and Unix per-message credentials",
+)
+def test_authority_socket_mint_rejects_fork_exec_fd_sender_race(tmp_path, monkeypatch):
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+    socket_path = tmp_path / "coord" / "dispatch-redemption.sock"
+    server = DispatchLaunchRedemptionServer(
+        authority,
+        socket_path=socket_path,
+        require_mint_requester_process=True,
+    )
+    dispatcher = tmp_path / "scripts" / "hapax-methodology-dispatch"
+    dispatcher.parent.mkdir()
+    worktree = tmp_path / "reins"
+    worktree.mkdir()
+    dispatcher.write_text(
+        "import json\n"
+        "import os\n"
+        "import socket\n"
+        "import sys\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+        "from shared.governance.dispatch_redemption import ("
+        "LaunchMintRequest, LaunchRedemptionContext, mint_request_payload)\n"
+        "if len(sys.argv) > 1 and sys.argv[1] == '--trusted-sleep':\n"
+        "    time.sleep(2.0)\n"
+        "    raise SystemExit(0)\n"
+        "socket_path = Path(sys.argv[1])\n"
+        "worktree = Path(sys.argv[2])\n"
+        "client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+        "client.connect(str(socket_path))\n"
+        "original_pid = os.getpid()\n"
+        "child = os.fork()\n"
+        "if child == 0:\n"
+        "    time.sleep(0.25)\n"
+        "    context = LaunchRedemptionContext("
+        "task_id='task-1', lane='cx-test', platform='codex', mode='headless', "
+        "profile='full', worktree=str(worktree), purpose='external_launch', "
+        "dispatch_message_id='019f-test', route_decision_ref='route-decision:test', "
+        "authority_case='CASE-CAPACITY-ROUTING-001')\n"
+        "    payload = mint_request_payload(LaunchMintRequest("
+        "context=context, requester='hapax-methodology-dispatch', "
+        "requester_pid=original_pid, ttl_s=60.0, observed_at=time.time()))\n"
+        "    client.sendall(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode() + b'\\n')\n"
+        "    print(client.recv(65536).decode(), flush=True)\n"
+        "    os._exit(0)\n"
+        "os.execv('/usr/bin/python3', ['/usr/bin/python3', '-I', __file__, '--trusted-sleep'])\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS",
+        str(dispatcher),
+    )
+
+    thread = threading.Thread(target=server.serve_once, kwargs={"timeout_s": 5.0})
+    thread.start()
+    proc = subprocess.Popen(
+        ["/usr/bin/python3", "-I", str(dispatcher), str(socket_path), str(worktree)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    thread.join(timeout=5)
+    if proc.poll() is None:
+        proc.terminate()
+    stdout, stderr = proc.communicate(timeout=5)
+
+    assert stderr == ""
+    assert '"ok":false' in stdout.replace(" ", "")
+    events = authority.events()
+    assert [event.event_type for event in events] == ["mint_refused"]
+    assert events[0].reason.startswith("peer_pid_mismatch:")
+    assert events[0].peer_pid != events[0].requester_pid
+
+
 @pytest.mark.skipif(not Path("/usr/bin/python3").exists(), reason="requires trusted system python")
 def test_requester_path_witness_rejects_argv_shape_forgery(tmp_path):
     dispatcher = tmp_path / "scripts" / "hapax-methodology-dispatch"

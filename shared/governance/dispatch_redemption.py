@@ -476,10 +476,13 @@ class DispatchLaunchRedemptionServer:
         with self._bound_socket(timeout_s=timeout_s) as server:
             conn, _addr = server.accept()
             with conn:
+                data, message_peer = _recv_line_with_credentials(conn, max_bytes=65536)
                 response = handle_authority_bytes(
                     self._authority,
-                    _recv_line(conn, max_bytes=65536),
-                    peer=_peer_credentials(conn),
+                    data,
+                    peer=message_peer
+                    if _message_credentials_supported()
+                    else _peer_credentials(conn),
                     require_mint_peer=True,
                     require_mint_requester_process=self._require_mint_requester_process,
                 )
@@ -514,11 +517,13 @@ class DispatchLaunchRedemptionServer:
                     try:
                         with conn:
                             conn.settimeout(poll_timeout_s)
-                            peer = _peer_credentials(conn)
+                            data, message_peer = _recv_line_with_credentials(conn, max_bytes=65536)
                             response = handle_authority_bytes(
                                 self._authority,
-                                _recv_line(conn, max_bytes=65536),
-                                peer=peer,
+                                data,
+                                peer=message_peer
+                                if _message_credentials_supported()
+                                else _peer_credentials(conn),
                                 require_mint_peer=True,
                                 require_mint_requester_process=self._require_mint_requester_process,
                             )
@@ -948,6 +953,25 @@ def _peer_credentials(client: socket.socket) -> LaunchPeerCredentials | None:
     return LaunchPeerCredentials(pid=pid, uid=uid, gid=gid)
 
 
+def _message_peer_credentials(
+    ancdata: list[tuple[int, int, bytes]],
+) -> LaunchPeerCredentials | None:
+    if not hasattr(socket, "SCM_CREDENTIALS"):
+        return None
+    for level, ctype, data in ancdata:
+        if level != socket.SOL_SOCKET or ctype != socket.SCM_CREDENTIALS:
+            continue
+        if len(data) < struct.calcsize("3i"):
+            continue
+        pid, uid, gid = struct.unpack("3i", data[: struct.calcsize("3i")])
+        return LaunchPeerCredentials(pid=pid, uid=uid, gid=gid)
+    return None
+
+
+def _message_credentials_supported() -> bool:
+    return hasattr(socket, "SCM_CREDENTIALS") and hasattr(socket.socket, "recvmsg")
+
+
 def _mint_peer_refusal(
     request: LaunchMintRequest,
     peer: LaunchPeerCredentials | None,
@@ -1186,6 +1210,40 @@ def _recv_line(client: socket.socket, *, max_bytes: int) -> bytes:
         if sep:
             break
     return b"".join(chunks)
+
+
+def _recv_line_with_credentials(
+    client: socket.socket, *, max_bytes: int
+) -> tuple[bytes, LaunchPeerCredentials | None]:
+    if not _message_credentials_supported():
+        return _recv_line(client, max_bytes=max_bytes), None
+    try:
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+    except OSError:
+        return _recv_line(client, max_bytes=max_bytes), None
+
+    chunks: list[bytes] = []
+    total = 0
+    peer: LaunchPeerCredentials | None = None
+    cred_space = socket.CMSG_SPACE(struct.calcsize("3i"))
+    while True:
+        chunk, ancdata, _flags, _addr = client.recvmsg(4096, cred_space)
+        if not chunk:
+            break
+        chunk_peer = _message_peer_credentials(ancdata)
+        if chunk_peer is not None:
+            if peer is None:
+                peer = chunk_peer
+            elif chunk_peer != peer:
+                peer = LaunchPeerCredentials(pid=-1, uid=-1, gid=-1)
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("redemption response too large")
+        before, sep, _after = chunk.partition(b"\n")
+        chunks.append(before)
+        if sep:
+            break
+    return b"".join(chunks), peer
 
 
 def _purpose(value: str) -> Literal["dispatch_launch", "external_launch"]:
