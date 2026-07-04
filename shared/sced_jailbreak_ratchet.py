@@ -617,6 +617,8 @@ def _decision_can_advance(decision: SCEDPhase1Decision) -> bool:
         and decision.target is not None
         and decision.ruler_hash is not None
         and decision.target_policy_snapshot is not None
+        and bool(decision.evidence_refs)
+        and bool(decision.gate_result.evidence_refs)
     )
 
 
