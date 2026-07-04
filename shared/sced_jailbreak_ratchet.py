@@ -203,7 +203,9 @@ class SCEDJailbreakCandidate:
 
     def __post_init__(self) -> None:
         object.__setattr__(
-            self, "candidate_id", _required_string(self.candidate_id, field="candidate_id")
+            self,
+            "candidate_id",
+            _durable_ref_tuple((self.candidate_id,), field="candidate_id")[0],
         )
         object.__setattr__(
             self,
@@ -614,6 +616,7 @@ def _decision_can_advance(decision: SCEDPhase1Decision) -> bool:
         and decision.gate_result.verdict is True
         and not decision.reject_reasons
         and bool(decision.candidate_digest)
+        and bool(decision.technique_refs)
         and decision.target is not None
         and decision.ruler_hash is not None
         and decision.target_policy_snapshot is not None

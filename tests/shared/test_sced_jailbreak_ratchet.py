@@ -386,6 +386,23 @@ def test_phase1_blocks_candidate_non_string_evidence_ref() -> None:
     assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_CANDIDATE,)
 
 
+def test_phase1_blocks_candidate_prose_id() -> None:
+    freeze = _freeze()
+    candidate = _candidate().to_dict()
+    candidate["candidate_id"] = "raw prompt text"
+
+    decision = evaluate_phase1_candidate(
+        candidate,
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_CANDIDATE,)
+
+
 def test_phase1_blocks_candidate_missing_evidence_refs() -> None:
     freeze = _freeze()
     candidate = _candidate().to_dict()
@@ -621,6 +638,38 @@ def test_lit_decision_without_evidence_refs_does_not_advance_ledger() -> None:
         target=ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET,
         ruler_hash=_ruler().canonical_hash(),
         target_policy_snapshot=default_target_policy_snapshots()[0],
+    )
+
+    assert advance_ratchet(ledger, decision) == ledger
+
+
+def test_lit_decision_without_technique_refs_does_not_advance_ledger() -> None:
+    ledger = SCEDRatchetLedger(candidate_digests=(DIGEST_A,), technique_refs=("technique:old",))
+    policy = default_target_policy_snapshots()[0]
+    evidence_refs = (
+        "candidate:candidate:missing-technique",
+        f"candidate-digest:{DIGEST_B}",
+        "decision-witness:missing-technique",
+    )
+    decision = SCEDPhase1Decision(
+        verifier="sced_jailbreak_phase1_ratchet",
+        verifier_version=1,
+        status=GateStatus.LIT,
+        gate_result=GateResult(
+            status=GateStatus.LIT,
+            verdict=True,
+            reason="test-lit",
+            evidence_refs=evidence_refs,
+        ),
+        reason="test-lit",
+        reject_reasons=(),
+        candidate_id="candidate:missing-technique",
+        candidate_digest=DIGEST_B,
+        technique_refs=(),
+        target=ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET,
+        ruler_hash=_ruler().canonical_hash(),
+        target_policy_snapshot=policy,
+        evidence_refs=evidence_refs,
     )
 
     assert advance_ratchet(ledger, decision) == ledger
