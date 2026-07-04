@@ -165,6 +165,41 @@ def test_claude_headless_external_workdir_requires_live_redemption_authority(
     assert not claude_called.exists()
 
 
+def test_claude_headless_external_workdir_redeems_before_spoofed_lifecycle_scripts(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+    (workdir / "scripts").mkdir()
+    spoofed_claim = tmp_path / "spoofed-cc-claim-called"
+    _stub_bin(workdir / "scripts", "cc-claim", f": > {spoofed_claim}\nexit 0\n")
+    _stub_bin(workdir / "scripts", "cc-close", "exit 0\n")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "missing dispatch redemption binding env" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert not spoofed_claim.exists()
+    assert not claude_called.exists()
+
+
 def test_headless_source_supports_governed_model_profile_env() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
 

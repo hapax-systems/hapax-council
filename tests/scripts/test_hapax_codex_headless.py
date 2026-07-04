@@ -576,6 +576,57 @@ exit 0
     assert not codex_called.exists()
 
 
+def test_codex_headless_external_workdir_redeems_before_spoofed_lifecycle_scripts(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+    spoofed_claim = tmp_path / "spoofed-cc-claim-called"
+
+    _write_executable(
+        workdir / "scripts" / "cc-claim",
+        f""": > "{spoofed_claim}"
+exit 0
+""",
+    )
+    _write_executable(workdir / "scripts" / "cc-close", "exit 0\n")
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "missing dispatch redemption binding env" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert not spoofed_claim.exists()
+    assert not codex_called.exists()
+
+
 def test_codex_headless_claim_mismatch_refuses_before_remote_bootstrap(
     tmp_path: Path,
 ) -> None:

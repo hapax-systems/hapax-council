@@ -40,6 +40,14 @@ def test_unit_runs_activated_source_and_fails_closed_pre_activation() -> None:
     assert "/projects/hapax-council" not in body
 
 
+def test_unit_names_governed_activation_installer() -> None:
+    body = UNIT.read_text(encoding="utf-8")
+
+    assert "scripts/hapax-dispatch-redemption-service-install --install" in body
+    assert "hapax-post-merge-deploy invokes that installer automatically" in body
+    assert "sudo cp systemd/units/hapax-dispatch-redemption.service" not in body
+
+
 def test_unit_hardening_baseline() -> None:
     body = UNIT.read_text(encoding="utf-8")
 

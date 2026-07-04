@@ -239,10 +239,6 @@ if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CLAUDE_TASK" ]]; then
   echo "hapax-claude-headless: refusing launch; role '$ROLE' already claims '$CLAIMED_TASK', not dispatch task '$CLAUDE_TASK'" >&2
   exit 13
 fi
-workdir_has_local_lifecycle_guards() {
-  [[ -x "$WORKDIR/scripts/cc-claim" && -x "$WORKDIR/scripts/cc-close" ]]
-}
-
 workdir_requires_dispatch_redemption() {
   [[ "${HAPAX_METHODOLOGY_DISPATCH_EXTERNAL:-}" == "1" ]] && return 0
   case "$WORKDIR" in
@@ -258,9 +254,13 @@ validate_dispatch_redemption_authority() {
   # dispatcher-issued one-time grant against the fixed governor socket. The
   # verifier imports from this launcher's own council checkout, never from the
   # (external) WORKDIR and never from the caller's cwd.
-  local council_dir profile="${HAPAX_METHODOLOGY_DISPATCH_PROFILE:-full}"
-  council_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  if ! python3 - "$council_dir" "$CLAUDE_TASK" "$ROLE" "$WORKDIR" claude headless "$profile" <<'PYEOF'
+  local council_dir python_bin profile="${HAPAX_METHODOLOGY_DISPATCH_PROFILE:-full}"
+  council_dir="${HAPAX_COUNCIL_DIR:-}"
+  if [[ -z "$council_dir" ]]; then
+    council_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  fi
+  python_bin="${HAPAX_REDEMPTION_PYTHON:-/usr/bin/python3}"
+  if ! "$python_bin" - "$council_dir" "$CLAUDE_TASK" "$ROLE" "$WORKDIR" claude headless "$profile" <<'PYEOF'
 import os
 import sys
 import time
@@ -336,7 +336,7 @@ PYEOF
 }
 
 DISPATCH_REDEEMED=0
-if workdir_requires_dispatch_redemption && ! workdir_has_local_lifecycle_guards; then
+if workdir_requires_dispatch_redemption; then
   validate_dispatch_redemption_authority
   DISPATCH_REDEEMED=1
 fi

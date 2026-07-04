@@ -1614,6 +1614,7 @@ def launch_claude_headless(
     # per-spawn HAPAX_SESSION_ID so two same-role re-dispatched lanes never share a
     # claim key (reform-identity-coherence cluster 11, AC1).
     env.pop("HAPAX_SESSION_ID", None)
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT_FOR_IMPORTS)
     # CapabilityExecutionInvariant drift guard (R0-pin): pin --model for EVERY claude
     # profile to its registry-declared model. Never let a profile inherit the Claude Code
     # CLI default (~/.claude/settings.json model=fable), which can silently drop fable->opus
@@ -1880,6 +1881,7 @@ def launch_codex_headless(
             ]
         )
     env = os.environ.copy()
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT_FOR_IMPORTS)
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
     if local_fallback_allowed:

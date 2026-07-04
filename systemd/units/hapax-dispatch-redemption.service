@@ -9,10 +9,14 @@
 # deliberate owner/mode (no ad hoc mkdir), and remove it when the governor
 # stops, so wrappers fail closed on connect instead of trusting a stale inode.
 #
-# Install (one-time; system scope is excluded from hapax-post-merge-deploy):
-#   sudo cp systemd/units/hapax-dispatch-redemption.service /etc/systemd/system/
-#   sudo systemctl daemon-reload && sudo systemctl enable --now hapax-dispatch-redemption.service
-# Witness owner/mode afterwards (token-free receipt):
+# Install/activate:
+#   scripts/hapax-dispatch-redemption-service-install --install
+#
+# hapax-post-merge-deploy invokes that installer automatically when this unit
+# changes, because this root/system-scoped service must not be copied into the
+# user unit directory and must not merge dormant.
+#
+# Witness owner/mode + live protocol afterwards (token-free receipt):
 #   scripts/hapax-dispatch-redemption-authority --receipt
 Description=Hapax dispatch launch redemption governor (fixed-socket mint/redeem authority)
 Documentation=file:/home/hapax/Documents/Personal/30-areas/hapax/dispatch-launch-redemption-service-design-2026-07-01.md

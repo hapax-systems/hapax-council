@@ -446,10 +446,6 @@ if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CODEX_TASK" ]]; then
   exit 13
 fi
 
-workdir_has_local_lifecycle_guards() {
-  [[ -x "$WORKDIR/scripts/cc-claim" && -x "$WORKDIR/scripts/cc-close" ]]
-}
-
 workdir_requires_dispatch_redemption() {
   [[ "${HAPAX_METHODOLOGY_DISPATCH_EXTERNAL:-}" == "1" ]] && return 0
   case "$WORKDIR" in
@@ -541,7 +537,7 @@ PYEOF
 }
 
 DISPATCH_REDEEMED=0
-if workdir_requires_dispatch_redemption && ! workdir_has_local_lifecycle_guards; then
+if workdir_requires_dispatch_redemption; then
   validate_dispatch_redemption_authority
   DISPATCH_REDEEMED=1
 fi

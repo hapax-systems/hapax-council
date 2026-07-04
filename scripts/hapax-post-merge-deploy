@@ -27,7 +27,9 @@
 #   systemd/units/*.slice            → cp + daemon-reload (members activate it; no enable/restart)
 #       unless the unit has `# Hapax-Install-Scope: system`, in which case
 #       it is system/root-scoped and must be installed by its dedicated
-#       installer rather than copied into the user unit directory.
+#       installer rather than copied into the user unit directory. The dispatch
+#       redemption governor is activated by
+#       scripts/hapax-dispatch-redemption-service-install when its unit changes.
 #       A unit carrying `# Hapax-Auto-Enable: true` (+ an [Install] section)
 #       is `enable --now`'d when newly installed, so a freshly-merged
 #       service/timer goes live instead of installing-but-sleeping (the
@@ -152,6 +154,8 @@ TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
 # isolates it automatically.
 LAST_DEPLOYED_SHA_PATH="${HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH:-$(dirname "$TRACE_PATH")/last-deployed-sha}"
 RECOVERY_INSTALLER_PATH="scripts/hapax-recovery-plane-install"
+DISPATCH_REDEMPTION_UNIT_PATH="systemd/units/hapax-dispatch-redemption.service"
+DISPATCH_REDEMPTION_INSTALLER_PATH="scripts/hapax-dispatch-redemption-service-install"
 RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
 RECOVERY_BUNDLE_SOURCE_FILES=(
     scripts/hapax-p0-incident-intake
@@ -1131,6 +1135,16 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
         systemctl --user disable --now "$base" >/dev/null 2>&1 || true
         if [ -e "$dest" ] || [ -L "$dest" ]; then
             rm -fv "$dest" || true
+        fi
+        if [ "$f" = "$DISPATCH_REDEMPTION_UNIT_PATH" ]; then
+            installer="$REPO/$DISPATCH_REDEMPTION_INSTALLER_PATH"
+            if [ ! -f "$installer" ]; then
+                echo "hapax-post-merge-deploy: missing dispatch redemption service installer at $installer" >&2
+                echo "  next action: ensure $DISPATCH_REDEMPTION_INSTALLER_PATH exists in the active source, then rerun hapax-post-merge-deploy for this merge" >&2
+                exit 1
+            fi
+            echo "  activating $base via $DISPATCH_REDEMPTION_INSTALLER_PATH"
+            HAPAX_COUNCIL_DIR="$REPO" bash "$installer" --install
         fi
     done
     systemctl --user daemon-reload
