@@ -42,7 +42,7 @@ Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS=/home/hapax/.cache
 #   sha256sum /home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-methodology-dispatch
 # tests/systemd/test_dispatch_redemption_unit.py enforces the repo-side match,
 # and hapax-post-merge-deploy reruns this installer on requester/runtime changes.
-Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_SHA256=c3dca72faa466c535f679e66f20ca3d7c5bcf92d5d73404e73b13f01943b40b7
+Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_SHA256=c43d559b55c4a9d1e44c86dd4d4e6d57846fa0c384bd24829fe7f990f3bcc62b
 RuntimeDirectory=hapax/coord
 RuntimeDirectoryMode=0750
 StateDirectory=hapax/dispatch-redemption

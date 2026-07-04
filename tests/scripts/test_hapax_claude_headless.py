@@ -179,6 +179,34 @@ def test_claude_headless_external_workdir_fails_closed_without_redemption_bindin
     assert not claude_called.exists()
 
 
+def test_claude_headless_outside_projects_workdir_fails_closed_without_redemption_binding(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    workdir = tmp_path / "outside" / "reins"
+    workdir.mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "missing dispatch redemption binding env" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert not claude_called.exists()
+
+
 def test_claude_headless_external_workdir_requires_live_redemption_authority(
     tmp_path: Path,
 ) -> None:

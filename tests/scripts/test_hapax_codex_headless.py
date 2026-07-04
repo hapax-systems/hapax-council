@@ -108,6 +108,12 @@ exit 0
     )
 
 
+def _council_workdir(home: Path, lane: str = "cx-amber") -> Path:
+    workdir = home / "projects" / f"hapax-council--{lane}"
+    workdir.mkdir(parents=True, exist_ok=True)
+    return workdir
+
+
 def _write_activation_redemption_stub(home: Path, marker: Path) -> None:
     stub = (
         home
@@ -186,8 +192,7 @@ def test_codex_headless_runs_on_appendix_via_remote_payload(tmp_path: Path) -> N
     cache.mkdir(parents=True)
     (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -275,8 +280,7 @@ def test_codex_headless_treats_appendix_alias_as_local_on_appendix(tmp_path: Pat
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     ssh_called = tmp_path / "ssh-called"
@@ -330,8 +334,7 @@ def test_codex_headless_treats_appendix_local_ip_as_local(tmp_path: Path) -> Non
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     ssh_called = tmp_path / "ssh-called"
@@ -530,6 +533,46 @@ exit 0
     assert result.returncode == 17
     assert "requires live methodology dispatch redemption" in result.stderr
     assert "dispatch redemption refused" in result.stderr
+    assert not codex_called.exists()
+
+
+def test_codex_headless_outside_projects_workdir_fails_closed_without_redemption_binding(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "outside" / "reins"
+    workdir.mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "missing dispatch redemption binding env" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
     assert not codex_called.exists()
 
 
@@ -976,8 +1019,7 @@ def test_codex_headless_claim_mismatch_refuses_before_remote_bootstrap(
     cache.mkdir(parents=True)
     (cache / "cc-active-task-cx-amber").write_text("other-task\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     ssh_log = tmp_path / "ssh.log"
@@ -1016,8 +1058,7 @@ def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "explicit-worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     ssh_log = tmp_path / "ssh.log"
@@ -1141,8 +1182,7 @@ def test_codex_headless_live_pid_blocks_remote_bootstrap_before_ssh(tmp_path: Pa
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
     pid_dir = tmp_path / "pids"
     pid_dir.mkdir()
 
@@ -1488,8 +1528,7 @@ def test_codex_headless_prefers_session_keyed_claim_over_stale_legacy(
     (cache / "cc-active-task-cx-amber").write_text("old-task\n", encoding="utf-8")
     (cache / f"cc-active-task-cx-amber-{sid}").write_text("task-x\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -1528,8 +1567,7 @@ def test_codex_headless_blocks_retired_relay_without_force(tmp_path: Path) -> No
     relay.mkdir(parents=True)
     (relay / "cx-amber.yaml").write_text("status: retired\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -1570,8 +1608,7 @@ def test_codex_headless_blocks_wound_down_relay_session_status(tmp_path: Path) -
     relay_file = relay / "cx-amber.yaml"
     relay_file.write_text("session_status: |\n  wind_down_idle\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -1612,8 +1649,7 @@ def test_codex_headless_does_not_overmatch_transitional_relay_status(tmp_path: P
     relay.mkdir(parents=True)
     (relay / "cx-amber.yaml").write_text("status: retiring-soon\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -1651,8 +1687,7 @@ def test_codex_headless_blocks_suffixed_terminal_relay_status(tmp_path: Path) ->
     relay.mkdir(parents=True)
     (relay / "cx-amber.yaml").write_text("status: closed_done\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -1691,8 +1726,7 @@ def test_codex_headless_force_reactivates_retired_relay(tmp_path: Path) -> None:
     relay.mkdir(parents=True)
     (relay / "cx-amber.yaml").write_text("status: retired\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -1733,8 +1767,7 @@ def test_codex_headless_force_does_not_bypass_live_pid_guard(tmp_path: Path) -> 
     relay_file = relay / "cx-amber.yaml"
     relay_file.write_text("status: active\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
     pid_dir = tmp_path / "pids"
     pid_dir.mkdir()
 
@@ -1791,8 +1824,7 @@ def test_codex_headless_cleanup_removes_owned_pid_and_retires_relay(
     cache = home / ".cache" / "hapax"
     (cache / "relay").mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
     pid_dir = tmp_path / "pids"
     pid_dir.mkdir()
     council_dir = tmp_path / "council"
@@ -1830,8 +1862,7 @@ def test_codex_headless_cleanup_preserves_replaced_pid_without_retiring_relay(
     cache = home / ".cache" / "hapax"
     (cache / "relay").mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
     pid_dir = tmp_path / "pids"
     pid_dir.mkdir()
     council_dir = tmp_path / "council"

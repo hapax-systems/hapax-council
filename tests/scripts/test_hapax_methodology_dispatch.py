@@ -356,6 +356,10 @@ def _spec(path: Path, case_id: str = "CASE-TEST-001") -> Path:
 
 
 def _worktree(path: Path, *, guarded: bool = True, close_guarded: bool = True) -> Path:
+    if path.name == "worktree" and not path.exists():
+        target = path.parent / "home" / "projects" / "hapax-council--cx-test"
+        target.mkdir(parents=True, exist_ok=True)
+        path.symlink_to(target, target_is_directory=True)
     guard = (
         "missing required AuthorityCase/ISAP fields authority_case parent_spec"
         if guarded
@@ -1896,6 +1900,20 @@ printf '%s\\n' \\
     assert captured[7:10] == ["--task", "task-x", "--no-claim"]
 
 
+def test_external_worktree_classifier_treats_only_council_as_internal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    assert module.is_external_project_worktree(home / "projects" / "hapax-council") is False
+    assert module.is_external_project_worktree(home / "projects" / "hapax-council--beta") is False
+    assert module.is_external_project_worktree(home / "projects" / "reins") is True
+    assert module.is_external_project_worktree(tmp_path / "reins") is True
+
+
 def test_claude_external_worktree_dispatch_exports_redemption_binding(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1971,6 +1989,36 @@ printf '%s\\n' \\
         "opaque-token",
     ]
     assert captured[7:] == ["--task", "task-x", "beta", "prompt"]
+
+
+def test_claude_external_worktree_dispatch_outside_projects_fails_closed_without_task_binding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    home = tmp_path / "home"
+    reins_worktree = tmp_path / "outside" / "reins"
+    reins_worktree.mkdir(parents=True)
+    launcher_called = tmp_path / "launcher-called"
+    fake_launcher = tmp_path / "bin" / "hapax-claude-headless"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"#!/usr/bin/env bash\n: > {launcher_called}\n",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(reins_worktree))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CLAUDE_HEADLESS", str(fake_launcher))
+
+    result = module.launch_claude_headless(
+        "task-x",
+        "beta",
+        "prompt",
+        module.PLATFORM_PATHS[("claude", "headless", "full")],
+    )
+
+    assert result == 19
+    assert not launcher_called.exists()
 
 
 def test_claude_external_worktree_dispatch_fails_closed_without_task_binding(

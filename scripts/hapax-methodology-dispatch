@@ -612,7 +612,7 @@ def is_external_project_worktree(worktree: Path) -> bool:
     try:
         relative = resolved.relative_to(projects_root)
     except ValueError:
-        return False
+        return True
     first = relative.parts[0] if relative.parts else ""
     return not (first == "hapax-council" or first.startswith("hapax-council--"))
 
