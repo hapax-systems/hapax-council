@@ -7,6 +7,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-rte-state"
 ASSIGN_RTE = REPO_ROOT / "scripts" / "assign-rte"
@@ -270,7 +272,7 @@ def test_malformed_assignment_timestamp_fail_closes(tmp_path: Path) -> None:
     assert "invalid expires_at" in payload["reasons"][0]
 
 
-def test_restricted_assignment_requires_protocol_exception(tmp_path: Path) -> None:
+def test_retired_assignment_is_invalid_without_protocol_exception(tmp_path: Path) -> None:
     _write_tick(tmp_path / "relay", "green")
     _write_assignment(tmp_path / "relay", rte="gemini-1")
     _write_planning_feed(tmp_path / "planning-feed-state.json")
@@ -280,12 +282,61 @@ def test_restricted_assignment_requires_protocol_exception(tmp_path: Path) -> No
     assert result.returncode == 3
     payload = json.loads(result.stdout)
     assert payload["assignment"]["status"] == "invalid"
-    assert "restricted RTE lane requires protocol_exception" in payload["reasons"][0]
+    assert "retired/excised RTE lane cannot be active" in payload["reasons"][0]
 
 
-def test_protocol_exception_restricted_assignment_can_be_active(tmp_path: Path) -> None:
+def test_protocol_exception_retired_assignment_is_still_invalid(tmp_path: Path) -> None:
     _write_tick(tmp_path / "relay", "green")
     _write_assignment(tmp_path / "relay", rte="gemini-1", protocol_exception=True)
+    _write_planning_feed(tmp_path / "planning-feed-state.json")
+
+    result = _run(tmp_path, "--json")
+
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "unknown"
+    assert payload["assignment"]["status"] == "invalid"
+    assert payload["assignment"]["protocol_exception"] is True
+    assert "retired/excised RTE lane cannot be active" in payload["reasons"][0]
+
+
+@pytest.mark.parametrize("retired_rte", ["agy", "agy-2", "antigravity"])
+def test_protocol_exception_retired_alias_assignment_is_still_invalid(
+    tmp_path: Path, retired_rte: str
+) -> None:
+    _write_tick(tmp_path / "relay", "green")
+    _write_assignment(tmp_path / "relay", rte=retired_rte, protocol_exception=True)
+    _write_planning_feed(tmp_path / "planning-feed-state.json")
+
+    result = _run(tmp_path, "--json")
+
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "unknown"
+    assert payload["assignment"]["status"] == "invalid"
+    assert payload["assignment"]["protocol_exception"] is True
+    assert "retired/excised RTE lane cannot be active" in payload["reasons"][0]
+
+
+@pytest.mark.parametrize("retired_rte", ["Antigrav", "Gemini-2", "VBE-1"])
+def test_mixed_case_retired_or_burst_assignment_is_invalid(
+    tmp_path: Path, retired_rte: str
+) -> None:
+    _write_tick(tmp_path / "relay", "green")
+    _write_assignment(tmp_path / "relay", rte=retired_rte)
+    _write_planning_feed(tmp_path / "planning-feed-state.json")
+
+    result = _run(tmp_path, "--json")
+
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "unknown"
+    assert payload["assignment"]["status"] == "invalid"
+
+
+def test_protocol_exception_vibe_assignment_can_be_active(tmp_path: Path) -> None:
+    _write_tick(tmp_path / "relay", "green")
+    _write_assignment(tmp_path / "relay", rte="vbe-1", protocol_exception=True)
     _write_planning_feed(tmp_path / "planning-feed-state.json")
 
     result = _run(tmp_path, "--json")
@@ -351,6 +402,25 @@ def test_assign_rte_auto_returns_distinct_failure_when_no_candidate_exists(
     assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
 
 
+def test_assign_rte_auto_ignores_retired_greek_relay_files(tmp_path: Path) -> None:
+    relay = tmp_path / "relay"
+    for lane in ("iota", "kappa", "lambda", "mu"):
+        _write_lane(relay, lane)
+
+    result = _run_assign_rte(
+        tmp_path,
+        "--auto",
+        "--originator",
+        "alpha",
+        "--json",
+        extra_env={"HAPAX_RTE_STALE_HOURS": "9000"},
+    )
+
+    assert result.returncode == 5
+    assert "no eligible RTE candidate found" in result.stderr
+    assert not (relay / "rte-assignment.yaml").exists()
+
+
 def test_assign_rte_refuses_originator_as_rte(tmp_path: Path) -> None:
     result = _run_assign_rte(tmp_path, "--rte", "alpha", "--originator", "alpha")
 
@@ -359,11 +429,63 @@ def test_assign_rte_refuses_originator_as_rte(tmp_path: Path) -> None:
     assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
 
 
-def test_assign_rte_refuses_restricted_explicit_lane_without_exception(tmp_path: Path) -> None:
+def test_assign_rte_refuses_retired_explicit_lane_without_exception(tmp_path: Path) -> None:
     result = _run_assign_rte(tmp_path, "--rte", "antigrav", "--originator", "alpha")
 
     assert result.returncode == 4
-    assert "protocol-exception" in result.stderr
+    assert "retired/excised" in result.stderr
+    assert "measured agy supply-leaf intake" in result.stderr
+    assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    "retired_lane", ["agy", "agy-2", "antigrav", "antigravity", "antigravity-2"]
+)
+def test_assign_rte_refuses_retired_explicit_lane_with_exception(
+    tmp_path: Path, retired_lane: str
+) -> None:
+    result = _run_assign_rte(
+        tmp_path,
+        "--rte",
+        retired_lane,
+        "--originator",
+        "alpha",
+        "--protocol-exception",
+    )
+
+    assert result.returncode == 4
+    assert "retired/excised" in result.stderr
+    assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
+
+
+def test_assign_rte_refuses_legacy_gemini_lane_with_exception(tmp_path: Path) -> None:
+    result = _run_assign_rte(
+        tmp_path,
+        "--rte",
+        "gemini",
+        "--originator",
+        "alpha",
+        "--protocol-exception",
+    )
+
+    assert result.returncode == 4
+    assert "retired/excised" in result.stderr
+    assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
+
+
+@pytest.mark.parametrize("retired_lane", ["Antigrav", "Gemini-2", "VBE-1"])
+def test_assign_rte_refuses_mixed_case_retired_or_burst_explicit_lane(
+    tmp_path: Path, retired_lane: str
+) -> None:
+    result = _run_assign_rte(
+        tmp_path,
+        "--rte",
+        retired_lane,
+        "--originator",
+        "alpha",
+    )
+
+    assert result.returncode == 4
     assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
 
 

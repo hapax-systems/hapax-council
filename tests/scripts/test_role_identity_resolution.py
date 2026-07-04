@@ -4,7 +4,7 @@
 Subprocess-runs the REAL scripts with a controlled, identity-stripped env + a tmp HOME
 (so no real markers are touched). Covers the three changed surfaces:
   - scripts/hapax-whoami            — env-first resolution (the KWin/cc-* bug fix)
-  - scripts/hapax-whoami-audit.sh   — approved-set accepts the full lane vocabulary
+  - scripts/hapax-whoami-audit.sh   — approved-set accepts the active lane vocabulary
   - hooks/scripts/agent-role.sh     — assert-identity accepts cc-<name>, rejects unknowns
 """
 
@@ -61,7 +61,7 @@ def test_whoami_marker_still_resolves_when_no_env(tmp_path: Path) -> None:
 # --- hapax-whoami-audit.sh: approved-set == canonical lane vocabulary ---
 
 
-@pytest.mark.parametrize("name", ["cc-zai", "cx-red", "zeta", "theta", "antigrav", "vbe-2"])
+@pytest.mark.parametrize("name", ["cc-zai", "cx-red", "zeta", "theta", "vbe-2"])
 def test_audit_accepts_full_vocabulary(tmp_path: Path, name: str) -> None:
     r = _run(["bash", str(AUDIT)], tmp_path, {"HAPAX_AGENT_ROLE": name})
     assert r.returncode == 0, f"{name}: {r.stderr}"
@@ -75,6 +75,11 @@ def test_audit_rejects_unknown(tmp_path: Path) -> None:
 
 def test_audit_rejects_retired_iota(tmp_path: Path) -> None:
     r = _run(["bash", str(AUDIT)], tmp_path, {"HAPAX_AGENT_ROLE": "iota"})
+    assert r.returncode == 2
+
+
+def test_audit_rejects_retired_antigrav(tmp_path: Path) -> None:
+    r = _run(["bash", str(AUDIT)], tmp_path, {"HAPAX_AGENT_ROLE": "antigrav"})
     assert r.returncode == 2
 
 
@@ -96,6 +101,15 @@ def test_assert_identity_accepts_cc_lane(tmp_path: Path) -> None:
 def test_assert_identity_rejects_unknown(tmp_path: Path) -> None:
     r = _run(
         ["bash", str(AGENT_ROLE), "assert-identity", "bogus123"],
+        tmp_path,
+        {"HAPAX_SESSION_ID": "test-sid-123"},
+    )
+    assert r.returncode == 2
+
+
+def test_assert_identity_rejects_retired_antigrav(tmp_path: Path) -> None:
+    r = _run(
+        ["bash", str(AGENT_ROLE), "assert-identity", "antigrav"],
         tmp_path,
         {"HAPAX_SESSION_ID": "test-sid-123"},
     )

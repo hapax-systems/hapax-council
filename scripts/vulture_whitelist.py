@@ -4489,13 +4489,10 @@ _glmcp_failure_code_for_zai
 
 # CapabilityAdapter protocol surface (capability-adapter-protocol-module). The whole adapter
 # layer is the thin uniform facade the dispatch/worker path WILL consume; this slice lands the
-# protocol + type hierarchy ahead of its consumers (worker-path / antigrav-glue / vibe-glue /
-# glmcp-reviewseat-coordination wire the live call sites). Until then only the test suite
-# exercises the methods, which the production vulture pass does not count. Reference the
+# protocol + type hierarchy ahead of some consumers (worker-path / vibe-glue /
+# glmcp-reviewseat-coordination wire or will wire the live call sites). Until then only the test
+# suite exercises some methods, which the production vulture pass does not count. Reference the
 # consumer-pending surface so the unused-callable gate sees the use.
-from shared.capability_adapter_protocol import (  # noqa: E402
-    AntigravAdapter as _AntigravAdapter,
-)
 from shared.capability_adapter_protocol import (  # noqa: E402
     BudgetAuthorityAdapter as _BudgetAuthorityAdapter,
 )
@@ -4507,6 +4504,9 @@ from shared.capability_adapter_protocol import (  # noqa: E402
 )
 from shared.capability_adapter_protocol import (  # noqa: E402
     CodexAdapter as _CodexAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    RetiredAntigravFailureClassifier as _RetiredAntigravFailureClassifier,
 )
 from shared.capability_adapter_protocol import (  # noqa: E402
     ReviewSeatAdapter as _ReviewSeatAdapter,
@@ -4526,11 +4526,13 @@ _CapabilityAdapter.preflight
 _CapabilityAdapter.classify_failure
 _WorkerAdapter.launch
 _SendCapableAdapter.send
-_BudgetAuthorityAdapter
-_ReviewSeatAdapter
-_AntigravAdapter
-_ClaudeAdapter
-_CodexAdapter
+_ = (
+    _BudgetAuthorityAdapter,
+    _ReviewSeatAdapter,
+    _RetiredAntigravFailureClassifier,
+    _ClaudeAdapter,
+    _CodexAdapter,
+)
 
 # worker_failure_witness (capability-adapter-worker-path): the receipt-append + guarded
 # family-availability witness are invoked by the extensionless launcher

@@ -5,7 +5,7 @@ cat >&2 <<'EOF'
 hapax-gemini-send is retired.
 
 There is no supported legacy hapax-gemini tmux lane to send prompts to. Use
-hapax-antigrav for governed interactive agy work or hapax-gemini-sidecar for
-read-only packet work.
+hapax-gemini-sidecar for read-only packet work, or create measured agy
+supply-leaf intake before any governed interactive worker path.
 EOF
 exit 64

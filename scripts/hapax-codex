@@ -126,9 +126,10 @@ relay_value_is_retired() {
   normalized="$(printf '%s' "$value" | sed "s/^[[:space:]\"']*//; s/[[:space:]\"']*$//" | tr '[:lower:]' '[:upper:]')"
   first_word="${normalized%%[[:space:]]*}"
   case "$first_word" in
-    # NOTE: the broad ANTIGRAVITY* glob stays out (coordination reform Phase 1):
-    # antigrav is a LIVE interface. The exact ANTIGRAVITY_TAKEOVER terminal
-    # marker remains valid relay history.
+    # NOTE: the broad ANTIGRAVITY* glob stays out because arbitrary relay prose is
+    # not a retirement marker. The exact ANTIGRAVITY_TAKEOVER terminal marker is
+    # retained only to parse older relay wind-down files after the live
+    # Antigrav/agy worker was excised.
     RETIRED*|SUPERSEDED*|CLOSED*|IDLE_WOUND_DOWN*|WIND_DOWN_IDLE*|WOUND_DOWN*|WIND_DOWN*|WINDING_DOWN*|ANTIGRAVITY_TAKEOVER)
       return 0
       ;;

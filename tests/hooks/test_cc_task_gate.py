@@ -950,7 +950,7 @@ class TestRelayInference:
 
 
 class TestGeneralizedPathRecovery:
-    """hapax_agent_role_from_path covers live greek slots + cx-*/antigrav/vbe-*."""
+    """hapax_agent_role_from_path covers live greek slots + cx-*/vbe-*."""
 
     @pytest.mark.parametrize(
         "dirname,expected",
@@ -967,8 +967,6 @@ class TestGeneralizedPathRecovery:
             ("hapax-council--eta", "eta"),
             ("hapax-council--cx-red", "cx-red"),
             ("hapax-council--cx-blue-scratch", "cx-blue"),
-            ("hapax-council--antigrav", "antigrav"),
-            ("hapax-council--antigrav-2", "antigrav"),
             ("hapax-council--vbe-3", "vbe-3"),
         ],
     )
@@ -978,6 +976,13 @@ class TestGeneralizedPathRecovery:
         r = _role_helper(f'hapax_agent_role_from_path "{wt}"')
         assert r.returncode == 0, r.stderr
         assert r.stdout.strip() == expected
+
+    @pytest.mark.parametrize("dirname", ["hapax-council--antigrav", "hapax-council--antigrav-2"])
+    def test_retired_antigrav_path_does_not_resolve(self, tmp_path: Path, dirname: str) -> None:
+        wt = tmp_path / dirname
+        wt.mkdir()
+        r = _role_helper(f'hapax_agent_role_from_path "{wt}"')
+        assert r.returncode != 0
 
     def test_unrecognized_path_returns_nonzero(self, tmp_path: Path) -> None:
         wt = tmp_path / "not-a-council-worktree"
@@ -1229,7 +1234,6 @@ _SPAWNERS = [
     "hapax-claude-headless",
     "hapax-codex",
     "hapax-vibe",
-    "hapax-antigrav",
 ]
 
 
@@ -1256,7 +1260,7 @@ class TestSpawnerSessionIdentity:
 
     @pytest.mark.parametrize(
         "spawner",
-        ["hapax-claude", "hapax-claude-headless", "hapax-codex", "hapax-vibe", "hapax-antigrav"],
+        ["hapax-claude", "hapax-claude-headless", "hapax-codex", "hapax-vibe"],
     )
     def test_session_id_is_generated_before_cc_claim(self, spawner: str) -> None:
         src = (REPO_ROOT / "scripts" / spawner).read_text()
@@ -1288,8 +1292,8 @@ def _codex_retired_rc(value: str) -> int:
     ).returncode
 
 
-class TestAntigravNotRetired:
-    """hapax-codex must not treat the live antigrav interface as a retired relay."""
+class TestHistoricalAntigravityRelayMarker:
+    """hapax-codex retains only exact historical Antigravity relay parsing."""
 
     @pytest.mark.parametrize("value", ["ANTIGRAVITY", "antigravity", "ANTIGRAVITY-cx-blue"])
     def test_antigravity_is_not_retired(self, value: str) -> None:
