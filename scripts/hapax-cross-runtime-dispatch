@@ -141,6 +141,11 @@ is_retired_antigrav_lane() {
     [[ "$lane" == "agy" || "$lane" == agy-* || "$lane" == "antigrav" || "$lane" == antigrav-* || "$lane" == "antigravity" || "$lane" == antigravity-* || "$lane" == "gemini-cli" || "$lane" == gemini-cli-* ]]
 }
 
+is_dispatchable_platform() {
+    local platform="${1,,}"
+    [[ "$platform" == "claude" || "$platform" == "codex" || "$platform" == "vibe" ]]
+}
+
 write_blocked_dispatch_receipt() {
     local block_reason="$1"
     mkdir -p "$LEDGER_DIR"
@@ -312,7 +317,7 @@ if $LIST_ELIGIBLE; then
         [[ -f "$meta_file" ]] || continue
         lane=$(basename "$meta_file" .json)
         platform=$(python3 -c "import json; print(json.load(open('$meta_file')).get('platform','?'))" 2>/dev/null)
-        if is_retired_antigrav_lane "$lane" || is_retired_antigrav_lane "$platform"; then
+        if is_retired_antigrav_lane "$lane" || is_retired_antigrav_lane "$platform" || ! is_dispatchable_platform "$platform"; then
             continue
         fi
         freshness=$(check_lane_freshness "$lane" 2>&1) || true

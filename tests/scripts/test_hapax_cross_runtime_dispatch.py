@@ -293,6 +293,9 @@ def test_list_eligible_skips_retired_antigrav_metadata(tmp_path: Path) -> None:
         ("cx-retired-platform", "antigrav"),
         ("cx-retired-platform-full", "antigravity"),
         ("cx-retired-gemini-cli", "gemini-cli"),
+        ("cx-unsupported-api", "api"),
+        ("cx-unsupported-gemini", "gemini"),
+        ("cx-unsupported-unknown", "unknown"),
     ]:
         (registry / f"{lane}.json").write_text(
             json.dumps(
@@ -321,6 +324,9 @@ def test_list_eligible_skips_retired_antigrav_metadata(tmp_path: Path) -> None:
     assert "cx-retired-platform" not in result.stdout
     assert "cx-retired-platform-full" not in result.stdout
     assert "cx-retired-gemini-cli" not in result.stdout
+    assert "cx-unsupported-api" not in result.stdout
+    assert "cx-unsupported-gemini" not in result.stdout
+    assert "cx-unsupported-unknown" not in result.stdout
     assert "gemini-cli" not in result.stdout
 
 
