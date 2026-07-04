@@ -5,9 +5,11 @@
 # the fixed governor socket lives under system /run (/run/hapax/coord), which a
 # user unit cannot own — user units get /run/user/<uid>, and a caller-writable
 # /run/user path is exactly the same-UID surface the redemption design forbids.
-# RuntimeDirectory= below makes the system manager provision the namespace with
-# deliberate owner/mode (no ad hoc mkdir), and remove it when the governor
-# stops, so wrappers fail closed on connect instead of trusting a stale inode.
+# RuntimeDirectory= below makes the system manager provision a root-owned
+# namespace with deliberate group/mode (no ad hoc mkdir), and remove it when
+# the governor stops, so wrappers fail closed on connect instead of trusting a
+# stale inode. The socket is root:hapax 0660: hapax can connect but cannot
+# unlink/replace the socket path in the root-owned 0750 directory.
 #
 # Install/activate:
 #   scripts/hapax-dispatch-redemption-service-install --install
@@ -24,8 +26,11 @@ ConditionPathExists=/home/hapax/.cache/hapax/source-activation/worktree/scripts/
 
 [Service]
 Type=simple
-User=hapax
+User=root
 Group=hapax
+Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_USER=hapax
+Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER=hapax-methodology-dispatch
+Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATH=/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-methodology-dispatch
 RuntimeDirectory=hapax/coord
 RuntimeDirectoryMode=0750
 ExecStart=/usr/bin/python3 /home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-dispatch-redemption-authority --serve

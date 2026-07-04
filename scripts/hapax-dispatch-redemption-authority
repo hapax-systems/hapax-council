@@ -56,6 +56,8 @@ from shared.governance.dispatch_redemption import (  # noqa: E402
 from shared.jsonl_append import append_jsonl  # noqa: E402
 
 DEFAULT_EVENTS_PATH = Path.home() / ".cache" / "hapax" / "dispatch-redemption" / "events.jsonl"
+PRODUCTION_RUNTIME_OWNER = "root"
+PRODUCTION_RUNTIME_GROUP = "hapax"
 # Purge cadence for expired/consumed grants. Purging maps a replayed token to
 # "unknown_token" instead of "already_consumed" — both fail closed.
 PURGE_INTERVAL_S = 300.0
@@ -95,6 +97,24 @@ def _path_receipt(path: Path, *, expect_socket: bool = False) -> dict[str, objec
     return receipt
 
 
+def _is_production_runtime_dir(runtime_dir: Path) -> bool:
+    return (
+        runtime_dir.expanduser().resolve(strict=False) == dispatch_launch_redemption_socket().parent
+    )
+
+
+def _runtime_owner_expectation(runtime_dir: Path) -> tuple[str, str]:
+    if _is_production_runtime_dir(runtime_dir):
+        return (
+            PRODUCTION_RUNTIME_OWNER,
+            os.environ.get(
+                "HAPAX_DISPATCH_REDEMPTION_RUNTIME_GROUP", PRODUCTION_RUNTIME_GROUP
+            ).strip()
+            or PRODUCTION_RUNTIME_GROUP,
+        )
+    return pwd.getpwuid(os.getuid()).pw_name, grp.getgrgid(os.getgid()).gr_name
+
+
 def _protocol_probe(socket_path: Path, *, timeout_s: float = 0.5) -> dict[str, object]:
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
@@ -130,22 +150,21 @@ def _protocol_probe(socket_path: Path, *, timeout_s: float = 0.5) -> dict[str, o
 def runtime_receipt(runtime_dir: Path, socket_path: Path) -> dict[str, object]:
     dir_receipt = _path_receipt(runtime_dir)
     sock_receipt = _path_receipt(socket_path, expect_socket=True)
+    expected_owner, expected_group = _runtime_owner_expectation(runtime_dir)
     protocol_probe = (
         _protocol_probe(socket_path)
         if sock_receipt.get("present") and sock_receipt.get("is_socket")
         else {"ok": False, "reason": "socket_absent"}
     )
-    user = pwd.getpwuid(os.getuid()).pw_name
-    group = grp.getgrgid(os.getgid()).gr_name
     healthy = bool(
         dir_receipt.get("present")
-        and dir_receipt.get("owner") == user
-        and dir_receipt.get("group") == group
+        and dir_receipt.get("owner") == expected_owner
+        and dir_receipt.get("group") == expected_group
         and dir_receipt.get("mode") == "0750"
         and sock_receipt.get("present")
         and sock_receipt.get("is_socket")
-        and sock_receipt.get("owner") == user
-        and sock_receipt.get("group") == group
+        and sock_receipt.get("owner") == expected_owner
+        and sock_receipt.get("group") == expected_group
         and sock_receipt.get("mode") == "0660"
         and protocol_probe.get("ok") is True
     )
@@ -154,6 +173,8 @@ def runtime_receipt(runtime_dir: Path, socket_path: Path) -> dict[str, object]:
         "observed_at": time.time(),
         "runtime_dir": dir_receipt,
         "socket": sock_receipt,
+        "expected_owner": expected_owner,
+        "expected_group": expected_group,
         "protocol_probe": protocol_probe,
         "healthy": healthy,
     }
@@ -177,12 +198,21 @@ def check_runtime_dir(runtime_dir: Path) -> None:
             "systemd/units/hapax-dispatch-redemption.service "
             "(RuntimeDirectory=hapax/coord provisions this namespace)"
         ) from None
-    if st.st_uid != os.getuid():
-        owner, _group = _owner_names(st)
+    expected_owner, expected_group = _runtime_owner_expectation(runtime_dir)
+    owner, group = _owner_names(st)
+    if owner != expected_owner or group != expected_group:
         raise SystemExit(
-            f"runtime namespace {runtime_dir} owned by '{owner}', not this daemon's user\n"
+            f"runtime namespace {runtime_dir} owned by '{owner}:{group}', "
+            f"not expected '{expected_owner}:{expected_group}'\n"
             "  next action: remove the foreign directory and restart "
             "hapax-dispatch-redemption.service so systemd re-provisions it"
+        )
+    mode = stat.S_IMODE(st.st_mode)
+    if mode != 0o750:
+        raise SystemExit(
+            f"runtime namespace {runtime_dir} has mode {mode:04o}, not expected 0750\n"
+            "  next action: restart hapax-dispatch-redemption.service so systemd "
+            "re-provisions the namespace"
         )
 
 
@@ -236,7 +266,11 @@ def serve(
         mint_policy_check=mint_policy,
         event_sink=_event_writer(events_path),
     )
-    server = DispatchLaunchRedemptionServer(authority, socket_path=socket_path)
+    server = DispatchLaunchRedemptionServer(
+        authority,
+        socket_path=socket_path,
+        require_mint_requester_process=True,
+    )
 
     last_purge = time.monotonic()
 
@@ -307,7 +341,9 @@ def main(argv: list[str] | None = None) -> int:
         runtime_dir,
         socket_path,
         events_path,
-        purge_interval_s=args.purge_interval if args.purge_interval is not None else PURGE_INTERVAL_S,
+        purge_interval_s=args.purge_interval
+        if args.purge_interval is not None
+        else PURGE_INTERVAL_S,
     )
 
 

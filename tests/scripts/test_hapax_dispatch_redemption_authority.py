@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -158,14 +159,18 @@ def test_check_runtime_dir_refuses_foreign_owned_namespace(
 
     def fake_stat(path: object, *args: object, **kwargs: object) -> object:
         if str(path) == str(runtime_dir):
-            return SimpleNamespace(st_uid=os.getuid() + 1, st_gid=os.getgid())
+            return SimpleNamespace(
+                st_uid=os.getuid() + 1,
+                st_gid=os.getgid(),
+                st_mode=stat.S_IFDIR | 0o750,
+            )
         return real_stat(path, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(script.os, "stat", fake_stat)
     with pytest.raises(SystemExit) as excinfo:
         script.check_runtime_dir(runtime_dir)
     message = str(excinfo.value)
-    assert "not this daemon's user" in message
+    assert "not expected" in message
     assert "re-provisions" in message
 
 
@@ -235,6 +240,9 @@ def test_serve_binds_mint_policy_event_sink_and_purge_into_live_governor(
     events_path = tmp_path / "events.jsonl"
     worktree = tmp_path / "reins"
     worktree.mkdir()
+    requester = Path(sys.executable).name
+    env = os.environ.copy()
+    env["HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER"] = requester
 
     proc = subprocess.Popen(
         [
@@ -253,6 +261,7 @@ def test_serve_binds_mint_policy_event_sink_and_purge_into_live_governor(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
     try:
         for _ in range(100):
@@ -284,7 +293,7 @@ def test_serve_binds_mint_policy_event_sink_and_purge_into_live_governor(
         refused = mint_launch_via_socket(
             LaunchMintRequest(
                 context=_context(tmp_path / "absent"),
-                requester="pytest",
+                requester=requester,
                 requester_pid=os.getpid(),
                 ttl_s=30.0,
                 observed_at=time.time(),
@@ -299,7 +308,7 @@ def test_serve_binds_mint_policy_event_sink_and_purge_into_live_governor(
         minted = mint_launch_via_socket(
             LaunchMintRequest(
                 context=context,
-                requester="pytest",
+                requester=requester,
                 requester_pid=os.getpid(),
                 ttl_s=30.0,
                 observed_at=time.time(),

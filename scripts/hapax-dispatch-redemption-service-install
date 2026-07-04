@@ -17,7 +17,7 @@ Modes:
   --check         verify source and installed unit drift; write nothing (default)
   --dry-run      print the install/activation plan; write nothing
   --install      install /etc/systemd/system/hapax-dispatch-redemption.service,
-                 reload the system manager, enable/start the unit, then witness
+                 reload the system manager, enable/restart the unit, then witness
                  the fixed-socket protocol receipt
 
 Options:
@@ -89,6 +89,14 @@ require_source_contract() {
     echo "unit does not provision RuntimeDirectory=hapax/coord: $UNIT_SRC" >&2
     exit 1
   }
+  grep -q "^User=root$" "$UNIT_SRC" || {
+    echo "unit must run the root-owned socket namespace owner: $UNIT_SRC" >&2
+    exit 1
+  }
+  grep -q "^Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_USER=hapax$" "$UNIT_SRC" || {
+    echo "unit does not permit the hapax caller user explicitly: $UNIT_SRC" >&2
+    exit 1
+  }
   grep -q "hapax-dispatch-redemption-authority --serve" "$UNIT_SRC" || {
     echo "unit does not exec hapax-dispatch-redemption-authority --serve: $UNIT_SRC" >&2
     exit 1
@@ -103,7 +111,8 @@ case "$MODE" in
   dry-run)
     echo "would install $UNIT_DST <- $UNIT_SRC"
     echo "would run: systemctl daemon-reload"
-    echo "would run: systemctl enable --now $UNIT_NAME"
+    echo "would run: systemctl enable $UNIT_NAME"
+    echo "would run: systemctl restart $UNIT_NAME"
     if [[ "$SKIP_RECEIPT" -eq 0 && -z "$ROOT" ]]; then
       echo "would run: $DAEMON_SRC --receipt"
     fi
@@ -137,7 +146,8 @@ case "$MODE" in
     echo "wrote $UNIT_DST"
     if [[ -z "$ROOT" ]]; then
       run_privileged systemctl daemon-reload
-      run_privileged systemctl enable --now "$UNIT_NAME"
+      run_privileged systemctl enable "$UNIT_NAME"
+      run_privileged systemctl restart "$UNIT_NAME"
       if [[ "$SKIP_RECEIPT" -eq 0 ]]; then
         "$DAEMON_SRC" --receipt
       fi

@@ -22,7 +22,8 @@ def test_dispatch_redemption_service_installer_dry_run_names_activation_steps(
     assert result.returncode == 0, result.stderr
     assert f"would install {tmp_path / 'root'}/etc/systemd/system/{UNIT_NAME}" in result.stdout
     assert "systemctl daemon-reload" in result.stdout
-    assert f"systemctl enable --now {UNIT_NAME}" in result.stdout
+    assert f"systemctl enable {UNIT_NAME}" in result.stdout
+    assert f"systemctl restart {UNIT_NAME}" in result.stdout
 
 
 def test_dispatch_redemption_service_installer_root_fixture_install_and_check(

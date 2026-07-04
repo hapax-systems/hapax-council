@@ -127,8 +127,8 @@ dispatch_host_is_local() {
 
 launcher_source_root() {
   local launcher="${BASH_SOURCE[0]}"
-  if command -v readlink >/dev/null 2>&1; then
-    launcher="$(readlink -f "$launcher" 2>/dev/null || printf '%s' "$launcher")"
+  if [[ -x /usr/bin/readlink ]]; then
+    launcher="$(/usr/bin/readlink -f "$launcher" 2>/dev/null || printf '%s' "$launcher")"
   fi
   (cd "$(dirname "$launcher")/.." && pwd -P)
 }

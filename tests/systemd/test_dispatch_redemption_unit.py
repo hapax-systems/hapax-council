@@ -8,6 +8,9 @@ ACTIVATION_DAEMON = (
     "/home/hapax/.cache/hapax/source-activation/worktree/scripts/"
     "hapax-dispatch-redemption-authority"
 )
+ACTIVATION_DISPATCHER = (
+    "/home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-methodology-dispatch"
+)
 
 
 def test_unit_is_system_scoped_governor() -> None:
@@ -25,6 +28,15 @@ def test_unit_provisions_fixed_namespace_with_deliberate_mode() -> None:
 
     assert "RuntimeDirectory=hapax/coord" in body
     assert "RuntimeDirectoryMode=0750" in body
+    assert "User=root" in body
+    assert "Group=hapax" in body
+    assert "Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_USER=hapax" in body
+    assert (
+        "Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER=hapax-methodology-dispatch"
+    ) in body
+    assert (
+        f"Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATH={ACTIVATION_DISPATCHER}"
+    ) in body
     directives = [
         line for line in body.splitlines() if line.strip() and not line.strip().startswith("#")
     ]
@@ -51,7 +63,7 @@ def test_unit_names_governed_activation_installer() -> None:
 def test_unit_hardening_baseline() -> None:
     body = UNIT.read_text(encoding="utf-8")
 
-    assert "User=hapax" in body
+    assert "User=root" in body
     assert "NoNewPrivileges=true" in body
     assert "PrivateTmp=true" in body
     assert "Restart=on-failure" in body

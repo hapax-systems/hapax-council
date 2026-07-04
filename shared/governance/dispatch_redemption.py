@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pwd
 import secrets
 import socket
 import stat
@@ -455,11 +456,13 @@ class DispatchLaunchRedemptionServer:
         socket_path: Path | None = None,
         socket_mode: int = 0o660,
         directory_mode: int = 0o750,
+        require_mint_requester_process: bool = False,
     ) -> None:
         self._authority = authority
         self._socket_path = socket_path or dispatch_launch_redemption_socket()
         self._socket_mode = socket_mode
         self._directory_mode = directory_mode
+        self._require_mint_requester_process = require_mint_requester_process
 
     @property
     def socket_path(self) -> Path:
@@ -474,6 +477,7 @@ class DispatchLaunchRedemptionServer:
                     _recv_line(conn, max_bytes=65536),
                     peer=_peer_credentials(conn),
                     require_mint_peer=True,
+                    require_mint_requester_process=self._require_mint_requester_process,
                 )
                 conn.sendall(_encode_payload(response))
 
@@ -512,6 +516,7 @@ class DispatchLaunchRedemptionServer:
                                 _recv_line(conn, max_bytes=65536),
                                 peer=peer,
                                 require_mint_peer=True,
+                                require_mint_requester_process=self._require_mint_requester_process,
                             )
                             conn.sendall(_encode_payload(response))
                     except Exception as exc:  # noqa: BLE001 - one bad conn must not kill the authority.
@@ -757,6 +762,7 @@ def handle_mint_payload(
     *,
     peer: LaunchPeerCredentials | None = None,
     require_peer: bool = False,
+    require_requester_process: bool = False,
 ) -> dict[str, object]:
     try:
         request = parse_mint_request(payload)
@@ -764,7 +770,12 @@ def handle_mint_payload(
         return mint_response_payload(
             LaunchMintResponse(ok=False, reason=f"invalid_request:{type(exc).__name__}")
         )
-    peer_refusal = _mint_peer_refusal(request, peer, require_peer=require_peer)
+    peer_refusal = _mint_peer_refusal(
+        request,
+        peer,
+        require_peer=require_peer,
+        require_requester_process=require_requester_process,
+    )
     if peer_refusal is not None:
         authority.record_mint_refusal(
             request.context,
@@ -807,6 +818,7 @@ def handle_authority_bytes(
     *,
     peer: LaunchPeerCredentials | None = None,
     require_mint_peer: bool = False,
+    require_mint_requester_process: bool = False,
 ) -> dict[str, object]:
     """Route one wire request (mint or redeem) to the authority, failing closed.
 
@@ -824,7 +836,13 @@ def handle_authority_bytes(
         )
     schema = payload.get("schema")
     if schema == "hapax.dispatch_launch_mint.v1":
-        return handle_mint_payload(authority, payload, peer=peer, require_peer=require_mint_peer)
+        return handle_mint_payload(
+            authority,
+            payload,
+            peer=peer,
+            require_peer=require_mint_peer,
+            require_requester_process=require_mint_requester_process,
+        )
     if schema == "hapax.dispatch_launch_redeem.v1":
         return handle_redemption_payload(authority, payload, peer=peer)
     return redemption_response_payload(
@@ -931,19 +949,92 @@ def _mint_peer_refusal(
     peer: LaunchPeerCredentials | None,
     *,
     require_peer: bool = False,
+    require_requester_process: bool = False,
 ) -> str | None:
     if peer is None:
         if require_peer:
             return "peer_unavailable"
         return None
-    # This is provenance/witnessing, not user authentication: same-UID callers
-    # can still speak the socket protocol, but they cannot claim a different
-    # requester pid/uid without a token-free refusal event.
-    if peer.uid != os.getuid():
+    expected_uid = _expected_peer_uid()
+    if peer.uid != expected_uid:
         return f"peer_uid_mismatch:{peer.uid}"
     if request.requester_pid != peer.pid:
         return f"peer_pid_mismatch:{request.requester_pid}!={peer.pid}"
+    if require_requester_process:
+        requester_refusal = _requester_process_refusal(peer.pid, request.requester)
+        if requester_refusal is not None:
+            return requester_refusal
     return None
+
+
+def _expected_peer_uid() -> int:
+    configured_uid = os.environ.get("HAPAX_DISPATCH_REDEMPTION_ALLOWED_UID", "").strip()
+    if configured_uid:
+        try:
+            return int(configured_uid)
+        except ValueError:
+            return -1
+    configured_user = os.environ.get("HAPAX_DISPATCH_REDEMPTION_ALLOWED_USER", "").strip()
+    if configured_user:
+        try:
+            return pwd.getpwnam(configured_user).pw_uid
+        except KeyError:
+            return -1
+    return os.getuid()
+
+
+def _requester_process_refusal(pid: int, requester: str) -> str | None:
+    requester_name = Path(requester).name
+    allowed_requester = os.environ.get(
+        "HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER",
+        "hapax-methodology-dispatch",
+    ).strip()
+    if requester_name != allowed_requester:
+        return f"peer_requester_mismatch:{requester}"
+    try:
+        exe = Path(f"/proc/{pid}/exe").resolve(strict=True)
+        cmdline = _proc_cmdline(pid)
+    except OSError:
+        return f"peer_requester_unwitnessed:{requester}"
+    expected_path = _allowed_requester_path()
+    if expected_path is not None:
+        if not _python_process_is_running_script(cmdline, expected_path):
+            return f"peer_requester_mismatch:{requester}"
+        return None
+    if exe.name == requester_name:
+        return None
+    if _cmdline_contains_basename(cmdline, requester_name):
+        return None
+    return f"peer_requester_mismatch:{requester}"
+
+
+def _proc_cmdline(pid: int) -> tuple[str, ...]:
+    raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    return tuple(part.decode("utf-8", "replace") for part in raw.split(b"\0") if part)
+
+
+def _allowed_requester_path() -> Path | None:
+    raw = os.environ.get("HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATH", "").strip()
+    if not raw:
+        return None
+    try:
+        return Path(raw).expanduser().resolve(strict=True)
+    except OSError:
+        return Path(raw).expanduser().resolve(strict=False)
+
+
+def _python_process_is_running_script(cmdline: tuple[str, ...], expected_path: Path) -> bool:
+    if len(cmdline) < 2:
+        return False
+    try:
+        observed = Path(cmdline[1]).expanduser().resolve(strict=True)
+    except OSError:
+        observed = Path(cmdline[1]).expanduser().resolve(strict=False)
+    return observed == expected_path
+
+
+def _cmdline_contains_basename(cmdline: tuple[str, ...], expected_name: str) -> bool:
+    return any(Path(part).name == expected_name for part in cmdline)
 
 
 def _token_digest(token: str) -> str:

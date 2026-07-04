@@ -253,6 +253,26 @@ def test_authority_socket_mint_refuses_peer_uid_mismatch():
     assert events[0].requester_pid == os.getpid()
 
 
+def test_authority_socket_mint_refuses_unwitnessed_requester_process():
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+
+    response_payload = handle_authority_bytes(
+        authority,
+        _encoded_mint_request(_mint_request()),
+        peer=LaunchPeerCredentials(pid=os.getpid(), uid=os.getuid(), gid=os.getgid()),
+        require_mint_peer=True,
+        require_mint_requester_process=True,
+    )
+    response = parse_mint_response(response_payload)
+
+    assert response.ok is False
+    assert response.reason == "peer_requester_mismatch:hapax-methodology-dispatch"
+    events = authority.events()
+    assert [event.event_type for event in events] == ["mint_refused"]
+    assert events[0].reason == "peer_requester_mismatch:hapax-methodology-dispatch"
+    assert events[0].peer_pid == os.getpid()
+
+
 def test_socket_redemption_fails_closed_when_authority_absent(tmp_path):
     response = redeem_launch_via_socket(_request("anything"), socket_path=tmp_path / "missing.sock")
 
