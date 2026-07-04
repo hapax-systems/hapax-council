@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import socket
 import stat
+import struct
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -121,6 +123,13 @@ class LaunchMintResponse:
 
 
 @dataclass(frozen=True)
+class LaunchPeerCredentials:
+    pid: int
+    uid: int
+    gid: int
+
+
+@dataclass(frozen=True)
 class LaunchRedemptionEvent:
     event_type: Literal["grant_minted", "grant_redeemed", "grant_refused", "mint_refused"]
     grant_id: str | None
@@ -133,6 +142,9 @@ class LaunchRedemptionEvent:
     route_decision_ref: str | None
     reason: str
     observed_at: float
+    peer_pid: int | None = None
+    peer_uid: int | None = None
+    peer_gid: int | None = None
 
 
 class LaunchMintRefusedError(RuntimeError):
@@ -167,7 +179,11 @@ class DispatchLaunchRedemptionAuthority:
         self._events: list[LaunchRedemptionEvent] = []
 
     def mint(
-        self, context: LaunchRedemptionContext, *, ttl_s: float = 600.0
+        self,
+        context: LaunchRedemptionContext,
+        *,
+        ttl_s: float = 600.0,
+        peer: LaunchPeerCredentials | None = None,
     ) -> LaunchRedemptionGrant:
         if ttl_s <= 0:
             raise ValueError("ttl_s must be positive")
@@ -182,6 +198,7 @@ class DispatchLaunchRedemptionAuthority:
                     context=normalized,
                     reason=f"mint_policy_refused:{refusal}",
                     observed_at=float(self._now()),
+                    peer=peer,
                 )
                 raise LaunchMintRefusedError(refusal)
         token = secrets.token_urlsafe(32)
@@ -199,34 +216,37 @@ class DispatchLaunchRedemptionAuthority:
             context=normalized,
             reason="minted",
             observed_at=float(self._now()),
+            peer=peer,
         )
         return LaunchRedemptionGrant(grant_id=grant_id, token=token, expires_at=expires_at)
 
-    def redeem(self, request: LaunchRedemptionRequest) -> LaunchRedemptionResponse:
+    def redeem(
+        self, request: LaunchRedemptionRequest, *, peer: LaunchPeerCredentials | None = None
+    ) -> LaunchRedemptionResponse:
         now = float(self._now())
         token = request.token.strip()
         if not token:
-            return self._response(False, "missing_token", None, now)
+            return self._response(False, "missing_token", None, now, peer=peer)
         stored = self._grants.get(_token_digest(token))
         if stored is None:
-            return self._response(False, "unknown_token", None, now)
+            return self._response(False, "unknown_token", None, now, peer=peer)
         if stored.consumed_at is not None:
-            return self._response(False, "already_consumed", stored, now)
+            return self._response(False, "already_consumed", stored, now, peer=peer)
         if now > stored.expires_at:
-            return self._response(False, "expired_token", stored, now)
+            return self._response(False, "expired_token", stored, now, peer=peer)
         try:
             observed = request.context.normalized()
             observed.validate()
         except ValueError:
-            return self._response(False, "invalid_context", stored, now)
+            return self._response(False, "invalid_context", stored, now, peer=peer)
         if observed != stored.context:
-            return self._response(False, "context_mismatch", stored, now)
+            return self._response(False, "context_mismatch", stored, now, peer=peer)
         if self._policy_check is not None:
             refusal = self._policy_check(stored.context)
             if refusal:
-                return self._response(False, f"policy_refused:{refusal}", stored, now)
+                return self._response(False, f"policy_refused:{refusal}", stored, now, peer=peer)
         stored.consumed_at = now
-        return self._response(True, "redeemed", stored, now)
+        return self._response(True, "redeemed", stored, now, peer=peer)
 
     def events(self) -> tuple[LaunchRedemptionEvent, ...]:
         return tuple(self._events)
@@ -248,8 +268,37 @@ class DispatchLaunchRedemptionAuthority:
             del self._grants[digest]
         return len(dead)
 
+    def record_mint_refusal(
+        self,
+        context: LaunchRedemptionContext | None,
+        *,
+        reason: str,
+        peer: LaunchPeerCredentials | None = None,
+    ) -> None:
+        normalized: LaunchRedemptionContext | None = None
+        if context is not None:
+            try:
+                normalized = context.normalized()
+                normalized.validate()
+            except ValueError:
+                normalized = None
+        self._append_event(
+            "mint_refused",
+            grant_id=None,
+            context=normalized,
+            reason=reason,
+            observed_at=float(self._now()),
+            peer=peer,
+        )
+
     def _response(
-        self, ok: bool, reason: str, stored: _StoredGrant | None, observed_at: float
+        self,
+        ok: bool,
+        reason: str,
+        stored: _StoredGrant | None,
+        observed_at: float,
+        *,
+        peer: LaunchPeerCredentials | None = None,
     ) -> LaunchRedemptionResponse:
         response = LaunchRedemptionResponse(
             ok=ok,
@@ -265,6 +314,7 @@ class DispatchLaunchRedemptionAuthority:
             context=stored.context if stored else None,
             reason=reason,
             observed_at=observed_at,
+            peer=peer,
         )
         return response
 
@@ -276,6 +326,7 @@ class DispatchLaunchRedemptionAuthority:
         context: LaunchRedemptionContext | None,
         reason: str,
         observed_at: float,
+        peer: LaunchPeerCredentials | None = None,
     ) -> None:
         event = LaunchRedemptionEvent(
             event_type=event_type,
@@ -289,6 +340,9 @@ class DispatchLaunchRedemptionAuthority:
             route_decision_ref=context.route_decision_ref if context else None,
             reason=reason,
             observed_at=observed_at,
+            peer_pid=peer.pid if peer else None,
+            peer_uid=peer.uid if peer else None,
+            peer_gid=peer.gid if peer else None,
         )
         self._events.append(event)
         if self._event_sink is not None:
@@ -325,8 +379,10 @@ class DispatchLaunchRedemptionServer:
         with self._bound_socket(timeout_s=timeout_s) as server:
             conn, _addr = server.accept()
             with conn:
-                response = handle_redemption_bytes(
-                    self._authority, _recv_line(conn, max_bytes=65536)
+                response = handle_authority_bytes(
+                    self._authority,
+                    _recv_line(conn, max_bytes=65536),
+                    peer=_peer_credentials(conn),
                 )
                 conn.sendall(_encode_payload(response))
 
@@ -359,8 +415,11 @@ class DispatchLaunchRedemptionServer:
                     try:
                         with conn:
                             conn.settimeout(poll_timeout_s)
+                            peer = _peer_credentials(conn)
                             response = handle_authority_bytes(
-                                self._authority, _recv_line(conn, max_bytes=65536)
+                                self._authority,
+                                _recv_line(conn, max_bytes=65536),
+                                peer=peer,
                             )
                             conn.sendall(_encode_payload(response))
                     except Exception as exc:  # noqa: BLE001 - one bad conn must not kill the authority.
@@ -556,11 +615,17 @@ def redemption_event_payload(event: LaunchRedemptionEvent) -> dict[str, object]:
         "route_decision_ref": event.route_decision_ref,
         "reason": event.reason,
         "observed_at": event.observed_at,
+        "peer_pid": event.peer_pid,
+        "peer_uid": event.peer_uid,
+        "peer_gid": event.peer_gid,
     }
 
 
 def handle_redemption_payload(
-    authority: DispatchLaunchRedemptionAuthority, payload: dict[str, object]
+    authority: DispatchLaunchRedemptionAuthority,
+    payload: dict[str, object],
+    *,
+    peer: LaunchPeerCredentials | None = None,
 ) -> dict[str, object]:
     try:
         request = parse_redemption_request(payload)
@@ -568,11 +633,14 @@ def handle_redemption_payload(
         return redemption_response_payload(
             LaunchRedemptionResponse(ok=False, reason=f"invalid_request:{type(exc).__name__}")
         )
-    return redemption_response_payload(authority.redeem(request))
+    return redemption_response_payload(authority.redeem(request, peer=peer))
 
 
 def handle_redemption_bytes(
-    authority: DispatchLaunchRedemptionAuthority, data: bytes
+    authority: DispatchLaunchRedemptionAuthority,
+    data: bytes,
+    *,
+    peer: LaunchPeerCredentials | None = None,
 ) -> dict[str, object]:
     try:
         payload = json.loads(data.decode("utf-8"))
@@ -582,11 +650,14 @@ def handle_redemption_bytes(
         return redemption_response_payload(
             LaunchRedemptionResponse(ok=False, reason=f"invalid_request:{type(exc).__name__}")
         )
-    return handle_redemption_payload(authority, payload)
+    return handle_redemption_payload(authority, payload, peer=peer)
 
 
 def handle_mint_payload(
-    authority: DispatchLaunchRedemptionAuthority, payload: dict[str, object]
+    authority: DispatchLaunchRedemptionAuthority,
+    payload: dict[str, object],
+    *,
+    peer: LaunchPeerCredentials | None = None,
 ) -> dict[str, object]:
     try:
         request = parse_mint_request(payload)
@@ -594,8 +665,12 @@ def handle_mint_payload(
         return mint_response_payload(
             LaunchMintResponse(ok=False, reason=f"invalid_request:{type(exc).__name__}")
         )
+    peer_refusal = _mint_peer_refusal(request, peer)
+    if peer_refusal is not None:
+        authority.record_mint_refusal(request.context, reason=peer_refusal, peer=peer)
+        return mint_response_payload(LaunchMintResponse(ok=False, reason=peer_refusal))
     try:
-        grant = authority.mint(request.context, ttl_s=request.ttl_s)
+        grant = authority.mint(request.context, ttl_s=request.ttl_s, peer=peer)
     except LaunchMintRefusedError as exc:
         return mint_response_payload(
             LaunchMintResponse(ok=False, reason=f"mint_policy_refused:{exc}")
@@ -616,7 +691,10 @@ def handle_mint_payload(
 
 
 def handle_authority_bytes(
-    authority: DispatchLaunchRedemptionAuthority, data: bytes
+    authority: DispatchLaunchRedemptionAuthority,
+    data: bytes,
+    *,
+    peer: LaunchPeerCredentials | None = None,
 ) -> dict[str, object]:
     """Route one wire request (mint or redeem) to the authority, failing closed.
 
@@ -634,9 +712,9 @@ def handle_authority_bytes(
         )
     schema = payload.get("schema")
     if schema == "hapax.dispatch_launch_mint.v1":
-        return handle_mint_payload(authority, payload)
+        return handle_mint_payload(authority, payload, peer=peer)
     if schema == "hapax.dispatch_launch_redeem.v1":
-        return handle_redemption_payload(authority, payload)
+        return handle_redemption_payload(authority, payload, peer=peer)
     return redemption_response_payload(
         LaunchRedemptionResponse(ok=False, reason="invalid_request:unsupported_schema")
     )
@@ -725,6 +803,29 @@ def _prepare_socket_path(path: Path, *, directory_mode: int) -> None:
     raise OSError(f"redemption socket already active: {path}")
 
 
+def _peer_credentials(client: socket.socket) -> LaunchPeerCredentials | None:
+    if not hasattr(socket, "SO_PEERCRED"):
+        return None
+    try:
+        raw = client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        pid, uid, gid = struct.unpack("3i", raw)
+    except OSError:
+        return None
+    return LaunchPeerCredentials(pid=pid, uid=uid, gid=gid)
+
+
+def _mint_peer_refusal(
+    request: LaunchMintRequest, peer: LaunchPeerCredentials | None
+) -> str | None:
+    if peer is None:
+        return None
+    if peer.uid != os.getuid():
+        return f"peer_uid_mismatch:{peer.uid}"
+    if request.requester_pid != peer.pid:
+        return f"peer_pid_mismatch:{request.requester_pid}!={peer.pid}"
+    return None
+
+
 def _token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -775,6 +876,7 @@ __all__ = [
     "LaunchMintRefusedError",
     "LaunchMintRequest",
     "LaunchMintResponse",
+    "LaunchPeerCredentials",
     "LaunchRedemptionContext",
     "LaunchRedemptionEvent",
     "LaunchRedemptionGrant",

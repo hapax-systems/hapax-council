@@ -1,16 +1,21 @@
 import json
+import os
 import socket
 import stat
 import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from shared.governance.dispatch_redemption import (
     DispatchLaunchRedemptionAuthority,
     DispatchLaunchRedemptionServer,
+    LaunchMintRequest,
     LaunchRedemptionContext,
     LaunchRedemptionRequest,
     dispatch_launch_redemption_socket,
+    mint_launch_via_socket,
     parse_redemption_response,
     redeem_launch_via_socket,
     redemption_event_payload,
@@ -41,6 +46,20 @@ def _request(token: str, context: LaunchRedemptionContext | None = None) -> Laun
         context=context or _context(),
         wrapper="hapax-codex-headless",
         wrapper_pid=123,
+        observed_at=1001.0,
+    )
+
+
+def _mint_request(
+    context: LaunchRedemptionContext | None = None,
+    *,
+    requester_pid: int | None = None,
+) -> LaunchMintRequest:
+    return LaunchMintRequest(
+        context=context or _context(),
+        requester="hapax-methodology-dispatch",
+        requester_pid=requester_pid or os.getpid(),
+        ttl_s=60.0,
         observed_at=1001.0,
     )
 
@@ -137,6 +156,56 @@ def test_socket_redemption_roundtrip_sets_governor_modes(tmp_path):
     assert stat.S_IMODE(socket_path.stat().st_mode) == 0o660
 
 
+@pytest.mark.skipif(not hasattr(socket, "SO_PEERCRED"), reason="SO_PEERCRED is Linux-only")
+def test_socket_mint_and_redeem_roundtrip_records_peer_metadata(tmp_path):
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+    socket_path = tmp_path / "coord" / "dispatch-redemption.sock"
+    server = DispatchLaunchRedemptionServer(authority, socket_path=socket_path)
+
+    mint_thread = threading.Thread(target=server.serve_once, kwargs={"timeout_s": 5.0})
+    mint_thread.start()
+    mint_response = _mint_with_retry(_mint_request(), socket_path)
+    mint_thread.join(timeout=5)
+
+    assert mint_response.ok is True
+    assert mint_response.reason == "minted"
+    assert mint_response.token
+
+    redeem_thread = threading.Thread(target=server.serve_once, kwargs={"timeout_s": 5.0})
+    redeem_thread.start()
+    redeem_response = _redeem_with_retry(_request(mint_response.token), socket_path)
+    redeem_thread.join(timeout=5)
+
+    assert redeem_response.ok is True
+    events = authority.events()
+    assert [event.event_type for event in events] == ["grant_minted", "grant_redeemed"]
+    assert events[0].peer_pid == os.getpid()
+    assert events[0].peer_uid == os.getuid()
+    payload = redemption_event_payload(events[0])
+    assert payload["peer_pid"] == os.getpid()
+    assert payload["peer_uid"] == os.getuid()
+    assert mint_response.token not in repr(payload)
+
+
+@pytest.mark.skipif(not hasattr(socket, "SO_PEERCRED"), reason="SO_PEERCRED is Linux-only")
+def test_socket_mint_refuses_requester_pid_that_is_not_peer(tmp_path):
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+    socket_path = tmp_path / "coord" / "dispatch-redemption.sock"
+    server = DispatchLaunchRedemptionServer(authority, socket_path=socket_path)
+
+    thread = threading.Thread(target=server.serve_once, kwargs={"timeout_s": 5.0})
+    thread.start()
+    response = _mint_with_retry(_mint_request(requester_pid=os.getpid() + 100_000), socket_path)
+    thread.join(timeout=5)
+
+    assert response.ok is False
+    assert response.reason.startswith("peer_pid_mismatch:")
+    events = authority.events()
+    assert [event.event_type for event in events] == ["mint_refused"]
+    assert events[0].reason.startswith("peer_pid_mismatch:")
+    assert events[0].peer_pid == os.getpid()
+
+
 def test_socket_redemption_fails_closed_when_authority_absent(tmp_path):
     response = redeem_launch_via_socket(_request("anything"), socket_path=tmp_path / "missing.sock")
 
@@ -169,6 +238,18 @@ def _redeem_with_retry(request: LaunchRedemptionRequest, socket_path: Path):
     last = None
     for _ in range(100):
         response = redeem_launch_via_socket(request, socket_path=socket_path, timeout_s=0.2)
+        if not response.reason.startswith("socket_unavailable:"):
+            return response
+        last = response
+        time.sleep(0.01)
+    assert last is not None
+    return last
+
+
+def _mint_with_retry(request: LaunchMintRequest, socket_path: Path):
+    last = None
+    for _ in range(100):
+        response = mint_launch_via_socket(request, socket_path=socket_path, timeout_s=0.2)
         if not response.reason.startswith("socket_unavailable:"):
             return response
         last = response
