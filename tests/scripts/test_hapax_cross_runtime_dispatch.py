@@ -330,6 +330,34 @@ def test_list_eligible_skips_retired_antigrav_metadata(tmp_path: Path) -> None:
     assert "gemini-cli" not in result.stdout
 
 
+def test_list_eligible_includes_claude_code_metadata(tmp_path: Path) -> None:
+    env, _dispatcher_log = _env(tmp_path / "claude-code-list")
+    registry = Path(env["HAPAX_TEAM_REGISTRY_DIR"])
+    (registry / "beta.json").write_text(
+        json.dumps(
+            {
+                "platform": "claude-code",
+                "last_probe_utc": time.time(),
+                "freshness_ttl_s": 3600,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(SCRIPT), "--list-eligible"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    row = next(line for line in result.stdout.splitlines() if "beta" in line)
+    assert "claude-code" in row
+    assert "eligible" in row
+
+
 def test_list_eligible_marks_malformed_freshness_unknown(tmp_path: Path) -> None:
     env, _dispatcher_log = _env(tmp_path / "malformed-freshness")
     registry = Path(env["HAPAX_TEAM_REGISTRY_DIR"])

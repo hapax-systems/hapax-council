@@ -143,7 +143,7 @@ is_retired_antigrav_lane() {
 
 is_dispatchable_platform() {
     local platform="${1,,}"
-    [[ "$platform" == "claude" || "$platform" == "codex" || "$platform" == "vibe" ]]
+    [[ "$platform" == "claude" || "$platform" == "claude-code" || "$platform" == "codex" || "$platform" == "vibe" ]]
 }
 
 write_blocked_dispatch_receipt() {
