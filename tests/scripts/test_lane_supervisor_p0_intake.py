@@ -56,8 +56,18 @@ def _supervisor_fixture(tmp_path: Path, *, intake_exit: int) -> tuple[Path, dict
 
     home = tmp_path / "home"
     env = os.environ.copy()
+    # KIND-5: pin the topology (provisioning runs on the dev target host) + drop any
+    # inherited dispatch/maintenance vars so the derived respawn decision is hermetic.
+    for _leaky in (
+        "HAPAX_LOCAL_DEV_MAINTENANCE_MODE",
+        "HAPAX_DISPATCH_HOST",
+        "HAPAX_DEFAULT_DISPATCH_HOST",
+        "HAPAX_CURRENT_HOST",
+    ):
+        env.pop(_leaky, None)
     env.update(
         {
+            "HAPAX_CURRENT_HOST": "hapax-appendix",
             "HOME": str(home),
             "PATH": f"{fake_bin}:{env['PATH']}",
             "HAPAX_SUPERVISOR_STATE_DIR": str(tmp_path / "state"),

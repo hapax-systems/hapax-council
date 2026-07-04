@@ -132,18 +132,30 @@ mkdir -p "$STATE_DIR"
 log() { printf '%s lane-supervisor: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 
 local_dev_maintenance_mode() {
-  local mode="${HAPAX_LOCAL_DEV_MAINTENANCE_MODE:-}"
-  if [ -z "$mode" ]; then
-    mode="${HAPAX_DEFAULT_DISPATCH_HOST:-${HAPAX_DISPATCH_HOST:-local}}"
+  # KIND-5 dissolution (MOVE 4): topology-DERIVED, not a static per-host flag. A
+  # static flag set wrong per-host silently over-suppresses (the dispatch wedge) or
+  # under-suppresses (dev leaks onto podium). Derived truth: suppress local dev-lane
+  # idle-await respawns iff THIS host is not the dev dispatch target (no-dev-on-podium).
+  # FAIL-CLOSED to suppress. Mirrors shared.host_confinement.should_suppress_local_dev_respawn
+  # (bash cannot import it here); kept in parity by tests/test_lane_maintenance_parity.py.
+  local override="${HAPAX_LOCAL_DEV_MAINTENANCE_MODE:-}"
+  if [ -n "$override" ]; then  # explicit override still honored (governed-claim override is the fast-follow)
+    case "$override" in
+      appendix | hapax-appendix | appendix-only | appendix_only | remote | thin-client | thin_client)
+        echo "appendix-only"; return ;;
+      *) echo "local"; return ;;
+    esac
   fi
-  case "$mode" in
-    appendix | hapax-appendix | appendix-only | appendix_only | remote | thin-client | thin_client)
-      echo "appendix-only"
-      ;;
-    *)
-      echo "local"
-      ;;
-  esac
+  local target current
+  target="${HAPAX_DISPATCH_HOST:-${HAPAX_DEFAULT_DISPATCH_HOST:-appendix}}"
+  target="${target#hapax-}"
+  current="${HAPAX_CURRENT_HOST:-$(hostname 2>/dev/null || true)}"
+  current="${current#hapax-}"
+  if [ -z "$current" ] || [ "$current" != "$target" ]; then
+    echo "appendix-only"
+  else
+    echo "local"
+  fi
 }
 
 LOCAL_DEV_MAINTENANCE_MODE="$(local_dev_maintenance_mode)"

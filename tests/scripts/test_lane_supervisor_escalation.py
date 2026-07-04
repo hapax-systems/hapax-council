@@ -36,7 +36,17 @@ def _base_env(tmp_path: Path, *, notify_record: Path, codex_rc: int) -> dict[str
         f'printf "%s\\t%s\\n" "$1" "$2" >> "{notify_record}"\n',
     )
     env = dict(os.environ)
+    # KIND-5: pin the topology (provisioning runs on the dev target host) + drop any
+    # inherited dispatch/maintenance vars so the derived respawn decision is hermetic.
+    for _leaky in (
+        "HAPAX_LOCAL_DEV_MAINTENANCE_MODE",
+        "HAPAX_DISPATCH_HOST",
+        "HAPAX_DEFAULT_DISPATCH_HOST",
+        "HAPAX_CURRENT_HOST",
+    ):
+        env.pop(_leaky, None)
     env.update(
+        HAPAX_CURRENT_HOST="hapax-appendix",
         HAPAX_SUPERVISOR_STATE_DIR=str(state),
         HAPAX_SUPERVISOR_WORKTREE_ROOT=str(worktrees),
         HAPAX_SUPERVISOR_VAULT_ROOT=str(tmp_path / "vault"),
