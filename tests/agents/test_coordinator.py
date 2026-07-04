@@ -14,6 +14,8 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
 
+import pytest
+
 from agents.coordinator.core import (
     _DISPATCH_CLAIM_GUARD_MARKERS,
     _DISPATCH_CLOSE_GUARD_MARKERS,
@@ -292,6 +294,26 @@ class TestDispatchWorktreeGuard:
         assert "unsupported dispatch platform 'antigrav'" in blocker
         assert "next_action=" in blocker
         assert "mint measured supply-leaf intake" in blocker
+
+    @pytest.mark.parametrize("platform", ["agy", "antigravity", "gemini-cli"])
+    def test_dispatch_tool_blocker_retired_aliases_keep_intake_next_action(
+        self,
+        tmp_path: Path,
+        platform: str,
+    ):
+        with (
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch(
+                "agents.coordinator.core._read_dispatch_guard",
+                side_effect=AssertionError("unsupported platform should not read guard files"),
+            ),
+        ):
+            blocker = _dispatch_tool_blocker(platform, platform)
+
+        assert blocker is not None
+        assert f"unsupported dispatch platform '{platform}'" in blocker
+        assert "mint measured supply-leaf intake" in blocker
+        assert "add coordinator headless dispatch support" not in blocker
 
 
 class TestParseTask:

@@ -1408,6 +1408,7 @@ def _live_headless_launcher(role: str) -> tuple[int, str | None] | None:
 
 
 COORDINATOR_DISPATCHABLE_PLATFORMS = dispatch_guards.COORDINATOR_HEADLESS_DISPATCHABLE_PLATFORMS
+RETIRED_DISPATCH_PLATFORM_ALIASES = frozenset({"agy", "antigrav", "antigravity", "gemini-cli"})
 _DISPATCH_CLAIM_GUARD_MARKERS = dispatch_guards.DISPATCH_CLAIM_GUARD_MARKERS
 _DISPATCH_CLOSE_GUARD_MARKERS = dispatch_guards.DISPATCH_CLOSE_GUARD_MARKERS
 
@@ -1444,7 +1445,7 @@ def _lane_not_alive_next_action(role: str, platform: str, worktree: Path) -> str
 
 
 def _unsupported_dispatch_platform_next_action(platform: str) -> str:
-    if platform == "antigrav":
+    if platform.strip().lower() in RETIRED_DISPATCH_PLATFORM_ALIASES:
         return (
             "route work to Claude, Codex, or Vibe; for agy, mint measured supply-leaf intake "
             "with route/resource/governance receipts before any future interactive worker path"

@@ -920,13 +920,27 @@ def _normalize_surface_token(value: str) -> str:
     return value.strip().lower().replace("/", ".").replace(" ", "_")
 
 
+def _shape_signal_token(shape: CapabilityShapeDescriptor) -> str | None:
+    prefix = "capability_surface_delta:"
+    signal = shape.surface_delta_signal.strip().lower()
+    if not signal.startswith(prefix):
+        return None
+    return _normalize_surface_token(signal.removeprefix(prefix))
+
+
 def _surface_matches_shape(
     delta: CapabilitySurfaceDeltaSignal,
     shape: CapabilityShapeDescriptor,
 ) -> bool:
     surface = _normalize_surface_token(delta.surface_id)
     shape_id = _normalize_surface_token(shape.shape_id)
-    return surface == shape_id or surface.startswith(f"{shape_id}.")
+    if surface == shape_id or surface.startswith(f"{shape_id}."):
+        return True
+    signal_token = _shape_signal_token(shape)
+    if signal_token is None or shape.shape_state is CapabilityShapeState.DEPRECATED:
+        return False
+    signal_surface = f"surface.{signal_token}"
+    return surface == signal_surface or surface.startswith(f"{signal_surface}.")
 
 
 def disposition_for_capability_surface_delta(

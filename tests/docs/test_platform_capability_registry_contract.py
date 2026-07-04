@@ -18,6 +18,7 @@ from shared.capability_surface_delta import (
     DeltaKind,
     FreshnessState,
     RequiredIntakeAction,
+    load_capability_surface_delta_fixtures,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -298,6 +299,27 @@ def test_surface_delta_for_omitted_shape_holds_until_measurement() -> None:
     assert disposition.demand_eligible is False
     assert disposition.descriptor_id == "publication_bus.public_event_surface"
     assert "evidence_only_not_dispatch_supply" in disposition.reason_codes
+
+
+def test_canonical_fixture_surface_delta_holds_registered_omitted_shape() -> None:
+    from shared.platform_capability_registry import (
+        CapabilitySurfaceDeltaAction,
+        disposition_for_capability_surface_delta,
+        load_platform_capability_registry,
+    )
+
+    registry = load_platform_capability_registry()
+    fixtures = load_capability_surface_delta_fixtures()
+    delta = next(
+        delta for delta in fixtures.deltas if delta.surface_id == "surface.publication_bus.weblog"
+    )
+
+    disposition = disposition_for_capability_surface_delta(registry, delta)
+
+    assert disposition.action is CapabilitySurfaceDeltaAction.KNOWN_HOLD_FOR_MEASUREMENT
+    assert disposition.demand_eligible is False
+    assert disposition.descriptor_id == "publication_bus.public_event_surface"
+    assert "known_omitted_capability_shape" in disposition.reason_codes
 
 
 def test_same_carrier_unknown_surface_delta_mints_intake_not_hold() -> None:
