@@ -1744,6 +1744,83 @@ printf '%s\\n' "$@" > {launcher_args}
     ]
 
 
+def test_codex_external_worktree_dispatch_exports_redemption_binding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    home = tmp_path / "home"
+    reins_worktree = home / "projects" / "reins"
+    reins_worktree.mkdir(parents=True)
+    launcher_env = tmp_path / "launcher-env.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex-headless"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' \\
+  "$HAPAX_CODEX_HEADLESS_WORKDIR" \\
+  "$HAPAX_METHODOLOGY_DISPATCH_EXTERNAL" \\
+  "$HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID" \\
+  "$HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF" \\
+  "$HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE" \\
+  "$HAPAX_METHODOLOGY_DISPATCH_PARENT_SPEC" \\
+  "${{HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN:-}}" \\
+  "$@" > {launcher_env}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(reins_worktree))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CODEX_HEADLESS", str(fake_launcher))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN", "opaque-token")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "status": "claimed",
+                "authority_case": "CASE-CAPACITY-ROUTING-001",
+                "parent_spec": "/tmp/spec.md",
+            },
+        ),
+    )
+    route_decision = type(
+        "RouteDecisionStub",
+        (),
+        {
+            "route_id": "codex.headless.full",
+            "selected_descriptor_leaf": "codex.headless.full",
+        },
+    )()
+
+    result = module.launch_codex_headless(
+        "task-x",
+        "cx-green",
+        "prompt",
+        validation,
+        module.PLATFORM_PATHS[("codex", "headless", "full")],
+        route_decision=route_decision,
+        route_decision_receipt_path=tmp_path / "route-receipt.json",
+        durable_binding=module.DurableDispatchBinding(
+            True, False, "durable_mq_dispatch_bound", message_id="019f-message"
+        ),
+    )
+
+    assert result == 0
+    captured = launcher_env.read_text(encoding="utf-8").splitlines()
+    assert captured[:7] == [
+        str(reins_worktree),
+        "1",
+        "019f-message",
+        str(tmp_path / "route-receipt.json"),
+        "CASE-CAPACITY-ROUTING-001",
+        "/tmp/spec.md",
+        "opaque-token",
+    ]
+    assert captured[7:10] == ["--task", "task-x", "--no-claim"]
+
+
 def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: Path) -> None:
     worktree = _worktree(tmp_path / "worktree")
     (worktree / "scripts" / "cc-claim").chmod(0o755)

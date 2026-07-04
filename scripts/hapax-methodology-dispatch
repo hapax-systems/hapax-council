@@ -563,6 +563,20 @@ def lane_worktree(lane: str, platform: str) -> Path:
     return dispatch_worktree(lane, platform)
 
 
+def is_external_project_worktree(worktree: Path) -> bool:
+    try:
+        resolved = worktree.expanduser().resolve()
+    except OSError:
+        resolved = worktree.expanduser().absolute()
+    projects_root = Path.home() / "projects"
+    try:
+        relative = resolved.relative_to(projects_root)
+    except ValueError:
+        return False
+    first = relative.parts[0] if relative.parts else ""
+    return not (first == "hapax-council" or first.startswith("hapax-council--"))
+
+
 def is_claude_operator_pool_lane(lane: str, platform: str) -> bool:
     """True for visible Claude dev-pool sessions that are not dispatch lanes."""
 
@@ -1696,6 +1710,9 @@ def launch_codex_headless(
     validation: Validation,
     route: PlatformPath,
     *,
+    route_decision: RouteDecision | None = None,
+    route_decision_receipt_path: Path | None = None,
+    durable_binding: DurableDispatchBinding | None = None,
     reactivate_retired_relay: bool = False,
 ) -> int:
     # Genuine headless path (reform §6 P0): `codex exec` via hapax-codex-headless,
@@ -1738,6 +1755,32 @@ def launch_codex_headless(
         # Preserve a caller/operator-provided fallback value; the P0 drain rule
         # only supplies the default local fallback when the env is otherwise unset.
         env.setdefault("HAPAX_DISPATCH_HOST_FALLBACK", "local")
+    worktree = lane_worktree(lane, "codex")
+    if is_external_project_worktree(worktree):
+        assert validation.task is not None
+        fields = validation.task.fields
+        env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(worktree)
+        env["HAPAX_METHODOLOGY_DISPATCH_EXTERNAL"] = "1"
+        env["HAPAX_METHODOLOGY_DISPATCH_PROFILE"] = route.profile
+        env["HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE"] = strip_scalar(
+            str(fields.get("authority_case", ""))
+        )
+        env["HAPAX_METHODOLOGY_DISPATCH_PARENT_SPEC"] = strip_scalar(
+            str(fields.get("parent_spec", ""))
+        )
+        if durable_binding is not None and durable_binding.message_id:
+            env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = durable_binding.message_id
+        if route_decision_receipt_path is not None:
+            env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = str(route_decision_receipt_path)
+        elif route_decision is not None:
+            env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = (
+                route_decision.selected_descriptor_leaf or route_decision.route_id
+            )
+        # The opaque token must come from the fixed governor/redemption service.
+        # If absent or self-minted, the wrapper's socket redemption fails closed.
+        token = os.environ.get("HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN", "").strip()
+        if token:
+            env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = token
     return _sliced_call(args, env)
 
 
@@ -2343,6 +2386,9 @@ def main(argv: list[str] | None = None) -> int:
                 prompt or "",
                 validation,
                 route,
+                route_decision=route_decision,
+                route_decision_receipt_path=route_decision_receipt_path,
+                durable_binding=durable_binding,
                 reactivate_retired_relay=reactivate_retired_codex_relay,
             ),
             ("vibe", "headless"): lambda: launch_vibe_headless(
