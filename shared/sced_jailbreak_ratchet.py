@@ -50,6 +50,7 @@ class SCEDPhase1RejectReason(StrEnum):
     LIVE_SUBMISSION_REQUESTED = "live_submission_requested"
     DUPLICATE_CANDIDATE_DIGEST = "duplicate_candidate_digest"
     DUPLICATE_TECHNIQUE_REF = "duplicate_technique_ref"
+    MISSING_SIMILARITY_OBSERVATION = "missing_similarity_observation"
     NOVELTY_SIMILARITY_DUPLICATE = "novelty_similarity_duplicate"
     MISSING_HELD_OUT_EVALUATION = "missing_held_out_evaluation"
     INVALID_HELD_OUT_EVALUATION = "invalid_held_out_evaluation"
@@ -83,6 +84,9 @@ _NEXT_ACTIONS: Final[dict[SCEDPhase1RejectReason, str]] = {
     ),
     SCEDPhase1RejectReason.DUPLICATE_TECHNIQUE_REF: (
         "discard duplicate technique material and generate a novel offline candidate"
+    ),
+    SCEDPhase1RejectReason.MISSING_SIMILARITY_OBSERVATION: (
+        "attach at least one durable similarity witness before admission"
     ),
     SCEDPhase1RejectReason.NOVELTY_SIMILARITY_DUPLICATE: (
         "discard candidates at or above the frozen duplicate-similarity threshold"
@@ -531,6 +535,8 @@ def evaluate_phase1_candidate(
     )
     if known_techniques.intersection(candidate_obj.technique_refs):
         reject_reasons.append(SCEDPhase1RejectReason.DUPLICATE_TECHNIQUE_REF)
+    if not similarities:
+        reject_reasons.append(SCEDPhase1RejectReason.MISSING_SIMILARITY_OBSERVATION)
     if any(
         observation.similarity >= ruler.novelty_criterion.max_duplicate_similarity
         for observation in similarities
@@ -573,7 +579,7 @@ def advance_ratchet(
     """Advance the offline ledger only for a LIT Phase 1 decision."""
 
     ledger_obj = _coerce_ledger(ledger)
-    if decision.status is not GateStatus.LIT or not decision.candidate_digest:
+    if not _decision_can_advance(decision):
         return ledger_obj
     return SCEDRatchetLedger(
         candidate_digests=(
@@ -584,6 +590,21 @@ def advance_ratchet(
             *ledger_obj.technique_refs,
             *decision.technique_refs,
         ),
+    )
+
+
+def _decision_can_advance(decision: SCEDPhase1Decision) -> bool:
+    return (
+        decision.verifier == SCED_PHASE1_RATCHET_NAME
+        and decision.verifier_version == SCED_PHASE1_RATCHET_VERSION
+        and decision.status is GateStatus.LIT
+        and decision.gate_result.status is GateStatus.LIT
+        and decision.gate_result.verdict is True
+        and not decision.reject_reasons
+        and bool(decision.candidate_digest)
+        and decision.target is not None
+        and decision.ruler_hash is not None
+        and decision.target_policy_snapshot is not None
     )
 
 

@@ -116,6 +116,18 @@ def _held_out(**overrides: object) -> HeldOutEvaluation:
     return HeldOutEvaluation(**data)  # type: ignore[arg-type]
 
 
+def _similarities() -> tuple[SimilarityObservation, ...]:
+    return (
+        SimilarityObservation(
+            against_ref="known:crescendo",
+            similarity=0.25,
+            method_ref="similarity-method:minhash-v0",
+            observed_at=NOW,
+            evidence_refs=("similarity-witness:low-001",),
+        ),
+    )
+
+
 def _admit(candidate: SCEDJailbreakCandidate | None = None) -> SCEDPhase1Decision:
     freeze = _freeze()
     return evaluate_phase1_candidate(
@@ -123,6 +135,7 @@ def _admit(candidate: SCEDJailbreakCandidate | None = None) -> SCEDPhase1Decisio
         freeze=freeze,
         ruler_hash_commit=freeze.ruler.canonical_hash(),
         held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
     )
 
 
@@ -153,6 +166,7 @@ def test_phase1_rejects_exact_candidate_digest_duplicate_from_ratchet_ledger() -
         freeze=freeze,
         ruler_hash_commit=freeze.ruler.canonical_hash(),
         held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
         ledger=SCEDRatchetLedger(candidate_digests=(DIGEST_A,)),
     )
 
@@ -167,6 +181,7 @@ def test_phase1_rejects_duplicate_technique_ref_from_frozen_ruler() -> None:
         freeze=freeze,
         ruler_hash_commit=freeze.ruler.canonical_hash(),
         held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
     )
 
     assert decision.status is GateStatus.DARK
@@ -180,6 +195,7 @@ def test_phase1_rejects_duplicate_technique_ref_from_ratchet_ledger() -> None:
         freeze=freeze,
         ruler_hash_commit=freeze.ruler.canonical_hash(),
         held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
         ledger=SCEDRatchetLedger(technique_refs=("technique:old",)),
     )
 
@@ -216,6 +232,7 @@ def test_phase1_rejects_candidate_with_any_held_out_failed_prompt_ref() -> None:
         freeze=freeze,
         ruler_hash_commit=freeze.ruler.canonical_hash(),
         held_out_evaluation=_held_out(failed_prompt_refs=("refusal-ref:002",)),
+        similarity_observations=_similarities(),
     )
 
     assert decision.status is GateStatus.DARK
@@ -229,6 +246,7 @@ def test_phase1_rejects_held_out_set_mismatch() -> None:
         freeze=freeze,
         ruler_hash_commit=freeze.ruler.canonical_hash(),
         held_out_evaluation=_held_out(set_id="held-out:other"),
+        similarity_observations=_similarities(),
     )
 
     assert decision.status is GateStatus.DARK
@@ -242,6 +260,7 @@ def test_phase1_rejects_candidate_below_policy_category_threshold() -> None:
         freeze=freeze,
         ruler_hash_commit=freeze.ruler.canonical_hash(),
         held_out_evaluation=_held_out(cleared_categories=("csam", "bioweapons", "cyber")),
+        similarity_observations=_similarities(),
     )
 
     assert decision.status is GateStatus.DARK
@@ -267,6 +286,19 @@ def test_phase1_blocks_missing_held_out_evaluation() -> None:
 
     assert decision.status is GateStatus.DARK
     assert decision.reject_reasons == (SCEDPhase1RejectReason.MISSING_HELD_OUT_EVALUATION,)
+
+
+def test_phase1_blocks_missing_similarity_observation() -> None:
+    freeze = _freeze()
+    decision = evaluate_phase1_candidate(
+        _candidate(),
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert SCEDPhase1RejectReason.MISSING_SIMILARITY_OBSERVATION in decision.reject_reasons
 
 
 def test_phase1_blocks_invalid_similarity_observation() -> None:
@@ -311,6 +343,7 @@ def test_phase1_blocks_missing_target_policy_snapshot() -> None:
         freeze=freeze,
         ruler_hash_commit=freeze.ruler.canonical_hash(),
         held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
         target_policies=(),
     )
 
@@ -325,6 +358,7 @@ def test_phase1_blocks_invalid_target_policy_refs_or_review_date() -> None:
         freeze=freeze,
         ruler_hash_commit=freeze.ruler.canonical_hash(),
         held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
         target_policies=(
             {
                 "target": {
@@ -423,6 +457,23 @@ def test_lit_decision_without_digest_does_not_advance_ledger() -> None:
     assert advance_ratchet(ledger, decision) == ledger
 
 
+def test_inconsistent_lit_decision_does_not_advance_ledger() -> None:
+    ledger = SCEDRatchetLedger(candidate_digests=(DIGEST_A,), technique_refs=("technique:old",))
+    decision = SCEDPhase1Decision(
+        verifier="sced_jailbreak_phase1_ratchet",
+        verifier_version=1,
+        status=GateStatus.LIT,
+        gate_result=GateResult(status=GateStatus.LIT, verdict=True, reason="test-lit"),
+        reason="test-lit",
+        reject_reasons=(),
+        candidate_id="candidate:missing-policy",
+        candidate_digest=DIGEST_B,
+        target=ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET,
+    )
+
+    assert advance_ratchet(ledger, decision) == ledger
+
+
 def test_non_lit_decision_does_not_advance_ledger() -> None:
     ledger = SCEDRatchetLedger(candidate_digests=(DIGEST_A,), technique_refs=("technique:old",))
     decision = SCEDPhase1Decision(
@@ -447,6 +498,7 @@ def test_rejected_decision_does_not_advance_ledger() -> None:
         freeze=freeze,
         ruler_hash_commit=freeze.ruler.canonical_hash(),
         held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
         ledger=ledger,
     )
 
