@@ -50,6 +50,7 @@ class SCEDPhase1RejectReason(StrEnum):
     LIVE_SUBMISSION_REQUESTED = "live_submission_requested"
     DUPLICATE_CANDIDATE_DIGEST = "duplicate_candidate_digest"
     DUPLICATE_TECHNIQUE_REF = "duplicate_technique_ref"
+    WITNESS_CANDIDATE_MISMATCH = "witness_candidate_mismatch"
     MISSING_SIMILARITY_OBSERVATION = "missing_similarity_observation"
     MISSING_SIMILARITY_COVERAGE = "missing_similarity_coverage"
     NOVELTY_SIMILARITY_DUPLICATE = "novelty_similarity_duplicate"
@@ -85,6 +86,9 @@ _NEXT_ACTIONS: Final[dict[SCEDPhase1RejectReason, str]] = {
     ),
     SCEDPhase1RejectReason.DUPLICATE_TECHNIQUE_REF: (
         "discard duplicate technique material and generate a novel offline candidate"
+    ),
+    SCEDPhase1RejectReason.WITNESS_CANDIDATE_MISMATCH: (
+        "rerun held-out and similarity witnesses for the evaluated candidate digest"
     ),
     SCEDPhase1RejectReason.MISSING_SIMILARITY_OBSERVATION: (
         "attach at least one durable similarity witness before admission"
@@ -205,7 +209,7 @@ class SCEDJailbreakCandidate:
         object.__setattr__(
             self,
             "candidate_id",
-            _durable_ref_tuple((self.candidate_id,), field="candidate_id")[0],
+            _required_durable_ref(self.candidate_id, field="candidate_id"),
         )
         object.__setattr__(
             self,
@@ -254,6 +258,8 @@ class SCEDJailbreakCandidate:
 class HeldOutEvaluation:
     """Offline witness that a candidate cleared or failed the frozen held-out set."""
 
+    candidate_id: str
+    candidate_digest: str
     set_id: str
     evaluated_at: datetime
     cleared_categories: tuple[str, ...]
@@ -261,6 +267,16 @@ class HeldOutEvaluation:
     evidence_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "candidate_id",
+            _required_durable_ref(self.candidate_id, field="candidate_id"),
+        )
+        object.__setattr__(
+            self,
+            "candidate_digest",
+            _sha256_digest(self.candidate_digest, field="candidate_digest"),
+        )
         object.__setattr__(self, "set_id", _required_string(self.set_id, field="set_id"))
         object.__setattr__(
             self, "evaluated_at", _coerce_datetime(self.evaluated_at, "evaluated_at")
@@ -283,6 +299,8 @@ class HeldOutEvaluation:
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> HeldOutEvaluation:
         return cls(
+            candidate_id=raw.get("candidate_id"),  # type: ignore[arg-type]
+            candidate_digest=raw.get("candidate_digest"),  # type: ignore[arg-type]
             set_id=raw.get("set_id"),  # type: ignore[arg-type]
             evaluated_at=raw.get("evaluated_at"),  # type: ignore[arg-type]
             cleared_categories=_seq(raw.get("cleared_categories")),
@@ -292,6 +310,8 @@ class HeldOutEvaluation:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "candidate_id": self.candidate_id,
+            "candidate_digest": self.candidate_digest,
             "set_id": self.set_id,
             "evaluated_at": self.evaluated_at.isoformat(),
             "cleared_categories": list(self.cleared_categories),
@@ -304,6 +324,8 @@ class HeldOutEvaluation:
 class SimilarityObservation:
     """Offline similarity witness against known technique material."""
 
+    candidate_id: str
+    candidate_digest: str
     against_ref: str
     similarity: float
     method_ref: str
@@ -313,8 +335,18 @@ class SimilarityObservation:
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
+            "candidate_id",
+            _required_durable_ref(self.candidate_id, field="candidate_id"),
+        )
+        object.__setattr__(
+            self,
+            "candidate_digest",
+            _sha256_digest(self.candidate_digest, field="candidate_digest"),
+        )
+        object.__setattr__(
+            self,
             "against_ref",
-            _durable_ref_tuple((self.against_ref,), field="against_ref")[0],
+            _required_durable_ref(self.against_ref, field="against_ref"),
         )
         similarity = _finite_float(self.similarity, field="similarity")
         if not 0.0 <= similarity <= 1.0:
@@ -323,7 +355,7 @@ class SimilarityObservation:
         object.__setattr__(
             self,
             "method_ref",
-            _durable_ref_tuple((self.method_ref,), field="method_ref")[0],
+            _required_durable_ref(self.method_ref, field="method_ref"),
         )
         object.__setattr__(self, "observed_at", _coerce_datetime(self.observed_at, "observed_at"))
         evidence_refs = _durable_ref_tuple(self.evidence_refs, field="evidence_refs")
@@ -334,6 +366,8 @@ class SimilarityObservation:
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> SimilarityObservation:
         return cls(
+            candidate_id=raw.get("candidate_id"),  # type: ignore[arg-type]
+            candidate_digest=raw.get("candidate_digest"),  # type: ignore[arg-type]
             against_ref=raw.get("against_ref"),  # type: ignore[arg-type]
             similarity=raw.get("similarity"),  # type: ignore[arg-type]
             method_ref=raw.get("method_ref"),  # type: ignore[arg-type]
@@ -343,6 +377,8 @@ class SimilarityObservation:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "candidate_id": self.candidate_id,
+            "candidate_digest": self.candidate_digest,
             "against_ref": self.against_ref,
             "similarity": self.similarity,
             "method_ref": self.method_ref,
@@ -540,6 +576,8 @@ def evaluate_phase1_candidate(
         reject_reasons.append(SCEDPhase1RejectReason.LIVE_SUBMISSION_REQUESTED)
     if candidate_obj.candidate_digest in ledger_obj.candidate_digests:
         reject_reasons.append(SCEDPhase1RejectReason.DUPLICATE_CANDIDATE_DIGEST)
+    if not _witnesses_match_candidate(candidate_obj, held_out, similarities):
+        reject_reasons.append(SCEDPhase1RejectReason.WITNESS_CANDIDATE_MISMATCH)
 
     known_techniques = set(ledger_obj.technique_refs) | set(
         ruler.novelty_criterion.known_technique_refs
@@ -622,6 +660,23 @@ def _decision_can_advance(decision: SCEDPhase1Decision) -> bool:
         and decision.target_policy_snapshot is not None
         and bool(decision.evidence_refs)
         and bool(decision.gate_result.evidence_refs)
+    )
+
+
+def _witnesses_match_candidate(
+    candidate: SCEDJailbreakCandidate,
+    held_out: HeldOutEvaluation,
+    similarities: Sequence[SimilarityObservation],
+) -> bool:
+    if (
+        held_out.candidate_id != candidate.candidate_id
+        or held_out.candidate_digest != candidate.candidate_digest
+    ):
+        return False
+    return all(
+        observation.candidate_id == candidate.candidate_id
+        and observation.candidate_digest == candidate.candidate_digest
+        for observation in similarities
     )
 
 
@@ -890,6 +945,13 @@ def _durable_ref_tuple(value: Any, *, field: str) -> tuple[str, ...]:
         if _REF_NAMESPACE_SEPARATOR not in ref or any(char.isspace() for char in ref):
             raise ValueError(f"{field} must contain durable reference tokens, not prose text")
     return refs
+
+
+def _required_durable_ref(value: Any, *, field: str) -> str:
+    refs = _durable_ref_tuple((value,), field=field)
+    if not refs:
+        raise ValueError(f"{field} requires one durable reference token")
+    return refs[0]
 
 
 def _seq(value: Any) -> tuple[str, ...]:

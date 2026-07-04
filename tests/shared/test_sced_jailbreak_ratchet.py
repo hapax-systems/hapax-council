@@ -106,6 +106,8 @@ def _candidate(**overrides: object) -> SCEDJailbreakCandidate:
 
 def _held_out(**overrides: object) -> HeldOutEvaluation:
     data: dict[str, object] = {
+        "candidate_id": "candidate:001",
+        "candidate_digest": DIGEST_A,
         "set_id": "held-out:refusal-v0",
         "evaluated_at": NOW,
         "cleared_categories": ("csam", "bioweapons", "cyber", "self_harm"),
@@ -116,9 +118,15 @@ def _held_out(**overrides: object) -> HeldOutEvaluation:
     return HeldOutEvaluation(**data)  # type: ignore[arg-type]
 
 
-def _similarities() -> tuple[SimilarityObservation, ...]:
+def _similarities(
+    *,
+    candidate_id: str = "candidate:001",
+    candidate_digest: str = DIGEST_A,
+) -> tuple[SimilarityObservation, ...]:
     return (
         SimilarityObservation(
+            candidate_id=candidate_id,
+            candidate_digest=candidate_digest,
             against_ref="known:dan",
             similarity=0.2,
             method_ref="similarity-method:minhash-v0",
@@ -126,6 +134,8 @@ def _similarities() -> tuple[SimilarityObservation, ...]:
             evidence_refs=("similarity-witness:low-000",),
         ),
         SimilarityObservation(
+            candidate_id=candidate_id,
+            candidate_digest=candidate_digest,
             against_ref="known:crescendo",
             similarity=0.25,
             method_ref="similarity-method:minhash-v0",
@@ -136,13 +146,20 @@ def _similarities() -> tuple[SimilarityObservation, ...]:
 
 
 def _admit(candidate: SCEDJailbreakCandidate | None = None) -> SCEDPhase1Decision:
+    candidate = candidate or _candidate()
     freeze = _freeze()
     return evaluate_phase1_candidate(
-        candidate or _candidate(),
+        candidate,
         freeze=freeze,
         ruler_hash_commit=freeze.ruler.canonical_hash(),
-        held_out_evaluation=_held_out(),
-        similarity_observations=_similarities(),
+        held_out_evaluation=_held_out(
+            candidate_id=candidate.candidate_id,
+            candidate_digest=candidate.candidate_digest,
+        ),
+        similarity_observations=_similarities(
+            candidate_id=candidate.candidate_id,
+            candidate_digest=candidate.candidate_digest,
+        ),
     )
 
 
@@ -219,6 +236,8 @@ def test_phase1_rejects_similarity_at_or_above_frozen_novelty_threshold() -> Non
         held_out_evaluation=_held_out(),
         similarity_observations=(
             SimilarityObservation(
+                candidate_id="candidate:001",
+                candidate_digest=DIGEST_A,
                 against_ref="known:crescendo",
                 similarity=0.8,
                 method_ref="similarity-method:minhash-v0",
@@ -282,6 +301,44 @@ def test_phase1_rejects_live_submission_requested_even_when_otherwise_valid() ->
     assert "live submission" in decision.next_action
 
 
+def test_phase1_rejects_held_out_witness_replayed_across_candidates() -> None:
+    freeze = _freeze()
+    candidate = _candidate(candidate_id="candidate:002", candidate_digest=DIGEST_B)
+    decision = evaluate_phase1_candidate(
+        candidate,
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(candidate_id="candidate:001", candidate_digest=DIGEST_A),
+        similarity_observations=_similarities(
+            candidate_id=candidate.candidate_id,
+            candidate_digest=candidate.candidate_digest,
+        ),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert SCEDPhase1RejectReason.WITNESS_CANDIDATE_MISMATCH in decision.reject_reasons
+
+
+def test_phase1_rejects_similarity_witness_replayed_across_candidates() -> None:
+    freeze = _freeze()
+    candidate = _candidate(candidate_id="candidate:002", candidate_digest=DIGEST_B)
+    decision = evaluate_phase1_candidate(
+        candidate,
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(
+            candidate_id=candidate.candidate_id,
+            candidate_digest=candidate.candidate_digest,
+        ),
+        similarity_observations=_similarities(
+            candidate_id="candidate:001", candidate_digest=DIGEST_A
+        ),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert SCEDPhase1RejectReason.WITNESS_CANDIDATE_MISMATCH in decision.reject_reasons
+
+
 def test_phase1_blocks_missing_held_out_evaluation() -> None:
     freeze = _freeze()
     decision = evaluate_phase1_candidate(
@@ -317,6 +374,8 @@ def test_phase1_blocks_partial_similarity_coverage_of_frozen_known_techniques() 
         held_out_evaluation=_held_out(),
         similarity_observations=(
             SimilarityObservation(
+                candidate_id="candidate:001",
+                candidate_digest=DIGEST_A,
                 against_ref="known:crescendo",
                 similarity=0.25,
                 method_ref="similarity-method:minhash-v0",
@@ -340,6 +399,8 @@ def test_phase1_blocks_invalid_similarity_observation() -> None:
         held_out_evaluation=_held_out(),
         similarity_observations=(
             {
+                "candidate_id": "candidate:001",
+                "candidate_digest": DIGEST_A,
                 "against_ref": "known:crescendo",
                 "similarity": 2.0,
                 "method_ref": "similarity-method:minhash-v0",
@@ -350,6 +411,41 @@ def test_phase1_blocks_invalid_similarity_observation() -> None:
 
     assert decision.status is GateStatus.DARK
     assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_SIMILARITY_OBSERVATION,)
+
+
+def test_phase1_blocks_blank_candidate_id_without_exception() -> None:
+    freeze = _freeze()
+    candidate = _candidate().to_dict()
+    candidate["candidate_id"] = ""
+
+    decision = evaluate_phase1_candidate(
+        candidate,
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_CANDIDATE,)
+
+
+def test_phase1_blocks_blank_similarity_singleton_refs_without_exception() -> None:
+    freeze = _freeze()
+    for field in ("against_ref", "method_ref"):
+        similarity = _similarities()[0].to_dict()
+        similarity[field] = ""
+
+        decision = evaluate_phase1_candidate(
+            _candidate(),
+            freeze=freeze,
+            ruler_hash_commit=freeze.ruler.canonical_hash(),
+            held_out_evaluation=_held_out(),
+            similarity_observations=(similarity,),
+        )
+
+        assert decision.status is GateStatus.DARK
+        assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_SIMILARITY_OBSERVATION,)
 
 
 def test_phase1_blocks_candidate_prose_evidence_refs() -> None:
