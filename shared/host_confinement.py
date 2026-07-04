@@ -18,6 +18,8 @@ access control — consistent with the single_user axiom.
 
 from __future__ import annotations
 
+import os
+
 # Mirror of shared.host_provenance._HOST_ALIASES (kept local to stay stdlib-only;
 # normalizes short dispatch forms to canonical hostnames).
 _HOST_ALIASES = {"podium": "hapax-podium", "appendix": "hapax-appendix"}
@@ -55,4 +57,42 @@ def decide_block(
     return True, (
         f"leaked dev lane: executing on {current_host} but dispatched to "
         f"{dispatch_host}; dev must run on its dispatch host (no-dev-on-podium)"
+    )
+
+
+def dev_dispatch_target_host() -> str:
+    """The host dev/SDLC lanes are confined to (the dispatch target).
+
+    Mirrors the ``effective_dispatch_host`` default chain in
+    ``scripts/hapax-methodology-dispatch``: explicit ``HAPAX_DISPATCH_HOST``, else
+    ``HAPAX_DEFAULT_DISPATCH_HOST``, else the ``appendix`` dev-confinement default.
+    """
+    for env in ("HAPAX_DISPATCH_HOST", "HAPAX_DEFAULT_DISPATCH_HOST"):
+        value = os.environ.get(env, "").strip()
+        if value:
+            return _norm(value)
+    return _norm("appendix")
+
+
+def should_suppress_local_dev_respawn(
+    current_host: str, target_host: str | None = None
+) -> tuple[bool, str]:
+    """Whether THIS host should suppress local dev-lane (idle-await) respawns.
+
+    The topology-DERIVED replacement for the static ``HAPAX_LOCAL_DEV_MAINTENANCE_MODE``
+    flag (KIND-5): dev/SDLC execution is confined to the dispatch target host, so every
+    OTHER host suppresses local dev respawns (no-dev-on-podium). Returns (suppress,
+    reason). FAIL-CLOSED to suppress: on an unknown current host we suppress, because
+    the unsafe direction is respawning dev on a non-target host (a leaked lane), while
+    over-suppression is only a recoverable idle state.
+    """
+    target = _norm(target_host.strip()) if target_host else dev_dispatch_target_host()
+    current = _norm((current_host or "").strip())
+    if not current:
+        return True, "current host unknown — fail-closed suppress (no-dev-on-podium)"
+    if current == target:
+        return False, f"this host ({current}) is the dev dispatch target — provision here"
+    return True, (
+        f"this host ({current}) is not the dev dispatch target ({target}) — "
+        "suppress local dev respawn (no-dev-on-podium)"
     )

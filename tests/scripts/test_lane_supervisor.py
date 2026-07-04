@@ -84,7 +84,18 @@ def _base(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path]:
 
     env = os.environ.copy()
     # Strip any inherited lane identity so it cannot leak into the subprocess.
-    for leaky in ("CLAUDE_ROLE", "HAPAX_AGENT_NAME", "HAPAX_AGENT_ROLE", "TMUX_LIVE"):
+    for leaky in (
+        "CLAUDE_ROLE",
+        "HAPAX_AGENT_NAME",
+        "HAPAX_AGENT_ROLE",
+        "TMUX_LIVE",
+        # KIND-5: pin the topology so the derived respawn-suppression is hermetic
+        # (it was silently dependent on the real hostname) — see test_lane_maintenance_parity.
+        "HAPAX_LOCAL_DEV_MAINTENANCE_MODE",
+        "HAPAX_DISPATCH_HOST",
+        "HAPAX_DEFAULT_DISPATCH_HOST",
+        "HAPAX_CURRENT_HOST",
+    ):
         env.pop(leaky, None)
     env.update(
         {
@@ -99,6 +110,11 @@ def _base(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path]:
             "HAPAX_SUPERVISOR_ANTIGRAV_LANES": "",
             "HAPAX_SUPERVISOR_RESTART_COOLDOWN_S": "0",
             "HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS": "0",
+            # Provisioning runs ON the dev target host; pin only the current host so
+            # the topology-derived respawn decision is deterministic (current ==
+            # default target 'appendix' -> provision). Do NOT set HAPAX_DISPATCH_HOST
+            # here — that would flip the codex launcher into cross-host dispatch.
+            "HAPAX_CURRENT_HOST": "hapax-appendix",
             "HAPAX_CLAUDE_HEADLESS_BIN": str(bin_dir / "hapax-claude-headless"),
             "HAPAX_CLAUDE_BIN": str(bin_dir / "hapax-claude"),
             "HAPAX_CODEX_BIN": str(bin_dir / "hapax-codex"),

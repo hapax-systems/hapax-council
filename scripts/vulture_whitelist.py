@@ -4679,3 +4679,14 @@ from shared.entitlement_capability import (
 from shared.entitlement_capability import is_routable_supply as _is_routable_supply  # noqa: E402
 
 _ = (_classify_entitlement, _is_routable_supply)
+
+# KIND-5 topology-derived respawn suppression: the canonical derivation is authored
+# here in Python and MIRRORED in the two bash lane scripts (hapax-lane-supervisor,
+# hapax-lane-idle-watchdog), which vulture cannot see as callers. The mirror is pinned
+# to this function by tests/test_lane_maintenance_parity.py (atlas Q0a). See
+# cc-task-appendix-provisioner-topology-source-20260703 (MOVE 4).
+from shared.host_confinement import (  # noqa: E402
+    should_suppress_local_dev_respawn as _should_suppress_local_dev_respawn,
+)
+
+_ = (_should_suppress_local_dev_respawn,)

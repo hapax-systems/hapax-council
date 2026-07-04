@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
@@ -242,6 +243,30 @@ class DispatchRefusalLedger:
             self._entries.clear()
         else:
             self._entries = {k: v for k, v in self._entries.items() if k[0] != task_id}
+
+    def invalidate_by_reason_predicate(
+        self, predicate: Callable[[str], bool], *, now: float | None = None
+    ) -> int:
+        """Remove refusal entries whose reason matches ``predicate``.
+
+        Used when the external condition that caused a class of refusals has
+        cleared — e.g. a fresh quota/resource/capability receipt means the
+        route-policy freshness holds that latched (task, lane) pairs into backoff
+        are stale (the M4 re-arm wedge: a fresh receipt could not previously flip
+        a cooled pair, so the whole offered set waited out up to a 1h cooldown
+        unless the coordinator was restarted). Wiping those entries lets the next
+        tick re-attempt them against the fresh evidence immediately. Entries not
+        currently in cooldown are removed too: a predicate match means the
+        refusal reason is stale regardless of its cooldown state. Returns the
+        count removed. ``now`` is accepted for signature symmetry with the other
+        accessors and forward-compatibility (a future caller may scope to cooled
+        entries only); it is not currently consulted.
+        """
+        del now  # reserved for a future cooled-only scope; see docstring.
+        stale_keys = [key for key, entry in self._entries.items() if predicate(entry.reason)]
+        for key in stale_keys:
+            del self._entries[key]
+        return len(stale_keys)
 
     def tick_starvation(
         self,

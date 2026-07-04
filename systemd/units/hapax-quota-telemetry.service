@@ -12,10 +12,22 @@ Type=oneshot
 # which load_dispatch_policy_sources prefers over the checked-in fixtures.
 # No secrets are read or persisted; the EnvironmentFile is wired only so future
 # account-live probes inherit the standard credential surface.
+# MOVE 4 durable unwedge (c): (re)create the durable gate-event sink before the
+# writer runs, so a cache-clear can never strand the emit. This timer fires every
+# ~10m, so the ExecStartPre is self-healing. Path == shared.durable_jsonl_sink
+# configured_durable_sink_root() default (~/.cache/hapax/stage0-durable-sink).
+ExecStartPre=/usr/bin/mkdir -p %h/.cache/hapax/stage0-durable-sink
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-quota-telemetry-writer
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+# MOVE 4 durable unwedge (b): expose the operator CLI bins so the capability
+# probe (hapax-platform-capability-receipts, spawned here inheriting this env)
+# can resolve claude (~/.local/bin) + codex (~/.npm-global/bin). Without them the
+# probe reports cli_missing_or_unusable, the receipts go stale, and the
+# route-policy gate re-latches the dispatch wedge. The transient
+# `systemctl --user set-environment PATH=...` was lost on reboot; this is durable.
+Environment=PATH=%h/.npm-global/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=-/run/user/1000/hapax-secrets.env
 StandardOutput=journal
 StandardError=journal
