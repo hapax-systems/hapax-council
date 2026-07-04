@@ -70,7 +70,9 @@ def _write_all(fd: int, blob: bytes) -> None:
     written = 0
     while written < len(view):
         count = os.write(fd, view[written:])
-        if count <= 0:
+        if count < 0:
+            raise OSError(f"os.write returned negative byte count: {count}")
+        if count == 0:
             raise OSError("os.write returned no progress")
         written += count
 

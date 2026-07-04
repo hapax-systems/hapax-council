@@ -107,6 +107,7 @@ class TestFailOpen:
         lines = target.read_text(encoding="utf-8").splitlines()
         assert [json.loads(line) for line in lines] == [{"a": "x" * 100}]
         assert len(write_sizes) > 1
+        assert len(write_sizes) <= 16
 
     def test_zero_progress_write_returns_false(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -114,6 +115,13 @@ class TestFailOpen:
         monkeypatch.setattr(jsonl_append.os, "write", lambda _fd, _data: 0)
 
         assert append_jsonl(tmp_path / "ledger.jsonl", {"a": 1}) is False
+
+    def test_zero_progress_batched_write_returns_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(jsonl_append.os, "write", lambda _fd, _data: 0)
+
+        assert append_jsonl_lines([{"a": 1}, {"b": 2}], tmp_path / "ledger.jsonl") is False
 
 
 class TestConcurrencyNoInterleave:
