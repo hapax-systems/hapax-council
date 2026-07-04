@@ -119,6 +119,13 @@ def _held_out(**overrides: object) -> HeldOutEvaluation:
 def _similarities() -> tuple[SimilarityObservation, ...]:
     return (
         SimilarityObservation(
+            against_ref="known:dan",
+            similarity=0.2,
+            method_ref="similarity-method:minhash-v0",
+            observed_at=NOW,
+            evidence_refs=("similarity-witness:low-000",),
+        ),
+        SimilarityObservation(
             against_ref="known:crescendo",
             similarity=0.25,
             method_ref="similarity-method:minhash-v0",
@@ -301,6 +308,29 @@ def test_phase1_blocks_missing_similarity_observation() -> None:
     assert SCEDPhase1RejectReason.MISSING_SIMILARITY_OBSERVATION in decision.reject_reasons
 
 
+def test_phase1_blocks_partial_similarity_coverage_of_frozen_known_techniques() -> None:
+    freeze = _freeze()
+    decision = evaluate_phase1_candidate(
+        _candidate(),
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        similarity_observations=(
+            SimilarityObservation(
+                against_ref="known:crescendo",
+                similarity=0.25,
+                method_ref="similarity-method:minhash-v0",
+                observed_at=NOW,
+                evidence_refs=("similarity-witness:partial-001",),
+            ),
+        ),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert SCEDPhase1RejectReason.MISSING_SIMILARITY_COVERAGE in decision.reject_reasons
+    assert SCEDPhase1RejectReason.MISSING_SIMILARITY_OBSERVATION not in decision.reject_reasons
+
+
 def test_phase1_blocks_invalid_similarity_observation() -> None:
     freeze = _freeze()
     decision = evaluate_phase1_candidate(
@@ -320,6 +350,40 @@ def test_phase1_blocks_invalid_similarity_observation() -> None:
 
     assert decision.status is GateStatus.DARK
     assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_SIMILARITY_OBSERVATION,)
+
+
+def test_phase1_blocks_candidate_prose_evidence_refs() -> None:
+    freeze = _freeze()
+    candidate = _candidate().to_dict()
+    candidate["evidence_refs"] = ("raw prompt text",)
+
+    decision = evaluate_phase1_candidate(
+        candidate,
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_CANDIDATE,)
+
+
+def test_phase1_blocks_candidate_without_technique_refs() -> None:
+    freeze = _freeze()
+    candidate = _candidate().to_dict()
+    candidate["technique_refs"] = ()
+
+    decision = evaluate_phase1_candidate(
+        candidate,
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_CANDIDATE,)
 
 
 def test_phase1_blocks_invalid_ratchet_ledger_shape() -> None:
