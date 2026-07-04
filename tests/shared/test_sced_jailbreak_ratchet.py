@@ -173,6 +173,20 @@ def test_phase1_rejects_duplicate_technique_ref_from_frozen_ruler() -> None:
     assert SCEDPhase1RejectReason.DUPLICATE_TECHNIQUE_REF in decision.reject_reasons
 
 
+def test_phase1_rejects_duplicate_technique_ref_from_ratchet_ledger() -> None:
+    freeze = _freeze()
+    decision = evaluate_phase1_candidate(
+        _candidate(technique_refs=("technique:old",)),
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        ledger=SCEDRatchetLedger(technique_refs=("technique:old",)),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert SCEDPhase1RejectReason.DUPLICATE_TECHNIQUE_REF in decision.reject_reasons
+
+
 def test_phase1_rejects_similarity_at_or_above_frozen_novelty_threshold() -> None:
     freeze = _freeze()
     decision = evaluate_phase1_candidate(
@@ -362,6 +376,24 @@ def test_default_target_policy_snapshots_record_anthropic_and_openai_refs_dates_
     assert "url:https://openai.com/index/gpt-5-5-bio-bug-bounty/" in openai.policy_refs
 
 
+def test_phase1_admits_openai_target_and_records_deadline_window() -> None:
+    decision = _admit(
+        _candidate(
+            candidate_id="candidate:openai-001",
+            candidate_digest=DIGEST_B,
+            target=OPENAI_BIO_JAILBREAK_TARGET,
+            technique_refs=("technique:openai-novel-001",),
+        )
+    )
+
+    assert decision.status is GateStatus.LIT
+    assert decision.target == OPENAI_BIO_JAILBREAK_TARGET
+    payload = decision.to_dict()
+    assert payload["target_policy_dates"]["application_deadline"] == "2026-06-22"
+    assert payload["target_policy_dates"]["testing_window_ends_on"] == "2026-07-27"
+    assert "url:https://openai.com/index/gpt-5-5-bio-bug-bounty/" in payload["target_policy_refs"]
+
+
 def test_phase1_decision_truthiness_is_undefined_and_accepted_decision_advances_ledger() -> None:
     candidate = _candidate(candidate_digest=DIGEST_B)
     decision = _admit(candidate)
@@ -386,6 +418,22 @@ def test_lit_decision_without_digest_does_not_advance_ledger() -> None:
         reject_reasons=(),
         candidate_id="candidate:missing-digest",
         candidate_digest=None,
+    )
+
+    assert advance_ratchet(ledger, decision) == ledger
+
+
+def test_non_lit_decision_does_not_advance_ledger() -> None:
+    ledger = SCEDRatchetLedger(candidate_digests=(DIGEST_A,), technique_refs=("technique:old",))
+    decision = SCEDPhase1Decision(
+        verifier="sced_jailbreak_phase1_ratchet",
+        verifier_version=1,
+        status=GateStatus.DARK,
+        gate_result=GateResult(status=GateStatus.DARK, reason="test-dark"),
+        reason="test-dark",
+        reject_reasons=(SCEDPhase1RejectReason.MISSING_TARGET_POLICY,),
+        candidate_id="candidate:dark",
+        candidate_digest=DIGEST_B,
     )
 
     assert advance_ratchet(ledger, decision) == ledger
