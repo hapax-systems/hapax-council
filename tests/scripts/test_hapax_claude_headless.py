@@ -200,6 +200,86 @@ def test_claude_headless_external_workdir_redeems_before_spoofed_lifecycle_scrip
     assert not claude_called.exists()
 
 
+def test_claude_headless_redemption_ignores_python_override(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_REDEMPTION_PYTHON"] = "/bin/true"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "missing dispatch redemption binding env" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert not claude_called.exists()
+
+
+def test_claude_headless_redemption_ignores_caller_council_dir_stub(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+    attacker_root = tmp_path / "attacker-council"
+    attacker_imported = tmp_path / "attacker-redemption-imported"
+    stub = attacker_root / "shared" / "governance" / "dispatch_redemption.py"
+    stub.parent.mkdir(parents=True)
+    stub.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(attacker_imported)!r}).write_text('imported\\n', encoding='utf-8')\n"
+        "class LaunchRedemptionContext:\n"
+        "    def __init__(self, **kwargs): pass\n"
+        "class LaunchRedemptionRequest:\n"
+        "    def __init__(self, **kwargs): pass\n"
+        "class Response:\n"
+        "    ok = True\n"
+        "    reason = 'ok'\n"
+        "def redeem_launch_via_socket(_request):\n"
+        "    return Response()\n",
+        encoding="utf-8",
+    )
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_COUNCIL_DIR"] = str(attacker_root)
+    env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = "self-minted"
+    env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "019f-fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = "route-decision:fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE"] = "CASE-CAPACITY-ROUTING-001"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "dispatch redemption refused" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert not attacker_imported.exists()
+    assert not claude_called.exists()
+
+
 def test_claude_headless_council_symlink_to_external_tree_still_requires_redemption(
     tmp_path: Path,
 ) -> None:

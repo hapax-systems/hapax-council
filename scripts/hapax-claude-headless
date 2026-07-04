@@ -253,18 +253,22 @@ workdir_requires_dispatch_redemption() {
   esac
 }
 
+launcher_source_root() {
+  local launcher="${BASH_SOURCE[0]}"
+  if command -v readlink >/dev/null 2>&1; then
+    launcher="$(readlink -f "$launcher" 2>/dev/null || printf '%s' "$launcher")"
+  fi
+  (cd "$(dirname "$launcher")/.." && pwd -P)
+}
+
 validate_dispatch_redemption_authority() {
   # Redemption parity with hapax-codex-headless: an external worktree has no
   # local cc-claim/cc-close lifecycle, so admission comes from redeeming the
   # dispatcher-issued one-time grant against the fixed governor socket. The
-  # verifier imports from this launcher's own council checkout, never from the
-  # (external) WORKDIR and never from the caller's cwd.
-  local council_dir python_bin profile="${HAPAX_METHODOLOGY_DISPATCH_PROFILE:-full}"
-  council_dir="${HAPAX_COUNCIL_DIR:-}"
-  if [[ -z "$council_dir" ]]; then
-    council_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  fi
-  python_bin="${HAPAX_REDEMPTION_PYTHON:-/usr/bin/python3}"
+  # verifier imports from this launcher's physical council checkout, never from
+  # caller-controlled HAPAX_COUNCIL_DIR, PATH, the external WORKDIR, or cwd.
+  local council_dir python_bin="/usr/bin/python3" profile="${HAPAX_METHODOLOGY_DISPATCH_PROFILE:-full}"
+  council_dir="$(launcher_source_root)"
   if ! "$python_bin" - "$council_dir" "$CLAUDE_TASK" "$ROLE" "$WORKDIR" claude headless "$profile" <<'PYEOF'
 import os
 import sys
