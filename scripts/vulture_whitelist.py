@@ -4526,11 +4526,13 @@ _CapabilityAdapter.preflight
 _CapabilityAdapter.classify_failure
 _WorkerAdapter.launch
 _SendCapableAdapter.send
-_BudgetAuthorityAdapter
-_ReviewSeatAdapter
-_retired_antigrav_failure_classifier_anchor = _RetiredAntigravFailureClassifier
-_ClaudeAdapter
-_CodexAdapter
+_ = (
+    _BudgetAuthorityAdapter,
+    _ReviewSeatAdapter,
+    _RetiredAntigravFailureClassifier,
+    _ClaudeAdapter,
+    _CodexAdapter,
+)
 
 # worker_failure_witness (capability-adapter-worker-path): the receipt-append + guarded
 # family-availability witness are invoked by the extensionless launcher
