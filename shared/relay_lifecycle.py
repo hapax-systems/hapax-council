@@ -51,6 +51,7 @@ __all__ = [
     "DEFAULT_RELAY_DIR",
     "RETIRED_PREFIXES",
     "lane_is_retired",
+    "parse_relay_document",
     "relay_status_values",
     "relay_value_is_retired",
     "relay_values_are_retired",
@@ -140,6 +141,27 @@ def relay_values_are_retired(values: Iterable[object]) -> bool:
     return any(relay_value_is_retired(value) for value in values)
 
 
+def parse_relay_document(text: str) -> dict:
+    """Parse one relay YAML stream with latest-document merge semantics."""
+
+    try:
+        documents = list(yaml.safe_load_all(text))
+    except yaml.YAMLError:
+        return {}
+    # Relay files are append-history: a status change is often a new YAML document
+    # (``---``) appended after the prior state. ``safe_load`` would ComposerError
+    # on the multi-doc stream (or load only the first) and silently drop the
+    # latest state — the real cx-crit divergence (coordinator saw the stale first
+    # doc / empty, launcher's flat awk scraped every doc). Merge every document in
+    # order so the LATEST value per key wins: a resumed lane is not stuck retired,
+    # and a newly-retired lane is retired even when appended as a new document.
+    merged: dict = {}
+    for document in documents:
+        if isinstance(document, dict):
+            merged.update(document)
+    return merged
+
+
 def _load_freshest_relay(role: str, session: str, relay_dir: Path) -> dict:
     """Return the parsed freshest candidate relay document for a lane (or ``{}``)."""
 
@@ -156,21 +178,9 @@ def _load_freshest_relay(role: str, session: str, relay_dir: Path) -> dict:
     if freshest is None:
         return {}
     try:
-        documents = list(yaml.safe_load_all(freshest.read_text(encoding="utf-8")))
-    except (yaml.YAMLError, OSError):
+        return parse_relay_document(freshest.read_text(encoding="utf-8"))
+    except OSError:
         return {}
-    # Relay files are append-history: a status change is often a new YAML document
-    # (``---``) appended after the prior state. ``safe_load`` would ComposerError
-    # on the multi-doc stream (or load only the first) and silently drop the
-    # latest state — the real cx-crit divergence (coordinator saw the stale first
-    # doc / empty, launcher's flat awk scraped every doc). Merge every document in
-    # order so the LATEST value per key wins: a resumed lane is not stuck retired,
-    # and a newly-retired lane is retired even when appended as a new document.
-    merged: dict = {}
-    for document in documents:
-        if isinstance(document, dict):
-            merged.update(document)
-    return merged
 
 
 def relay_status_values(relay: dict) -> list[str]:

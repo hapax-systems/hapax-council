@@ -39,7 +39,12 @@ from shared.dispatcher_policy import LOCAL_DEV_TARGET
 from shared.jsonl_append import append_jsonl
 from shared.notify import send_notification
 from shared.recovery_governor import converge_action_cap
-from shared.relay_lifecycle import relay_value_is_retired
+from shared.relay_lifecycle import (
+    parse_relay_document,
+    relay_status_values,
+    relay_value_is_retired,
+    relay_values_are_retired,
+)
 from shared.relay_mq import send_message
 from shared.relay_mq_envelope import Envelope
 from shared.route_metadata_schema import (
@@ -1143,8 +1148,8 @@ def _load_freshest_relay(role: str, session: str = "") -> tuple[dict, float | No
     if fresh_path is None:
         return {}, None
     try:
-        relay = yaml.safe_load(fresh_path.read_text(encoding="utf-8"))
-    except (yaml.YAMLError, OSError):
+        relay = parse_relay_document(fresh_path.read_text(encoding="utf-8"))
+    except OSError:
         return {}, fresh_mtime
     return relay if isinstance(relay, dict) else {}, fresh_mtime
 
@@ -1175,6 +1180,8 @@ def _relay_reports_claim_ownership_block(relay: dict) -> bool:
 
 def _relay_status_has_no_active_claim(relay: dict) -> bool:
     status = _normalized_status(relay.get("status") or relay.get("session_status"))
+    if _relay_is_retired(relay):
+        return True
     if not status:
         return False
     if (
@@ -1232,6 +1239,10 @@ def _relay_status_is_retired(value: object) -> bool:
     # rc=6) and unifies the canonicalization. See shared/relay_lifecycle +
     # design-of-record non-boutique-codex-auth-and-lane-liveness-design-2026-07-03.md.
     return relay_value_is_retired(value)
+
+
+def _relay_is_retired(relay: dict) -> bool:
+    return relay_values_are_retired(relay_status_values(relay))
 
 
 def _relay_status_is_idle(value: object) -> bool | None:
@@ -1544,7 +1555,7 @@ def _check_lane(lane: str | LaneDescriptor) -> LaneState:
 
     if relay:
         relay_status = relay.get("status") or relay.get("session_status")
-        if _relay_status_is_retired(relay_status):
+        if _relay_is_retired(relay):
             state.dispatchable = False
         relay_claim = _claim_from_relay(relay)
         if relay_claim:
