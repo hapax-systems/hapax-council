@@ -81,6 +81,112 @@ def test_rest_status_rollup_uses_check_runs_and_statuses(tmp_path: Path) -> None
     assert not any(call[:2] == ["gh", "pr"] for call in runner.calls)
 
 
+def test_rest_status_rollup_fails_closed_when_status_source_fails(tmp_path: Path) -> None:
+    class PartialRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/status"):
+                self.calls.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 1, "", "status unavailable")
+            return super().__call__(cmd, **kwargs)
+
+    runner = PartialRunner()
+    old_cache_dir = github_pr_status.DEFAULT_CACHE_DIR
+    github_pr_status.DEFAULT_CACHE_DIR = tmp_path / "cache"
+
+    try:
+        rollup = github_pr_status.fetch_status_check_rollup_rest(
+            "abc123",
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=runner,
+            use_cache=True,
+        )
+    finally:
+        github_pr_status.DEFAULT_CACHE_DIR = old_cache_dir
+
+    assert rollup == []
+    assert not list((tmp_path / "cache").glob("**/*.json"))
+
+
+def test_rest_status_rollup_fails_closed_when_check_run_source_fails(tmp_path: Path) -> None:
+    class PartialRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/check-runs"):
+                self.calls.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 1, "", "check runs unavailable")
+            return super().__call__(cmd, **kwargs)
+
+    runner = PartialRunner()
+
+    rollup = github_pr_status.fetch_status_check_rollup_rest(
+        "abc123",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        use_cache=False,
+    )
+
+    assert rollup == []
+
+
+def test_review_decision_rest_fails_closed_when_no_reviews(tmp_path: Path) -> None:
+    class ReviewRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/reviews"):
+                return subprocess.CompletedProcess(cmd, 0, json.dumps([]), "")
+            return super().__call__(cmd, **kwargs)
+
+    assert (
+        github_pr_status.review_decision_rest(
+            9,
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=ReviewRunner(),
+        )
+        == "REVIEW_REQUIRED"
+    )
+
+
+def test_review_decision_rest_fails_closed_on_lookup_failure(tmp_path: Path) -> None:
+    class ReviewRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/reviews"):
+                return subprocess.CompletedProcess(cmd, 1, "", "reviews unavailable")
+            return super().__call__(cmd, **kwargs)
+
+    assert (
+        github_pr_status.review_decision_rest(
+            9,
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=ReviewRunner(),
+        )
+        == "REVIEW_REQUIRED"
+    )
+
+
+def test_review_decision_rest_preserves_changes_requested(tmp_path: Path) -> None:
+    class ReviewRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/reviews"):
+                payload = [{"state": "changes_requested", "user": {"login": "reviewer"}}]
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return super().__call__(cmd, **kwargs)
+
+    assert (
+        github_pr_status.review_decision_rest(
+            9,
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=ReviewRunner(),
+        )
+        == "CHANGES_REQUESTED"
+    )
+
+
 def test_graphql_backoff_skips_graphql_when_remaining_is_low(tmp_path: Path) -> None:
     runner = FakeRunner()
 

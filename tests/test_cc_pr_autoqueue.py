@@ -494,11 +494,9 @@ class _FakeRunner:
                 None,
             )
             decision = pr.get("reviewDecision") if isinstance(pr, dict) else None
-            payload = (
-                [{"state": str(decision).lower(), "user": {"login": "reviewer"}}]
-                if decision
-                else []
-            )
+            if decision is None:
+                decision = "APPROVED"
+            payload = [{"state": str(decision).lower(), "user": {"login": "reviewer"}}]
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         check_match = re.fullmatch(r"repos/owner/repo/commits/(.+)/check-runs", path)
         if check_match:
@@ -663,6 +661,25 @@ def test_graphql_backoff_skips_autoqueue_reconciler(tmp_path: Path) -> None:
     assert report["skipped"] is True
     assert report["reason"] == "merge_queue_state_indeterminate"
     assert not any(call[:3] == ["gh", "api", "graphql"] for call in runner.calls)
+
+
+def test_review_required_rest_decision_blocks_autoqueue(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42, review_decision="REVIEW_REQUIRED")]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    assert "review_decision:REVIEW_REQUIRED" in report["decisions"][0]["reasons"]
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
 def test_queue_green_governed_pr(tmp_path: Path) -> None:

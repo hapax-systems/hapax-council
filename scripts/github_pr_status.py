@@ -24,6 +24,7 @@ DEFAULT_CACHE_TTL_SECONDS = 60
 DEFAULT_GRAPHQL_MIN_REMAINING = 500
 DEFAULT_GRAPHQL_BACKOFF_MAX_SLEEP_SECONDS = 0
 DEFAULT_TIMEOUT_SECONDS = 60
+STATUS_CACHE_SCHEMA_VERSION = 2
 GRAPHQL_BACKOFF_RC = 75
 
 _SAFE_CACHE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -113,6 +114,11 @@ def _read_cached_rollup(repo: str, ref: str) -> list[dict[str, Any]] | None:
         return None
     if time.time() - float(fetched_at) > ttl:
         return None
+    if (
+        payload.get("schema_version") != STATUS_CACHE_SCHEMA_VERSION
+        or payload.get("complete") is not True
+    ):
+        return None
     rollup = payload.get("statusCheckRollup")
     return rollup if isinstance(rollup, list) else None
 
@@ -129,6 +135,8 @@ def _write_cached_rollup(repo: str, ref: str, rollup: list[dict[str, Any]]) -> N
             json.dumps(
                 {
                     "fetched_at": time.time(),
+                    "schema_version": STATUS_CACHE_SCHEMA_VERSION,
+                    "complete": True,
                     "repo": repo,
                     "ref": ref,
                     "statusCheckRollup": rollup,
@@ -166,7 +174,7 @@ def _rest_get_json(
     return _json_from_proc(proc)
 
 
-def _rest_get_json_pages(
+def _rest_get_json_pages_or_none(
     path: str,
     *,
     repo_root: Path,
@@ -174,7 +182,7 @@ def _rest_get_json_pages(
     fields: dict[str, str] | None = None,
     limit: int = 100,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
-) -> list[Any]:
+) -> list[Any] | None:
     if limit <= 0:
         return []
     out: list[Any] = []
@@ -190,13 +198,37 @@ def _rest_get_json_pages(
             fields=page_fields,
             timeout=timeout,
         )
-        if not isinstance(payload, list) or not payload:
+        if not isinstance(payload, list):
+            return None
+        if not payload:
             break
         out.extend(payload)
         if len(payload) < per_page:
             break
         page += 1
     return out
+
+
+def _rest_get_json_pages(
+    path: str,
+    *,
+    repo_root: Path,
+    runner: Any,
+    fields: dict[str, str] | None = None,
+    limit: int = 100,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> list[Any]:
+    return (
+        _rest_get_json_pages_or_none(
+            path,
+            repo_root=repo_root,
+            runner=runner,
+            fields=fields,
+            limit=limit,
+            timeout=timeout,
+        )
+        or []
+    )
 
 
 def _check_run_to_rollup(item: dict[str, Any]) -> dict[str, Any]:
@@ -239,17 +271,15 @@ def fetch_status_check_rollup_rest(
         if cached is not None:
             return cached
 
-    rollup: list[dict[str, Any]] = []
     check_runs = _rest_get_json(
         f"repos/{repo}/commits/{ref}/check-runs",
         repo_root=repo_root,
         runner=runner,
         fields={"per_page": "100"},
     )
-    if isinstance(check_runs, dict):
-        raw_runs = check_runs.get("check_runs")
-        if isinstance(raw_runs, list):
-            rollup.extend(_check_run_to_rollup(item) for item in raw_runs if isinstance(item, dict))
+    raw_runs = check_runs.get("check_runs") if isinstance(check_runs, dict) else None
+    if not isinstance(raw_runs, list):
+        return []
 
     combined_status = _rest_get_json(
         f"repos/{repo}/commits/{ref}/status",
@@ -257,12 +287,13 @@ def fetch_status_check_rollup_rest(
         runner=runner,
         fields={"per_page": "100"},
     )
-    if isinstance(combined_status, dict):
-        raw_statuses = combined_status.get("statuses")
-        if isinstance(raw_statuses, list):
-            rollup.extend(
-                _status_to_rollup(item) for item in raw_statuses if isinstance(item, dict)
-            )
+    raw_statuses = combined_status.get("statuses") if isinstance(combined_status, dict) else None
+    if not isinstance(raw_statuses, list):
+        return []
+
+    rollup: list[dict[str, Any]] = []
+    rollup.extend(_check_run_to_rollup(item) for item in raw_runs if isinstance(item, dict))
+    rollup.extend(_status_to_rollup(item) for item in raw_statuses if isinstance(item, dict))
 
     if use_cache and rollup:
         _write_cached_rollup(repo, ref, rollup)
@@ -382,12 +413,14 @@ def review_decision_rest(
     runner: Any = subprocess.run,
     limit: int = 100,
 ) -> str | None:
-    payload = _rest_get_json_pages(
+    payload = _rest_get_json_pages_or_none(
         f"repos/{repo}/pulls/{pr_number}/reviews",
         repo_root=repo_root,
         runner=runner,
         limit=limit,
     )
+    if payload is None:
+        return "REVIEW_REQUIRED"
     latest_by_reviewer: dict[str, str] = {}
     for index, item in enumerate(payload):
         if not isinstance(item, dict):
@@ -403,7 +436,7 @@ def review_decision_rest(
         return "CHANGES_REQUESTED"
     if "APPROVED" in states:
         return "APPROVED"
-    return None
+    return "REVIEW_REQUIRED"
 
 
 def _files_payload_from_rest(files: list[dict[str, Any]]) -> list[dict[str, Any]]:

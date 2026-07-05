@@ -255,6 +255,20 @@ class TestFetchMergedPRs:
         )
         assert [p.number for p in merged] == [6]
 
+    def test_skips_closed_unmerged_and_old_merged_rows(self, tmp_path: Path) -> None:
+        runner = _FakeRunner()
+        runner.gh_payload = [
+            {"number": 7, "mergedAt": None, "headRefName": "closed/no-merge"},
+            {"number": 8, "mergedAt": "2026-04-26T11:00:00Z", "headRefName": "old/merge"},
+            {"number": 9, "mergedAt": "2026-04-26T13:00:00Z", "headRefName": "new/merge"},
+        ]
+
+        merged = watcher.fetch_merged_prs(
+            datetime(2026, 4, 26, 12, tzinfo=UTC), repo_root=tmp_path, runner=runner
+        )
+
+        assert [p.number for p in merged] == [9]
+
 
 # ---------------------------------------------------------------------------
 # run_watcher: end-to-end with mocked subprocess

@@ -125,7 +125,7 @@ def fetch_merged_prs(
     cursor: datetime,
     *,
     repo_root: Path | None = None,
-    limit: int = 50,
+    limit: int = 300,
     runner: callable[..., subprocess.CompletedProcess] | None = None,
 ) -> list[MergedPR]:
     """List recently merged PRs through REST/core and parse the result.
