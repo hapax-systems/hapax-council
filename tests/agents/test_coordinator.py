@@ -1150,8 +1150,76 @@ current_claim: stale-task-{index}
                 assert state.dispatchable is False
 
         assert _relay_status_is_retired("retiring") is False
-        assert _relay_status_is_retired("superseded-by-cx-blue") is False
-        assert _relay_status_is_retired("closed-by-operator") is False
+        # SUPERSEDED/CLOSED are now retired (broad-9: the launcher is the refusal
+        # surface; the coordinator previously under-refused these -> routed -> rc=6).
+        assert _relay_status_is_retired("superseded-by-cx-blue") is True
+        assert _relay_status_is_retired("closed-by-operator") is True
+
+    def test_retired_relay_multidoc_latest_document_suppresses_claim(self, tmp_path: Path):
+        role = "cx-multidoc-retired"
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / f"{role}.yaml").write_text(
+            """status: active
+current_claim: stale-task
+---
+status: retired
+current_claim: stale-task
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role=role,
+                    session=f"hapax-codex-{role}",
+                    platform="codex",
+                )
+            )
+
+        assert state.alive is True
+        assert state.claimed_task is None
+        assert state.idle is True
+        assert state.dispatchable is False
+
+    def test_retired_relay_status_union_suppresses_claim(self, tmp_path: Path):
+        role = "cx-relay-status-retired"
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / f"{role}.yaml").write_text(
+            """status: active
+relay_status: closed-by-operator
+current_claim: stale-task
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role=role,
+                    session=f"hapax-codex-{role}",
+                    platform="codex",
+                )
+            )
+
+        assert state.alive is True
+        assert state.claimed_task is None
+        assert state.idle is False
+        assert state.dispatchable is False
 
     def test_active_task_file_still_beats_retired_role_status(self, tmp_path: Path):
         role = "ut-role"
