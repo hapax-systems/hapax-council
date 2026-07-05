@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import UTC, datetime
+from hashlib import sha256
 from types import SimpleNamespace
 from unittest import mock
 
@@ -39,6 +41,8 @@ def _decision(
     launch_allowed: bool,
     route_id: str = "claude.headless.opus",
     reason_codes: tuple[str, ...] = (),
+    platform: str = "claude",
+    lane: str = "cc-sdlc",
 ) -> RouteDecision:
     """Build a REAL RouteDecision (the type the dispatcher returns) for the authority tests."""
 
@@ -46,9 +50,9 @@ def _decision(
         decision_id="d-test",
         created_at=datetime(2026, 6, 20, tzinfo=UTC),
         task_id="t",
-        lane="cc-sdlc",
+        lane=lane,
         route_id=route_id,
-        platform="claude",
+        platform=platform,
         mode="headless",
         profile="opus",
         action=action,
@@ -121,7 +125,29 @@ def test_worker_has_launch_and_sendcapable_has_send() -> None:
     assert hasattr(CodexAdapter, "launch")
     assert hasattr(CodexAdapter, "send")
     assert hasattr(VibeAdapter, "launch")
-    assert not hasattr(VibeAdapter, "send")
+    assert hasattr(VibeAdapter, "send")
+
+
+def test_no_runtime_supports_send_flag_anywhere() -> None:
+    # Capability is MRO presence, never a mutable boolean: no adapter (send-capable or not) may
+    # grow a runtime supports_send flag — that is exactly the boutique-flag drift the type
+    # hierarchy exists to prevent.
+    for cls in (
+        AgyAdapter,
+        ClaudeAdapter,
+        CodexAdapter,
+        VibeAdapter,
+        BudgetAuthorityAdapter,
+        ReviewSeatAdapter,
+        RetiredAntigravFailureClassifier,
+    ):
+        assert not hasattr(cls, "supports_send"), cls.__name__
+    assert not issubclass(AgyAdapter, SendCapableAdapter)
+    assert not issubclass(BudgetAuthorityAdapter, SendCapableAdapter)
+    assert not issubclass(ReviewSeatAdapter, SendCapableAdapter)
+    assert issubclass(ClaudeAdapter, SendCapableAdapter)
+    assert issubclass(CodexAdapter, SendCapableAdapter)
+    assert issubclass(VibeAdapter, SendCapableAdapter)
 
 
 def test_budget_authority_has_no_launch_or_send() -> None:
@@ -206,14 +232,115 @@ def test_new_worker_adapters_inherit_launch_gate(adapter_cls: type[WorkerAdapter
     spawn.assert_called_once_with(request, launch_callable)
 
 
-def test_send_asserts_authority_then_is_not_yet_wired() -> None:
-    # send gates authority just like launch; the relay itself is a glue-slice concern.
+# --- SESSION gate: send() is the authority-checked egress boundary ------------------------------
+
+
+def test_send_asserts_authority_before_any_egress_side_effect(tmp_path) -> None:
     refuse = _decision(action=DispatchAction.REFUSE, launch_allowed=False)
-    with pytest.raises(AuthorityViolation):
-        ClaudeAdapter().send(refuse, "hello")
+    runner = mock.Mock(return_value=0)
+    receipts = tmp_path / "receipts.jsonl"
+    with pytest.raises(AuthorityViolation, match="not authorized"):
+        ClaudeAdapter().send(refuse, "hello", relay_runner=runner, receipts_path=receipts)
+    runner.assert_not_called()  # authority fired BEFORE the relay
+    assert not receipts.exists()  # ... and BEFORE any receipt side effect
+
+
+@pytest.mark.parametrize(
+    ("adapter_cls", "platform", "lane", "wrapper"),
+    [
+        (ClaudeAdapter, "claude", "eta", "hapax-claude-send"),
+        (CodexAdapter, "codex", "cx-cap", "hapax-codex-send"),
+        (VibeAdapter, "vibe", "vbe-1", "hapax-vibe-send"),
+    ],
+)
+def test_send_routes_through_canonical_relay_and_mints_receipt(
+    adapter_cls, platform: str, lane: str, wrapper: str, tmp_path
+) -> None:
+    decision = _decision(
+        action=DispatchAction.LAUNCH,
+        launch_allowed=True,
+        platform=platform,
+        lane=lane,
+        route_id=f"{platform}.headless.full",
+    )
+    seen: list[tuple[str, ...]] = []
+
+    def runner(argv: tuple[str, ...]) -> int:
+        seen.append(argv)
+        return 0
+
+    receipts = tmp_path / "receipts.jsonl"
+    now = datetime(2026, 7, 5, 12, 0, tzinfo=UTC)
+    receipt = adapter_cls().send(
+        decision, "do the thing", relay_runner=runner, now=now, receipts_path=receipts
+    )
+    # canonical relay only: the argv targets scripts/hapax-<platform>-send with the decision lane
+    assert len(seen) == 1
+    argv = seen[0]
+    assert argv[0].endswith(f"scripts/{wrapper}")
+    assert argv[1:3] == ("--session", lane)
+    assert argv[-2:] == ("--", "do the thing")
+    # the receipt is the SESSION-gate authority result the reins consumer lights up on
+    assert receipt.outcome == "sent" and receipt.exit_code == 0
+    assert receipt.relay_wrapper == f"scripts/{wrapper}"
+    assert receipt.platform == platform and receipt.lane == lane
+    assert receipt.route_id == f"{platform}.headless.full"
+    assert receipt.authority_action == "launch" and receipt.authority_launch_allowed is True
+    assert receipt.message_sha256 == sha256(b"do the thing").hexdigest()
+    assert receipt.message_chars == len("do the thing")
+    # ... and it was appended to the evidence bus as one JSON line
+    lines = receipts.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["receipt_id"] == receipt.receipt_id
+
+
+def test_send_receipt_carries_no_message_body(tmp_path) -> None:
+    # privacy_or_secret_sensitive route: the evidence bus must never persist message content.
+    decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True, lane="eta")
+    receipts = tmp_path / "receipts.jsonl"
+    secret = "hunter2-super-secret-payload"
+    ClaudeAdapter().send(decision, secret, relay_runner=lambda argv: 0, receipts_path=receipts)
+    on_disk = receipts.read_text(encoding="utf-8")
+    assert secret not in on_disk
+    assert sha256(secret.encode("utf-8")).hexdigest() in on_disk
+
+
+def test_send_failed_relay_mints_failed_receipt(tmp_path) -> None:
+    decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True, lane="eta")
+    receipts = tmp_path / "receipts.jsonl"
+    receipt = ClaudeAdapter().send(
+        decision, "msg", relay_runner=lambda argv: 3, receipts_path=receipts
+    )
+    assert receipt.outcome == "failed" and receipt.exit_code == 3
+    # a failed relay still leaves lossless evidence — but it is NOT a "sent" light-up signal
+    assert json.loads(receipts.read_text(encoding="utf-8"))["outcome"] == "failed"
+
+
+def test_send_platform_mismatch_is_wiring_bug_not_authority_breach(tmp_path) -> None:
+    codex_decision = _decision(
+        action=DispatchAction.LAUNCH, launch_allowed=True, platform="codex", lane="cx-cap"
+    )
+    runner = mock.Mock(return_value=0)
+    receipts = tmp_path / "receipts.jsonl"
+    with pytest.raises(ValueError, match="mismatch"):
+        ClaudeAdapter().send(codex_decision, "x", relay_runner=runner, receipts_path=receipts)
+    runner.assert_not_called()
+    assert not receipts.exists()
+
+
+def test_send_cannot_be_overridden_no_boutique_paths() -> None:
+    # the __init_subclass__ guard: a per-engine send override IS the boutique-path failure mode.
+    with pytest.raises(TypeError, match="boutique"):
+        type("BadSendAdapter", (ClaudeAdapter,), {"send": lambda self, d, m: "hijacked"})
+    with pytest.raises(TypeError, match="boutique"):
+        type("BadMixinSub", (SendCapableAdapter,), {"send": lambda self, d, m: "hijacked"})
+
+
+def test_send_on_bare_mixin_fails_closed() -> None:
+    # a bare mixin has no PLATFORM, hence no governed relay target: fail closed AFTER authority.
     allow = _decision(action=DispatchAction.LAUNCH, launch_allowed=True)
-    with pytest.raises(NotImplementedError):
-        ClaudeAdapter().send(allow, "hello")
+    with pytest.raises(TypeError, match="PLATFORM"):
+        SendCapableAdapter().send(allow, "x", relay_runner=lambda argv: 0)
 
 
 # --- collect_receipts delegation ---------------------------------------------------------------

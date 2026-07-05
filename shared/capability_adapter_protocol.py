@@ -4,10 +4,12 @@ The adapter layer is a *thin* facade over the existing pure dispatch functions. 
 exists to give admitted platforms (claude/codex worker lanes, the api budget authority, the
 glmcp review seat) ONE uniform surface —
 ``describe / admit / observe / collect_receipts`` (FINAL, non-overridable delegations) plus
-``preflight / launch / send / classify_failure`` (the per-platform overridable surface) —
-WITHOUT widening any authority or duplicating policy.
+``preflight / launch / classify_failure`` (the per-platform overridable surface) —
+WITHOUT widening any authority or duplicating policy. ``send`` is the governed SESSION-gate
+egress boundary: single-sourced on :class:`SendCapableAdapter` (subclasses may not override it)
+with per-platform variation ONLY through the canonical relay-wrapper table.
 
-Two invariants are load-bearing:
+Three invariants are load-bearing:
 
 1. **A platform is never admitted by editing adapter code.** ``describe`` and ``admit``
    delegate verbatim to ``registry.require`` and ``evaluate_dispatch_policy``; the adapter
@@ -16,10 +18,17 @@ Two invariants are load-bearing:
    ``@final`` *and* guarded at runtime by ``__init_subclass__`` (``typing.final`` alone is
    advisory — only static checkers honour it).
 
-2. **``launch`` asserts authority FIRST.** ``coord_dispatch.run_atomic_dispatch_launch``
+2. **``launch`` and ``send`` assert authority FIRST.** ``coord_dispatch.run_atomic_dispatch_launch``
    never re-checks the decision, so ``WorkerAdapter.launch`` is the SOLE enforcement point:
    a non-``LAUNCH`` (or ``launch_allowed=False``) decision raises :class:`AuthorityViolation`
-   before any side effect.
+   before any side effect. ``SendCapableAdapter.send`` applies the same gate before ANY egress
+   side effect, then mints a :class:`SessionSendReceipt` on the evidence bus the reins
+   send-gate consumer lights up on.
+
+3. **No boutique send paths.** ``send`` cannot be overridden (``__init_subclass__`` guard on the
+   mixin); the ONLY per-platform variation is the ``_SESSION_SEND_RELAYS`` row mapping a platform
+   to its already-governed relay wrapper (``scripts/hapax-<platform>-send``). A platform without a
+   row fails closed — no ad-hoc ``hapax-<engine>`` egress is minted by adapter code.
 
 Capability differences are expressed at the TYPE level, not via runtime flags: only
 :class:`WorkerAdapter` has ``launch``; only :class:`SendCapableAdapter` (a mixin) has
@@ -34,10 +43,17 @@ already taken by the unrelated ``PerceptionBackendAdapter``.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from collections.abc import Callable
-from datetime import datetime
-from typing import ClassVar, final
+from datetime import UTC, datetime
+from hashlib import sha256
+from pathlib import Path
+from typing import ClassVar, Literal, final
+from uuid import uuid4
+
+from pydantic import BaseModel
 
 from shared.coord_dispatch import (
     DispatchLaunchRequest,
@@ -75,6 +91,9 @@ __all__ = [
     "ClaudeAdapter",
     "CodexAdapter",
     "VibeAdapter",
+    "SessionSendReceipt",
+    "append_session_send_receipt",
+    "DEFAULT_SESSION_SEND_RECEIPTS",
 ]
 
 
@@ -284,22 +303,164 @@ class WorkerAdapter(CapabilityAdapter):
         return run_atomic_dispatch_launch(request, launch_callable)
 
 
-class SendCapableAdapter:
-    """Mixin granting the relay ``send`` capability. Combine as
-    ``class FooAdapter(WorkerAdapter, SendCapableAdapter)``. Platforms without send (api, the glmcp
-    review seat) do not mix this in, so ``send`` is absent from their MRO.
+# --- SESSION-gate send: receipts bus + canonical relay table ------------------------------------
 
-    Not a :class:`CapabilityAdapter` subclass on its own (so defining it does not trip the FINAL
-    guard). The protocol layer marks the capability + gates authority; the actual relay is wired
-    per-platform in glue slices (for example ``scripts/hapax-claude-send`` for Claude lanes).
+#: Persistent (NOT tmpfs) SESSION-send evidence bus — one JSON line per governed egress. The reins
+#: send-gate consumer lights up ONLY on receipts read from this path; keep it out of /tmp and
+#: /dev/shm (the tmpfs-swap-trap) so the evidence survives a reboot, mirroring ``shared.gate_log``.
+DEFAULT_SESSION_SEND_RECEIPTS = Path(
+    os.environ.get(
+        "HAPAX_SESSION_SEND_RECEIPTS",
+        str(Path.home() / ".cache" / "hapax" / "sdlc-routing" / "session-send-receipts.jsonl"),
+    )
+)
+
+#: The ONLY per-platform variation point of the SESSION gate: platform -> canonical relay wrapper
+#: (already-governed transports under ``scripts/``). A send-capable platform missing here fails
+#: closed; a platform gains egress by adding a row — never by a new ``hapax-<engine>`` send script
+#: and never by overriding ``send``.
+_SESSION_SEND_RELAYS: dict[Platform, str] = {
+    Platform.CLAUDE: "hapax-claude-send",
+    Platform.CODEX: "hapax-codex-send",
+    Platform.VIBE: "hapax-vibe-send",
+}
+
+_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+
+
+class SessionSendReceipt(BaseModel):
+    """One governed SESSION-gate egress receipt — the authority result the reins send-gate reads.
+
+    Deliberately carries NO message body (the send route is privacy/secret-sensitive): the sha256 +
+    length prove WHICH payload egressed without persisting content on the evidence bus.
     """
 
-    def send(self, decision: RouteDecision, message: str) -> str:
+    receipt_schema: Literal[1] = 1
+    receipt_id: str
+    created_at: str
+    op: Literal["session_send"] = "session_send"
+    decision_id: str
+    task_id: str
+    lane: str
+    route_id: str
+    platform: str
+    authority_action: str
+    authority_launch_allowed: bool
+    relay_wrapper: str
+    message_sha256: str
+    message_chars: int
+    exit_code: int
+    outcome: Literal["sent", "failed"]
+
+
+def append_session_send_receipt(
+    receipt: SessionSendReceipt, *, path: Path | str | None = None
+) -> Path:
+    """Append one receipt line to the SESSION-send evidence bus.
+
+    Creates the parent directory if needed; an unwritable path raises the OSError to the caller —
+    a lost egress receipt must surface, never silently pass (same contract as the gate log).
+    """
+
+    target = Path(path) if path is not None else DEFAULT_SESSION_SEND_RECEIPTS
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as fh:
+        fh.write(receipt.model_dump_json() + "\n")
+    return target
+
+
+def _run_session_relay(argv: tuple[str, ...]) -> int:
+    """Default relay runner: execute the canonical wrapper, return its exit code (no capture —
+    the wrapper's ack/status output belongs to the operator's terminal, not the receipt).
+    """
+
+    return subprocess.run(list(argv), check=False).returncode
+
+
+class SendCapableAdapter:
+    """Mixin granting the governed SESSION-gate ``send`` capability. Combine as
+    ``class FooAdapter(WorkerAdapter, SendCapableAdapter)``. Platforms without send (agy, api, the
+    glmcp review seat) do not mix this in, so ``send`` is absent from their MRO — capability stays
+    a type-level fact, never a runtime ``supports_send`` flag.
+
+    Not a :class:`CapabilityAdapter` subclass on its own (so defining it does not trip the FINAL
+    guard). ``send`` IS the SESSION egress boundary: authority asserted FIRST, then the canonical
+    per-platform relay wrapper from ``_SESSION_SEND_RELAYS``, then a :class:`SessionSendReceipt`
+    on the evidence bus (the receipt the reins send-gate consumer lights up on). Subclasses may
+    NOT override ``send`` — a per-engine send override would fork the gate into a boutique path.
+    """
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if "send" in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} may not override SendCapableAdapter.send: the SESSION gate is "
+                "single-sourced (authority -> canonical relay -> receipt). No boutique send "
+                "paths — a platform varies only via the _SESSION_SEND_RELAYS wrapper table."
+            )
+
+    def send(
+        self,
+        decision: RouteDecision,
+        message: str,
+        *,
+        relay_runner: Callable[[tuple[str, ...]], int] | None = None,
+        now: datetime | None = None,
+        receipts_path: Path | str | None = None,
+    ) -> SessionSendReceipt:
+        """Authority-checked SESSION egress: assert authority FIRST (before ANY side effect),
+        relay through the canonical per-platform wrapper, mint the evidence receipt.
+
+        A non-``LAUNCH`` decision raises :class:`AuthorityViolation` with the relay untouched and
+        no receipt written. A platform/decision mismatch or a missing canonical relay is a wiring
+        bug (``ValueError`` / ``FileNotFoundError``) — fail closed, never substitute a path.
+        """
+
         _require_launch_authority(decision, op="send")
-        raise NotImplementedError(
-            "relay send is wired per-platform in the glue slices; the protocol layer only marks "
-            "the capability and gates authority."
+        platform = getattr(type(self), "PLATFORM", None)
+        if not isinstance(platform, Platform):
+            raise TypeError(
+                "SendCapableAdapter must be mixed into a CapabilityAdapter with a PLATFORM "
+                "ClassVar; a bare mixin has no governed relay target."
+            )
+        if decision.platform != platform.value:
+            raise ValueError(
+                f"decision routes platform {decision.platform!r}, adapter is {platform.value!r} "
+                "(adapter/decision mismatch — wiring bug, not an authority breach)"
+            )
+        relay_name = _SESSION_SEND_RELAYS.get(platform)
+        if relay_name is None:
+            raise ValueError(
+                f"no canonical session relay registered for platform {platform.value!r}; "
+                "send-capable platforms gain egress ONLY via _SESSION_SEND_RELAYS (no boutique "
+                "hapax-<engine> send paths)"
+            )
+        wrapper = _SCRIPTS_DIR / relay_name
+        if not wrapper.is_file():
+            raise FileNotFoundError(
+                f"canonical relay wrapper missing: {wrapper} — fail closed; do NOT substitute an "
+                "ad-hoc send path"
+            )
+        argv = (str(wrapper), "--session", decision.lane, "--", message)
+        exit_code = (relay_runner or _run_session_relay)(argv)
+        receipt = SessionSendReceipt(
+            receipt_id=uuid4().hex,
+            created_at=(now or datetime.now(UTC)).isoformat(),
+            decision_id=decision.decision_id,
+            task_id=decision.task_id,
+            lane=decision.lane,
+            route_id=decision.route_id,
+            platform=platform.value,
+            authority_action=decision.action.value,
+            authority_launch_allowed=decision.launch_allowed,
+            relay_wrapper=f"scripts/{relay_name}",
+            message_sha256=sha256(message.encode("utf-8")).hexdigest(),
+            message_chars=len(message),
+            exit_code=exit_code,
+            outcome="sent" if exit_code == 0 else "failed",
         )
+        append_session_send_receipt(receipt, path=receipts_path)
+        return receipt
 
 
 class BudgetAuthorityAdapter(CapabilityAdapter):
@@ -411,8 +572,10 @@ class CodexAdapter(WorkerAdapter, SendCapableAdapter):
         )
 
 
-class VibeAdapter(WorkerAdapter):
-    """Vibe worker lanes: pure reuse + the shared CLI failure table."""
+class VibeAdapter(WorkerAdapter, SendCapableAdapter):
+    """Vibe worker lanes: pure reuse + the shared CLI failure table. Send-capable — vibe lanes are
+    live tmux harnesses with a canonical relay (``scripts/hapax-vibe-send``).
+    """
 
     PLATFORM: ClassVar[Platform] = Platform.VIBE
 
