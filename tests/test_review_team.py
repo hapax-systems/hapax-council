@@ -218,6 +218,11 @@ class TestLensRegistry:
         assert lane_families["prefixes"]["codex-"] == "codex"
         assert lane_families["prefixes"]["glm-"] == "glm"
         assert "iota" in lane_families["retired"]
+        assert "agy" in lane_families["retired"]
+        assert "agy-review" in lane_families["retired"]
+        assert "agy-" in lane_families["retired_prefixes"]
+        assert "agy-review" not in lane_families["exact"]
+        assert "agy-" not in lane_families["prefixes"]
         assert lane_families["default"] == "claude"
 
 
@@ -406,7 +411,6 @@ class TestConstitution:
         assert rt.writer_family_for_lane("zeta", reg) == "claude"
         assert rt.writer_family_for_lane("cx-gold", reg) == "codex"
         assert rt.writer_family_for_lane("codex-agy-cli", reg) == "codex"
-        assert rt.writer_family_for_lane("agy-review", reg) == "agy"
         assert rt.writer_family_for_lane("cx-glmcp", reg) == "glm"
         assert rt.writer_family_for_lane("codex-glmcp", reg) == "glm"
         assert rt.writer_family_for_lane("glm-alpha", reg) == "glm"
@@ -420,6 +424,12 @@ class TestConstitution:
         reg = rt.load_lens_registry()
         with pytest.raises(ValueError, match="retired authoring lane"):
             rt.writer_family_for_lane("iota", reg)
+        with pytest.raises(ValueError, match="retired authoring lane"):
+            rt.writer_family_for_lane("agy", reg)
+        with pytest.raises(ValueError, match="retired authoring lane"):
+            rt.writer_family_for_lane("agy-review", reg)
+        with pytest.raises(ValueError, match="retired authoring lane"):
+            rt.writer_family_for_lane("agy-2", reg)
         with pytest.raises(ValueError, match="retired authoring lane"):
             rt.writer_family_for_lane("antigrav", reg)
         with pytest.raises(ValueError, match="retired authoring lane"):

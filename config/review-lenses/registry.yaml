@@ -133,18 +133,19 @@ lane_families:
     cx-glmcp: glm
     codex-glmcp: glm
     glmcp: glm
-    agy-review: agy
   prefixes:
     cx-: codex
     codex-: codex
     glm-: glm
     vbe-: vibe
-    agy-: agy
   retired:
     - iota
+    - agy
+    - agy-review
     - antigrav
     - antigravity
   retired_prefixes:
+    - agy-
     - antigrav-
     - antigravity-
   default: claude
