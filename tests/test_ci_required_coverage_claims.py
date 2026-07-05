@@ -123,7 +123,7 @@ def test_auto_fix_keeps_real_failure_remediation_but_skips_auto_fix_recursion() 
 def test_readme_typecheck_commands_match_ci_and_safety_net() -> None:
     readme_text = _read("README.md")
 
-    assert "uv run --no-project --with pyrefly==0.62.0 pyrefly check" in readme_text
+    assert "uv run --no-project --with pyrefly==0.64.1 pyrefly check" in readme_text
     assert "CI typecheck" in readme_text
     assert "uv run pyright" in readme_text
     assert "weekly typecheck safety net" in readme_text
@@ -141,7 +141,7 @@ def test_ci_typecheck_uses_minimal_pyrefly_fast_path() -> None:
 
     _assert_uses_pinned_action(typecheck_block, "astral-sh/setup-uv")
     assert "enable-cache: true" in typecheck_block
-    assert "uv run --no-project --with pyrefly==0.62.0 pyrefly check" in typecheck_block
+    assert "uv run --no-project --with pyrefly==0.64.1 pyrefly check" in typecheck_block
     assert "apt-get" not in typecheck_block
     assert "uv sync --extra ci" not in typecheck_block
     assert "actions/cache@v4" not in typecheck_block
