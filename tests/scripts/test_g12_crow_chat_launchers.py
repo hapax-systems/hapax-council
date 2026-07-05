@@ -520,6 +520,7 @@ def test_hapax_claude_headless_valid_attestation_scrubs_hmac_before_worker(
     tmp_path: Path,
 ) -> None:
     env = _base_env(tmp_path)
+    env.pop("PYTHONPATH", None)
     home = Path(env["HOME"])
     workdir = home / "projects" / "hapax-council--beta"
     workdir.mkdir(parents=True)
@@ -548,6 +549,7 @@ def test_hapax_claude_headless_valid_attestation_scrubs_hmac_before_worker(
 
     result = subprocess.run(
         [str(CLAUDE_HEADLESS), "--task", "task-x", "beta", "governed prompt"],
+        cwd=tmp_path,
         env=env,
         text=True,
         capture_output=True,

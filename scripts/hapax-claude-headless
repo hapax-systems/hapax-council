@@ -7,6 +7,13 @@
 
 set -euo pipefail
 
+_headless_self="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  _headless_self="$(readlink -f "$_headless_self" 2>/dev/null || printf '%s' "$_headless_self")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$_headless_self")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 # Saved BEFORE arg parsing shifts "$@", so the L1 slice self-attach below can
 # re-exec with the full original argv.
 ORIG_ARGS=("$@")
@@ -32,7 +39,7 @@ g12_attestation_required() {
 
 require_g12_crow_chat_attestation() {
   g12_attestation_required || return 0
-  PYTHONPATH="$WORKDIR${PYTHONPATH:+:$PYTHONPATH}" python3 -m shared.g12_crow_chat_gate \
+  PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 -m shared.g12_crow_chat_gate \
     --task "$1" --lane "$2" --surface "$3"
 }
 
