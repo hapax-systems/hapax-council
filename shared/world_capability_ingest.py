@@ -91,15 +91,18 @@ def _descriptor_from_record(rec: dict[str, object]) -> CapabilityHarnessDescript
     daemon = str(rec.get("daemon") or "")
     direction = str(rec.get("direction") or "observe")
     authority = _authority_ceiling(rec)
+    mutation_surfaces: list[str] = []
+    if shape in {CapabilityShape.LOCAL_TOOL, CapabilityShape.PUBLIC_EGRESS}:
+        mutation_surfaces = [world_domain or capability_id]
     return CapabilityHarnessDescriptor(
         capability_id=capability_id,
         display_name=str(rec.get("capability_name") or capability_id),
         shape=shape,
         domain=_domain_for_world_domain(world_domain),
         actions=_actions_for_direction(direction),
-        execution_harness_id=daemon or None,
+        execution_harness_id=daemon or capability_id or None,
         authority_ceiling=authority,
-        mutation_surfaces=[world_domain] if authority == AuthorityCeiling.PUBLIC_PUBLISH else [],
+        mutation_surfaces=mutation_surfaces,
         public_egress_authority_required=shape == CapabilityShape.PUBLIC_EGRESS,
         resource_pools=[daemon] if daemon else [],
         freshness_state=_freshness_state(rec),

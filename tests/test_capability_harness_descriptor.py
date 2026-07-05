@@ -15,7 +15,10 @@ from shared.capability_harness_descriptor import (
     CapabilityDomain,
     CapabilityHarnessDescriptor,
     CapabilityShape,
+    CostSource,
     DeltaKind,
+    FreshnessState,
+    QuotaSource,
     descriptor_fingerprint,
     discover,
     validate_descriptor,
@@ -102,6 +105,29 @@ class ValidateDescriptorTest(unittest.TestCase):
         missing = validate_descriptor(desc)
         self.assertIn("mutation_surfaces", missing)
 
+    def test_defaulted_authority_fact_must_be_explicit(self) -> None:
+        desc = CapabilityHarnessDescriptor(
+            capability_id="hosted.defaulted",
+            display_name="hosted.defaulted",
+            shape=CapabilityShape.HOSTED_MODEL,
+            domain=CapabilityDomain.LLM_WORKER,
+            provider="provider",
+            model="model",
+        )
+        self.assertIn("spend_authority_required", validate_descriptor(desc))
+
+    def test_explicit_false_authority_fact_is_present(self) -> None:
+        desc = CapabilityHarnessDescriptor(
+            capability_id="hosted.explicit-free",
+            display_name="hosted.explicit-free",
+            shape=CapabilityShape.HOSTED_MODEL,
+            domain=CapabilityDomain.LLM_WORKER,
+            provider="provider",
+            model="model",
+            spend_authority_required=False,
+        )
+        self.assertEqual(validate_descriptor(desc), [])
+
     def test_shape_with_no_required_facts_always_validates(self) -> None:
         # Any shape not in SHAPE_REQUIRED_FACTS validates regardless.
         desc = CapabilityHarnessDescriptor(
@@ -128,6 +154,22 @@ class FingerprintTest(unittest.TestCase):
             CapabilityShape.HOSTED_MODEL, authority_ceiling=AuthorityCeiling.PUBLIC_PUBLISH
         )
         self.assertNotEqual(descriptor_fingerprint(a), descriptor_fingerprint(b))
+
+    def test_governance_material_fields_change_fingerprint(self) -> None:
+        base = _descriptor(CapabilityShape.HOSTED_MODEL)
+        updates = {
+            "provider": "other-provider",
+            "backend": "other-backend",
+            "mutation_surfaces": ["other-surface"],
+            "quota_source": QuotaSource.LEDGER,
+            "cost_source": CostSource.LEDGER,
+            "freshness_state": FreshnessState.FRESH,
+            "freshness_evidence": ["receipt://fresh"],
+        }
+        for field, value in updates.items():
+            with self.subTest(field=field):
+                changed = base.model_copy(update={field: value})
+                self.assertNotEqual(descriptor_fingerprint(base), descriptor_fingerprint(changed))
 
     def test_cosmetic_change_preserves_fingerprint(self) -> None:
         a = _descriptor(CapabilityShape.HOSTED_MODEL)
@@ -166,6 +208,11 @@ class DiscoverDeltaTest(unittest.TestCase):
         delta = discover([desc], registered={desc.capability_id: fp})
         self.assertTrue(delta.is_empty)
         self.assertEqual(delta.kinds(), [])
+
+    def test_duplicate_observed_capability_ids_are_rejected(self) -> None:
+        desc = _descriptor(CapabilityShape.LOCAL_TOOL, capability_id="cap.duplicate")
+        with self.assertRaisesRegex(ValueError, "duplicate capability_id"):
+            discover([desc, desc.model_copy()], registered={})
 
     def test_kinds_emits_all_deltas(self) -> None:
         unchanged = _descriptor(CapabilityShape.LOCAL_TOOL, capability_id="cap.same")

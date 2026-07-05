@@ -58,6 +58,7 @@ def _descriptor_from_surface(surface_id: str, spec: object) -> CapabilityHarness
         if shape == CapabilityShape.MONEY_RAIL
         else [CapabilityAction.PUBLISH],
         execution_harness_id=dispatch or None,
+        mutation_surfaces=[surface_id] if shape == CapabilityShape.PUBLIC_EGRESS else [],
         authority_ceiling=(
             AuthorityCeiling.RECEIVE_ONLY_MONEY
             if shape == CapabilityShape.MONEY_RAIL

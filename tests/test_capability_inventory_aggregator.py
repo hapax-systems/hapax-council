@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import unittest
+from collections import Counter
 
+from shared.capability_harness_descriptor import validate_descriptor
 from shared.capability_inventory_aggregator import aggregate_all_capabilities, full_inventory_delta
 
 
@@ -32,11 +34,13 @@ class AggregateAllCapabilitiesTest(unittest.TestCase):
     def test_no_duplicate_capability_ids(self) -> None:
         descs = aggregate_all_capabilities()
         ids = [d.capability_id for d in descs]
-        duplicates = [cid for cid in ids if ids.count(cid) > 1]
-        if duplicates:
-            # some overlap across vocabularies is expected (e.g. a route in both registries);
-            # report it but don't fail — the delta surfaces it
-            pass
+        duplicates = sorted(cid for cid, count in Counter(ids).items() if count > 1)
+        self.assertEqual(duplicates, [])
+
+    def test_aggregate_descriptors_validate(self) -> None:
+        descs = aggregate_all_capabilities()
+        invalid = {d.capability_id: validate_descriptor(d) for d in descs if validate_descriptor(d)}
+        self.assertEqual(invalid, {})
 
 
 class FullInventoryDeltaTest(unittest.TestCase):

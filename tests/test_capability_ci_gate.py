@@ -12,7 +12,7 @@ import json
 import unittest
 from pathlib import Path
 
-from shared.capability_harness_descriptor import discover
+from shared.capability_harness_descriptor import discover, validate_descriptor
 from shared.capability_inventory_aggregator import aggregate_all_capabilities
 
 
@@ -31,6 +31,20 @@ class CapabilityCIGateTest(unittest.TestCase):
         payload = json.loads(self.baseline_path.read_text(encoding="utf-8"))
         registered = payload.get("fingerprints", {})
         observed = aggregate_all_capabilities()
+        invalid = {
+            descriptor.capability_id: validate_descriptor(descriptor)
+            for descriptor in observed
+            if validate_descriptor(descriptor)
+        }
+        if invalid:
+            details = [
+                f"{capability_id}: {', '.join(gaps)}"
+                for capability_id, gaps in sorted(invalid.items())
+            ]
+            self.fail(
+                "capability inventory has shape-validation gaps; the baseline must not bless "
+                "schema-invalid descriptors. Gaps:\n  " + "\n  ".join(details[:20])
+            )
         delta = discover(observed, registered)
         if not delta.is_empty:
             details: list[str] = []

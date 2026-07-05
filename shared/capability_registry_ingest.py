@@ -24,6 +24,7 @@ from shared.capability_harness_descriptor import (
     CapabilityHarnessDescriptor,
     CapabilityShape,
     FreshnessState,
+    validate_descriptor,
 )
 
 __all__ = ["ingest_platform_capability_registry", "ingest_routes"]
@@ -109,6 +110,27 @@ def _descriptor_from_route(route: dict[str, object]) -> CapabilityHarnessDescrip
     effort = str(exec_desc.get("effort") or "none")
     capacity_pool = str(route.get("capacity_pool") or "")
     resource_pools = [capacity_pool] if capacity_pool else []
+    provider = str(route.get("provider") or platform or "")
+    backend = str(
+        exec_desc.get("backend")
+        or exec_desc.get("gateway")
+        or exec_desc.get("adapter")
+        or model
+        or profile
+        or platform
+        or ""
+    )
+    execution_harness_id = str(route.get("launcher") or platform or route_id or "")
+    authority = _authority_ceiling(route)
+    mutation_surfaces = ["source"] if authority == AuthorityCeiling.REPO_MUTATION else []
+    if shape == CapabilityShape.LOCAL_TOOL and not mutation_surfaces:
+        mutation_surfaces = [profile or "local_tool"]
+    descriptor_provider = None
+    if shape in {CapabilityShape.HOSTED_MODEL, CapabilityShape.PROVIDER_GATEWAY}:
+        descriptor_provider = provider or None
+    descriptor_backend = None
+    if shape == CapabilityShape.PROVIDER_GATEWAY:
+        descriptor_backend = backend or None
     return CapabilityHarnessDescriptor(
         capability_id=route_id,
         display_name=str(route.get("summary") or route_id),
@@ -117,13 +139,13 @@ def _descriptor_from_route(route: dict[str, object]) -> CapabilityHarnessDescrip
         actions=_actions_for_shape(shape),
         platform_id=platform or None,
         route_id=route_id or None,
-        execution_harness_id=str(route.get("launcher") or "") or None,
+        execution_harness_id=execution_harness_id or None,
+        provider=descriptor_provider,
+        backend=descriptor_backend,
         model=model or None,
         effort=effort if effort != "none" else None,
-        authority_ceiling=_authority_ceiling(route),
-        mutation_surfaces=["source"]
-        if _authority_ceiling(route) == AuthorityCeiling.REPO_MUTATION
-        else [],
+        authority_ceiling=authority,
+        mutation_surfaces=mutation_surfaces,
         resource_pools=resource_pools,
         spend_authority_required=capacity_pool in {"subscription_quota", "paid_spend"},
         freshness_state=_freshness_state(route.get("route_state")),
@@ -136,7 +158,16 @@ def ingest_routes(routes: Sequence[dict[str, object]]) -> list[CapabilityHarness
 
     Separated from the file reader so tests can exercise the mapping with a fixture dict.
     """
-    return [_descriptor_from_route(route) for route in routes if isinstance(route, dict)]
+    descriptors = [_descriptor_from_route(route) for route in routes if isinstance(route, dict)]
+    invalid = {
+        descriptor.capability_id: validate_descriptor(descriptor)
+        for descriptor in descriptors
+        if validate_descriptor(descriptor)
+    }
+    if invalid:
+        details = "; ".join(f"{cid}: {', '.join(gaps)}" for cid, gaps in invalid.items())
+        raise ValueError(f"platform-capability-registry descriptors failed validation: {details}")
+    return descriptors
 
 
 def ingest_platform_capability_registry(path: str | Path) -> list[CapabilityHarnessDescriptor]:

@@ -7,6 +7,9 @@ as a failing check). The aggregator knows the repo layout + wires each adapter t
 
 from __future__ import annotations
 
+import ast
+import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from shared.capability_harness_descriptor import (
@@ -24,10 +27,39 @@ from shared.world_capability_ingest import ingest_world_capability_registry
 
 __all__ = ["aggregate_all_capabilities", "repo_root"]
 
+LOG = logging.getLogger(__name__)
+
 
 def repo_root() -> Path:
     """The hapax-council repo root (this file's parents[1])."""
     return Path(__file__).resolve().parents[1]
+
+
+def _extend_from_file(
+    descriptors: list[CapabilityHarnessDescriptor],
+    path: Path,
+    ingest: Callable[[Path], list[CapabilityHarnessDescriptor]],
+) -> None:
+    if not path.is_file():
+        LOG.warning("capability inventory source missing: %s", path)
+        return
+    descriptors.extend(ingest(path))
+
+
+def _read_models_dict_literal(path: Path) -> dict[str, object]:
+    """Read MODELS from shared/config.py without importing secret-loading runtime code."""
+    module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in module.body:
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.target.id == "MODELS" and node.value is not None:
+                value = ast.literal_eval(node.value)
+                return value if isinstance(value, dict) else {}
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "MODELS":
+                    value = ast.literal_eval(node.value)
+                    return value if isinstance(value, dict) else {}
+    return {}
 
 
 def aggregate_all_capabilities(root: Path | None = None) -> list[CapabilityHarnessDescriptor]:
@@ -41,44 +73,53 @@ def aggregate_all_capabilities(root: Path | None = None) -> list[CapabilityHarne
     descriptors: list[CapabilityHarnessDescriptor] = []
 
     # 1. platform-capability-registry.json (LLM/dispatch supply)
-    pcr = config / "platform-capability-registry.json"
-    if pcr.is_file():
-        descriptors.extend(ingest_platform_capability_registry(pcr))
+    _extend_from_file(
+        descriptors,
+        config / "platform-capability-registry.json",
+        ingest_platform_capability_registry,
+    )
 
     # 2. world-capability-registry.json (world-expression/observation/state)
-    wcr = config / "world-capability-registry.json"
-    if wcr.is_file():
-        descriptors.extend(ingest_world_capability_registry(wcr))
+    _extend_from_file(
+        descriptors,
+        config / "world-capability-registry.json",
+        ingest_world_capability_registry,
+    )
 
     # 3. grounding-providers.json
-    gp = config / "grounding-providers.json"
-    if gp.is_file():
-        descriptors.extend(ingest_grounding_providers(gp))
+    _extend_from_file(descriptors, config / "grounding-providers.json", ingest_grounding_providers)
 
     # 4. mcp-connector-tool-manifest.json
-    mcm = config / "mcp-connector-tool-manifest.json"
-    if mcm.is_file():
-        descriptors.extend(ingest_mcp_connector_manifest(mcm))
+    _extend_from_file(
+        descriptors,
+        config / "mcp-connector-tool-manifest.json",
+        ingest_mcp_connector_manifest,
+    )
 
     # 5. capability-classification-inventory.json
-    cci = config / "capability-classification-inventory.json"
-    if cci.is_file():
-        descriptors.extend(ingest_classification_inventory(cci))
+    _extend_from_file(
+        descriptors,
+        config / "capability-classification-inventory.json",
+        ingest_classification_inventory,
+    )
 
     # 6. publication-bus surface_registry (Python module import)
     try:
         descriptors.extend(ingest_publication_bus_from_module())
-    except (ImportError, Exception):
-        pass  # the absence is surfaced by the delta
+    except ImportError as exc:
+        LOG.warning("capability inventory source unavailable: publication_bus (%s)", exc)
 
     # 7. MODELS dict (shared/config.py) — lightweight: read the dict without heavy import
+    config_py = root / "shared" / "config.py"
     try:
-        import shared.config as cfg
-
-        if hasattr(cfg, "MODELS") and isinstance(cfg.MODELS, dict):
-            descriptors.extend(ingest_models_dict(cfg.MODELS))
-    except (ImportError, Exception):
-        pass
+        models = _read_models_dict_literal(config_py)
+    except (OSError, SyntaxError, ValueError) as exc:
+        LOG.warning("capability inventory source unavailable: %s (%s)", config_py, exc)
+    else:
+        if models:
+            descriptors.extend(ingest_models_dict(models))
+        else:
+            LOG.warning("capability inventory source missing MODELS literal: %s", config_py)
 
     return descriptors
 

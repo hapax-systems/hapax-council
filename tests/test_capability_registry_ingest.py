@@ -10,6 +10,7 @@ from shared.capability_harness_descriptor import (
     CapabilityDomain,
     CapabilityShape,
     FreshnessState,
+    validate_descriptor,
 )
 from shared.capability_registry_ingest import (
     ingest_platform_capability_registry,
@@ -103,10 +104,15 @@ class IngestRoutesMappingTest(unittest.TestCase):
     def test_provider_gateway_shape(self) -> None:
         desc = self.descriptors["api.headless.provider_gateway"]
         self.assertEqual(desc.shape, CapabilityShape.PROVIDER_GATEWAY)
+        self.assertEqual(desc.provider, "api")
+        self.assertEqual(desc.backend, "litellm-router")
+        self.assertEqual(validate_descriptor(desc), [])
 
     def test_hosted_model_shape_for_api_frontier(self) -> None:
         desc = self.descriptors["api.headless.api_frontier"]
         self.assertEqual(desc.shape, CapabilityShape.HOSTED_MODEL)
+        self.assertEqual(desc.provider, "api")
+        self.assertEqual(validate_descriptor(desc), [])
 
     def test_route_id_and_model_preserved(self) -> None:
         desc = self.descriptors["claude.headless.full"]
@@ -162,6 +168,7 @@ class IngestRealConfigSmokeTest(unittest.TestCase):
         # every descriptor carries its route_id
         for desc in descriptors:
             self.assertTrue(desc.route_id)
+            self.assertEqual(validate_descriptor(desc), [], f"{desc.capability_id} has gaps")
 
 
 if __name__ == "__main__":

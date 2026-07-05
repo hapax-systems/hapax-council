@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Sequence
+from pathlib import Path
 
 from shared.capability_harness_descriptor import (
     CapabilityHarnessDescriptor,
@@ -22,6 +23,22 @@ from shared.capability_harness_seed import SEED_CAPABILITY_DESCRIPTORS
 # all adapter modules at import time for users who only want the seed inventory.
 
 __all__ = ["inventory_report", "project_inventory"]
+
+_BASELINE_PATH = (
+    Path(__file__).resolve().parent.parent / "config" / "capability-inventory-baseline.json"
+)
+
+
+def _load_registered_baseline(path: Path = _BASELINE_PATH) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    fingerprints = payload.get("fingerprints", {})
+    return (
+        {str(cid): str(fp) for cid, fp in fingerprints.items()}
+        if isinstance(fingerprints, dict)
+        else {}
+    )
 
 
 def _rows(descriptors: Sequence[CapabilityHarnessDescriptor]) -> list[dict[str, object]]:
@@ -124,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.delta:
         from shared.capability_inventory_aggregator import full_inventory_delta
 
-        observed, delta = full_inventory_delta()
+        observed, delta = full_inventory_delta(_load_registered_baseline())
         print(
             f"capability_surface_delta: {len(delta.new_capability_ids)} new, "
             f"{len(delta.changed_capability_ids)} changed, "
@@ -133,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         for cid, kind in delta.kinds():
             print(f"  {kind.value}: {cid}")
-        return 0
+        return 1 if not delta.is_empty else 0
 
     descriptors = SEED_CAPABILITY_DESCRIPTORS
     if args.gaps_only:

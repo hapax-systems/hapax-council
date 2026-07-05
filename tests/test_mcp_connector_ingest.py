@@ -57,6 +57,12 @@ class McpConnectorIngestTest(unittest.TestCase):
     def test_one_per_tool(self) -> None:
         self.assertEqual(len(ingest_mcp_connector_routes(_FIXTURE)), len(_FIXTURE))
 
+    def test_unknown_effect_class_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown MCP effect_classes"):
+            ingest_mcp_connector_routes(
+                [{"canonical_name": "tool.unknown", "effect_classes": ["network_mystery"]}]
+            )
+
 
 class McpConnectorSmokeTest(unittest.TestCase):
     def test_ingests_real_manifest(self) -> None:

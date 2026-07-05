@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -228,9 +229,28 @@ SHAPE_REQUIRED_FACTS: dict[CapabilityShape, tuple[str, ...]] = {
     CapabilityShape.CAPABILITY_AGGREGATOR: ("actions",),
 }
 
+_EXPLICIT_REQUIRED_DEFAULT_FACTS = frozenset(
+    {
+        "authority_ceiling",
+        "spend_authority_required",
+        "public_egress_authority_required",
+    }
+)
+
+
+def _explicit_fields(descriptor: CapabilityHarnessDescriptor) -> set[str]:
+    fields = getattr(
+        descriptor,
+        "model_fields_set",
+        getattr(descriptor, "__pydantic_fields_set__", set()),
+    )
+    return set(fields)
+
 
 def _fact_absent(descriptor: CapabilityHarnessDescriptor, fact: str) -> bool:
     """True if a required fact is absent (None, empty list, or empty string)."""
+    if fact in _EXPLICIT_REQUIRED_DEFAULT_FACTS and fact not in _explicit_fields(descriptor):
+        return True
     value = getattr(descriptor, fact, None)
     return value is None or (isinstance(value, list | str) and len(value) == 0)
 
@@ -307,12 +327,31 @@ def descriptor_fingerprint(descriptor: CapabilityHarnessDescriptor) -> str:
         "platform_id": descriptor.platform_id,
         "route_id": descriptor.route_id,
         "execution_harness_id": descriptor.execution_harness_id,
+        "provider": descriptor.provider,
+        "backend": descriptor.backend,
         "model": descriptor.model,
         "effort": descriptor.effort,
+        "context_window": descriptor.context_window,
         "authority_ceiling": descriptor.authority_ceiling.value,
+        "mutation_surfaces": sorted(descriptor.mutation_surfaces),
+        "quality_floors": sorted(descriptor.quality_floors),
+        "privacy_posture": descriptor.privacy_posture,
+        "public_claim_ceiling": descriptor.public_claim_ceiling,
         "resource_pools": sorted(descriptor.resource_pools),
+        "quota_source": descriptor.quota_source.value,
+        "cost_source": descriptor.cost_source.value,
         "spend_authority_required": descriptor.spend_authority_required,
         "public_egress_authority_required": descriptor.public_egress_authority_required,
+        "freshness_evidence": sorted(descriptor.freshness_evidence),
+        "observed_at": descriptor.observed_at,
+        "stale_after": descriptor.stale_after,
+        "freshness_state": descriptor.freshness_state.value,
+        "freshness_remediation_task": descriptor.freshness_remediation_task,
+        "new_capability_signal": descriptor.new_capability_signal,
+        "receipt_classes": sorted(descriptor.receipt_classes),
+        "failure_classes": sorted(descriptor.failure_classes),
+        "kill_switches": sorted(descriptor.kill_switches),
+        "fallback_policy": descriptor.fallback_policy,
     }
     blob = json.dumps(material, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
@@ -329,6 +368,12 @@ def discover(
     descriptor whose fingerprint differs), MISSING (registered descriptor not seen in the observed set).
     A non-empty delta is the failing check.
     """
+    counts = Counter(d.capability_id for d in observed)
+    duplicates = sorted(cid for cid, count in counts.items() if count > 1)
+    if duplicates:
+        raise ValueError(
+            "duplicate capability_id(s) in observed descriptors: " + ", ".join(duplicates)
+        )
     observed_fp: dict[str, str] = {d.capability_id: descriptor_fingerprint(d) for d in observed}
     new_ids = [cid for cid in observed_fp if cid not in registered]
     changed_ids = [

@@ -71,13 +71,20 @@ def _descriptor_from_row(row: dict[str, object]) -> CapabilityHarnessDescriptor 
         else FreshnessState.DARK
     )
     display = str(row.get("display_name") or row.get("semantic_description") or row_id)
+    mutation_surfaces: list[str] = []
+    if shape in {CapabilityShape.LOCAL_TOOL, CapabilityShape.PUBLIC_EGRESS}:
+        mutation_surfaces = [str(row.get("surface") or row.get("domain") or row_id)]
     return CapabilityHarnessDescriptor(
         capability_id=row_id,
         display_name=display[:100],
         shape=shape,
         domain=CapabilityDomain.RESOURCE,
         actions=_actions_for_direction(direction),
+        execution_harness_id=str(row.get("execution_harness_id") or row_id) or None,
         authority_ceiling=authority,
+        mutation_surfaces=mutation_surfaces,
+        public_egress_authority_required=shape == CapabilityShape.PUBLIC_EGRESS,
+        resource_pools=[row_id] if shape == CapabilityShape.MONEY_RAIL and row_id else [],
         freshness_state=freshness,
         freshness_remediation_task="cc-task-capability-harness-descriptor-20260703",
         owner_docs=[f"classification kind={row.get('kind', [])} direction={direction}"],

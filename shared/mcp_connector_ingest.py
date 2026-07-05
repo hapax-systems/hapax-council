@@ -35,12 +35,15 @@ _EFFECT_TO_SHAPE: dict[str, CapabilityShape] = {
 
 def _shape_for_effects(effects: Sequence[str]) -> CapabilityShape:
     """Pick the most-significant shape from the effect_classes."""
+    unknown = sorted(set(effects) - set(_EFFECT_TO_SHAPE))
+    if unknown:
+        raise ValueError(f"unknown MCP effect_classes: {', '.join(unknown)}")
     priority = [
         CapabilityShape.MONEY_RAIL,
         CapabilityShape.PUBLIC_EGRESS,
         CapabilityShape.LOCAL_TOOL,
     ]
-    shapes = {_EFFECT_TO_SHAPE.get(e, CapabilityShape.LOCAL_TOOL) for e in effects}
+    shapes = {_EFFECT_TO_SHAPE[e] for e in effects}
     for prio in priority:
         if prio in shapes:
             return prio
@@ -75,14 +78,20 @@ def _descriptor_from_tool(tool: dict[str, object]) -> CapabilityHarnessDescripto
         effects = []
     effects_str = [str(e) for e in effects]
     shape = _shape_for_effects(effects_str)
+    mutation_surfaces = (
+        [canonical] if shape in {CapabilityShape.LOCAL_TOOL, CapabilityShape.PUBLIC_EGRESS} else []
+    )
     return CapabilityHarnessDescriptor(
         capability_id=canonical,
         display_name=canonical,
         shape=shape,
         domain=CapabilityDomain.RESOURCE,
         actions=_actions_for_effects(effects_str),
+        execution_harness_id=canonical or None,
         authority_ceiling=_authority_for_shape(shape),
+        mutation_surfaces=mutation_surfaces,
         public_egress_authority_required=shape == CapabilityShape.PUBLIC_EGRESS,
+        resource_pools=[canonical] if shape == CapabilityShape.MONEY_RAIL and canonical else [],
         freshness_state=FreshnessState.DARK,
         freshness_remediation_task="cc-task-capability-harness-descriptor-20260703",
         owner_docs=[f"mcp_connector effect_classes={effects_str}"],
