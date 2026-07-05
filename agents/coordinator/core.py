@@ -57,6 +57,7 @@ from shared.route_metadata_schema import (
 )
 from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
 from shared.sdlc_pressure_gate import admission_state
+from shared.sdlc_router import REQUIREMENT_VECTOR_DIMENSIONS
 
 log = logging.getLogger(__name__)
 
@@ -1043,17 +1044,31 @@ def _parse_task(path: Path) -> Task | None:
 
 
 def _parse_requirement_vector(value: object) -> dict[str, int] | None:
-    """Parse the decomposer-written requirement_vector (8-dim, strict int 0..5).
+    """Parse the decomposer-written requirement_vector (canonical dims, strict int 0..5).
 
     Returns None when absent/invalid so the fit-scorer treats it as honest-DARK
-    (no fit influence). Strict-int validation mirrors SdlcRoutingRequest's own
-    validator — a bool or non-int score is rejected (not coerced).
+    (no fit influence). Mirrors ``SdlcRoutingRequest``'s own validator on the three
+    guarantees that protect ranking integrity under a non-zero blend: a bool or non-int
+    score is rejected (not coerced); an UNKNOWN dimension (a key not in
+    ``REQUIREMENT_VECTOR_DIMENSIONS`` — a typo or stale decomposer entry) rejects the
+    whole vector; and an out-of-range score (``<0`` or ``>5``) rejects the whole vector.
+    A PARTIAL vector — a subset of the canonical dims, all in range — is valid and scores
+    over its active dims (the focused-hot design); only malformed frontmatter goes DARK.
+    This is deliberately stricter than ``fit_score``'s own drop-unknown guard so the live
+    dispatch path never reaches the scorer with garbage.
     """
     if not isinstance(value, dict) or not value:
         return None
     parsed: dict[str, int] = {}
     for key, score in value.items():
-        if not isinstance(key, str) or isinstance(score, bool) or not isinstance(score, int):
+        if (
+            not isinstance(key, str)
+            or key not in REQUIREMENT_VECTOR_DIMENSIONS
+            or isinstance(score, bool)
+            or not isinstance(score, int)
+            or score < 0
+            or score > 5
+        ):
             return None
         parsed[key] = score
     return parsed

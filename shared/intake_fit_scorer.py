@@ -42,27 +42,41 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from shared.sdlc_router import REQUIREMENT_VECTOR_DIMENSIONS
+
 # Excluded from scoring (a hard floor / veto, not a soft score) — mirrors the engine's
 # ``_scored_requirement_dimensions``. Source of truth: ``shared.sdlc_router.REQUIREMENT_VECTOR_DIMENSIONS``.
 _QUALITY_FLOOR_DIMENSION = "quality_floor"
+# The dimensions ``fit_score`` will score: the canonical eight MINUS the ``quality_floor`` veto.
+# An unknown key (a typo, a stale decomposer entry) is dropped here as defense-in-depth — it can
+# never inflate the score. The parse gate (``coordinator.core._parse_requirement_vector``) is
+# stricter still: a vector carrying an unknown dim OR an out-of-range score is rejected wholesale
+# (returns None → honest-DARK), so the live dispatch path never reaches ``fit_score`` with
+# malformed frontmatter. This guard exists so a direct/test caller cannot score garbage either.
+_SCORED_DIMENSIONS = frozenset(REQUIREMENT_VECTOR_DIMENSIONS) - {_QUALITY_FLOOR_DIMENSION}
 
 
 def fit_score(requirement_vector: Mapping[str, int] | None) -> float:
     """Task-level demand magnitude on the engine's 0..5 scale (0.0 = DARK/neutral).
 
-    The mean of the strict-int (bool rejected) ``1..5`` scores over the non-``quality_floor``
-    dimensions present in ``requirement_vector`` — a dim scored ``0`` is *inactive* demand
-    (mirror of the engine's ``>0`` filter) and is excluded from both the numerator and the
-    denominator, so a focused-hot task outranks a diffuse-medium one. ``None``, a non-mapping,
-    an empty mapping, a mapping whose non-floor dims are all inactive/invalid, or a hostile
-    mapping whose iteration raises all return ``0.0`` — honest-DARK, never raises, never NaN.
+    The mean of the strict-int (bool rejected) ``1..5`` scores over the canonical non-
+    ``quality_floor`` dimensions present in ``requirement_vector`` — ``quality_floor`` is a
+    veto (not a soft score), and any key outside ``REQUIREMENT_VECTOR_DIMENSIONS`` is dropped
+    (defense-in-depth: a typo or stale decomposer entry can never inflate the score). A dim
+    scored ``0`` is *inactive* demand (mirror of the engine's ``>0`` filter) and is excluded
+    from both the numerator and the denominator, so a focused-hot task outranks a diffuse-
+    medium one. ``None``, a non-mapping, an empty mapping, a mapping whose scored dims are all
+    inactive/invalid, or a hostile mapping whose iteration raises all return ``0.0`` — honest-
+    DARK, never raises, never NaN.
     """
     try:
         if not isinstance(requirement_vector, Mapping):
             return 0.0
         scored: list[int] = []
         for dim, value in requirement_vector.items():
-            if dim == _QUALITY_FLOOR_DIMENSION:
+            # Only the canonical scored dimensions count: ``quality_floor`` (a hard veto, not a
+            # soft score) and any unknown key (typo / stale decomposer entry) are both excluded.
+            if dim not in _SCORED_DIMENSIONS:
                 continue
             # bool is a subclass of int — reject it (strict-int scores, mirror iter-1 + the engine).
             if isinstance(value, bool) or not isinstance(value, int):
