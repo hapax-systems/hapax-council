@@ -164,6 +164,25 @@ def test_json_fails_nonzero_for_unsupported_route(tmp_path: Path) -> None:
     assert payload["routes"][0]["errors"] == ["unsupported route: codex.headless.nope"]
 
 
+def test_json_fails_structured_for_malformed_now(tmp_path: Path) -> None:
+    result = _run(
+        "--json",
+        "--now",
+        "definitely-not-a-date",
+        "--route",
+        "codex.headless.full",
+        "--receipt-dir",
+        str(tmp_path / "empty-receipts"),
+    )
+
+    assert result.returncode == 2
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert "Invalid isoformat string" in payload["error"]
+    assert "next action" in payload["error"]
+
+
 def test_json_succeeds_for_fresh_route_fixture(tmp_path: Path) -> None:
     payload = load_platform_capability_registry().model_dump(mode="json")
     route = next(route for route in payload["routes"] if route["route_id"] == "codex.headless.full")

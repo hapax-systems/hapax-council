@@ -158,6 +158,31 @@ def test_oauth_subscription_route_degrades_when_account_live_quota_is_unobservab
     assert "capacity_pool_headroom_not_fresh" in receipt.reason_codes
 
 
+def test_oauth_subscription_route_degrades_when_account_live_quota_ref_is_negated() -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "test:codex:account-live-quota:unobserved",
+        "test:codex:not-observed-account-live-quota",
+        "test:codex:account-live-quota:not:observed",
+    ]
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is False
+    assert receipt.predicate.account_live_quota_attested is False
+    assert "account_live_quota_evidence_absent" in receipt.reason_codes
+
+
 def test_degraded_oauth_route_uses_auth_surface_strategy_registry() -> None:
     registry = load_platform_capability_registry()
     route = registry.require("codex.headless.full")

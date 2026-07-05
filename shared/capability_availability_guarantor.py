@@ -488,14 +488,29 @@ def _account_live_quota_attested(
 
 
 def _account_live_quota_observed_ref(ref: str) -> bool:
-    normalized = re.sub(r"[\s_]+", "-", ref.strip().lower())
+    normalized = re.sub(r"[\s_:]+", "-", ref.strip().lower())
     if not normalized:
         return False
-    if any(token in normalized for token in ("unobservable", "absent", "missing", "blocked")):
+    tokens = tuple(token for token in normalized.split("-") if token)
+    negative_tokens = {
+        "absent",
+        "blocked",
+        "denied",
+        "failed",
+        "failure",
+        "false",
+        "missing",
+        "negative",
+        "not",
+        "unobservable",
+        "unobserved",
+    }
+    if any(token in negative_tokens for token in tokens):
         return False
-    if "quota-status:observed" in normalized or "quota-status-observed" in normalized:
+    if tokens[-3:] == ("quota", "status", "observed"):
         return True
-    return "account-live" in normalized and "quota" in normalized and "observed" in normalized
+    required_tokens = {"account", "live", "quota", "observed"}
+    return required_tokens.issubset(tokens)
 
 
 def _ensure_utc(value: datetime) -> datetime:
