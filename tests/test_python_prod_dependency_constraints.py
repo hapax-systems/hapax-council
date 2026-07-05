@@ -219,6 +219,7 @@ def test_core_dependency_runtime_smoke_paths() -> None:
     import cv2
     import litellm
     from fastapi import FastAPI
+    from mcp.server.fastmcp import FastMCP
     from mcp.types import Implementation, TextContent
     from mistralai.client import Mistral
     from PIL import Image
@@ -237,6 +238,7 @@ def test_core_dependency_runtime_smoke_paths() -> None:
     assert health() == {"value": 7}, NEXT_ACTION
     assert any(route.path == "/health" for route in app.routes), NEXT_ACTION
     assert VectorParams(size=3, distance=Distance.COSINE).size == 3, NEXT_ACTION
+    assert FastMCP("hapax-smoke").tool, NEXT_ACTION
     assert Implementation(name="hapax-smoke", version="0").name == "hapax-smoke", NEXT_ACTION
     assert TextContent(type="text", text="ok").text == "ok", NEXT_ACTION
     assert Mistral(api_key="test-key"), NEXT_ACTION

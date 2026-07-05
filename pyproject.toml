@@ -37,6 +37,7 @@ dependencies = [
     # The torch>=2.10,<2.11 override in [tool.uv] erases torchvision's own exact
     # torch pin during resolution, so this floor is what keeps the pair
     # ABI-matched. Bump together with the torch override.
+    # Guarded by tests/test_python_prod_dependency_constraints.py.
     "torchvision>=0.25,<0.26",
     "mistralai>=2.5.2",
     "python-toon>=0.1.3",
