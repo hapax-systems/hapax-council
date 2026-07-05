@@ -227,7 +227,9 @@ def _render_fallback(spec: dict, output_path: Path, size: tuple[int, int]) -> No
     try:
         draw.text((size[0] // 24, size[1] // 2), title[:120], fill=COLORS["fg"])
     except Exception:
-        pass
+        log.warning(
+            "Fallback chart title drawing failed; continuing with untitled image", exc_info=True
+        )
     image.save(output_path)
 
 
