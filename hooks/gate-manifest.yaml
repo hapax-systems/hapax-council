@@ -125,6 +125,10 @@ runtimes:
         - matcher: "Agent"
           hooks:
             - subagent-file-persistence-check.sh
+      UserPromptSubmit:
+        - matcher: ""
+          hooks:
+            - sense-reissue-capture.sh
       SubagentStop:
         - matcher: ""
           hooks:

@@ -138,7 +138,10 @@ def run_atomic_dispatch_launch(
         # See shared/relay_lifecycle + design-of-record
         # non-boutique-codex-auth-and-lane-liveness-design-2026-07-03.md.
         if lane_is_retired(request.lane) and not request.reactivate_retired:
-            raise CoordDispatchError("lane_retired")
+            raise CoordDispatchError(
+                "lane_retired: inspect the lane relay in HAPAX_RELAY_DIR, resume the lane, "
+                "or use the sanctioned P0-drain reactivation path"
+            )
         _append_dispatch_event(request, idempotency_key=key, outcome="started", returncode=None)
     except CoordDispatchError:
         _cleanup_dispatch_message(request, idempotency_key=key, state="deferred", returncode=71)

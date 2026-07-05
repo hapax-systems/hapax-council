@@ -44,12 +44,12 @@ def _request(lane: str = "cx-retired", *, reactivate: bool = False) -> DispatchL
 def _mocked_internals():
     """Mock the MQ/event internals so the gate is tested in isolation."""
     with (
-        mock.patch(f"{MOD}.replay_terminal_result", return_value=None),
-        mock.patch(f"{MOD}._accept_dispatch_message"),
-        mock.patch(f"{MOD}._cleanup_dispatch_message"),
-        mock.patch(f"{MOD}._append_dispatch_event"),
+        mock.patch(f"{MOD}.replay_terminal_result", return_value=None) as replay,
+        mock.patch(f"{MOD}._accept_dispatch_message") as accept,
+        mock.patch(f"{MOD}._cleanup_dispatch_message") as cleanup,
+        mock.patch(f"{MOD}._append_dispatch_event") as append,
     ):
-        yield
+        yield {"replay": replay, "accept": accept, "cleanup": cleanup, "append": append}
 
 
 def test_reactivate_retired_defaults_false() -> None:
@@ -57,11 +57,19 @@ def test_reactivate_retired_defaults_false() -> None:
 
 
 def test_retired_lane_refused_before_launch() -> None:
+    request = _request()
     launch = mock.Mock(return_value=0)
-    with _mocked_internals(), mock.patch(f"{MOD}.lane_is_retired", return_value=True):
+    with _mocked_internals() as internals, mock.patch(f"{MOD}.lane_is_retired", return_value=True):
         with pytest.raises(CoordDispatchError, match="lane_retired"):
-            run_atomic_dispatch_launch(_request(), launch)
+            run_atomic_dispatch_launch(request, launch)
         launch.assert_not_called()  # the gate refused before the launcher
+        internals["cleanup"].assert_called_once_with(
+            request,
+            idempotency_key=request.effective_idempotency_key,
+            state="deferred",
+            returncode=71,
+        )
+        internals["append"].assert_not_called()
 
 
 def test_reactivate_bypasses_gate_for_sanctioned_reactivation() -> None:
