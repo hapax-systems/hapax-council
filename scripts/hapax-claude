@@ -23,11 +23,13 @@ set -euo pipefail
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
 
 g12_attestation_required() {
-  case "${HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION:-}" in
-    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+  local g12_require="${HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION:-}"
+  local methodology_require="${HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION:-}"
+  case "${g12_require,,}" in
+    1|true|yes|on) return 0 ;;
   esac
-  case "${HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION:-}" in
-    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+  case "${methodology_require,,}" in
+    1|true|yes|on) return 0 ;;
   esac
   return 1
 }

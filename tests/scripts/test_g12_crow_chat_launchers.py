@@ -96,7 +96,7 @@ exit 0
 
 def test_hapax_codex_rejects_taskless_launch_when_g12_enforced(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
-    env["HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION"] = "1"
+    env["HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION"] = "True"
     workdir = tmp_path / "worktree"
     workdir.mkdir()
     _fake_codex(tmp_path / "bin", tmp_path / "codex-env.txt")
