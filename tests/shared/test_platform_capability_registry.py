@@ -580,7 +580,8 @@ def test_api_receipt_does_not_admit_openrouter_without_measurement_budget_or_key
     route = _route_payload(payload, "api.headless.openrouter")
 
     receipt_time = datetime(2026, 7, 5, 16, 0, tzinfo=UTC)
-    _apply_receipt_to_route_payload(route, _make_api_receipt(observed_at=receipt_time))
+    receipt = _make_api_receipt(observed_at=receipt_time)
+    _apply_receipt_to_route_payload(route, receipt)
 
     assert route["route_state"] == "blocked"
     assert "capabilityio_measurement_absent" in route["blocked_reasons"]
@@ -594,6 +595,12 @@ def test_api_receipt_does_not_admit_openrouter_without_measurement_budget_or_key
     assert (
         "openrouter_key_secret_receipt_absent"
         in route["freshness"]["evidence"]["resource"]["blocked_reasons"]
+    )
+    assert route["capability_scores"]["source_editing"]["observed_at"] is None
+    assert route["capability_scores"]["local_calibration"]["observed_at"] is None
+    assert not any(
+        ref.startswith("platform-capability-receipt:api:")
+        for ref in route["capability_scores"]["source_editing"]["evidence_refs"]
     )
 
     registry = PlatformCapabilityRegistry.model_validate(payload)

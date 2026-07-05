@@ -241,6 +241,11 @@ def test_resolve_openrouter_route_is_receipt_only_not_launchable() -> None:
     assert "not a spawnable lane" in res.reason
     assert res.route_id == "api.headless.openrouter"
 
+    frontier = resolve_capability("openrouter-frontier", valid_route_ids=VALID)
+    assert not frontier.ok
+    assert "not a spawnable lane" in frontier.reason
+    assert frontier.route_id == "api.headless.openrouter"
+
 
 # --- the launchable set vs the LIVE dispatcher (contract, not a mock) ------------
 
