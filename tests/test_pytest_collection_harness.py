@@ -10,6 +10,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_SRC_ROOTS = {
+    ".",
     "packages/agentgov/src",
     "packages/hapax-axioms/src",
     "packages/hapax-refusals/src",
@@ -79,3 +80,29 @@ def test_agentgov_strategy_shim_reexports_package_strategies() -> None:
     assert Path(root_strategies.__file__).resolve() == REPO_ROOT / "tests" / "strategies.py"
     for name in root_strategies.__all__:
         assert getattr(root_strategies, name) is getattr(package_strategies, name)
+
+
+def test_configured_pythonpath_resolves_package_test_strategies() -> None:
+    configured_paths = [
+        str((REPO_ROOT / str(path)).resolve()) for path in _pytest_options()["pythonpath"]
+    ]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib.util, pathlib, sys; "
+                f"sys.path[:] = {configured_paths!r}; "
+                "spec = importlib.util.find_spec('packages.agentgov.tests.strategies'); "
+                "assert spec is not None and spec.origin; "
+                "print(pathlib.Path(spec.origin).as_posix())"
+            ),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip().endswith("packages/agentgov/tests/strategies.py")

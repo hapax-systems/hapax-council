@@ -223,6 +223,7 @@ dev = [
 asyncio_mode = "auto"
 addopts = "--import-mode=importlib -m 'not llm and not contract and not e2e and not revocation_drill'"
 pythonpath = [
+    ".",
     "packages/agentgov/src",
     "packages/hapax-axioms/src",
     "packages/hapax-refusals/src",
