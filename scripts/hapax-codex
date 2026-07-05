@@ -232,6 +232,12 @@ require_g12_crow_chat_attestation() {
     --task "$1" --lane "$2" --surface "$3"
 }
 
+scrub_g12_attestation_secrets() {
+  unset HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY
+  unset HAPAX_OPERATOR_ATTESTATION_HMAC_KEY
+  unset HAPAX_G12_BREAKGLASS_HMAC_KEY
+}
+
 foot_color_theme_for_current_mode() {
   local mode
   mode="$(cat "$HOME/.cache/hapax/working-mode" 2>/dev/null || printf '%s\n' rnd)"
@@ -434,6 +440,8 @@ for name in (
     "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF",
     "HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION",
     "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION",
+    "HAPAX_G12_SIGNED_BREAKGLASS_REF",
+    "HAPAX_G12_SIGNED_BREAKGLASS_REASON",
     "HAPAX_CODEX_WORKTREE_STRATEGY",
     "HAPAX_CC_TASK_GATE",
     "HAPAX_IDLE_UPDATE_SECONDS",
@@ -911,9 +919,7 @@ export LOGOS_BASE_URL
 export COCKPIT_BASE_URL
 export HAPAX_CC_TASK_GATE="$TASK_GATE"
 
-if [ -n "$TASK_ID" ]; then
-  require_g12_crow_chat_attestation "$TASK_ID" "$SESSION" "hapax-codex"
-fi
+require_g12_crow_chat_attestation "$TASK_ID" "$SESSION" "hapax-codex"
 
 if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   CLAIM_SCRIPT="$WORKDIR/scripts/cc-claim"
@@ -1034,6 +1040,9 @@ unset GITHUB_PERSONAL_ACCESS_TOKEN
 unset CODEX_GITHUB_PERSONAL_ACCESS_TOKEN
 unset TAVILY_API_KEY
 unset CONTEXT7_API_KEY
+if [ "$TERMINAL" = "none" ]; then
+  scrub_g12_attestation_secrets
+fi
 
 MCP_CONFIG_SCRUB="$COUNCIL_DIR/scripts/hapax-codex-mcp-config-scrub"
 if [ -x "$MCP_CONFIG_SCRUB" ]; then
@@ -1139,7 +1148,9 @@ if [ -n "$DISPATCH_HOST" ]; then
       HAPAX_METHODOLOGY_ORIGIN_SURFACE \
       HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF \
       HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION \
-      HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION; do
+      HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION \
+      HAPAX_G12_SIGNED_BREAKGLASS_REF \
+      HAPAX_G12_SIGNED_BREAKGLASS_REASON; do
       if [ -n "${!_att_env:-}" ]; then
         printf 'export %s=%q\n' "$_att_env" "${!_att_env}"
       fi
@@ -1173,7 +1184,12 @@ else
       HAPAX_METHODOLOGY_ORIGIN_SURFACE \
       HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF \
       HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION \
-      HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION; do
+      HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION \
+      HAPAX_G12_SIGNED_BREAKGLASS_REF \
+      HAPAX_G12_SIGNED_BREAKGLASS_REASON \
+      HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY \
+      HAPAX_OPERATOR_ATTESTATION_HMAC_KEY \
+      HAPAX_G12_BREAKGLASS_HMAC_KEY; do
       if [ -n "${!_att_env:-}" ]; then
         printf 'export %s=%q\n' "$_att_env" "${!_att_env}"
       fi

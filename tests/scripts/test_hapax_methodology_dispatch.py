@@ -13,12 +13,15 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from shared.coord_dispatch import expected_operator_attestation_ref
+from shared.operator_attestation import expected_g12_signed_breakglass_ref
 from shared.platform_capability_registry import PlatformCapabilityRegistry
 from shared.relay_mq import send_message
 from shared.relay_mq_envelope import Envelope
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
+TEST_HMAC_KEY = "test-crow-chat-hmac-key"
+TEST_BREAKGLASS_KEY = "test-breakglass-hmac-key"
 RECEIPT_SCRIPT = REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 
@@ -2230,6 +2233,7 @@ def test_crow_chat_attestation_ref_reaches_dispatch_receipt_and_event(tmp_path: 
         origin_surface="crow_chat",
         task_id="governed-build",
         lane="cx-green",
+        hmac_key=TEST_HMAC_KEY,
     )
     result = _run(
         tmp_path,
@@ -2244,6 +2248,7 @@ def test_crow_chat_attestation_ref_reaches_dispatch_receipt_and_event(tmp_path: 
         "--launch",
         extra_env={
             "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
+            "HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY": TEST_HMAC_KEY,
             "HAPAX_METHODOLOGY_ORIGIN_SURFACE": "crow_chat",
             "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF": attestation_ref,
             "HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION": "1",
@@ -2389,6 +2394,69 @@ def test_unsupported_selected_route_writes_blocked_receipt_with_next_action(
     assert "next action" in receipt["reason"]
 
 
+def test_g12_signed_breakglass_ref_reaches_dispatch_receipt_and_event(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_launcher.chmod(0o755)
+    breakglass_reason = "crow-chat attestation issuer unavailable"
+    breakglass_ref = expected_g12_signed_breakglass_ref(
+        task_id="governed-build",
+        lane="cx-green",
+        reason=breakglass_reason,
+        hmac_key=TEST_BREAKGLASS_KEY,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        "--signed-breakglass-ref",
+        breakglass_ref,
+        "--signed-breakglass-reason",
+        breakglass_reason,
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
+            "HAPAX_G12_BREAKGLASS_HMAC_KEY": TEST_BREAKGLASS_KEY,
+            "HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION": "1",
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["signed_breakglass_ref"] == breakglass_ref
+    assert receipt["signed_breakglass_reason"] == breakglass_reason
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "coord" / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["payload"]["signed_breakglass_ref"] == breakglass_ref
+    assert events[-1]["payload"]["signed_breakglass_reason"] == breakglass_reason
+
+
 def test_g12_gate_rejects_attestation_not_bound_to_task_and_lane(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
@@ -2409,6 +2477,7 @@ def test_g12_gate_rejects_attestation_not_bound_to_task_and_lane(tmp_path: Path)
         origin_surface="crow_chat",
         task_id="other-task",
         lane="cx-green",
+        hmac_key=TEST_HMAC_KEY,
     )
 
     result = _run(
@@ -2424,6 +2493,7 @@ def test_g12_gate_rejects_attestation_not_bound_to_task_and_lane(tmp_path: Path)
         "--launch",
         extra_env={
             "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
+            "HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY": TEST_HMAC_KEY,
             "HAPAX_METHODOLOGY_ORIGIN_SURFACE": "crow_chat",
             "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF": wrong_ref,
             "XDG_CACHE_HOME": str(tmp_path / "cache"),
@@ -2431,7 +2501,7 @@ def test_g12_gate_rejects_attestation_not_bound_to_task_and_lane(tmp_path: Path)
     )
 
     assert result.returncode == 10
-    assert "operator_attestation_ref_task_lane_mismatch" in result.stderr
+    assert "operator_attestation_ref_hmac_mismatch" in result.stderr
 
 
 def test_codex_p0_incident_drain_lane_allows_local_fallback(tmp_path: Path) -> None:

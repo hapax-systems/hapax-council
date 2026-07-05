@@ -38,6 +38,12 @@ require_g12_crow_chat_attestation() {
     --task "$1" --lane "$2" --surface "$3"
 }
 
+scrub_g12_attestation_secrets() {
+  unset HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY
+  unset HAPAX_OPERATOR_ATTESTATION_HMAC_KEY
+  unset HAPAX_G12_BREAKGLASS_HMAC_KEY
+}
+
 usage() {
   cat <<'EOF'
 usage: hapax-claude [--role alpha|…|theta | dev|dev2|…] [--cd DIR]
@@ -351,10 +357,11 @@ EOF
     exit 13
   fi
 fi
+if [ "$READONLY" -ne 1 ]; then
+  require_g12_crow_chat_attestation "$CLAUDE_TASK" "$ROLE" "hapax-claude"
+  scrub_g12_attestation_secrets
+fi
 if [ -n "$CLAUDE_TASK" ]; then
-  if [ "$READONLY" -ne 1 ]; then
-    require_g12_crow_chat_attestation "$CLAUDE_TASK" "$ROLE" "hapax-claude"
-  fi
   export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
 fi
 
@@ -391,7 +398,9 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
     HAPAX_METHODOLOGY_ORIGIN_SURFACE \
     HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF \
     HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION \
-    HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION; do
+    HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION \
+    HAPAX_G12_SIGNED_BREAKGLASS_REF \
+    HAPAX_G12_SIGNED_BREAKGLASS_REASON; do
     if [ -n "${!_att_env:-}" ]; then
       printf 'export %s=%q\n' "$_att_env" "${!_att_env}"
     fi

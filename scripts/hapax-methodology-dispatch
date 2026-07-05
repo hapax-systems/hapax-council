@@ -59,7 +59,12 @@ from shared.dispatcher_policy import (
 )
 from shared.failure_classification import FailureCode, FailureReceipt
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
-from shared.g12_crow_chat_gate import child_attestation_env, gate_required
+from shared.g12_crow_chat_gate import (
+    SIGNED_BREAKGLASS_REASON_ENV,
+    SIGNED_BREAKGLASS_REF_ENV,
+    child_attestation_env,
+    gate_required,
+)
 from shared.gate_event_producer import build_gate_event
 from shared.gate_log import append_gate_event
 from shared.quota_wall import QUOTA_WALL_EXIT_CODE
@@ -1279,6 +1284,8 @@ def write_receipt(
         record["origin_surface"] = dispatch_launch.origin_surface
         record["operator_attestation_ref"] = dispatch_launch.operator_attestation_ref
         record["crow_chat_attestation_required"] = dispatch_launch.crow_chat_attestation_required
+        record["signed_breakglass_ref"] = dispatch_launch.signed_breakglass_ref
+        record["signed_breakglass_reason"] = dispatch_launch.signed_breakglass_reason
     if route_decision is not None:
         record.update(route_decision_receipt_payload(route_decision))
         record["route_decision_receipt_path"] = (
@@ -2103,6 +2110,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--signed-breakglass-ref",
+        help=(
+            "Signed per-dispatch G12 breakglass ref bound to task/lane/reason; "
+            "used only when Crow-chat attestation production is unavailable"
+        ),
+    )
+    parser.add_argument(
+        "--signed-breakglass-reason",
+        help="Emergency reason bound into --signed-breakglass-ref",
+    )
+    parser.add_argument(
         "--dispatch-capability",
         help="Path to a single-use DispatchCapability file authorizing a SYSTEM drain "
         "(--lane __system__) of an orphaned task whose owning lane is verifiably dead.",
@@ -2149,11 +2167,19 @@ def main(argv: list[str] | None = None) -> int:
         "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF",
     )
     attestation_required = args.require_crow_chat_attestation or gate_required(os.environ)
+    signed_breakglass_ref = optional_cli_or_env(
+        args.signed_breakglass_ref, SIGNED_BREAKGLASS_REF_ENV
+    )
+    signed_breakglass_reason = optional_cli_or_env(
+        args.signed_breakglass_reason, SIGNED_BREAKGLASS_REASON_ENV
+    )
     os.environ.update(
         child_attestation_env(
             origin_surface=attestation_origin_surface,
             operator_attestation_ref=attestation_ref,
             require_crow_chat_attestation=attestation_required,
+            signed_breakglass_ref=signed_breakglass_ref,
+            signed_breakglass_reason=signed_breakglass_reason,
         )
     )
 
@@ -2552,6 +2578,8 @@ def main(argv: list[str] | None = None) -> int:
                         origin_surface=attestation_origin_surface,
                         operator_attestation_ref=attestation_ref,
                         require_crow_chat_attestation=attestation_required,
+                        signed_breakglass_ref=signed_breakglass_ref,
+                        signed_breakglass_reason=signed_breakglass_reason,
                     ),
                     launch_callable=functools.partial(
                         classify_and_witness_launch,

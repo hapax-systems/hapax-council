@@ -34,6 +34,12 @@ require_g12_crow_chat_attestation() {
     --task "$1" --lane "$2" --surface "$3"
 }
 
+scrub_g12_attestation_secrets() {
+  unset HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY
+  unset HAPAX_OPERATOR_ATTESTATION_HMAC_KEY
+  unset HAPAX_G12_BREAKGLASS_HMAC_KEY
+}
+
 ROLE=""
 CLAUDE_TASK="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
 while [[ $# -gt 0 ]]; do
@@ -261,6 +267,7 @@ if [[ -z "$CLAIMED_TASK" ]]; then
   (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")
 fi
 export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
+scrub_g12_attestation_secrets
 
 SDLC_PREAMBLE="SDLC DISCIPLINE (MANDATORY):
 1. Work only on the task named in this dispatch.
@@ -598,6 +605,8 @@ elif kind == "exec":
         "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF",
         "HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION",
         "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION",
+        "HAPAX_G12_SIGNED_BREAKGLASS_REF",
+        "HAPAX_G12_SIGNED_BREAKGLASS_REASON",
     )
     payload["env"].update(
         {k: os.environ[k] for k in identity_keys if os.environ.get(k)}

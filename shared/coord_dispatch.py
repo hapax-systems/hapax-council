@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Literal
 
 from shared.coord_event_log import CoordEvent, CoordEventLog, CoordWriter, DuplicateEventError
-from shared.operator_attestation import expected_operator_attestation_ref
+from shared.operator_attestation import (
+    OperatorAttestationError,
+    expected_operator_attestation_ref,  # noqa: F401 - compatibility re-export for dispatch tests/tools
+    verify_g12_signed_breakglass_ref,
+    verify_operator_attestation_ref,
+)
 from shared.relay_lifecycle import lane_is_retired
 from shared.relay_mq import ensure_schema
 
@@ -49,6 +54,8 @@ class DispatchLaunchRequest:
     origin_surface: str | None = None
     operator_attestation_ref: str | None = None
     require_crow_chat_attestation: bool = False
+    signed_breakglass_ref: str | None = None
+    signed_breakglass_reason: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("task_id", "lane", "platform", "mode", "profile", "authority_case"):
@@ -58,18 +65,33 @@ class DispatchLaunchRequest:
             raise CoordDispatchError("strict_mq_message_id_required")
         origin_surface = (self.origin_surface or "").strip()
         attestation_ref = (self.operator_attestation_ref or "").strip()
+        breakglass_ref = (self.signed_breakglass_ref or "").strip()
+        breakglass_reason = (self.signed_breakglass_reason or "").strip()
+        if breakglass_ref:
+            try:
+                verify_g12_signed_breakglass_ref(
+                    task_id=self.task_id,
+                    lane=self.lane,
+                    reason=breakglass_reason,
+                    breakglass_ref=breakglass_ref,
+                )
+            except OperatorAttestationError as exc:
+                raise CoordDispatchError(exc.reason) from exc
+            return
         if self.require_crow_chat_attestation and origin_surface != "crow_chat":
             raise CoordDispatchError("crow_chat_origin_required_for_dispatch")
         if origin_surface == "crow_chat" and not attestation_ref:
             raise CoordDispatchError("operator_attestation_ref_required_for_crow_chat")
         if origin_surface == "crow_chat":
-            expected = expected_operator_attestation_ref(
-                origin_surface=origin_surface,
-                task_id=self.task_id,
-                lane=self.lane,
-            )
-            if attestation_ref != expected:
-                raise CoordDispatchError("operator_attestation_ref_task_lane_mismatch")
+            try:
+                verify_operator_attestation_ref(
+                    origin_surface=origin_surface,
+                    task_id=self.task_id,
+                    lane=self.lane,
+                    attestation_ref=attestation_ref,
+                )
+            except OperatorAttestationError as exc:
+                raise CoordDispatchError(exc.reason) from exc
         if attestation_ref and not origin_surface:
             raise CoordDispatchError("operator_attestation_ref_without_origin_surface")
 
@@ -106,6 +128,8 @@ class DispatchLaunchResult:
     origin_surface: str | None = None
     operator_attestation_ref: str | None = None
     crow_chat_attestation_required: bool = False
+    signed_breakglass_ref: str | None = None
+    signed_breakglass_reason: str | None = None
 
 
 def default_idempotency_key(
@@ -210,6 +234,8 @@ def run_atomic_dispatch_launch(
         origin_surface=request.origin_surface,
         operator_attestation_ref=request.operator_attestation_ref,
         crow_chat_attestation_required=request.require_crow_chat_attestation,
+        signed_breakglass_ref=request.signed_breakglass_ref,
+        signed_breakglass_reason=request.signed_breakglass_reason,
     )
 
 
@@ -244,6 +270,8 @@ def replay_terminal_result(
             origin_surface=request.origin_surface,
             operator_attestation_ref=request.operator_attestation_ref,
             crow_chat_attestation_required=request.require_crow_chat_attestation,
+            signed_breakglass_ref=request.signed_breakglass_ref,
+            signed_breakglass_reason=request.signed_breakglass_reason,
         )
     return None
 
@@ -415,6 +443,8 @@ def _append_dispatch_event(
             "origin_surface": request.origin_surface,
             "operator_attestation_ref": request.operator_attestation_ref,
             "crow_chat_attestation_required": request.require_crow_chat_attestation,
+            "signed_breakglass_ref": request.signed_breakglass_ref,
+            "signed_breakglass_reason": request.signed_breakglass_reason,
         },
     )
     try:

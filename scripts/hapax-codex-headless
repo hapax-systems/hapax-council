@@ -45,6 +45,12 @@ require_g12_crow_chat_attestation() {
     --task "$1" --lane "$2" --surface "$3"
 }
 
+scrub_g12_attestation_secrets() {
+  unset HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY
+  unset HAPAX_OPERATOR_ATTESTATION_HMAC_KEY
+  unset HAPAX_G12_BREAKGLASS_HMAC_KEY
+}
+
 relay_retired() {
   # Delegate to the single-source predicate (shared/relay_lifecycle.lane_is_retired)
   # so the launcher agrees with the dispatch gate + the coordinator: one
@@ -480,6 +486,7 @@ if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
   (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
 fi
 export HAPAX_METHODOLOGY_DISPATCH_TASK="$CODEX_TASK"
+scrub_g12_attestation_secrets
 
 # Keep the lane from becoming a credential sink (same scrub as hapax-codex).
 unset GITHUB_PERSONAL_ACCESS_TOKEN

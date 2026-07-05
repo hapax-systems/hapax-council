@@ -8,6 +8,7 @@ from shared.operator_attestation import expected_operator_attestation_ref
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "cc-claim"
+TEST_HMAC_KEY = "test-crow-chat-hmac-key"
 
 
 def _task_root(home: Path) -> Path:
@@ -171,6 +172,7 @@ def test_g12_attested_claim_accepts_task_lane_bound_ref(tmp_path: Path) -> None:
         origin_surface="crow_chat",
         task_id="attested-claim-target",
         lane="cx-test",
+        hmac_key=TEST_HMAC_KEY,
     )
 
     result = _claim(
@@ -178,6 +180,7 @@ def test_g12_attested_claim_accepts_task_lane_bound_ref(tmp_path: Path) -> None:
         "attested-claim-target",
         {
             "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1",
+            "HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY": TEST_HMAC_KEY,
             "HAPAX_METHODOLOGY_ORIGIN_SURFACE": "crow_chat",
             "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF": attestation_ref,
         },

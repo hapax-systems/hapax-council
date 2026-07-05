@@ -29,6 +29,7 @@ from shared.relay_mq_envelope import (
 )
 
 DB = Path(":memory:")  # only for non-schema tests that use a single function call
+TEST_HMAC_KEY = "test-crow-chat-hmac-key"
 
 
 def _make_envelope(**overrides) -> Envelope:
@@ -174,6 +175,7 @@ class TestSend(unittest.TestCase):
             origin_surface="crow_chat",
             task_id="task-x",
             lane="cx-green",
+            hmac_key=TEST_HMAC_KEY,
         )
         env = _make_envelope(
             message_type="dispatch",
@@ -185,6 +187,7 @@ class TestSend(unittest.TestCase):
             os.environ,
             {
                 "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1",
+                "HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY": TEST_HMAC_KEY,
                 "HAPAX_METHODOLOGY_ORIGIN_SURFACE": "crow_chat",
                 "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF": attestation_ref,
             },
