@@ -17,8 +17,10 @@ from shared.dispatcher_policy import (
     QuotaSpendState,
     RouteCapabilityState,
     build_dispatch_request,
+    build_route_authority_receipt,
     evaluate_dispatch_policy,
     load_dispatch_policy_sources,
+    write_route_authority_receipt,
     write_route_decision_receipt,
 )
 from shared.platform_capability_registry import (
@@ -2439,6 +2441,7 @@ def test_policy_sources_flag_invalid_live_ledger_on_fallback(
 
 
 def test_policy_sources_fail_soft_when_quota_fixture_resolution_fails(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fail_fixture_resolution(*, live_path: Path | None = None) -> object:
@@ -2452,12 +2455,23 @@ def test_policy_sources_fail_soft_when_quota_fixture_resolution_fails(
         "load_quota_spend_ledger_resolved",
         fail_fixture_resolution,
     )
+    receipt = build_route_authority_receipt(
+        receipt_type="runtime_actuation",
+        route_id="codex.headless.full",
+        evidence_refs=["route-authority-receipt:test-feed-1e"],
+        task_ids=["cc-task-quota-fixture-failsoft-capability-plane-20260705"],
+        mutation_surfaces=["runtime"],
+        receipt_id="test-feed-1e-runtime-actuation",
+        issued_at=NOW,
+    )
+    write_route_authority_receipt(receipt, receipt_dir=tmp_path)
 
-    sources = load_dispatch_policy_sources()
+    sources = load_dispatch_policy_sources(receipt_dir=tmp_path, now=NOW)
 
     assert sources.registry is not None
     assert sources.registry.routes
     assert sources.registry_error is None
+    assert sources.route_authority_receipts == (receipt,)
     assert sources.quota_ledger is None
     assert sources.quota_ledger_source is None
     assert sources.quota_error is not None
