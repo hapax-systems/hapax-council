@@ -19,11 +19,14 @@ scored non-`quality_floor` dims) at the task level.
 
 - `fit_score(requirement_vector: Mapping[str, int] | None) -> float`
   - Mean of dims where `key != "quality_floor"` and value is a strict int (reject bool) in `0..5`.
-  - `None` / empty / partial / any-invalid → `0.0` (honest-DARK; never raises, never NaN).
+  - `None` / empty / all-non-floor-dims-inactive-or-invalid / hostile-iteration → `0.0`
+    (honest-DARK; never raises, never NaN). A *partial* vector with at least one active
+    (score > 0) dim is scored over its active dims — not DARK.
   - Range `[0.0, 5.0]` — directly comparable to the engine's `requirement_fit`.
 - `composite_rank_key(wsjf_eff: float, fit: float, *, blend: float) -> float`
   - `blend == 0.0` → return `wsjf_eff` **exactly** (short-circuit; the golden guarantee).
-  - else → `wsjf_eff + blend * fit`.
+  - else → `wsjf_eff + blend * fit`. The pure function does not clamp; the env gate
+    (`_intake_fit_blend`) clamps `HAPAX_INTAKE_FIT_BLEND` to `[0.0, 0.5)` (task-spec safe range).
 
 ### Rank-key sites (both patched — the no-spin invariant needs both)
 
@@ -35,7 +38,9 @@ scored non-`quality_floor` dims) at the task level.
 ### Flag (mirrors `SCHEDULER_LEGACY_ENV`)
 
 - `INTAKE_FIT_BLEND_ENV = "HAPAX_INTAKE_FIT_BLEND"` (default `0.0`).
-- Read in `tick()`, passed as `fit_blend=` to `plan_dispatches` and `_repair_cooled_plan`.
+- Read in `tick()` via `_intake_fit_blend()` (clamped to `[0.0, 0.5)` — the task-spec safe
+  range; oversize saturates to the largest float < 0.5, negative/non-finite → 0.0), passed
+  as `fit_blend=` to `plan_dispatches` and `_repair_cooled_plan`.
 
 ### The 3 verify corrections
 
@@ -60,13 +65,19 @@ scored non-`quality_floor` dims) at the task level.
   overstates it as live) owned by `cc-task-ccef-reins-substrate-unification` (retire-vs-write is
   theirs to decide). This slice emits fit_score observability solely via `append_gate_event`.
 
-## Tests (~13)
+## Tests (34 across 4 files)
 
-Scorer: valid-full / valid-partial / None / empty / bool-rejected / non-int-rejected /
-all-zero-is-neutral / quality_floor-excluded.
-Composite: blend=0 byte-identical / blend>0 reorders / both-sites-use-composite.
-Convergence: GateEvent.fit_score round-trip / emit flag-off writes nothing / emit flag-on
+Scorer (15): valid-full / valid-partial / None / empty / bool-rejected / non-int-rejected /
+all-zero-is-neutral / quality_floor-excluded / blend=0 byte-identical / blend>0 reorders /
+negative-blend arithmetic / NaN-safety / …
+Composite + planner integration (5): both dispatch sites use composite; blend=0 byte-identical
+across RV shapes; positive blend lets high-fit overtake lower-WSJF; repair honors fit_blend.
+Demand plumb (9): requirement_vector/routing_class/mutation_surface/authority_level parse into
+Task/QueueTask; strict-int; honest-DARK on absent/invalid.
+Convergence (5): GateEvent.fit_score round-trip / emit flag-off writes nothing / emit flag-on
 writes reqvec+routing_class+fit_score / emit fail-open on unwritable path.
+Env-gate clamp (this iter-3 file): negative→0.0 / unset→0.0 / 0.25 passthrough / 0.5 + oversize
+→ nextafter(0.5,0.0) / NaN→0.0.
 
 ## Out of scope (follow-on PRs)
 

@@ -125,8 +125,10 @@ def test_composite_blend_positive_adds_term() -> None:
 
 
 def test_composite_negative_blend_inverts() -> None:
-    # a negative blend is a valid operator knob (prefer simpler tasks first); it must
-    # flow through as plain arithmetic, not be clamped (the flag is the operator's dial).
+    # The PURE composite function is unclamped arithmetic: a negative blend (prefer simpler
+    # tasks first) flows through as wsjf + blend*fit. The deployment policy — which blends
+    # are reachable from HAPAX_INTAKE_FIT_BLEND — is clamped to [0.0, 0.5) at the env gate
+    # (see tests/test_intake_fit_blend_clamp.py); this asserts the math layer only.
     wsjf = 5.0
     assert composite_rank_key(wsjf, 3.0, blend=-1.0) == 2.0
 

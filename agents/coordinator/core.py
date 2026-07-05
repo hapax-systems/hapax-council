@@ -72,17 +72,43 @@ def _positive_env_float(name: str, default: float) -> float:
 def _env_float(name: str, default: float) -> float:
     """Parse a finite float env var with no sign constraint (allows 0 and negatives).
 
-    For knobs like the intake-fit blend where 0.0 is the default-off golden state and a
-    negative value is a valid operator dial — ``_positive_env_float`` would clamp both.
     Non-finite values (``nan``/``inf``) fall back to default — a NaN blend would otherwise
     poison the rank-key's ``max()`` sort (``nan == 0.0`` is False, so it would flow through
-    ``composite_rank_key`` and return NaN).
+    ``composite_rank_key`` and return NaN). Range policy (e.g. the intake-fit blend clamp)
+    is enforced by the caller, not here.
     """
     try:
         value = float(os.environ.get(name, str(default)))
     except (TypeError, ValueError):
         return default
     return value if math.isfinite(value) else default
+
+
+# The task-spec safe range for the intake-fit blend (cc-task-sdlc-router-intake-shadow-
+# 20260704 acceptance criteria): 0.0 is the default-off golden state (byte-identical plan);
+# the active shadow value is a light weight (0.25 typical). Half-open — 0.5 is excluded.
+_INTAKE_FIT_BLEND_CEIL = 0.5
+
+
+def _intake_fit_blend() -> float:
+    """Read ``HAPAX_INTAKE_FIT_BLEND`` clamped to the task-spec's safe ``[0.0, 0.5)`` range.
+
+    The bound is the safety rail: a misconfigured ``HAPAX_INTAKE_FIT_BLEND=50`` cannot
+    distort the rank-key, and a negative or non-finite value cannot reach the scheduler.
+    ``0.0`` (also the unset / out-of-range fallback) keeps the plan byte-identical to pure
+    WSJF — the default-off golden guarantee. ``[0.0, 0.5)`` is half-open, so an oversize
+    blend saturates to the largest float strictly below 0.5 via ``math.nextafter``.
+
+    The pure ``composite_rank_key`` stays unclamped arithmetic (a negative blend = "prefer
+    simpler tasks" remains a valid unit-level contract); this gate is the deployment policy
+    that decides which blends are reachable from the environment.
+    """
+    raw = _env_float(INTAKE_FIT_BLEND_ENV, 0.0)
+    if raw <= 0.0:
+        return 0.0
+    if raw >= _INTAKE_FIT_BLEND_CEIL:
+        return math.nextafter(_INTAKE_FIT_BLEND_CEIL, 0.0)
+    return raw
 
 
 def _ntfy_escalate(title: str, body: str) -> None:
@@ -194,7 +220,8 @@ DISPATCH_SERVICE_TIME_CACHE_NAME = "dispatch-service-time.json"
 SCHEDULER_LEGACY_ENV = "HAPAX_DISPATCH_SCHEDULER_LEGACY"
 # Intake fit-shadow: blend the demand-shape fit_score into the dispatch rank-key.
 # Default 0.0 => composite short-circuits to wsjf_effective (byte-identical plan, the
-# golden guarantee); a non-zero value (positive OR negative) is the operator's dial.
+# golden guarantee); clamped to [0.0, 0.5) at the env gate by _intake_fit_blend (the
+# task-spec safe range; the active shadow value is a light weight, ~0.25 typical).
 INTAKE_FIT_BLEND_ENV = "HAPAX_INTAKE_FIT_BLEND"
 # Convergence contract: emit one admission GateEvent per planned dispatch to the
 # gate-events.jsonl plane reins' :route lens reads (off by default — the shadow-diff
@@ -372,8 +399,9 @@ class Coordinator:
         # `legacy` restores the prior fixed-T / raw-WSJF behavior exactly (revert env).
         legacy = os.environ.get(SCHEDULER_LEGACY_ENV) == "1"
         # bb-intake-fit-shadow: blend the demand-shape fit_score into the dispatch
-        # rank-key. Default 0.0 => byte-identical to pure WSJF (the golden guarantee).
-        fit_blend = _env_float(INTAKE_FIT_BLEND_ENV, 0.0)
+        # rank-key. Default 0.0 => byte-identical to pure WSJF (the golden guarantee);
+        # clamped to the task-spec [0.0, 0.5) safe range by _intake_fit_blend.
+        fit_blend = _intake_fit_blend()
         # Convergence contract: light the gate-events.jsonl feed reins :route reads.
         observe_fit = os.environ.get(INTAKE_FIT_OBSERVE_ENV) == "1"
         cache = None if legacy else _load_dispatch_cache()

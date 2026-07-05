@@ -84,10 +84,13 @@ def composite_rank_key(wsjf_effective_value: float, fit: float, *, blend: float)
 
     ``blend == 0.0`` returns ``wsjf_effective_value`` by identity — the byte-identical
     golden guarantee (the default-off flag changes nothing in the plan). Any non-zero
-    blend (positive OR negative — the operator's dial, not clamped) flows through as
-    ``wsjf_effective_value + blend * fit``. ``fit`` lives on ``0..5`` while
-    ``wsjf_effective_value`` lives on roughly ``1..30`` (raw wsjf ``1..10`` × aging factor
-    ``1..3``), so a blend of ``~1`` is a light weight, ``~3`` moderate, ``~5+`` strong.
+    blend (positive OR negative) flows through as plain arithmetic,
+    ``wsjf_effective_value + blend * fit`` — this pure function does NOT clamp; range
+    policy is enforced at the env gate (``_intake_fit_blend`` clamps
+    ``HAPAX_INTAKE_FIT_BLEND`` to the task-spec's ``[0.0, 0.5)`` safe range before it ever
+    reaches the rank-key). ``fit`` lives on ``0..5`` while ``wsjf_effective_value`` lives
+    on roughly ``1..30`` (raw wsjf ``1..10`` × aging factor ``1..3``), so a blend of
+    ``~1`` is a light weight, ``~3`` moderate, ``~5+`` strong.
     """
     if blend == 0.0:
         return wsjf_effective_value
