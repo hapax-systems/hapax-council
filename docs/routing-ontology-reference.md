@@ -42,9 +42,10 @@ Defined in `RouteConstraints.preferred_platforms` / `allowed_platforms` / `prohi
 | `vibe` | Mistral Medium 3.5 | JR+ | 256K | Mechanical: tests, deps, CI fixes |
 
 `antigrav` / Antigravity is retired and excised as a live platform, lane, and
-route family. Legitimate Gemini-family capability in that neighborhood must be
-registered as measured `agy` supply-leaf intake with route, resource, and
-governance receipts before it can satisfy demand.
+route family. The Agy adapter family is distinct and live after the 2026-07-05
+steward correction, but it does not satisfy dispatch demand until a measured
+`agy` route is registered with route, resource, and governance receipts. Legacy
+`gemini-cli` aliases remain retired.
 
 ## Reaching the Opus Route (signed route-authority receipts)
 
