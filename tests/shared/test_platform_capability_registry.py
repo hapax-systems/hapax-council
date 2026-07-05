@@ -266,6 +266,32 @@ def test_cloud_burst_api_route_is_blocked_dry_run_paid_surface() -> None:
     assert "cloud_burst_release_gate_absent" in route.blocked_reasons
 
 
+def test_openrouter_frontier_route_is_blocked_until_measurement_budget_and_key() -> None:
+    registry = load_platform_capability_registry()
+    route = registry.require("api.headless.openrouter")
+
+    assert route.route_state is RouteState.BLOCKED
+    assert route.model_or_engine == "openrouter/openai/gpt-5.5"
+    assert route.execution_descriptor.model_id.value == "gpt-5.5"
+    assert route.paid_provider == "openrouter"
+    assert route.paid_profile == "frontier-gpt-5.5"
+    assert route.authority_ceiling is AuthorityCeiling.FRONTIER_REVIEW_REQUIRED
+    assert route.capacity_pool.value == "api_paid_spend"
+    assert route.mutability.source is True
+    assert route.mutability.provider_spend is False
+    assert route.privacy_posture.value == "provider_training_unknown"
+    assert route.capability_tier.value == "frontier_full"
+    assert route.worker_tier.value == "fallback_worker"
+    assert route.capability_scores.source_editing.observed_at is None
+    assert route.capability_scores.source_editing.confidence == 2
+    assert route.capability_scores.local_calibration.score == 1
+    assert route.tool_access.filesystem.value == "read_write"
+    assert route.tool_access.shell.value == "full"
+    assert "capabilityio_measurement_absent" in route.blocked_reasons
+    assert "openrouter_paid_budget_receipt_absent" in route.blocked_reasons
+    assert "openrouter_served_model_witness_absent" in route.blocked_reasons
+
+
 def test_provider_gateway_route_is_explicit_fail_closed_paid_runtime_surface() -> None:
     registry = load_platform_capability_registry()
     route = registry.require("api.headless.provider_gateway")
@@ -440,7 +466,11 @@ def _make_api_receipt(
     return PlatformCapabilityReceipt(
         receipt_id="test-api-receipt",
         platform="api",
-        routes=["api.headless.api_frontier", "api.headless.provider_gateway"],
+        routes=[
+            "api.headless.api_frontier",
+            "api.headless.openrouter",
+            "api.headless.provider_gateway",
+        ],
         observed_at=observed_at,
         stale_after=stale_after,
         cli=CliEvidence(binary="python3", available=True, version="Python 3.12.3"),
@@ -543,6 +573,38 @@ def test_api_receipt_does_not_open_cloud_burst_release_gate() -> None:
         "cloud_runner_resource_receipt_absent"
         in route["freshness"]["evidence"]["resource"]["blocked_reasons"]
     )
+
+
+def test_api_receipt_does_not_admit_openrouter_without_measurement_budget_or_key() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "api.headless.openrouter")
+
+    receipt_time = datetime(2026, 7, 5, 16, 0, tzinfo=UTC)
+    _apply_receipt_to_route_payload(route, _make_api_receipt(observed_at=receipt_time))
+
+    assert route["route_state"] == "blocked"
+    assert "capabilityio_measurement_absent" in route["blocked_reasons"]
+    assert "openrouter_key_secret_receipt_absent" in route["blocked_reasons"]
+    assert "openrouter_paid_budget_receipt_absent" in route["blocked_reasons"]
+    assert "openrouter_served_model_witness_absent" in route["blocked_reasons"]
+    assert (
+        "capabilityio_measurement_absent"
+        in route["freshness"]["evidence"]["capability"]["blocked_reasons"]
+    )
+    assert (
+        "openrouter_key_secret_receipt_absent"
+        in route["freshness"]["evidence"]["resource"]["blocked_reasons"]
+    )
+
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    result = check_registry_freshness(
+        registry,
+        route_ids=["api.headless.openrouter"],
+        now=datetime(2026, 7, 5, 16, 1, tzinfo=UTC),
+    )
+
+    assert result.ok is False
+    assert any("blocked:" in error for error in result.routes[0].errors)
 
 
 # --------------------------------------------------------------------------------------

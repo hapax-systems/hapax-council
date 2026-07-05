@@ -8,10 +8,12 @@
     "scripts/hapax-methodology-dispatch --list-platform-paths",
     "quality-preserving-capacity-routing-authority-case-draft-2026-05-09#R2",
     "fresh-platform-surface-research:2026-05-17T18:38Z",
-    "cc-task-register-omitted-demand-shape-routes-20260630"
+    "cc-task-register-omitted-demand-shape-routes-20260630",
+    "cc-task-onboard-r1-openrouter-substitute-frontier-20260705"
   ],
   "required_route_ids": [
     "api.headless.api_frontier",
+    "api.headless.openrouter",
     "api.headless.provider_gateway",
     "claude.headless.full",
     "claude.headless.haiku",
@@ -566,6 +568,294 @@
       "approval_posture": "default_deny_enable_latch",
       "capability_tier": "frontier_full",
       "worker_tier": "bounded_worker"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "api.headless.openrouter",
+      "platform": "api",
+      "mode": "headless",
+      "profile": "openrouter",
+      "launcher": "receipt-only CapabilityIO/BudgetAuthorityAdapter route for LiteLLM alias gpt-5.5-or; no bespoke OpenRouter launcher",
+      "summary": "OpenRouter GPT-5.5 frontier substitute route",
+      "notes": "Concrete OpenRouter leaf for R1 substitute-frontier coverage; not openrouter/auto, not a fallback group, and not a hapax-openrouter launcher. CapabilityIO measurement and served-model evidence are required before non-degradation admission.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "capabilityio_measurement_absent",
+        "openrouter_litellm_route_receipt_absent",
+        "openrouter_key_secret_receipt_absent",
+        "openrouter_paid_budget_receipt_absent",
+        "openrouter_served_model_witness_absent"
+      ],
+      "model_or_engine": "openrouter/openai/gpt-5.5",
+      "execution_descriptor": {
+        "model_id": "gpt-5.5",
+        "effort": "none",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
+      "paid_provider": "openrouter",
+      "paid_profile": "frontier-gpt-5.5",
+      "auth_surface": "api_key",
+      "capacity_pool": "api_paid_spend",
+      "mutability": {
+        "vault_docs": true,
+        "source": true,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "frontier_review_required",
+      "tool_access": {
+        "filesystem": "read_write",
+        "shell": "full",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "provider_training_unknown",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "frontier_required",
+          "frontier_review_required",
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [
+          "route-authority:openrouter-gpt-5.5-substitute-frontier-asserted"
+        ],
+        "excluded_task_classes": [
+          "privacy_secret_sensitive",
+          "runtime_mutation_without_isap",
+          "provider_spend",
+          "public_release_without_gate"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "very_large"
+      },
+      "telemetry": {
+        "quota_source": "ledger",
+        "cost_source": "ledger",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "5m",
+        "provider_docs_checked_at": "2026-07-05T14:34:00Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "task:cc-task-onboard-r1-openrouter-substitute-frontier-20260705"
+            ],
+            "blocked_reasons": [
+              "capabilityio_measurement_absent",
+              "capability_scores_asserted_not_measured"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "openrouter_paid_budget_receipt_absent",
+              "openrouter_key_credit_witness_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:/home/hapax/llm-stack/litellm-config.yaml:gpt-5.5-or:2026-07-05"
+            ],
+            "blocked_reasons": [
+              "openrouter_litellm_route_receipt_absent",
+              "openrouter_key_secret_receipt_absent",
+              "capabilityio_adapter_wiring_absent"
+            ]
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "context7:/websites/openrouter_ai:quickstart-and-models-api:2026-07-05",
+              "official:https://openrouter.ai/docs/quickstart",
+              "official:https://openrouter.ai/docs/api-reference/list-available-models"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "OpenRouter key/credit witness is not materialized in hapax-secrets for this route; prior premeasurement found the key only in the llm-stack environment.",
+        "No completion run was performed for this task; scores are asserted-not-measured until CapabilityIO or EDT witnesses outcomes.",
+        "Served-model readback must prove the actual model remains openai/gpt-5.5 and is not router, auto, or fallback substitution."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:grounding"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:source_editing"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:architecture"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 5,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:long_context"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:test_authoring"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:privacy_safety"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 1,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:local_calibration"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read",
+            "write"
+          ],
+          "observed_at": null,
+          "stale_after": "5m",
+          "evidence_ref": "platform-capability-registry:api.headless.openrouter:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "execute",
+            "verify"
+          ],
+          "observed_at": null,
+          "stale_after": "5m",
+          "evidence_ref": "platform-capability-registry:api.headless.openrouter:tool_access.shell"
+        },
+        {
+          "tool_id": "litellm_gateway",
+          "available": false,
+          "authority_use": [
+            "execute",
+            "verify"
+          ],
+          "observed_at": null,
+          "stale_after": "5m",
+          "evidence_ref": "platform-capability-registry:api.headless.openrouter:tool_access.litellm_gateway"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-methodology-dispatch",
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "frontier_full",
+      "worker_tier": "fallback_worker"
     },
     {
       "registry_schema": 1,

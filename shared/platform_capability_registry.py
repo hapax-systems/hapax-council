@@ -49,6 +49,7 @@ CAPACITY_INVARIANT = (
 REQUIRED_ROUTE_IDS = frozenset(
     {
         "api.headless.api_frontier",
+        "api.headless.openrouter",
         "api.headless.provider_gateway",
         "claude.headless.full",
         "claude.headless.haiku",
@@ -104,6 +105,7 @@ class Profile(StrEnum):
     HAIKU = "haiku"
     JR = "jr"
     LITE = "lite"
+    OPENROUTER = "openrouter"
     OPUS = "opus"
     PROVIDER_GATEWAY = "provider_gateway"
     SONNET = "sonnet"

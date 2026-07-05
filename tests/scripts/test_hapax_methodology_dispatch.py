@@ -2887,6 +2887,7 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert "gemini/" not in result.stdout
     assert "antigrav/" not in result.stdout
     assert "api/headless/api_frontier" in result.stdout
+    assert "api/headless/openrouter" in result.stdout
     assert "api/headless/provider_gateway" in result.stdout
 
 

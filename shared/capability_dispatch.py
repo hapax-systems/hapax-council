@@ -68,6 +68,8 @@ CAPABILITY_ALIASES: dict[str, str] = {
     "claude-interactive": "claude.interactive.full",
     "api": "api.headless.provider_gateway",
     "api-frontier": "api.headless.api_frontier",
+    "openrouter": "api.headless.openrouter",
+    "openrouter-frontier": "api.headless.openrouter",
     "vibe": "vibe.headless.full",
     # valid routes, but reached via a different surface (not a spawnable lane):
     "glmcp-review": "glmcp.review.direct",

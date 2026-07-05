@@ -37,6 +37,7 @@ VALID = frozenset(
         "claude.interactive.full",
         "api.headless.provider_gateway",
         "api.headless.api_frontier",
+        "api.headless.openrouter",
         "vibe.headless.full",
         "glmcp.review.direct",
         "local_tool.local.worker",
@@ -204,6 +205,7 @@ def test_load_valid_route_ids_reflects_real_registry() -> None:
         platform, mode, _ = split_route_id(route_id)  # type: ignore[misc]
         assert (platform, mode) in LAUNCHABLE_PATHS
     assert "api" not in launchable and "api-frontier" not in launchable
+    assert "openrouter" not in launchable and "openrouter-frontier" not in launchable
     assert "local-worker" not in launchable and "glmcp-review" not in launchable
     assert not any(rid.startswith("api.") for rid in launchable.values())
 
@@ -218,6 +220,7 @@ def test_launchable_aliases_excludes_non_spawnable() -> None:
     assert "glmcp-review" not in out  # platform glmcp not spawnable
     assert "local-worker" not in out  # receipt-only local-inference, no lane
     assert "api" not in out and "api-frontier" not in out  # receipt-only api routes
+    assert "openrouter" not in out and "openrouter-frontier" not in out
     for route_id in out.values():
         platform, mode, _ = split_route_id(route_id)  # type: ignore[misc]
         assert (platform, mode) in LAUNCHABLE_PATHS
@@ -230,6 +233,13 @@ def test_resolve_api_route_is_receipt_only_not_launchable() -> None:
     assert not res.ok
     assert "not a spawnable lane" in res.reason
     assert res.route_id == "api.headless.provider_gateway"
+
+
+def test_resolve_openrouter_route_is_receipt_only_not_launchable() -> None:
+    res = resolve_capability("openrouter", valid_route_ids=VALID)
+    assert not res.ok
+    assert "not a spawnable lane" in res.reason
+    assert res.route_id == "api.headless.openrouter"
 
 
 # --- the launchable set vs the LIVE dispatcher (contract, not a mock) ------------
