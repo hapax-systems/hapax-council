@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 from shared.capability_availability_guarantor import (
+    CodexOAuthRefreshStrategy,
+    RefreshCommandResult,
     RefreshOutcome,
     RefreshStatus,
     RefreshStrategyRegistry,
     availability_dispatch_reason_codes,
-    default_refresh_strategy_registry,
+    evaluate_registry_availability,
     evaluate_route_availability,
 )
 from shared.dispatcher_policy import _capability_state
@@ -35,6 +38,23 @@ class _FakeOAuthStrategy:
             reason_codes=("test_oauth_refresh_invoked",),
             evidence_refs=(f"test:oauth:{route.route_id}",),
         )
+
+
+class _FakeRefreshRunner:
+    def __init__(self, result: RefreshCommandResult) -> None:
+        self.result = result
+        self.commands: list[tuple[str, ...]] = []
+        self.timeout_s: float | None = None
+
+    def __call__(
+        self,
+        command: tuple[str, ...],
+        *,
+        timeout_s: float,
+    ) -> RefreshCommandResult:
+        self.commands.append(command)
+        self.timeout_s = timeout_s
+        return self.result
 
 
 def _payload() -> dict:
@@ -111,19 +131,54 @@ def test_degraded_oauth_route_uses_auth_surface_strategy_registry() -> None:
     assert "capability_availability_degraded" in availability_dispatch_reason_codes(receipt)
 
 
-def test_default_codex_oauth_strategy_avoids_bearer_token_daemon() -> None:
+def test_default_codex_oauth_strategy_runs_receipt_refresher_without_bearer_daemon() -> None:
     registry = load_platform_capability_registry()
     route = registry.require("codex.headless.full")
     freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+    runner = _FakeRefreshRunner(
+        RefreshCommandResult(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "receipts": [
+                        {
+                            "platform": "codex",
+                            "receipt_id": "codex-20260509T210000Z",
+                            "path": "/tmp/codex.json",
+                            "cli_available": True,
+                            "wrapper_exists": True,
+                        }
+                    ]
+                }
+            ),
+        )
+    )
 
     receipt = evaluate_route_availability(
         route,
         freshness,
-        refresh_strategies=default_refresh_strategy_registry(),
+        refresh_strategies=RefreshStrategyRegistry(
+            (CodexOAuthRefreshStrategy(runner=runner, timeout_s=3.0),)
+        ),
         now=NOW,
     )
 
+    assert runner.commands
+    assert runner.commands[0][1:] == (
+        "--platform",
+        "codex",
+        "--json",
+        "--now",
+        "2026-05-09T21:00:00Z",
+    )
+    assert runner.commands[0][-1] == "2026-05-09T21:00:00Z"
+    assert runner.timeout_s == 3.0
     assert receipt.refresh_strategy_id == "codex-oauth-supported-refresh"
+    assert receipt.refresh_status is RefreshStatus.REFRESHED
+    assert "refresh_receipt_written" in receipt.refresh_reason_codes
+    assert "platform-capability-receipt:codex:codex-20260509T210000Z" in (
+        receipt.refresh_evidence_refs
+    )
     assert "policy:not_codex_access_token_daemon" in receipt.refresh_evidence_refs
     serialized = " ".join(
         [
@@ -133,6 +188,81 @@ def test_default_codex_oauth_strategy_avoids_bearer_token_daemon() -> None:
         ]
     )
     assert "CODEX_ACCESS_TOKEN" not in serialized
+
+
+def test_registry_availability_fails_closed_for_unsupported_route_filter() -> None:
+    registry = load_platform_capability_registry()
+
+    result = evaluate_registry_availability(
+        registry,
+        route_ids=["codex/headless/nope"],
+        now=NOW,
+    )
+
+    assert result.ok is False
+    assert result.receipts == ()
+    assert len(result.unsupported_routes) == 1
+    assert result.unsupported_routes[0].route_id == "codex.headless.nope"
+    assert result.to_dict()["unsupported_routes"][0]["errors"] == [
+        "unsupported route: codex.headless.nope"
+    ]
+
+
+def test_registry_availability_mixed_filter_keeps_supported_receipt_but_fails_overall() -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+
+    result = evaluate_registry_availability(
+        registry,
+        route_ids=["codex.headless.full", "codex.headless.nope"],
+        now=NOW,
+    )
+
+    assert result.ok is False
+    assert [receipt.route_id for receipt in result.receipts] == ["codex.headless.full"]
+    assert result.receipts[0].available is True
+    assert [route.route_id for route in result.unsupported_routes] == ["codex.headless.nope"]
+
+
+def test_no_strategy_refresh_outcome_carries_remediation() -> None:
+    registry = load_platform_capability_registry()
+    route = registry.require("api.headless.api_frontier")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.refresh_status is RefreshStatus.NO_STRATEGY
+    reasons = availability_dispatch_reason_codes(receipt)
+    assert "refresh_strategy_absent:api_key" in reasons
+    assert "refresh_remediation:register refresh strategy for auth_surface=api_key" in reasons
+
+
+def test_capability_staleness_does_not_masquerade_as_auth_staleness() -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    route_payload["freshness"]["capability_checked_at"] = "2026-05-01T00:00:00Z"
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is False
+    assert "capability_degraded" in receipt.reason_codes
+    assert "auth_surface_not_fresh" not in receipt.reason_codes
 
 
 def test_dispatcher_capability_state_carries_availability_receipt_ref() -> None:

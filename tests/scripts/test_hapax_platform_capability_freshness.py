@@ -4,8 +4,17 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
+from shared.platform_capability_receipts import (
+    CliEvidence,
+    EvidenceStatus,
+    PlatformCapabilityReceipt,
+    ProviderDocsEvidence,
+    SurfaceEvidence,
+    WrapperEvidence,
+)
 from shared.platform_capability_registry import load_platform_capability_registry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +34,54 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 def _write_registry(tmp_path: Path, payload: dict) -> Path:
     path = tmp_path / "platform-capability-registry.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _write_codex_receipt(receipt_dir: Path, *, observed_at: datetime) -> Path:
+    receipt = PlatformCapabilityReceipt(
+        receipt_id="test-codex-receipt",
+        platform="codex",
+        routes=["codex.headless.full", "codex.headless.spark"],
+        observed_at=observed_at,
+        stale_after="24h",
+        cli=CliEvidence(binary="codex", available=True, version="codex-cli test"),
+        wrapper=WrapperEvidence(
+            path="scripts/hapax-codex",
+            exists=True,
+            executable=True,
+            sha256="abc123",
+        ),
+        capability=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:codex:capability"],
+        ),
+        resource=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:codex:resource"],
+        ),
+        quota=SurfaceEvidence(
+            status=EvidenceStatus.UNOBSERVABLE,
+            source="test",
+            observed_at=observed_at,
+            stale_after="15m",
+            evidence_refs=["test:codex:quota"],
+            reason_codes=["account_live_quota_receipt_absent"],
+        ),
+        provider_docs=ProviderDocsEvidence(
+            refs=["test:codex:provider-docs"],
+            fetched_at=observed_at,
+            stale_after="30d",
+        ),
+    )
+    receipt_dir.mkdir(parents=True)
+    path = receipt_dir / "codex.json"
+    path.write_text(json.dumps(receipt.model_dump(mode="json")), encoding="utf-8")
     return path
 
 
@@ -59,8 +116,16 @@ def _mark_fresh(route: dict) -> None:
         tool["observed_at"] = "2026-05-09T20:55:00Z"
 
 
-def test_json_reports_blocked_seed_registry_nonzero() -> None:
-    result = _run("--json", "--now", "2026-05-17T08:14:00Z", "--route", "codex.headless.full")
+def test_json_reports_blocked_seed_registry_nonzero(tmp_path: Path) -> None:
+    result = _run(
+        "--json",
+        "--now",
+        "2026-05-17T08:14:00Z",
+        "--route",
+        "codex.headless.full",
+        "--receipt-dir",
+        str(tmp_path / "empty-receipts"),
+    )
 
     assert result.returncode == 1
     payload = json.loads(result.stdout)
@@ -74,13 +139,15 @@ def test_json_reports_blocked_seed_registry_nonzero() -> None:
     assert payload["routes"][0]["evidence_refs"]
 
 
-def test_json_fails_nonzero_for_unsupported_route() -> None:
+def test_json_fails_nonzero_for_unsupported_route(tmp_path: Path) -> None:
     result = _run(
         "--json",
         "--now",
         FRESH_NOW,
         "--route",
         "codex/headless/nope",
+        "--receipt-dir",
+        str(tmp_path / "empty-receipts"),
     )
 
     assert result.returncode == 1
@@ -104,12 +171,39 @@ def test_json_succeeds_for_fresh_route_fixture(tmp_path: Path) -> None:
         FRESH_NOW,
         "--route",
         "codex.headless.full",
+        "--receipt-dir",
+        str(tmp_path / "empty-receipts"),
     )
 
     assert result.returncode == 0, result.stdout
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["routes"][0]["errors"] == []
+
+
+def test_json_applies_receipt_overlay_at_requested_now(tmp_path: Path) -> None:
+    receipt_dir = tmp_path / "receipts"
+    _write_codex_receipt(
+        receipt_dir,
+        observed_at=datetime(2026, 5, 9, 20, 55, tzinfo=UTC),
+    )
+
+    result = _run(
+        "--json",
+        "--now",
+        FRESH_NOW,
+        "--route",
+        "codex.headless.full",
+        "--receipt-dir",
+        str(receipt_dir),
+    )
+
+    assert result.returncode == 0, result.stdout
+    payload = json.loads(result.stdout)
+    route = payload["routes"][0]
+    assert payload["ok"] is True
+    assert route["blocked_reasons"] == []
+    assert "platform-capability-receipt:codex:test-codex-receipt" in route["evidence_refs"]
 
 
 def test_json_fails_nonzero_for_stale_provider_docs(tmp_path: Path) -> None:
@@ -127,6 +221,8 @@ def test_json_fails_nonzero_for_stale_provider_docs(tmp_path: Path) -> None:
         FRESH_NOW,
         "--route",
         "codex.headless.full",
+        "--receipt-dir",
+        str(tmp_path / "empty-receipts"),
     )
 
     assert result.returncode == 1
