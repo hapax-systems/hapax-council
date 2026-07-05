@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-import shared.dispatcher_policy as dispatcher_policy
 from shared.dispatcher_policy import (
     LOCAL_DEV_PLATFORMS,
     ClogRouteState,
@@ -2451,8 +2450,7 @@ def test_policy_sources_fail_soft_when_quota_fixture_resolution_fails(
         )
 
     monkeypatch.setattr(
-        dispatcher_policy,
-        "load_quota_spend_ledger_resolved",
+        "shared.dispatcher_policy.load_quota_spend_ledger_resolved",
         fail_fixture_resolution,
     )
     receipt = build_route_authority_receipt(
@@ -2485,8 +2483,7 @@ def test_policy_sources_do_not_mask_unexpected_quota_runtime_errors(
         raise RuntimeError("unexpected quota resolver bug")
 
     monkeypatch.setattr(
-        dispatcher_policy,
-        "load_quota_spend_ledger_resolved",
+        "shared.dispatcher_policy.load_quota_spend_ledger_resolved",
         fail_unexpectedly,
     )
 
