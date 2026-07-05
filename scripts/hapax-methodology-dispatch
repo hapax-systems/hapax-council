@@ -32,15 +32,16 @@ from executor_contract import (  # noqa: E402
 )
 
 from shared.capability_adapter_protocol import (
+    AuthorityViolation,
     CapabilityAdapter,
     ClaudeAdapter,
     CodexAdapter,
+    WorkerAdapter,
 )
 from shared.coord_dispatch import (
     CoordDispatchError,
     DispatchLaunchRequest,
     DispatchLaunchResult,
-    run_atomic_dispatch_launch,
 )
 from shared.coord_event_log import CoordEventLog, coord_base_dir
 from shared.dispatch_service_time import is_claude_operator_pool_role
@@ -49,7 +50,6 @@ from shared.dispatcher_policy import (
     DispatchRequest,
     RouteDecision,
     build_dispatch_request,
-    evaluate_dispatch_policy,
     load_dispatch_policy_sources,
     route_decision_receipt_payload,
     write_route_decision_receipt,
@@ -1385,10 +1385,37 @@ def _await_sdlc_admission(args: argparse.Namespace) -> None:
 # (cc-task capability-adapter-worker-path-classify-failure). Best-effort + strictly FAIL-OPEN:
 # classification NEVER changes the dispatch returncode or outcome. The guard, single-key write, and
 # no-sibling-flip invariants live in shared.worker_failure_witness.
-_WORKER_FAILURE_ADAPTERS: dict[str, type[CapabilityAdapter]] = {
+_WORKER_FAILURE_ADAPTERS: dict[str, type[WorkerAdapter]] = {
     "claude": ClaudeAdapter,
     "codex": CodexAdapter,
 }
+
+
+def _capability_adapter_for_admission(platform: str) -> CapabilityAdapter:
+    """Return the adapter used for the admission call.
+
+    Worker platforms use the existing worker-adapter map. Non-worker routes still go through the
+    final ``CapabilityAdapter.admit`` delegation so methodology dispatch no longer calls the policy
+    spine directly.
+    """
+
+    adapter_cls = _WORKER_FAILURE_ADAPTERS.get(platform)
+    if adapter_cls is not None:
+        return adapter_cls()
+    return CapabilityAdapter()
+
+
+def _worker_adapter_for_launch(platform: str) -> WorkerAdapter:
+    """Return the launch-capable adapter for ``platform`` or fail closed."""
+
+    adapter_cls = _WORKER_FAILURE_ADAPTERS.get(platform)
+    if adapter_cls is None:
+        raise AuthorityViolation(
+            f"launch not authorized for platform {platform}: no WorkerAdapter registered. "
+            "Next: route mutable dispatch through a governed WorkerAdapter before attempting "
+            "CapabilityAdapter.launch."
+        )
+    return adapter_cls()
 
 
 def _read_worker_failure_text(platform: str, mode: str, lane: str) -> str:
@@ -2180,7 +2207,8 @@ def main(argv: list[str] | None = None) -> int:
         legacy_route_supported=route is not None,
         legacy_route_mutable=route.mutable if route else False,
     )
-    route_decision = evaluate_dispatch_policy(policy_request)
+    adapter = _capability_adapter_for_admission(args.platform)
+    route_decision = adapter.admit(policy_request)
     route_decision_receipt_path = write_route_decision_receipt(
         route_decision,
         ledger_dir=orchestration_ledger_dir(),
@@ -2336,8 +2364,10 @@ def main(argv: list[str] | None = None) -> int:
             assert mq_message_id is not None
             fields = validation.task.fields
             try:
-                dispatch_launch = run_atomic_dispatch_launch(
-                    DispatchLaunchRequest(
+                launch_adapter = _worker_adapter_for_launch(args.platform)
+                dispatch_launch = launch_adapter.launch(
+                    decision=route_decision,
+                    request=DispatchLaunchRequest(
                         task_id=args.task,
                         lane=args.lane,
                         platform=args.platform,
@@ -2352,7 +2382,7 @@ def main(argv: list[str] | None = None) -> int:
                         idempotency_key=args.idempotency_key,
                         reactivate_retired=reactivate_retired_codex_relay,
                     ),
-                    functools.partial(
+                    launch_callable=functools.partial(
                         classify_and_witness_launch,
                         run_platform_launch,
                         task_id=args.task,
@@ -2363,6 +2393,32 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                 )
                 rc = dispatch_launch.launch_returncode
+            except AuthorityViolation as exc:
+                reason = f"capability adapter launch refused: {exc}"
+                blocked = Validation(
+                    False,
+                    reason,
+                    validation.task,
+                    validation.parent_spec_path,
+                    validation.exempt_read_only,
+                )
+                if not args.no_receipt:
+                    write_receipt(
+                        task_id=args.task,
+                        lane=args.lane,
+                        platform=args.platform,
+                        mode=args.mode,
+                        profile=args.profile,
+                        route=route,
+                        validation=blocked,
+                        prompt=prompt,
+                        launched=False,
+                        route_decision=route_decision,
+                        route_decision_receipt_path=route_decision_receipt_path,
+                        durable_binding=durable_binding,
+                    )
+                print(f"BLOCKED: {reason}", file=sys.stderr)
+                return 10
             except CoordDispatchError as exc:
                 reason = f"atomic dispatch launch failed: {exc.reason}"
                 blocked = Validation(

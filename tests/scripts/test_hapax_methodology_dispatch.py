@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from shared.relay_mq import send_message
 from shared.relay_mq_envelope import Envelope
 
@@ -1054,6 +1056,69 @@ def test_receipt_contains_task_and_authority(tmp_path: Path) -> None:
     assert receipt["route_policy_action"] == "launch"
     assert receipt["dimensional_route_receipt_schema"] == 1
     assert receipt["dimensional_selected_route_id"] == "claude.headless.full"
+
+
+def test_dispatch_admission_reuses_worker_adapter_map(monkeypatch) -> None:
+    module = _dispatcher_module()
+    request = object()
+    sentinel = object()
+    calls: list[object] = []
+
+    class SpyAdapter:
+        def admit(self, policy_request: object) -> object:
+            calls.append(policy_request)
+            return sentinel
+
+    monkeypatch.setitem(module._WORKER_FAILURE_ADAPTERS, "codex", SpyAdapter)
+
+    adapter = module._capability_adapter_for_admission("codex")
+
+    assert adapter.admit(request) is sentinel
+    assert calls == [request]
+
+
+def test_dispatch_launch_requires_worker_adapter() -> None:
+    module = _dispatcher_module()
+
+    with pytest.raises(module.AuthorityViolation, match="no WorkerAdapter registered"):
+        module._worker_adapter_for_launch("vibe")
+
+
+def test_dispatch_launch_adapter_rejects_non_launch_decision_before_side_effect() -> None:
+    module = _dispatcher_module()
+    decision = module.RouteDecision(
+        decision_id="rd-test",
+        created_at=datetime(2026, 7, 5, tzinfo=UTC),
+        task_id="governed-build",
+        lane="cx-green",
+        route_id="codex.headless.full",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        action=module.DispatchAction.HOLD,
+        policy_outcome="held",
+        launch_allowed=False,
+        prompt_allowed=False,
+        quality_floor_satisfied=True,
+        authority_allowed=True,
+        reason_codes=("held_for_test",),
+        message="held for test",
+    )
+    launch_called = False
+
+    def launch_callable() -> int:
+        nonlocal launch_called
+        launch_called = True
+        return 0
+
+    with pytest.raises(module.AuthorityViolation, match="not authorized"):
+        module._worker_adapter_for_launch("codex").launch(
+            decision=decision,
+            request=object(),
+            launch_callable=launch_callable,
+        )
+
+    assert launch_called is False
 
 
 def test_policy_hold_writes_route_decision_before_prompt_or_launch(tmp_path: Path) -> None:
