@@ -194,6 +194,18 @@ def test_launch_happy_path_delegates_to_coord_dispatch() -> None:
     spawn.assert_called_once_with(request, launch_callable)
 
 
+@pytest.mark.parametrize("adapter_cls", [AgyAdapter, VibeAdapter])
+def test_new_worker_adapters_inherit_launch_gate(adapter_cls: type[WorkerAdapter]) -> None:
+    decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True)
+    request = object()
+    launch_callable = lambda: 0  # noqa: E731
+    sentinel_result = object()
+    with mock.patch(f"{_MOD}.run_atomic_dispatch_launch", return_value=sentinel_result) as spawn:
+        result = adapter_cls().launch(decision, request, launch_callable)  # type: ignore[arg-type]
+    assert result is sentinel_result
+    spawn.assert_called_once_with(request, launch_callable)
+
+
 def test_send_asserts_authority_then_is_not_yet_wired() -> None:
     # send gates authority just like launch; the relay itself is a glue-slice concern.
     refuse = _decision(action=DispatchAction.REFUSE, launch_allowed=False)
