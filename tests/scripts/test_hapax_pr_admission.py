@@ -180,6 +180,19 @@ class TestClassifyPR:
         pr = {"statusCheckRollup": [{"conclusion": "SUCCESS"}], "mergeStateStatus": "CLEAN"}
         assert gov_module.classify_pr(pr) == "green"
 
+    def test_indeterminate_rest_rollup_is_pending_not_green(self, gov_module):
+        pr = {
+            "statusCheckRollup": [
+                {
+                    "name": "github-rest-status-indeterminate",
+                    "status": "PENDING",
+                    "conclusion": None,
+                }
+            ],
+            "mergeStateStatus": "CLEAN",
+        }
+        assert gov_module.classify_pr(pr) == "pending"
+
 
 class TestAdmissionLibrary:
     def test_normal_mode_allows_anything(self, gov_module):

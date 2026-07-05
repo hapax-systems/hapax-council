@@ -14,7 +14,7 @@ can exhaust the shared GraphQL quota.
 ```bash
 repo="${GH_REPO:-hapax-systems/hapax-council}"
 sha="$(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$repo/pulls/{args}" --jq '.head.sha')"
-gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$repo/commits/$sha/check-runs" --jq '.check_runs[] | "\(.name): \(.status) \(.conclusion // "")"'
+gh api --paginate --method GET -H 'Accept: application/vnd.github+json' "repos/$repo/commits/$sha/check-runs?per_page=100" --jq '.check_runs[] | "\(.name): \(.status) \(.conclusion // "")"'
 gh api --method GET -H 'Accept: application/vnd.github+json' "repos/$repo/commits/$sha/status" --jq '.statuses[] | "\(.context): \(.state)"'
 ```
 

@@ -31,6 +31,18 @@ def test_pr_review_dispatch_service_uses_source_activation_worktree() -> None:
     assert any("scripts/cc-pr-review-dispatch.py --all --apply" in line for line in execution_lines)
 
 
+def test_pr_review_dispatch_service_is_timer_driven_only() -> None:
+    text = (UNITS_DIR / "hapax-pr-review-dispatch.service").read_text(encoding="utf-8")
+    assert "[Install]" not in text
+    assert "WantedBy=default.target" not in text
+
+
+def test_pr_review_dispatch_timer_has_single_periodic_cadence() -> None:
+    text = (UNITS_DIR / "hapax-pr-review-dispatch.timer").read_text(encoding="utf-8")
+    assert "OnUnitActiveSec=10min" in text
+    assert "OnCalendar=" not in text
+
+
 def test_pr_review_dispatch_timer_is_preset_enabled() -> None:
     preset_lines = {
         line.strip()

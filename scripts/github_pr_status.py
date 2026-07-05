@@ -28,6 +28,7 @@ DEFAULT_GRAPHQL_BACKOFF_MAX_SLEEP_SECONDS = 0
 DEFAULT_TIMEOUT_SECONDS = 60
 STATUS_CACHE_SCHEMA_VERSION = 2
 GRAPHQL_BACKOFF_RC = 75
+REST_INDETERMINATE_CHECK_NAME = "github-rest-status-indeterminate"
 
 _SAFE_CACHE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -233,6 +234,61 @@ def _rest_get_json_pages(
     )
 
 
+def _rest_get_json_object_array_pages_or_none(
+    path: str,
+    *,
+    array_key: str,
+    total_key: str | None = None,
+    repo_root: Path,
+    runner: Any,
+    fields: dict[str, str] | None = None,
+    limit: int = 5000,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> list[Any] | None:
+    if limit <= 0:
+        return []
+    out: list[Any] = []
+    page = 1
+    while len(out) < limit:
+        per_page = min(100, limit - len(out))
+        page_fields = dict(fields or {})
+        page_fields.update({"per_page": str(per_page), "page": str(page)})
+        payload = _rest_get_json(
+            path,
+            repo_root=repo_root,
+            runner=runner,
+            fields=page_fields,
+            timeout=timeout,
+        )
+        if not isinstance(payload, dict):
+            return None
+        raw_items = payload.get(array_key)
+        if not isinstance(raw_items, list):
+            return None
+        out.extend(raw_items)
+        total_count = payload.get(total_key) if total_key else None
+        if isinstance(total_count, int):
+            if total_count > limit:
+                return None
+            if len(out) >= total_count:
+                break
+        if not raw_items or len(raw_items) < per_page:
+            break
+        page += 1
+    return out
+
+
+def _indeterminate_rollup(reason: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": REST_INDETERMINATE_CHECK_NAME,
+            "status": "PENDING",
+            "conclusion": None,
+            "details": reason,
+        }
+    ]
+
+
 def _check_run_to_rollup(item: dict[str, Any]) -> dict[str, Any]:
     app = item.get("app") if isinstance(item.get("app"), dict) else {}
     return {
@@ -273,15 +329,15 @@ def fetch_status_check_rollup_rest(
         if cached is not None:
             return cached
 
-    check_runs = _rest_get_json(
+    raw_runs = _rest_get_json_object_array_pages_or_none(
         f"repos/{repo}/commits/{ref}/check-runs",
+        array_key="check_runs",
+        total_key="total_count",
         repo_root=repo_root,
         runner=runner,
-        fields={"per_page": "100"},
     )
-    raw_runs = check_runs.get("check_runs") if isinstance(check_runs, dict) else None
-    if not isinstance(raw_runs, list):
-        return []
+    if raw_runs is None:
+        return _indeterminate_rollup("check_runs_rest_indeterminate")
 
     combined_status = _rest_get_json(
         f"repos/{repo}/commits/{ref}/status",
@@ -291,7 +347,7 @@ def fetch_status_check_rollup_rest(
     )
     raw_statuses = combined_status.get("statuses") if isinstance(combined_status, dict) else None
     if not isinstance(raw_statuses, list):
-        return []
+        return _indeterminate_rollup("combined_status_rest_indeterminate")
 
     rollup: list[dict[str, Any]] = []
     rollup.extend(_check_run_to_rollup(item) for item in raw_runs if isinstance(item, dict))
@@ -352,16 +408,28 @@ def list_pulls_for_branch_rest(
     runner: Any = subprocess.run,
     state: str = "all",
     limit: int = 1,
+    fail_on_indeterminate: bool = False,
 ) -> list[dict[str, Any]]:
     owner = repo.split("/", 1)[0]
     head = branch if ":" in branch else f"{owner}:{branch}"
-    payload = _rest_get_json_pages(
-        f"repos/{repo}/pulls",
-        repo_root=repo_root,
-        runner=runner,
-        fields={"head": head, "state": state, "per_page": str(limit)},
-        limit=limit,
-    )
+    if fail_on_indeterminate:
+        payload = _rest_get_json_pages_or_none(
+            f"repos/{repo}/pulls",
+            repo_root=repo_root,
+            runner=runner,
+            fields={"head": head, "state": state, "per_page": str(limit)},
+            limit=limit,
+        )
+        if payload is None:
+            raise subprocess.SubprocessError(f"REST pull list indeterminate for {repo} head={head}")
+    else:
+        payload = _rest_get_json_pages(
+            f"repos/{repo}/pulls",
+            repo_root=repo_root,
+            runner=runner,
+            fields={"head": head, "state": state, "per_page": str(limit)},
+            limit=limit,
+        )
     return [item for item in payload if isinstance(item, dict)]
 
 
@@ -582,6 +650,7 @@ def list_pr_statuses_for_branch_rest(
     runner: Any = subprocess.run,
     limit: int = 5,
     include_status: bool = True,
+    fail_on_indeterminate: bool = False,
 ) -> list[dict[str, Any]]:
     payload = list_pulls_for_branch_rest(
         branch,
@@ -590,6 +659,7 @@ def list_pr_statuses_for_branch_rest(
         runner=runner,
         state="open",
         limit=limit,
+        fail_on_indeterminate=fail_on_indeterminate,
     )
     return [
         _pull_status_row_from_rest(
@@ -755,6 +825,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo_root=args.repo_root,
                 limit=args.limit,
                 include_status=include_status,
+                fail_on_indeterminate=True,
             )
         else:
             rows = list_open_pr_statuses_rest(
@@ -762,6 +833,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo_root=args.repo_root,
                 limit=args.limit,
                 include_status=include_status,
+                fail_on_indeterminate=True,
             )
         json.dump(rows, sys.stdout, sort_keys=True)
         sys.stdout.write("\n")

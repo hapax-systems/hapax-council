@@ -166,6 +166,9 @@ if [[ "$branch" != "main" && "$branch" != "master" ]]; then
     if [[ "$pr_count" -eq 0 ]]; then
       stacked=false
       open_prs_without_status="$(rest_pr_json 100 --no-status)"
+      if [[ "$open_prs_without_status" == "error" ]]; then
+        exit 0
+      fi
       open_branches="$(
         printf '%s' "$open_prs_without_status" |
           jq -r '.[].headRefName // empty' 2>/dev/null || true

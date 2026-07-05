@@ -18,5 +18,7 @@ def test_ci_watch_skill_uses_rest_core_for_pr_status() -> None:
     for needle in forbidden:
         assert needle not in text
     assert "gh api --method GET" in text
+    assert "gh api --paginate --method GET" in text
     assert "/check-runs" in text
+    assert "check-runs?per_page=100" in text
     assert "/status" in text

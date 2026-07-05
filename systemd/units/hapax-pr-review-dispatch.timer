@@ -5,7 +5,6 @@ Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/cc-pr-re
 [Timer]
 OnBootSec=5min
 OnUnitActiveSec=10min
-OnCalendar=*:0/15
 RandomizedDelaySec=45s
 AccuracySec=1min
 Persistent=true

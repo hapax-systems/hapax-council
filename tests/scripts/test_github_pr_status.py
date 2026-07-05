@@ -81,6 +81,60 @@ def test_rest_status_rollup_uses_check_runs_and_statuses(tmp_path: Path) -> None
     assert not any(call[:2] == ["gh", "pr"] for call in runner.calls)
 
 
+def test_rest_status_rollup_paginates_check_runs(tmp_path: Path) -> None:
+    class PaginatedRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/check-runs"):
+                fields = {
+                    cmd[index + 1].split("=", 1)[0]: cmd[index + 1].split("=", 1)[1]
+                    for index, token in enumerate(cmd[:-1])
+                    if token == "-f" and "=" in cmd[index + 1]
+                }
+                page = int(fields.get("page", "1"))
+                if page == 1:
+                    payload = {
+                        "total_count": 101,
+                        "check_runs": [
+                            {
+                                "name": f"check-{index}",
+                                "status": "completed",
+                                "conclusion": "success",
+                            }
+                            for index in range(100)
+                        ],
+                    }
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+                payload = {
+                    "total_count": 101,
+                    "check_runs": [
+                        {
+                            "name": "late-failure",
+                            "status": "completed",
+                            "conclusion": "failure",
+                        }
+                    ],
+                }
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/status"):
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"statuses": []}), "")
+            return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+    runner = PaginatedRunner()
+
+    rollup = github_pr_status.fetch_status_check_rollup_rest(
+        "abc123",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        use_cache=False,
+    )
+
+    assert len(rollup) == 101
+    assert any(item.get("name") == "late-failure" for item in rollup)
+    assert any("page=2" in call for call in runner.calls for call in call)
+
+
 def test_rest_status_rollup_cache_round_trips(tmp_path: Path, monkeypatch: Any) -> None:
     runner = FakeRunner()
     old_cache_dir = github_pr_status.DEFAULT_CACHE_DIR
@@ -139,7 +193,14 @@ def test_rest_status_rollup_fails_closed_when_status_source_fails(tmp_path: Path
     finally:
         github_pr_status.DEFAULT_CACHE_DIR = old_cache_dir
 
-    assert rollup == []
+    assert rollup == [
+        {
+            "name": github_pr_status.REST_INDETERMINATE_CHECK_NAME,
+            "status": "PENDING",
+            "conclusion": None,
+            "details": "combined_status_rest_indeterminate",
+        }
+    ]
     assert not list((tmp_path / "cache").glob("**/*.json"))
 
 
@@ -161,7 +222,14 @@ def test_rest_status_rollup_fails_closed_when_check_run_source_fails(tmp_path: P
         use_cache=False,
     )
 
-    assert rollup == []
+    assert rollup == [
+        {
+            "name": github_pr_status.REST_INDETERMINATE_CHECK_NAME,
+            "status": "PENDING",
+            "conclusion": None,
+            "details": "check_runs_rest_indeterminate",
+        }
+    ]
 
 
 def test_review_decision_rest_fails_closed_when_no_reviews(tmp_path: Path) -> None:

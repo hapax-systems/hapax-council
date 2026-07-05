@@ -85,7 +85,9 @@ def _install_rest_status_helper(repo: Path) -> None:
     shutil.copy2(REPO_ROOT / "scripts" / "github_pr_status.py", scripts / "github_pr_status.py")
 
 
-def _install_fake_rest_gh(tmp_path: Path, *, branch: str = "feat/ci") -> tuple[Path, Path]:
+def _install_fake_rest_gh(
+    tmp_path: Path, *, branch: str = "feat/ci", fail_pull_list: bool = False
+) -> tuple[Path, Path]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log_path = tmp_path / "gh-calls.log"
@@ -105,6 +107,10 @@ fi
 path="${{6:-}}"
 case "$path" in
   repos/owner/repo/pulls)
+    if [[ "{"1" if fail_pull_list else "0"}" == "1" ]]; then
+      echo "pull list unavailable" >&2
+      exit 42
+    fi
     echo '[{{"number":42,"title":"PR 42","body":"","head":{{"ref":"{branch}","sha":"sha-42"}},"draft":false,"state":"open","changed_files":1}}]'
     ;;
   repos/owner/repo/pulls/42)
@@ -235,6 +241,41 @@ class TestRepoGating:
         assert "\npr " not in f"\n{calls}"
         assert "repos/owner/repo/pulls" in calls
         assert "check-runs" in calls
+
+    def test_feature_branch_rest_failure_does_not_emit_false_no_pr_block(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _make_repo(tmp_path)
+        _install_rest_status_helper(repo)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:owner/repo.git"],
+            cwd=repo,
+            check=True,
+        )
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/api-down"], cwd=repo, check=True)
+        target = repo / "ok.py"
+        target.write_text("# ok\n")
+        subprocess.run(["git", "add", "ok.py"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "feature"], cwd=repo, check=True)
+        bin_dir, log_path = _install_fake_rest_gh(
+            tmp_path,
+            branch="feat/api-down",
+            fail_pull_list=True,
+        )
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "GH_CALL_LOG": str(log_path),
+                "HAPAX_GITHUB_PR_STATUS_CACHE_TTL_SECONDS": "0",
+            },
+        )
+
+        assert result.returncode == 0
+        assert "with no PR" not in result.stderr
+        calls = log_path.read_text(encoding="utf-8")
+        assert "repos/owner/repo/pulls" in calls
 
     def test_main_branch_local_pr_sweep_uses_rest_helper_not_gh_pr(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)

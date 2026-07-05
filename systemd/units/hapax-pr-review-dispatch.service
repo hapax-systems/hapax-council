@@ -13,6 +13,3 @@ Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/cc-pr-review-dispatch.py --all --apply
 TimeoutStartSec=30min
-
-[Install]
-WantedBy=default.target
