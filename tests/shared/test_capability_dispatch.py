@@ -246,6 +246,16 @@ def test_resolve_openrouter_route_is_receipt_only_not_launchable() -> None:
     assert "not a spawnable lane" in frontier.reason
     assert frontier.route_id == "api.headless.openrouter"
 
+    raw = resolve_capability("api.headless.openrouter", valid_route_ids=VALID)
+    assert not raw.ok
+    assert "not a spawnable lane" in raw.reason
+    assert raw.route_id == "api.headless.openrouter"
+
+    typo = resolve_capability("open-router", valid_route_ids=VALID)
+    assert not typo.ok
+    assert "unknown capability" in typo.reason
+    assert typo.route_id is None
+
 
 # --- the launchable set vs the LIVE dispatcher (contract, not a mock) ------------
 
