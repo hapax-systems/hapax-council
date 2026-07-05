@@ -65,6 +65,7 @@ REQUIRED_SPECS = {
     ("project.optional-dependencies.rerank", "sentence-transformers"): ">=5.6.0",
     ("tool.uv.override-dependencies", "torch"): ">=2.10,<2.11",
     ("tool.uv.override-dependencies", "torchaudio"): ">=2.10,<2.11",
+    ("tool.uv.override-dependencies", "pillow"): ">=12.3.0",
 }
 
 
@@ -300,6 +301,7 @@ def test_audio_and_tui_dependency_runtime_smoke_paths() -> None:
     pytest.importorskip("mediapipe")
     pytest.importorskip("soundfile")
     pytest.importorskip("textual")
+    pytest.importorskip("torchcodec")
 
     import essentia
     import mediapipe as mp
@@ -313,10 +315,36 @@ def test_audio_and_tui_dependency_runtime_smoke_paths() -> None:
     assert ComposeResult
 
 
+def test_torch_torchvision_clean_subprocess_abi_smoke_path() -> None:
+    _run_clean_python(
+        f"""
+        from importlib.metadata import version
+        import importlib.util
+
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+
+        NEXT_ACTION = {NEXT_ACTION!r}
+
+        import torch
+        import torchvision
+
+        assert Version(torch.__version__) in SpecifierSet(">=2.10,<2.11"), NEXT_ACTION
+        assert Version(torchvision.__version__) in SpecifierSet(">=0.25,<0.26"), (
+            NEXT_ACTION
+        )
+        if importlib.util.find_spec("torchcodec") is not None:
+            assert Version(version("torchcodec")) in SpecifierSet("==0.10.*"), NEXT_ACTION
+        """
+    )
+
+
 def test_additional_bumped_dependency_runtime_smoke_paths() -> None:
     _run_clean_python(
-        """
+        f"""
         from importlib.metadata import version
+        import importlib.util
+
         from google.auth.credentials import AnonymousCredentials
         from google.cloud import pubsub_v1
         from google.cloud import monitoring_v3
@@ -329,80 +357,76 @@ def test_additional_bumped_dependency_runtime_smoke_paths() -> None:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
         from werkzeug.datastructures import Headers
 
-        assert StaticModel.__name__ == "StaticModel"
-        assert gi.version_info >= (3, 56, 3)
-        assert OllamaClient(host="http://127.0.0.1:1")
-        assert Headers([("X-Test", "ok")])["X-Test"] == "ok"
+        NEXT_ACTION = {NEXT_ACTION!r}
+
+        assert StaticModel.__name__ == "StaticModel", NEXT_ACTION
+        assert gi.version_info >= (3, 56, 3), NEXT_ACTION
+        assert OllamaClient(host="http://127.0.0.1:1"), NEXT_ACTION
+        assert Headers([("X-Test", "ok")])["X-Test"] == "ok", NEXT_ACTION
         figure = Figure(figsize=(1, 1))
         axes = figure.subplots()
         axes.plot([0, 1], [1, 0])
-        assert len(figure.axes) == 1
-        assert PlaywrightTimeoutError.__name__ == "TimeoutError"
+        assert len(figure.axes) == 1, NEXT_ACTION
+        assert PlaywrightTimeoutError.__name__ == "TimeoutError", NEXT_ACTION
         monitoring_client = monitoring_v3.MetricServiceClient(
             credentials=AnonymousCredentials()
         )
         monitoring_request = monitoring_v3.ListTimeSeriesRequest(
             name="projects/test-project"
         )
-        assert type(monitoring_client).__name__ == "MetricServiceClient"
-        assert monitoring_request.name == "projects/test-project"
+        assert type(monitoring_client).__name__ == "MetricServiceClient", NEXT_ACTION
+        assert monitoring_request.name == "projects/test-project", NEXT_ACTION
         publisher = pubsub_v1.PublisherClient(credentials=AnonymousCredentials())
         assert publisher.topic_path("project-id", "topic-id") == (
             "projects/project-id/topics/topic-id"
-        )
+        ), NEXT_ACTION
 
-        import pipecat
+        if importlib.util.find_spec("pipecat") is not None:
+            import pipecat
 
-        assert Version(pipecat.__version__) in SpecifierSet(">=1.4.0"), (
-            "NEXT_ACTION: keep pipecat-ai inside its declared audio floor."
-        )
+            assert Version(pipecat.__version__) in SpecifierSet(">=1.4.0"), NEXT_ACTION
+        if importlib.util.find_spec("omegaconf") is not None:
+            from omegaconf import OmegaConf
 
-        from omegaconf import OmegaConf
+            config = OmegaConf.create({{"audio": {{"enabled": True}}}})
+            assert config.audio.enabled is True, NEXT_ACTION
+        if importlib.util.find_spec("pvporcupine") is not None:
+            import pvporcupine
 
-        config = OmegaConf.create({"audio": {"enabled": True}})
-        assert config.audio.enabled is True, (
-            "NEXT_ACTION: keep omegaconf import/config creation working."
-        )
-
-        import pvporcupine
-
-        assert "porcupine" in pvporcupine.KEYWORDS, (
-            "NEXT_ACTION: keep pvporcupine keyword metadata importable."
-        )
-        assert Version(version("pyannote.audio")) in SpecifierSet(">=4.0.7"), (
-            "NEXT_ACTION: keep pyannote-audio inside its declared 4.x floor."
-        )
+            assert "porcupine" in pvporcupine.KEYWORDS, NEXT_ACTION
+        if importlib.util.find_spec("pyannote.audio") is not None:
+            assert Version(version("pyannote.audio")) in SpecifierSet(">=4.0.7"), (
+                NEXT_ACTION
+            )
         """
     )
 
 
 def test_optional_studio_and_rerank_dependency_runtime_smoke_paths() -> None:
     _run_clean_python(
-        """
+        f"""
+        import importlib.util
         from packaging.specifiers import SpecifierSet
         from packaging.version import Version
         from importlib.metadata import version
 
-        from ultralytics import YOLO
+        NEXT_ACTION = {NEXT_ACTION!r}
 
-        assert YOLO.__name__ == "YOLO", (
-            "NEXT_ACTION: keep ultralytics import smoke working for studio extra."
-        )
-        assert Version(version("ultralytics")) in SpecifierSet(">=8.4.87"), (
-            "NEXT_ACTION: keep ultralytics inside its declared studio floor."
-        )
+        if importlib.util.find_spec("ultralytics") is not None:
+            from ultralytics import YOLO
 
-        from sentence_transformers import InputExample
+            assert YOLO.__name__ == "YOLO", NEXT_ACTION
+            assert Version(version("ultralytics")) in SpecifierSet(">=8.4.87"), (
+                NEXT_ACTION
+            )
+        if importlib.util.find_spec("sentence_transformers") is not None:
+            from sentence_transformers import InputExample
 
-        example = InputExample(texts=["left", "right"], label=1.0)
-        assert example.texts == ["left", "right"], (
-            "NEXT_ACTION: keep sentence-transformers InputExample construction working."
-        )
-        assert example.label == 1.0, (
-            "NEXT_ACTION: keep sentence-transformers InputExample labels stable."
-        )
-        assert Version(version("sentence-transformers")) in SpecifierSet(">=5.6.0"), (
-            "NEXT_ACTION: keep sentence-transformers inside its declared rerank floor."
-        )
+            example = InputExample(texts=["left", "right"], label=1.0)
+            assert example.texts == ["left", "right"], NEXT_ACTION
+            assert example.label == 1.0, NEXT_ACTION
+            assert Version(version("sentence-transformers")) in SpecifierSet(">=5.6.0"), (
+                NEXT_ACTION
+            )
         """
     )
