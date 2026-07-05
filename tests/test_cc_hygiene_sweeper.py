@@ -321,6 +321,66 @@ def test_duplicate_claim_distinct_tasks_no_event() -> None:
     assert check_duplicate_claim(payloads, now=now) == []
 
 
+def test_duplicate_claim_bare_string_no_timestamps_does_not_storm() -> None:
+    """Bare-string current_claim with no timestamp must NOT read as simultaneous.
+
+    Regression for the duplicate_claim P0 storm (incident
+    ``cc_hygiene_violation:duplicate_claim``): two relays listed the same task
+    as a bare string (``current_claim: <task-id>``) carrying no ``claimed_at``
+    and no relay ``updated``. The claims were actually 91min apart (a stale
+    collision, not a race), but collapsing the unknown timestamps to ``now``
+    made the 5min window a no-op, so the check fired a false "claimed
+    simultaneously within 5min" on every sweep and stormed 52 P0 pages.
+    With no usable timestamp on either side, the check cannot establish the
+    claims are within the window and must stay silent.
+    """
+    now = _now()
+    payloads = {
+        "cx-p0": {"current_claim": "cc-shared"},
+        "cx-crit": {"current_claim": "cc-shared"},
+    }
+    assert check_duplicate_claim(payloads, now=now) == []
+
+
+def test_duplicate_claim_bare_string_relay_updated_outside_window_suppresses() -> None:
+    """Exact incident shape: bare-string claims 91min apart via relay ``updated``.
+
+    When ``current_claim`` is a bare string the check falls back to each
+    relay's own ``updated`` timestamp. Here they are 91min apart — a stale
+    collision, not a near-simultaneous double-claim — so no event fires.
+    """
+    now = _now()
+    payloads = {
+        "cx-p0": {
+            "current_claim": "cc-shared",
+            "updated": (now - timedelta(minutes=91)).isoformat(),
+        },
+        "cx-crit": {"current_claim": "cc-shared", "updated": now.isoformat()},
+    }
+    assert check_duplicate_claim(payloads, now=now) == []
+
+
+def test_duplicate_claim_bare_string_falls_back_to_relay_updated_within_window() -> None:
+    """A genuine near-simultaneous double-claim still fires via relay ``updated``.
+
+    Both relays hold the same bare-string claim and were both ``updated``
+    within the window — a real double-dispatch race. The check must still
+    fire so genuine double-claims are not silenced by the storm fix.
+    """
+    now = _now()
+    payloads = {
+        "cx-p0": {
+            "current_claim": "cc-shared",
+            "updated": (now - timedelta(minutes=1)).isoformat(),
+        },
+        "cx-crit": {"current_claim": "cc-shared", "updated": now.isoformat()},
+    }
+    events = check_duplicate_claim(payloads, now=now)
+    assert len(events) == 1
+    assert events[0].check_id == "duplicate_claim"
+    assert events[0].severity == "violation"
+
+
 # ----------------------------------------------------------------------------
 # check_orphan_pr (§2.4)
 # ----------------------------------------------------------------------------
