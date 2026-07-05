@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ TERMINAL_EVENT_TYPES = {
     "coord_dispatch.launch_succeeded",
     "coord_dispatch.launch_failed",
 }
+OPERATOR_ATTESTATION_RULING = "RULING-REINS-OPERATOR-ATTESTATION-20260701"
 
 
 class CoordDispatchError(RuntimeError):
@@ -26,6 +28,28 @@ class CoordDispatchError(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+def expected_operator_attestation_ref(
+    *,
+    origin_surface: str,
+    task_id: str,
+    lane: str,
+    ruling: str = OPERATOR_ATTESTATION_RULING,
+) -> str:
+    """Return the Crow-chat operator attestation ref bound to origin, task, lane, and ruling."""
+
+    origin = origin_surface.strip()
+    payload = {
+        "origin_surface": origin,
+        "task_id": task_id.strip(),
+        "lane": lane.strip(),
+        "ruling": ruling.strip(),
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:32]
+    return f"operator-attestation:reins:{origin}:{digest}"
 
 
 @dataclass(frozen=True)
@@ -45,6 +69,9 @@ class DispatchLaunchRequest:
     idempotency_key: str | None = None
     authority_item: str | None = None
     reactivate_retired: bool = False
+    origin_surface: str | None = None
+    operator_attestation_ref: str | None = None
+    require_crow_chat_attestation: bool = False
 
     def __post_init__(self) -> None:
         for name in ("task_id", "lane", "platform", "mode", "profile", "authority_case"):
@@ -52,6 +79,22 @@ class DispatchLaunchRequest:
                 raise ValueError(f"{name} is required")
         if not self.message_id.strip():
             raise CoordDispatchError("strict_mq_message_id_required")
+        origin_surface = (self.origin_surface or "").strip()
+        attestation_ref = (self.operator_attestation_ref or "").strip()
+        if self.require_crow_chat_attestation and origin_surface != "crow_chat":
+            raise CoordDispatchError("crow_chat_origin_required_for_dispatch")
+        if origin_surface == "crow_chat" and not attestation_ref:
+            raise CoordDispatchError("operator_attestation_ref_required_for_crow_chat")
+        if origin_surface == "crow_chat":
+            expected = expected_operator_attestation_ref(
+                origin_surface=origin_surface,
+                task_id=self.task_id,
+                lane=self.lane,
+            )
+            if attestation_ref != expected:
+                raise CoordDispatchError("operator_attestation_ref_task_lane_mismatch")
+        if attestation_ref and not origin_surface:
+            raise CoordDispatchError("operator_attestation_ref_without_origin_surface")
 
     @property
     def normalized_lane(self) -> str:
@@ -83,6 +126,9 @@ class DispatchLaunchResult:
     idempotency_key: str
     event_id: str | None = None
     cleanup_state: Literal["processed", "deferred"] | None = None
+    origin_surface: str | None = None
+    operator_attestation_ref: str | None = None
+    crow_chat_attestation_required: bool = False
 
 
 def default_idempotency_key(
@@ -184,6 +230,9 @@ def run_atomic_dispatch_launch(
         idempotency_key=key,
         event_id=event_id,
         cleanup_state=cleanup_state,
+        origin_surface=request.origin_surface,
+        operator_attestation_ref=request.operator_attestation_ref,
+        crow_chat_attestation_required=request.require_crow_chat_attestation,
     )
 
 
@@ -215,6 +264,9 @@ def replay_terminal_result(
             idempotency_key=idempotency_key,
             event_id=event.event_id,
             cleanup_state=cleanup_state,
+            origin_surface=request.origin_surface,
+            operator_attestation_ref=request.operator_attestation_ref,
+            crow_chat_attestation_required=request.require_crow_chat_attestation,
         )
     return None
 
@@ -383,6 +435,9 @@ def _append_dispatch_event(
             "profile": request.profile,
             "outcome": outcome,
             "returncode": returncode,
+            "origin_surface": request.origin_surface,
+            "operator_attestation_ref": request.operator_attestation_ref,
+            "crow_chat_attestation_required": request.require_crow_chat_attestation,
         },
     )
     try:

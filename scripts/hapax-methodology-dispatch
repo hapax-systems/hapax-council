@@ -1275,6 +1275,9 @@ def write_receipt(
         record["coord_dispatch_reason"] = dispatch_launch.reason
         record["coord_dispatch_event_id"] = dispatch_launch.event_id
         record["coord_dispatch_cleanup_state"] = dispatch_launch.cleanup_state
+        record["origin_surface"] = dispatch_launch.origin_surface
+        record["operator_attestation_ref"] = dispatch_launch.operator_attestation_ref
+        record["crow_chat_attestation_required"] = dispatch_launch.crow_chat_attestation_required
     if route_decision is not None:
         record.update(route_decision_receipt_payload(route_decision))
         record["route_decision_receipt_path"] = (
@@ -1743,6 +1746,11 @@ def dispatch_message_id(cli_value: str | None) -> str | None:
     return value or None
 
 
+def optional_cli_or_env(cli_value: str | None, env_name: str) -> str | None:
+    value = (cli_value or os.environ.get(env_name, "")).strip()
+    return value or None
+
+
 def coord_event_log_from_env() -> CoordEventLog:
     # Per-surface overrides still win (test isolation sets them explicitly); the
     # bare default is the single user-writable coord SSOT (coord_base_dir() →
@@ -2076,6 +2084,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--idempotency-key",
         help="Stable idempotency key for atomic bind/consume/launch replay",
+    )
+    parser.add_argument(
+        "--origin-surface",
+        help="Origin surface for an externally witnessed dispatch intent, e.g. crow_chat",
+    )
+    parser.add_argument(
+        "--operator-attestation-ref",
+        help="Operator attestation reference bound by the origin surface to task/lane",
+    )
+    parser.add_argument(
+        "--require-crow-chat-attestation",
+        action="store_true",
+        help=(
+            "Fail closed for mutable dispatch unless it carries a Crow-chat origin "
+            "and task/lane-bound operator attestation ref"
+        ),
     )
     parser.add_argument(
         "--dispatch-capability",
@@ -2508,6 +2532,17 @@ def main(argv: list[str] | None = None) -> int:
                         event_log=coord_event_log_from_env(),
                         idempotency_key=args.idempotency_key,
                         reactivate_retired=reactivate_retired_codex_relay,
+                        origin_surface=optional_cli_or_env(
+                            args.origin_surface, "HAPAX_METHODOLOGY_ORIGIN_SURFACE"
+                        ),
+                        operator_attestation_ref=optional_cli_or_env(
+                            args.operator_attestation_ref,
+                            "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF",
+                        ),
+                        require_crow_chat_attestation=(
+                            args.require_crow_chat_attestation
+                            or env_flag("HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION")
+                        ),
                     ),
                     launch_callable=functools.partial(
                         classify_and_witness_launch,
