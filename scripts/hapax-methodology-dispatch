@@ -64,6 +64,7 @@ from shared.g12_crow_chat_gate import (
     SIGNED_BREAKGLASS_REF_ENV,
     child_attestation_env,
     gate_required,
+    next_action_for_reason,
 )
 from shared.gate_event_producer import build_gate_event
 from shared.gate_log import append_gate_event
@@ -2619,7 +2620,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"BLOCKED: {reason}", file=sys.stderr)
                 return 10
             except CoordDispatchError as exc:
-                reason = f"atomic dispatch launch failed: {exc.reason}"
+                next_action = next_action_for_reason(exc.reason)
+                reason = f"atomic dispatch launch failed: {exc.reason}; next action: {next_action}"
                 blocked = Validation(
                     False,
                     reason,

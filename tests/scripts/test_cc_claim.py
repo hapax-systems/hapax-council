@@ -812,6 +812,16 @@ def test_claim_writes_session_keyed_epoch_sidecar(tmp_path: Path) -> None:
     _write_task(home, "active", "cc-sidecar-session")
     sid = "0f9f9f9f-1111-2222-3333-444455556666"
     env = os.environ.copy()
+    for key in (
+        "CODEX_ROLE",
+        "CLAUDE_ROLE",
+        "CODEX_THREAD_NAME",
+        "CODEX_SESSION",
+        "CLAUDE_CODE_SESSION_ID",
+        "HAPAX_AGENT_NAME",
+        "HAPAX_WORKTREE_ROLE",
+    ):
+        env.pop(key, None)
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
     env["HAPAX_SESSION_ID"] = sid

@@ -2311,6 +2311,8 @@ def test_g12_gate_requires_crow_chat_attestation_when_enforced(tmp_path: Path) -
 
     assert result.returncode == 10
     assert "crow_chat_origin_required_for_dispatch" in result.stderr
+    assert "next action:" in result.stderr
+    assert "--origin-surface crow_chat" in result.stderr
 
 
 def test_unsupported_selected_route_writes_blocked_receipt_with_next_action(

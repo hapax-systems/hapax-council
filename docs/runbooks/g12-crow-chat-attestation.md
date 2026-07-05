@@ -55,3 +55,17 @@ scripts/hapax-methodology-dispatch \
 A taskless mutable launch is refused while enforcement is on. Split relay MQ
 broadcasts into one attested dispatch per lane because each ref binds exactly
 one `task_id` to one lane.
+
+Recheck commands:
+
+```bash
+uv run pytest tests/shared/test_g12_crow_chat_gate.py
+uv run pytest tests/shared/test_relay_mq.py tests/scripts/test_cc_claim.py
+uv run pytest tests/scripts/test_g12_crow_chat_launchers.py
+uv run pytest tests/scripts/test_hapax_methodology_dispatch.py::test_g12_gate_requires_crow_chat_attestation_when_enforced tests/scripts/test_hapax_methodology_dispatch.py::test_g12_signed_breakglass_ref_reaches_dispatch_receipt_and_event
+bash -n scripts/cc-claim scripts/hapax-codex scripts/hapax-codex-headless scripts/hapax-claude scripts/hapax-claude-headless scripts/hapax-methodology-dispatch
+```
+
+Those checks exercise taskless refusal, task/lane-bound refs, single-lane MQ
+dispatch, launcher key scrubbing, remote payload propagation, and dispatcher
+failure next-action text.

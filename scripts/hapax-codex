@@ -927,11 +927,7 @@ if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
     echo "hapax-codex: cannot claim task from selected worktree; missing executable $CLAIM_SCRIPT" >&2
     exit 8
   fi
-  if [ "$TERMINAL" = "none" ]; then
-    "$CLAIM_SCRIPT" "$TASK_ID"
-  else
-    preflight_claimable_task "$TASK_ID" "$SESSION"
-  fi
+  "$CLAIM_SCRIPT" "$TASK_ID"
 fi
 
 SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/codex-spawns"
@@ -1114,24 +1110,6 @@ if [ "$TERMINAL" = "foot" ]; then
 fi
 
 RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION").sh"
-CHILD_ARGS=(--session "$SESSION" --slot "$SLOT" --cd "$WORKDIR" --terminal none)
-if [ "$FORCE" -eq 1 ]; then
-  CHILD_ARGS+=(--force)
-fi
-if [ "$CLAIM_TASK" -eq 0 ]; then
-  CHILD_ARGS+=(--no-claim)
-fi
-if [ "$TASK_GATE" -eq 1 ]; then
-  CHILD_ARGS+=(--task-gate)
-fi
-if [ -n "$TASK_ID" ]; then
-  CHILD_ARGS+=(--task "$TASK_ID")
-fi
-if [ -n "$BOOTSTRAP_FILE" ]; then
-  CHILD_ARGS+=(--bootstrap "$BOOTSTRAP_FILE")
-fi
-CHILD_ARGS+=(--)
-CHILD_ARGS+=("${CODEX_EXTRA[@]}")
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 if [ -n "$DISPATCH_HOST" ]; then
@@ -1141,6 +1119,9 @@ if [ -n "$DISPATCH_HOST" ]; then
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
     printf 'trap '\''%q %q --reason "clean exit (codex remote)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$SESSION"
+    printf '%s\n' 'unset HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY'
+    printf '%s\n' 'unset HAPAX_OPERATOR_ATTESTATION_HMAC_KEY'
+    printf '%s\n' 'unset HAPAX_G12_BREAKGLASS_HMAC_KEY'
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
@@ -1175,28 +1156,42 @@ else
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
     printf 'trap '\''%q %q --reason "clean exit (codex)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$SESSION"
+    printf '%s\n' 'unset HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY'
+    printf '%s\n' 'unset HAPAX_OPERATOR_ATTESTATION_HMAC_KEY'
+    printf '%s\n' 'unset HAPAX_G12_BREAKGLASS_HMAC_KEY'
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
-    # Propagate the session id so the re-exec'd inner hapax-codex keeps ONE stable
-    # uuid (reform Phase 1, FM-2) instead of minting a fresh one.
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
+    printf 'export HAPAX_AGENT_INTERFACE=codex\n'
+    printf 'export HAPAX_AGENT_NAME=%q\n' "$SESSION"
+    printf 'export CODEX_THREAD_NAME=%q\n' "$SESSION"
+    printf 'export CODEX_ROLE=%q\n' "$SESSION"
+    printf 'export HAPAX_AGENT_ROLE=%q\n' "$SESSION"
+    printf 'export HAPAX_AGENT_SLOT=%q\n' "$SLOT"
+    printf 'export HAPAX_WORKTREE_ROLE=%q\n' "$SLOT"
+    printf 'export CLAUDE_ROLE=%q\n' "$CLAUDE_ROLE"
+    printf 'export HAPAX_IDLE_UPDATE_SECONDS=%q\n' "$HAPAX_IDLE_UPDATE_SECONDS"
+    printf 'export PASSWORD_STORE_DIR=%q\n' "$PASSWORD_STORE_DIR"
+    printf 'export LOGOS_BASE_URL=%q\n' "$LOGOS_BASE_URL"
+    printf 'export COCKPIT_BASE_URL=%q\n' "$COCKPIT_BASE_URL"
+    printf 'export HAPAX_CC_TASK_GATE=%q\n' "$TASK_GATE"
+    if [ -n "$TASK_ID" ]; then
+      printf 'export HAPAX_METHODOLOGY_DISPATCH_TASK=%q\n' "$TASK_ID"
+    fi
     for _att_env in \
       HAPAX_METHODOLOGY_ORIGIN_SURFACE \
       HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF \
       HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION \
       HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION \
       HAPAX_G12_SIGNED_BREAKGLASS_REF \
-      HAPAX_G12_SIGNED_BREAKGLASS_REASON \
-      HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY \
-      HAPAX_OPERATOR_ATTESTATION_HMAC_KEY \
-      HAPAX_G12_BREAKGLASS_HMAC_KEY; do
+      HAPAX_G12_SIGNED_BREAKGLASS_REASON; do
       if [ -n "${!_att_env:-}" ]; then
         printf 'export %s=%q\n' "$_att_env" "${!_att_env}"
       fi
     done
     printf 'cd %q\n' "$WORKDIR"
-    printf 'exec %q' "$COUNCIL_DIR/scripts/hapax-codex"
-    for arg in "${CHILD_ARGS[@]}"; do
+    printf 'exec %q' "$CODEX_BIN"
+    for arg in "${CODEX_ARGS[@]}"; do
       printf ' %q' "$arg"
     done
     printf '\n'
