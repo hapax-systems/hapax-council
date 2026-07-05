@@ -496,7 +496,7 @@ def truncate_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> str:
         return diff
     marker = (
         f"[diff truncated to balanced per-file excerpts at {limit} chars — "
-        "run `gh pr diff` for the full diff]\n"
+        "fetch the full diff via the REST pull diff endpoint]\n"
     )
     starts = [match.start() for match in re.finditer(r"(?m)^diff --git ", diff)]
     if not starts:

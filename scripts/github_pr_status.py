@@ -9,10 +9,12 @@ or the dequeue mutation.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -448,6 +450,71 @@ def _files_payload_from_rest(files: list[dict[str, Any]]) -> list[dict[str, Any]
     return out
 
 
+def _pull_status_row_from_rest(
+    item: dict[str, Any],
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    include_files: bool = False,
+    include_review_decision: bool = False,
+    include_status: bool = True,
+) -> dict[str, Any]:
+    number = item.get("number")
+    detail = (
+        get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner) if number else None
+    )
+    pull = detail if isinstance(detail, dict) else item
+    head = pull.get("head") if isinstance(pull.get("head"), dict) else {}
+    sha = str(head.get("sha") or "")
+    head_ref = str(head.get("ref") or "")
+    status_ref = sha or head_ref
+    files = (
+        list_pull_files_rest(number, repo=repo, repo_root=repo_root, runner=runner)
+        if (include_files and number)
+        else []
+    )
+    try:
+        changed_files = (
+            int(pull["changed_files"]) if pull.get("changed_files") is not None else None
+        )
+    except (TypeError, ValueError):
+        changed_files = None
+    if changed_files is None and files:
+        changed_files = len(files)
+    labels = pull.get("labels") if isinstance(pull.get("labels"), list) else []
+    return {
+        "number": number,
+        "id": pull.get("node_id") or pull.get("id"),
+        "title": pull.get("title") or "",
+        "body": pull.get("body") or "",
+        "headRefName": head_ref,
+        "headRefOid": sha,
+        "changedFiles": changed_files,
+        "files": _files_payload_from_rest(files) if include_files else None,
+        "isDraft": bool(pull.get("draft")),
+        "labels": labels,
+        "reviewDecision": review_decision_rest(
+            number,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+        )
+        if include_review_decision and number
+        else None,
+        "autoMergeRequest": pull.get("auto_merge"),
+        "mergeStateStatus": rest_merge_state_status(pull),
+        "statusCheckRollup": fetch_status_check_rollup_rest(
+            status_ref,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+        )
+        if include_status and status_ref
+        else [],
+    }
+
+
 def list_open_pr_statuses_rest(
     *,
     repo: str = DEFAULT_REPO,
@@ -456,6 +523,7 @@ def list_open_pr_statuses_rest(
     limit: int = 100,
     include_files: bool = False,
     include_review_decision: bool = False,
+    include_status: bool = True,
 ) -> list[dict[str, Any]]:
     payload = list_pulls_rest(
         repo=repo,
@@ -469,62 +537,68 @@ def list_open_pr_statuses_rest(
     for item in payload:
         if not isinstance(item, dict):
             continue
-        number = item.get("number")
-        detail = (
-            get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner) if number else None
-        )
-        pull = detail if isinstance(detail, dict) else item
-        head = pull.get("head") if isinstance(pull.get("head"), dict) else {}
-        sha = str(head.get("sha") or "")
-        head_ref = str(head.get("ref") or "")
-        status_ref = sha or head_ref
-        files = (
-            list_pull_files_rest(number, repo=repo, repo_root=repo_root, runner=runner)
-            if (include_files and number)
-            else []
-        )
-        try:
-            changed_files = (
-                int(pull["changed_files"]) if pull.get("changed_files") is not None else None
-            )
-        except (TypeError, ValueError):
-            changed_files = None
-        if changed_files is None and files:
-            changed_files = len(files)
-        labels = pull.get("labels") if isinstance(pull.get("labels"), list) else []
         out.append(
-            {
-                "number": number,
-                "id": pull.get("node_id") or pull.get("id"),
-                "title": pull.get("title") or "",
-                "body": pull.get("body") or "",
-                "headRefName": head_ref,
-                "headRefOid": sha,
-                "changedFiles": changed_files,
-                "files": _files_payload_from_rest(files) if include_files else None,
-                "isDraft": bool(pull.get("draft")),
-                "labels": labels,
-                "reviewDecision": review_decision_rest(
-                    number,
-                    repo=repo,
-                    repo_root=repo_root,
-                    runner=runner,
-                )
-                if include_review_decision and number
-                else None,
-                "autoMergeRequest": pull.get("auto_merge"),
-                "mergeStateStatus": rest_merge_state_status(pull),
-                "statusCheckRollup": fetch_status_check_rollup_rest(
-                    status_ref,
-                    repo=repo,
-                    repo_root=repo_root,
-                    runner=runner,
-                )
-                if status_ref
-                else [],
-            }
+            _pull_status_row_from_rest(
+                item,
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+                include_files=include_files,
+                include_review_decision=include_review_decision,
+                include_status=include_status,
+            )
         )
     return out
+
+
+def list_pr_statuses_for_branch_rest(
+    branch: str,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    limit: int = 5,
+    include_status: bool = True,
+) -> list[dict[str, Any]]:
+    payload = list_pulls_for_branch_rest(
+        branch,
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+        state="open",
+        limit=limit,
+    )
+    return [
+        _pull_status_row_from_rest(
+            item,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            include_status=include_status,
+        )
+        for item in payload
+        if isinstance(item, dict)
+    ]
+
+
+def get_pr_status_rest(
+    pr_number: int | str,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    include_status: bool = True,
+) -> dict[str, Any] | None:
+    pull = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+    if not isinstance(pull, dict):
+        return None
+    return _pull_status_row_from_rest(
+        pull,
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+        include_status=include_status,
+    )
 
 
 def graphql_backoff(
@@ -627,3 +701,48 @@ def run_graphql_rate_aware(
         repo_root=repo_root,
         timeout=timeout,
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    open_parser = subparsers.add_parser(
+        "open-prs",
+        help="Emit GraphQL-shaped open PR snapshots fetched through REST/core.",
+    )
+    open_parser.add_argument("--repo", default=DEFAULT_REPO)
+    open_parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    open_parser.add_argument("--head", help="Filter to an open PR head branch.")
+    open_parser.add_argument("--limit", type=int, default=100)
+    open_parser.add_argument(
+        "--no-status",
+        action="store_true",
+        help="Omit per-PR check/status rollups when only PR identity is needed.",
+    )
+
+    args = parser.parse_args(argv)
+    if args.command == "open-prs":
+        include_status = not args.no_status
+        if args.head:
+            rows = list_pr_statuses_for_branch_rest(
+                args.head,
+                repo=args.repo,
+                repo_root=args.repo_root,
+                limit=args.limit,
+                include_status=include_status,
+            )
+        else:
+            rows = list_open_pr_statuses_rest(
+                repo=args.repo,
+                repo_root=args.repo_root,
+                limit=args.limit,
+                include_status=include_status,
+            )
+        json.dump(rows, sys.stdout, sort_keys=True)
+        sys.stdout.write("\n")
+        return 0
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

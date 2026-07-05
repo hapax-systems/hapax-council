@@ -58,6 +58,9 @@ fi
 if ! command -v gh &>/dev/null; then
   exit 0
 fi
+if ! command -v python3 &>/dev/null; then
+  exit 0
+fi
 
 # --- 4. Get current branch (handle detached HEAD) ---
 branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
@@ -73,6 +76,65 @@ elif git show-ref --verify --quiet refs/heads/master; then
 else
   exit 0
 fi
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || exit 0)"
+status_helper="$repo_root/scripts/github_pr_status.py"
+if [[ ! -f "$status_helper" ]]; then
+  exit 0
+fi
+
+github_repo_slug() {
+  if [[ -n "${HAPAX_CC_PR_REPO:-}" ]]; then
+    printf '%s\n' "$HAPAX_CC_PR_REPO"
+    return 0
+  fi
+  local origin slug
+  origin="$(git remote get-url origin 2>/dev/null || true)"
+  case "$origin" in
+    git@github.com:*) slug="${origin#git@github.com:}" ;;
+    ssh://git@github.com/*) slug="${origin#ssh://git@github.com/}" ;;
+    https://github.com/*) slug="${origin#https://github.com/}" ;;
+    http://github.com/*) slug="${origin#http://github.com/}" ;;
+    *) return 1 ;;
+  esac
+  slug="${slug%.git}"
+  case "$slug" in
+    */*) printf '%s\n' "$slug" ;;
+    *) return 1 ;;
+  esac
+}
+
+repo_slug="$(github_repo_slug 2>/dev/null || true)"
+if [[ -z "$repo_slug" ]]; then
+  exit 0
+fi
+
+rest_pr_json() {
+  local limit="$1"
+  shift
+  local args=(
+    python3 "$status_helper" open-prs
+    --repo "$repo_slug"
+    --repo-root "$repo_root"
+    --limit "$limit"
+  )
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --head)
+        args+=(--head "$2")
+        shift 2
+        ;;
+      --no-status)
+        args+=(--no-status)
+        shift
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done
+  "${args[@]}" 2>/dev/null || printf 'error\n'
+}
 
 # --- 6. Feature branch checks (not on main/master) ---
 if [[ "$branch" != "main" && "$branch" != "master" ]]; then
@@ -91,7 +153,7 @@ if [[ "$branch" != "main" && "$branch" != "master" ]]; then
   fi
 
   if [[ "$ahead" -gt 0 ]]; then
-    pr_json="$(gh pr list --head "$branch" --state open --json number,statusCheckRollup 2>/dev/null || echo "error")"
+    pr_json="$(rest_pr_json 5 --head "$branch")"
     if [[ "$pr_json" == "error" ]]; then
       exit 0
     fi
@@ -103,7 +165,11 @@ if [[ "$branch" != "main" && "$branch" != "master" ]]; then
     # already protected by that PR; allow edits. Otherwise block.
     if [[ "$pr_count" -eq 0 ]]; then
       stacked=false
-      open_branches="$(gh pr list --state open --json headRefName --jq '.[].headRefName' 2>/dev/null || true)"
+      open_prs_without_status="$(rest_pr_json 100 --no-status)"
+      open_branches="$(
+        printf '%s' "$open_prs_without_status" |
+          jq -r '.[].headRefName // empty' 2>/dev/null || true
+      )"
       my_head="$(git rev-parse HEAD 2>/dev/null || true)"
       while IFS= read -r other; do
         [[ -z "$other" || "$other" == "$branch" ]] && continue
@@ -130,7 +196,8 @@ if [[ "$branch" != "main" && "$branch" != "master" ]]; then
     # The block only applies from main (section 7 below).
     failed="$(printf '%s' "$pr_json" | jq -r '
       .[0].statusCheckRollup // [] |
-      map(select(.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT" or .conclusion == "ACTION_REQUIRED")) |
+      map((.conclusion // .state // .status // "") | ascii_upcase) |
+      map(select(. == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT" or . == "ACTION_REQUIRED")) |
       length
     ' 2>/dev/null || echo 0)"
 
@@ -147,7 +214,6 @@ fi
 # --- 7. On main: block if open PRs exist whose branch is a LOCAL branch ---
 # Scoped: only blocks if the PR's branch exists in this worktree as a local branch.
 # This way one session's PR doesn't block the other session's worktree.
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null || exit 0)"
 cache_key="$(echo "$repo_root" | md5sum | cut -d' ' -f1)"
 cache_file="/tmp/hapax-wr-gate-${cache_key}.json"
 cache_ttl=60
@@ -224,7 +290,7 @@ if [[ "$use_cache" == true ]]; then
 fi
 
 # Fetch all open PRs for this repo
-all_prs="$(gh pr list --state open --json number,headRefName,statusCheckRollup --limit 100 2>/dev/null || echo "error")"
+all_prs="$(rest_pr_json 100)"
 if [[ "$all_prs" == "error" ]]; then
   echo "[]" > "$cache_file" 2>/dev/null || true
   exit 0
@@ -232,14 +298,15 @@ fi
 
 # Build PR list (exclude dependabot)
 open_prs="$(printf '%s' "$all_prs" | jq '
-  [ .[] | select(.headRefName | startswith("dependabot/") | not) |
+  [ .[] | select((.headRefName // "") | startswith("dependabot/") | not) |
     {
       number: .number,
       branch: .headRefName,
       status: (
-        if (.statusCheckRollup // [] | map(select(.conclusion == "FAILURE")) | length) > 0
+        (.statusCheckRollup // [] | map((.conclusion // .state // .status // "") | ascii_upcase)) as $states |
+        if ($states | map(select(. == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT" or . == "ACTION_REQUIRED")) | length) > 0
         then "failing"
-        elif (.statusCheckRollup // [] | map(select(.conclusion == "" or .conclusion == null)) | length) > 0
+        elif ($states | map(select(. == "" or . == "PENDING" or . == "IN_PROGRESS" or . == "QUEUED" or . == "REQUESTED" or . == "WAITING")) | length) > 0
         then "pending"
         else "passing"
         end

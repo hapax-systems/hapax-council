@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -76,6 +77,55 @@ def _make_repo(tmp_path: Path, default_branch: str = "main") -> Path:
         check=True,
     )
     return tmp_path
+
+
+def _install_rest_status_helper(repo: Path) -> None:
+    scripts = repo / "scripts"
+    scripts.mkdir(exist_ok=True)
+    shutil.copy2(REPO_ROOT / "scripts" / "github_pr_status.py", scripts / "github_pr_status.py")
+
+
+def _install_fake_rest_gh(tmp_path: Path, *, branch: str = "feat/ci") -> tuple[Path, Path]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log_path = tmp_path / "gh-calls.log"
+    fake = bin_dir / "gh"
+    fake.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${{GH_CALL_LOG}}"
+if [[ "${{1:-}}" == "pr" ]]; then
+  echo "unexpected gh pr call" >&2
+  exit 97
+fi
+if [[ "${{1:-}}" != "api" ]]; then
+  echo "unexpected gh command" >&2
+  exit 98
+fi
+path="${{6:-}}"
+case "$path" in
+  repos/owner/repo/pulls)
+    echo '[{{"number":42,"title":"PR 42","body":"","head":{{"ref":"{branch}","sha":"sha-42"}},"draft":false,"state":"open","changed_files":1}}]'
+    ;;
+  repos/owner/repo/pulls/42)
+    echo '{{"number":42,"title":"PR 42","body":"","head":{{"ref":"{branch}","sha":"sha-42"}},"draft":false,"state":"open","changed_files":1,"mergeable_state":"clean"}}'
+    ;;
+  repos/owner/repo/commits/sha-42/check-runs)
+    echo '{{"check_runs":[{{"name":"test","status":"completed","conclusion":"failure"}}]}}'
+    ;;
+  repos/owner/repo/commits/sha-42/status)
+    echo '{{"statuses":[]}}'
+    ;;
+  *)
+    echo "unexpected gh api path: $path" >&2
+    exit 99
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return bin_dir, log_path
 
 
 # ── Tool gating ────────────────────────────────────────────────────
@@ -154,6 +204,66 @@ class TestRepoGating:
         target.write_text("# ok\n")
         result = _run(_edit(target))
         assert result.returncode == 0
+
+    def test_feature_branch_pr_status_uses_rest_helper_not_gh_pr(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        _install_rest_status_helper(repo)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:owner/repo.git"],
+            cwd=repo,
+            check=True,
+        )
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/ci"], cwd=repo, check=True)
+        target = repo / "ok.py"
+        target.write_text("# ok\n")
+        subprocess.run(["git", "add", "ok.py"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "feature"], cwd=repo, check=True)
+        bin_dir, log_path = _install_fake_rest_gh(tmp_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "GH_CALL_LOG": str(log_path),
+                "HAPAX_GITHUB_PR_STATUS_CACHE_TTL_SECONDS": "0",
+            },
+        )
+
+        assert result.returncode == 0
+        assert "has 1 failing check(s)" in result.stderr
+        calls = log_path.read_text(encoding="utf-8")
+        assert "\npr " not in f"\n{calls}"
+        assert "repos/owner/repo/pulls" in calls
+        assert "check-runs" in calls
+
+    def test_main_branch_local_pr_sweep_uses_rest_helper_not_gh_pr(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        _install_rest_status_helper(repo)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "git@github.com:owner/repo.git"],
+            cwd=repo,
+            check=True,
+        )
+        subprocess.run(["git", "branch", "feat/ci"], cwd=repo, check=True)
+        target = repo / "ok.py"
+        target.write_text("# ok\n")
+        bin_dir, log_path = _install_fake_rest_gh(tmp_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "GH_CALL_LOG": str(log_path),
+                "HAPAX_GITHUB_PR_STATUS_CACHE_TTL_SECONDS": "0",
+            },
+        )
+
+        assert result.returncode == 2
+        assert "PR #42 (feat/ci) — failing" in result.stderr
+        calls = log_path.read_text(encoding="utf-8")
+        assert "\npr " not in f"\n{calls}"
+        assert "repos/owner/repo/pulls" in calls
+        assert "check-runs" in calls
 
 
 # ── External-tool gating ───────────────────────────────────────────

@@ -352,7 +352,7 @@ AUTO_FREEZE_THRESHOLD = ADVISORY_OPEN_PR_COUNT  # deprecated alias
 def cmd_auto(args: argparse.Namespace) -> int:
     """Auto-cycle: freeze/thaw from merge-group failure rate.
 
-    Designed for systemd-timer or GitHub-Action invocation every 5 min.
+    Designed for systemd-timer or GitHub-Action invocation on the timer-defined cadence.
     No-op (exit 0) for unrelated cases. Only acts when thresholds cross.
     """
     state = load_state()

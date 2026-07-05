@@ -134,6 +134,24 @@ class TestStatusCommand:
 
 
 class TestClassifyPR:
+    def test_query_open_prs_rollup_feeds_status_classification(self, gov_module) -> None:
+        rows = [
+            {
+                "number": 4436,
+                "headRefName": "codex/cx-ghrate",
+                "statusCheckRollup": [{"name": "test", "conclusion": "FAILURE"}],
+                "mergeStateStatus": "CLEAN",
+            }
+        ]
+        with (
+            patch.object(gov_module.shutil, "which", return_value="/usr/bin/gh"),
+            patch.object(gov_module, "list_open_pr_statuses_rest", return_value=rows),
+        ):
+            prs = gov_module.query_open_prs()
+
+        assert prs == rows
+        assert gov_module.classify_pr(prs[0]) == "failed"
+
     def test_failed(self, gov_module):
         pr = {"statusCheckRollup": [{"conclusion": "FAILURE"}], "mergeStateStatus": ""}
         assert gov_module.classify_pr(pr) == "failed"

@@ -1,6 +1,6 @@
 [Unit]
 Description=Hapax PR admission governor — auto-cycle timer
-Documentation=file://%h/projects/hapax-council/scripts/hapax-pr-admission
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-pr-admission
 
 [Timer]
 # Fire before the heavier PR automation, then run on its own staggered cadence.

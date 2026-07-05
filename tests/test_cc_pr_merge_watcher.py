@@ -111,6 +111,34 @@ class _FakeRunner:
         self.calls.append(list(cmd))
         if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
             path = cmd[6]
+            if path == "search/issues":
+                payload = {"items": [{"number": item["number"]} for item in self.gh_payload]}
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=self.gh_returncode,
+                    stdout=json.dumps(payload),
+                    stderr="",
+                )
+            pull_match = re.fullmatch(r"repos/hapax-systems/hapax-council/pulls/(\d+)", path)
+            if pull_match:
+                number = int(pull_match.group(1))
+
+                def _item_number(item: dict[str, Any]) -> int | None:
+                    try:
+                        return int(item.get("number", -1))
+                    except (TypeError, ValueError):
+                        return None
+
+                payload = next(
+                    (item for item in self.gh_payload if _item_number(item) == number),
+                    None,
+                )
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0 if payload is not None and self.gh_returncode == 0 else 1,
+                    stdout=json.dumps(payload or {}),
+                    stderr="",
+                )
             if path == "repos/hapax-systems/hapax-council/pulls":
                 return subprocess.CompletedProcess(
                     args=cmd,
@@ -234,6 +262,7 @@ class TestFetchMergedPRs:
         assert [p.number for p in merged] == [1, 2]
         assert merged[0].head_branch == "feat/x"
         assert merged[1].merged_at == datetime(2026, 4, 26, 13, 0, tzinfo=UTC)
+        assert any(call[6] == "search/issues" for call in runner.calls)
 
     def test_handles_gh_failure(self, tmp_path: Path) -> None:
         runner = _FakeRunner()

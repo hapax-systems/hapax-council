@@ -22,6 +22,15 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from github_pr_status import (  # noqa: E402
+    DEFAULT_REPO,
+    get_pr_status_rest,
+    list_open_pr_statuses_rest,
+)
 
 from shared.merge_queue_lineage import (  # noqa: E402
     DEFAULT_LEDGER_PATH,
@@ -41,10 +50,6 @@ RUN_LIST_FIELDS = (
     "headSha,name,number,startedAt,status,updatedAt,url,workflowName"
 )
 RUN_VIEW_FIELDS = RUN_LIST_FIELDS + ",jobs"
-PR_FIELDS = (
-    "number,headRefName,headRefOid,state,mergeStateStatus,statusCheckRollup,"
-    "autoMergeRequest,isDraft,body,title,mergedAt,updatedAt,url"
-)
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 
 
@@ -149,24 +154,27 @@ def fetch_prs(
     pr_numbers: set[int],
 ) -> list[dict[str, Any]]:
     """Fetch PR state for open holds and run-specific lineage correlation."""
-    cmd = ["gh", "pr", "list", "--state", "open", "--limit", str(limit), "--json", PR_FIELDS]
-    if repo:
-        cmd.extend(["--repo", repo])
+    repo_name = repo or DEFAULT_REPO
     try:
-        prs = list(run_json(cmd))
-    except RuntimeError as exc:
+        prs = list(
+            list_open_pr_statuses_rest(
+                repo=repo_name,
+                repo_root=REPO_ROOT,
+                runner=subprocess.run,
+                limit=limit,
+            )
+        )
+    except (subprocess.SubprocessError, json.JSONDecodeError) as exc:
         print(f"warning: open PR query failed: {exc}", file=sys.stderr)
         prs = []
 
     seen = {int(pr["number"]) for pr in prs if pr.get("number") is not None}
     for number in sorted(pr_numbers - seen):
-        view_cmd = ["gh", "pr", "view", str(number), "--json", PR_FIELDS]
-        if repo:
-            view_cmd.extend(["--repo", repo])
-        try:
-            prs.append(run_json(view_cmd))
-        except RuntimeError as exc:
-            print(f"warning: PR #{number} query failed: {exc}", file=sys.stderr)
+        pr = get_pr_status_rest(number, repo=repo_name, repo_root=REPO_ROOT, runner=subprocess.run)
+        if pr is not None:
+            prs.append(pr)
+        else:
+            print(f"warning: PR #{number} query failed via REST", file=sys.stderr)
     return prs
 
 

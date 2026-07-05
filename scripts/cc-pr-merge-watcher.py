@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """cc-pr-merge-watcher — auto-close cc-tasks on linked-PR merge (PR3 / H9).
 
-Scans closed pull requests via GitHub REST since the last cursor timestamp, finds
+Searches merged pull requests via GitHub REST since the last cursor timestamp, finds
 vault cc-task notes linked to those PRs (`pr: N` frontmatter), and
 invokes `scripts/cc-close <task_id> --pr N` for each.
 
@@ -89,6 +89,112 @@ class MergedPR:
     head_branch: str
 
 
+def _run_gh_api_json(
+    path: str,
+    *,
+    repo_root: Path,
+    runner: callable[..., subprocess.CompletedProcess],
+    fields: dict[str, str] | None = None,
+    timeout: int = 60,
+) -> Any | None:
+    cmd = [
+        "gh",
+        "api",
+        "--method",
+        "GET",
+        "-H",
+        "Accept: application/vnd.github+json",
+        path,
+    ]
+    for key, value in (fields or {}).items():
+        cmd.extend(["-f", f"{key}={value}"])
+    proc = runner(
+        cmd,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout or "null")
+    except json.JSONDecodeError:
+        return None
+
+
+def _merged_pr_from_rest_item(item: dict[str, Any], *, cursor: datetime) -> MergedPR | None:
+    try:
+        number = int(item["number"])
+        merged_at_raw = str(item.get("mergedAt") or item.get("merged_at") or "")
+        head_payload = item.get("head") if isinstance(item.get("head"), dict) else {}
+        head = str(item.get("headRefName") or head_payload.get("ref") or "")
+    except (KeyError, TypeError, ValueError) as e:
+        LOG.warning("skipping malformed PR record %r: %s", item, e)
+        return None
+    if not _ISO_RE.match(merged_at_raw):
+        LOG.warning("skipping PR #%d with bad mergedAt %r", number, merged_at_raw)
+        return None
+    try:
+        merged_at = datetime.fromisoformat(merged_at_raw.replace("Z", "+00:00"))
+    except ValueError as e:
+        LOG.warning("skipping PR #%d with unparseable mergedAt %r: %s", number, merged_at_raw, e)
+        return None
+    if merged_at <= cursor:
+        return None
+    return MergedPR(number=number, merged_at=merged_at, head_branch=head)
+
+
+def _search_merged_pull_details_rest(
+    cursor: datetime,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: callable[..., subprocess.CompletedProcess],
+    limit: int,
+) -> list[dict[str, Any]] | None:
+    query = f"repo:{repo} is:pr is:merged merged:>={cursor.astimezone(UTC):%Y-%m-%d}"
+    out: list[dict[str, Any]] = []
+    page = 1
+    while len(out) < limit:
+        per_page = min(100, limit - len(out))
+        payload = _run_gh_api_json(
+            "search/issues",
+            repo_root=repo_root,
+            runner=runner,
+            fields={
+                "q": query,
+                "sort": "updated",
+                "order": "desc",
+                "per_page": str(per_page),
+                "page": str(page),
+            },
+        )
+        if not isinstance(payload, dict):
+            return None
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return None
+        if not items:
+            break
+        for search_item in items:
+            if not isinstance(search_item, dict):
+                continue
+            number = search_item.get("number")
+            if number is None:
+                continue
+            detail = get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner)
+            if isinstance(detail, dict):
+                out.append(detail)
+                if len(out) >= limit:
+                    break
+        if len(items) < per_page:
+            break
+        page += 1
+    return out
+
+
 @dataclass
 class LinkedTask:
     """A vault cc-task note linked to a specific PR."""
@@ -144,40 +250,33 @@ def fetch_merged_prs(
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
     cursor_str = cursor.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    LOG.debug("fetching merged PRs newer than %s via REST pulls", cursor_str)
-    items = list_pulls_rest(
+    LOG.debug("fetching merged PRs newer than %s via REST search", cursor_str)
+    items = _search_merged_pull_details_rest(
+        cursor,
         repo=DEFAULT_REPO,
         repo_root=repo_root,
         runner=runner,
-        state="closed",
-        sort="updated",
-        direction="desc",
         limit=limit,
     )
+    if items is None:
+        LOG.warning("REST merged-PR search failed; falling back to closed pulls scan")
+        items = list_pulls_rest(
+            repo=DEFAULT_REPO,
+            repo_root=repo_root,
+            runner=runner,
+            state="closed",
+            sort="updated",
+            direction="desc",
+            limit=limit,
+        )
 
     out: list[MergedPR] = []
     for item in items:
-        try:
-            number = int(item["number"])
-            merged_at_raw = str(item.get("mergedAt") or item.get("merged_at") or "")
-            head_payload = item.get("head") if isinstance(item.get("head"), dict) else {}
-            head = str(item.get("headRefName") or head_payload.get("ref") or "")
-        except (KeyError, TypeError, ValueError) as e:
-            LOG.warning("skipping malformed PR record %r: %s", item, e)
+        if not isinstance(item, dict):
             continue
-        if not _ISO_RE.match(merged_at_raw):
-            LOG.warning("skipping PR #%d with bad mergedAt %r", number, merged_at_raw)
-            continue
-        try:
-            merged_at = datetime.fromisoformat(merged_at_raw.replace("Z", "+00:00"))
-        except ValueError as e:
-            LOG.warning(
-                "skipping PR #%d with unparseable mergedAt %r: %s", number, merged_at_raw, e
-            )
-            continue
-        if merged_at <= cursor:
-            continue
-        out.append(MergedPR(number=number, merged_at=merged_at, head_branch=head))
+        merged = _merged_pr_from_rest_item(item, cursor=cursor)
+        if merged is not None:
+            out.append(merged)
     return out
 
 
