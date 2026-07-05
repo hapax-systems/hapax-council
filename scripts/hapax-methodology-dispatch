@@ -1606,13 +1606,16 @@ def _route_for_route_id(route_id: str) -> PlatformPath | None:
     return route_for(parts[0], parts[1], parts[2])
 
 
-def _decision_selected_route(route_decision: RouteDecision) -> PlatformPath | None:
-    selected_route_id = (
+def _decision_selected_route_id(route_decision: RouteDecision) -> str:
+    return (
         route_decision.dimensional_receipt.selected_route_id
         if route_decision.dimensional_receipt is not None
         else None
-    )
-    return _route_for_route_id(selected_route_id or route_decision.route_id)
+    ) or route_decision.route_id
+
+
+def _decision_selected_route(route_decision: RouteDecision) -> PlatformPath | None:
+    return _route_for_route_id(_decision_selected_route_id(route_decision))
 
 
 def supported_route_lines() -> list[str]:
@@ -2325,7 +2328,13 @@ def main(argv: list[str] | None = None) -> int:
 
     selected_route = _decision_selected_route(route_decision)
     if selected_route is None:
-        reason = f"route policy selected unsupported route: {route_decision.route_id}"
+        unsupported_route_id = _decision_selected_route_id(route_decision)
+        reason = (
+            f"route policy selected unsupported route: {unsupported_route_id}; "
+            "next action: inspect dimensional_selected_route_id in the route decision receipt "
+            "and either add a matching governed PLATFORM_PATHS launcher entry or constrain "
+            "the candidate set to supported governed routes."
+        )
         blocked = Validation(
             False,
             reason,
@@ -2348,6 +2357,8 @@ def main(argv: list[str] | None = None) -> int:
                 route_decision_receipt_path=route_decision_receipt_path,
             )
         print(f"BLOCKED: {reason}", file=sys.stderr)
+        print("Supported governed routes:", file=sys.stderr)
+        print("\n".join(supported_route_lines()), file=sys.stderr)
         return 10
     route = selected_route
     args.platform = route.platform

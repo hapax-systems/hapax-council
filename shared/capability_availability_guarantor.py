@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from shared.platform_capability_registry import (
     AuthSurface,
+    CapacityPool,
     PlatformCapabilityRegistry,
     PlatformCapabilityRoute,
     RouteFreshnessCheck,
@@ -55,6 +56,7 @@ class AvailabilityPredicate(_AvailabilityModel):
     quota_headroom: bool
     not_degraded: bool
     mask_permitted: bool = True
+    account_live_quota_attested: bool = True
 
     @property
     def available(self) -> bool:
@@ -64,6 +66,7 @@ class AvailabilityPredicate(_AvailabilityModel):
             and self.quota_headroom
             and self.not_degraded
             and self.mask_permitted
+            and self.account_live_quota_attested
         )
 
 
@@ -407,14 +410,18 @@ def _availability_predicate(
     freshness: RouteFreshnessCheck,
 ) -> AvailabilityPredicate:
     reason_text = "\n".join([*freshness.errors, *freshness.blocked_reasons]).lower()
+    account_live_quota_attested = _account_live_quota_attested(route, freshness)
     return AvailabilityPredicate(
         admitted=route.route_state is RouteState.ACTIVE and not route.blocked_reasons,
         auth_fresh=not _contains_reason_token(
             reason_text,
             ("auth", "credential", "oauth", "account_live"),
-        ),
-        quota_headroom=not _contains_reason_token(reason_text, ("quota",)),
+        )
+        and account_live_quota_attested,
+        quota_headroom=not _contains_reason_token(reason_text, ("quota",))
+        and account_live_quota_attested,
         not_degraded=freshness.ok,
+        account_live_quota_attested=account_live_quota_attested,
     )
 
 
@@ -433,6 +440,8 @@ def _availability_reason_codes(
         reasons.append("capacity_pool_headroom_not_fresh")
     if not predicate.not_degraded:
         reasons.append("capability_degraded")
+    if not predicate.account_live_quota_attested:
+        reasons.append("account_live_quota_evidence_absent")
     reasons.extend(_blocked_reason_refs(freshness))
     return tuple(dict.fromkeys(reasons))
 
@@ -464,6 +473,29 @@ def _blocked_reason_refs(freshness: RouteFreshnessCheck) -> tuple[str, ...]:
     for reason in freshness.blocked_reasons:
         refs.append(f"blocked_reason:{reason}")
     return tuple(refs)
+
+
+def _account_live_quota_attested(
+    route: PlatformCapabilityRoute,
+    freshness: RouteFreshnessCheck,
+) -> bool:
+    if not (
+        route.auth_surface is AuthSurface.OAUTH
+        and route.capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
+    ):
+        return True
+    return any(_account_live_quota_observed_ref(ref) for ref in freshness.evidence_refs)
+
+
+def _account_live_quota_observed_ref(ref: str) -> bool:
+    normalized = re.sub(r"[\s_]+", "-", ref.strip().lower())
+    if not normalized:
+        return False
+    if any(token in normalized for token in ("unobservable", "absent", "missing", "blocked")):
+        return False
+    if "quota-status:observed" in normalized or "quota-status-observed" in normalized:
+        return True
+    return "account-live" in normalized and "quota" in normalized and "observed" in normalized
 
 
 def _ensure_utc(value: datetime) -> datetime:

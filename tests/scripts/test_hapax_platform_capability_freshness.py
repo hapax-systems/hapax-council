@@ -7,6 +7,10 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+from shared.capability_availability_guarantor import (
+    RefreshStrategyRegistry,
+    evaluate_route_availability,
+)
 from shared.platform_capability_receipts import (
     CliEvidence,
     EvidenceStatus,
@@ -15,7 +19,10 @@ from shared.platform_capability_receipts import (
     SurfaceEvidence,
     WrapperEvidence,
 )
-from shared.platform_capability_registry import load_platform_capability_registry
+from shared.platform_capability_registry import (
+    check_registry_freshness,
+    load_platform_capability_registry,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-platform-capability-freshness"
@@ -181,7 +188,9 @@ def test_json_succeeds_for_fresh_route_fixture(tmp_path: Path) -> None:
     assert payload["routes"][0]["errors"] == []
 
 
-def test_json_applies_receipt_overlay_at_requested_now(tmp_path: Path) -> None:
+def test_json_applies_receipt_overlay_but_oauth_availability_remains_degraded(
+    tmp_path: Path,
+) -> None:
     receipt_dir = tmp_path / "receipts"
     _write_codex_receipt(
         receipt_dir,
@@ -204,6 +213,24 @@ def test_json_applies_receipt_overlay_at_requested_now(tmp_path: Path) -> None:
     assert payload["ok"] is True
     assert route["blocked_reasons"] == []
     assert "platform-capability-receipt:codex:test-codex-receipt" in route["evidence_refs"]
+
+    checked_at = datetime(2026, 5, 9, 21, 0, tzinfo=UTC)
+    registry = load_platform_capability_registry(receipt_dir=receipt_dir, now=checked_at)
+    registry_route = registry.require("codex.headless.full")
+    freshness_check = check_registry_freshness(
+        registry,
+        route_ids=["codex.headless.full"],
+        now=checked_at,
+    ).routes[0]
+    availability = evaluate_route_availability(
+        registry_route,
+        freshness_check,
+        refresh_strategies=RefreshStrategyRegistry(()),
+        now=checked_at,
+    )
+
+    assert availability.available is False
+    assert "account_live_quota_evidence_absent" in availability.reason_codes
 
 
 def test_json_fails_nonzero_for_stale_provider_docs(tmp_path: Path) -> None:

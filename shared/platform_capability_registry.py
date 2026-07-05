@@ -1475,7 +1475,7 @@ def _apply_receipt_to_route_payload(
         *_resource_receipt_removable_reasons(route_payload),
         "provider_docs_evidence_absent",
     }
-    if quota_unobservable_nonblocking:
+    if quota_unobservable_nonblocking or receipt.quota.status is EvidenceStatus.OBSERVED:
         removable_top_blockers.update(_quota_unobservable_removable_reasons(route_payload))
     top_blockers = [reason for reason in top_blockers if reason not in removable_top_blockers]
     route_payload["blocked_reasons"] = list(dict.fromkeys(top_blockers))

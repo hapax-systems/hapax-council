@@ -97,6 +97,12 @@ def _mark_fresh(route: dict) -> None:
         tool["evidence_ref"] = "test:fresh-tool"
 
 
+def _mark_account_live_quota_observed(route: dict) -> None:
+    route["freshness"]["evidence"]["quota"]["evidence_refs"].append(
+        "test:codex:account-live-quota:observed"
+    )
+
+
 def test_codex_routes_are_oauth_auth_surface_with_subscription_capacity() -> None:
     registry = load_platform_capability_registry()
 
@@ -110,6 +116,7 @@ def test_fresh_route_emits_available_receipt_without_refresh() -> None:
     payload = _payload()
     route_payload = _route_payload(payload, "codex.headless.full")
     _mark_fresh(route_payload)
+    _mark_account_live_quota_observed(route_payload)
     registry = PlatformCapabilityRegistry.model_validate(payload)
     route = registry.require("codex.headless.full")
     freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
@@ -120,6 +127,35 @@ def test_fresh_route_emits_available_receipt_without_refresh() -> None:
     assert receipt.status.value == "available"
     assert receipt.refresh_status is RefreshStatus.NOT_REQUIRED
     assert receipt.reason_codes == ()
+
+
+def test_oauth_subscription_route_degrades_when_account_live_quota_is_unobservable() -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    assert freshness.ok is True
+
+    receipt = evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is False
+    assert receipt.status.value == "degraded"
+    assert receipt.predicate.account_live_quota_attested is False
+    assert "account_live_quota_evidence_absent" in receipt.reason_codes
+    assert "auth_surface_not_fresh" in receipt.reason_codes
+    assert "capacity_pool_headroom_not_fresh" in receipt.reason_codes
 
 
 def test_degraded_oauth_route_uses_auth_surface_strategy_registry() -> None:
@@ -387,6 +423,7 @@ def test_registry_availability_mixed_filter_keeps_supported_receipt_but_fails_ov
     payload = _payload()
     route_payload = _route_payload(payload, "codex.headless.full")
     _mark_fresh(route_payload)
+    _mark_account_live_quota_observed(route_payload)
     registry = PlatformCapabilityRegistry.model_validate(payload)
 
     result = evaluate_registry_availability(
@@ -423,6 +460,7 @@ def test_capability_staleness_does_not_masquerade_as_auth_staleness() -> None:
     payload = _payload()
     route_payload = _route_payload(payload, "codex.headless.full")
     _mark_fresh(route_payload)
+    _mark_account_live_quota_observed(route_payload)
     route_payload["freshness"]["capability_checked_at"] = "2026-05-01T00:00:00Z"
     registry = PlatformCapabilityRegistry.model_validate(payload)
     route = registry.require("codex.headless.full")
@@ -454,7 +492,7 @@ def test_reason_token_matching_does_not_overmatch_authority_or_quotable_text() -
             "authority metadata stale",
             "quotable docs stale",
         ),
-        evidence_refs=("test:evidence",),
+        evidence_refs=("test:codex:account-live-quota:observed",),
     )
 
     receipt = evaluate_route_availability(
@@ -482,7 +520,7 @@ def test_reason_token_matching_counts_snake_case_auth_and_quota_tokens() -> None
             "auth_failed",
             "quota_exceeded",
         ),
-        evidence_refs=("test:evidence",),
+        evidence_refs=("test:codex:account-live-quota:observed",),
     )
 
     receipt = evaluate_route_availability(

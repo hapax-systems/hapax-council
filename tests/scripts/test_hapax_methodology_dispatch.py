@@ -36,6 +36,12 @@ def _fresh_registry(tmp_path: Path) -> Path:
     payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
     checked_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     for route in payload["routes"]:
+        quota_refs = [f"test:{route['route_id']}:quota"]
+        if (
+            route.get("auth_surface") == "oauth"
+            and route.get("capacity_pool") == "subscription_quota"
+        ):
+            quota_refs.append(f"test:{route['route_id']}:account-live-quota:observed")
         route["route_state"] = "active"
         route["blocked_reasons"] = []
         route["freshness"]["capability_checked_at"] = checked_at
@@ -48,7 +54,7 @@ def _fresh_registry(tmp_path: Path) -> Path:
                 "blocked_reasons": [],
             },
             "quota": {
-                "evidence_refs": [f"test:{route['route_id']}:quota"],
+                "evidence_refs": quota_refs,
                 "blocked_reasons": [],
             },
             "resource": {
@@ -66,6 +72,24 @@ def _fresh_registry(tmp_path: Path) -> Path:
             tool["observed_at"] = checked_at
     path = tmp_path / "fixtures" / "fresh-platform-capability-registry.json"
     path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _without_account_live_quota_evidence(
+    tmp_path: Path,
+    registry_path: Path,
+    route_id: str,
+) -> Path:
+    payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    for route in payload["routes"]:
+        if route["route_id"] != route_id:
+            continue
+        quota = route["freshness"]["evidence"]["quota"]
+        quota["evidence_refs"] = [
+            ref for ref in quota["evidence_refs"] if "account-live-quota" not in ref
+        ]
+    path = tmp_path / "fixtures" / "no-account-live-platform-capability-registry.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
@@ -2009,6 +2033,82 @@ printf '%s\\n' "$@" > {launcher_args}
     )
 
 
+def test_unsupported_selected_route_writes_blocked_receipt_with_next_action(
+    tmp_path: Path,
+    monkeypatch,
+    capfd,
+) -> None:
+    module = _dispatcher_module()
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+
+    def _unsupported_selection(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        return module.RouteDecision(
+            decision_id="rd-unsupported-selected-route-test",
+            created_at=datetime(2026, 5, 9, 22, 30, tzinfo=UTC),
+            task_id="governed-build",
+            lane="cx-green",
+            route_id="external.headless.full",
+            platform="external",
+            mode="headless",
+            profile="full",
+            action=module.DispatchAction.LAUNCH,
+            policy_outcome="launch",
+            launch_allowed=True,
+            prompt_allowed=True,
+            quality_floor_satisfied=True,
+            authority_allowed=True,
+            reason_codes=("policy_launch",),
+            message="policy_launch",
+        )
+
+    monkeypatch.setattr(module, "evaluate_dispatch_policy", _unsupported_selection)
+
+    rc = module.main(
+        [
+            "--task",
+            "governed-build",
+            "--lane",
+            "cx-green",
+            "--platform",
+            "codex",
+            "--mode",
+            "headless",
+        ]
+    )
+    captured = capfd.readouterr()
+
+    assert rc == 10
+    assert "route policy selected unsupported route: external.headless.full" in captured.err
+    assert "next action: inspect dimensional_selected_route_id" in captured.err
+    assert "Supported governed routes:" in captured.err
+
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["launched"] is False
+    assert receipt["route_policy_action"] == "launch"
+    assert "next action" in receipt["reason"]
+
+
 def test_codex_p0_incident_drain_lane_allows_local_fallback(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
@@ -2852,9 +2952,13 @@ def test_failed_launch_cleans_up_mq_state_and_records_failure(tmp_path: Path) ->
     assert "coord_dispatch.launch_failed" in mirror
 
 
-def test_launch_uses_subscription_receipt_without_policy_rollback(tmp_path: Path) -> None:
+def test_launch_recomposes_from_subscription_receipt_without_account_live(
+    tmp_path: Path,
+) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
+    registry = _fresh_registry(tmp_path)
+    registry = _without_account_live_quota_evidence(tmp_path, registry, "codex.headless.full")
     _task(
         tmp_path / "tasks",
         "governed-build",
@@ -2862,6 +2966,38 @@ def test_launch_uses_subscription_receipt_without_policy_rollback(tmp_path: Path
         kind: build
         authority_case: CASE-TEST-001
         parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: frontier_required
+        authority_level: authoritative
+        mutation_surface: source
+        mutation_scope_refs: []
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: [claude, codex]
+          prohibited_platforms: []
+          required_mode: headless
+          required_profile: full
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
         """,
     )
     bin_dir = tmp_path / "bin"
@@ -2873,7 +3009,7 @@ def test_launch_uses_subscription_receipt_without_policy_rollback(tmp_path: Path
             sys.executable,
             str(RECEIPT_SCRIPT),
             "--registry",
-            str(REGISTRY),
+            str(registry),
             "--receipt-dir",
             str(receipt_dir),
             "--platform",
@@ -2888,7 +3024,7 @@ def test_launch_uses_subscription_receipt_without_policy_rollback(tmp_path: Path
     assert receipt_result.returncode == 0, receipt_result.stderr
 
     launcher_args = tmp_path / "launcher-args.txt"
-    fake_launcher = tmp_path / "launcher" / "hapax-codex"
+    fake_launcher = tmp_path / "launcher" / "hapax-claude-headless"
     fake_launcher.parent.mkdir(parents=True, exist_ok=True)
     fake_launcher.write_text(
         f"""#!/usr/bin/env bash
@@ -2910,8 +3046,8 @@ printf '%s\\n' "$@" > {launcher_args}
         "headless",
         "--launch",
         extra_env={
-            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
-            "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(REGISTRY),
+            "HAPAX_METHODOLOGY_CLAUDE_HEADLESS": str(fake_launcher),
+            "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(registry),
             "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR": str(receipt_dir),
             "XDG_CACHE_HOME": str(tmp_path / "cache"),
         },
@@ -2925,9 +3061,11 @@ printf '%s\\n' "$@" > {launcher_args}
     )
     assert receipt["route_policy_action"] == "launch"
     assert receipt["route_policy_launch_allowed"] is True
-    assert receipt["route_policy_registry_freshness_green"] is True
-    assert receipt["route_policy_quota_freshness_green"] is True
-    assert receipt["route_policy_resource_freshness_green"] is True
+    assert receipt["platform"] == "claude"
+    assert receipt["dimensional_selected_route_id"] == "claude.headless.full"
+    reasons = set(receipt["route_policy_reason_codes"])
+    assert "availability_recomposition_required" in reasons
+    assert "account_live_quota_evidence_absent" in reasons
     assert receipt.get("route_policy_compatibility_mode") in {None, "none"}
 
 
