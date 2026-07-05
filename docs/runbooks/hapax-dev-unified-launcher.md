@@ -23,16 +23,20 @@ the tmux spawn, and the runtime exec all stay in `hapax-claude` /
 (b) refuses collisions by construction, (c) guarantees a fresh session id, and
 (d) handles visibility (attach / window / detach).
 
-`agy` / `antigrav` / `antigravity` is retired as a live dispatch platform,
-lane, route family, and supply leaf. `hapax-dev agy`, `hapax-dev antigrav`, and
-`hapax-dev antigravity` fail closed; any future agy capability must re-enter as
-measured supply leaves with fresh route/resource/governance receipts.
+`antigrav` / `antigravity` is retired as a live dispatch platform, lane, route
+family, and supply leaf. `hapax-dev agy`, `hapax-dev antigrav`, and
+`hapax-dev antigravity` still fail closed in this dev launcher because there is
+no `hapax-dev` Agy session path; Agy's methodology adapter support is live but
+spawnable dispatch still requires a measured route with fresh
+route/resource/governance receipts.
 
 Recheck the admitted governed route set with:
 
 ```bash
 uv run python scripts/hapax-methodology-dispatch --list-platform-paths
+test -z "$(uv run python scripts/hapax-methodology-dispatch --list-platform-paths | rg -i 'antigrav|agy' || true)"
 uv run pytest tests/scripts/test_hapax_dev.py -q
+uv run pytest tests/scripts/test_hapax_methodology_dispatch.py::test_dispatch_worker_adapter_map_includes_live_worker_families tests/test_capability_adapter_protocol.py::test_platform_classvars_are_pinned -q
 ```
 
 ## Identities (interactive pools, distinct from the supervised fleet)

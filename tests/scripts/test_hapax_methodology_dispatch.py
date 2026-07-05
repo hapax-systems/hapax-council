@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from shared.relay_mq import send_message
 from shared.relay_mq_envelope import Envelope
 
@@ -1054,6 +1056,315 @@ def test_receipt_contains_task_and_authority(tmp_path: Path) -> None:
     assert receipt["route_policy_action"] == "launch"
     assert receipt["dimensional_route_receipt_schema"] == 1
     assert receipt["dimensional_selected_route_id"] == "claude.headless.full"
+
+
+def test_dispatch_admission_reuses_worker_adapter_map(monkeypatch) -> None:
+    module = _dispatcher_module()
+    request = object()
+    sentinel = object()
+    calls: list[object] = []
+
+    class SpyAdapter:
+        def admit(self, policy_request: object) -> object:
+            calls.append(policy_request)
+            return sentinel
+
+    monkeypatch.setitem(module._WORKER_FAILURE_ADAPTERS, "codex", SpyAdapter)
+
+    adapter = module._capability_adapter_for_admission("codex")
+
+    assert adapter.admit(request) is sentinel
+    assert calls == [request]
+
+
+def test_dispatch_main_uses_adapter_admit_for_route_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _dispatcher_module()
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    seen_platforms: list[str] = []
+    seen_requests: list[object] = []
+
+    class HoldingAdapter:
+        def admit(self, policy_request):
+            seen_requests.append(policy_request)
+            return module.RouteDecision(
+                decision_id="rd-adapter-fixture",
+                created_at=datetime(2026, 7, 5, tzinfo=UTC),
+                task_id=policy_request.task_id,
+                lane=policy_request.lane,
+                route_id=policy_request.route_id,
+                platform=policy_request.platform,
+                mode=policy_request.mode,
+                profile=policy_request.profile,
+                action=module.DispatchAction.HOLD,
+                policy_outcome="adapter_fixture_hold",
+                launch_allowed=False,
+                prompt_allowed=False,
+                quality_floor_satisfied=True,
+                authority_allowed=True,
+                reason_codes=("adapter_fixture_hold",),
+                message="fixture adapter admission hold",
+            )
+
+    def adapter_for_admission(platform: str) -> HoldingAdapter:
+        seen_platforms.append(platform)
+        return HoldingAdapter()
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setattr(module, "_capability_adapter_for_admission", adapter_for_admission)
+
+    rc = module.main(
+        [
+            "--task",
+            "governed-build",
+            "--lane",
+            "cx-green",
+            "--platform",
+            "codex",
+            "--mode",
+            "headless",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 10
+    assert seen_platforms == ["codex"]
+    assert len(seen_requests) == 1
+    assert "fixture adapter admission hold" in captured.err
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["route_decision_id"] == "rd-adapter-fixture"
+    assert receipt["route_policy_action"] == "hold"
+    assert receipt["route_policy_reason_codes"] == ["adapter_fixture_hold"]
+
+
+def test_dispatch_admission_falls_back_to_base_adapter_for_non_worker_route() -> None:
+    module = _dispatcher_module()
+
+    adapter = module._capability_adapter_for_admission("api")
+
+    assert type(adapter) is module.CapabilityAdapter
+    assert not isinstance(adapter, module.WorkerAdapter)
+
+
+def test_dispatch_worker_adapter_map_includes_live_worker_families() -> None:
+    module = _dispatcher_module()
+
+    assert module._WORKER_FAILURE_ADAPTERS["agy"] is module.AgyAdapter
+    assert isinstance(module._worker_adapter_for_launch("agy"), module.AgyAdapter)
+    assert module._WORKER_FAILURE_ADAPTERS["vibe"] is module.VibeAdapter
+    assert isinstance(module._worker_adapter_for_launch("vibe"), module.VibeAdapter)
+
+
+def test_dispatch_launch_requires_worker_adapter() -> None:
+    module = _dispatcher_module()
+
+    with pytest.raises(module.AuthorityViolation, match="no WorkerAdapter registered"):
+        module._worker_adapter_for_launch("api")
+
+
+def test_dispatch_launch_adapter_rejects_non_launch_decision_before_side_effect() -> None:
+    module = _dispatcher_module()
+    decision = module.RouteDecision(
+        decision_id="rd-test",
+        created_at=datetime(2026, 7, 5, tzinfo=UTC),
+        task_id="governed-build",
+        lane="cx-green",
+        route_id="codex.headless.full",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        action=module.DispatchAction.HOLD,
+        policy_outcome="held",
+        launch_allowed=False,
+        prompt_allowed=False,
+        quality_floor_satisfied=True,
+        authority_allowed=True,
+        reason_codes=("held_for_test",),
+        message="held for test",
+    )
+    launch_called = False
+
+    def launch_callable() -> int:
+        nonlocal launch_called
+        launch_called = True
+        return 0
+
+    with pytest.raises(module.AuthorityViolation, match="not authorized"):
+        module._worker_adapter_for_launch("codex").launch(
+            decision=decision,
+            request=object(),
+            launch_callable=launch_callable,
+        )
+
+    assert launch_called is False
+
+
+def test_launch_authority_violation_writes_blocked_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _dispatcher_module()
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    args = (
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+    )
+    mq_db, message_id = _maybe_write_durable_mq_binding(tmp_path, args)
+    assert message_id is not None
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_COORD_LEDGER_DB", str(tmp_path / "coord" / "ledger.db"))
+    monkeypatch.setenv("HAPAX_COORD_JSONL_MIRROR", str(tmp_path / "coord" / "ledger.jsonl"))
+    monkeypatch.setenv("HAPAX_COORD_SPOOL_DIR", str(tmp_path / "coord" / "spool"))
+    monkeypatch.setenv("HAPAX_RELAY_MQ_DB", str(mq_db))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID", message_id)
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setattr(module, "_await_sdlc_admission", lambda args: None)
+
+    class RefusingAdapter:
+        def launch(self, *, decision, request, launch_callable):
+            raise module.AuthorityViolation("fixture refusal")
+
+    monkeypatch.setattr(module, "_worker_adapter_for_launch", lambda platform: RefusingAdapter())
+
+    rc = module.main(list(args))
+
+    captured = capsys.readouterr()
+    assert rc == 10
+    assert "BLOCKED: capability adapter launch refused: fixture refusal" in captured.err
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["launched"] is False
+    assert receipt["route_policy_action"] == "launch"
+    assert receipt["durable_mq_dispatch_bound"] is True
+    assert receipt["reason"] == "capability adapter launch refused: fixture refusal"
+
+
+def test_dispatch_main_launches_through_worker_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _dispatcher_module()
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    args = (
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+    )
+    mq_db, message_id = _maybe_write_durable_mq_binding(tmp_path, args)
+    assert message_id is not None
+    launcher_args = tmp_path / "codex-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+    launch_calls: list[tuple[str, str]] = []
+
+    class SpyCodexAdapter(module.CodexAdapter):
+        def launch(self, *, decision, request, launch_callable):
+            launch_calls.append((decision.action.value, request.platform))
+            return super().launch(
+                decision=decision,
+                request=request,
+                launch_callable=launch_callable,
+            )
+
+    monkeypatch.setitem(module._WORKER_FAILURE_ADAPTERS, "codex", SpyCodexAdapter)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_COORD_LEDGER_DB", str(tmp_path / "coord" / "ledger.db"))
+    monkeypatch.setenv("HAPAX_COORD_JSONL_MIRROR", str(tmp_path / "coord" / "ledger.jsonl"))
+    monkeypatch.setenv("HAPAX_COORD_SPOOL_DIR", str(tmp_path / "coord" / "spool"))
+    monkeypatch.setenv("HAPAX_RELAY_MQ_DB", str(mq_db))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID", message_id)
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CODEX_HEADLESS", str(fake_launcher))
+    monkeypatch.setattr(module, "_await_sdlc_admission", lambda args: None)
+
+    rc = module.main(list(args))
+
+    assert rc == 0
+    assert launch_calls == [("launch", "codex")]
+    assert launcher_args.exists()
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["route_policy_action"] == "launch"
+    assert receipt["launched"] is True
 
 
 def test_policy_hold_writes_route_decision_before_prompt_or_launch(tmp_path: Path) -> None:
@@ -2858,6 +3169,124 @@ printf '%s\\n' "$@" > {launcher_args}
     assert "quality_floor_not_satisfied" in result.stderr
 
 
+def test_vibe_mutable_launch_reaches_existing_launcher(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "bounded-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: deterministic_ok
+        authority_level: support_non_authoritative
+        mutation_surface: source
+        mutation_scope_refs: []
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: []
+          prohibited_platforms: []
+          required_mode: null
+          required_profile: null
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
+        """,
+        route_metadata_defaults=False,
+    )
+    launcher_args = tmp_path / "vibe-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-vibe"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "bounded-build",
+        "--lane",
+        "vbe-1",
+        "--platform",
+        "vibe",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_VIBE_LAUNCHER": str(fake_launcher)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert args[:6] == ["--session", "vbe-1", "--terminal", "tmux", "--task", "bounded-build"]
+    assert "--prompt" in args
+    assert "--force" in args
+
+
+def test_agy_dispatch_remains_route_gated_without_spawnable_route(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "agy",
+        "--mode",
+        "headless",
+        "--launch",
+    )
+
+    assert result.returncode == 10
+    assert "route policy" in result.stderr
+    assert "Supported governed routes:" in result.stderr
+    assert "agy/" not in result.stderr
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["platform"] == "agy"
+    assert receipt["launched"] is False
+    assert receipt["route_policy_action"] != "launch"
+    assert "unsupported_route" in receipt["route_policy_reason_codes"]
+
+
 def test_gemini_platform_is_not_dispatchable(tmp_path: Path) -> None:
     result = _run(
         tmp_path,
@@ -2886,6 +3315,7 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert "claude/headless/sonnet" in result.stdout
     assert "gemini/" not in result.stdout
     assert "antigrav/" not in result.stdout
+    assert "agy/" not in result.stdout
     assert "api/headless/api_frontier" in result.stdout
     assert "api/headless/openrouter" in result.stdout
     assert "api/headless/provider_gateway" in result.stdout
@@ -2899,8 +3329,8 @@ def test_normalizes_openrouter_api_profile_aliases() -> None:
     assert dispatcher.normalize_profile("api", "openrouter") == "openrouter"
 
 
-def test_antigrav_platform_is_not_dispatchable(tmp_path: Path) -> None:
-    for platform in ("agy", "antigrav", "Antigrav", "antigravity", "gemini-cli"):
+def test_legacy_antigrav_platforms_are_not_dispatchable(tmp_path: Path) -> None:
+    for platform in ("antigrav", "Antigrav", "antigravity", "gemini-cli"):
         result = _run(
             tmp_path,
             "--task",
@@ -2915,7 +3345,8 @@ def test_antigrav_platform_is_not_dispatchable(tmp_path: Path) -> None:
 
         assert result.returncode == 10
         assert f"platform '{platform.lower()}' is retired/excised" in result.stderr
-        assert "measured agy supply-leaf intake" in result.stderr
+        assert "Use admitted Claude, Codex, or Vibe routes." in result.stderr
+        assert "Agy adapter support is live" in result.stderr
 
 
 def test_codex_launch_unsupported_mode_fails_closed(tmp_path: Path) -> None:
