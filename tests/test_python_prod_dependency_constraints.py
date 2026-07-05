@@ -6,7 +6,8 @@ import subprocess
 import sys
 import textwrap
 import tomllib
-from importlib.metadata import version
+from importlib import import_module
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import pytest
@@ -69,6 +70,10 @@ REQUIRED_SPECS = {
     ("tool.uv.override-dependencies", "pillow"): ">=12.3.0",
 }
 
+REQUIRED_EXTRAS = {
+    ("project.optional-dependencies.audio", "pipecat-ai"): frozenset({"openai", "silero"}),
+}
+
 
 def _load_pyproject() -> dict:
     return tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -116,6 +121,14 @@ def _run_clean_python(script: str) -> None:
         )
 
 
+def _optional_distribution_installed(distribution: str) -> bool:
+    try:
+        version(distribution)
+    except PackageNotFoundError:
+        return False
+    return True
+
+
 def test_review_blocked_python_prod_specs_keep_abi_and_major_caps() -> None:
     pyproject = _load_pyproject()
 
@@ -127,6 +140,11 @@ def test_review_blocked_python_prod_specs_keep_abi_and_major_caps() -> None:
         )
         assert requirements[package_name].specifier == SpecifierSet(expected_specifier), (
             f"{package_name} in {group_path} must keep specifier {expected_specifier}. "
+            f"{NEXT_ACTION}"
+        )
+        expected_extras = REQUIRED_EXTRAS.get((group_path, package_name), frozenset())
+        assert requirements[package_name].extras == expected_extras, (
+            f"{package_name} in {group_path} must keep extras {sorted(expected_extras)}. "
             f"{NEXT_ACTION}"
         )
 
@@ -275,71 +293,112 @@ def test_core_dependency_runtime_smoke_paths() -> None:
 
 
 def test_logos_and_google_dependency_runtime_smoke_paths() -> None:
-    pytest.importorskip("googleapiclient.discovery")
-    pytest.importorskip("google_auth_oauthlib.flow")
-    pytest.importorskip("google.cloud.pubsub_v1")
-    pytest.importorskip("langfuse")
-    pytest.importorskip("sse_starlette.sse")
+    exercised: list[str] = []
 
-    from google.auth.credentials import AnonymousCredentials
-    from google.cloud import pubsub_v1
-    from google_auth_oauthlib.flow import Flow
-    from langfuse import Langfuse
-    from sse_starlette.sse import EventSourceResponse
-    from uvicorn import Config
+    if _optional_distribution_installed("google-api-python-client"):
+        discovery = import_module("googleapiclient.discovery")
+        assert discovery.build.__name__ == "build", NEXT_ACTION
+        exercised.append("google-api-python-client")
 
-    assert AnonymousCredentials().expired is False, NEXT_ACTION
-    publisher = pubsub_v1.PublisherClient(credentials=AnonymousCredentials())
-    assert (
-        publisher.topic_path("project-id", "topic-id") == "projects/project-id/topics/topic-id"
-    ), NEXT_ACTION
-    flow = Flow.from_client_config(
-        {
-            "installed": {
-                "client_id": "id.apps.googleusercontent.com",
-                "client_secret": "secret",
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": ["http://localhost"],
-            }
-        },
-        scopes=["https://www.googleapis.com/auth/gmail.readonly"],
-    )
-    assert flow.oauth2session.scope == ["https://www.googleapis.com/auth/gmail.readonly"], (
-        NEXT_ACTION
-    )
+    if _optional_distribution_installed("google-cloud-pubsub"):
+        from google.auth.credentials import AnonymousCredentials
 
-    async def events():
-        yield {"event": "ping", "data": "ok"}
+        pubsub_v1 = import_module("google.cloud.pubsub_v1")
+        assert AnonymousCredentials().expired is False, NEXT_ACTION
+        publisher = pubsub_v1.PublisherClient(credentials=AnonymousCredentials())
+        assert publisher.topic_path("project-id", "topic-id") == (
+            "projects/project-id/topics/topic-id"
+        ), NEXT_ACTION
+        exercised.append("google-cloud-pubsub")
 
-    assert EventSourceResponse(events()).media_type == "text/event-stream", NEXT_ACTION
-    langfuse = Langfuse(
-        public_key="pk-lf-test",
-        secret_key="sk-lf-test",
-        host="http://127.0.0.1:1",
-    )
-    assert type(langfuse).__name__ == "Langfuse", NEXT_ACTION
-    langfuse.shutdown()
-    assert Config("example:app").host == "127.0.0.1", NEXT_ACTION
+    if _optional_distribution_installed("google-auth-oauthlib"):
+        flow_module = import_module("google_auth_oauthlib.flow")
+        flow = flow_module.Flow.from_client_config(
+            {
+                "installed": {
+                    "client_id": "id.apps.googleusercontent.com",
+                    "client_secret": "secret",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": ["http://localhost"],
+                }
+            },
+            scopes=["https://www.googleapis.com/auth/gmail.readonly"],
+        )
+        assert flow.oauth2session.scope == ["https://www.googleapis.com/auth/gmail.readonly"], (
+            NEXT_ACTION
+        )
+        exercised.append("google-auth-oauthlib")
+
+    if _optional_distribution_installed("sse-starlette"):
+        event_module = import_module("sse_starlette.sse")
+
+        async def events():
+            yield {"event": "ping", "data": "ok"}
+
+        assert event_module.EventSourceResponse(events()).media_type == "text/event-stream", (
+            NEXT_ACTION
+        )
+        exercised.append("sse-starlette")
+
+    if _optional_distribution_installed("langfuse"):
+        langfuse_module = import_module("langfuse")
+        langfuse = langfuse_module.Langfuse(
+            public_key="pk-lf-test",
+            secret_key="sk-lf-test",
+            host="http://127.0.0.1:1",
+        )
+        assert type(langfuse).__name__ == "Langfuse", NEXT_ACTION
+        langfuse.shutdown()
+        exercised.append("langfuse")
+
+    if _optional_distribution_installed("uvicorn"):
+        uvicorn_config = import_module("uvicorn").Config
+        assert uvicorn_config("example:app").host == "127.0.0.1", NEXT_ACTION
+        exercised.append("uvicorn")
+
+    if not exercised:
+        pytest.skip("logos/google optional dependencies are not installed")
 
 
 def test_audio_and_tui_dependency_runtime_smoke_paths() -> None:
-    pytest.importorskip("essentia")
-    pytest.importorskip("mediapipe")
-    pytest.importorskip("soundfile")
-    pytest.importorskip("textual")
-    pytest.importorskip("torchcodec")
+    exercised: list[str] = []
 
-    import essentia
-    import mediapipe as mp
-    import soundfile
-    from textual.app import ComposeResult
+    if _optional_distribution_installed("essentia"):
+        essentia = import_module("essentia")
+        assert essentia.__version__.startswith("2.1-beta6"), NEXT_ACTION
+        exercised.append("essentia")
 
-    assert essentia.__version__.startswith("2.1-beta6"), NEXT_ACTION
-    assert mp.__version__, NEXT_ACTION
-    assert soundfile.__version__, NEXT_ACTION
-    assert Version(version("torchcodec")) in SpecifierSet("==0.10.*"), NEXT_ACTION
-    assert ComposeResult, NEXT_ACTION
+    if _optional_distribution_installed("mediapipe"):
+        mediapipe = import_module("mediapipe")
+        assert mediapipe.__version__, NEXT_ACTION
+        exercised.append("mediapipe")
+
+    if _optional_distribution_installed("soundfile"):
+        soundfile = import_module("soundfile")
+        assert soundfile.__version__, NEXT_ACTION
+        exercised.append("soundfile")
+
+    if _optional_distribution_installed("textual"):
+        textual_app = import_module("textual.app")
+        assert textual_app.ComposeResult, NEXT_ACTION
+        exercised.append("textual")
+
+    if _optional_distribution_installed("torchcodec"):
+        assert Version(version("torchcodec")) in SpecifierSet("==0.10.*"), NEXT_ACTION
+        _run_clean_python(
+            f"""
+            import torchcodec
+
+            NEXT_ACTION = {NEXT_ACTION!r}
+
+            assert torchcodec.__name__ == "torchcodec", NEXT_ACTION
+            """
+        )
+        exercised.append("torchcodec")
+
+    if not exercised:
+        pytest.skip("audio/tui optional dependencies are not installed")
 
 
 def test_torch_torchvision_clean_subprocess_abi_smoke_path() -> None:
@@ -412,8 +471,12 @@ def test_additional_bumped_dependency_runtime_smoke_paths() -> None:
 
         if importlib.util.find_spec("pipecat") is not None:
             import pipecat
+            from pipecat.audio.vad.silero import SileroVADAnalyzer
+            from pipecat.services.openai.llm import OpenAILLMService
 
             assert Version(pipecat.__version__) in SpecifierSet(">=1.4.0"), NEXT_ACTION
+            assert SileroVADAnalyzer.__name__ == "SileroVADAnalyzer", NEXT_ACTION
+            assert OpenAILLMService.__name__ == "OpenAILLMService", NEXT_ACTION
         if importlib.util.find_spec("omegaconf") is not None:
             from omegaconf import OmegaConf
 
