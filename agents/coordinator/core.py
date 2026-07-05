@@ -36,6 +36,9 @@ from shared.dispatch_service_time import (
     wsjf_effective,
 )
 from shared.dispatcher_policy import LOCAL_DEV_TARGET
+from shared.gate_event_producer import build_gate_event
+from shared.gate_log import append_gate_event
+from shared.intake_fit_scorer import composite_rank_key, fit_score
 from shared.jsonl_append import append_jsonl
 from shared.notify import send_notification
 from shared.recovery_governor import converge_action_cap
@@ -58,6 +61,22 @@ def _positive_env_float(name: str, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return value if value > 0 else default
+
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a finite float env var with no sign constraint (allows 0 and negatives).
+
+    For knobs like the intake-fit blend where 0.0 is the default-off golden state and a
+    negative value is a valid operator dial — ``_positive_env_float`` would clamp both.
+    Non-finite values (``nan``/``inf``) fall back to default — a NaN blend would otherwise
+    poison the rank-key's ``max()`` sort (``nan == 0.0`` is False, so it would flow through
+    ``composite_rank_key`` and return NaN).
+    """
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if math.isfinite(value) else default
 
 
 def _ntfy_escalate(title: str, body: str) -> None:
@@ -88,6 +107,22 @@ def pressure_dispatch_budget(
 def _queue_task_routable(task: QueueTask, lane: QueueLane) -> bool:
     platforms = {platform.lower() for platform in task.platform_suitability}
     return "any" in platforms or lane.platform.lower() in platforms
+
+
+def _task_fields_for_gate_event(task: Task) -> dict[str, object]:
+    """Project a parsed ``Task`` into the frontmatter-shaped mapping ``build_gate_event``
+    reads (task_id / requirement_vector / routing_class / kind / mutation_surface).
+
+    The coordinator holds a parsed ``Task``, not raw frontmatter; this is the faithful
+    bridge so the producer's classification + hashing logic is reused, not duplicated.
+    """
+    return {
+        "task_id": task.task_id,
+        "requirement_vector": dict(task.requirement_vector) if task.requirement_vector else {},
+        "routing_class": task.routing_class or "",
+        "kind": task.kind,
+        "mutation_surface": task.mutation_surface or "",
+    }
 
 
 TASKS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
@@ -151,6 +186,15 @@ MAX_REOFFERS_PER_TASK = 3  # per-lifetime cap: after N, escalate (block + ntfy),
 DISPATCH_SERVICE_TIME_CACHE_NAME = "dispatch-service-time.json"
 # Revert env: restore the exact prior fixed-T, raw-WSJF greedy-global behavior.
 SCHEDULER_LEGACY_ENV = "HAPAX_DISPATCH_SCHEDULER_LEGACY"
+# Intake fit-shadow: blend the demand-shape fit_score into the dispatch rank-key.
+# Default 0.0 => composite short-circuits to wsjf_effective (byte-identical plan, the
+# golden guarantee); a non-zero value (positive OR negative) is the operator's dial.
+INTAKE_FIT_BLEND_ENV = "HAPAX_INTAKE_FIT_BLEND"
+# Convergence contract: emit one admission GateEvent per planned dispatch to the
+# gate-events.jsonl plane reins' :route lens reads (off by default — the shadow-diff
+# discipline; flip to 1 to light the feed). Reuses build_gate_event (no parallel logic)
+# and stamps the spine's fit_score. Fail-open: a lost measurement must never crash tick.
+INTAKE_FIT_OBSERVE_ENV = "HAPAX_INTAKE_FIT_OBSERVE"
 
 
 @dataclass(frozen=True)
@@ -319,6 +363,11 @@ class Coordinator:
         # bb-dispatch-scheduler: load the measured per-lineage service-time cache once.
         # `legacy` restores the prior fixed-T / raw-WSJF behavior exactly (revert env).
         legacy = os.environ.get(SCHEDULER_LEGACY_ENV) == "1"
+        # bb-intake-fit-shadow: blend the demand-shape fit_score into the dispatch
+        # rank-key. Default 0.0 => byte-identical to pure WSJF (the golden guarantee).
+        fit_blend = _env_float(INTAKE_FIT_BLEND_ENV, 0.0)
+        # Convergence contract: light the gate-events.jsonl feed reins :route reads.
+        observe_fit = os.environ.get(INTAKE_FIT_OBSERVE_ENV) == "1"
         cache = None if legacy else _load_dispatch_cache()
 
         # Project ground-truth `stalled` for every lane, then reoffer held tasks off
@@ -386,9 +435,15 @@ class Coordinator:
             max_dispatches=max_dispatches,
             age_norm_s=age_norm_s,
             legacy=legacy,
+            fit_blend=fit_blend,
         )
         plan, skipped_cooldown = self._repair_cooled_plan(
-            plan, queue_tasks, queue_lanes, age_norm_s=age_norm_s, now_mono=now_mono
+            plan,
+            queue_tasks,
+            queue_lanes,
+            age_norm_s=age_norm_s,
+            now_mono=now_mono,
+            fit_blend=fit_blend,
         )
         task_by_id = {t.task_id: t for t in offered}
         lane_by_role = {l.role: l for l in idle_lanes}
@@ -406,6 +461,10 @@ class Coordinator:
             else:
                 # Every failed dispatch is recorded — no silent retries.
                 self._refusal_ledger.record_refusal(task_id, role, refusal_reason, now=now_mono)
+            # Convergence contract: emit one admission gate-event per planned dispatch
+            # to the gate-events.jsonl plane reins' :route lens reads (flag-gated + fail-open).
+            if observe_fit:
+                self._emit_admission_gate_event(task, lane, accepted=success)
 
         state.dispatches_this_tick = dispatches
         state.lanes = {role: _lane_to_dict(l) for role, l in lanes.items()}
@@ -490,6 +549,7 @@ class Coordinator:
         *,
         age_norm_s: float,
         now_mono: float,
+        fit_blend: float = 0.0,
     ) -> tuple[list[tuple[str, str]], int]:
         """No-spin law for the planned dispatches: drop refusal-cooled pairs and
         replan their freed lane to the best eligible non-cooled task.
@@ -528,12 +588,48 @@ class Coordinator:
                 and not cooled(t.task_id, role)
             ]
             if candidates:
-                best = max(candidates, key=lambda t: wsjf_effective(t.wsjf, t.age_s, age_norm_s))
+                best = max(
+                    candidates,
+                    key=lambda t: composite_rank_key(
+                        wsjf_effective(t.wsjf, t.age_s, age_norm_s),
+                        fit_score(t.requirement_vector),
+                        blend=fit_blend,
+                    ),
+                )
                 repaired.append((best.task_id, role))
                 planned.add(best.task_id)
             else:
                 skipped += 1
         return repaired, skipped
+
+    def _emit_admission_gate_event(self, task: Task, lane: LaneState, *, accepted: bool) -> None:
+        """Emit one observational admission ``GateEvent`` for a planned dispatch.
+
+        Reuses ``build_gate_event`` (the designated admission assembler — no parallel
+        logic) for routing_class resolution + requirement_vector + task_hash, then
+        stamps the spine's ``fit_score`` and ``provenance="admission"``. Fail-open: any
+        assembly or I/O error is logged and swallowed — a lost measurement must never
+        crash the dispatch tick (observation is best-effort, the plan is authoritative).
+        Lights the ``gate-events.jsonl`` feed the reins ``:route`` lens reads.
+        """
+        try:
+            event = build_gate_event(
+                _task_fields_for_gate_event(task),
+                route=lane.platform,
+                demand_vector=None,
+                gate_result="accept" if accepted else "reject",
+            )
+            # Stamp the measured score only when the vector was measured-complete: the
+            # producer sets event.requirement_vector non-empty iff the explicit 8-dim
+            # vector was valid, so a DARK/partial task stamps None (no measured demand),
+            # mirroring reins' _measured_reqvec_or_absent honesty (not 0.0-as-measured).
+            event.fit_score = (
+                fit_score(task.requirement_vector) if event.requirement_vector else None
+            )
+            event.provenance = "admission"
+            append_gate_event(event)
+        except Exception:  # noqa: BLE001 - observation is best-effort; never block dispatch.
+            log.warning("admission gate-event emit failed for task=%s", task.task_id, exc_info=True)
 
     def _dispatch(self, task: Task, lane: LaneState) -> tuple[bool, str]:
         """Attempt to dispatch a task to a lane.
