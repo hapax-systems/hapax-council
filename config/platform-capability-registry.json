@@ -581,6 +581,7 @@
       "route_state": "blocked",
       "blocked_reasons": [
         "capabilityio_measurement_absent",
+        "capability_scores_asserted_not_measured",
         "openrouter_litellm_route_receipt_absent",
         "openrouter_key_secret_receipt_absent",
         "openrouter_paid_budget_receipt_absent",

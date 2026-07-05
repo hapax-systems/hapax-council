@@ -288,6 +288,7 @@ def test_openrouter_frontier_route_is_blocked_until_measurement_budget_and_key()
     assert route.tool_access.filesystem.value == "read_write"
     assert route.tool_access.shell.value == "full"
     assert "capabilityio_measurement_absent" in route.blocked_reasons
+    assert "capability_scores_asserted_not_measured" in route.blocked_reasons
     assert "openrouter_paid_budget_receipt_absent" in route.blocked_reasons
     assert "openrouter_served_model_witness_absent" in route.blocked_reasons
 
@@ -548,6 +549,11 @@ def test_provider_gateway_receipt_clears_gateway_evidence_blockers() -> None:
         not in route["freshness"]["evidence"]["resource"]["blocked_reasons"]
     )
     assert route["freshness"]["quota_stale_after"] == "24h"
+    assert route["capability_scores"]["source_editing"]["observed_at"] == "2026-06-04T16:00:00Z"
+    assert any(
+        ref.startswith("platform-capability-receipt:api:")
+        for ref in route["capability_scores"]["source_editing"]["evidence_refs"]
+    )
 
     registry = PlatformCapabilityRegistry.model_validate(payload)
     result = check_registry_freshness(
