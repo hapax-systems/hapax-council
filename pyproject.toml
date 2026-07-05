@@ -204,6 +204,7 @@ logos-api = "logos.api.__main__:main"
 
 [dependency-groups]
 dev = [
+    "google-api-python-client>=2.198.0",
     "hypothesis>=6.100.0",
     "pyright>=1.1.400",
     "pytest>=9.0.2",
@@ -215,11 +216,19 @@ dev = [
     "schemathesis>=4.7",
     "prometheus-client>=0.24.1",
     "rdflib>=7.6.0",
+    "watchdog>=6.0.0",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-m 'not llm and not contract and not e2e and not revocation_drill'"
+addopts = "--import-mode=importlib -m 'not llm and not contract and not e2e and not revocation_drill'"
+pythonpath = [
+    "packages/agentgov/src",
+    "packages/hapax-axioms/src",
+    "packages/hapax-refusals/src",
+    "packages/hapax-swarm/src",
+    "packages/hapax-velocity-meter/src",
+]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks integration tests",
