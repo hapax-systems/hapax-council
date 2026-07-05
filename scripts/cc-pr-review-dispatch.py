@@ -461,7 +461,15 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
 
 def fetch_pr_diff(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> str:
     return _run_gh(
-        ["gh", "pr", "diff", str(pr_number), "--repo", repo],
+        [
+            "gh",
+            "api",
+            "--method",
+            "GET",
+            "-H",
+            "Accept: application/vnd.github.v3.diff",
+            f"repos/{repo}/pulls/{pr_number}",
+        ],
         repo_root=repo_root,
         runner=runner,
     )

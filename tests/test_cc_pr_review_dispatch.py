@@ -185,6 +185,8 @@ class FakeGh:
             path = cmd[6]
             if path == "repos/owner/repo/pulls":
                 return subprocess.CompletedProcess(cmd, 0, json.dumps(self._rest_open_prs()), "")
+            if path == f"repos/owner/repo/pulls/{self.pr_number}" and "v3.diff" in cmd[5]:
+                return subprocess.CompletedProcess(cmd, 0, self.diff, "")
             if path.startswith("repos/owner/repo/pulls/") and path.endswith("/files"):
                 try:
                     number = int(path.rsplit("/", 2)[-2])
@@ -1014,7 +1016,14 @@ checklist:
 
         assert result["status"] == "dispatched"
         assert not any(call[:3] == ["gh", "pr", "view"] for call in gh.calls)
+        assert not any(call[:3] == ["gh", "pr", "diff"] for call in gh.calls)
         assert any(len(call) > 6 and call[6] == "repos/owner/repo/pulls/42" for call in gh.calls)
+        assert any(
+            len(call) > 6
+            and call[5] == "Accept: application/vnd.github.v3.diff"
+            and call[6] == "repos/owner/repo/pulls/42"
+            for call in gh.calls
+        )
         assert any(
             len(call) > 6 and call[6] == "repos/owner/repo/pulls/42/files" for call in gh.calls
         )
