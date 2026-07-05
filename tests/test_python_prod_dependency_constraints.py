@@ -1,6 +1,9 @@
 """Regression guards for the python-prod dependency bump safety caps."""
 
 import re
+import subprocess
+import sys
+import textwrap
 import tomllib
 from importlib.metadata import version
 from pathlib import Path
@@ -58,6 +61,16 @@ def _requirements_by_name(requirements: list[str]) -> dict[str, Requirement]:
         Requirement(requirement).name.lower(): Requirement(requirement)
         for requirement in requirements
     }
+
+
+def _run_clean_python(script: str) -> None:
+    subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script)],
+        check=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_review_blocked_python_prod_specs_keep_abi_and_major_caps() -> None:
@@ -146,7 +159,7 @@ def test_core_dependency_runtime_smoke_paths() -> None:
     assert Image.new("RGB", (1, 1)).size == (1, 1)
     assert cv2.__version__
     assert Version(version("torchvision")) in SpecifierSet(">=0.25,<0.26")
-    assert litellm
+    assert litellm.get_llm_provider("gpt-4o-mini")[1] == "openai"
     assert version("litellm")
 
 
@@ -165,10 +178,33 @@ def test_logos_and_google_dependency_runtime_smoke_paths() -> None:
     from uvicorn import Config
 
     assert AnonymousCredentials().expired is False
-    assert pubsub_v1.PublisherClient
-    assert Flow.from_client_config
-    assert Langfuse
-    assert EventSourceResponse
+    publisher = pubsub_v1.PublisherClient(credentials=AnonymousCredentials())
+    assert publisher.topic_path("project-id", "topic-id") == "projects/project-id/topics/topic-id"
+    flow = Flow.from_client_config(
+        {
+            "installed": {
+                "client_id": "id.apps.googleusercontent.com",
+                "client_secret": "secret",
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": ["http://localhost"],
+            }
+        },
+        scopes=["https://www.googleapis.com/auth/gmail.readonly"],
+    )
+    assert flow.oauth2session.scope == ["https://www.googleapis.com/auth/gmail.readonly"]
+
+    async def events():
+        yield {"event": "ping", "data": "ok"}
+
+    assert EventSourceResponse(events()).media_type == "text/event-stream"
+    langfuse = Langfuse(
+        public_key="pk-lf-test",
+        secret_key="sk-lf-test",
+        host="http://127.0.0.1:1",
+    )
+    assert type(langfuse).__name__ == "Langfuse"
+    langfuse.shutdown()
     assert Config("example:app").host == "127.0.0.1"
 
 
@@ -188,3 +224,70 @@ def test_audio_and_tui_dependency_runtime_smoke_paths() -> None:
     assert soundfile.__version__
     assert Version(version("torchcodec")) in SpecifierSet("==0.10.*")
     assert ComposeResult
+
+
+def test_additional_bumped_dependency_runtime_smoke_paths() -> None:
+    _run_clean_python(
+        """
+        from importlib.metadata import version
+        import importlib.util
+
+        from google.auth.credentials import AnonymousCredentials
+        from google.cloud import monitoring_v3
+        import gi
+        from model2vec import StaticModel
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+
+        assert StaticModel.__name__ == "StaticModel"
+        assert gi.version_info >= (3, 56, 3)
+        monitoring_client = monitoring_v3.MetricServiceClient(
+            credentials=AnonymousCredentials()
+        )
+        monitoring_request = monitoring_v3.ListTimeSeriesRequest(
+            name="projects/test-project"
+        )
+        assert type(monitoring_client).__name__ == "MetricServiceClient"
+        assert monitoring_request.name == "projects/test-project"
+
+        if importlib.util.find_spec("pipecat") is not None:
+            import pipecat
+
+            assert pipecat.__version__ == "1.4.0"
+        if importlib.util.find_spec("omegaconf") is not None:
+            from omegaconf import OmegaConf
+
+            config = OmegaConf.create({"audio": {"enabled": True}})
+            assert config.audio.enabled is True
+        if importlib.util.find_spec("pvporcupine") is not None:
+            import pvporcupine
+
+            assert "porcupine" in pvporcupine.KEYWORDS
+        if importlib.util.find_spec("pyannote.audio") is not None:
+            assert Version(version("pyannote.audio")) in SpecifierSet(">=4.0.7")
+        """
+    )
+
+
+def test_optional_studio_and_rerank_dependency_runtime_smoke_paths() -> None:
+    _run_clean_python(
+        """
+        import importlib.util
+
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+        from importlib.metadata import version
+
+        if importlib.util.find_spec("ultralytics") is not None:
+            from ultralytics import YOLO
+
+            assert YOLO.__name__ == "YOLO"
+            assert Version(version("ultralytics")) in SpecifierSet(">=8.4.87")
+        if importlib.util.find_spec("sentence_transformers") is not None:
+            from sentence_transformers import InputExample
+
+            example = InputExample(texts=["left", "right"], label=1.0)
+            assert example.texts == ["left", "right"]
+            assert example.label == 1.0
+        """
+    )
