@@ -251,18 +251,23 @@ def test_api_provider_gateway_receipt_allows_paid_gateway_dispatch(
     assert SECRET not in receipt_text
     receipt = json.loads(receipt_text)
     assert "api.headless.provider_gateway" in receipt["routes"]
+    assert "api.headless.openrouter" in receipt["routes"]
     assert receipt["quota"]["status"] == "unobservable"
     assert receipt["known_unknowns"][0].startswith("Provider spend is authorized")
 
     registry = load_platform_capability_registry(REGISTRY, receipt_dir=tmp_path, now=API_NOW_DT)
     gateway = registry.require("api.headless.provider_gateway")
     cloud = registry.require("api.headless.api_frontier")
+    openrouter = registry.require("api.headless.openrouter")
 
     assert gateway.route_state.value == "active"
     assert "provider_budget_receipt_absent" not in gateway.blocked_reasons
     assert "provider_gateway_evidence_absent" not in gateway.blocked_reasons
     assert cloud.route_state.value == "blocked"
     assert "cloud_burst_release_gate_absent" in cloud.blocked_reasons
+    assert openrouter.route_state.value == "blocked"
+    assert "capabilityio_measurement_absent" in openrouter.blocked_reasons
+    assert "openrouter_paid_budget_receipt_absent" in openrouter.blocked_reasons
 
     sources = load_dispatch_policy_sources(
         registry_path=REGISTRY,

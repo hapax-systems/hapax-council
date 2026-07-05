@@ -49,6 +49,7 @@ CAPACITY_INVARIANT = (
 REQUIRED_ROUTE_IDS = frozenset(
     {
         "api.headless.api_frontier",
+        "api.headless.openrouter",
         "api.headless.provider_gateway",
         "claude.headless.full",
         "claude.headless.haiku",
@@ -104,6 +105,7 @@ class Profile(StrEnum):
     HAIKU = "haiku"
     JR = "jr"
     LITE = "lite"
+    OPENROUTER = "openrouter"
     OPUS = "opus"
     PROVIDER_GATEWAY = "provider_gateway"
     SONNET = "sonnet"
@@ -1452,7 +1454,7 @@ def _apply_receipt_to_route_payload(
     for tool in route_payload.get("tool_state", []):
         tool["observed_at"] = observed_at
         tool["evidence_ref"] = receipt_ref
-    if receipt.capability.status is EvidenceStatus.OBSERVED:
+    if _receipt_measures_capability_scores(route_payload, receipt):
         for score in route_payload.get("capability_scores", {}).values():
             score["observed_at"] = observed_at
             score["evidence_refs"] = list(
@@ -1476,6 +1478,26 @@ def _apply_receipt_to_route_payload(
     top_blockers = [reason for reason in top_blockers if reason not in removable_top_blockers]
     route_payload["blocked_reasons"] = list(dict.fromkeys(top_blockers))
     route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
+
+
+def _receipt_measures_capability_scores(
+    route_payload: dict[str, Any],
+    receipt: PlatformCapabilityReceipt,
+) -> bool:
+    if receipt.capability.status is not EvidenceStatus.OBSERVED:
+        return False
+    capability_blockers = set(
+        route_payload.get("freshness", {})
+        .get("evidence", {})
+        .get("capability", {})
+        .get("blocked_reasons", [])
+    )
+    top_blockers = set(route_payload.get("blocked_reasons") or [])
+    unmeasured_score_blockers = {
+        "capability_scores_asserted_not_measured",
+        "capabilityio_measurement_absent",
+    }
+    return not (capability_blockers | top_blockers) & unmeasured_score_blockers
 
 
 def _quota_unobservable_nonblocking(

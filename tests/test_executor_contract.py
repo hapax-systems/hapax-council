@@ -115,7 +115,7 @@ def test_executor_profiles_cover_every_required_route() -> None:
     # gap-8 regression: every route in REQUIRED_ROUTE_IDS must have its profile
     # declared in its platform's executor profiles, or the declared capability
     # surface diverges from the required-route contract. The originating defect:
-    # `api.headless.provider_gateway` is REQUIRED but api profiles only listed
+    # `api.headless.provider_gateway` was REQUIRED but api profiles only listed
     # ("api_frontier",), so the executor contract under-declared a required route.
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))

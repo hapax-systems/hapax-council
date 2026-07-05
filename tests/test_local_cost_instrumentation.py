@@ -50,6 +50,7 @@ def _hold_local_capacity_span(
     child_cm.LOCAL_CAPACITY_LEASE_DIR = Path(lease_dir)
     child_cm.LOCAL_CAPACITY_CEILING = 4.0
     child_cm.reset_for_testing()
+    child_cm._ensure_metrics(CollectorRegistry())
 
     with child_llm_call_span(model="command-r", route="dmn-thinking"):
         ready.set()
