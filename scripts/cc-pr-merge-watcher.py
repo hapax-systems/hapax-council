@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -93,7 +94,7 @@ def _run_gh_api_json(
     path: str,
     *,
     repo_root: Path,
-    runner: callable[..., subprocess.CompletedProcess],
+    runner: Callable[..., subprocess.CompletedProcess],
     fields: dict[str, str] | None = None,
     timeout: int = 60,
 ) -> Any | None:
@@ -151,7 +152,7 @@ def _search_merged_pull_details_rest(
     *,
     repo: str = DEFAULT_REPO,
     repo_root: Path,
-    runner: callable[..., subprocess.CompletedProcess],
+    runner: Callable[..., subprocess.CompletedProcess],
     limit: int,
 ) -> list[dict[str, Any]] | None:
     query = f"repo:{repo} is:pr is:merged merged:>={cursor.astimezone(UTC):%Y-%m-%d}"
@@ -232,7 +233,7 @@ def fetch_merged_prs(
     *,
     repo_root: Path | None = None,
     limit: int = 300,
-    runner: callable[..., subprocess.CompletedProcess] | None = None,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
 ) -> list[MergedPR]:
     """List recently merged PRs through REST/core and parse the result.
 
@@ -318,7 +319,7 @@ def close_linked_task(
     task: LinkedTask,
     *,
     repo_root: Path | None = None,
-    runner: callable[..., subprocess.CompletedProcess] | None = None,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
     role: str = "watcher",
 ) -> bool:
     """Invoke ``scripts/cc-close`` on the matched task. Returns True on success."""
@@ -372,7 +373,7 @@ def close_linked_task(
 def trigger_reform_dispatch(
     *,
     repo_root: Path | None = None,
-    runner: callable[..., subprocess.CompletedProcess] | None = None,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
 ) -> bool:
     """Nudge the RTE manifest-drain dispatcher (event complement to the 270s poll).
 
@@ -405,7 +406,7 @@ def run_watcher(
     vault_root: Path = DEFAULT_VAULT_ROOT,
     repo_root: Path | None = None,
     dry_run: bool = False,
-    runner: callable[..., subprocess.CompletedProcess] | None = None,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
 ) -> dict[str, int]:
     """Run one watcher cycle.
 
@@ -492,7 +493,7 @@ def _query_pr_state(
     pr_num: str,
     *,
     repo_root: Path,
-    runner: callable[..., subprocess.CompletedProcess],
+    runner: Callable[..., subprocess.CompletedProcess],
 ) -> str | None:
     """Return the PR's current state (MERGED|CLOSED|OPEN) or None on lookup failure."""
     try:
@@ -506,7 +507,7 @@ def _list_prs_for_branch(
     branch: str,
     *,
     repo_root: Path,
-    runner: callable[..., subprocess.CompletedProcess],
+    runner: Callable[..., subprocess.CompletedProcess],
 ) -> list[dict[str, Any]]:
     """Re-derive PRs for a branch via REST ``pulls?head=`` (newest first)."""
     try:
@@ -562,7 +563,7 @@ def _close_merged_note(
     *,
     repo_root: Path,
     dry_run: bool,
-    runner: callable[..., subprocess.CompletedProcess],
+    runner: Callable[..., subprocess.CompletedProcess],
 ) -> bool:
     """cc-close a task whose PR is merged (the cursor loop missed it). True on close."""
     task_id = _task_id_from_note(note, text)
@@ -587,7 +588,7 @@ def _apply_pr_state(
     *,
     repo_root: Path,
     dry_run: bool,
-    runner: callable[..., subprocess.CompletedProcess],
+    runner: Callable[..., subprocess.CompletedProcess],
     counts: dict[str, int],
 ) -> None:
     """Reconcile one note against its PR's current state."""
@@ -610,7 +611,7 @@ def _repair_pr_null_note(
     *,
     repo_root: Path,
     dry_run: bool,
-    runner: callable[..., subprocess.CompletedProcess],
+    runner: Callable[..., subprocess.CompletedProcess],
     counts: dict[str, int],
 ) -> None:
     """pr:null + pr_open/merge_queue: re-derive the PR from the task branch.
@@ -668,7 +669,7 @@ def reconcile_stale_pr_states(
     vault_root: Path = DEFAULT_VAULT_ROOT,
     repo_root: Path | None = None,
     dry_run: bool = False,
-    runner: callable[..., subprocess.CompletedProcess] | None = None,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
 ) -> dict[str, int]:
     """Reconcile active pr_open/merge_queue tasks against live PR state.
 
@@ -740,7 +741,7 @@ def _stuck_gh_json(
     args: list[str],
     *,
     repo_root: Path,
-    runner: callable[..., subprocess.CompletedProcess],
+    runner: Callable[..., subprocess.CompletedProcess],
 ) -> Any:
     try:
         proc = runner(
@@ -767,7 +768,7 @@ def fetch_merge_queue_numbers(
     *,
     repo: str = DEFAULT_REPO,
     repo_root: Path,
-    runner: callable[..., subprocess.CompletedProcess] = subprocess.run,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
 ) -> set[int] | None:
     """PR numbers currently in the native merge queue (graphql)."""
     owner, _, name = repo.partition("/")
@@ -815,7 +816,7 @@ def detect_stuck_prs(
     *,
     repo: str = DEFAULT_REPO,
     repo_root: Path,
-    runner: callable[..., subprocess.CompletedProcess] = subprocess.run,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     required_checks: tuple[str, ...] = REQUIRED_QUEUE_CHECKS,
 ) -> list[StuckPR]:
     """Armed (auto-merge enabled) + all required checks green, yet NOT in the
@@ -849,7 +850,7 @@ def alert_stuck_prs(
     *,
     repo: str = DEFAULT_REPO,
     repo_root: Path,
-    runner: callable[..., subprocess.CompletedProcess] = subprocess.run,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     dry_run: bool = False,
 ) -> int:
     """Detect ejected-while-green PRs and ntfy the operator; returns the count.

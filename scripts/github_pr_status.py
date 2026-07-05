@@ -486,8 +486,12 @@ def _pull_status_row_from_rest(
     return {
         "number": number,
         "id": pull.get("node_id") or pull.get("id"),
+        "state": rest_pull_state(pull),
         "title": pull.get("title") or "",
         "body": pull.get("body") or "",
+        "url": pull.get("html_url") or pull.get("url"),
+        "updatedAt": pull.get("updated_at"),
+        "mergedAt": pull.get("merged_at"),
         "headRefName": head_ref,
         "headRefOid": sha,
         "changedFiles": changed_files,

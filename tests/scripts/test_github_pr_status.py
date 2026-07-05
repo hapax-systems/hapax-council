@@ -81,6 +81,41 @@ def test_rest_status_rollup_uses_check_runs_and_statuses(tmp_path: Path) -> None
     assert not any(call[:2] == ["gh", "pr"] for call in runner.calls)
 
 
+def test_rest_status_rollup_cache_round_trips(tmp_path: Path, monkeypatch: Any) -> None:
+    runner = FakeRunner()
+    old_cache_dir = github_pr_status.DEFAULT_CACHE_DIR
+    github_pr_status.DEFAULT_CACHE_DIR = tmp_path / "cache"
+    monkeypatch.setenv("HAPAX_GITHUB_PR_STATUS_CACHE_TTL_SECONDS", "60")
+
+    try:
+        rollup = github_pr_status.fetch_status_check_rollup_rest(
+            "abc123",
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=runner,
+            use_cache=True,
+        )
+
+        class FailingRunner(FakeRunner):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                self.calls.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 1, "", "cache was missed")
+
+        cached_runner = FailingRunner()
+        cached = github_pr_status.fetch_status_check_rollup_rest(
+            "abc123",
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=cached_runner,
+            use_cache=True,
+        )
+    finally:
+        github_pr_status.DEFAULT_CACHE_DIR = old_cache_dir
+
+    assert cached == rollup
+    assert cached_runner.calls == []
+
+
 def test_rest_status_rollup_fails_closed_when_status_source_fails(tmp_path: Path) -> None:
     class PartialRunner(FakeRunner):
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
@@ -242,6 +277,10 @@ def test_open_pr_status_snapshot_uses_single_pull_for_merge_state(tmp_path: Path
                                     "title": "REST PR",
                                     "head": {"ref": "feat/rest", "sha": "abc123"},
                                     "draft": False,
+                                    "state": "open",
+                                    "merged_at": None,
+                                    "updated_at": "2026-07-05T15:00:00Z",
+                                    "html_url": "https://github.example/owner/repo/pull/9",
                                     "auto_merge": {"enabled_by": {"login": "bot"}},
                                 }
                             ]
@@ -260,6 +299,10 @@ def test_open_pr_status_snapshot_uses_single_pull_for_merge_state(tmp_path: Path
                                 "body": "body",
                                 "head": {"ref": "feat/rest", "sha": "abc123"},
                                 "draft": False,
+                                "state": "open",
+                                "merged_at": None,
+                                "updated_at": "2026-07-05T15:00:00Z",
+                                "html_url": "https://github.example/owner/repo/pull/9",
                                 "auto_merge": {"enabled_by": {"login": "bot"}},
                                 "mergeable_state": "clean",
                                 "changed_files": 1,
@@ -291,6 +334,10 @@ def test_open_pr_status_snapshot_uses_single_pull_for_merge_state(tmp_path: Path
     )
 
     assert rows[0]["mergeStateStatus"] == "CLEAN"
+    assert rows[0]["state"] == "OPEN"
+    assert rows[0]["mergedAt"] is None
+    assert rows[0]["updatedAt"] == "2026-07-05T15:00:00Z"
+    assert rows[0]["url"] == "https://github.example/owner/repo/pull/9"
     assert rows[0]["changedFiles"] == 1
     assert rows[0]["files"] == [{"path": "scripts/example.py"}]
     assert rows[0]["reviewDecision"] == "APPROVED"
