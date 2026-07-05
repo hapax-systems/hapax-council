@@ -265,19 +265,33 @@ def build_receipt(
     receipt_id = f"{platform}-{observed_at.strftime('%Y%m%dT%H%M%SZ')}"
     capability_reasons: list[str] = []
     capability_refs: list[str] = []
+    wrapper_usable = wrapper.exists and wrapper.executable and bool(wrapper.sha256)
     if cli.available:
         capability_refs.append(f"local:{platform}:cli-version:{cli.version or 'available'}")
     else:
         capability_reasons.append("cli_missing_or_unusable")
-    if wrapper.exists and wrapper.sha256:
+    if wrapper_usable:
         capability_refs.append(f"local:{wrapper.path}:sha256:{wrapper.sha256}")
+    elif wrapper.exists and wrapper.sha256 and not wrapper.executable:
+        capability_reasons.append("sanctioned_wrapper_not_executable")
     else:
         capability_reasons.append("sanctioned_wrapper_missing_or_unreadable")
     capability_status = (
         EvidenceStatus.OBSERVED if not capability_reasons else EvidenceStatus.BLOCKED
     )
-    resource_status = EvidenceStatus.OBSERVED if wrapper.exists else EvidenceStatus.MISSING
-    resource_refs = [f"local:{wrapper.path}:exists:{str(wrapper.exists).lower()}"]
+    if wrapper_usable:
+        resource_status = EvidenceStatus.OBSERVED
+        resource_reasons: list[str] = []
+    elif wrapper.exists and not wrapper.executable:
+        resource_status = EvidenceStatus.BLOCKED
+        resource_reasons = ["wrapper_not_executable"]
+    else:
+        resource_status = EvidenceStatus.MISSING
+        resource_reasons = ["wrapper_missing"]
+    resource_refs = [
+        f"local:{wrapper.path}:exists:{str(wrapper.exists).lower()}",
+        f"local:{wrapper.path}:executable:{str(wrapper.executable).lower()}",
+    ]
     quota_reason = "account_live_quota_receipt_absent"
     quota = surface_evidence(
         status=EvidenceStatus.UNOBSERVABLE,
@@ -315,7 +329,7 @@ def build_receipt(
             observed_at=observed_at,
             stale_after=stale_after,
             evidence_refs=resource_refs,
-            reason_codes=[] if resource_status is EvidenceStatus.OBSERVED else ["wrapper_missing"],
+            reason_codes=resource_reasons,
         ),
         quota=quota,
         provider_docs=ProviderDocsEvidence(

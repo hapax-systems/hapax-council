@@ -1419,7 +1419,9 @@ def _apply_receipt_to_route_payload(
         stale_after=receipt.capability.stale_after,
         evidence_refs=[*receipt.capability.evidence_refs, receipt_ref],
         reason_codes=receipt.capability.reason_codes,
-        removable_reasons=_capability_receipt_removable_reasons(route_payload),
+        removable_reasons=_capability_receipt_removable_reasons(route_payload)
+        if receipt.capability.status is EvidenceStatus.OBSERVED
+        else set(),
     )
     _apply_surface(
         freshness,
@@ -1428,7 +1430,9 @@ def _apply_receipt_to_route_payload(
         stale_after=receipt.resource.stale_after,
         evidence_refs=[*receipt.resource.evidence_refs, receipt_ref],
         reason_codes=receipt.resource.reason_codes,
-        removable_reasons=_resource_receipt_removable_reasons(route_payload),
+        removable_reasons=_resource_receipt_removable_reasons(route_payload)
+        if receipt.resource.status is EvidenceStatus.OBSERVED
+        else set(),
     )
     quota_stale_after = (
         receipt.stale_after if quota_unobservable_nonblocking else receipt.quota.stale_after
@@ -1475,11 +1479,11 @@ def _apply_receipt_to_route_payload(
     if receipt.quota.status is not EvidenceStatus.OBSERVED and not quota_unobservable_nonblocking:
         top_blockers.extend(receipt.quota.reason_codes)
 
-    removable_top_blockers = {
-        *_capability_receipt_removable_reasons(route_payload),
-        *_resource_receipt_removable_reasons(route_payload),
-        "provider_docs_evidence_absent",
-    }
+    removable_top_blockers = {"provider_docs_evidence_absent"}
+    if receipt.capability.status is EvidenceStatus.OBSERVED:
+        removable_top_blockers.update(_capability_receipt_removable_reasons(route_payload))
+    if receipt.resource.status is EvidenceStatus.OBSERVED:
+        removable_top_blockers.update(_resource_receipt_removable_reasons(route_payload))
     if quota_unobservable_nonblocking:
         removable_top_blockers.update(_quota_unobservable_removable_reasons(route_payload))
     elif receipt.quota.status is EvidenceStatus.OBSERVED:

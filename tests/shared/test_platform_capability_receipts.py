@@ -40,6 +40,7 @@ def _run_receipts(
     env: dict[str, str] | None = None,
     now: str = NOW,
     platform: str = "codex",
+    registry: Path = REGISTRY,
 ) -> subprocess.CompletedProcess[str]:
     merged_env = {**os.environ, **(env or {})}
     return subprocess.run(
@@ -47,7 +48,7 @@ def _run_receipts(
             sys.executable,
             str(SCRIPT),
             "--registry",
-            str(REGISTRY),
+            str(registry),
             "--receipt-dir",
             str(tmp_path),
             "--platform",
@@ -265,6 +266,54 @@ def test_agy_receipt_records_live_review_route_without_unblocking_quota(tmp_path
     assert route.route_state.value == "blocked"
     assert "agy_review_seat_receipt_admission_required" not in route.blocked_reasons
     assert "route_specific_quota_receipt_absent" in route.blocked_reasons
+
+
+def test_agy_receipt_requires_executable_review_wrapper(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "agy", "1.0.10")
+    wrapper = tmp_path / "non-executable-hapax-agy-reviewer"
+    wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    wrapper.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    registry_payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    for route in registry_payload["routes"]:
+        if route["route_id"] == "agy.review.direct":
+            route["sanctioned_wrapper"] = str(wrapper)
+            break
+    else:  # pragma: no cover - fixture invariant
+        raise AssertionError("agy.review.direct route missing from registry fixture")
+    registry_dir = tmp_path / "registry"
+    registry_dir.mkdir()
+    registry = registry_dir / "platform-capability-registry.json"
+    registry.write_text(json.dumps(registry_payload), encoding="utf-8")
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(tmp_path / "home")},
+        platform="agy",
+        registry=registry,
+        now="2026-07-05T14:51:11Z",
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((tmp_path / "agy.json").read_text(encoding="utf-8"))
+    assert receipt["wrapper"]["exists"] is True
+    assert receipt["wrapper"]["executable"] is False
+    assert receipt["capability"]["status"] == "blocked"
+    assert "sanctioned_wrapper_not_executable" in receipt["capability"]["reason_codes"]
+    assert receipt["resource"]["status"] == "blocked"
+    assert receipt["resource"]["reason_codes"] == ["wrapper_not_executable"]
+
+    registry_with_receipt = load_platform_capability_registry(
+        registry,
+        receipt_dir=tmp_path,
+        now=datetime(2026, 7, 5, 14, 52, tzinfo=UTC),
+    )
+    route = registry_with_receipt.require("agy.review.direct")
+    assert route.route_state.value == "blocked"
+    assert "agy_review_seat_receipt_admission_required" in route.blocked_reasons
+    assert "sanctioned_wrapper_not_executable" in route.blocked_reasons
+    assert "wrapper_not_executable" in route.blocked_reasons
 
 
 def test_api_provider_gateway_receipt_allows_paid_gateway_dispatch(
