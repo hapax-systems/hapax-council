@@ -38,10 +38,7 @@ def _fresh_registry(tmp_path: Path) -> Path:
     checked_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     for route in payload["routes"]:
         quota_refs = [f"test:{route['route_id']}:quota"]
-        if (
-            route.get("auth_surface") == "oauth"
-            and route.get("capacity_pool") == "subscription_quota"
-        ):
+        if route.get("capacity_pool") == "subscription_quota":
             quota_refs.append(f"test:{route['route_id']}:account-live-quota:observed")
         route["route_state"] = "active"
         route["blocked_reasons"] = []
@@ -1311,9 +1308,8 @@ def test_availability_recomposition_candidates_fail_closed_when_registry_missing
     assert candidates == ()
 
 
-def test_availability_recomposition_candidates_skip_unsupported_and_immutable_routes(
+def test_availability_recomposition_candidates_skip_unsupported_routes(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _dispatcher_module()
     registry = _registry_from_path(_availability_degraded_registry(tmp_path, "codex.headless.full"))
@@ -1332,10 +1328,48 @@ def test_availability_recomposition_candidates_skip_unsupported_and_immutable_ro
         routes=(
             descriptor("codex.headless.full"),
             descriptor("ghost.headless.full"),
-            descriptor("local_tool.local.worker"),
         )
     )
+
+    candidates = module._availability_recomposition_candidate_requests(
+        primary,
+        task_fields={},
+        policy_sources=module.DispatchPolicySources.model_construct(registry=candidate_registry),
+        validation=module.Validation(True, "eligible"),
+        rollback_mode=False,
+    )
+
+    assert primary.capability.availability_recomposition_required is True
+    assert candidates == ()
+
+
+def test_availability_recomposition_candidates_skip_supported_immutable_routes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _dispatcher_module()
+    registry = _registry_from_path(_availability_degraded_registry(tmp_path, "codex.headless.full"))
+    primary = _availability_dispatch_request(module, registry)
+
+    def descriptor(route_id: str) -> SimpleNamespace:
+        platform, mode, profile = route_id.split(".", 2)
+        return SimpleNamespace(
+            route_id=route_id,
+            platform=SimpleNamespace(value=platform),
+            mode=SimpleNamespace(value=mode),
+            profile=SimpleNamespace(value=profile),
+        )
+
+    read_only_route = module.route_for("local_tool", "local", "worker")
+    assert read_only_route is not None
+    assert read_only_route.mutable is False
+    candidate_registry = SimpleNamespace(routes=(descriptor("local_tool.local.worker"),))
     monkeypatch.setattr(module, "supports_route", lambda _platform, _mode: True)
+
+    def forbidden_build_dispatch_request(**_kwargs):
+        raise AssertionError("immutable recomposition candidates must be skipped before build")
+
+    monkeypatch.setattr(module, "build_dispatch_request", forbidden_build_dispatch_request)
 
     candidates = module._availability_recomposition_candidate_requests(
         primary,

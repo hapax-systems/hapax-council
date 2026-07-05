@@ -183,6 +183,23 @@ def test_json_fails_structured_for_malformed_now(tmp_path: Path) -> None:
     assert "next action" in payload["error"]
 
 
+def test_plain_text_fails_structured_for_malformed_now(tmp_path: Path) -> None:
+    result = _run(
+        "--now",
+        "definitely-not-a-date",
+        "--route",
+        "codex.headless.full",
+        "--receipt-dir",
+        str(tmp_path / "empty-receipts"),
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith("ERROR: ")
+    assert "Invalid isoformat string" in result.stderr
+    assert "next action" in result.stderr
+
+
 def test_json_succeeds_for_fresh_route_fixture(tmp_path: Path) -> None:
     payload = load_platform_capability_registry().model_dump(mode="json")
     route = next(route for route in payload["routes"] if route["route_id"] == "codex.headless.full")

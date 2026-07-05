@@ -274,13 +274,16 @@ def _route_with_scores(
     payload["freshness"]["quota_checked_at"] = "2026-05-09T22:00:00Z"
     payload["freshness"]["resource_checked_at"] = "2026-05-09T22:00:00Z"
     payload["freshness"]["provider_docs_checked_at"] = "2026-05-09T22:00:00Z"
+    quota_evidence_refs = [f"test:{route_id}:quota"]
+    if payload.get("capacity_pool") == "subscription_quota":
+        quota_evidence_refs.append(f"test:{route_id}:account-live-quota:observed")
     payload["freshness"]["evidence"] = {
         "capability": {
             "evidence_refs": [f"test:{route_id}:capability"],
             "blocked_reasons": [],
         },
         "quota": {
-            "evidence_refs": [f"test:{route_id}:quota"],
+            "evidence_refs": quota_evidence_refs,
             "blocked_reasons": [],
         },
         "resource": {

@@ -98,8 +98,9 @@ def _mark_fresh(route: dict) -> None:
 
 
 def _mark_account_live_quota_observed(route: dict) -> None:
+    route_id = route["route_id"]
     route["freshness"]["evidence"]["quota"]["evidence_refs"].append(
-        "test:codex:account-live-quota:observed"
+        f"test:{route_id}:account-live-quota:observed"
     )
 
 
@@ -129,7 +130,7 @@ def test_fresh_route_emits_available_receipt_without_refresh() -> None:
     assert receipt.reason_codes == ()
 
 
-def test_oauth_subscription_route_degrades_when_account_live_quota_is_unobservable() -> None:
+def test_subscription_route_degrades_when_account_live_quota_is_unobservable() -> None:
     payload = _payload()
     route_payload = _route_payload(payload, "codex.headless.full")
     _mark_fresh(route_payload)
@@ -156,6 +157,43 @@ def test_oauth_subscription_route_degrades_when_account_live_quota_is_unobservab
     assert "account_live_quota_evidence_absent" in receipt.reason_codes
     assert "auth_surface_not_fresh" in receipt.reason_codes
     assert "capacity_pool_headroom_not_fresh" in receipt.reason_codes
+
+
+def test_non_oauth_subscription_route_requires_account_live_quota_evidence() -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, "claude.headless.full")
+    _mark_fresh(route_payload)
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("claude.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    missing = evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert route.auth_surface is AuthSurface.SUBSCRIPTION
+    assert route.capacity_pool.value == "subscription_quota"
+    assert missing.available is False
+    assert missing.predicate.account_live_quota_attested is False
+    assert "account_live_quota_evidence_absent" in missing.reason_codes
+
+    _mark_account_live_quota_observed(route_payload)
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("claude.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+    observed = evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert observed.available is True
+    assert observed.predicate.account_live_quota_attested is True
+    assert "account_live_quota_evidence_absent" not in observed.reason_codes
 
 
 def test_oauth_subscription_route_degrades_when_account_live_quota_ref_is_negated() -> None:

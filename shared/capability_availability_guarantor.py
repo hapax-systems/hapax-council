@@ -479,10 +479,7 @@ def _account_live_quota_attested(
     route: PlatformCapabilityRoute,
     freshness: RouteFreshnessCheck,
 ) -> bool:
-    if not (
-        route.auth_surface is AuthSurface.OAUTH
-        and route.capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
-    ):
+    if route.capacity_pool is not CapacityPool.SUBSCRIPTION_QUOTA:
         return True
     return any(_account_live_quota_observed_ref(ref) for ref in freshness.evidence_refs)
 

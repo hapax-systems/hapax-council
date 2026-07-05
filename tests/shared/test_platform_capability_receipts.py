@@ -434,6 +434,7 @@ def test_signed_opus_entitlement_receipt_allows_dispatch_without_policy_rollback
         platform="claude",
     )
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path, platform="claude")
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="opus-entitlement-test",
@@ -502,6 +503,7 @@ def test_quality_equivalence_receipt_does_not_widen_authority_ceiling(
         platform="claude",
     )
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path, platform="claude")
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="sonnet-equivalence-test",
@@ -856,6 +858,7 @@ def _fresh_claude_platform_receipt(tmp_path: Path) -> None:
         platform="claude",
     )
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path, platform="claude")
 
 
 def _opus_dispatch_request(sources):  # type: ignore[no-untyped-def]
