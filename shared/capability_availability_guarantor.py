@@ -2,7 +2,8 @@
 
 The guarantor reads capability descriptors plus freshness checks and emits a
 uniform availability receipt. Refresh is selected by ``auth_surface`` only; the
-core evaluator does not branch on platform names.
+core evaluator does not branch on platform names or execute refresh side effects
+unless a caller supplies an executable refresh strategy.
 """
 
 from __future__ import annotations
@@ -175,8 +176,9 @@ class CodexOAuthRefreshStrategy:
         *,
         runner: RefreshCommandRunner | None = None,
         timeout_s: float = 30.0,
+        execute: bool = False,
     ) -> None:
-        self._runner = runner or _run_refresh_command
+        self._runner = runner if runner is not None else (_run_refresh_command if execute else None)
         self._timeout_s = timeout_s
 
     def refresh(
@@ -186,16 +188,6 @@ class CodexOAuthRefreshStrategy:
         *,
         now: datetime,
     ) -> RefreshOutcome:
-        command = (
-            str(REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"),
-            "--platform",
-            "codex",
-            "--json",
-            "--now",
-            _iso_z(now),
-        )
-        result = self._runner(command, timeout_s=self._timeout_s)
-        receipt_item = _refresh_receipt_item(result.stdout, platform="codex")
         base_refs = (
             f"platform-capability-registry:{route.route_id}:auth_surface:oauth",
             "script:scripts/hapax-platform-capability-receipts --platform codex --json",
@@ -206,6 +198,30 @@ class CodexOAuthRefreshStrategy:
         freshness_command = (
             f"scripts/hapax-platform-capability-freshness --route {route.route_id} --json"
         )
+
+        if self._runner is None:
+            return RefreshOutcome(
+                status=RefreshStatus.DEFERRED,
+                strategy_id=self.strategy_id,
+                reason_codes=(
+                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "refresh_execution_not_requested",
+                    "availability_recheck_required_after_refresh",
+                ),
+                evidence_refs=base_refs,
+                remediation_commands=(refresh_command, freshness_command),
+            )
+
+        command = (
+            str(REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"),
+            "--platform",
+            "codex",
+            "--json",
+            "--now",
+            _iso_z(now),
+        )
+        result = self._runner(command, timeout_s=self._timeout_s)
+        receipt_item = _refresh_receipt_item(result.stdout, platform="codex")
 
         if result.returncode != 0:
             return RefreshOutcome(
