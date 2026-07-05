@@ -41,16 +41,17 @@ Not send-capable: `AgyAdapter`, `BudgetAuthorityAdapter` (api), `ReviewSeatAdapt
 
 ## The Reins consumer (clean-stack follow-on)
 
-Reins remains honest-dark in this council PR: its send-gate still renders `NOT WIRED` until a
-separate `reins-dev` branch wires the consumer to the SESSION-send evidence bus. The intended
+Reins remains honest-dark in this council PR: the paired consumer work lives in draft
+`reins-dev` PR #10, stacked on `reins-cockpit-overhaul-20260627`. Until that lands, the
+send-gate still renders `NOT WIRED` in Reins. The intended
 consumer contract is: read `~/.cache/hapax/sdlc-routing/session-send-receipts.jsonl` and light
 ONLY on a receipt with `receipt_schema=1`, `op=session_send`, and `outcome=sent`; missing files,
 corrupt lines, failed relays, and unknown schemas must remain dark.
 
 No Reins commit is included in PR #4440. A stale worker briefly edited the shared dirty Reins
 checkout on `reins-cockpit-overhaul-20260627`; those edits were reversed because that checkout is
-dirty/ahead and not a safe task branch for this slice. The Reins tests named below are the
-follow-on pins to add on a clean branch, not evidence already landed here.
+dirty/ahead and not a safe task branch for this slice. The Reins tests named below are
+implemented in draft `reins-dev` PR #10, not in this council repo.
 
 ## Scoped exceptions (recorded per spec §7, with re-arm plan)
 
@@ -67,6 +68,6 @@ follow-on pins to add on a clean branch, not evidence already landed here.
 
 - Latest evidence: `tail -n 3 ~/.cache/hapax/sdlc-routing/session-send-receipts.jsonl`
 - Regression pins: `uv run pytest tests/test_capability_adapter_protocol.py -q`
-- Reins follow-on pins: add `TestSendGateLightsOnlyOnSessionGateReceipt` and
-  `TestComposerSessionGateFooterLightsOnlyOnEvidence` on a clean `reins-dev` branch, then run
-  `go test ./internal/model/ ./internal/grammar/`.
+- Reins paired PR: `reins-dev` #10; pins `TestSendGateLightsOnlyOnSessionGateReceipt` and
+  `TestComposerSessionGateFooterLightsOnlyOnEvidence`; verification:
+  `go test ./internal/model ./internal/grammar`.
