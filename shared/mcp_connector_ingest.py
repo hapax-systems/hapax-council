@@ -3,7 +3,7 @@
 Ingests config/mcp-connector-tool-manifest.json (27 tools) into CapabilityHarnessDescriptors. Maps
 effect_classes to shapes: read_only_evidence -> local_tool; local_mutation -> local_tool;
 external_mutation/public_egress -> public_egress; money_resource_mutation -> money_rail;
-governance_mutation -> local_tool.
+governance_mutation -> local_tool with repo-mutation authority.
 """
 
 from __future__ import annotations
@@ -23,6 +23,11 @@ from shared.capability_harness_descriptor import (
 
 __all__ = ["ingest_mcp_connector_routes", "ingest_mcp_connector_manifest"]
 
+_EFFECT_CLASSES_REPAIR = (
+    "repair config/mcp-connector-tool-manifest.json or add an effect mapping before "
+    "regenerating the capability inventory baseline"
+)
+
 _EFFECT_TO_SHAPE: dict[str, CapabilityShape] = {
     "read_only_evidence": CapabilityShape.LOCAL_TOOL,
     "local_mutation": CapabilityShape.LOCAL_TOOL,
@@ -35,9 +40,13 @@ _EFFECT_TO_SHAPE: dict[str, CapabilityShape] = {
 
 def _shape_for_effects(effects: Sequence[str]) -> CapabilityShape:
     """Pick the most-significant shape from the effect_classes."""
+    if not effects:
+        raise ValueError(f"MCP effect_classes must be a non-empty list; {_EFFECT_CLASSES_REPAIR}")
     unknown = sorted(set(effects) - set(_EFFECT_TO_SHAPE))
     if unknown:
-        raise ValueError(f"unknown MCP effect_classes: {', '.join(unknown)}")
+        raise ValueError(
+            f"unknown MCP effect_classes: {', '.join(unknown)}; {_EFFECT_CLASSES_REPAIR}"
+        )
     priority = [
         CapabilityShape.MONEY_RAIL,
         CapabilityShape.PUBLIC_EGRESS,
@@ -63,22 +72,28 @@ def _actions_for_effects(effects: Sequence[str]) -> list[CapabilityAction]:
     return actions or [CapabilityAction.QUERY]
 
 
-def _authority_for_shape(shape: CapabilityShape) -> AuthorityCeiling:
+def _authority_for_effects(effects: Sequence[str], shape: CapabilityShape) -> AuthorityCeiling:
     if shape == CapabilityShape.PUBLIC_EGRESS:
         return AuthorityCeiling.PUBLIC_PUBLISH
     if shape == CapabilityShape.MONEY_RAIL:
         return AuthorityCeiling.RECEIVE_ONLY_MONEY
+    if "local_mutation" in effects or "governance_mutation" in effects:
+        return AuthorityCeiling.REPO_MUTATION
     return AuthorityCeiling.READ_ONLY
 
 
 def _descriptor_from_tool(tool: dict[str, object]) -> CapabilityHarnessDescriptor:
     canonical = str(tool.get("canonical_name") or "")
-    effects = tool.get("effect_classes")
-    if effects is None:
-        effects = []
+    if "effect_classes" not in tool or tool.get("effect_classes") is None:
+        raise ValueError(
+            f"MCP connector tool {canonical or '<unknown>'} effect_classes must be a "
+            f"non-empty list; {_EFFECT_CLASSES_REPAIR}"
+        )
+    effects = tool["effect_classes"]
     if not isinstance(effects, list):
         raise ValueError(
-            f"MCP connector tool {canonical or '<unknown>'} effect_classes must be a list"
+            f"MCP connector tool {canonical or '<unknown>'} effect_classes must be a "
+            f"non-empty list; {_EFFECT_CLASSES_REPAIR}"
         )
     effects_str = [str(e) for e in effects]
     shape = _shape_for_effects(effects_str)
@@ -92,7 +107,7 @@ def _descriptor_from_tool(tool: dict[str, object]) -> CapabilityHarnessDescripto
         domain=CapabilityDomain.RESOURCE,
         actions=_actions_for_effects(effects_str),
         execution_harness_id=canonical or None,
-        authority_ceiling=_authority_for_shape(shape),
+        authority_ceiling=_authority_for_effects(effects_str, shape),
         mutation_surfaces=mutation_surfaces,
         public_egress_authority_required=shape == CapabilityShape.PUBLIC_EGRESS,
         resource_pools=[canonical] if shape == CapabilityShape.MONEY_RAIL and canonical else [],

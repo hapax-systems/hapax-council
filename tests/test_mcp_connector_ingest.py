@@ -53,21 +53,37 @@ class McpConnectorIngestTest(unittest.TestCase):
 
     def test_local_mutation_has_mutate_action(self) -> None:
         self.assertIn(CapabilityAction.MUTATE, self.descs["hapax.nudge_act"].actions)
+        self.assertEqual(
+            self.descs["hapax.nudge_act"].authority_ceiling,
+            AuthorityCeiling.REPO_MUTATION,
+        )
 
     def test_one_per_tool(self) -> None:
         self.assertEqual(len(ingest_mcp_connector_routes(_FIXTURE)), len(_FIXTURE))
 
     def test_unknown_effect_class_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "unknown MCP effect_classes"):
+        with self.assertRaisesRegex(ValueError, "repair config/mcp-connector-tool-manifest"):
             ingest_mcp_connector_routes(
                 [{"canonical_name": "tool.unknown", "effect_classes": ["network_mystery"]}]
             )
 
     def test_malformed_effect_classes_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "effect_classes must be a list"):
+        with self.assertRaisesRegex(ValueError, "effect_classes must be a non-empty list"):
             ingest_mcp_connector_routes(
                 [{"canonical_name": "tool.malformed", "effect_classes": "external_mutation"}]
             )
+
+    def test_missing_effect_classes_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "effect_classes must be a non-empty list"):
+            ingest_mcp_connector_routes([{"canonical_name": "tool.missing"}])
+
+    def test_null_effect_classes_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "effect_classes must be a non-empty list"):
+            ingest_mcp_connector_routes([{"canonical_name": "tool.null", "effect_classes": None}])
+
+    def test_empty_effect_classes_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "effect_classes must be a non-empty list"):
+            ingest_mcp_connector_routes([{"canonical_name": "tool.empty", "effect_classes": []}])
 
 
 class McpConnectorSmokeTest(unittest.TestCase):
