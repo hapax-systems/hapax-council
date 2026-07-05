@@ -145,35 +145,10 @@ def test_codex_adapter_drift_fails(tmp_path: Path) -> None:
     assert "pip-guard.sh" in result.stderr
 
 
-def test_antigravity_cli_and_ide_marker_drift_fails(tmp_path: Path) -> None:
-    launcher = tmp_path / "hapax-antigrav"
-    source = (REPO_ROOT / "scripts" / "hapax-antigrav").read_text(encoding="utf-8")
-    launcher.write_text(source.replace(".agents/workflows", ".agents/disabled"), encoding="utf-8")
-
-    result = _run("--skip-claude-settings", "--antigravity-launcher", launcher)
-
-    assert result.returncode == 1
-    assert "antigravity capability marker drift" in result.stderr
-    assert ".agents/workflows" in result.stderr
-
-
-def test_antigravity_adapter_marker_drift_fails(tmp_path: Path) -> None:
+def test_antigravity_runtime_is_not_in_gate_manifest() -> None:
     manifest = _manifest()
-    adapter = tmp_path / "antigrav-hook-adapter.sh"
-    source = (REPO_ROOT / manifest["runtimes"]["antigravity"]["hook_adapter"]).read_text(
-        encoding="utf-8"
-    )
-    adapter.write_text(source.replace("ANTIGRAV_COMMAND", "ANTIGRAV_DISABLED"), encoding="utf-8")
-    adapter.chmod(0o755)
-    manifest["runtimes"]["antigravity"]["hook_adapter"] = str(adapter)
-    manifest_path = tmp_path / "gate-manifest.yaml"
-    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
 
-    result = _run("--skip-claude-settings", "--manifest", manifest_path)
-
-    assert result.returncode == 1
-    assert "antigravity adapter marker drift" in result.stderr
-    assert "ANTIGRAV_COMMAND" in result.stderr
+    assert "antigravity" not in manifest["runtimes"]
 
 
 def test_vibe_capability_marker_drift_fails(tmp_path: Path) -> None:
@@ -197,7 +172,7 @@ def test_gemini_runtime_is_not_in_gate_manifest() -> None:
 def test_gate_manifest_check_is_wired_in_ci_and_precommit() -> None:
     ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     precommit_text = (REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
-    # The checker runs in CI (codex/antigrav/vibe/ci wiring) and in
+    # The checker runs in CI (codex/vibe/ci wiring) and in
     # pre-commit (the live ~/.claude/settings.json, the most drift-prone wiring).
     assert "scripts/gate-manifest-check.py" in ci_text
     assert "scripts/gate-manifest-check.py" in precommit_text

@@ -33,6 +33,7 @@ CURRENT_FILE = RELAY_DIR / ".rte-current"
 DEFAULT_STALE_HOURS = float(os.environ.get("HAPAX_RTE_STALE_HOURS", "24"))
 DEFAULT_ASSIGNMENT_HOURS = float(os.environ.get("HAPAX_RTE_ASSIGNMENT_HOURS", "24"))
 
+AUTO_ELIGIBLE_GREEK_LANES = frozenset({"alpha", "beta", "gamma", "delta", "epsilon", "zeta"})
 AUTO_PREFERRED_LANES = (
     "beta",
     "alpha",
@@ -40,10 +41,6 @@ AUTO_PREFERRED_LANES = (
     "delta",
     "epsilon",
     "zeta",
-    "iota",
-    "kappa",
-    "lambda",
-    "mu",
     "cx-red",
     "cx-blue",
     "cx-green",
@@ -144,7 +141,7 @@ def discover_active_lanes(*, now: datetime, stale_hours: float) -> dict[str, Lan
 
 
 def normalize_lane(lane: str) -> str:
-    return lane.strip()
+    return lane.strip().lower()
 
 
 def is_vibe_lane(lane: str) -> bool:
@@ -152,7 +149,10 @@ def is_vibe_lane(lane: str) -> bool:
 
 
 def is_antigrav_lane(lane: str) -> bool:
-    return lane == "antigrav" or lane.startswith("antigrav-")
+    normalized = lane.strip().lower()
+    return normalized in {"agy", "antigrav", "antigravity"} or normalized.startswith(
+        ("agy-", "antigrav-", "antigravity-")
+    )
 
 
 def is_gemini_lane(lane: str) -> bool:
@@ -164,18 +164,7 @@ def is_auto_eligible(lane: str, *, originator: str) -> bool:
         return False
     if is_vibe_lane(lane) or is_antigrav_lane(lane) or is_gemini_lane(lane):
         return False
-    return lane.startswith("cx-") or lane in {
-        "alpha",
-        "beta",
-        "gamma",
-        "delta",
-        "epsilon",
-        "zeta",
-        "iota",
-        "kappa",
-        "lambda",
-        "mu",
-    }
+    return lane.startswith("cx-") or lane in AUTO_ELIGIBLE_GREEK_LANES
 
 
 def validate_explicit_rte(rte: str, *, originator: str, allow_protocol_exception: bool) -> None:
@@ -183,12 +172,13 @@ def validate_explicit_rte(rte: str, *, originator: str, allow_protocol_exception
         raise ValueError("empty RTE lane")
     if rte == originator:
         raise ValueError(f"RTE cannot be the originator ({originator})")
+    if is_antigrav_lane(rte) or is_gemini_lane(rte):
+        raise ValueError(
+            f"{rte} is retired/excised and cannot be RTE; use admitted Claude/Codex lanes "
+            "or mint measured agy supply-leaf intake with route/resource/governance receipts"
+        )
     if is_vibe_lane(rte) and not allow_protocol_exception:
         raise ValueError(f"{rte} is a Vibe burst lane and cannot be RTE")
-    if (is_antigrav_lane(rte) or is_gemini_lane(rte)) and not allow_protocol_exception:
-        raise ValueError(
-            f"{rte} is not auto-RTE eligible; use --protocol-exception for explicit operator assignment"
-        )
 
 
 def candidate_order(active: dict[str, LaneStatus], *, originator: str) -> list[str]:
@@ -338,7 +328,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--protocol-exception",
         action="store_true",
-        help="allow explicit antigrav/gemini/vibe assignment when protocol/operator says so",
+        help="allow explicit Vibe assignment when protocol/operator says so",
     )
     parser.add_argument(
         "--json", action="store_true", help="emit JSON for --show or assignment result"

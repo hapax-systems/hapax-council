@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from shared.coord_event_log import CoordEvent, CoordEventLog, CoordWriter, DuplicateEventError
+from shared.relay_lifecycle import lane_is_retired
 from shared.relay_mq import ensure_schema
 
 TERMINAL_EVENT_TYPES = {
@@ -43,6 +44,7 @@ class DispatchLaunchRequest:
     event_log: CoordEventLog
     idempotency_key: str | None = None
     authority_item: str | None = None
+    reactivate_retired: bool = False
 
     def __post_init__(self) -> None:
         for name in ("task_id", "lane", "platform", "mode", "profile", "authority_case"):
@@ -126,6 +128,20 @@ def run_atomic_dispatch_launch(
 
     _accept_dispatch_message(request, idempotency_key=key)
     try:
+        # Derived lane-liveness eligibility gate (the retired-axis of the 3-axis
+        # predicate at this chokepoint): refuse to launch a retired lane unless
+        # the caller supplied the sanctioned reactivation signal
+        # (reactivate_retired, threaded from methodology-dispatch's
+        # allow_codex_governed_relay_reactivation). Raised before the "started"
+        # event is appended, so no launch_started is recorded; the except returns
+        # the MQ row to deferred (accepted -> deferred) and the error propagates.
+        # See shared/relay_lifecycle + design-of-record
+        # non-boutique-codex-auth-and-lane-liveness-design-2026-07-03.md.
+        if lane_is_retired(request.lane) and not request.reactivate_retired:
+            raise CoordDispatchError(
+                "lane_retired: inspect the lane relay in HAPAX_RELAY_DIR, resume the lane, "
+                "or use the sanctioned P0-drain reactivation path"
+            )
         _append_dispatch_event(request, idempotency_key=key, outcome="started", returncode=None)
     except CoordDispatchError:
         _cleanup_dispatch_message(request, idempotency_key=key, state="deferred", returncode=71)

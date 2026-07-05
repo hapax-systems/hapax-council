@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from shared.dispatcher_policy import (
+    LOCAL_DEV_PLATFORMS,
     ClogRouteState,
     DispatchAction,
     DispatchRequest,
@@ -55,6 +56,10 @@ GLMCP_ADMISSION_EVIDENCE_REF = (
     "observed_at:2026-05-09T22:00:00Z:"
     "fresh_until:2026-05-09T23:00:00Z"
 )
+
+
+def test_antigrav_is_not_a_local_dev_platform() -> None:
+    assert "antigrav" not in LOCAL_DEV_PLATFORMS
 
 
 def _capability(**overrides: object) -> RouteCapabilityState:

@@ -71,7 +71,7 @@ Agents read and write Markdown + YAML on disk. An inotify-driven reactive engine
 
 ### Multi-lane coordination
 
-Concurrent AI sessions (Claude Code, Codex, Antigravity/agy, and Vibe) coordinate through a relay protocol at `~/.cache/hapax/relay/`. Each session operates in its own git worktree. A triage officer daemon annotates incoming tasks with priority, effort class, and platform suitability. Dispatch policies enforce permission tiers, quota partitioning, and capability matching.
+Concurrent AI sessions (Claude Code, Codex, and Vibe) coordinate through a relay protocol at `~/.cache/hapax/relay/`. Each session operates in its own git worktree. Antigrav is retired/excised as live supply; any future `agy` capability must re-enter as measured supply-leaf intake with route, resource, and governance receipts. A triage officer daemon annotates incoming tasks with priority, effort class, and platform suitability. Dispatch policies enforce permission tiers, quota partitioning, and capability matching.
 
 ### Multimodal perception
 
@@ -141,7 +141,7 @@ direnv allow                                             # load .envrc (pass-bac
 uv sync --all-extras                                     # install all dependencies
 uv run pytest tests/ -q                                  # test suite
 uv run ruff check . && uv run ruff format --check .      # lint
-uv run --no-project --with pyrefly==0.62.0 pyrefly check # CI typecheck
+uv run --no-project --with pyrefly==0.64.1 pyrefly check # CI typecheck
 uv run pyright                                           # weekly typecheck safety net
 ```
 

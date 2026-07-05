@@ -102,7 +102,7 @@ DEFAULT_EXPECTED_PLATFORM_SET = 12
 DEFAULT_DEPTH_CAP = 20
 # Anchored to the module (repo root), NOT cwd-relative: score_edt(registry) must find the shipped
 # config from ANY working directory — a cwd-relative default would silently fall back to the
-# 8-member default set and DROP the operator's declared members (cohere/hf), blinding the D0 canary.
+# 7-member default set and DROP the operator's declared members (cohere/hf), blinding the D0 canary.
 DEFAULT_KNOBS_PATH = Path(__file__).resolve().parent.parent / "config" / "edt-platform-knobs.yaml"
 
 #: The 14 REQUIRED CapabilityScores dimensions, in declared order.

@@ -28,7 +28,6 @@ from shared.capability_dispatch import (
 # A fixed registry set so resolution tests don't depend on the live registry file.
 VALID = frozenset(
     {
-        "antigrav.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
         "claude.headless.full",
@@ -49,15 +48,15 @@ VALID = frozenset(
 
 
 def test_resolve_known_alias_ok() -> None:
-    res = resolve_capability("agy", valid_route_ids=VALID)
+    res = resolve_capability("codex", valid_route_ids=VALID)
     assert res.ok
-    assert res.route_id == "antigrav.interactive.full"
-    assert (res.platform, res.mode, res.profile) == ("antigrav", "interactive", "full")
+    assert res.route_id == "codex.headless.full"
+    assert (res.platform, res.mode, res.profile) == ("codex", "headless", "full")
 
 
 def test_resolve_is_case_insensitive_and_trims() -> None:
-    res = resolve_capability("  AGY ", valid_route_ids=VALID)
-    assert res.ok and res.route_id == "antigrav.interactive.full"
+    res = resolve_capability("  CODEX ", valid_route_ids=VALID)
+    assert res.ok and res.route_id == "codex.headless.full"
 
 
 def test_resolve_raw_route_id_ok() -> None:
@@ -76,6 +75,25 @@ def test_resolve_sakana_points_at_fugu() -> None:
     assert not res.ok and "fugu" in res.reason.lower()
 
 
+def test_resolve_deprecated_antigrav_alias_fails_closed() -> None:
+    res = resolve_capability("agy", valid_route_ids=VALID)
+    assert not res.ok
+    assert "deprecated" in res.reason.lower()
+    assert res.route_id is None
+
+    full_word = resolve_capability("antigravity", valid_route_ids=VALID)
+    assert not full_word.ok
+    assert "deprecated" in full_word.reason.lower()
+    assert "measured agy supply leaves" in full_word.reason
+    assert full_word.route_id is None
+
+    gemini_cli = resolve_capability("gemini-cli", valid_route_ids=VALID)
+    assert not gemini_cli.ok
+    assert "retired" in gemini_cli.reason.lower()
+    assert "measured agy supply leaves" in gemini_cli.reason
+    assert gemini_cli.route_id is None
+
+
 def test_resolve_unknown_capability() -> None:
     res = resolve_capability("nope", valid_route_ids=VALID)
     assert not res.ok and "unknown capability" in res.reason
@@ -89,8 +107,8 @@ def test_resolve_non_spawnable_platform_fails_closed() -> None:
 
 
 def test_resolve_alias_to_route_absent_from_registry() -> None:
-    # agy -> antigrav.interactive.full, but pretend the registry lacks that route.
-    res = resolve_capability("agy", valid_route_ids=VALID - {"antigrav.interactive.full"})
+    # codex-spark maps to a real route, but pretend the registry lacks that route.
+    res = resolve_capability("codex-spark", valid_route_ids=VALID - {"codex.headless.spark"})
     assert not res.ok and "not in the registry" in res.reason
 
 
@@ -195,7 +213,8 @@ def test_load_valid_route_ids_reflects_real_registry() -> None:
 
 def test_launchable_aliases_excludes_non_spawnable() -> None:
     out = launchable_aliases(VALID)
-    assert "agy" in out and "codex" in out and "vibe" in out
+    assert "codex" in out and "vibe" in out
+    assert "agy" not in out
     assert "glmcp-review" not in out  # platform glmcp not spawnable
     assert "local-worker" not in out  # receipt-only local-inference, no lane
     assert "api" not in out and "api-frontier" not in out  # receipt-only api routes
@@ -305,9 +324,11 @@ def test_utilization_active_vs_latent() -> None:
     ]
     u = utilization(records, valid_route_ids=VALID)
     assert "codex.headless.full" in u.active
-    assert "antigrav.interactive.full" in u.active
+    assert "antigrav.interactive.full" not in u.known
+    assert "antigrav.interactive.full" not in u.active
     assert "vibe.headless.full" in u.latent  # launchable but unused
     assert u.counts["codex.headless.full"] == 2
+    assert u.counts["antigrav.interactive.full"] == 1
     assert set(u.active).isdisjoint(set(u.latent))
     assert sorted(u.active + u.latent) == u.known
 
@@ -333,7 +354,6 @@ def test_utilization_counts_unknown_routes_but_excludes_from_known() -> None:
 
 
 def test_utilization_alias_for_uses_primary_alias() -> None:
-    records = [{"platform": "antigrav", "mode": "interactive", "profile": "full", "launched": True}]
+    records = [{"platform": "codex", "mode": "headless", "profile": "full", "launched": True}]
     u = utilization(records, valid_route_ids=VALID)
-    # agy is declared before gemini, so it is the primary display alias.
-    assert u.alias_for["antigrav.interactive.full"] == "agy"
+    assert u.alias_for["codex.headless.full"] == "codex"

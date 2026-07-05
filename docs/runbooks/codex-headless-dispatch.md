@@ -40,6 +40,21 @@ Remote appendix dispatch uses this order:
    `codex`;
 4. execute `codex exec` on the remote host.
 
+On the remote host, the launcher materializes both the legacy and session-keyed
+claim caches plus their epoch sidecars before `codex exec` starts:
+`cc-active-task-<cx-session>`, `cc-claim-epoch-<cx-session>`,
+`cc-active-task-<cx-session>-<session_id>`, and
+`cc-claim-epoch-<cx-session>-<session_id>`. Recheck a live remote claim with:
+
+```bash
+role=cx-amber
+for f in ~/.cache/hapax/cc-active-task-"$role"*; do
+  key=${f##*/cc-active-task-}
+  printf '%s -> %s :: ' "$f" "$(head -n1 "$f")"
+  head -n1 ~/.cache/hapax/cc-claim-epoch-"$key"
+done
+```
+
 Default worktrees are constructive: if `$HOME/projects/hapax-council--<cx-session>`
 is missing on the dispatch host, the launcher may create it from the remote primary
 council checkout using branch `codex/<cx-session>`. Override the branch prefix with

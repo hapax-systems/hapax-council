@@ -194,16 +194,15 @@ fi
 
 # Session worktree limit. Reflects the full multi-interface team that
 # coexists today: Claude Code peers (greek-named) + Codex native lanes
-# (cx-*) + Mistral Vibe (vbe-*) + Antigravity/agy (antigrav).
-# Floor sums to ~16 steady-state slots:
+# (cx-*) + Mistral Vibe (vbe-*). Retired Antigrav/agy surfaces do not count.
+# Floor sums to ~14 steady-state slots:
 #   1  canonical (alpha, must remain on main; vite reads it)
 #   4  Claude peers (beta, gamma, zeta, epsilon)
 #   7  Codex lanes (cx-amber/blue/cyan/gold/green/red/violet)
 #   N  Codex sub-lane variants (e.g. cx-gold-cbip — same lane, two branches)
 #   2  Mistral Vibe (vbe-1, vbe-2)
-#   1  Antigrav (IDE-bound, JR+ tier)
 # Plus operational slack for transient debug/audit worktrees + alpha-side
-# fix-PR staging. Cap of 20 leaves ~4 spontaneous slots above the floor.
+# fix-PR staging. Cap of 20 leaves ~6 spontaneous slots above the floor.
 # Re-evaluate when team capacity changes again.
 #
 # Infrastructure worktrees are NOT counted — they are not operator-visible session

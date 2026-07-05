@@ -19,7 +19,7 @@ if str(SCRIPTS) not in sys.path:
 
 import executor_contract as ec  # noqa: E402
 
-ALL_PLATFORMS = {"api", "glmcp", "claude", "codex", "vibe", "antigrav", "local_tool"}
+ALL_PLATFORMS = {"api", "glmcp", "claude", "codex", "vibe", "local_tool"}
 
 
 def test_registry_covers_all_runtimes() -> None:
@@ -42,12 +42,12 @@ def test_supports_route_for_known_routes() -> None:
     assert ec.supports_route("codex", "headless")
     assert ec.supports_route("claude", "headless")
     assert ec.supports_route("vibe", "headless")
-    assert ec.supports_route("antigrav", "interactive")
 
 
 def test_supports_route_rejects_unlaunchable_routes() -> None:
     assert not ec.supports_route("gemini", "headless")
     assert not ec.supports_route("gemini", "interactive")
+    assert not ec.supports_route("antigrav", "interactive")
     assert not ec.supports_route("antigrav", "headless")
     assert not ec.supports_route("vibe", "interactive")
     assert not ec.supports_route("api", "headless")  # receipt metadata, not a launcher
@@ -64,12 +64,8 @@ def test_codex_has_a_genuine_headless_path() -> None:
     assert "hapax-codex-headless" in codex.notes
 
 
-def test_antigrav_hook_gap_is_machine_legible() -> None:
-    antigrav = ec.capabilities("antigrav")
-    assert antigrav is not None
-    # The agy CLI path is gated; the residual IDE-surface gap is documented.
-    assert antigrav.headless is False
-    assert "IDE" in antigrav.notes
+def test_antigrav_is_excised_from_executor_registry() -> None:
+    assert ec.capabilities("antigrav") is None
 
 
 def test_capabilities_unknown_is_none() -> None:

@@ -30,16 +30,29 @@ headless_allowed() {
 }
 
 relay_retired() {
+  # Delegate to the single-source predicate (shared/relay_lifecycle.lane_is_retired)
+  # so the launcher agrees with the dispatch gate + the coordinator: one
+  # broad-9 vocabulary, freshest-of-candidates resolution, multi-doc
+  # latest-wins. The legacy awk (relay_current_values/relay_value_is_retired
+  # below) over-refused SUPERSEDED/CLOSED lane relays (task/claim states that
+  # leaked); dead code retained for a minimal diff — remove later. FAIL-OPEN on
+  # tooling error (python missing / import fail): the gate at
+  # coord_dispatch.run_atomic_dispatch_launch is authoritative on the governed
+  # path, so a fail-open launcher only ever sees gate-allowed lanes.
   local relay_name="$1"
-  local relay_file="${HAPAX_RELAY_DIR:-$HOME/.cache/hapax/relay}/$relay_name.yaml"
-  local value
-  [ -f "$relay_file" ] || return 1
-  while IFS= read -r value; do
-    if relay_value_is_retired "$value"; then
-      return 0
-    fi
-  done < <(relay_current_values "$relay_file")
-  return 1
+  local council_root
+  local relay_dir="${HAPAX_RELAY_DIR:-$HOME/.cache/hapax/relay}"
+  council_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  PYTHONPATH="$council_root${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
+import sys
+from pathlib import Path
+from shared.relay_lifecycle import lane_is_retired
+sys.exit(0 if lane_is_retired(sys.argv[1], relay_dir=Path(sys.argv[2])) else 1)
+' "$relay_name" "$relay_dir" 2>/dev/null
+  case $? in
+    0) return 0 ;;
+    *) return 1 ;;  # 1 = not retired; any other = tooling error -> fail-open
+  esac
 }
 
 relay_current_values() {
@@ -288,6 +301,10 @@ try:
         os.makedirs(cache,exist_ok=True)
         open(os.path.join(cache,"session-role-"+sid),"w",encoding="utf-8").write(role+"\n")
         if task:
+            import time as _time
+            epoch_line=str(int(_time.time()))+" "+task+"\n"
+            open(os.path.join(cache,"cc-claim-epoch-"+role),"w",encoding="utf-8").write(epoch_line)
+            open(os.path.join(cache,"cc-claim-epoch-"+role+"-"+sid),"w",encoding="utf-8").write(epoch_line)
             open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
             open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
             materialized=True

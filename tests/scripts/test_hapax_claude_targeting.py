@@ -224,6 +224,69 @@ def test_send_rejects_unknown_role(tmp_path: Path) -> None:
     assert "invalid role 'boguslane'" in result.stderr
 
 
+def test_send_rejects_retired_antigrav_role(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fast_fail_targeting(bin_dir)
+    result = subprocess.run(
+        [
+            "bash",
+            str(SEND),
+            "--session",
+            "antigrav",
+            "--transport",
+            "auto",
+            "--no-submit",
+            "--",
+            "msg",
+        ],
+        capture_output=True,
+        text=True,
+        env=_env(tmp_path, bin_dir),
+        timeout=5,
+    )
+    assert result.returncode == 2
+    assert "invalid role 'antigrav'" in result.stderr
+
+
+def test_send_rejects_retired_antigrav_role_even_when_allowlisted(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fast_fail_targeting(bin_dir)
+    for role in (
+        "agy",
+        "agy-2",
+        "antigrav",
+        "antigravity",
+        "antigravity-2",
+        "gemini-cli",
+        "gemini-cli-2",
+    ):
+        env = _env(tmp_path, bin_dir)
+        env["HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST"] = f"alpha {role}"
+        result = subprocess.run(
+            [
+                "bash",
+                str(SEND),
+                "--session",
+                role,
+                "--transport",
+                "auto",
+                "--no-submit",
+                "--",
+                "msg",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=5,
+        )
+        assert result.returncode == 2
+        assert f"invalid role '{role}'" in result.stderr
+        assert "retired/excised send targets cannot be allowlisted" in result.stderr
+        assert "mint measured agy supply-leaf intake" in result.stderr
+
+
 def test_send_rejects_dev_lookalikes_not_in_pool(tmp_path: Path) -> None:
     # the dev pattern is digits-only (dev / dev<1-2 digits>) — NOT a `dev*` superset, so
     # look-alikes with trailing junk are rejected (e.g. dev2foo, devel, dev-2).
