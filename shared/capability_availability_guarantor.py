@@ -144,7 +144,8 @@ class RefreshStrategy(Protocol):
         freshness: RouteFreshnessCheck,
         *,
         now: datetime,
-    ) -> RefreshOutcome: ...
+    ) -> RefreshOutcome:
+        pass
 
 
 class RefreshCommandRunner(Protocol):
@@ -153,7 +154,8 @@ class RefreshCommandRunner(Protocol):
         command: tuple[str, ...],
         *,
         timeout_s: float,
-    ) -> RefreshCommandResult: ...
+    ) -> RefreshCommandResult:
+        pass
 
 
 class RefreshStrategyRegistry:
