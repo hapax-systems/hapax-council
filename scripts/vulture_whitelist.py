@@ -4266,6 +4266,18 @@ from shared.gate_outcome_producer import (  # noqa: E402
 build_outcome_gate_event
 emit_outcome_gate_event
 
+# Additive measurement-loop join helper (Stage-3 sub-slice 1): public API lands before the
+# witnessed PR-resolution caller, so vulture cannot see its production call path yet.
+from shared.gate_event_join import (  # noqa: E402
+    AdmissionContext,
+    emit_witnessed_outcome,
+    recover_admission_context,
+)
+
+AdmissionContext
+recover_admission_context
+emit_witnessed_outcome
+
 # Additive CCEF/H STEP 2: the dispatch-frontier public API — callers land in the shadow-wire
 # (STEP 9); referenced here so the vulture gate does not flag the as-yet caller-less functions.
 from shared.dispatch_frontier import dominates, non_dominated_set  # noqa: E402
