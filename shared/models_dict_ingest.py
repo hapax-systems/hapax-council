@@ -1,8 +1,7 @@
 """MODELS dict ingestion adapter (producer layer slice 8).
 
-Ingests the MODELS dict from shared/config.py (~20 LiteLLM aliases — deepseek, glm, gemini, mistral,
-opus, local-fast, etc.) into CapabilityHarnessDescriptors. Cloud aliases become hosted_model shapes;
-local/appendix aliases become raw_model shapes so cost/spend boundaries stay honest.
+Ingests the MODELS dict from shared/config.py into CapabilityHarnessDescriptors. Cloud aliases become
+hosted_model shapes; local/appendix aliases become raw_model shapes so cost/spend boundaries stay honest.
 """
 
 from __future__ import annotations
@@ -66,6 +65,10 @@ def ingest_models_dict(models: dict[str, object]) -> list[CapabilityHarnessDescr
         elif isinstance(value, dict):
             route_str = str(value.get("route") or value.get("model") or alias)
         else:
-            continue
+            raise ValueError(
+                "MODELS alias "
+                f"{alias!r} must be a string route or dict route config, got "
+                f"{type(value).__name__}"
+            )
         descriptors.append(_descriptor_for_alias(alias, route_str))
     return descriptors

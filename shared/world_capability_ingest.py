@@ -1,7 +1,7 @@
 """World-capability-registry ingestion adapter (producer layer slice 4).
 
-Ingests config/world-capability-registry.json (17 records — the world-expression/observation/state plane:
-audio broadcast, camera/compositor, archive, browser MCP, MIDI, mobile biometrics, public aperture) into
+Ingests config/world-capability-registry.json (the world-expression/observation/state plane: audio broadcast,
+camera/compositor, archive, browser MCP, MIDI, mobile biometrics, public aperture) into
 CapabilityHarnessDescriptors. Maps realm/domain/daemon/authority/direction to the unified descriptor schema.
 """
 

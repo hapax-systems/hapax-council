@@ -1,6 +1,6 @@
 """Capability-classification-inventory ingestion adapter (producer layer slice 7).
 
-Ingests config/capability-classification-inventory.json (41 semantic affordance rows) into descriptors.
+Ingests config/capability-classification-inventory.json into descriptors.
 Filters to recruitable=true (selectable supply leaves; non-recruitable rows are observations/affordances,
 not dispatchable capabilities). Shape inferred from direction/effect_type.
 """

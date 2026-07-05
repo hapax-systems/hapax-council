@@ -2,7 +2,7 @@
 
 The producer layer: ingest the 7 parallel capability registries into the unified ``CapabilityHarnessDescriptor``
 schema so the inventory projects the *actual* live capabilities + ``discover()`` emits the real delta. This
-module's adapter: ``config/platform-capability-registry.json`` (the LLM/dispatch supply plane — 13 routes).
+module's adapter: ``config/platform-capability-registry.json`` (the LLM/dispatch supply plane).
 Follow-on adapters (separate slices): the world-capability-registry, the publication-bus surface_registry,
 grounding-providers, the MODELS dict, the mcp-connector-manifest, the capability-classification-inventory.
 

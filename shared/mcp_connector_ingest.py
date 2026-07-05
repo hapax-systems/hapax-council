@@ -1,7 +1,7 @@
 """MCP connector manifest ingestion adapter (producer layer slice 6).
 
-Ingests config/mcp-connector-tool-manifest.json (27 tools) into CapabilityHarnessDescriptors. Maps
-effect_classes to shapes: read_only_evidence -> local_tool; local_mutation -> local_tool;
+Ingests config/mcp-connector-tool-manifest.json into CapabilityHarnessDescriptors. Maps effect_classes to
+shapes: read_only_evidence -> local_tool; local_mutation -> local_tool;
 external_mutation/public_egress -> public_egress; money_resource_mutation -> money_rail;
 governance_mutation -> local_tool with repo-mutation authority.
 """

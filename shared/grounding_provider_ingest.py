@@ -1,8 +1,8 @@
 """Grounding-providers registry ingestion adapter (producer layer slice 5).
 
-Ingests config/grounding-providers.json (6 records — the grounding provider plane: local Command-R via
-TabbyAPI, cloud providers) into CapabilityHarnessDescriptors. Maps provider_id/provider_family/model_id
-to the provider_gateway / hosted_model / raw_model shapes.
+Ingests config/grounding-providers.json (the grounding provider plane: local Command-R via TabbyAPI, cloud
+providers) into CapabilityHarnessDescriptors. Maps provider_id/provider_family/model_id to the
+provider_gateway / hosted_model / raw_model shapes.
 """
 
 from __future__ import annotations

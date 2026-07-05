@@ -48,6 +48,10 @@ class ModelsDictIngestTest(unittest.TestCase):
     def test_empty_dict_returns_empty(self) -> None:
         self.assertEqual(ingest_models_dict({}), [])
 
+    def test_unsupported_alias_shape_raises(self) -> None:
+        with self.assertRaisesRegex(ValueError, "MODELS alias 'bad'"):
+            ingest_models_dict({"bad": ["not", "a", "route"]})
+
     def test_capability_ids_prefixed(self) -> None:
         descs = ingest_models_dict({"mistral": "mistral/mistral-large"})
         self.assertEqual(descs[0].capability_id, "litellm.mistral")
