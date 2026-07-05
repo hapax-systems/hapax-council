@@ -2478,6 +2478,22 @@ def test_policy_sources_fail_soft_when_quota_fixture_resolution_fails(
     assert "quota-spend-ledger-fixtures.json" in sources.quota_error
 
 
+def test_policy_sources_do_not_mask_unexpected_quota_runtime_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_unexpectedly(*, live_path: Path | None = None) -> object:
+        raise RuntimeError("unexpected quota resolver bug")
+
+    monkeypatch.setattr(
+        dispatcher_policy,
+        "load_quota_spend_ledger_resolved",
+        fail_unexpectedly,
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected quota resolver bug"):
+        load_dispatch_policy_sources()
+
+
 def test_policy_sources_explicit_path_bypasses_live_resolution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
