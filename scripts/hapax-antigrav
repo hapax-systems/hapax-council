@@ -12,9 +12,10 @@ cat >&2 <<'EOF'
 hapax-antigrav: retired
 
 Antigrav/agy live worker launch is deprecated and excised from Hapax dispatch.
-Use Claude, Codex, Vibe, or a future measured agy supply leaf with fresh
-route/resource/governance receipts. This compatibility stub intentionally
-refuses before hooks, claims, worktrees, tmux, or agy can run.
+Use Claude, Codex, or Vibe for worker dispatch. For read-only review-plane work,
+use agy.review.direct through scripts/hapax-agy-reviewer after route-specific
+admission receipts exist. This compatibility stub intentionally refuses before
+hooks, claims, worktrees, tmux, or agy can run.
 EOF
 
 exit 2

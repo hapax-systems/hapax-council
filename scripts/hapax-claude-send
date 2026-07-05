@@ -186,7 +186,7 @@ if [ -z "$SESSION" ]; then
 fi
 
 if is_retired_send_target_role "$SESSION"; then
-  echo "hapax-claude-send: invalid role '$SESSION' (retired/excised send targets cannot be allowlisted; mint measured agy supply-leaf intake with route/resource/governance receipts)" >&2
+  echo "hapax-claude-send: invalid role '$SESSION' (retired/excised send targets cannot be allowlisted; use agy.review.direct through scripts/hapax-agy-reviewer only for admitted read-only review-plane work)" >&2
   exit 2
 fi
 

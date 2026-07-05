@@ -27,7 +27,7 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 )
 
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
-RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset({"glmcp.review.direct"})
+RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset({"agy.review.direct", "glmcp.review.direct"})
 RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
     "glmcp.review.direct": "z_ai-glm-coding-plan",
 }
@@ -106,6 +106,7 @@ class ModelId(StrEnum):
     # mirrored from shared.platform_capability_registry.ModelId — the structured dated identity that
     # replaces the coarse free-text model_or_engine for spend metering; drift-pinned to the registry.
     CLAUDE_OPUS_4_8 = "claude-opus-4-8"
+    CLAUDE_OPUS_4_6 = "claude-opus-4-6"
     CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
     CLAUDE_SONNET_5 = "claude-sonnet-5"
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
@@ -116,6 +117,8 @@ class ModelId(StrEnum):
     QWEN3_5_9B = "qwen3.5-9b"
     MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    GEMINI_3_5_FLASH = "gemini-3.5-flash"
+    GPT_OSS_120B = "gpt-oss-120b"
     Z_AI_GLM_5 = "z_ai-glm-5"
     UNKNOWN = "unknown"
 

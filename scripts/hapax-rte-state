@@ -225,7 +225,7 @@ def read_assignment() -> dict[str, Any]:
         status = "invalid"
         reasons.append(
             "retired/excised RTE lane cannot be active; use admitted frontier lanes or "
-            "measured agy supply-leaf intake with route/resource/governance receipts"
+            "agy.review.direct through scripts/hapax-agy-reviewer for admitted read-only review-plane work"
         )
     if expires_at is not None and expires_at <= now_dt:
         status = "expired"

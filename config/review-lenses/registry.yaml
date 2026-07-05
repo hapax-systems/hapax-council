@@ -91,17 +91,19 @@ families:
     # deliberately bare-fence-only for channel trust) discards it as
     # invalid-output — a lost accept (the claude seat rode as invalid-output
     # across rounds 6-8 of PR #4119 despite returning verdict: accept).
-    # The agy-backed gemini family gets equivalent instructions in
+    # The agy family gets equivalent instructions in
     # scripts/hapax-agy-reviewer; codex complies natively.
     reviewer_command: ["claude", "-p", "--append-system-prompt", "You are a blind PR reviewer invoked non-interactively. Output policy is ABSOLUTE and overrides any urge to explain: your ENTIRE reply MUST be exactly one fenced yaml code block (opening ```yaml, your verdict/findings/checklist, closing ```) and NOTHING ELSE — no preamble, no reasoning, no prose, no text whatsoever before or after the fence. The dossier parser requires the whole reply to be a single bare yaml fence; ANY character outside it discards your entire review as invalid-output (a silently lost vote). Do all reasoning silently; emit only the fence."]
     timeout_seconds: 1200
   - family: codex
     reviewer_command: ["codex", "exec", "--sandbox", "read-only", "-"]
     timeout_seconds: 1200
-  - family: gemini
+  - family: agy
+    route_id: agy.review.direct
     reviewer_command: ["scripts/hapax-agy-reviewer"]
     timeout_seconds: 1200
   - family: glm
+    route_id: glmcp.review.direct
     # Emergency outage procedure: GLM degrades out of a constitution only with
     # a fresh family-outage witness in
     # ~/.cache/hapax/review-team/family-outage.json, normally written when the
@@ -131,15 +133,18 @@ lane_families:
     cx-glmcp: glm
     codex-glmcp: glm
     glmcp: glm
-    antigrav: gemini
-    antigravity: gemini
+    agy-review: agy
   prefixes:
     cx-: codex
     codex-: codex
     glm-: glm
     vbe-: vibe
-    antigrav-: gemini
-    agy-: gemini
+    agy-: agy
   retired:
     - iota
+    - antigrav
+    - antigravity
+  retired_prefixes:
+    - antigrav-
+    - antigravity-
   default: claude

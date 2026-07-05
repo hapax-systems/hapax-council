@@ -618,7 +618,7 @@ class TestRecipientExpansion(unittest.TestCase):
                 Path(td),
                 ["alpha", "agy", "agy-2", "antigrav", "antigrav-2", "antigravity", "cx-red"],
             )
-            with self.assertRaisesRegex(ValueError, "retired/excised"):
+            with self.assertRaisesRegex(ValueError, "agy.review.direct"):
                 expand_recipients("*:antigrav", relay_dir)
 
     def test_expand_broadcast_vibe(self) -> None:
@@ -662,11 +662,11 @@ class TestRecipientExpansion(unittest.TestCase):
             self.assertNotIn("alpha-status", result)
 
     def test_expand_direct_antigrav_is_retired(self) -> None:
-        with self.assertRaisesRegex(ValueError, "retired/excised"):
+        with self.assertRaisesRegex(ValueError, "agy.review.direct"):
             expand_recipients("alpha,antigrav")
-        with self.assertRaisesRegex(ValueError, "retired/excised"):
+        with self.assertRaisesRegex(ValueError, "agy.review.direct"):
             expand_recipients("alpha,agy")
-        with self.assertRaisesRegex(ValueError, "retired/excised"):
+        with self.assertRaisesRegex(ValueError, "agy.review.direct"):
             expand_recipients("alpha,gemini-cli")
 
     def test_expand_broadcast_unknown_group(self) -> None:

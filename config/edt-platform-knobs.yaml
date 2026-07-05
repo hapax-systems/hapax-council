@@ -6,15 +6,15 @@
 # registry.required_route_ids), so a platform the operator EXPECTS but the registry does NOT carry
 # is flagged. The scorer never hardcodes the count; edit this file to assert the real expected set.
 #
-# 6 prefixes are observed in the live registry (api, claude, codex, glmcp, local_tool, vibe).
-# `gemini` has a Platform enum slot but no route yet, so it remains an omitted canary.
+# 7 prefixes are observed in the live registry (agy, api, claude, codex, glmcp, local_tool, vibe).
+# `gemini` has a Platform enum slot but no route, so it remains an omitted canary.
 # antigrav/cohere/hf are retired phantoms the operator still counts in the target,
 # but they are explicitly excluded from the omitted-platform failure set below.
 #
-# NOTE: this EXPLICIT members list (9 entries) is INTENTIONALLY LARGER than the absent-file default
-# fallback (7 = the 6 observed + gemini). When this file is present, the list below is authoritative
+# NOTE: this EXPLICIT members list (10 entries) is INTENTIONALLY LARGER than the absent-file default
+# fallback (8 members: 7 observed prefixes + gemini). When this file is present, the list below is authoritative
 # and the omitted-canary flags expected non-retired members not observed in the registry (gemini).
-# Only when this file is ABSENT does load_edt_knobs() synthesize the 7-member default (set=12,
+# Only when this file is ABSENT does load_edt_knobs() synthesize the 8-member default (set=12,
 # depth_cap=20) — a fail-safe, never the operator's full declared target.
 
 # Operator target count (an assertion; MAY exceed the concrete members list below).
@@ -23,6 +23,7 @@ expected_platform_set: 12
 # The concrete declared set. D0 omitted_platforms = (members - observed - retired_phantoms).
 # A non-retired member not observed in the registry cannot pass, regardless of descriptor richness.
 expected_platform_members:
+  - agy
   - api
   - claude
   - codex

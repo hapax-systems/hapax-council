@@ -9,10 +9,20 @@
 The methodology-aware headless dispatcher routes tasks to admitted platform
 lanes (Claude, Codex, and Vibe) while preserving quality guarantees. Gemini API
 routes are provider-gateway surfaces, not standing Gemini CLI worker lanes;
-retired Antigravity/agy worker surfaces must become measured `agy` supply-leaf
-intake with route/resource/governance receipts before any future demand
-fulfillment. It reads fresh quota state, enforces quality floors, prevents
-silent downgrades, and emits observable route decisions.
+retired Antigravity/agy worker surfaces remain non-dispatchable. The live
+`agy.review.direct` route is read-only review-plane supply and stays blocked
+until route-specific admission receipts exist. The dispatcher reads fresh quota
+state, enforces quality floors, prevents silent downgrades, and emits observable
+route decisions.
+
+Recheck the agy receipt clearing path with:
+
+```bash
+uv run pytest \
+  tests/shared/test_platform_capability_registry.py::test_agy_local_receipt_clears_review_seat_but_not_route_quota \
+  tests/shared/test_platform_capability_registry.py::test_agy_observed_route_quota_receipt_admits_review_route \
+  tests/shared/test_platform_capability_receipts.py::test_agy_receipt_records_live_review_route_without_unblocking_quota
+```
 
 ## 2. Enforcement Points
 

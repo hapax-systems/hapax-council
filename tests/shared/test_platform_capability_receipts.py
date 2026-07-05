@@ -210,7 +210,7 @@ def test_fresh_subscription_receipt_allows_dispatch_without_rollback(
     assert decision.registry_freshness_green is True
 
 
-def test_antigrav_agy_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -> None:
+def test_antigrav_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "agy", "1.0.0")
@@ -219,7 +219,7 @@ def test_antigrav_agy_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -
     wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
 
-    for platform in ("agy", "antigrav", "Antigrav", "antigravity", "gemini-cli"):
+    for platform in ("antigrav", "Antigrav", "antigravity", "gemini-cli"):
         result = _run_receipts(
             tmp_path,
             env={"PATH": str(bin_dir), "HOME": str(tmp_path / "home")},
@@ -228,8 +228,43 @@ def test_antigrav_agy_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -
 
         assert result.returncode == 2
         assert f"platform '{platform.lower()}' is retired/excised" in result.stderr
-        assert "measured agy supply-leaf intake" in result.stderr
+        assert "agy.review.direct" in result.stderr
         assert not (tmp_path / f"{platform}.json").exists()
+
+
+def test_agy_receipt_records_live_review_route_without_unblocking_quota(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "agy", "1.0.10")
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(tmp_path / "home")},
+        platform="agy",
+        now="2026-07-05T14:51:11Z",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["receipts"][0]["platform"] == "agy"
+    assert payload["receipts"][0]["cli_available"] is True
+    assert payload["receipts"][0]["wrapper_exists"] is True
+    assert payload["receipts"][0]["quota_status"] == "unobservable"
+    receipt = json.loads((tmp_path / "agy.json").read_text(encoding="utf-8"))
+    assert receipt["platform"] == "agy"
+    assert receipt["routes"] == ["agy.review.direct"]
+    assert receipt["cli"]["version"] == "1.0.10"
+    assert receipt["quota"]["reason_codes"] == ["account_live_quota_receipt_absent"]
+
+    registry = load_platform_capability_registry(
+        REGISTRY,
+        receipt_dir=tmp_path,
+        now=datetime(2026, 7, 5, 14, 52, tzinfo=UTC),
+    )
+    route = registry.require("agy.review.direct")
+    assert route.route_state.value == "blocked"
+    assert "agy_review_seat_receipt_admission_required" not in route.blocked_reasons
+    assert "route_specific_quota_receipt_absent" in route.blocked_reasons
 
 
 def test_api_provider_gateway_receipt_allows_paid_gateway_dispatch(

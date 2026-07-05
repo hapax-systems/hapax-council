@@ -40,18 +40,24 @@ from shared.platform_capability_registry import (  # noqa: E402
 )
 
 BINARY_BY_PLATFORM = {
+    "agy": "agy",
     "api": "python3",
     "claude": "claude",
     "codex": "codex",
     "vibe": "vibe",
 }
 VERSION_ARGS_BY_PLATFORM = {
+    "agy": ["--version"],
     "api": ["--version"],
     "claude": ["--version"],
     "codex": ["--version"],
     "vibe": ["--version"],
 }
 CONFIG_REFS_BY_PLATFORM = {
+    "agy": [
+        "~/.gemini/antigravity-cli/builtin/skills/antigravity_guide/references/cli.md",
+        "scripts/hapax-agy-reviewer",
+    ],
     "api": [
         "~/llm-stack/litellm-config.yaml",
         "~/llm-stack/docker-compose.yml",
@@ -68,7 +74,7 @@ CONFIG_REFS_BY_PLATFORM = {
     ],
 }
 SECRETISH_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|credential)([=:])(\S+)")
-RETIRED_ANTIGRAV_PLATFORMS = frozenset({"agy", "antigrav", "antigravity", "gemini-cli"})
+RETIRED_ANTIGRAV_PLATFORMS = frozenset({"antigrav", "antigravity", "gemini-cli"})
 
 
 def parse_utc(value: str) -> datetime:
@@ -399,9 +405,8 @@ def main(argv: list[str] | None = None) -> int:
         retired = [platform for platform in unknown if platform in RETIRED_ANTIGRAV_PLATFORMS]
         for platform in retired:
             print(
-                f"platform '{platform}' is retired/excised; mint measured agy supply-leaf "
-                "intake with route/resource/governance receipts before any future "
-                "interactive worker path",
+                f"platform '{platform}' is retired/excised; use agy.review.direct for "
+                "the live read-only review route",
                 file=sys.stderr,
             )
         if retired:

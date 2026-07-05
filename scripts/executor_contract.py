@@ -52,6 +52,21 @@ class ExecutorCapabilities(BaseModel, frozen=True):
 
 
 EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
+    "agy": ExecutorCapabilities(
+        platform="agy",
+        modes=(),
+        profiles=("direct",),
+        mutates=False,
+        claims=False,
+        hooks_wired=False,
+        headless=False,
+        read_only=True,
+        notes=(
+            "receipt-only review-seat route (agy.review.direct); a read-only PR "
+            "reviewer via hapax-agy-reviewer and /usr/bin/agy, not a launchable "
+            "worker lane (modes=())."
+        ),
+    ),
     "api": ExecutorCapabilities(
         platform="api",
         modes=(),

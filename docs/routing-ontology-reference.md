@@ -40,12 +40,30 @@ Defined in `RouteConstraints.preferred_platforms` / `allowed_platforms` / `prohi
 | `claude` | Claude Code (Opus/Sonnet) | Frontier | 1M | Multi-file refactors, governance, architecture |
 | `codex` | Codex headless | Frontier | 192K | Bounded implementation, parallel lanes |
 | `vibe` | Mistral Medium 3.5 | JR+ | 256K | Mechanical: tests, deps, CI fixes |
+| `agy` | Agy CLI review seat | Read-only support | Provider-dependent | Blind PR review through `scripts/hapax-agy-reviewer`; not a worker lane |
 
 `antigrav` / Antigravity is retired and excised as a live platform, lane, and
 route family. The Agy adapter family is distinct and live after the 2026-07-05
 steward correction, but it does not satisfy dispatch demand until a measured
-`agy` route is registered with route, resource, and governance receipts. Legacy
-`gemini-cli` aliases remain retired.
+worker route is registered with route, resource, and governance receipts.
+`agy.review.direct` is the live replacement review route, with
+Gemini/Claude/GPT-OSS as engines behind the `agy` harness rather than capability
+family names. It is read-only and remains blocked for admission until a
+route-specific quota/resource receipt is present. Legacy `gemini-cli` aliases
+remain retired.
+
+Recheck the agy review-route/non-worker claims with:
+
+```bash
+uv run pytest \
+  tests/docs/test_platform_capability_registry_contract.py::test_seed_registry_records_agy_review_route_as_blocked_review_supply \
+  tests/shared/test_platform_capability_registry.py::test_gemini_routes_are_not_seeded_as_dispatchable_platform_paths \
+  tests/shared/test_capability_dispatch.py::test_resolve_agy_review_route_is_valid_but_non_spawnable \
+  tests/scripts/test_cc_dispatch.py::test_agy_review_route_is_valid_but_non_spawnable \
+  tests/scripts/test_hapax_methodology_dispatch.py::test_agy_platform_is_review_route_not_dispatchable_worker \
+  tests/scripts/test_hapax_cross_runtime_dispatch.py::test_agy_platform_is_review_route_not_cross_runtime_worker \
+  tests/test_review_team.py::TestFamilyOutageDegradation::test_review_route_blocked_families_reads_current_agy_route
+```
 
 ## Reaching the Opus Route (signed route-authority receipts)
 

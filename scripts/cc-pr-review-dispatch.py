@@ -24,7 +24,7 @@ Usage::
 
 Default mode is a dry-run constitution plan. ``--apply`` dispatches reviewers
 and writes the dossier; ``--force`` re-reviews an already-reviewed head sha.
-Reviewer CLIs (claude/codex/agy-backed gemini/glm) are configured in
+Reviewer CLIs (claude/codex/agy/glm) are configured in
 ``config/review-lenses/registry.yaml`` ``families[].reviewer_command``.
 """
 
@@ -974,6 +974,7 @@ def write_acceptance_receipt_if_due(
     changed_file_count: int | None = None,
     outage_state_path: Path | None = None,
     outage_witness: dict[str, str] | None = None,
+    route_blocked_families: dict[str, tuple[str, ...]] | None = None,
 ) -> Path | None:
     """The dossier IS the acceptance receipt for review-floor tasks (spec §5).
 
@@ -1013,6 +1014,7 @@ def write_acceptance_receipt_if_due(
             changed_file_count=changed_file_count,
             outage_state_path=validation_outage_state_path,
             admission_time=now_iso,
+            route_blocked_families=route_blocked_families,
         )
     finally:
         if witness_snapshot_path is not None:
@@ -1165,6 +1167,7 @@ def replay_dossier_side_effects(
     changed_file_count: int | None = None,
     outage_state_path: Path | None = None,
     outage_witness: dict[str, str] | None = None,
+    route_blocked_families: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
     """Idempotently replay side effects derived from an already-written dossier."""
 
@@ -1181,6 +1184,7 @@ def replay_dossier_side_effects(
         changed_file_count=changed_file_count,
         outage_state_path=outage_state_path,
         outage_witness=outage_witness,
+        route_blocked_families=route_blocked_families,
     )
     wake_path = None
     has_block = any(str(r.get("verdict")) == "block" for r in dossier.get("reviewers") or [])
@@ -1214,6 +1218,7 @@ def review_pr(
     send_runner: Any = None,
     registry_path: Path | None = None,
     now_iso: str | None = None,
+    route_blocked_families: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
     """Constitute (and with ``apply``, dispatch) the review team for one PR."""
 
@@ -1223,6 +1228,17 @@ def review_pr(
     send_runner = send_runner or _default_send_runner
     now_iso = now_iso or datetime.now(UTC).isoformat(timespec="seconds")
     registry = review_team.load_lens_registry(registry_path)
+    if route_blocked_families is None:
+        try:
+            route_blocked_families = review_team.review_route_blocked_families(registry)
+        except review_team.PlatformCapabilityRegistryError as exc:
+            LOG.warning("review route gate unavailable for PR #%d: %s", pr_number, exc)
+            return {
+                "status": "route_gate_unavailable",
+                "pr": pr_number,
+                "blocker": f"platform_capability_registry_unavailable:{type(exc).__name__}",
+                "detail": str(exc),
+            }
 
     pr_info = fetch_pr(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner)
     if pr_info.is_draft:
@@ -1274,6 +1290,7 @@ def review_pr(
                 changed_files=pr_info.files,
                 changed_file_count=pr_info.changed_file_count,
                 registry=registry,
+                route_blocked_families=route_blocked_families,
             )
             if blockers:
                 if str(existing.get("review_team_verdict") or "").lower() == "blocked":
@@ -1292,6 +1309,7 @@ def review_pr(
                             pr_number=pr_info.number,
                             changed_files=pr_info.files,
                             changed_file_count=pr_info.changed_file_count,
+                            route_blocked_families=route_blocked_families,
                         )
                     fresh_results.append(
                         {
@@ -1320,6 +1338,7 @@ def review_pr(
                     pr_number=pr_info.number,
                     changed_files=pr_info.files,
                     changed_file_count=pr_info.changed_file_count,
+                    route_blocked_families=route_blocked_families,
                 )
             fresh_results.append(
                 {
@@ -1368,8 +1387,21 @@ def review_pr(
             "family outage active (%s) — constitution may degrade (never seals)",
             ",".join(sorted(outage_families)),
         )
+    if route_blocked_families:
+        LOG.warning(
+            "review family route blocked (%s) — constitution may degrade but will not run blocked routes",
+            ",".join(
+                f"{family}:{'|'.join(reasons)}"
+                for family, reasons in sorted(route_blocked_families.items())
+            ),
+        )
     constitution = review_team.constitute_team(
-        team_class, writer_family, registry, pr_number=pr_number, outage_families=outage_families
+        team_class,
+        writer_family,
+        registry,
+        pr_number=pr_number,
+        outage_families=outage_families,
+        route_blocked_families=route_blocked_families,
     )
     plan = {
         "pr": pr_number,
@@ -1381,6 +1413,9 @@ def review_pr(
         "seats": [{"id": seat.id, "family": seat.family} for seat in constitution.seats],
         "lenses": list(lenses),
         "constitution_notes": list(constitution.notes),
+        "route_blocked_families": {
+            family: list(reasons) for family, reasons in route_blocked_families.items()
+        },
     }
     if not apply:
         return {"status": "planned", "plan": plan}
@@ -1501,6 +1536,7 @@ def review_pr(
             changed_files=pr_info.files,
             changed_file_count=pr_info.changed_file_count,
             outage_witness=outage_witness,
+            route_blocked_families=route_blocked_families,
         )
         results.append(
             {

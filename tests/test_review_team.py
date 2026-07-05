@@ -47,6 +47,25 @@ def _registry() -> dict:
     return yaml.safe_load(REGISTRY_PATH.read_text(encoding="utf-8"))
 
 
+def _raw_platform_capability_registry(rt):
+    payload = json.loads(
+        (REPO_ROOT / "config" / "platform-capability-registry.json").read_text(encoding="utf-8")
+    )
+    return rt.PlatformCapabilityRegistry.model_validate(payload)
+
+
+def _admitted_agy_platform_capability_registry(rt):
+    payload = _raw_platform_capability_registry(rt).model_dump(mode="json")
+    route = next(route for route in payload["routes"] if route["route_id"] == "agy.review.direct")
+    route["route_state"] = "active"
+    route["blocked_reasons"] = []
+    route["telemetry"]["quota_source"] = "manual"
+    route["freshness"]["quota_checked_at"] = "2026-07-05T14:51:00Z"
+    route["freshness"]["evidence"]["quota"]["evidence_refs"] = ["test:agy:route-quota-observed"]
+    route["freshness"]["evidence"]["quota"]["blocked_reasons"] = []
+    return rt.PlatformCapabilityRegistry.model_validate(payload)
+
+
 def _all_registry_lenses(reg: dict) -> set[str]:
     lenses = set(reg["always_on_lenses"]) | set(reg["tests_only_lenses"])
     for row in reg["surface_lenses"]:
@@ -121,10 +140,10 @@ class TestLensRegistry:
         referenced = set(re.findall(r"[a-z-]+(?= lens)", low))
         assert "trust-boundary" not in referenced, consent_line
 
-    def test_gemini_prompt_names_rdf_prefix_directives_as_valid_syntax(self) -> None:
+    def test_agy_prompt_names_rdf_prefix_directives_as_valid_syntax(self) -> None:
         reg = _registry()
-        gemini = next(row for row in reg["families"] if row["family"] == "gemini")
-        assert gemini["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
+        agy = next(row for row in reg["families"] if row["family"] == "agy")
+        assert agy["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
         prompt = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
         assert "RDF/Turtle/TriG @prefix directives are" in prompt
         assert "valid source syntax" in prompt
@@ -147,23 +166,25 @@ class TestLensRegistry:
     def test_families_roster_covers_four_model_families(self) -> None:
         roster = _registry()["families"]
         families = {entry["family"] for entry in roster}
-        assert {"claude", "codex", "gemini", "glm"} <= families
+        assert {"claude", "codex", "agy", "glm"} <= families
         for entry in roster:
             assert isinstance(entry["reviewer_command"], list) and entry["reviewer_command"]
             assert entry["timeout_seconds"] > 0
-        gemini = next(entry for entry in roster if entry["family"] == "gemini")
-        assert gemini["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
-        gemini_wrapper = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
-        assert "fenced yaml code block" in gemini_wrapper
-        assert "ONLY the dossier YAML" not in gemini_wrapper
+        agy = next(entry for entry in roster if entry["family"] == "agy")
+        assert agy["route_id"] == "agy.review.direct"
+        assert agy["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
+        agy_wrapper = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
+        assert "fenced yaml code block" in agy_wrapper
+        assert "ONLY the dossier YAML" not in agy_wrapper
         glm = next(entry for entry in roster if entry["family"] == "glm")
+        assert glm["route_id"] == "glmcp.review.direct"
         assert glm["reviewer_command"] == ["scripts/hapax-glmcp-reviewer"]
 
     def test_claude_family_forces_bare_fence_output(self) -> None:
         """Claude (a reasoning model) must be given a bare-fence output directive,
         or it prepends prose and the strict dossier parser discards its verdict as
         invalid-output (a lost vote — PR #4119 rounds 6-8). It carries the same
-        no-prose contract gemini gets, delivered via --append-system-prompt."""
+        no-prose contract agy gets, delivered via --append-system-prompt."""
         roster = _registry()["families"]
         claude = next(entry for entry in roster if entry["family"] == "claude")
         cmd = claude["reviewer_command"]
@@ -384,9 +405,7 @@ class TestConstitution:
         assert rt.writer_family_for_lane("zeta", reg) == "claude"
         assert rt.writer_family_for_lane("cx-gold", reg) == "codex"
         assert rt.writer_family_for_lane("codex-agy-cli", reg) == "codex"
-        assert rt.writer_family_for_lane("antigrav", reg) == "gemini"
-        assert rt.writer_family_for_lane("antigrav-2", reg) == "gemini"
-        assert rt.writer_family_for_lane("agy-review", reg) == "gemini"
+        assert rt.writer_family_for_lane("agy-review", reg) == "agy"
         assert rt.writer_family_for_lane("cx-glmcp", reg) == "glm"
         assert rt.writer_family_for_lane("codex-glmcp", reg) == "glm"
         assert rt.writer_family_for_lane("glm-alpha", reg) == "glm"
@@ -400,6 +419,10 @@ class TestConstitution:
         reg = rt.load_lens_registry()
         with pytest.raises(ValueError, match="retired authoring lane"):
             rt.writer_family_for_lane("iota", reg)
+        with pytest.raises(ValueError, match="retired authoring lane"):
+            rt.writer_family_for_lane("antigrav", reg)
+        with pytest.raises(ValueError, match="retired authoring lane"):
+            rt.writer_family_for_lane("antigrav-2", reg)
 
 
 def _review(
@@ -452,7 +475,7 @@ class TestSynthesizeDossier:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
                 _review("claude-1", "claude", "accept"),
             ],
             writer_family="claude",
@@ -475,7 +498,7 @@ class TestSynthesizeDossier:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
                 _review("claude-1", "claude", "accept"),
             ],
             changed_files=None,
@@ -490,7 +513,7 @@ class TestSynthesizeDossier:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept-with-findings"),
+                _review("agy-1", "agy", "accept-with-findings"),
                 _review("claude-1", "claude", "block", [_critical(resolved=True)]),
             ],
         )
@@ -504,7 +527,7 @@ class TestSynthesizeDossier:
             rt,
             [
                 _review("codex-1", "codex", "accept", checklist={}),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
                 _review("claude-1", "claude", "block"),
             ],
         )
@@ -518,7 +541,7 @@ class TestSynthesizeDossier:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
                 _review("claude-1", "claude", "block", [_critical()]),
             ],
         )
@@ -531,7 +554,7 @@ class TestSynthesizeDossier:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
                 _review("claude-1", "claude", "block", [_critical()]),
             ],
         )
@@ -543,7 +566,7 @@ class TestSynthesizeDossier:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "invalid-output"),
+                _review("agy-1", "agy", "invalid-output"),
                 _review("claude-1", "claude", "invalid-output"),
             ],
         )
@@ -555,7 +578,7 @@ class TestSynthesizeDossier:
             rt,
             [
                 _review("codex-1", "codex", "invalid-output"),
-                _review("gemini-1", "gemini", "invalid-output"),
+                _review("agy-1", "agy", "invalid-output"),
                 _review("claude-1", "claude", "invalid-output"),
             ],
         )
@@ -569,7 +592,7 @@ class TestSynthesizeDossier:
             [
                 _review("codex-1", "codex", "accept"),
                 _review("codex-2", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
                 _review("claude-1", "claude", "block"),
             ],
             team_class="t1_critical",
@@ -594,7 +617,7 @@ class TestSynthesizeDossier:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
                 _review("claude-1", "claude", "accept"),
                 _review("glm-1", "glm", "accept"),
             ],
@@ -608,7 +631,7 @@ class TestSynthesizeDossier:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
                 _review("claude-1", "claude", "block"),  # no critical finding named
             ],
         )
@@ -633,7 +656,7 @@ class TestVerdictBlockers:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
+                _review("codex-2", "codex", "accept"),
                 _review("claude-1", "claude", "accept"),
             ],
         )
@@ -677,7 +700,7 @@ class TestVerdictBlockers:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "invalid-output"),
+                _review("agy-1", "agy", "invalid-output"),
                 _review("claude-1", "claude", "invalid-output"),
             ],
         )
@@ -739,7 +762,7 @@ class TestVerdictBlockers:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
                 _review("claude-1", "claude", "accept"),
                 _review("codex-2", "codex", "accept"),
             ],
@@ -814,7 +837,7 @@ class TestVerdictBlockers:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
                 _review("mystery-1", "mystery", "invalid-output"),
             ],
         )
@@ -882,7 +905,7 @@ class TestVerdictBlockers:
             rt,
             [
                 _review("codex-1", "codex", "accept", checklist={}),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
                 _review("claude-1", "claude", "accept"),
             ],
         )
@@ -897,7 +920,7 @@ class TestVerdictBlockers:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
                 _review("claude-1", "claude", "block", [_critical()]),
             ],
         )
@@ -912,7 +935,7 @@ class TestVerdictBlockers:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
                 _review("claude-1", "claude", "block", [_critical(resolved=True)]),
             ],
         )
@@ -927,7 +950,7 @@ class TestVerdictBlockers:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
             ],
         )
         note = _write_dossier(tmp_path, "task-x", dossier)
@@ -1193,7 +1216,7 @@ class TestFamilyOutageDegradation:
         )
         assert not rt.is_provider_outage(
             "Error authenticating: IneligibleTierError: This client is no longer "
-            "supported for Gemini Code Assist for individuals.",
+            "supported for Agy Code Assist for individuals.",
             process_failed=True,
             model_stdout="```yaml\nverdict: accept\n```",
         )
@@ -1208,8 +1231,8 @@ class TestFamilyOutageDegradation:
         rt = _load_review_team_module()
         unsupported_client = (
             "Error authenticating: IneligibleTierError: This client is no longer "
-            "supported for Gemini Code Assist for individuals. To continue using "
-            "Gemini, please migrate to the Antigravity suite of products.\n"
+            "supported for Agy Code Assist for individuals. To continue using "
+            "Agy, please migrate to the Antigravity suite of products.\n"
             "reasonCode: 'UNSUPPORTED_CLIENT'"
         )
         assert rt.is_reviewer_route_unavailable(unsupported_client, process_failed=True)
@@ -1243,6 +1266,8 @@ class TestFamilyOutageDegradation:
     ) -> None:
         rt = _load_review_team_module()
         wrapper = REPO_ROOT / "scripts" / "hapax-agy-reviewer"
+        assert wrapper.is_file()
+        assert os.access(wrapper, os.X_OK)
         env = {**os.environ, "HAPAX_AGY_BIN": str(tmp_path / "agy")}
 
         result = subprocess.run(
@@ -1353,6 +1378,106 @@ class TestFamilyOutageDegradation:
         # degraded quorum is t2's, and reachable with claude gone
         assert team.quorum_required == int(reg["sizing"]["t2_standard"]["quorum_accept"])
 
+    def test_t1_degrades_on_blocked_reviewer_route(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        team = rt.constitute_team(
+            "t1_critical",
+            "codex",
+            reg,
+            pr_number=7,
+            route_blocked_families={"agy": ("route_specific_quota_receipt_absent",)},
+        )
+        families = {seat.family for seat in team.seats}
+        assert "agy" not in families
+        assert len(families) >= 2
+        assert "degraded_family_route_blocked:agy" in team.notes
+        assert (
+            "route_blocked_family_reason:agy:agy.review.direct:route_specific_quota_receipt_absent"
+            in team.notes
+        )
+        assert "degraded_to:t2_standard" in team.notes
+        assert "post_route_receipt_rereview_required" in team.notes
+        assert team.quorum_required == int(reg["sizing"]["t2_standard"]["quorum_accept"])
+
+    def test_review_route_blocked_families_reads_current_agy_route(self) -> None:
+        rt = _load_review_team_module()
+        review_registry = {"families": [{"family": "agy", "route_id": "agy/review/direct"}]}
+
+        blocked = rt.review_route_blocked_families(
+            review_registry,
+            platform_registry=_raw_platform_capability_registry(rt),
+        )
+
+        assert blocked == {
+            "agy": (
+                "agy_review_seat_receipt_admission_required",
+                "route_specific_quota_receipt_absent",
+            )
+        }
+
+    def test_review_route_blocked_families_fails_closed_when_registry_unreadable(
+        self, monkeypatch
+    ) -> None:
+        import pytest
+
+        rt = _load_review_team_module()
+
+        def unreadable_registry():
+            raise rt.PlatformCapabilityRegistryError("synthetic unreadable registry")
+
+        monkeypatch.setattr(rt, "load_platform_capability_registry", unreadable_registry)
+
+        with pytest.raises(rt.PlatformCapabilityRegistryError, match="synthetic unreadable"):
+            rt.review_route_blocked_families(
+                {"families": [{"family": "agy", "route_id": "agy.review.direct"}]}
+            )
+
+    def test_review_route_blocked_families_fails_closed_when_route_missing(self) -> None:
+        import pytest
+
+        rt = _load_review_team_module()
+
+        class EmptyPlatformRegistry:
+            def route_map(self) -> dict:
+                return {}
+
+        with pytest.raises(rt.PlatformCapabilityRegistryError, match="missing from platform"):
+            rt.review_route_blocked_families(
+                {"families": [{"family": "agy", "route_id": "agy.review.direct"}]},
+                platform_registry=EmptyPlatformRegistry(),
+            )
+
+    def test_review_route_blocked_families_reads_current_glm_route(self) -> None:
+        rt = _load_review_team_module()
+        review_registry = {"families": [{"family": "glm", "route_id": "glmcp.review.direct"}]}
+
+        blocked = rt.review_route_blocked_families(
+            review_registry,
+            platform_registry=_raw_platform_capability_registry(rt),
+        )
+
+        assert blocked == {
+            "glm": (
+                "glmcp_review_seat_receipt_admission_required",
+                "fresh_capability_evidence_absent",
+                "quota_telemetry_unknown",
+                "fresh_resource_evidence_absent",
+                "provider_docs_evidence_absent",
+            )
+        }
+
+    def test_review_route_blocked_families_allows_receipt_cleared_agy_route(self) -> None:
+        rt = _load_review_team_module()
+        review_registry = {"families": [{"family": "agy", "route_id": "agy.review.direct"}]}
+
+        blocked = rt.review_route_blocked_families(
+            review_registry,
+            platform_registry=_admitted_agy_platform_capability_registry(rt),
+        )
+
+        assert blocked == {}
+
     def test_t1_still_seals_when_family_missing_without_outage_evidence(self) -> None:
         import pytest
 
@@ -1378,8 +1503,8 @@ class TestFamilyOutageDegradation:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("glm-1", "glm", "accept"),
+                _review("glm-2", "glm", "accept"),
             ],
             team_class="t1_critical",
             constitution_notes=notes,
@@ -1394,8 +1519,8 @@ class TestFamilyOutageDegradation:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
+                _review("agy-2", "agy", "accept"),
                 _review("claude-1", "claude", "quota-wall", checklist={}),
             ],
             team_class="t1_critical",
@@ -1416,8 +1541,26 @@ class TestFamilyOutageDegradation:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("glm-1", "glm", "accept"),
+                _review("glm-2", "glm", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+
+    def _route_blocked_dossier(self, rt) -> dict:
+        notes = (
+            "degraded_family_route_blocked:agy",
+            "route_blocked_family_reason:agy:agy.review.direct:route_specific_quota_receipt_absent",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        return _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("claude-1", "claude", "accept"),
+                _review("glm-1", "glm", "accept"),
             ],
             team_class="t1_critical",
             constitution_notes=notes,
@@ -1432,8 +1575,107 @@ class TestFamilyOutageDegradation:
             pr_head_sha="a" * 40,
             outage_state_path=self._witness(tmp_path),
             admission_time="2026-06-11T20:30:00+00:00",
+            route_blocked_families={},
         )
         assert blockers == (), f"degraded dossier must admit, got: {blockers}"
+
+    def test_route_blocked_degraded_dossier_passes_while_route_still_blocked(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._route_blocked_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"agy": ("route_specific_quota_receipt_absent",)},
+        )
+        assert blockers == (), f"route-blocked degraded dossier must admit, got: {blockers}"
+
+    def test_route_blocked_degraded_dossier_requires_matching_reason(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._route_blocked_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"agy": ("agy_review_seat_receipt_admission_required",)},
+        )
+        assert "review_dossier_route_block_degradation_reason_mismatch:agy" in blockers
+
+    def test_route_block_gate_unavailable_blocks_admission(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._route_blocked_dossier(rt))
+
+        def unreadable_registry(_registry):
+            raise rt.PlatformCapabilityRegistryError("synthetic unreadable registry")
+
+        monkeypatch.setattr(rt, "review_route_blocked_families", unreadable_registry)
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+        )
+        assert "review_dossier_route_gate_unavailable:PlatformCapabilityRegistryError" in blockers
+
+    def test_recovered_route_block_invalidates_pending_degraded_admission(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._route_blocked_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+        )
+        assert "review_dossier_route_block_degradation_unwitnessed:agy" in blockers
+
+    def test_blocked_route_family_seated_blocks_current_head_admission(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("agy-1", "agy", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            changed_files=("shared/foo.py",),
+            changed_file_count=1,
+            route_blocked_families={"agy": ("route_specific_quota_receipt_absent",)},
+        )
+        assert "review_dossier_blocked_route_family_seated:agy" in blockers
+
+    def test_blocked_route_family_seated_blocks_even_without_changed_files(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("agy-1", "agy", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._tfb_frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"agy": ("route_specific_quota_receipt_absent",)},
+        )
+        assert "review_dossier_blocked_route_family_seated:agy" in blockers
 
     def test_inconsistent_degradation_flags_block_admission(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
@@ -1456,7 +1698,7 @@ class TestFamilyOutageDegradation:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
                 _review("claude-1", "claude", "accept"),  # walled family seated?!
             ],
             team_class="t1_critical",
@@ -1469,6 +1711,7 @@ class TestFamilyOutageDegradation:
             pr_head_sha="a" * 40,
             outage_state_path=self._witness(tmp_path),
             admission_time="2026-06-11T20:30:00+00:00",
+            route_blocked_families={},
         )
         assert any(b.startswith("review_dossier_degraded_family_was_seated:") for b in blockers)
 
@@ -1494,8 +1737,8 @@ class TestFamilyOutageDegradation:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("glm-1", "glm", "accept"),
+                _review("glm-2", "glm", "accept"),
             ],
             team_class="t2_standard",
             constitution_notes=notes,
@@ -1509,6 +1752,7 @@ class TestFamilyOutageDegradation:
             pr_head_sha="a" * 40,
             outage_state_path=self._witness(tmp_path),
             admission_time="2026-06-11T20:30:00+00:00",
+            route_blocked_families={},
         )
         assert blockers == (), f"t2 outage dossier must admit by its own rules, got: {blockers}"
 
@@ -1523,8 +1767,8 @@ class TestFamilyOutageDegradation:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
+                _review("agy-2", "agy", "accept"),
             ],
             team_class="t2_standard",
             constitution_notes=notes,
@@ -1619,6 +1863,7 @@ class TestFamilyOutageDegradation:
                 tmp_path, observed="2026-06-11T20:05:00+00:00", started="2026-06-11T19:55:00+00:00"
             ),
             admission_time="2026-06-11T20:30:00+00:00",
+            route_blocked_families={},
         )
         assert blockers == (), f"sustained-outage dossier must admit, got: {blockers}"
 
@@ -1683,8 +1928,8 @@ class TestFamilyOutageDegradation:
             rt,
             [
                 _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("agy-1", "agy", "accept"),
+                _review("agy-2", "agy", "accept"),
             ],
             team_class="t1_critical",
             constitution_notes=notes,
@@ -1931,7 +2176,7 @@ class TestGoGate:
         assert rt.verify_literal_defect_critical(f, tmp_path) is True
 
     def test_syntax_claim_beyond_file_is_phantom(self, tmp_path: Path) -> None:
-        # the documented gemini confabulation: a SYNTAX claim citing a line absent from the file
+        # the documented agy confabulation: a SYNTAX claim citing a line absent from the file
         rt = _load_review_team_module()
         self._py(tmp_path, "shared/t.py", "a = 1\nb = 2\n")
         f = self._lit("syntax error at line 690", file="shared/t.py", line=690)
@@ -1951,7 +2196,7 @@ class TestGoGate:
         (tmp_path / ".git").mkdir()  # a repo dir with no HEAD -> rev-parse fails -> cannot match
         self._py(tmp_path, "shared/foo.py", "x = 1\n")
         phantom = self._lit("fatal syntax error at line 690", line=690)
-        reviews = [_review("gemini-1", "gemini", "block", findings=[phantom])]
+        reviews = [_review("agy-1", "agy", "block", findings=[phantom])]
         blocking, phantoms = rt._blocking_criticals(reviews, tmp_path, head_sha="deadbeef" * 5)
         assert len(blocking) == 1 and phantoms == []
 
@@ -1986,7 +2231,7 @@ class TestGoGate:
         rt = _load_review_team_module()
         self._py(tmp_path, "shared/foo.py", "x = 1\n")
         phantom = self._lit("fatal syntax error at line 690", line=690)
-        reviews = [_review("gemini-1", "gemini", "block", findings=[phantom])]
+        reviews = [_review("agy-1", "agy", "block", findings=[phantom])]
         monkeypatch.setenv("HAPAX_REVIEW_GO_GATE_OFF", "1")
         blocking, phantoms = rt._blocking_criticals(reviews, tmp_path)
         assert len(blocking) == 1 and phantoms == []
@@ -2007,7 +2252,7 @@ class TestGoGate:
         monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
         self._py(tmp_path, "shared/foo.py", "x = 1\n")
         phantom = self._lit("fatal syntax error at line 690", line=690)
-        reviews = [_review("gemini-1", "gemini", "block", findings=[phantom])]
+        reviews = [_review("agy-1", "agy", "block", findings=[phantom])]
         monkeypatch.chdir(tmp_path)
         blocking, phantoms = rt._blocking_criticals(reviews, None, head_sha="a" * 40)
         assert blocking == [] and len(phantoms) == 1
@@ -2020,7 +2265,7 @@ class TestGoGate:
         self._py(tmp_path, "shared/foo.py", "x = 1\n")
         phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
         reviews = [
-            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("agy-1", "agy", "block", findings=[phantom]),
             _review("claude-1", "claude", "accept"),
             _review("codex-1", "codex", "accept"),
         ]
@@ -2037,7 +2282,7 @@ class TestGoGate:
         self._py(tmp_path, "shared/foo.py", "x = 1\n")
         phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
         reviews = [
-            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("agy-1", "agy", "block", findings=[phantom]),
             _review("codex-1", "codex", "accept"),
             _review("claude-1", "claude", "invalid-output"),
         ]
@@ -2058,7 +2303,7 @@ class TestGoGate:
         (tmp_path / ".git").mkdir()
         phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
         reviews = [
-            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("agy-1", "agy", "block", findings=[phantom]),
             _review("codex-1", "codex", "accept"),
             _review("claude-1", "claude", "invalid-output"),
         ]
@@ -2088,7 +2333,7 @@ class TestGoGate:
         self._py(reviewed, "shared/foo.py", "x = 1\n")
         phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
         reviews = [
-            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("agy-1", "agy", "block", findings=[phantom]),
             _review("codex-1", "codex", "accept"),
             _review("claude-1", "claude", "invalid-output"),
         ]
@@ -2121,7 +2366,7 @@ class TestGoGate:
         )
         phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
         reviews = [
-            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("agy-1", "agy", "block", findings=[phantom]),
             _review("codex-1", "codex", "accept"),
             _review("claude-1", "claude", "invalid-output"),
         ]
@@ -2153,7 +2398,7 @@ class TestGoGate:
         dossier = _synth(
             rt,
             [
-                _review("gemini-1", "gemini", "block", findings=[semantic]),
+                _review("agy-1", "agy", "block", findings=[semantic]),
                 _review("codex-1", "codex", "accept"),
                 _review("claude-1", "claude", "accept"),
             ],
@@ -2177,7 +2422,7 @@ class TestGoGate:
         reviews = [
             _review("codex-1", "codex", "block", findings=[real]),
             _review("claude-1", "claude", "accept"),
-            _review("gemini-1", "gemini", "accept"),
+            _review("agy-1", "agy", "accept"),
         ]
         d = _synth(rt, reviews, repo_root=tmp_path)
         assert d["review_team_verdict"] == "blocked"
@@ -2190,7 +2435,7 @@ class TestGoGate:
         reviews = [
             _review("codex-1", "codex", "block", findings=[nonlit]),
             _review("claude-1", "claude", "accept"),
-            _review("gemini-1", "gemini", "accept"),
+            _review("agy-1", "agy", "accept"),
         ]
         d = _synth(rt, reviews, repo_root=tmp_path)
         assert d["review_team_verdict"] == "blocked"
@@ -2210,7 +2455,7 @@ class TestGoGate:
         rt = _load_review_team_module()
         self._py(tmp_path, "shared/foo.py", "x = 1\n")
         phantom = self._lit("fatal syntax error at line 690", line=690)
-        reviews = [_review("gemini-1", "gemini", "block", findings=[phantom])]
+        reviews = [_review("agy-1", "agy", "block", findings=[phantom])]
         # head_sha="" -> should skip verification, keep all as blocking
         blocking, phantoms = rt._blocking_criticals(reviews, tmp_path, head_sha="")
         assert len(blocking) == 1 and phantoms == []
@@ -2228,7 +2473,7 @@ class TestGoGate:
         # a phantom syntax critical on a clean file — must be dropped by the go-gate
         phantom = self._lit("fatal syntax error: corrupted decorators at line 690", line=690)
         reviews = [
-            _review("gemini-1", "gemini", "block", findings=[phantom]),
+            _review("agy-1", "agy", "block", findings=[phantom]),
             _review("claude-1", "claude", "accept"),
         ]
         # Build a dossier that the admission gate will validate
@@ -2270,7 +2515,7 @@ class TestGoGate:
             head_sha="abc123def456" * 4,  # 48 chars, arbitrary
             team_class="t2_standard",
             registry=reg,
-            reviews=[_review("g-1", "gemini", "accept"), _review("c-1", "claude", "accept")],
+            reviews=[_review("g-1", "agy", "accept"), _review("c-1", "claude", "accept")],
             lenses=ALWAYS_ON_LENSES,
             constituted_at="2026-06-11T20:00:00+00:00",
             repo_root=tmp_path,
@@ -2291,7 +2536,7 @@ class TestGoGate:
             head_sha="a" * 40,
             team_class="t2_standard",
             registry=reg,
-            reviews=[_review("g-1", "gemini", "accept"), _review("c-1", "claude", "accept")],
+            reviews=[_review("g-1", "agy", "accept"), _review("c-1", "claude", "accept")],
             lenses=ALWAYS_ON_LENSES,
             constituted_at="2026-06-11T20:00:00+00:00",
             repo_root=tmp_path,
@@ -2309,32 +2554,32 @@ class TestGoGate:
         assert len(stale) == 1, f"mismatched head_sha MUST trigger stale_head: {blockers_mismatch}"
 
 
-def test_gemini_reviewer_prompt_has_diff_awareness():
-    """Regression guard: the gemini reviewer hallucinated phantom IndentationError /
+def test_agy_reviewer_prompt_has_diff_awareness():
+    """Regression guard: the agy reviewer hallucinated phantom IndentationError /
     SyntaxError / invalid-decorator criticals by misreading unified-diff +/- prefixes
     and context paths as source code, blocking valid PRs (#4135, #4161, #4163) that
     claude + codex accepted. Its reviewer_command prompt must declare that diff
     prefixes are syntax, not code, so it confirms a defect against real line content."""
     reg = _registry()
-    gemini = next(f for f in reg["families"] if (f.get("family") or f.get("name")) == "gemini")
-    assert gemini["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
+    agy = next(f for f in reg["families"] if (f.get("family") or f.get("name")) == "agy")
+    assert agy["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
     prompt = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
-    assert "UNIFIED DIFF" in prompt, "gemini reviewer prompt lost its diff-awareness guard"
+    assert "UNIFIED DIFF" in prompt, "agy reviewer prompt lost its diff-awareness guard"
     assert "DIFF SYNTAX" in prompt
 
 
-def test_gemini_reviewer_denies_repo_roaming_and_blocks_phantom_syntax():
-    """Durable fix for the gemini plan-mode hallucination (deadlocked PR #4167): in
-    plan-mode gemini ROAMED the repo (grep/read) and manufactured phantom syntax
+def test_agy_reviewer_denies_repo_roaming_and_blocks_phantom_syntax():
+    """Durable fix for the agy plan-mode hallucination (deadlocked PR #4167): in
+    plan-mode agy ROAMED the repo (grep/read) and manufactured phantom syntax
     criticals (notify-failure@%n.service read as invalid template syntax) AND a false
     'volatile cache' critical on the canonical source-activation deploy path -- blocking a
     PR that claude + codex accepted. The reviewer_command must (a) enforce a
     deny-roaming equivalent by invoking agy in sandboxed print mode and telling the
-    reviewer it has no repository access, and (b) tell gemini the diff already passed CI
+    reviewer it has no repository access, and (b) tell agy the diff already passed CI
     so it does not block on phantom syntax findings."""
     reg = _registry()
-    gemini = next(f for f in reg["families"] if (f.get("family") or f.get("name")) == "gemini")
-    cmd = [str(part) for part in gemini["reviewer_command"]]
+    agy = next(f for f in reg["families"] if (f.get("family") or f.get("name")) == "agy")
+    cmd = [str(part) for part in agy["reviewer_command"]]
     assert cmd == ["scripts/hapax-agy-reviewer"]
     wrapper = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
     assert "--sandbox" in wrapper, "agy reviewer must use sandboxed print mode"
@@ -2342,16 +2587,16 @@ def test_gemini_reviewer_denies_repo_roaming_and_blocks_phantom_syntax():
     prompt = wrapper
     assert "fenced yaml code block" in prompt
     assert "no prose" in prompt
-    assert "ALREADY PASSED" in prompt and "CI" in prompt, "gemini prompt must cite the CI gates"
-    assert "source-activation" in prompt, "gemini prompt must whitelist the canonical deploy path"
+    assert "ALREADY PASSED" in prompt and "CI" in prompt, "agy prompt must cite the CI gates"
+    assert "source-activation" in prompt, "agy prompt must whitelist the canonical deploy path"
 
 
-def test_gemini_review_family_uses_agy_wrapper_not_legacy_cli():
-    """Gemini-family review seats must not execute the retired gemini binary."""
+def test_agy_review_family_uses_agy_wrapper_not_legacy_cli():
+    """Agy-family review seats must not execute the retired gemini binary."""
 
     reg = _registry()
-    gemini = next(f for f in reg["families"] if (f.get("family") or f.get("name")) == "gemini")
-    assert gemini["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
+    agy = next(f for f in reg["families"] if (f.get("family") or f.get("name")) == "agy")
+    assert agy["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
     wrapper = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
     assert "--print" in wrapper
     assert "--model" in wrapper

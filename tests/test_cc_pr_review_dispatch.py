@@ -52,6 +52,25 @@ def _make_vault(tmp_path: Path) -> Path:
     return vault
 
 
+def _raw_platform_capability_registry():
+    payload = json.loads(
+        (REPO_ROOT / "config" / "platform-capability-registry.json").read_text(encoding="utf-8")
+    )
+    return dispatch.review_team.PlatformCapabilityRegistry.model_validate(payload)
+
+
+def _admitted_agy_platform_capability_registry():
+    payload = _raw_platform_capability_registry().model_dump(mode="json")
+    route = next(route for route in payload["routes"] if route["route_id"] == "agy.review.direct")
+    route["route_state"] = "active"
+    route["blocked_reasons"] = []
+    route["telemetry"]["quota_source"] = "manual"
+    route["freshness"]["quota_checked_at"] = "2026-07-05T14:51:00Z"
+    route["freshness"]["evidence"]["quota"]["evidence_refs"] = ["test:agy:route-quota-observed"]
+    route["freshness"]["evidence"]["quota"]["blocked_reasons"] = []
+    return dispatch.review_team.PlatformCapabilityRegistry.model_validate(payload)
+
+
 def _write_task(
     vault: Path,
     task_id: str = "task-a",
@@ -219,6 +238,7 @@ def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingRe
         "wake_dir": tmp_path / "wake",
         "send_runner": lambda cmd: None,
         "now_iso": "2026-06-11T21:00:00+00:00",
+        "route_blocked_families": {},
     }
     kwargs.update(overrides)
     try:
@@ -254,6 +274,109 @@ class TestApply:
         families = {r["family"] for r in dossier["reviewers"]}
         assert len(families) >= 2
         assert dossier["review_team_verdict"] == "quorum-accept"
+
+    def test_blocked_agy_route_is_not_invoked_as_reviewer(self, tmp_path: Path) -> None:
+        result, _, reviewers, note = _review(
+            tmp_path,
+            route_blocked_families={"agy": ("route_specific_quota_receipt_absent",)},
+        )
+        assert result["status"] == "dispatched"
+        assert all(family != "agy" for _, family, _ in reviewers.invocations)
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        assert dossier["degraded_family_route_blocked"] == ["agy"]
+        assert dossier["post_route_receipt_rereview_required"] is True
+        assert "degraded_family_route_blocked:agy" in dossier["constitution_notes"]
+        assert dossier["review_team_verdict"] == "quorum-accept"
+
+    def test_default_route_gate_derives_blocked_agy_from_registry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_platform_capability_registry",
+            _raw_platform_capability_registry,
+        )
+
+        result, _, reviewers, note = _review(
+            tmp_path,
+            task_kwargs={"risk_tier": "T1"},
+            route_blocked_families=None,
+        )
+
+        assert result["status"] == "dispatched"
+        assert all(family != "agy" for _, family, _ in reviewers.invocations)
+        assert all(family != "glm" for _, family, _ in reviewers.invocations)
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        assert dossier["degraded_family_route_blocked"] == ["agy", "glm"]
+        assert (
+            "route_blocked_family_reason:agy:agy.review.direct:route_specific_quota_receipt_absent"
+        ) in dossier["constitution_notes"]
+        assert (
+            "route_blocked_family_reason:glm:glmcp.review.direct:quota_telemetry_unknown"
+        ) in dossier["constitution_notes"]
+
+    def test_default_route_gate_fails_closed_when_platform_registry_unreadable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def unreadable_registry():
+            raise dispatch.review_team.PlatformCapabilityRegistryError(
+                "synthetic unreadable registry"
+            )
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_platform_capability_registry",
+            unreadable_registry,
+        )
+
+        result, _, reviewers, note = _review(
+            tmp_path,
+            task_kwargs={"risk_tier": "T1"},
+            route_blocked_families=None,
+        )
+
+        assert result["status"] == "route_gate_unavailable"
+        assert (
+            result["blocker"]
+            == "platform_capability_registry_unavailable:PlatformCapabilityRegistryError"
+        )
+        assert reviewers.invocations == []
+        assert not list(note.parent.glob("*.review-dossier.yaml"))
+
+    def test_default_route_gate_seats_receipt_cleared_agy_route(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_platform_capability_registry",
+            _admitted_agy_platform_capability_registry,
+        )
+
+        result, _, reviewers, note = _review(
+            tmp_path,
+            task_kwargs={"risk_tier": "T1"},
+            route_blocked_families=None,
+        )
+
+        assert result["status"] == "dispatched"
+        assert any(family == "agy" for _, family, _ in reviewers.invocations)
+        assert all(family != "glm" for _, family, _ in reviewers.invocations)
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        assert dossier["degraded_family_route_blocked"] == ["glm"]
+        assert not any(
+            note.startswith("degraded_family_route_blocked:agy")
+            for note in dossier["constitution_notes"]
+        )
+        assert any(
+            note.startswith("degraded_family_route_blocked:glm")
+            for note in dossier["constitution_notes"]
+        )
 
     def test_reviews_are_blind(self, tmp_path: Path) -> None:
         _, _, reviewers, _ = _review(tmp_path)
@@ -682,7 +805,7 @@ checklist: {}
         monkeypatch.setattr(dispatch.review_team, "_repo_head_matches", lambda *a, **k: True)
         reviewers = RecordingReviewers(
             replies={
-                "gemini": """```yaml
+                "agy": """```yaml
 verdict: block
 findings:
   - severity: critical
@@ -772,6 +895,7 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
         )
         assert result2["status"] == "skipped_fresh"
         assert reviewers2.invocations == []
@@ -793,6 +917,7 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
         )
         assert second["status"] == "skipped_blocked"
         assert second["review_team_verdict"] == "blocked"
@@ -814,6 +939,7 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
         )
         assert result["status"] == "multi_dispatched"
         assert {item["task_id"] for item in result["results"]} == {"task-a", "task-b"}
@@ -844,6 +970,7 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T23:00:00+00:00",
+            route_blocked_families={},
         )
         assert second["status"] == "multi_skipped_fresh"
         assert second_reviewers.invocations == []
@@ -867,6 +994,7 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
         )
         assert result2["status"] == "skipped_fresh"
         assert receipt_path.is_file()
@@ -1003,8 +1131,8 @@ class TestReceiptAndWake:
                     "checklist": {},
                 },
                 {
-                    "id": "gemini-1",
-                    "family": "gemini",
+                    "id": "agy-1",
+                    "family": "agy",
                     "verdict": "accept",
                     "findings": [],
                     "checklist": {},
@@ -1058,6 +1186,7 @@ class TestReceiptAndWake:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
         )
         assert "operator" in receipt_path.read_text(encoding="utf-8")
 
@@ -1088,6 +1217,7 @@ class TestReceiptAndWake:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
         )
 
         assert result["side_effects"]["receipt_path"] == str(receipt_path)
@@ -1250,7 +1380,7 @@ class TestNoQuorumRecovery:
 
     def test_no_quorum_from_dead_reviewers_fires_auto_wake(self, tmp_path: Path) -> None:
         sent: list[list[str]] = []
-        reviewers = RecordingReviewers(replies={"codex": "no yaml here", "gemini": "also not yaml"})
+        reviewers = RecordingReviewers(replies={"codex": "no yaml here", "agy": "also not yaml"})
         result, _, _, note = _review(
             tmp_path,
             reviewers=reviewers,
@@ -1279,7 +1409,7 @@ class TestNoQuorumRecovery:
                         "HTTP 500: Internal Server Error; retry later or check the provider status",
                         returncode=1,
                     )
-                if seat.family == "gemini":
+                if seat.family == "agy":
                     return "no yaml here"
                 return GOOD_REPLY
 
@@ -1293,7 +1423,7 @@ class TestNoQuorumRecovery:
             reviewer.strip()
             for reviewer in dossier["no_quorum_cause"].removeprefix("dead reviewers: ").split(",")
         }
-        assert dead == {"codex-1", "gemini-1"}
+        assert dead == {"codex-1", "agy-1"}
         codex_seats = [r for r in dossier["reviewers"] if r["family"] == "codex"]
         assert codex_seats and codex_seats[0]["verdict"] == "provider-outage"
 
@@ -1302,7 +1432,7 @@ class TestFamilyOutageDegradation:
     """Postmortem 2026-06-12 failure class #1 (REVIEW-FAMILY-WALL-BLINDNESS):
     provider walls become quota-wall seat states, a walled family is OUT for
     the next constitution, t1 degrades with receipts — the gate never seals.
-    The 2026-06-12 scenario (claude walled, gemini+codex live) is the
+    The 2026-06-12 scenario (claude walled, agy+codex live) is the
     permanent fixture the n-tier symmetry principal demands."""
 
     WALL = "You've hit your weekly limit · resets 5pm America/Chicago"
@@ -1422,7 +1552,7 @@ class TestFamilyOutageDegradation:
         class MixedFailureRunner(RecordingReviewers):
             def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
                 self.invocations.append((seat.id, seat.family, prompt))
-                if seat.family == "gemini":
+                if seat.family == "agy":
                     raise dispatch.ReviewerProcessError(
                         mixed_diagnostic,
                         returncode=1,
@@ -1435,9 +1565,9 @@ class TestFamilyOutageDegradation:
             task_kwargs={"assigned_to": "cx-gold"},
         )
         dossier = result["dossier"]
-        gemini_seats = [r for r in dossier["reviewers"] if r["family"] == "gemini"]
-        assert gemini_seats
-        assert all(r["verdict"] == "quota-wall" for r in gemini_seats)
+        agy_seats = [r for r in dossier["reviewers"] if r["family"] == "agy"]
+        assert agy_seats
+        assert all(r["verdict"] == "quota-wall" for r in agy_seats)
 
     def test_route_unavailable_precedes_provider_outage_when_both_match(
         self, monkeypatch: Any, tmp_path: Path
@@ -1453,7 +1583,7 @@ class TestFamilyOutageDegradation:
         class MixedFailureRunner(RecordingReviewers):
             def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
                 self.invocations.append((seat.id, seat.family, prompt))
-                if seat.family == "gemini":
+                if seat.family == "agy":
                     raise dispatch.ReviewerProcessError(mixed_diagnostic, returncode=1)
                 return GOOD_REPLY
 
@@ -1463,9 +1593,9 @@ class TestFamilyOutageDegradation:
             task_kwargs={"risk_tier": "T1"},
         )
         dossier = result["dossier"]
-        gemini_seats = [r for r in dossier["reviewers"] if r["family"] == "gemini"]
-        assert gemini_seats
-        assert all(r["verdict"] == "reviewer-route-unavailable" for r in gemini_seats)
+        agy_seats = [r for r in dossier["reviewers"] if r["family"] == "agy"]
+        assert agy_seats
+        assert all(r["verdict"] == "reviewer-route-unavailable" for r in agy_seats)
 
     def test_nonzero_stdout_malformed_reset_does_not_forge_quota_wall(
         self, monkeypatch: Any, tmp_path: Path
@@ -1549,10 +1679,10 @@ class TestFamilyOutageDegradation:
         class UnsupportedClientRunner(RecordingReviewers):
             def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
                 self.invocations.append((seat.id, seat.family, prompt))
-                if seat.family == "gemini":
+                if seat.family == "agy":
                     raise dispatch.ReviewerProcessError(
                         "Error authenticating: IneligibleTierError: This client is no "
-                        "longer supported for Gemini Code Assist for individuals.\n"
+                        "longer supported for Agy Code Assist for individuals.\n"
                         "reasonCode: 'UNSUPPORTED_CLIENT'",
                         returncode=1,
                     )
@@ -1564,11 +1694,11 @@ class TestFamilyOutageDegradation:
             task_kwargs={"risk_tier": "T1"},
         )
         dossier = result["dossier"]
-        gemini_seats = [r for r in dossier["reviewers"] if r["family"] == "gemini"]
-        assert gemini_seats
-        assert gemini_seats[0]["verdict"] == "reviewer-route-unavailable"
+        agy_seats = [r for r in dossier["reviewers"] if r["family"] == "agy"]
+        assert agy_seats
+        assert agy_seats[0]["verdict"] == "reviewer-route-unavailable"
         recorded = json.loads(state.read_text(encoding="utf-8"))
-        assert "gemini" in recorded
+        assert "agy" in recorded
 
     def test_stdout_unsupported_client_cannot_forge_route_unavailable(
         self, monkeypatch: Any, tmp_path: Path
@@ -1578,7 +1708,7 @@ class TestFamilyOutageDegradation:
         class StdoutUnsupportedClientRunner(RecordingReviewers):
             def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
                 self.invocations.append((seat.id, seat.family, prompt))
-                if seat.family == "gemini":
+                if seat.family == "agy":
                     raise dispatch.ReviewerProcessError(
                         "",
                         returncode=1,
@@ -1592,11 +1722,11 @@ class TestFamilyOutageDegradation:
             task_kwargs={"risk_tier": "T1"},
         )
         dossier = result["dossier"]
-        gemini_seats = [r for r in dossier["reviewers"] if r["family"] == "gemini"]
-        assert gemini_seats
-        assert gemini_seats[0]["verdict"] == "invalid-output"
+        agy_seats = [r for r in dossier["reviewers"] if r["family"] == "agy"]
+        assert agy_seats
+        assert agy_seats[0]["verdict"] == "invalid-output"
         recorded = json.loads(state.read_text(encoding="utf-8"))
-        assert "gemini" not in recorded
+        assert "agy" not in recorded
 
     def test_provider_outage_round_records_the_family_outage(
         self, monkeypatch: Any, tmp_path: Path
@@ -1681,11 +1811,11 @@ class TestFamilyOutageDegradation:
         TTL window)."""
 
         state, _ = self._isolate_state(monkeypatch, tmp_path)
-        # entry is OLDER than the TTL -> gemini is seated again this round
-        state.write_text(json.dumps({"gemini": "2026-06-12T08:58:00+00:00"}), encoding="utf-8")
+        # entry is OLDER than the TTL -> agy is seated again this round
+        state.write_text(json.dumps({"agy": "2026-06-12T08:58:00+00:00"}), encoding="utf-8")
         _review(tmp_path, now_iso="2026-06-12T21:00:00+00:00")
         recorded = json.loads(state.read_text(encoding="utf-8"))
-        assert "gemini" not in recorded
+        assert "agy" not in recorded
 
     def test_outage_expires_after_ttl(self, monkeypatch: Any, tmp_path: Path) -> None:
         state, _ = self._isolate_state(monkeypatch, tmp_path)
@@ -1849,6 +1979,30 @@ class TestFamilyOutageDegradation:
             raise AssertionError("nonzero exit must raise ReviewerProcessError")
         except dispatch.ReviewerProcessError as exc:
             assert dispatch.review_team.is_quota_wall(exc.output, process_failed=True)
+
+    def test_agy_reviewer_command_runs_wrapper_with_fake_binary(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        fake_agy = tmp_path / "agy"
+        fake_agy.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' '```yaml' 'verdict: accept' 'findings: []' 'checklist: {}' '```'\n",
+            encoding="utf-8",
+        )
+        fake_agy.chmod(0o755)
+        monkeypatch.setenv("HAPAX_AGY_BIN", str(fake_agy))
+
+        registry = dispatch.review_team.load_lens_registry()
+        family_cfg = next(entry for entry in registry["families"] if entry["family"] == "agy")
+        family_cfg = {**family_cfg, "timeout_seconds": 30}
+        seat = dispatch.review_team.Seat(id="agy-1", family="agy")
+
+        reply = dispatch.default_reviewer_runner(seat, family_cfg, "minimal dossier")
+        parsed = dispatch.extract_review(reply)
+
+        assert parsed is not None
+        assert parsed["verdict"] == "accept"
+        assert parsed["parse_path"] == "fence"
 
     def test_provider_outage_on_stderr_becomes_provider_outage(self) -> None:
         constitution = dispatch.review_team.Constitution(

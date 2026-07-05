@@ -44,7 +44,7 @@
   },
   "$defs": {
     "platform": {
-      "enum": ["api", "claude", "codex", "gemini", "glmcp", "local_tool", "vibe"]
+      "enum": ["agy", "api", "claude", "codex", "gemini", "glmcp", "local_tool", "vibe"]
     },
     "mode": {
       "enum": ["headless", "interactive", "local", "receipt_only", "review"]
@@ -457,14 +457,17 @@
     "model_id": {
       "enum": [
         "claude-opus-4-8",
+        "claude-opus-4-6",
         "claude-sonnet-4-6",
         "claude-haiku-4-5",
         "claude-fable-5",
         "gpt-5.5",
         "gpt-5.3-codex-spark",
+        "gpt-oss-120b",
         "command-r-08-2024",
         "mistral-medium-3.5",
         "gemini-3.1-pro-preview",
+        "gemini-3.5-flash",
         "z_ai-glm-5",
         "unknown"
       ]

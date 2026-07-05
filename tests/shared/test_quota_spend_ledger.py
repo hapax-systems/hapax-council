@@ -15,6 +15,8 @@ from shared.quota_spend_ledger import (
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
     QUOTA_SPEND_LEDGER_FIXTURES,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
+    RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS,
+    RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES,
     ArtifactProvenanceRecord,
     BootstrapDependencyState,
     BudgetLifecycleState,
@@ -755,6 +757,12 @@ def test_effort_and_model_id_enum_parity_with_registry() -> None:
 
     assert {e.value for e in Effort} == {e.value for e in RegistryEffort}
     assert {m.value for m in ModelId} == {m.value for m in RegistryModelId}
+
+
+def test_agy_receipt_bounded_route_has_no_single_provider_mapping() -> None:
+    assert "agy.review.direct" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+    assert "agy.review.direct" not in RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS
+    assert RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS["glmcp.review.direct"] == "z_ai-glm-coding-plan"
 
 
 def test_spend_receipt_meters_effort_and_structured_model_id() -> None:

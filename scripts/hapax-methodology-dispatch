@@ -2050,12 +2050,20 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
 
-    if args.platform in {"antigrav", "antigravity", "gemini-cli"}:
-        reason = (
-            f"platform '{args.platform}' is retired/excised; do not dispatch it as live supply. "
-            "Use admitted Claude, Codex, or Vibe routes. Agy adapter support is live, but a "
-            "spawnable agy route still requires governed route/resource receipts before dispatch."
-        )
+    if args.platform in {"agy", "antigrav", "antigravity", "gemini-cli"}:
+        if args.platform == "agy":
+            reason = (
+                "platform 'agy' is the non-launchable read-only agy.review.direct review route, "
+                "not a methodology-dispatch worker lane. Use scripts/hapax-agy-reviewer for "
+                "review-plane work; spawnable agy worker dispatch still requires governed "
+                "route/resource receipts before dispatch."
+            )
+        else:
+            reason = (
+                f"platform '{args.platform}' is retired/excised; do not dispatch it as live supply. "
+                "Use admitted Claude, Codex, or Vibe routes, or agy.review.direct for the live "
+                "read-only review route."
+            )
         task_for_receipt = read_task(task_root, args.task)
         if not args.no_receipt:
             write_receipt(

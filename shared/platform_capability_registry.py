@@ -58,6 +58,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
+        "agy.review.direct",
         "glmcp.review.direct",
         "local_tool.local.worker",
         "vibe.headless.full",
@@ -157,16 +158,19 @@ class ModelId(StrEnum):
     receipt-only maintenance route)."""
 
     CLAUDE_OPUS_4_8 = "claude-opus-4-8"
+    CLAUDE_OPUS_4_6 = "claude-opus-4-6"
     CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
     CLAUDE_SONNET_5 = "claude-sonnet-5"
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
     GPT_5_5 = "gpt-5.5"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
+    GPT_OSS_120B = "gpt-oss-120b"
     COMMAND_R_08_2024 = "command-r-08-2024"
     QWEN3_5_9B = "qwen3.5-9b"
     MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     UNKNOWN = "unknown"
 
@@ -1440,7 +1444,7 @@ def _apply_receipt_to_route_payload(
         else [],
         removable_reasons=_quota_unobservable_removable_reasons(route_payload)
         if quota_unobservable_nonblocking
-        else {"account_live_quota_receipt_absent", "quota_telemetry_unknown"},
+        else _quota_receipt_removable_reasons(route_payload),
     )
     _apply_surface(
         freshness,
@@ -1461,6 +1465,8 @@ def _apply_receipt_to_route_payload(
             score["evidence_refs"] = list(
                 dict.fromkeys([*score.get("evidence_refs", []), receipt_ref])
             )
+    if receipt.quota.status is EvidenceStatus.OBSERVED:
+        route_payload.setdefault("telemetry", {})["quota_source"] = QuotaSource.MANUAL.value
 
     if receipt.capability.status is not EvidenceStatus.OBSERVED:
         top_blockers.extend(receipt.capability.reason_codes)
@@ -1476,6 +1482,8 @@ def _apply_receipt_to_route_payload(
     }
     if quota_unobservable_nonblocking:
         removable_top_blockers.update(_quota_unobservable_removable_reasons(route_payload))
+    elif receipt.quota.status is EvidenceStatus.OBSERVED:
+        removable_top_blockers.update(_quota_receipt_removable_reasons(route_payload))
     top_blockers = [reason for reason in top_blockers if reason not in removable_top_blockers]
     route_payload["blocked_reasons"] = list(dict.fromkeys(top_blockers))
     route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
@@ -1541,6 +1549,8 @@ def _quota_unobservable_nonblocking(
 
 def _capability_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
     reasons = {"fresh_capability_evidence_absent"}
+    if route_payload.get("route_id") == "agy.review.direct":
+        reasons.add("agy_review_seat_receipt_admission_required")
     if route_payload.get("route_id") == "api.headless.provider_gateway":
         reasons.add("provider_gateway_evidence_absent")
     return reasons
@@ -1560,6 +1570,13 @@ def _quota_unobservable_removable_reasons(route_payload: dict[str, Any]) -> set[
         CapacityPool.BOOTSTRAP_BUDGET.value,
     }:
         reasons.add("provider_budget_receipt_absent")
+    return reasons
+
+
+def _quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
+    reasons = {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+    if route_payload.get("route_id") == "agy.review.direct":
+        reasons.add("route_specific_quota_receipt_absent")
     return reasons
 
 
@@ -1609,12 +1626,19 @@ _MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
     # DECLARE-layer drift (observed != declared). Repointing this alias is a production-routing
     # decision deferred to the operator; the explicit "claude-sonnet-5" identity below is additive.
     "claude-sonnet": ModelId.CLAUDE_SONNET_4_6,
+    "claude-sonnet-4.6": ModelId.CLAUDE_SONNET_4_6,
+    "claude-sonnet-4-6": ModelId.CLAUDE_SONNET_4_6,
+    "claude-opus-4.6": ModelId.CLAUDE_OPUS_4_6,
+    "claude-opus-4-6": ModelId.CLAUDE_OPUS_4_6,
     "claude-sonnet-5": ModelId.CLAUDE_SONNET_5,
     "claude-haiku": ModelId.CLAUDE_HAIKU_4_5,
     "gpt-5.5": ModelId.GPT_5_5,
     "gpt-5.3-codex-spark": ModelId.GPT_5_3_CODEX_SPARK,
+    "gpt-oss-120b": ModelId.GPT_OSS_120B,
     "mistral-vibe": ModelId.MISTRAL_MEDIUM_3_5,
     "google-antigravity-cli-agy": ModelId.GEMINI_3_1_PRO_PREVIEW,
+    "agy-universal-harness": ModelId.GEMINI_3_1_PRO_PREVIEW,
+    "gemini-3.5-flash": ModelId.GEMINI_3_5_FLASH,
     "z_ai-glm-coding-plan:glm-5": ModelId.Z_AI_GLM_5,
     "litellm.anthropic.claude-opus-4-cloud-burst": ModelId.CLAUDE_OPUS_4_8,
     "litellm.provider-gateway-maintenance": ModelId.GEMINI_3_1_PRO_PREVIEW,

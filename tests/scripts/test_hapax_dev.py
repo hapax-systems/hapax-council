@@ -219,7 +219,7 @@ class TestExplicitNames:
         assert r.returncode == 2
 
 
-# ── codex + retired agy dispatch ─────────────────────────────────────────────
+# ── codex + non-visible agy / retired Antigrav dispatch ──────────────────────
 
 
 class TestCodexAndRetiredAgy:
@@ -245,10 +245,11 @@ class TestCodexAndRetiredAgy:
         assert _field(r.stdout, "visibility") == "window"
         assert "--terminal foot" in _field(r.stdout, "spawn")
 
-    def test_agy_alias_is_retired(self, tmp_path: Path) -> None:
+    def test_agy_alias_is_not_a_visible_worker_lane(self, tmp_path: Path) -> None:
         r = run_dev("agy", "--dry-run", claim_dir=tmp_path / "c", workdir=tmp_path)
         assert r.returncode == 2
-        assert "platform 'agy' is retired" in r.stderr
+        assert "platform 'agy' is not a visible-dev worker lane" in r.stderr
+        assert "agy.review.direct" in r.stderr
 
     def test_antigrav_keyword_is_retired(self, tmp_path: Path) -> None:
         r = run_dev("antigrav", "--dry-run", claim_dir=tmp_path / "c", workdir=tmp_path)
@@ -263,7 +264,7 @@ class TestCodexAndRetiredAgy:
     def test_agy_window_is_not_a_hidden_launch_path(self, tmp_path: Path) -> None:
         r = run_dev("agy", "--window", "--dry-run", claim_dir=tmp_path / "c", workdir=tmp_path)
         assert r.returncode == 2
-        assert "platform 'agy' is retired" in r.stderr
+        assert "platform 'agy' is not a visible-dev worker lane" in r.stderr
 
 
 # ── visibility flags ────────────────────────────────────────────────────────
