@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 import textwrap
@@ -39,6 +40,16 @@ def _workflow_shell_function(workflow_text: str, function_name: str) -> str:
         re.DOTALL | re.MULTILINE,
     )
     assert match is not None, f"missing shell function {function_name}"
+    return textwrap.dedent(match.group(0))
+
+
+def _workflow_docs_filter_decision_block(workflow_text: str) -> str:
+    match = re.search(
+        r'^ {10}docs_only=true\n.*?^ {10}echo "python_prod_dependency_witness=\$python_prod_dependency_witness" >> "\$GITHUB_OUTPUT"',
+        workflow_text,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert match is not None, "missing docs_only_filter decision block"
     return textwrap.dedent(match.group(0))
 
 
@@ -177,6 +188,75 @@ def test_ci_runs_python_prod_optional_dependency_witness_for_dependency_changes(
     assert "portaudio19-dev" in test_full_shard_block
     assert test_block.count("Run python-prod optional dependency witness") == 2
     assert witness_command in test_block
+
+
+def test_ci_docs_only_filter_executes_python_prod_witness_decision(tmp_path: Path) -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    script = "\n\n".join(
+        _workflow_shell_function(ci_text, function_name)
+        for function_name in (
+            "is_audio_authority_path",
+            "is_system_dynamics_map_authority_path",
+            "docs_only_path",
+        )
+    )
+    script += textwrap.dedent(
+        """
+
+        changed_files="$CHANGED_FILES"
+        changed_count="$CHANGED_COUNT"
+        """
+    )
+    script += "\n" + _workflow_docs_filter_decision_block(ci_text)
+
+    def run_filter(paths: list[str]) -> dict[str, str]:
+        changed_files = tmp_path / "changed-files.txt"
+        github_output = tmp_path / "github-output.txt"
+        changed_files.write_text(
+            "".join(f"{path}\n" for path in paths),
+            encoding="utf-8",
+        )
+        github_output.write_text("", encoding="utf-8")
+        env = {
+            **os.environ,
+            "CHANGED_FILES": str(changed_files),
+            "CHANGED_COUNT": str(len(paths)),
+            "GITHUB_OUTPUT": str(github_output),
+        }
+        result = subprocess.run(
+            ["bash", "-c", "set -euo pipefail\n" + script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        return dict(
+            line.split("=", 1) for line in github_output.read_text(encoding="utf-8").splitlines()
+        )
+
+    assert run_filter(["pyproject.toml"]) == {
+        "docs_only": "false",
+        "changed_count": "1",
+        "python_prod_dependency_witness": "true",
+    }
+    assert run_filter(["uv.lock"])["python_prod_dependency_witness"] == "true"
+    assert (
+        run_filter(["tests/test_python_prod_dependency_constraints.py"])[
+            "python_prod_dependency_witness"
+        ]
+        == "true"
+    )
+    assert run_filter(["docs/research/dependency-note.md"]) == {
+        "docs_only": "true",
+        "changed_count": "1",
+        "python_prod_dependency_witness": "false",
+    }
+    assert run_filter(["shared/runtime.py"]) == {
+        "docs_only": "false",
+        "changed_count": "1",
+        "python_prod_dependency_witness": "false",
+    }
 
 
 def test_cargo_hook_advisory_has_matching_path_gated_ci_job() -> None:

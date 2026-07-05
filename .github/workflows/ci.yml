@@ -471,6 +471,7 @@ jobs:
         run: uv sync --extra ci --frozen
       - name: Run python-prod optional dependency witness
         if: matrix.shard == 1 && needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'
+        # Null-route networked clients so import smokes cannot reach live services from CI.
         env:
           LITELLM_BASE_URL: "http://0.0.0.0:1"
           QDRANT_URL: "http://0.0.0.0:1"
@@ -790,6 +791,7 @@ jobs:
             portaudio19-dev
       - name: Run python-prod optional dependency witness
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'pr-admission' && needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'
+        # Null-route networked clients so import smokes cannot reach live services from CI.
         env:
           LITELLM_BASE_URL: "http://0.0.0.0:1"
           QDRANT_URL: "http://0.0.0.0:1"
@@ -831,6 +833,7 @@ jobs:
         run: uv sync --extra ci --frozen
       - name: Run python-prod optional dependency witness
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full' && needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'
+        # Null-route networked clients so import smokes cannot reach live services from CI.
         env:
           LITELLM_BASE_URL: "http://0.0.0.0:1"
           QDRANT_URL: "http://0.0.0.0:1"
