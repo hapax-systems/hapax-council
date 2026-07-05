@@ -141,7 +141,7 @@ direnv allow                                             # load .envrc (pass-bac
 uv sync --all-extras                                     # install all dependencies
 uv run pytest tests/ -q                                  # test suite
 uv run ruff check . && uv run ruff format --check .      # lint
-uv run --no-project --with pyrefly==0.62.0 pyrefly check # CI typecheck
+uv run --no-project --with pyrefly==0.64.1 pyrefly check # CI typecheck
 uv run pyright                                           # weekly typecheck safety net
 ```
 
