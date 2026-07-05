@@ -398,7 +398,10 @@ def test_additional_bumped_dependency_runtime_smoke_paths() -> None:
             import pvporcupine
 
             assert "porcupine" in pvporcupine.KEYWORDS, NEXT_ACTION
-        if importlib.util.find_spec("pyannote.audio") is not None:
+        if (
+            importlib.util.find_spec("pyannote") is not None
+            and importlib.util.find_spec("pyannote.audio") is not None
+        ):
             assert Version(version("pyannote.audio")) in SpecifierSet(">=4.0.7"), (
                 NEXT_ACTION
             )
