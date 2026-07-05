@@ -173,6 +173,8 @@ def test_ci_runs_python_prod_optional_dependency_witness_for_dependency_changes(
 
     assert "Install python-prod optional witness system deps" in test_block
     assert "ffmpeg" in test_block
+    assert "portaudio19-dev" in test_block
+    assert "portaudio19-dev" in test_full_shard_block
     assert test_block.count("Run python-prod optional dependency witness") == 2
     assert witness_command in test_block
 

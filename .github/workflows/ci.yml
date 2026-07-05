@@ -451,6 +451,7 @@ jobs:
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
             gir1.2-pango-1.0 \
             ffmpeg \
+            portaudio19-dev \
             socat
       - name: Install Px437 IBM VGA 8x16 font (HARDM aesthetic dependency, audit 4.7 PR #1109)
         run: |
@@ -785,7 +786,8 @@ jobs:
             libcairo2-dev libgirepository-2.0-dev gobject-introspection \
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
             gir1.2-pango-1.0 \
-            ffmpeg
+            ffmpeg \
+            portaudio19-dev
       - name: Run python-prod optional dependency witness
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'pr-admission' && needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'
         env:
@@ -807,6 +809,7 @@ jobs:
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
             gir1.2-pango-1.0 \
             ffmpeg \
+            portaudio19-dev \
             socat
       - name: Install Px437 IBM VGA 8x16 font (HARDM aesthetic dependency, audit 4.7 PR #1109)
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
