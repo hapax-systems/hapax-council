@@ -9,6 +9,7 @@ unless a caller supplies an executable refresh strategy.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -266,6 +267,21 @@ class CodexOAuthRefreshStrategy:
                 remediation_commands=(refresh_command, freshness_command),
             )
 
+        account_live_reasons = _receipt_account_live_unverified_reasons(receipt_item)
+        if account_live_reasons:
+            return RefreshOutcome(
+                status=RefreshStatus.DEFERRED,
+                strategy_id=self.strategy_id,
+                reason_codes=(
+                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "refresh_receipt_account_live_unverified",
+                    *account_live_reasons,
+                    "availability_recheck_required_after_refresh",
+                ),
+                evidence_refs=tuple(dict.fromkeys(evidence_refs)),
+                remediation_commands=(refresh_command, freshness_command),
+            )
+
         return RefreshOutcome(
             status=RefreshStatus.REFRESHED,
             strategy_id=self.strategy_id,
@@ -393,10 +409,11 @@ def _availability_predicate(
     reason_text = "\n".join([*freshness.errors, *freshness.blocked_reasons]).lower()
     return AvailabilityPredicate(
         admitted=route.route_state is RouteState.ACTIVE and not route.blocked_reasons,
-        auth_fresh=not any(
-            token in reason_text for token in ("auth", "credential", "oauth", "account_live")
+        auth_fresh=not _contains_reason_token(
+            reason_text,
+            ("auth", "credential", "oauth", "account_live"),
         ),
-        quota_headroom="quota" not in reason_text,
+        quota_headroom=not _contains_reason_token(reason_text, ("quota",)),
         not_degraded=freshness.ok,
     )
 
@@ -508,6 +525,24 @@ def _refresh_receipt_item(stdout: str, *, platform: str) -> dict[str, object] | 
         if isinstance(item, dict) and item.get("platform") == platform:
             return item
     return None
+
+
+def _receipt_account_live_unverified_reasons(receipt_item: dict[str, object]) -> tuple[str, ...]:
+    reasons: list[str] = []
+    quota_status = receipt_item.get("quota_status")
+    if quota_status != "observed":
+        reasons.append(f"refresh_receipt_quota_status:{quota_status or 'missing'}")
+    quota_reason_codes = receipt_item.get("quota_reason_codes")
+    if not isinstance(quota_reason_codes, list):
+        reasons.append("refresh_receipt_quota_reason_codes_missing")
+        return tuple(reasons)
+    reasons.extend(f"refresh_receipt_quota_reason:{reason}" for reason in quota_reason_codes)
+    return tuple(dict.fromkeys(reasons))
+
+
+def _contains_reason_token(reason_text: str, tokens: tuple[str, ...]) -> bool:
+    pattern = "|".join(re.escape(token) for token in tokens)
+    return re.search(rf"(?<![a-z0-9_])(?:{pattern})(?![a-z0-9_])", reason_text) is not None
 
 
 __all__ = [

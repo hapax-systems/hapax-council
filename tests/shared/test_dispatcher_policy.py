@@ -15,6 +15,7 @@ from shared.dispatcher_policy import (
     DispatchRequest,
     QuotaSpendState,
     RouteCapabilityState,
+    _resource_state_refs,
     build_dispatch_request,
     build_route_authority_receipt,
     evaluate_dispatch_policy,
@@ -110,6 +111,39 @@ def _quota(**overrides: object) -> QuotaSpendState:
     }
     payload.update(overrides)
     return QuotaSpendState.model_validate(payload)
+
+
+def test_resource_state_refs_skip_availability_receipt_for_non_resource_degradation() -> None:
+    capability = _capability(
+        freshness_ok=False,
+        freshness_errors=(
+            "capability_availability_degraded",
+            "auth_surface_not_fresh",
+            "capacity_pool_headroom_not_fresh",
+        ),
+        availability_receipt_ref="capability-availability-receipt:codex.headless.full:test",
+    )
+
+    refs = _resource_state_refs(capability, None)
+
+    assert "capability-availability-receipt:codex.headless.full:test" not in refs
+    assert "capability.resource_source:local_probe" in refs
+
+
+def test_resource_state_refs_include_availability_receipt_for_resource_degradation() -> None:
+    capability = _capability(
+        freshness_ok=False,
+        freshness_errors=(
+            "capability_availability_degraded",
+            "codex.headless.full: resource stale",
+        ),
+        availability_receipt_ref="capability-availability-receipt:codex.headless.full:test",
+    )
+
+    refs = _resource_state_refs(capability, None)
+
+    assert "capability-availability-receipt:codex.headless.full:test" in refs
+    assert "codex.headless.full: resource stale" in refs
 
 
 def _request(**overrides: object) -> DispatchRequest:

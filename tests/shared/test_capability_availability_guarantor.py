@@ -22,6 +22,7 @@ from shared.dispatcher_policy import _capability_state
 from shared.platform_capability_registry import (
     AuthSurface,
     PlatformCapabilityRegistry,
+    RouteFreshnessCheck,
     RouteState,
     check_registry_freshness,
     load_platform_capability_registry,
@@ -175,6 +176,8 @@ def test_executable_codex_oauth_strategy_runs_receipt_refresher_without_bearer_d
                             "path": "/tmp/codex.json",
                             "cli_available": True,
                             "wrapper_exists": True,
+                            "quota_status": "observed",
+                            "quota_reason_codes": [],
                         }
                     ]
                 }
@@ -216,6 +219,46 @@ def test_executable_codex_oauth_strategy_runs_receipt_refresher_without_bearer_d
         ]
     )
     assert "CODEX_ACCESS_TOKEN" not in serialized
+
+
+def test_executable_codex_oauth_strategy_defers_when_account_live_quota_unverified() -> None:
+    route, freshness = _degraded_codex_route_and_freshness()
+    runner = _FakeRefreshRunner(
+        RefreshCommandResult(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "receipts": [
+                        {
+                            "platform": "codex",
+                            "receipt_id": "codex-unverified",
+                            "path": "/tmp/codex.json",
+                            "cli_available": True,
+                            "wrapper_exists": True,
+                            "quota_status": "unobservable",
+                            "quota_reason_codes": ["account_live_quota_receipt_absent"],
+                        }
+                    ]
+                }
+            ),
+        )
+    )
+
+    receipt = evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=RefreshStrategyRegistry((CodexOAuthRefreshStrategy(runner=runner),)),
+        now=NOW,
+    )
+
+    assert receipt.refresh_status is RefreshStatus.DEFERRED
+    assert "refresh_receipt_account_live_unverified" in receipt.refresh_reason_codes
+    assert "refresh_receipt_quota_status:unobservable" in receipt.refresh_reason_codes
+    assert (
+        "refresh_receipt_quota_reason:account_live_quota_receipt_absent"
+        in receipt.refresh_reason_codes
+    )
+    assert "refresh_receipt_written" not in receipt.refresh_reason_codes
 
 
 def test_executable_codex_oauth_strategy_reports_command_failure() -> None:
@@ -395,6 +438,34 @@ def test_capability_staleness_does_not_masquerade_as_auth_staleness() -> None:
     assert receipt.available is False
     assert "capability_degraded" in receipt.reason_codes
     assert "auth_surface_not_fresh" not in receipt.reason_codes
+
+
+def test_reason_token_matching_does_not_overmatch_authority_or_quotable_text() -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = RouteFreshnessCheck(
+        route_id=route.route_id,
+        ok=False,
+        supported=True,
+        errors=(
+            "authority metadata stale",
+            "quotable docs stale",
+        ),
+        evidence_refs=("test:evidence",),
+    )
+
+    receipt = evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert "auth_surface_not_fresh" not in receipt.reason_codes
+    assert "capacity_pool_headroom_not_fresh" not in receipt.reason_codes
 
 
 def test_dispatcher_capability_state_carries_availability_receipt_ref_without_refresh_side_effect(

@@ -2951,7 +2951,9 @@ def _resource_state_refs(
 ) -> tuple[str, ...]:
     refs: list[str] = []
     if capability is not None:
-        if capability.availability_receipt_ref:
+        if capability.availability_receipt_ref and any(
+            "resource" in error for error in capability.freshness_errors
+        ):
             refs.append(capability.availability_receipt_ref)
         refs.extend(error for error in capability.freshness_errors if "resource" in error)
         if capability.telemetry_resource_source:
