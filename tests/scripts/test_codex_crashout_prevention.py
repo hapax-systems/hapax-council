@@ -124,6 +124,8 @@ def _run_hook(
     env = os.environ.copy()
     env["HOME"] = home
     env["HAPAX_AGENT_ROLE"] = "cx-test"
+    env.pop("HAPAX_CC_TASK_GATE_OFF", None)
+    env.pop("HAPAX_METHODOLOGY_EMERGENCY", None)
     return subprocess.run(
         ["bash", str(script)],
         input=payload,
