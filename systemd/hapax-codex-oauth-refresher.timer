@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly codex OAuth refresh check (appendix)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+# Persist so we catch up after sleep/shutdown (never miss a refresh window).
+Persistent=true
+
+[Install]
+WantedBy=timers.target

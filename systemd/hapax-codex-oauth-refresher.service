@@ -1,0 +1,16 @@
+[Unit]
+Description=Codex OAuth single-writer refresher (appendix auth host)
+After=hapax-secrets.service network-online.target
+Wants=network-online.target
+# Runs ONLY on appendix (the auth host). Podium consumes a synced read-only copy
+# (see hapax-codex-auth-sync.service). The daemon is the SOLE writer of auth.json;
+# flock serializes its writes against any rare consumer self-refresh.
+
+[Service]
+Type=oneshot
+# Refresh whenever <3 days remain on the ~10-day access_token (pre-emptive refresh
+# closes the intra-rig race window: consumers never see a stale token).
+ExecStart=/usr/bin/env uv run --directory %h/projects/hapax-council \
+  python -m shared.codex_oauth_refresher --once --threshold-days 3
+StandardOutput=append:%h/.codex/codex-oauth-refresher.log
+StandardError=append:%h/.codex/codex-oauth-refresher.log
