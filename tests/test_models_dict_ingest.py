@@ -8,6 +8,7 @@ from shared.capability_harness_descriptor import (
     CapabilityDomain,
     CapabilityShape,
     CostSource,
+    QuotaSource,
 )
 from shared.models_dict_ingest import ingest_models_dict
 
@@ -28,6 +29,21 @@ class ModelsDictIngestTest(unittest.TestCase):
     def test_dict_alias_extracts_route(self) -> None:
         descs = ingest_models_dict({"opus": {"route": "anthropic/claude-opus-4-8"}})
         self.assertEqual(descs[0].model, "anthropic/claude-opus-4-8")
+
+    def test_local_alias_maps_to_raw_model_without_provider_spend(self) -> None:
+        descs = ingest_models_dict({"local-fast": "local-fast"})
+        desc = descs[0]
+        self.assertEqual(desc.shape, CapabilityShape.RAW_MODEL)
+        self.assertEqual(desc.domain, CapabilityDomain.LOCAL_COMPUTE)
+        self.assertFalse(desc.spend_authority_required)
+        self.assertEqual(desc.cost_source, CostSource.NONE)
+        self.assertEqual(desc.quota_source, QuotaSource.NONE)
+        self.assertEqual(desc.backend, "litellm-local")
+
+    def test_appendix_alias_maps_to_raw_model_without_provider_spend(self) -> None:
+        descs = ingest_models_dict({"appendix-fast": "appendix-fast"})
+        self.assertEqual(descs[0].shape, CapabilityShape.RAW_MODEL)
+        self.assertFalse(descs[0].spend_authority_required)
 
     def test_empty_dict_returns_empty(self) -> None:
         self.assertEqual(ingest_models_dict({}), [])

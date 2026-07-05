@@ -23,7 +23,9 @@ from shared.capability_harness_descriptor import (
     CapabilityDomain,
     CapabilityHarnessDescriptor,
     CapabilityShape,
+    CostSource,
     FreshnessState,
+    QuotaSource,
     validate_descriptor,
 )
 
@@ -85,6 +87,29 @@ def _authority_ceiling(route: dict[str, object]) -> AuthorityCeiling:
     return AuthorityCeiling.READ_ONLY
 
 
+def _enum_from(
+    value: object, enum_type: type[CostSource] | type[QuotaSource]
+) -> CostSource | QuotaSource:
+    try:
+        return enum_type(str(value or "").lower())
+    except ValueError:
+        return enum_type.NONE
+
+
+def _mutation_surfaces(
+    route: dict[str, object], authority: AuthorityCeiling, shape: CapabilityShape
+) -> list[str]:
+    mutability = route.get("mutability") or {}
+    surfaces: list[str] = []
+    if isinstance(mutability, dict):
+        surfaces = sorted(str(surface) for surface, enabled in mutability.items() if enabled)
+    if not surfaces and authority == AuthorityCeiling.REPO_MUTATION:
+        surfaces = ["source"]
+    if shape == CapabilityShape.LOCAL_TOOL and not surfaces:
+        surfaces = ["local_tool"]
+    return surfaces
+
+
 def _freshness_state(route_state: object) -> FreshnessState:
     """Map the route_state to the descriptor's freshness_state."""
     state = str(route_state or "").lower()
@@ -110,11 +135,12 @@ def _descriptor_from_route(route: dict[str, object]) -> CapabilityHarnessDescrip
     effort = str(exec_desc.get("effort") or "none")
     capacity_pool = str(route.get("capacity_pool") or "")
     resource_pools = [capacity_pool] if capacity_pool else []
-    provider = str(route.get("provider") or platform or "")
+    provider = str(route.get("provider") or route.get("paid_provider") or platform or "")
     backend = str(
         exec_desc.get("backend")
         or exec_desc.get("gateway")
         or exec_desc.get("adapter")
+        or route.get("paid_profile")
         or model
         or profile
         or platform
@@ -122,9 +148,12 @@ def _descriptor_from_route(route: dict[str, object]) -> CapabilityHarnessDescrip
     )
     execution_harness_id = str(route.get("launcher") or platform or route_id or "")
     authority = _authority_ceiling(route)
-    mutation_surfaces = ["source"] if authority == AuthorityCeiling.REPO_MUTATION else []
-    if shape == CapabilityShape.LOCAL_TOOL and not mutation_surfaces:
-        mutation_surfaces = [profile or "local_tool"]
+    mutation_surfaces = _mutation_surfaces(route, authority, shape)
+    telemetry = route.get("telemetry") or {}
+    if not isinstance(telemetry, dict):
+        telemetry = {}
+    quota_source = _enum_from(telemetry.get("quota_source"), QuotaSource)
+    cost_source = _enum_from(telemetry.get("cost_source"), CostSource)
     descriptor_provider = None
     if shape in {CapabilityShape.HOSTED_MODEL, CapabilityShape.PROVIDER_GATEWAY}:
         descriptor_provider = provider or None
@@ -147,7 +176,11 @@ def _descriptor_from_route(route: dict[str, object]) -> CapabilityHarnessDescrip
         authority_ceiling=authority,
         mutation_surfaces=mutation_surfaces,
         resource_pools=resource_pools,
-        spend_authority_required=capacity_pool in {"subscription_quota", "paid_spend"},
+        spend_authority_required=capacity_pool
+        in {"subscription_quota", "paid_spend", "api_paid_spend"}
+        or "provider_spend" in mutation_surfaces,
+        quota_source=quota_source,
+        cost_source=cost_source,
         freshness_state=_freshness_state(route.get("route_state")),
         freshness_remediation_task="cc-task-capability-harness-descriptor-20260703",
     )

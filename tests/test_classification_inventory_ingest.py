@@ -74,6 +74,18 @@ class ClassificationInventoryIngestTest(unittest.TestCase):
         self.assertEqual(d.authority_ceiling, AuthorityCeiling.READ_ONLY)
         self.assertTrue(d.public_egress_authority_required)
 
+    def test_unknown_direction_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown classification direction"):
+            ingest_classification_routes(
+                [
+                    {
+                        "row_id": "capability.unknown",
+                        "direction": "teleport",
+                        "recruitable": True,
+                    }
+                ]
+            )
+
     def test_receive_maps_to_money_rail_authority(self) -> None:
         d = self.descs["capability.payment.receive"]
         self.assertEqual(d.shape, CapabilityShape.MONEY_RAIL)

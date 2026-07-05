@@ -25,27 +25,51 @@ __all__ = ["ingest_classification_routes", "ingest_classification_inventory"]
 _DIR_TO_SHAPE: dict[str, CapabilityShape] = {
     "communicate": CapabilityShape.PUBLIC_EGRESS,
     "publish": CapabilityShape.PUBLIC_EGRESS,
+    "express": CapabilityShape.LOCAL_TOOL,
     "observe": CapabilityShape.BACKGROUND_SERVICE,
     "mutate": CapabilityShape.LOCAL_TOOL,
     "query": CapabilityShape.LOCAL_TOOL,
+    "recall": CapabilityShape.LOCAL_TOOL,
+    "route": CapabilityShape.LOCAL_TOOL,
+    "act": CapabilityShape.LOCAL_TOOL,
     "receive": CapabilityShape.MONEY_RAIL,
 }
 
 
 def _shape_for_direction(direction: str) -> CapabilityShape:
-    return _DIR_TO_SHAPE.get(direction.lower(), CapabilityShape.LOCAL_TOOL)
+    normalized = direction.lower()
+    try:
+        return _DIR_TO_SHAPE[normalized]
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown classification direction {direction!r}; repair "
+            "config/capability-classification-inventory.json or add an adapter mapping "
+            "before regenerating the capability inventory baseline"
+        ) from exc
 
 
 def _actions_for_direction(direction: str) -> list[CapabilityAction]:
     mapping = {
         "communicate": [CapabilityAction.PUBLISH],
         "publish": [CapabilityAction.PUBLISH],
+        "express": [CapabilityAction.ACTUATE],
         "observe": [CapabilityAction.OBSERVE],
         "mutate": [CapabilityAction.MUTATE],
         "query": [CapabilityAction.QUERY],
+        "recall": [CapabilityAction.QUERY],
+        "route": [CapabilityAction.MUTATE],
+        "act": [CapabilityAction.ACTUATE],
         "receive": [CapabilityAction.RECEIVE],
     }
-    return mapping.get(direction.lower(), [CapabilityAction.OBSERVE])
+    normalized = direction.lower()
+    try:
+        return mapping[normalized]
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown classification direction {direction!r}; repair "
+            "config/capability-classification-inventory.json or add an adapter mapping "
+            "before regenerating the capability inventory baseline"
+        ) from exc
 
 
 def _authority_ceiling(shape: CapabilityShape, ceiling: str) -> AuthorityCeiling:

@@ -55,12 +55,22 @@ def _domain_for_world_domain(world_domain: str) -> CapabilityDomain:
 def _actions_for_direction(direction: str) -> list[CapabilityAction]:
     mapping = {
         "communicate": [CapabilityAction.PUBLISH],
+        "express": [CapabilityAction.ACTUATE],
         "observe": [CapabilityAction.OBSERVE],
         "mutate": [CapabilityAction.MUTATE],
         "query": [CapabilityAction.QUERY],
+        "recall": [CapabilityAction.QUERY],
+        "act": [CapabilityAction.ACTUATE],
         "receive": [CapabilityAction.RECEIVE],
     }
-    return mapping.get(direction, [CapabilityAction.OBSERVE])
+    try:
+        return mapping[direction]
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown world capability direction {direction!r}; repair "
+            "config/world-capability-registry.json or add an adapter mapping before "
+            "regenerating the capability inventory baseline"
+        ) from exc
 
 
 def _authority_ceiling(rec: dict[str, object]) -> AuthorityCeiling:

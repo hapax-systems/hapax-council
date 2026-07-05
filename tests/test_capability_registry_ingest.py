@@ -9,7 +9,9 @@ from shared.capability_harness_descriptor import (
     AuthorityCeiling,
     CapabilityDomain,
     CapabilityShape,
+    CostSource,
     FreshnessState,
+    QuotaSource,
     validate_descriptor,
 )
 from shared.capability_registry_ingest import (
@@ -64,7 +66,9 @@ _FIXTURE_ROUTES = [
         "summary": "API gateway",
         "execution_descriptor": {"model_id": "litellm-router"},
         "authority_ceiling": "read_only",
-        "mutability": {"source": False},
+        "capacity_pool": "api_paid_spend",
+        "mutability": {"source": False, "runtime": True, "provider_spend": True},
+        "telemetry": {"quota_source": "ledger", "cost_source": "ledger"},
     },
     {
         "route_id": "api.headless.api_frontier",
@@ -107,6 +111,10 @@ class IngestRoutesMappingTest(unittest.TestCase):
         self.assertEqual(desc.provider, "api")
         self.assertEqual(desc.backend, "litellm-router")
         self.assertEqual(validate_descriptor(desc), [])
+        self.assertTrue(desc.spend_authority_required)
+        self.assertEqual(desc.cost_source, CostSource.LEDGER)
+        self.assertEqual(desc.quota_source, QuotaSource.LEDGER)
+        self.assertEqual(desc.mutation_surfaces, ["provider_spend", "runtime"])
 
     def test_hosted_model_shape_for_api_frontier(self) -> None:
         desc = self.descriptors["api.headless.api_frontier"]
@@ -143,6 +151,7 @@ class IngestRoutesMappingTest(unittest.TestCase):
     def test_spend_authority_for_subscription_pool(self) -> None:
         self.assertTrue(self.descriptors["claude.headless.full"].spend_authority_required)
         self.assertTrue(self.descriptors["api.headless.api_frontier"].spend_authority_required)
+        self.assertTrue(self.descriptors["api.headless.provider_gateway"].spend_authority_required)
         self.assertFalse(self.descriptors["local_tool.local.worker"].spend_authority_required)
 
     def test_one_descriptor_per_route(self) -> None:

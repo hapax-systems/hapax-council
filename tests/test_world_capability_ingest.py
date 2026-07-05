@@ -98,6 +98,19 @@ class WorldCapabilityIngestTest(unittest.TestCase):
             self.descs["audio.broadcast_voice"].execution_harness_id, "hapax-daimonion"
         )
 
+    def test_unknown_direction_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown world capability direction"):
+            ingest_world_capability_routes(
+                [
+                    {
+                        "capability_id": "world.unknown",
+                        "realm": "world_state",
+                        "domain": "camera",
+                        "direction": "teleport",
+                    }
+                ]
+            )
+
     def test_one_per_record(self) -> None:
         self.assertEqual(len(ingest_world_capability_routes(_FIXTURE)), len(_FIXTURE))
 
