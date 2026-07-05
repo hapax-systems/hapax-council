@@ -150,6 +150,23 @@ def test_missing_relay_is_not_retired(tmp_path: Path) -> None:
     assert lane_is_retired("never-existed", relay_dir=tmp_path) is False
 
 
+def test_hapax_relay_dir_env_is_used(monkeypatch, tmp_path: Path) -> None:
+    _write(tmp_path / "cx-env.yaml", "status: retired\n", mtime_offset=0.0)
+    monkeypatch.setenv("HAPAX_RELAY_DIR", str(tmp_path))
+
+    assert lane_is_retired("cx-env") is True
+
+
+def test_explicit_relay_dir_beats_hapax_relay_dir_env(monkeypatch, tmp_path: Path) -> None:
+    env_dir = tmp_path / "env-relay"
+    explicit_dir = tmp_path / "explicit-relay"
+    _write(env_dir / "cx-env.yaml", "status: retired\n", mtime_offset=0.0)
+    _write(explicit_dir / "cx-env.yaml", "status: active\n", mtime_offset=0.0)
+    monkeypatch.setenv("HAPAX_RELAY_DIR", str(env_dir))
+
+    assert lane_is_retired("cx-env", relay_dir=explicit_dir) is False
+
+
 def test_corrupt_relay_is_not_retired(tmp_path: Path) -> None:
     _write(tmp_path / "cx-bad.yaml", "status: [unclosed\n", mtime_offset=0.0)
     assert lane_is_retired("cx-bad", relay_dir=tmp_path) is False

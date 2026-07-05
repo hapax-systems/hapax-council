@@ -77,12 +77,14 @@ relay_retired() {
   # path, so a fail-open launcher only ever sees gate-allowed lanes.
   local relay_name="$1"
   local council_root
+  local relay_dir="${HAPAX_RELAY_DIR:-$HOME/.cache/hapax/relay}"
   council_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   PYTHONPATH="$council_root${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
 import sys
+from pathlib import Path
 from shared.relay_lifecycle import lane_is_retired
-sys.exit(0 if lane_is_retired(sys.argv[1]) else 1)
-' "$relay_name" 2>/dev/null
+sys.exit(0 if lane_is_retired(sys.argv[1], relay_dir=Path(sys.argv[2])) else 1)
+' "$relay_name" "$relay_dir" 2>/dev/null
   case $? in
     0) return 0 ;;
     *) return 1 ;;  # 1 = not retired; any other = tooling error -> fail-open
