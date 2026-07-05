@@ -39,14 +39,18 @@ Not send-capable: `AgyAdapter`, `BudgetAuthorityAdapter` (api), `ReviewSeatAdapt
 - **Privacy:** the receipt NEVER carries the message body — only `message_sha256` +
   `message_chars` (the send route is privacy/secret-sensitive).
 
-## The Reins consumer (built-ahead, honest-dark)
+## The Reins consumer (clean-stack follow-on)
 
-`reins/internal/model/sendgate.go` reads the bus and lights the send-gate ONLY on a receipt with
-`receipt_schema=1`, `op=session_send`, `outcome=sent`. Missing file, corrupt lines, failed
-relays, and unknown schemas all render the honest-dark `NOT WIRED` footer. Test-pinned in
-`sendgate_test.go` (`TestSendGateLightsOnlyOnSessionGateReceipt`) and
-`injection_test.go` (`TestComposerSessionGateFooterLightsOnlyOnEvidence`); reins-side commit
-`7c30e2c` on `reins-cockpit-overhaul-20260627`.
+Reins remains honest-dark in this council PR: its send-gate still renders `NOT WIRED` until a
+separate `reins-dev` branch wires the consumer to the SESSION-send evidence bus. The intended
+consumer contract is: read `~/.cache/hapax/sdlc-routing/session-send-receipts.jsonl` and light
+ONLY on a receipt with `receipt_schema=1`, `op=session_send`, and `outcome=sent`; missing files,
+corrupt lines, failed relays, and unknown schemas must remain dark.
+
+No Reins commit is included in PR #4440. A stale worker briefly edited the shared dirty Reins
+checkout on `reins-cockpit-overhaul-20260627`; those edits were reversed because that checkout is
+dirty/ahead and not a safe task branch for this slice. The Reins tests named below are the
+follow-on pins to add on a clean branch, not evidence already landed here.
 
 ## Scoped exceptions (recorded per spec §7, with re-arm plan)
 
@@ -63,4 +67,6 @@ relays, and unknown schemas all render the honest-dark `NOT WIRED` footer. Test-
 
 - Latest evidence: `tail -n 3 ~/.cache/hapax/sdlc-routing/session-send-receipts.jsonl`
 - Regression pins: `uv run pytest tests/test_capability_adapter_protocol.py -q`
-- Reins pins: `go test ./internal/model/ ./internal/grammar/` in the reins clone.
+- Reins follow-on pins: add `TestSendGateLightsOnlyOnSessionGateReceipt` and
+  `TestComposerSessionGateFooterLightsOnlyOnEvidence` on a clean `reins-dev` branch, then run
+  `go test ./internal/model/ ./internal/grammar/`.
