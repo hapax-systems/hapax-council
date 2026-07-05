@@ -1,5 +1,6 @@
 """Regression guards for the python-prod dependency bump safety caps."""
 
+import asyncio
 import re
 import subprocess
 import sys
@@ -152,6 +153,17 @@ def test_review_blocked_python_prod_lock_resolves_inside_safe_specs() -> None:
             )
 
 
+def test_ci_typecheck_exercises_locked_pyrefly_version() -> None:
+    packages_by_name = _load_lock_package_entries()
+    locked_pyrefly = packages_by_name["pyrefly"][0]["version"]
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    expected_command = f"uv run --no-project --with pyrefly=={locked_pyrefly} pyrefly check"
+    assert expected_command in workflow, (
+        f"CI typecheck must exercise the same pyrefly version resolved by uv.lock. {NEXT_ACTION}"
+    )
+
+
 def test_torch_abi_stack_keeps_override_and_lockstep_pairing() -> None:
     pyproject = _load_pyproject()
     packages_by_name = _load_lock_package_entries()
@@ -235,10 +247,23 @@ def test_core_dependency_runtime_smoke_paths() -> None:
     def health() -> dict[str, int]:
         return Payload(value=7).model_dump()
 
+    async def smoke_fastmcp_registration() -> None:
+        server = FastMCP("hapax-smoke")
+
+        @server.tool()
+        def echo(value: int) -> dict[str, int]:
+            return {"value": value}
+
+        tools = await server.list_tools()
+        assert any(tool.name == "echo" for tool in tools), NEXT_ACTION
+        content, structured = await server.call_tool("echo", {"value": 7})
+        assert structured == {"value": 7}, NEXT_ACTION
+        assert content and content[0].text, NEXT_ACTION
+
     assert health() == {"value": 7}, NEXT_ACTION
     assert any(route.path == "/health" for route in app.routes), NEXT_ACTION
     assert VectorParams(size=3, distance=Distance.COSINE).size == 3, NEXT_ACTION
-    assert FastMCP("hapax-smoke").tool, NEXT_ACTION
+    asyncio.run(smoke_fastmcp_registration())
     assert Implementation(name="hapax-smoke", version="0").name == "hapax-smoke", NEXT_ACTION
     assert TextContent(type="text", text="ok").text == "ok", NEXT_ACTION
     assert Mistral(api_key="test-key"), NEXT_ACTION

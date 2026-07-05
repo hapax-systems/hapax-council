@@ -410,7 +410,7 @@ jobs:
       # the previous analysis-cache restore did not materially shorten this
       # check.
       - if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
-        run: uv run --no-project --with pyrefly==0.62.0 pyrefly check
+        run: uv run --no-project --with pyrefly==0.64.1 pyrefly check
 
   test-full-shard:
     needs: [docs_only_filter, post_merge_duplicate_filter]
