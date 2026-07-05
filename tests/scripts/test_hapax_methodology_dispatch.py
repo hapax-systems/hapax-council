@@ -1135,10 +1135,12 @@ def test_dispatch_main_uses_adapter_admit_for_route_decision(
     )
     seen_platforms: list[str] = []
     seen_requests: list[object] = []
+    seen_candidate_requests: list[object] = []
 
     class HoldingAdapter:
-        def admit(self, policy_request):
+        def admit(self, policy_request, *, candidate_requests=None):
             seen_requests.append(policy_request)
+            seen_candidate_requests.append(candidate_requests)
             return module.RouteDecision(
                 decision_id="rd-adapter-fixture",
                 created_at=datetime(2026, 7, 5, tzinfo=UTC),
@@ -1187,6 +1189,7 @@ def test_dispatch_main_uses_adapter_admit_for_route_decision(
     assert rc == 10
     assert seen_platforms == ["codex"]
     assert len(seen_requests) == 1
+    assert seen_candidate_requests == [None]
     assert "fixture adapter admission hold" in captured.err
     receipt = json.loads(
         (tmp_path / "ledger" / "methodology-dispatch.jsonl")
@@ -2057,27 +2060,32 @@ def test_unsupported_selected_route_writes_blocked_receipt_with_next_action(
     monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
     monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
 
-    def _unsupported_selection(*_args, **_kwargs):  # noqa: ANN002, ANN003
-        return module.RouteDecision(
-            decision_id="rd-unsupported-selected-route-test",
-            created_at=datetime(2026, 5, 9, 22, 30, tzinfo=UTC),
-            task_id="governed-build",
-            lane="cx-green",
-            route_id="external.headless.full",
-            platform="external",
-            mode="headless",
-            profile="full",
-            action=module.DispatchAction.LAUNCH,
-            policy_outcome="launch",
-            launch_allowed=True,
-            prompt_allowed=True,
-            quality_floor_satisfied=True,
-            authority_allowed=True,
-            reason_codes=("policy_launch",),
-            message="policy_launch",
-        )
+    class UnsupportedSelectionAdapter:
+        def admit(self, policy_request, *, candidate_requests=None):
+            return module.RouteDecision(
+                decision_id="rd-unsupported-selected-route-test",
+                created_at=datetime(2026, 5, 9, 22, 30, tzinfo=UTC),
+                task_id=policy_request.task_id,
+                lane=policy_request.lane,
+                route_id="external.headless.full",
+                platform="external",
+                mode="headless",
+                profile="full",
+                action=module.DispatchAction.LAUNCH,
+                policy_outcome="launch",
+                launch_allowed=True,
+                prompt_allowed=True,
+                quality_floor_satisfied=True,
+                authority_allowed=True,
+                reason_codes=("policy_launch",),
+                message="policy_launch",
+            )
 
-    monkeypatch.setattr(module, "evaluate_dispatch_policy", _unsupported_selection)
+    monkeypatch.setattr(
+        module,
+        "_capability_adapter_for_admission",
+        lambda _platform: UnsupportedSelectionAdapter(),
+    )
 
     rc = module.main(
         [
