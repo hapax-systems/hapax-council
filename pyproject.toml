@@ -16,6 +16,8 @@ readme = "README.md"
 license = {text = "PolyForm-Strict-1.0.0"}
 requires-python = ">=3.12"
 dependencies = [
+    # Python-prod dependency caps and optional runtime surfaces are guarded by:
+    # uv run pytest tests/test_python_prod_dependency_constraints.py -q
     # Core: shared by all agents and containers
     "httpx>=0.28.0",
     "ollama>=0.6.2",

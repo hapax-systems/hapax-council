@@ -148,6 +148,35 @@ def test_ci_typecheck_uses_minimal_pyrefly_fast_path() -> None:
     assert "~/.cache/pyrefly" not in typecheck_block
 
 
+def test_ci_runs_python_prod_optional_dependency_witness_for_dependency_changes() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    docs_filter_block = _workflow_job_block(ci_text, "docs_only_filter")
+    test_full_shard_block = _workflow_job_block(ci_text, "test-full-shard")
+    test_block = _workflow_job_block(ci_text, "test")
+
+    assert "python_prod_dependency_witness:" in docs_filter_block
+    assert "python_prod_dependency_witness=false" in docs_filter_block
+    assert "python_prod_dependency_witness=true" in docs_filter_block
+    assert "tests/test_python_prod_dependency_constraints.py" in docs_filter_block
+
+    witness_command = (
+        "uv run --frozen \\\n"
+        "            --extra ci --extra audio --extra tui --extra studio --extra rerank \\\n"
+        "            pytest tests/test_python_prod_dependency_constraints.py -q -rs"
+    )
+    assert "Run python-prod optional dependency witness" in test_full_shard_block
+    assert "matrix.shard == 1" in test_full_shard_block
+    assert "needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'" in (
+        test_full_shard_block
+    )
+    assert witness_command in test_full_shard_block
+
+    assert "Install python-prod optional witness system deps" in test_block
+    assert "ffmpeg" in test_block
+    assert test_block.count("Run python-prod optional dependency witness") == 2
+    assert witness_command in test_block
+
+
 def test_cargo_hook_advisory_has_matching_path_gated_ci_job() -> None:
     ci_text = _read(".github/workflows/ci.yml")
     hook_text = _read("hooks/scripts/cargo-check-rust.sh")

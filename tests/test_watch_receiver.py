@@ -183,8 +183,10 @@ class TestSensorIngestion:
         """Logos API exposes the companion POST path on port 8051."""
         from fastapi.testclient import TestClient
 
+        from agents import watch_receiver
         from logos.api.app import app as logos_app
 
+        assert state_dir == watch_receiver.WATCH_STATE_DIR
         logos_client = TestClient(logos_app)
 
         status_resp = logos_client.get("/watch/status")

@@ -498,6 +498,12 @@ def test_additional_bumped_dependency_runtime_smoke_paths() -> None:
 
 
 def test_optional_studio_and_rerank_dependency_runtime_smoke_paths() -> None:
+    if not (
+        _optional_distribution_installed("ultralytics")
+        or _optional_distribution_installed("sentence-transformers")
+    ):
+        pytest.skip("studio/rerank optional dependencies are not installed")
+
     _run_clean_python(
         f"""
         import importlib.util
@@ -506,6 +512,7 @@ def test_optional_studio_and_rerank_dependency_runtime_smoke_paths() -> None:
         from importlib.metadata import version
 
         NEXT_ACTION = {NEXT_ACTION!r}
+        exercised = []
 
         if importlib.util.find_spec("ultralytics") is not None:
             from ultralytics import YOLO
@@ -514,6 +521,7 @@ def test_optional_studio_and_rerank_dependency_runtime_smoke_paths() -> None:
             assert Version(version("ultralytics")) in SpecifierSet(">=8.4.87"), (
                 NEXT_ACTION
             )
+            exercised.append("ultralytics")
         if importlib.util.find_spec("sentence_transformers") is not None:
             from sentence_transformers import InputExample
 
@@ -523,5 +531,7 @@ def test_optional_studio_and_rerank_dependency_runtime_smoke_paths() -> None:
             assert Version(version("sentence-transformers")) in SpecifierSet(">=5.6.0"), (
                 NEXT_ACTION
             )
+            exercised.append("sentence-transformers")
+        assert exercised, NEXT_ACTION
         """
     )
