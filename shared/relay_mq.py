@@ -178,8 +178,9 @@ _CLAUDE_LANE_NAMES = frozenset(
     {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
 )
 _RETIRED_ANTIGRAV_NEXT_ACTION = (
-    "antigrav/agy relay recipients are retired/excised; use agy.review.direct "
-    "through scripts/hapax-agy-reviewer for admitted read-only review-plane work"
+    "antigrav and legacy gemini-cli relay recipients are retired/excised; agy is "
+    "not a relay peer and only exists as agy.review.direct through "
+    "scripts/hapax-agy-reviewer for admitted read-only review-plane work"
 )
 
 

@@ -10,6 +10,7 @@ set -euo pipefail
 
 cat >&2 <<'EOF'
 hapax-antigrav: retired
+reason_code=antigrav_worker_stub_refusal
 
 Antigrav/agy live worker launch is deprecated and excised from Hapax dispatch.
 Use Claude, Codex, or Vibe for worker dispatch. For read-only review-plane work,

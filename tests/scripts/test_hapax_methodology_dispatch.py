@@ -3285,6 +3285,7 @@ def test_agy_dispatch_remains_route_gated_without_spawnable_route(tmp_path: Path
     assert receipt["launched"] is False
     assert receipt["ok"] is False
     assert "non-launchable read-only agy.review.direct" in receipt["reason"]
+    assert receipt["route_policy_reason_codes"] == ["review_route_not_launchable"]
 
 
 def test_gemini_platform_is_not_dispatchable(tmp_path: Path) -> None:

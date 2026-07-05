@@ -1236,6 +1236,7 @@ def write_receipt(
     route_decision_receipt_path: Path | None = None,
     durable_binding: DurableDispatchBinding | None = None,
     dispatch_launch: DispatchLaunchResult | None = None,
+    route_policy_reason_codes: list[str] | None = None,
 ) -> Path:
     ledger_dir = orchestration_ledger_dir()
     ledger_dir.mkdir(parents=True, exist_ok=True)
@@ -1274,6 +1275,8 @@ def write_receipt(
         record["coord_dispatch_reason"] = dispatch_launch.reason
         record["coord_dispatch_event_id"] = dispatch_launch.event_id
         record["coord_dispatch_cleanup_state"] = dispatch_launch.cleanup_state
+    if route_policy_reason_codes is not None:
+        record["route_policy_reason_codes"] = route_policy_reason_codes
     if route_decision is not None:
         record.update(route_decision_receipt_payload(route_decision))
         record["route_decision_receipt_path"] = (
@@ -2076,6 +2079,11 @@ def main(argv: list[str] | None = None) -> int:
                 validation=Validation(False, reason, task_for_receipt),
                 prompt=None,
                 launched=False,
+                route_policy_reason_codes=[
+                    "review_route_not_launchable"
+                    if args.platform == "agy"
+                    else "retired_platform_not_dispatchable"
+                ],
             )
         print(f"BLOCKED: {reason}", file=sys.stderr)
         return 10

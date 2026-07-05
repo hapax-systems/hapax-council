@@ -61,6 +61,7 @@ def _admitted_agy_platform_capability_registry(rt):
     route["blocked_reasons"] = []
     route["telemetry"]["quota_source"] = "manual"
     route["freshness"]["quota_checked_at"] = "2026-07-05T14:51:00Z"
+    route["freshness"]["quota_stale_after"] = "999d"
     route["freshness"]["evidence"]["quota"]["evidence_refs"] = ["test:agy:route-quota-observed"]
     route["freshness"]["evidence"]["quota"]["blocked_reasons"] = []
     return rt.PlatformCapabilityRegistry.model_validate(payload)
@@ -846,6 +847,32 @@ class TestVerdictBlockers:
         blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert "review_dossier_unknown_reviewer_family:mystery" in blockers
 
+    def test_legacy_gemini_dossier_family_remains_admissible_after_agy_rename(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"agy": ("route_specific_quota_receipt_absent",)},
+        )
+
+        assert "review_dossier_unknown_reviewer_family:gemini" not in blockers
+        assert "review_dossier_unknown_accept_family:gemini" not in blockers
+        assert "review_dossier_blocked_route_family_seated:agy" not in blockers
+        assert not any(b.startswith("review_dossier_family_diversity:") for b in blockers)
+
     def test_unknown_reviewer_verdict_blocks(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         dossier = self._good_dossier(rt)
@@ -1416,6 +1443,22 @@ class TestFamilyOutageDegradation:
             )
         }
 
+    def test_review_route_blocked_families_uses_default_receipt_dir(self, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        review_registry = {"families": [{"family": "agy", "route_id": "agy.review.direct"}]}
+        receipt_dirs: list[Path | None] = []
+
+        def receipt_cleared_registry(*, receipt_dir=None, now=None):
+            receipt_dirs.append(receipt_dir)
+            return _admitted_agy_platform_capability_registry(rt)
+
+        monkeypatch.setattr(rt, "load_platform_capability_registry", receipt_cleared_registry)
+
+        blocked = rt.review_route_blocked_families(review_registry)
+
+        assert blocked == {}
+        assert receipt_dirs == [rt.DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR]
+
     def test_review_route_blocked_families_fails_closed_when_registry_unreadable(
         self, monkeypatch
     ) -> None:
@@ -1423,7 +1466,7 @@ class TestFamilyOutageDegradation:
 
         rt = _load_review_team_module()
 
-        def unreadable_registry():
+        def unreadable_registry(*, receipt_dir=None, now=None):
             raise rt.PlatformCapabilityRegistryError("synthetic unreadable registry")
 
         monkeypatch.setattr(rt, "load_platform_capability_registry", unreadable_registry)
@@ -1477,6 +1520,27 @@ class TestFamilyOutageDegradation:
         )
 
         assert blocked == {}
+
+    def test_review_route_blocked_families_blocks_stale_active_agy_route(self) -> None:
+        rt = _load_review_team_module()
+        review_registry = {"families": [{"family": "agy", "route_id": "agy.review.direct"}]}
+        payload = _admitted_agy_platform_capability_registry(rt).model_dump(mode="json")
+        route = next(
+            route for route in payload["routes"] if route["route_id"] == "agy.review.direct"
+        )
+        route["freshness"]["quota_checked_at"] = "2026-01-01T00:00:00Z"
+        route["freshness"]["quota_stale_after"] = "15m"
+
+        blocked = rt.review_route_blocked_families(
+            review_registry,
+            platform_registry=rt.PlatformCapabilityRegistry.model_validate(payload),
+        )
+
+        assert "agy" in blocked
+        assert any(
+            reason.startswith("freshness_check:agy.review.direct: quota stale")
+            for reason in blocked["agy"]
+        )
 
     def test_t1_still_seals_when_family_missing_without_outage_evidence(self) -> None:
         import pytest

@@ -52,20 +52,21 @@ def _make_vault(tmp_path: Path) -> Path:
     return vault
 
 
-def _raw_platform_capability_registry():
+def _raw_platform_capability_registry(*, receipt_dir=None, now=None):
     payload = json.loads(
         (REPO_ROOT / "config" / "platform-capability-registry.json").read_text(encoding="utf-8")
     )
     return dispatch.review_team.PlatformCapabilityRegistry.model_validate(payload)
 
 
-def _admitted_agy_platform_capability_registry():
+def _admitted_agy_platform_capability_registry(*, receipt_dir=None, now=None):
     payload = _raw_platform_capability_registry().model_dump(mode="json")
     route = next(route for route in payload["routes"] if route["route_id"] == "agy.review.direct")
     route["route_state"] = "active"
     route["blocked_reasons"] = []
     route["telemetry"]["quota_source"] = "manual"
     route["freshness"]["quota_checked_at"] = "2026-07-05T14:51:00Z"
+    route["freshness"]["quota_stale_after"] = "999d"
     route["freshness"]["evidence"]["quota"]["evidence_refs"] = ["test:agy:route-quota-observed"]
     route["freshness"]["evidence"]["quota"]["blocked_reasons"] = []
     return dispatch.review_team.PlatformCapabilityRegistry.model_validate(payload)
@@ -322,7 +323,7 @@ class TestApply:
     def test_default_route_gate_fails_closed_when_platform_registry_unreadable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def unreadable_registry():
+        def unreadable_registry(*, receipt_dir=None, now=None):
             raise dispatch.review_team.PlatformCapabilityRegistryError(
                 "synthetic unreadable registry"
             )

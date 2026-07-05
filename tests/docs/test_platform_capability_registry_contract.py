@@ -293,6 +293,7 @@ def test_seed_registry_records_agy_review_route_as_blocked_review_supply() -> No
     route = {route["route_id"]: route for route in registry["routes"]}["agy.review.direct"]
 
     assert route["sanctioned_wrapper"] == "scripts/hapax-agy-reviewer"
+    assert (REPO_ROOT / route["sanctioned_wrapper"]).is_file()
     assert route["route_state"] == "blocked"
     assert route["blocked_reasons"] == [
         "agy_review_seat_receipt_admission_required",

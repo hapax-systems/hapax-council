@@ -664,8 +664,10 @@ class TestRecipientExpansion(unittest.TestCase):
     def test_expand_direct_antigrav_is_retired(self) -> None:
         with self.assertRaisesRegex(ValueError, "agy.review.direct"):
             expand_recipients("alpha,antigrav")
-        with self.assertRaisesRegex(ValueError, "agy.review.direct"):
+        with self.assertRaises(ValueError) as agy_error:
             expand_recipients("alpha,agy")
+        self.assertIn("agy is not a relay peer", str(agy_error.exception))
+        self.assertNotIn("agy relay recipients are retired/excised", str(agy_error.exception))
         with self.assertRaisesRegex(ValueError, "agy.review.direct"):
             expand_recipients("alpha,gemini-cli")
 
