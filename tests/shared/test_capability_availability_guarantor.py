@@ -468,6 +468,34 @@ def test_reason_token_matching_does_not_overmatch_authority_or_quotable_text() -
     assert "capacity_pool_headroom_not_fresh" not in receipt.reason_codes
 
 
+def test_reason_token_matching_counts_snake_case_auth_and_quota_tokens() -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = RouteFreshnessCheck(
+        route_id=route.route_id,
+        ok=False,
+        supported=True,
+        errors=(
+            "auth_failed",
+            "quota_exceeded",
+        ),
+        evidence_refs=("test:evidence",),
+    )
+
+    receipt = evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert "auth_surface_not_fresh" in receipt.reason_codes
+    assert "capacity_pool_headroom_not_fresh" in receipt.reason_codes
+
+
 def test_dispatcher_capability_state_carries_availability_receipt_ref_without_refresh_side_effect(
     monkeypatch,
 ) -> None:

@@ -1369,6 +1369,7 @@ def _evaluate_dimensional_candidate_set(
     checked_at: datetime,
 ) -> RouteDecision:
     candidates = _candidate_set_with_primary(request, candidate_requests)
+    candidate_request_by_route = {candidate.route_id: candidate for candidate in candidates}
     receipts: list[DimensionalCandidateReceipt] = []
     eligible: list[DimensionalCandidateReceipt] = []
     incomparable_present = False
@@ -1462,6 +1463,24 @@ def _evaluate_dimensional_candidate_set(
     winner = tied[0]
     updated = _mark_candidate_relations(receipts, selected_route_id=winner.route_id)
     if winner.route_id != request.route_id:
+        if _availability_recomposition_required(request):
+            winner_request = candidate_request_by_route[winner.route_id]
+            return _decision(
+                winner_request,
+                DispatchAction.LAUNCH,
+                (
+                    *_launch_reason_codes(winner_request, checked_at=checked_at),
+                    *_availability_recomposition_reason_codes(
+                        request,
+                        selected_route_id=winner.route_id,
+                    ),
+                ),
+                checked_at,
+                quality_floor_satisfied=True,
+                authority_allowed=True,
+                dimensional_candidates=updated,
+                selected_route_id=winner.route_id,
+            )
         return _decision(
             request,
             DispatchAction.HOLD,
@@ -1486,6 +1505,34 @@ def _evaluate_dimensional_candidate_set(
         dimensional_candidates=updated,
         selected_route_id=winner.route_id,
     )
+
+
+def _availability_recomposition_required(request: DispatchRequest) -> bool:
+    capability = request.capability
+    return bool(capability is not None and capability.availability_recomposition_required)
+
+
+def _availability_recomposition_reason_codes(
+    request: DispatchRequest,
+    *,
+    selected_route_id: str,
+) -> tuple[str, ...]:
+    capability = request.capability
+    if capability is None:
+        return ()
+    reasons: list[str] = [
+        "availability_recomposition_required",
+        f"availability_recomposed_from:{request.route_id}",
+        f"availability_recomposed_to:{selected_route_id}",
+    ]
+    if capability.availability_status:
+        reasons.append(f"availability_status:{capability.availability_status}")
+    if capability.availability_receipt_ref:
+        reasons.append(capability.availability_receipt_ref)
+    reasons.extend(capability.availability_reason_codes)
+    if capability.availability_refresh_status:
+        reasons.append(f"refresh_status:{capability.availability_refresh_status}")
+    return tuple(dict.fromkeys(reason for reason in reasons if reason))
 
 
 def _candidate_set_with_primary(

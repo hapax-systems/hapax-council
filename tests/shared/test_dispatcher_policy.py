@@ -10,6 +10,7 @@ import pytest
 
 from shared.dispatcher_policy import (
     LOCAL_DEV_PLATFORMS,
+    CandidateStatus,
     ClogRouteState,
     DispatchAction,
     DispatchRequest,
@@ -2316,6 +2317,63 @@ def test_dimensional_policy_holds_lower_scoring_requested_route() -> None:
     assert "requested_route_dominated_by_higher_scoring_candidate" in decision.reason_codes
     assert decision.dimensional_receipt is not None
     assert decision.dimensional_receipt.selected_route_id == "claude.headless.full"
+
+
+def test_dimensional_policy_launches_substitute_for_degraded_recomposition() -> None:
+    primary = _dimensional_request(
+        "codex.headless.full",
+        score=5,
+        capability_overrides={
+            "freshness_ok": False,
+            "freshness_errors": (
+                "capability_availability_degraded",
+                "availability_receipt:availability-codex-headless-full-test",
+                "auth_surface_not_fresh",
+                "capacity_pool_headroom_not_fresh",
+            ),
+            "availability_status": "degraded",
+            "availability_receipt_ref": (
+                "capability-availability-receipt:"
+                "codex.headless.full:availability-codex-headless-full-test"
+            ),
+            "availability_reason_codes": (
+                "capability_availability_degraded",
+                "availability_receipt:availability-codex-headless-full-test",
+                "auth_surface:oauth",
+                "capacity_pool:subscription_quota",
+                "auth_surface_not_fresh",
+                "capacity_pool_headroom_not_fresh",
+                "refresh_status:deferred",
+            ),
+            "availability_refresh_status": "deferred",
+            "availability_recomposition_required": True,
+        },
+    )
+    substitute = _dimensional_request("claude.headless.full", score=4)
+
+    decision = evaluate_dispatch_policy(
+        primary,
+        candidate_requests=(substitute,),
+        now=NOW,
+    )
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.launch_allowed is True
+    assert decision.route_id == "claude.headless.full"
+    assert "policy_launch" in decision.reason_codes
+    assert "availability_recomposition_required" in decision.reason_codes
+    assert "availability_recomposed_from:codex.headless.full" in decision.reason_codes
+    assert "availability_recomposed_to:claude.headless.full" in decision.reason_codes
+    assert (
+        "capability-availability-receipt:codex.headless.full:availability-codex-headless-full-test"
+    ) in decision.reason_codes
+    assert decision.dimensional_receipt is not None
+    assert decision.dimensional_receipt.selected_route_id == "claude.headless.full"
+    candidates = {
+        candidate.route_id: candidate for candidate in decision.dimensional_receipt.candidates
+    }
+    assert candidates["codex.headless.full"].status is CandidateStatus.VETOED
+    assert candidates["claude.headless.full"].status is CandidateStatus.SELECTED
 
 
 def test_dimensional_policy_holds_ties_without_degraded_authority() -> None:

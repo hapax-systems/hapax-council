@@ -70,6 +70,21 @@ def _fresh_registry(tmp_path: Path) -> Path:
     return path
 
 
+def _availability_degraded_registry(tmp_path: Path, route_id: str) -> Path:
+    path = _fresh_registry(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    for route in payload["routes"]:
+        if route["route_id"] != route_id:
+            continue
+        route["freshness"]["quota_checked_at"] = "2026-01-01T00:00:00Z"
+        route["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+            f"test:{route_id}:quota:degraded"
+        ]
+    degraded_path = tmp_path / "fixtures" / "degraded-platform-capability-registry.json"
+    degraded_path.write_text(json.dumps(payload), encoding="utf-8")
+    return degraded_path
+
+
 def _fake_binary(bin_dir: Path, name: str, output: str) -> None:
     target = bin_dir / name
     target.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n", encoding="utf-8")
@@ -1882,6 +1897,116 @@ printf '%s\\n' "$@" > {launcher_args}
         "host=appendix",
         "fallback=",
     ]
+
+
+def test_degraded_codex_recomposes_to_claude_coverage_substitute(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    registry = _availability_degraded_registry(tmp_path, "codex.headless.full")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: frontier_required
+        authority_level: authoritative
+        mutation_surface: source
+        mutation_scope_refs: []
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: [claude, codex]
+          prohibited_platforms: []
+          required_mode: headless
+          required_profile: full
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
+        """,
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    launcher_env = tmp_path / "launcher-env.txt"
+    fake_claude = tmp_path / "bin" / "hapax-claude-headless"
+    fake_claude.parent.mkdir(parents=True, exist_ok=True)
+    fake_claude.write_text(
+        f"""#!/usr/bin/env bash
+printf 'host=%s\\nmodel=%s\\n' "$HAPAX_DISPATCH_HOST" "$HAPAX_CLAUDE_MODEL" > {launcher_env}
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_claude.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--launch",
+        extra_env={
+            "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(registry),
+            "HAPAX_METHODOLOGY_CLAUDE_HEADLESS": str(fake_claude),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    recorded = launcher_args.read_text(encoding="utf-8")
+    assert recorded.startswith("--task\ngoverned-build\ncx-green\n")
+    assert "Platform: claude" in recorded
+    assert "Profile: full" in recorded
+    assert launcher_env.read_text(encoding="utf-8").splitlines() == [
+        "host=appendix",
+        "model=opus",
+    ]
+
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["platform"] == "claude"
+    assert receipt["mode"] == "headless"
+    assert receipt["profile"] == "full"
+    assert receipt["platform_path_summary"] == "Claude Code headless stream-json lane"
+    assert receipt["route_policy_action"] == "launch"
+    assert receipt["route_policy_launch_allowed"] is True
+    assert receipt["dimensional_selected_route_id"] == "claude.headless.full"
+    reasons = set(receipt["route_policy_reason_codes"])
+    assert "availability_recomposition_required" in reasons
+    assert "availability_recomposed_from:codex.headless.full" in reasons
+    assert "availability_recomposed_to:claude.headless.full" in reasons
+    assert any(
+        reason.startswith("capability-availability-receipt:codex.headless.full:")
+        for reason in reasons
+    )
 
 
 def test_codex_p0_incident_drain_lane_allows_local_fallback(tmp_path: Path) -> None:

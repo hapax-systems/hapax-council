@@ -542,7 +542,7 @@ def _receipt_account_live_unverified_reasons(receipt_item: dict[str, object]) ->
 
 def _contains_reason_token(reason_text: str, tokens: tuple[str, ...]) -> bool:
     pattern = "|".join(re.escape(token) for token in tokens)
-    return re.search(rf"(?<![a-z0-9_])(?:{pattern})(?![a-z0-9_])", reason_text) is not None
+    return re.search(rf"(?<![a-z0-9])(?:{pattern})(?![a-z0-9])", reason_text) is not None
 
 
 __all__ = [
