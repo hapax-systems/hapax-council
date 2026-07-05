@@ -138,8 +138,16 @@ class TestClassifyPR:
         pr = {"statusCheckRollup": [{"conclusion": "FAILURE"}], "mergeStateStatus": ""}
         assert gov_module.classify_pr(pr) == "failed"
 
+    def test_failed_rest_lowercase_state(self, gov_module):
+        pr = {"statusCheckRollup": [{"state": "failure"}], "mergeStateStatus": ""}
+        assert gov_module.classify_pr(pr) == "failed"
+
     def test_pending(self, gov_module):
         pr = {"statusCheckRollup": [{"status": "IN_PROGRESS"}], "mergeStateStatus": ""}
+        assert gov_module.classify_pr(pr) == "pending"
+
+    def test_pending_rest_lowercase_status(self, gov_module):
+        pr = {"statusCheckRollup": [{"status": "queued"}], "mergeStateStatus": ""}
         assert gov_module.classify_pr(pr) == "pending"
 
     def test_behind(self, gov_module):

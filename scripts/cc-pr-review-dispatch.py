@@ -1963,26 +1963,6 @@ def review_all_open_prs(
         runner=gh_runner,
         limit=100,
     )
-    if not open_prs and gh_runner is not subprocess.run:
-        out = _run_gh(
-            [
-                "gh",
-                "pr",
-                "list",
-                "--repo",
-                repo,
-                "--state",
-                "open",
-                "--limit",
-                "100",
-                "--json",
-                "number,headRefName,headRefOid,isDraft",
-            ],
-            repo_root=repo_root,
-            runner=gh_runner,
-        )
-        parsed = json.loads(out or "[]")
-        open_prs = parsed if isinstance(parsed, list) else []
     results: list[dict[str, Any]] = []
     for item in open_prs:
         if not isinstance(item, dict) or item.get("isDraft"):

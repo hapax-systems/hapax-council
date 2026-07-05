@@ -75,6 +75,9 @@ def test_rest_status_rollup_uses_check_runs_and_statuses(tmp_path: Path) -> None
         "lint",
         "legacy-ci",
     }
+    assert rollup[0]["status"] == "COMPLETED"
+    assert rollup[0]["conclusion"] == "SUCCESS"
+    assert rollup[1]["state"] == "SUCCESS"
     assert not any(call[:2] == ["gh", "pr"] for call in runner.calls)
 
 
@@ -91,3 +94,75 @@ def test_graphql_backoff_skips_graphql_when_remaining_is_low(tmp_path: Path) -> 
     assert proc.returncode == 75
     assert "github_graphql_remaining_below_threshold" in proc.stderr
     assert not any(call[:3] == ["gh", "api", "graphql"] for call in runner.calls)
+
+
+def test_open_pr_status_snapshot_uses_single_pull_for_merge_state(tmp_path: Path) -> None:
+    class SnapshotRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+                path = cmd[6]
+                if path == "repos/owner/repo/pulls":
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        json.dumps(
+                            [
+                                {
+                                    "number": 9,
+                                    "title": "REST PR",
+                                    "head": {"ref": "feat/rest", "sha": "abc123"},
+                                    "draft": False,
+                                    "auto_merge": {"enabled_by": {"login": "bot"}},
+                                }
+                            ]
+                        ),
+                        "",
+                    )
+                if path == "repos/owner/repo/pulls/9":
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        json.dumps(
+                            {
+                                "number": 9,
+                                "node_id": "PR_node",
+                                "title": "REST PR",
+                                "body": "body",
+                                "head": {"ref": "feat/rest", "sha": "abc123"},
+                                "draft": False,
+                                "auto_merge": {"enabled_by": {"login": "bot"}},
+                                "mergeable_state": "clean",
+                                "changed_files": 1,
+                            }
+                        ),
+                        "",
+                    )
+                if path == "repos/owner/repo/pulls/9/files":
+                    return subprocess.CompletedProcess(
+                        cmd, 0, json.dumps([{"filename": "scripts/example.py"}]), ""
+                    )
+                if path == "repos/owner/repo/pulls/9/reviews":
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        json.dumps([{"state": "approved", "user": {"login": "reviewer"}}]),
+                        "",
+                    )
+            return super().__call__(cmd, **kwargs)
+
+    runner = SnapshotRunner()
+
+    rows = github_pr_status.list_open_pr_statuses_rest(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        include_files=True,
+        include_review_decision=True,
+    )
+
+    assert rows[0]["mergeStateStatus"] == "CLEAN"
+    assert rows[0]["changedFiles"] == 1
+    assert rows[0]["files"] == [{"path": "scripts/example.py"}]
+    assert rows[0]["reviewDecision"] == "APPROVED"
+    assert not any(call[:2] == ["gh", "pr"] for call in runner.calls)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -398,6 +399,132 @@ class _FakeRunner:
         # read-before-write idempotency check in set_autoqueue_admission_status.
         self.head_statuses: dict[str, list[dict[str, Any]]] = {}
 
+    @staticmethod
+    def _fields(cmd: list[str]) -> dict[str, str]:
+        out: dict[str, str] = {}
+        index = 0
+        while index < len(cmd):
+            if cmd[index] == "-f" and index + 1 < len(cmd) and "=" in cmd[index + 1]:
+                key, value = cmd[index + 1].split("=", 1)
+                out[key] = value
+                index += 2
+                continue
+            index += 1
+        return out
+
+    @staticmethod
+    def _rest_pr(pr: dict[str, Any]) -> dict[str, Any]:
+        labels = pr.get("labels") if isinstance(pr.get("labels"), list) else []
+        merge_state = str(pr.get("mergeStateStatus") or "CLEAN").lower()
+        return {
+            "number": pr.get("number"),
+            "node_id": pr.get("id"),
+            "title": pr.get("title") or "",
+            "body": pr.get("body") or "",
+            "head": {"ref": pr.get("headRefName") or "", "sha": pr.get("headRefOid") or ""},
+            "draft": bool(pr.get("isDraft")),
+            "labels": labels,
+            "auto_merge": pr.get("autoMergeRequest"),
+            "mergeable_state": merge_state,
+            "mergeable": merge_state in {"clean", "has_hooks", "unstable"},
+            "changed_files": pr.get("changedFiles"),
+            "state": "open",
+            "merged": False,
+            "merged_at": None,
+        }
+
+    @staticmethod
+    def _rest_check_run(check: dict[str, Any]) -> dict[str, Any]:
+        conclusion = check.get("conclusion")
+        status = check.get("status")
+        if status is None:
+            status = "completed" if conclusion is not None else "in_progress"
+        return {
+            "name": check.get("name") or check.get("context") or "unnamed-check",
+            "status": str(status).lower(),
+            "conclusion": str(conclusion).lower() if conclusion is not None else None,
+            "completed_at": check.get("completedAt")
+            or check.get("completed_at")
+            or "2026-07-05T00:00:00Z",
+        }
+
+    def _rest_pull_for_number(self, number: int) -> dict[str, Any] | None:
+        pr = next((item for item in self.open_prs if item.get("number") == number), None)
+        return self._rest_pr(pr) if pr is not None else None
+
+    def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+        if cmd[:5] != ["gh", "api", "--method", "GET", "-H"]:
+            return None
+        path = cmd[6]
+        fields = self._fields(cmd)
+        if path == "repos/owner/repo/pulls":
+            rows = [self._rest_pr(pr) for pr in self.open_prs]
+            head = fields.get("head")
+            if head:
+                branch = head.split(":", 1)[-1]
+                rows = [row for row in rows if (row.get("head") or {}).get("ref") == branch]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
+        pull_match = re.fullmatch(r"repos/owner/repo/pulls/(\d+)", path)
+        if pull_match:
+            payload = self._rest_pull_for_number(int(pull_match.group(1)))
+            if payload is None:
+                return subprocess.CompletedProcess(cmd, 1, "", "PR not found")
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        files_match = re.fullmatch(r"repos/owner/repo/pulls/(\d+)/files", path)
+        if files_match:
+            pr = next(
+                (item for item in self.open_prs if item.get("number") == int(files_match.group(1))),
+                None,
+            )
+            files = pr.get("files") if isinstance(pr, dict) else []
+            payload = [
+                {"filename": entry.get("path")}
+                for entry in files or []
+                if isinstance(entry, dict) and entry.get("path")
+            ]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        reviews_match = re.fullmatch(r"repos/owner/repo/pulls/(\d+)/reviews", path)
+        if reviews_match:
+            pr = next(
+                (
+                    item
+                    for item in self.open_prs
+                    if item.get("number") == int(reviews_match.group(1))
+                ),
+                None,
+            )
+            decision = pr.get("reviewDecision") if isinstance(pr, dict) else None
+            payload = (
+                [{"state": str(decision).lower(), "user": {"login": "reviewer"}}]
+                if decision
+                else []
+            )
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        check_match = re.fullmatch(r"repos/owner/repo/commits/(.+)/check-runs", path)
+        if check_match:
+            ref = check_match.group(1)
+            pr = next(
+                (
+                    item
+                    for item in self.open_prs
+                    if item.get("headRefOid") == ref or item.get("headRefName") == ref
+                ),
+                None,
+            )
+            checks = pr.get("statusCheckRollup") if isinstance(pr, dict) else []
+            payload = {
+                "check_runs": [
+                    self._rest_check_run(check)
+                    for check in checks or []
+                    if isinstance(check, dict) and (check.get("name") or check.get("context"))
+                ]
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        status_match = re.fullmatch(r"repos/owner/repo/commits/(.+)/status", path)
+        if status_match:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"statuses": []}), "")
+        return None
+
     def __call__(
         self,
         cmd: list[str],
@@ -410,22 +537,9 @@ class _FakeRunner:
         **_: Any,
     ) -> subprocess.CompletedProcess:
         self.calls.append(list(cmd))
-        if cmd[:3] == ["gh", "pr", "list"]:
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(self.open_prs), "")
-        if cmd[:3] == ["gh", "pr", "view"]:
-            pr_number = int(cmd[3])
-            pr = next((item for item in self.open_prs if item.get("number") == pr_number), None)
-            if pr is None:
-                return subprocess.CompletedProcess(cmd, 1, "", "PR not found")
-            fields = []
-            if "--json" in cmd:
-                fields = cmd[cmd.index("--json") + 1].split(",")
-            payload: dict[str, Any] = {}
-            if not fields or "headRefOid" in fields:
-                payload["headRefOid"] = pr.get("headRefOid")
-            if "statusCheckRollup" in fields:
-                payload["statusCheckRollup"] = pr.get("statusCheckRollup", [])
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        rest = self._rest_response(cmd)
+        if rest is not None:
+            return rest
         if cmd[:3] == ["gh", "api", "graphql"] and any(
             "dequeuePullRequest" in part for part in cmd
         ):
@@ -483,7 +597,7 @@ def test_fetch_pr_release_evidence_rejects_non_json_success(tmp_path: Path) -> N
     )
 
     assert ok is False
-    assert message == "invalid_pr_release_evidence_json"
+    assert message == "invalid_pr_release_evidence_payload"
     assert checks == set()
 
 
@@ -506,6 +620,49 @@ def test_fetch_pr_release_evidence_rejects_missing_head_oid(tmp_path: Path) -> N
     assert ok is False
     assert message == "missing_head_sha"
     assert checks == set()
+
+
+def test_fetch_open_prs_uses_rest_core_not_gh_pr_list(tmp_path: Path) -> None:
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42)]
+
+    prs = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
+
+    assert [pr.number for pr in prs] == [42]
+    assert any(
+        call[:5] == ["gh", "api", "--method", "GET", "-H"] and call[6] == "repos/owner/repo/pulls"
+        for call in runner.calls
+    )
+    assert not any(call[:3] == ["gh", "pr", "list"] for call in runner.calls)
+    assert not any(call[:3] == ["gh", "pr", "view"] for call in runner.calls)
+
+
+def test_graphql_backoff_skips_autoqueue_reconciler(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+
+    class _LowGraphQLRunner(_FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            if cmd[:3] == ["gh", "api", "rate_limit"]:
+                self.calls.append(list(cmd))
+                payload = {"resources": {"graphql": {"remaining": 0, "reset": 1893456000}}}
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return super().__call__(cmd, **kwargs)
+
+    runner = _LowGraphQLRunner()
+    runner.open_prs = [_pr(42)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["skipped"] is True
+    assert report["reason"] == "merge_queue_state_indeterminate"
+    assert not any(call[:3] == ["gh", "api", "graphql"] for call in runner.calls)
 
 
 def test_queue_green_governed_pr(tmp_path: Path) -> None:
@@ -2285,14 +2442,11 @@ def test_governance_auto_arm_refetches_live_mitigation_evidence_before_write(
     class _StaleMitigationRunner(_FakeRunner):
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
             result = super().__call__(cmd, **kwargs)
-            # The INITIAL per-PR check fetch (`gh pr view N --json statusCheckRollup`) returns the
+            # The INITIAL per-PR REST check-runs fetch returns the
             # PASSING checks (result was built before this mutation); the mutation then leaves
             # open_prs FAILING so the refetch-before-write
-            # (`gh pr view N --json headRefOid,statusCheckRollup`, fetch_pr_release_evidence)
-            # observes the fresh authority-case-check failure — the stale->fresh transition this
-            # test exercises. (statusCheckRollup was moved out of the bulk `gh pr list` to avoid a
-            # 504 on the open-PR backlog, so the injection point moved from the list to this fetch.)
-            if cmd[:3] == ["gh", "pr", "view"] and cmd[-1] == "statusCheckRollup":
+            # (`fetch_pr_release_evidence`) observes the fresh authority-case-check failure.
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/check-runs"):
                 self.open_prs[0]["statusCheckRollup"] = [
                     _check("lint"),
                     _check("test"),
@@ -2450,14 +2604,11 @@ def test_already_queued_refetches_mitigation_checks_before_success_proof(
     class _StaleMitigationRunner(_FakeRunner):
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
             result = super().__call__(cmd, **kwargs)
-            # The INITIAL per-PR check fetch (`gh pr view N --json statusCheckRollup`) returns the
+            # The INITIAL per-PR REST check-runs fetch returns the
             # PASSING checks (result was built before this mutation); the mutation then leaves
             # open_prs FAILING so the refetch-before-write
-            # (`gh pr view N --json headRefOid,statusCheckRollup`, fetch_pr_release_evidence)
-            # observes the fresh authority-case-check failure — the stale->fresh transition this
-            # test exercises. (statusCheckRollup was moved out of the bulk `gh pr list` to avoid a
-            # 504 on the open-PR backlog, so the injection point moved from the list to this fetch.)
-            if cmd[:3] == ["gh", "pr", "view"] and cmd[-1] == "statusCheckRollup":
+            # (`fetch_pr_release_evidence`) observes the fresh authority-case-check failure.
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/check-runs"):
                 self.open_prs[0]["statusCheckRollup"] = [
                     _check("lint"),
                     _check("test"),
@@ -2557,25 +2708,19 @@ def test_head_locked_sensitive_path_release_passes_revalidation(
         == ["sensitive_path_waived_by_release_authorization:hapax-council/CLAUDE.md"]
         for item in report["mutations"]
     )
-    evidence_index = runner.calls.index(
-        [
-            "gh",
-            "pr",
-            "view",
-            "760",
-            "--repo",
-            "owner/repo",
-            "--json",
-            "headRefOid,statusCheckRollup",
-        ]
-    )
     success_status_index = next(
         index
         for index, call in enumerate(runner.calls)
         if call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-760"]
         and "state=success" in call
     )
-    assert evidence_index < success_status_index
+    evidence_indices = [
+        index
+        for index, call in enumerate(runner.calls)
+        if call[:5] == ["gh", "api", "--method", "GET", "-H"]
+        and call[6] == "repos/owner/repo/commits/sha-760/check-runs"
+    ]
+    assert len([index for index in evidence_indices if index < success_status_index]) >= 2
     assert any(
         call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-760"]
         and "state=success" in call
@@ -3589,6 +3734,7 @@ def test_governance_auto_arm_missing_head_sha_blocks_before_note_write(
         pr=745,
         extra_frontmatter=_eligible_arm_extra(),
     )
+    _write_governance_review_dossier(vault, "stranded-missing-head", 745)
     runner = _FakeRunner()
     pr = _pr(745, checks=_governance_mitigation_checks())
     pr["headRefOid"] = None

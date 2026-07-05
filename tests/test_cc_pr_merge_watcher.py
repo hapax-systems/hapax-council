@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -36,6 +37,19 @@ def _load_watcher_module() -> ModuleType:
 
 
 watcher = _load_watcher_module()
+
+
+def _api_fields(cmd: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    index = 0
+    while index < len(cmd):
+        if cmd[index] == "-f" and index + 1 < len(cmd) and "=" in cmd[index + 1]:
+            key, value = cmd[index + 1].split("=", 1)
+            out[key] = value
+            index += 2
+            continue
+        index += 1
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -95,13 +109,15 @@ class _FakeRunner:
         **_: Any,
     ) -> subprocess.CompletedProcess:
         self.calls.append(list(cmd))
-        if cmd[:3] == ["gh", "pr", "list"]:
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=self.gh_returncode,
-                stdout=json.dumps(self.gh_payload),
-                stderr="",
-            )
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            path = cmd[6]
+            if path == "repos/hapax-systems/hapax-council/pulls":
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=self.gh_returncode,
+                    stdout=json.dumps(self.gh_payload),
+                    stderr="",
+                )
         # Anything else is cc-close.
         self.cc_close_invocations.append(list(cmd))
         self.cc_close_envs.append(dict(env or {}))
@@ -489,13 +505,13 @@ blocked_reason: null
 
 
 class _ReconcileRunner:
-    """Inject gh pr view (state) + gh pr list --head + cc-close responses."""
+    """Inject REST PR state/head lookup + cc-close responses."""
 
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
         self.pr_states: dict[str, str] = {}  # pr_num -> OPEN|CLOSED|MERGED
         self.pr_view_returncode = 0
-        self.head_prs: dict[str, list[dict[str, Any]]] = {}  # branch -> gh pr list rows
+        self.head_prs: dict[str, list[dict[str, Any]]] = {}  # branch -> REST pull rows
         self.cc_close_returncodes: list[int] = []
         self.cc_close_invocations: list[list[str]] = []
 
@@ -512,22 +528,43 @@ class _ReconcileRunner:
         **_: Any,
     ) -> subprocess.CompletedProcess:
         self.calls.append(list(cmd))
-        if cmd[:3] == ["gh", "pr", "view"]:
-            pr_num = cmd[3]
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=self.pr_view_returncode,
-                stdout=self.pr_states.get(pr_num, "OPEN"),
-                stderr="",
-            )
-        if cmd[:3] == ["gh", "pr", "list"]:
-            head = cmd[cmd.index("--head") + 1] if "--head" in cmd else ""
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=0,
-                stdout=json.dumps(self.head_prs.get(head, [])),
-                stderr="",
-            )
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            path = cmd[6]
+            pull_match = re.fullmatch(r"repos/hapax-systems/hapax-council/pulls/(\d+)", path)
+            if pull_match:
+                pr_num = pull_match.group(1)
+                state = self.pr_states.get(pr_num, "OPEN")
+                payload = {
+                    "number": int(pr_num),
+                    "state": "closed" if state in {"CLOSED", "MERGED"} else "open",
+                    "merged": state == "MERGED",
+                    "merged_at": "2026-07-05T00:00:00Z" if state == "MERGED" else None,
+                    "draft": False,
+                }
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=self.pr_view_returncode,
+                    stdout=json.dumps(payload),
+                    stderr="",
+                )
+            if path == "repos/hapax-systems/hapax-council/pulls":
+                fields = _api_fields(cmd)
+                head = fields.get("head", "").split(":", 1)[-1]
+                rows: list[dict[str, Any]] = []
+                for item in self.head_prs.get(head, []):
+                    state = str(item.get("state") or "OPEN")
+                    rows.append(
+                        {
+                            "number": item.get("number"),
+                            "state": "closed" if state in {"CLOSED", "MERGED"} else "open",
+                            "merged": state == "MERGED",
+                            "merged_at": "2026-07-05T00:00:00Z" if state == "MERGED" else None,
+                            "draft": False,
+                        }
+                    )
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout=json.dumps(rows), stderr=""
+                )
         # cc-close
         self.cc_close_invocations.append(list(cmd))
         rc = self.cc_close_returncodes.pop(0) if self.cc_close_returncodes else 0
@@ -676,8 +713,7 @@ class TestReconcilePrNullRepair:
 
 
 class _StuckRunner:
-    """Canned gh responses for the G5 probe: `gh pr list` -> open PRs,
-    `gh api graphql` -> merge-queue entries."""
+    """Canned REST status responses plus GraphQL merge-queue entries."""
 
     def __init__(self, open_prs: list[dict[str, Any]], queued: tuple[int, ...] = ()) -> None:
         self.open_prs = open_prs
@@ -697,8 +733,63 @@ class _StuckRunner:
         **_: Any,
     ) -> subprocess.CompletedProcess:
         self.calls.append(list(cmd))
-        if cmd[:3] == ["gh", "pr", "list"]:
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(self.open_prs), "")
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            path = cmd[6]
+            if path == "repos/o/r/pulls":
+                payload = [
+                    {
+                        "number": pr["number"],
+                        "title": f"PR {pr['number']}",
+                        "head": {"ref": pr.get("headRefName"), "sha": f"sha-{pr['number']}"},
+                        "draft": pr.get("isDraft", False),
+                        "auto_merge": pr.get("autoMergeRequest"),
+                        "state": "open",
+                    }
+                    for pr in self.open_prs
+                ]
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            pull_match = re.fullmatch(r"repos/o/r/pulls/(\d+)", path)
+            if pull_match:
+                number = int(pull_match.group(1))
+                pr = next((item for item in self.open_prs if item["number"] == number), None)
+                if pr is None:
+                    return subprocess.CompletedProcess(cmd, 1, "", "PR not found")
+                payload = {
+                    "number": number,
+                    "title": f"PR {number}",
+                    "head": {"ref": pr.get("headRefName"), "sha": f"sha-{number}"},
+                    "draft": pr.get("isDraft", False),
+                    "auto_merge": pr.get("autoMergeRequest"),
+                    "mergeable_state": "clean",
+                    "state": "open",
+                }
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            check_match = re.fullmatch(r"repos/o/r/commits/sha-(\d+)/check-runs", path)
+            if check_match:
+                number = int(check_match.group(1))
+                pr = next((item for item in self.open_prs if item["number"] == number), None)
+                rollup = pr.get("statusCheckRollup", []) if pr else []
+                payload = {
+                    "check_runs": [
+                        {
+                            "name": check.get("name") or check.get("context"),
+                            "status": str(
+                                check.get("status")
+                                or ("completed" if check.get("conclusion") else "in_progress")
+                            ).lower(),
+                            "conclusion": str(check.get("conclusion")).lower()
+                            if check.get("conclusion") is not None
+                            else None,
+                        }
+                        for check in rollup
+                    ]
+                }
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            if re.fullmatch(r"repos/o/r/commits/sha-\d+/status", path):
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"statuses": []}), "")
+        if cmd[:3] == ["gh", "api", "rate_limit"]:
+            payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         if cmd[:3] == ["gh", "api", "graphql"]:
             nodes = [{"pullRequest": {"number": n}} for n in self.queued]
             payload = {"data": {"repository": {"mergeQueue": {"entries": {"nodes": nodes}}}}}
@@ -754,6 +845,20 @@ class TestStuckPRAlerter:
         checks.append({"name": watcher.REQUIRED_QUEUE_CHECKS[-1], "conclusion": "FAILURE"})
         runner = _StuckRunner([_open_pr(74, checks=checks)], queued=())
         assert watcher.detect_stuck_prs(repo="o/r", repo_root=tmp_path, runner=runner) == []
+
+    def test_graphql_backoff_does_not_report_stuck(self, tmp_path: Path) -> None:
+        class _LowGraphQLRunner(_StuckRunner):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                if cmd[:3] == ["gh", "api", "rate_limit"]:
+                    self.calls.append(list(cmd))
+                    payload = {"resources": {"graphql": {"remaining": 0, "reset": 1893456000}}}
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+                return super().__call__(cmd, **kwargs)
+
+        runner = _LowGraphQLRunner([_open_pr(75)], queued=())
+
+        assert watcher.detect_stuck_prs(repo="o/r", repo_root=tmp_path, runner=runner) == []
+        assert not any(call[:3] == ["gh", "api", "graphql"] for call in runner.calls)
 
     def test_draft_pr_is_skipped(self, tmp_path: Path) -> None:
         runner = _StuckRunner([_open_pr(75, draft=True)], queued=())

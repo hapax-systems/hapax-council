@@ -46,8 +46,10 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import review_team  # noqa: E402
 from github_pr_status import (  # noqa: E402
+    GRAPHQL_BACKOFF_RC,
     fetch_status_check_rollup_rest,
     get_pull_rest,
+    list_open_pr_statuses_rest,
     rest_merge_state_status,
     run_graphql_rate_aware,
 )
@@ -703,58 +705,16 @@ def fetch_open_prs(
 ) -> list[PullRequest]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
-    cmd = [
-        "gh",
-        "pr",
-        "list",
-        "--repo",
-        repo,
-        "--state",
-        "open",
-        "--limit",
-        str(limit),
-        "--json",
-        ",".join(
-            [
-                "number",
-                "id",
-                "title",
-                "body",
-                "headRefName",
-                "headRefOid",
-                "files",
-                "changedFiles",
-                "isDraft",
-                "labels",
-                "reviewDecision",
-                "autoMergeRequest",
-                # NOTE: statusCheckRollup is deliberately NOT requested in this bulk query.
-                # It is the check-runs-per-PR field; requesting it for the whole open-PR
-                # backlog makes the aggregate GraphQL response large enough that GitHub
-                # returns HTTP 504 (empirically deterministic at ~30 open PRs), which this
-                # function then swallowed as an empty list — silently deadlocking the whole
-                # merge pipeline. It is fetched per-PR below (a light call that always serves).
-            ]
-        ),
-    ]
-    proc = runner(
-        cmd,
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
+    raw = list_open_pr_statuses_rest(
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+        limit=limit,
+        include_files=True,
+        include_review_decision=True,
     )
-    if proc.returncode != 0:
-        LOG.error("gh pr list failed (rc=%d): %s", proc.returncode, proc.stderr.strip())
-        return []
-    try:
-        raw = json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        LOG.error("gh pr list emitted non-JSON: %s", exc)
-        return []
-    if not isinstance(raw, list):
-        LOG.error("gh pr list emitted %s, expected list", type(raw).__name__)
+    if not raw:
+        LOG.warning("REST open PR scan returned no rows")
         return []
     prs: list[PullRequest] = []
     for item in raw:
@@ -770,24 +730,20 @@ def fetch_open_prs(
                 if rest_pr is not None
                 else str(item.get("mergeStateStatus") or "UNKNOWN").upper()
             )
-            # Attach the per-PR statusCheckRollup (kept out of the bulk query above to avoid
-            # the 504). The rollup is derived through REST/core check-runs and commit
-            # statuses, not another GraphQL PR view. Fail-closed: an unfetchable rollup
-            # becomes [] so the PR reads as "checks unknown / not green" and the
-            # autoqueue does not merge it wrongly.
+            # Preserve the shared REST snapshot when available. If it is absent, derive the
+            # rollup through REST/core check-runs and commit statuses, not another GraphQL PR
+            # view. Fail-closed: an unfetchable rollup reads as "checks unknown / not green".
             fallback_rollup = item.get("statusCheckRollup")
-            rest_rollup = _fetch_status_check_rollup(
-                item.get("number"),
-                head_sha=item.get("headRefOid"),
-                repo=repo,
-                repo_root=repo_root,
-                runner=runner,
-            )
-            item["statusCheckRollup"] = (
-                rest_rollup
-                if rest_rollup or not isinstance(fallback_rollup, list)
-                else fallback_rollup
-            )
+            if isinstance(fallback_rollup, list) and fallback_rollup:
+                item["statusCheckRollup"] = fallback_rollup
+            else:
+                item["statusCheckRollup"] = _fetch_status_check_rollup(
+                    item.get("number"),
+                    head_sha=item.get("headRefOid"),
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
+                )
             pr = _parse_pr(item)
             if pr is not None:
                 prs.append(pr)
@@ -804,8 +760,8 @@ def _fetch_status_check_rollup(
 ) -> list[Any]:
     """Fetch one PR's status rollup via REST check-runs/statuses.
 
-    Kept separate from the bulk ``gh pr list`` because requesting statusCheckRollup for the
-    whole open-PR backlog 504s and spends GraphQL. Returns ``[]`` fail-closed on any
+    Kept separate from the open-PR metadata scan because check-runs are fetched per
+    head SHA through REST/core. Returns ``[]`` fail-closed on any
     error so an unknown-checks PR is never treated as green.
     """
     sha = _scalar(head_sha)
@@ -822,23 +778,6 @@ def _fetch_status_check_rollup(
         repo_root=repo_root,
         runner=runner,
     )
-    if not rollup and runner is not subprocess.run and isinstance(number, int):
-        proc = runner(
-            ["gh", "pr", "view", str(number), "--repo", repo, "--json", "statusCheckRollup"],
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-        if proc.returncode == 0:
-            try:
-                payload = json.loads(proc.stdout or "{}")
-            except json.JSONDecodeError:
-                payload = {}
-            legacy_rollup = payload.get("statusCheckRollup") if isinstance(payload, dict) else None
-            if isinstance(legacy_rollup, list):
-                rollup = legacy_rollup
     if not rollup:
         LOG.warning(
             "REST status rollup fetch returned no checks for #%s sha=%s",
@@ -858,36 +797,6 @@ def fetch_pr_release_evidence(
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
     payload = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
-    if not isinstance(payload, dict) and runner is not subprocess.run:
-        cmd = [
-            "gh",
-            "pr",
-            "view",
-            str(pr_number),
-            "--repo",
-            repo,
-            "--json",
-            "headRefOid,statusCheckRollup",
-        ]
-        proc = runner(
-            cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60
-        )
-        output = (proc.stdout or proc.stderr or "").strip()
-        if proc.returncode != 0:
-            return False, output or f"gh pr view failed rc={proc.returncode}", set()
-        try:
-            legacy_payload = json.loads(output or "{}")
-        except json.JSONDecodeError:
-            return False, "invalid_pr_release_evidence_json", set()
-        if not isinstance(legacy_payload, dict):
-            return False, "invalid_pr_release_evidence_payload", set()
-        sha = _scalar(legacy_payload.get("headRefOid"))
-        rollup = legacy_payload.get("statusCheckRollup")
-        if not sha:
-            return False, "missing_head_sha", set()
-        if not isinstance(rollup, list):
-            return False, "invalid_status_check_rollup", set()
-        return True, sha, set(summarize_checks(rollup).verified_passed)
     if not isinstance(payload, dict):
         return False, "invalid_pr_release_evidence_payload", set()
     head = payload.get("head") if isinstance(payload.get("head"), dict) else {}
@@ -910,7 +819,7 @@ def fetch_merge_queue_pr_numbers(
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
-) -> set[int]:
+) -> set[int] | None:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
     owner, name = repo.split("/", 1)
@@ -932,13 +841,19 @@ def fetch_merge_queue_pr_numbers(
         runner=runner,
     )
     if proc.returncode != 0:
-        LOG.error("gh merge queue query failed (rc=%d): %s", proc.returncode, proc.stderr.strip())
-        return set()
+        level = logging.WARNING if proc.returncode == GRAPHQL_BACKOFF_RC else logging.ERROR
+        LOG.log(
+            level,
+            "gh merge queue query indeterminate (rc=%d): %s",
+            proc.returncode,
+            proc.stderr.strip(),
+        )
+        return None
     try:
         payload = json.loads(proc.stdout or "{}")
     except json.JSONDecodeError as exc:
         LOG.error("gh merge queue query emitted non-JSON: %s", exc)
-        return set()
+        return None
     nodes = (
         payload.get("data", {})
         .get("repository", {})
@@ -2424,7 +2339,24 @@ def run_reconciler(
     repo_root = repo_root or default_repo_root()
     tasks = load_task_notes(vault_root)
     active_ci_repair_task_ids = _active_ci_repair_task_ids(tasks)
-    queued_prs = fetch_merge_queue_pr_numbers(repo=repo, repo_root=repo_root, runner=runner)
+    queued_prs_snapshot = fetch_merge_queue_pr_numbers(
+        repo=repo, repo_root=repo_root, runner=runner
+    )
+    if queued_prs_snapshot is None:
+        report = {
+            "repo": repo,
+            "apply": apply,
+            "skipped": True,
+            "reason": "merge_queue_state_indeterminate",
+            "detail": "native merge-queue GraphQL probe failed or backed off; no queue mutations attempted",
+        }
+        return _finalize_reconciler_report(
+            report,
+            report_path=report_path,
+            admission_governor_path=admission_governor_path,
+            now=now,
+        )
+    queued_prs = queued_prs_snapshot
     prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
     preliminary_decisions = [
         classify_pr(

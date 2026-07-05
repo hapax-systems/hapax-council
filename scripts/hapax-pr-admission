@@ -136,11 +136,17 @@ def current_throttle_decision(open_count: int | None = None):
 def classify_pr(pr: dict[str, Any]) -> str:
     """Classify PR into one of: failed, pending, behind, blocked, green."""
     rollup = pr.get("statusCheckRollup") or []
-    has_fail = any(c.get("conclusion") == "FAILURE" for c in rollup)
+    observed = [
+        str(c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+        for c in rollup
+        if isinstance(c, dict)
+    ]
+    has_fail = any(state in {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT"} for state in observed)
     has_pending = any(
-        c.get("status") in ("IN_PROGRESS", "QUEUED") or c.get("conclusion") is None for c in rollup
+        state in {"", "PENDING", "IN_PROGRESS", "QUEUED", "REQUESTED", "WAITING"}
+        for state in observed
     )
-    ms = pr.get("mergeStateStatus", "")
+    ms = str(pr.get("mergeStateStatus", "")).upper()
     if has_fail:
         return "failed"
     if has_pending:

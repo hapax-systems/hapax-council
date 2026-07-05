@@ -22,7 +22,9 @@ DEFAULT_REPO = "hapax-systems/hapax-council"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "hapax" / "pr-status"
 DEFAULT_CACHE_TTL_SECONDS = 60
 DEFAULT_GRAPHQL_MIN_REMAINING = 500
+DEFAULT_GRAPHQL_BACKOFF_MAX_SLEEP_SECONDS = 0
 DEFAULT_TIMEOUT_SECONDS = 60
+GRAPHQL_BACKOFF_RC = 75
 
 _SAFE_CACHE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -78,6 +80,13 @@ def _json_from_proc(proc: subprocess.CompletedProcess) -> Any | None:
         return json.loads(proc.stdout or "null")
     except json.JSONDecodeError:
         return None
+
+
+def _upper_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text.upper() if text else None
 
 
 def _cache_key(repo: str, ref: str) -> Path:
@@ -157,12 +166,45 @@ def _rest_get_json(
     return _json_from_proc(proc)
 
 
+def _rest_get_json_pages(
+    path: str,
+    *,
+    repo_root: Path,
+    runner: Any,
+    fields: dict[str, str] | None = None,
+    limit: int = 100,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> list[Any]:
+    if limit <= 0:
+        return []
+    out: list[Any] = []
+    page = 1
+    while len(out) < limit:
+        per_page = min(100, limit - len(out))
+        page_fields = dict(fields or {})
+        page_fields.update({"per_page": str(per_page), "page": str(page)})
+        payload = _rest_get_json(
+            path,
+            repo_root=repo_root,
+            runner=runner,
+            fields=page_fields,
+            timeout=timeout,
+        )
+        if not isinstance(payload, list) or not payload:
+            break
+        out.extend(payload)
+        if len(payload) < per_page:
+            break
+        page += 1
+    return out
+
+
 def _check_run_to_rollup(item: dict[str, Any]) -> dict[str, Any]:
     app = item.get("app") if isinstance(item.get("app"), dict) else {}
     return {
         "name": item.get("name") or item.get("external_id") or "unnamed-check",
-        "status": item.get("status"),
-        "conclusion": item.get("conclusion"),
+        "status": _upper_or_none(item.get("status")),
+        "conclusion": _upper_or_none(item.get("conclusion")),
         "started_at": item.get("started_at"),
         "completed_at": item.get("completed_at"),
         "app": {"name": app.get("name")} if app else {},
@@ -172,7 +214,7 @@ def _check_run_to_rollup(item: dict[str, Any]) -> dict[str, Any]:
 def _status_to_rollup(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "context": item.get("context") or "unnamed-status",
-        "state": item.get("state"),
+        "state": _upper_or_none(item.get("state")),
         "created_at": item.get("created_at"),
         "updated_at": item.get("updated_at"),
     }
@@ -280,13 +322,14 @@ def list_pulls_for_branch_rest(
 ) -> list[dict[str, Any]]:
     owner = repo.split("/", 1)[0]
     head = branch if ":" in branch else f"{owner}:{branch}"
-    payload = _rest_get_json(
+    payload = _rest_get_json_pages(
         f"repos/{repo}/pulls",
         repo_root=repo_root,
         runner=runner,
         fields={"head": head, "state": state, "per_page": str(limit)},
+        limit=limit,
     )
-    return payload if isinstance(payload, list) else []
+    return [item for item in payload if isinstance(item, dict)]
 
 
 def list_pulls_rest(
@@ -304,13 +347,72 @@ def list_pulls_rest(
         fields["sort"] = sort
     if direction:
         fields["direction"] = direction
-    payload = _rest_get_json(
+    payload = _rest_get_json_pages(
         f"repos/{repo}/pulls",
         repo_root=repo_root,
         runner=runner,
         fields=fields,
+        limit=limit,
     )
-    return payload if isinstance(payload, list) else []
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def list_pull_files_rest(
+    pr_number: int | str,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    limit: int = 3000,
+) -> list[dict[str, Any]]:
+    payload = _rest_get_json_pages(
+        f"repos/{repo}/pulls/{pr_number}/files",
+        repo_root=repo_root,
+        runner=runner,
+        limit=limit,
+    )
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def review_decision_rest(
+    pr_number: int | str,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    limit: int = 100,
+) -> str | None:
+    payload = _rest_get_json_pages(
+        f"repos/{repo}/pulls/{pr_number}/reviews",
+        repo_root=repo_root,
+        runner=runner,
+        limit=limit,
+    )
+    latest_by_reviewer: dict[str, str] = {}
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict):
+            continue
+        state = _upper_or_none(item.get("state"))
+        if not state or state in {"COMMENTED", "DISMISSED"}:
+            continue
+        user = item.get("user") if isinstance(item.get("user"), dict) else {}
+        reviewer = str(user.get("login") or item.get("user_login") or f"review-{index}")
+        latest_by_reviewer[reviewer] = state
+    states = set(latest_by_reviewer.values())
+    if "CHANGES_REQUESTED" in states:
+        return "CHANGES_REQUESTED"
+    if "APPROVED" in states:
+        return "APPROVED"
+    return None
+
+
+def _files_payload_from_rest(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for item in files:
+        filename = item.get("filename") or item.get("path")
+        if filename:
+            out.append({"path": str(filename)})
+    return out
 
 
 def list_open_pr_statuses_rest(
@@ -319,6 +421,8 @@ def list_open_pr_statuses_rest(
     repo_root: Path,
     runner: Any = subprocess.run,
     limit: int = 100,
+    include_files: bool = False,
+    include_review_decision: bool = False,
 ) -> list[dict[str, Any]]:
     payload = list_pulls_rest(
         repo=repo,
@@ -332,24 +436,58 @@ def list_open_pr_statuses_rest(
     for item in payload:
         if not isinstance(item, dict):
             continue
-        head = item.get("head") if isinstance(item.get("head"), dict) else {}
+        number = item.get("number")
+        detail = (
+            get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner) if number else None
+        )
+        pull = detail if isinstance(detail, dict) else item
+        head = pull.get("head") if isinstance(pull.get("head"), dict) else {}
         sha = str(head.get("sha") or "")
+        head_ref = str(head.get("ref") or "")
+        status_ref = sha or head_ref
+        files = (
+            list_pull_files_rest(number, repo=repo, repo_root=repo_root, runner=runner)
+            if (include_files and number)
+            else []
+        )
+        try:
+            changed_files = (
+                int(pull["changed_files"]) if pull.get("changed_files") is not None else None
+            )
+        except (TypeError, ValueError):
+            changed_files = None
+        if changed_files is None and files:
+            changed_files = len(files)
+        labels = pull.get("labels") if isinstance(pull.get("labels"), list) else []
         out.append(
             {
-                "number": item.get("number"),
-                "title": item.get("title") or "",
-                "headRefName": head.get("ref") or "",
+                "number": number,
+                "id": pull.get("node_id") or pull.get("id"),
+                "title": pull.get("title") or "",
+                "body": pull.get("body") or "",
+                "headRefName": head_ref,
                 "headRefOid": sha,
-                "isDraft": bool(item.get("draft")),
-                "autoMergeRequest": item.get("auto_merge"),
-                "mergeStateStatus": rest_merge_state_status(item),
-                "statusCheckRollup": fetch_status_check_rollup_rest(
-                    sha,
+                "changedFiles": changed_files,
+                "files": _files_payload_from_rest(files) if include_files else None,
+                "isDraft": bool(pull.get("draft")),
+                "labels": labels,
+                "reviewDecision": review_decision_rest(
+                    number,
                     repo=repo,
                     repo_root=repo_root,
                     runner=runner,
                 )
-                if sha
+                if include_review_decision and number
+                else None,
+                "autoMergeRequest": pull.get("auto_merge"),
+                "mergeStateStatus": rest_merge_state_status(pull),
+                "statusCheckRollup": fetch_status_check_rollup_rest(
+                    status_ref,
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
+                )
+                if status_ref
                 else [],
             }
         )
@@ -404,6 +542,7 @@ def run_graphql_rate_aware(
     repo_root: Path,
     runner: Any = subprocess.run,
     min_remaining: int | None = None,
+    max_sleep_seconds: int | None = None,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess:
     """Run ``gh api graphql`` only when the GraphQL pool is not exhausted."""
@@ -416,11 +555,36 @@ def run_graphql_rate_aware(
         else _env_int("HAPAX_GITHUB_GRAPHQL_MIN_REMAINING", DEFAULT_GRAPHQL_MIN_REMAINING),
     )
     if backoff is not None:
+        max_sleep = (
+            _env_int(
+                "HAPAX_GITHUB_GRAPHQL_BACKOFF_MAX_SLEEP_SECONDS",
+                DEFAULT_GRAPHQL_BACKOFF_MAX_SLEEP_SECONDS,
+            )
+            if max_sleep_seconds is None
+            else max(0, max_sleep_seconds)
+        )
+        reset = backoff.reset_in_seconds
+        if reset is not None and max_sleep > 0:
+            time.sleep(min(reset, max_sleep))
+            backoff = graphql_backoff(
+                repo_root=repo_root,
+                runner=runner,
+                min_remaining=min_remaining
+                if min_remaining is not None
+                else _env_int("HAPAX_GITHUB_GRAPHQL_MIN_REMAINING", DEFAULT_GRAPHQL_MIN_REMAINING),
+            )
+        if backoff is None:
+            return _run(
+                runner,
+                ["gh", "api", "graphql", *graphql_args],
+                repo_root=repo_root,
+                timeout=timeout,
+            )
         reset = backoff.reset_in_seconds
         retry = f"; retry_after={reset}s" if reset is not None else ""
         return subprocess.CompletedProcess(
             ["gh", "api", "graphql", *graphql_args],
-            75,
+            GRAPHQL_BACKOFF_RC,
             "",
             f"{backoff.reason}{retry}",
         )
