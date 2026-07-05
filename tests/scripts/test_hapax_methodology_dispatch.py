@@ -8,10 +8,11 @@ import sys
 import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from shared.platform_capability_registry import PlatformCapabilityRegistry
 from shared.relay_mq import send_message
 from shared.relay_mq_envelope import Envelope
 
@@ -107,6 +108,31 @@ def _availability_degraded_registry(tmp_path: Path, route_id: str) -> Path:
     degraded_path = tmp_path / "fixtures" / "degraded-platform-capability-registry.json"
     degraded_path.write_text(json.dumps(payload), encoding="utf-8")
     return degraded_path
+
+
+def _registry_from_path(path: Path) -> PlatformCapabilityRegistry:
+    return PlatformCapabilityRegistry.model_validate(json.loads(path.read_text(encoding="utf-8")))
+
+
+def _availability_dispatch_request(
+    module: ModuleType,
+    registry: PlatformCapabilityRegistry,
+    route_id: str = "codex.headless.full",
+):
+    platform, mode, profile = route_id.split(".", 2)
+    route = module.route_for(platform, mode, profile)
+    return module.build_dispatch_request(
+        task_id="governed-build",
+        lane="cx-green",
+        platform=platform,
+        mode=mode,
+        profile=profile,
+        task_fields={"kind": "build", "authority_case": "CASE-TEST-001"},
+        registry=registry,
+        legacy_route_supported=route is not None,
+        legacy_route_mutable=route.mutable if route else False,
+        now=datetime.now(UTC),
+    )
 
 
 def _fake_binary(bin_dir: Path, name: str, output: str) -> None:
@@ -1208,6 +1234,119 @@ def test_dispatch_admission_falls_back_to_base_adapter_for_non_worker_route() ->
 
     assert type(adapter) is module.CapabilityAdapter
     assert not isinstance(adapter, module.WorkerAdapter)
+
+
+def test_unsupported_selected_route_reason_fails_closed_for_launch_decision() -> None:
+    module = _dispatcher_module()
+    unsupported = module.RouteDecision(
+        decision_id="rd-unsupported-selected-route-test",
+        created_at=datetime(2026, 7, 5, tzinfo=UTC),
+        task_id="governed-build",
+        lane="cx-green",
+        route_id="external.headless.full",
+        platform="external",
+        mode="headless",
+        profile="full",
+        action=module.DispatchAction.LAUNCH,
+        policy_outcome="launch",
+        launch_allowed=True,
+        prompt_allowed=True,
+        quality_floor_satisfied=True,
+        authority_allowed=True,
+        reason_codes=("policy_launch",),
+        message="policy_launch",
+    )
+    supported = unsupported.model_copy(
+        update={
+            "route_id": "codex.headless.full",
+            "platform": "codex",
+            "mode": "headless",
+            "profile": "full",
+        }
+    )
+
+    reason = module._unsupported_selected_route_reason(unsupported)
+
+    assert reason is not None
+    assert "route policy selected unsupported route: external.headless.full" in reason
+    assert "next action: inspect dimensional_selected_route_id" in reason
+    assert module._unsupported_selected_route_reason(supported) is None
+
+
+def test_availability_recomposition_candidates_return_none_without_recomposition(
+    tmp_path: Path,
+) -> None:
+    module = _dispatcher_module()
+    registry = _registry_from_path(_fresh_registry(tmp_path))
+    primary = _availability_dispatch_request(module, registry)
+
+    candidates = module._availability_recomposition_candidate_requests(
+        primary,
+        task_fields={},
+        policy_sources=module.DispatchPolicySources(registry=registry),
+        validation=module.Validation(True, "eligible"),
+        rollback_mode=False,
+    )
+
+    assert primary.capability.availability_recomposition_required is False
+    assert candidates is None
+
+
+def test_availability_recomposition_candidates_fail_closed_when_registry_missing(
+    tmp_path: Path,
+) -> None:
+    module = _dispatcher_module()
+    registry = _registry_from_path(_availability_degraded_registry(tmp_path, "codex.headless.full"))
+    primary = _availability_dispatch_request(module, registry)
+
+    candidates = module._availability_recomposition_candidate_requests(
+        primary,
+        task_fields={},
+        policy_sources=module.DispatchPolicySources(registry=None),
+        validation=module.Validation(True, "eligible"),
+        rollback_mode=False,
+    )
+
+    assert primary.capability.availability_recomposition_required is True
+    assert candidates == ()
+
+
+def test_availability_recomposition_candidates_skip_unsupported_and_immutable_routes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _dispatcher_module()
+    registry = _registry_from_path(_availability_degraded_registry(tmp_path, "codex.headless.full"))
+    primary = _availability_dispatch_request(module, registry)
+
+    def descriptor(route_id: str) -> SimpleNamespace:
+        platform, mode, profile = route_id.split(".", 2)
+        return SimpleNamespace(
+            route_id=route_id,
+            platform=SimpleNamespace(value=platform),
+            mode=SimpleNamespace(value=mode),
+            profile=SimpleNamespace(value=profile),
+        )
+
+    candidate_registry = SimpleNamespace(
+        routes=(
+            descriptor("codex.headless.full"),
+            descriptor("ghost.headless.full"),
+            descriptor("local_tool.local.worker"),
+        )
+    )
+    monkeypatch.setattr(module, "supports_route", lambda _platform, _mode: True)
+
+    candidates = module._availability_recomposition_candidate_requests(
+        primary,
+        task_fields={},
+        policy_sources=module.DispatchPolicySources.model_construct(registry=candidate_registry),
+        validation=module.Validation(True, "eligible"),
+        rollback_mode=False,
+    )
+
+    assert primary.capability.availability_recomposition_required is True
+    assert candidates == ()
 
 
 def test_dispatch_worker_adapter_map_includes_live_worker_families() -> None:

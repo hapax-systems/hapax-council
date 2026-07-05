@@ -492,25 +492,32 @@ def _account_live_quota_observed_ref(ref: str) -> bool:
     if not normalized:
         return False
     tokens = tuple(token for token in normalized.split("-") if token)
+    if not tokens:
+        return False
     negative_tokens = {
         "absent",
         "blocked",
         "denied",
+        "exhausted",
+        "expired",
         "failed",
         "failure",
         "false",
         "missing",
         "negative",
         "not",
+        "stale",
         "unobservable",
         "unobserved",
+        "zero",
     }
     if any(token in negative_tokens for token in tokens):
         return False
-    if tokens[-3:] == ("quota", "status", "observed"):
-        return True
-    required_tokens = {"account", "live", "quota", "observed"}
-    return required_tokens.issubset(tokens)
+    allowed_suffixes = (
+        ("account", "live", "quota", "observed"),
+        ("quota", "status", "observed"),
+    )
+    return any(tokens[-len(suffix) :] == suffix for suffix in allowed_suffixes)
 
 
 def _ensure_utc(value: datetime) -> datetime:

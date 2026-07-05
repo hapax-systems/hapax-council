@@ -1618,6 +1618,19 @@ def _decision_selected_route(route_decision: RouteDecision) -> PlatformPath | No
     return _route_for_route_id(_decision_selected_route_id(route_decision))
 
 
+def _unsupported_selected_route_reason(route_decision: RouteDecision) -> str | None:
+    selected_route = _decision_selected_route(route_decision)
+    if selected_route is not None:
+        return None
+    unsupported_route_id = _decision_selected_route_id(route_decision)
+    return (
+        f"route policy selected unsupported route: {unsupported_route_id}; "
+        "next action: inspect dimensional_selected_route_id in the route decision receipt "
+        "and either add a matching governed PLATFORM_PATHS launcher entry or constrain "
+        "the candidate set to supported governed routes."
+    )
+
+
 def supported_route_lines() -> list[str]:
     lines = [CAPACITY_INVARIANT, ""]
     for _, route in sorted(PLATFORM_PATHS.items()):
@@ -2328,13 +2341,8 @@ def main(argv: list[str] | None = None) -> int:
 
     selected_route = _decision_selected_route(route_decision)
     if selected_route is None:
-        unsupported_route_id = _decision_selected_route_id(route_decision)
-        reason = (
-            f"route policy selected unsupported route: {unsupported_route_id}; "
-            "next action: inspect dimensional_selected_route_id in the route decision receipt "
-            "and either add a matching governed PLATFORM_PATHS launcher entry or constrain "
-            "the candidate set to supported governed routes."
-        )
+        reason = _unsupported_selected_route_reason(route_decision)
+        assert reason is not None
         blocked = Validation(
             False,
             reason,

@@ -166,6 +166,11 @@ def test_oauth_subscription_route_degrades_when_account_live_quota_ref_is_negate
         "test:codex:account-live-quota:unobserved",
         "test:codex:not-observed-account-live-quota",
         "test:codex:account-live-quota:not:observed",
+        "test:codex:account-live-quota:observed-stale",
+        "test:codex:account-live-quota:observed:expired",
+        "test:codex:account-live-quota:observed:exhausted",
+        "test:codex:account-live-quota:observed:zero",
+        "test:codex:not:quota:status:observed",
     ]
     registry = PlatformCapabilityRegistry.model_validate(payload)
     route = registry.require("codex.headless.full")
