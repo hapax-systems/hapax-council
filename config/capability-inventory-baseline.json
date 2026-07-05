@@ -1,8 +1,9 @@
 {
-  "count": 176,
+  "count": 177,
   "fingerprints": {
     "anthropic_web_search": "4a84a85c58c98dd5a2a4f10dea7886e399d98ed37b8822b7f956e9577c9d3db0",
     "api.headless.api_frontier": "33d6db6d0126fa3a366c475cc197a9da204a9e9bd10540e46f39b364b0bdbd0f",
+    "api.headless.openrouter": "0f5adfed2a5a48a29076cedbf591919137c2c27105786a6c17aa0527e28e27f1",
     "api.headless.provider_gateway": "45926557d49dc098210382b5edbe068608287d5219b149d7334d459cb01f3d53",
     "archive.hls_sidecar": "802231d79d418531e4b86a89b812581663953e265e38fe1135a305fa92e64399",
     "archive.replay_sidecar": "b306524e2166798843f69188a60efbab60b5a494404c2b00e4e79e3aa78056e2",
