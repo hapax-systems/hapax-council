@@ -162,11 +162,11 @@ def fetch_prs(
                 repo_root=REPO_ROOT,
                 runner=subprocess.run,
                 limit=limit,
+                fail_on_indeterminate=True,
             )
         )
     except (subprocess.SubprocessError, json.JSONDecodeError) as exc:
-        print(f"warning: open PR query failed: {exc}", file=sys.stderr)
-        prs = []
+        raise RuntimeError(f"open PR query indeterminate via REST: {exc}") from exc
 
     seen = {int(pr["number"]) for pr in prs if pr.get("number") is not None}
     for number in sorted(pr_numbers - seen):

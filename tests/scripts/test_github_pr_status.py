@@ -342,3 +342,52 @@ def test_open_pr_status_snapshot_uses_single_pull_for_merge_state(tmp_path: Path
     assert rows[0]["files"] == [{"path": "scripts/example.py"}]
     assert rows[0]["reviewDecision"] == "APPROVED"
     assert not any(call[:2] == ["gh", "pr"] for call in runner.calls)
+
+
+def test_open_pr_status_snapshot_does_not_hydrate_list_rows_by_default(tmp_path: Path) -> None:
+    class SnapshotRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+                path = cmd[6]
+                if path == "repos/owner/repo/pulls":
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        json.dumps(
+                            [
+                                {
+                                    "number": 9,
+                                    "node_id": "PR_node",
+                                    "title": "REST PR",
+                                    "body": "body",
+                                    "head": {"ref": "feat/rest", "sha": "abc123"},
+                                    "draft": True,
+                                    "state": "open",
+                                    "merged_at": None,
+                                    "updated_at": "2026-07-05T15:00:00Z",
+                                    "html_url": "https://github.example/owner/repo/pull/9",
+                                    "auto_merge": None,
+                                    "changed_files": 1,
+                                }
+                            ]
+                        ),
+                        "",
+                    )
+            return super().__call__(cmd, **kwargs)
+
+    runner = SnapshotRunner()
+
+    rows = github_pr_status.list_open_pr_statuses_rest(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        include_status=False,
+    )
+
+    assert rows[0]["state"] == "OPEN"
+    assert rows[0]["isDraft"] is True
+    assert rows[0]["mergedAt"] is None
+    assert rows[0]["updatedAt"] == "2026-07-05T15:00:00Z"
+    assert rows[0]["url"] == "https://github.example/owner/repo/pull/9"
+    assert not any(call[6] == "repos/owner/repo/pulls/9" for call in runner.calls)

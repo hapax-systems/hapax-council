@@ -336,7 +336,7 @@ def rest_pull_state(payload: dict[str, Any] | None) -> str | None:
         return None
     state = str(payload.get("state") or "").lower()
     if state == "open":
-        return "DRAFT" if payload.get("draft") else "OPEN"
+        return "OPEN"
     if state == "closed":
         if payload.get("merged") or payload.get("merged_at"):
             return "MERGED"
@@ -374,19 +374,31 @@ def list_pulls_rest(
     limit: int = 100,
     sort: str | None = None,
     direction: str | None = None,
+    fail_on_indeterminate: bool = False,
 ) -> list[dict[str, Any]]:
     fields = {"state": state, "per_page": str(limit)}
     if sort:
         fields["sort"] = sort
     if direction:
         fields["direction"] = direction
-    payload = _rest_get_json_pages(
-        f"repos/{repo}/pulls",
-        repo_root=repo_root,
-        runner=runner,
-        fields=fields,
-        limit=limit,
-    )
+    if fail_on_indeterminate:
+        payload = _rest_get_json_pages_or_none(
+            f"repos/{repo}/pulls",
+            repo_root=repo_root,
+            runner=runner,
+            fields=fields,
+            limit=limit,
+        )
+        if payload is None:
+            raise subprocess.SubprocessError(f"REST pull list indeterminate for {repo}")
+    else:
+        payload = _rest_get_json_pages(
+            f"repos/{repo}/pulls",
+            repo_root=repo_root,
+            runner=runner,
+            fields=fields,
+            limit=limit,
+        )
     return [item for item in payload if isinstance(item, dict)]
 
 
@@ -459,10 +471,14 @@ def _pull_status_row_from_rest(
     include_files: bool = False,
     include_review_decision: bool = False,
     include_status: bool = True,
+    hydrate_pull: bool = False,
 ) -> dict[str, Any]:
     number = item.get("number")
+    should_hydrate = hydrate_pull or include_files or include_review_decision
     detail = (
-        get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner) if number else None
+        (get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner) if number else None)
+        if should_hydrate
+        else None
     )
     pull = detail if isinstance(detail, dict) else item
     head = pull.get("head") if isinstance(pull.get("head"), dict) else {}
@@ -528,6 +544,7 @@ def list_open_pr_statuses_rest(
     include_files: bool = False,
     include_review_decision: bool = False,
     include_status: bool = True,
+    fail_on_indeterminate: bool = False,
 ) -> list[dict[str, Any]]:
     payload = list_pulls_rest(
         repo=repo,
@@ -535,6 +552,7 @@ def list_open_pr_statuses_rest(
         runner=runner,
         state="open",
         limit=limit,
+        fail_on_indeterminate=fail_on_indeterminate,
     )
 
     out: list[dict[str, Any]] = []
@@ -550,6 +568,7 @@ def list_open_pr_statuses_rest(
                 include_files=include_files,
                 include_review_decision=include_review_decision,
                 include_status=include_status,
+                hydrate_pull=include_files or include_review_decision,
             )
         )
     return out
@@ -579,6 +598,7 @@ def list_pr_statuses_for_branch_rest(
             repo_root=repo_root,
             runner=runner,
             include_status=include_status,
+            hydrate_pull=False,
         )
         for item in payload
         if isinstance(item, dict)
@@ -602,6 +622,7 @@ def get_pr_status_rest(
         repo_root=repo_root,
         runner=runner,
         include_status=include_status,
+        hydrate_pull=True,
     )
 
 

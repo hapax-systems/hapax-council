@@ -251,3 +251,36 @@ def test_fetch_prs_uses_rest_status_shape(tmp_path: Path, monkeypatch: Any) -> N
     assert rows[0]["statusCheckRollup"][0]["name"] == "test"
     assert rows[0]["statusCheckRollup"][0]["conclusion"] == "SUCCESS"
     assert not any(call[:2] == ["gh", "pr"] for call in runner.calls)
+
+
+def test_fetch_prs_fails_closed_when_open_pr_snapshot_is_indeterminate(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    lineage = _load_lineage_module()
+
+    class IndeterminateRunner:
+        def __call__(
+            self,
+            cmd: list[str],
+            *,
+            cwd: str | None = None,
+            capture_output: bool = False,
+            text: bool = False,
+            check: bool = False,
+            timeout: int | None = None,
+            **_: Any,
+        ) -> subprocess.CompletedProcess:
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+                return subprocess.CompletedProcess(cmd, 1, "", "rate limit")
+            return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+    monkeypatch.setattr(lineage.subprocess, "run", IndeterminateRunner())
+    monkeypatch.setattr(lineage, "REPO_ROOT", tmp_path)
+
+    try:
+        lineage.fetch_prs(limit=100, repo=None, pr_numbers=set())
+    except RuntimeError as exc:
+        assert "open PR query indeterminate via REST" in str(exc)
+    else:
+        raise AssertionError("fetch_prs must not return a false-empty open PR set")
