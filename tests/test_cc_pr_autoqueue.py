@@ -620,6 +620,40 @@ def test_fetch_pr_release_evidence_rejects_missing_head_oid(tmp_path: Path) -> N
     assert checks == set()
 
 
+def test_fetch_pr_release_evidence_bypasses_status_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42)]
+    observed: dict[str, object] = {}
+
+    def fake_rollup(
+        ref: str,
+        *,
+        repo: str,
+        repo_root: Path,
+        runner: Any,
+        use_cache: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        observed["ref"] = ref
+        observed["use_cache"] = use_cache
+        return [_check("authority-case-check")]
+
+    monkeypatch.setattr(autoqueue, "fetch_status_check_rollup_rest", fake_rollup)
+
+    ok, sha, checks = autoqueue.fetch_pr_release_evidence(
+        42,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is True
+    assert sha == "sha-42"
+    assert checks == {"authority-case-check"}
+    assert observed == {"ref": "sha-42", "use_cache": False}
+
+
 def test_fetch_open_prs_uses_rest_core_not_gh_pr_list(tmp_path: Path) -> None:
     runner = _FakeRunner()
     runner.open_prs = [_pr(42)]
@@ -633,6 +667,24 @@ def test_fetch_open_prs_uses_rest_core_not_gh_pr_list(tmp_path: Path) -> None:
     )
     assert not any(call[:3] == ["gh", "pr", "list"] for call in runner.calls)
     assert not any(call[:3] == ["gh", "pr", "view"] for call in runner.calls)
+
+
+def test_fetch_open_prs_missing_review_decision_defaults_to_required(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _FakeRunner()
+    row = _pr(42)
+    row.pop("reviewDecision", None)
+    runner.open_prs = [row]
+
+    def fake_open_prs(**_: Any) -> list[dict[str, Any]]:
+        return [dict(row)]
+
+    monkeypatch.setattr(autoqueue, "list_open_pr_statuses_rest", fake_open_prs)
+
+    prs = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
+
+    assert prs[0].review_decision == "REVIEW_REQUIRED"
 
 
 def test_graphql_backoff_skips_autoqueue_reconciler(tmp_path: Path) -> None:

@@ -719,6 +719,8 @@ def fetch_open_prs(
     prs: list[PullRequest] = []
     for item in raw:
         if isinstance(item, dict):
+            if "reviewDecision" not in item or item.get("reviewDecision") is None:
+                item["reviewDecision"] = "REVIEW_REQUIRED"
             rest_pr = None
             try:
                 number = int(item.get("number"))
@@ -808,6 +810,7 @@ def fetch_pr_release_evidence(
         repo=repo,
         repo_root=repo_root,
         runner=runner,
+        use_cache=False,
     )
     if not isinstance(rollup, list):
         return False, "invalid_status_check_rollup", set()

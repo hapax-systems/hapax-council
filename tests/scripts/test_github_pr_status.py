@@ -187,6 +187,29 @@ def test_review_decision_rest_preserves_changes_requested(tmp_path: Path) -> Non
     )
 
 
+def test_review_decision_rest_dismissed_review_revokes_approval(tmp_path: Path) -> None:
+    class ReviewRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/reviews"):
+                payload = [
+                    {"state": "approved", "user": {"login": "reviewer"}},
+                    {"state": "dismissed", "user": {"login": "reviewer"}},
+                ]
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return super().__call__(cmd, **kwargs)
+
+    assert (
+        github_pr_status.review_decision_rest(
+            9,
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=ReviewRunner(),
+        )
+        == "REVIEW_REQUIRED"
+    )
+
+
 def test_graphql_backoff_skips_graphql_when_remaining_is_low(tmp_path: Path) -> None:
     runner = FakeRunner()
 

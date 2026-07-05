@@ -17,8 +17,8 @@ Usage::
     uv run python scripts/cc-pr-merge-watcher.py --dry-run
     HAPAX_CC_HYGIENE_OFF=1 uv run python scripts/cc-pr-merge-watcher.py
 
-The systemd timer ``hapax-cc-pr-merge-watcher.timer`` runs this every
-5 minutes.
+The systemd timer ``hapax-cc-pr-merge-watcher.timer`` runs this on the
+staggered cadence declared in ``systemd/units/hapax-cc-pr-merge-watcher.timer``.
 """
 
 from __future__ import annotations

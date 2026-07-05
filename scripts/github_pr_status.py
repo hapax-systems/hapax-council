@@ -426,7 +426,7 @@ def review_decision_rest(
         if not isinstance(item, dict):
             continue
         state = _upper_or_none(item.get("state"))
-        if not state or state in {"COMMENTED", "DISMISSED"}:
+        if not state or state == "COMMENTED":
             continue
         user = item.get("user") if isinstance(item.get("user"), dict) else {}
         reviewer = str(user.get("login") or item.get("user_login") or f"review-{index}")
