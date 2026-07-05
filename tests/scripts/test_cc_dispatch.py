@@ -31,6 +31,7 @@ VALID = frozenset(
         "local_tool.local.worker",
     }
 )
+ACTIVE = VALID
 
 
 def _load():
@@ -44,6 +45,7 @@ def _load():
 
 def _patch_valid(monkeypatch, mod):
     monkeypatch.setattr(mod, "load_valid_route_ids", lambda *a, **k: VALID)
+    monkeypatch.setattr(mod, "load_active_route_ids", lambda *a, **k: ACTIVE)
 
 
 def test_list(monkeypatch, capsys) -> None:
@@ -267,7 +269,7 @@ def test_dispatch_composes_with_real_dispatcher(tmp_path) -> None:
 
 def test_print_list_empty_registry_returns_1(monkeypatch, capsys) -> None:
     mod = _load()
-    monkeypatch.setattr(mod, "load_valid_route_ids", lambda *a, **k: frozenset())
+    monkeypatch.setattr(mod, "load_active_route_ids", lambda *a, **k: frozenset())
     assert mod.main(["--list"]) == 1
     assert "no launchable capabilities" in capsys.readouterr().err
 

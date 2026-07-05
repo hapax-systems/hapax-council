@@ -16,6 +16,7 @@ from shared.capability_dispatch import (
     UNROUTED_POINTERS,
     launchable_aliases,
     ledger_health,
+    load_active_route_ids,
     load_valid_route_ids,
     read_dispatch_ledger,
     record_route_id,
@@ -38,11 +39,13 @@ VALID = frozenset(
         "api.headless.provider_gateway",
         "api.headless.api_frontier",
         "api.headless.openrouter",
+        "codex.headless.ornith",
         "vibe.headless.full",
         "glmcp.review.direct",
         "local_tool.local.worker",
     }
 )
+ACTIVE = VALID - {"codex.headless.ornith"}
 
 
 # --- resolve_capability ----------------------------------------------------------
@@ -63,6 +66,14 @@ def test_resolve_is_case_insensitive_and_trims() -> None:
 def test_resolve_raw_route_id_ok() -> None:
     res = resolve_capability("claude.headless.opus", valid_route_ids=VALID)
     assert res.ok and res.profile == "opus"
+
+
+def test_resolve_ornith_route_uses_codex_harness_profile() -> None:
+    for alias in ("ornith", "ornith-35b", "ornith-35b-local", "ornith-local"):
+        res = resolve_capability(alias, valid_route_ids=VALID)
+        assert res.ok, alias
+        assert res.route_id == "codex.headless.ornith"
+        assert (res.platform, res.mode, res.profile) == ("codex", "headless", "ornith")
 
 
 def test_resolve_unrouted_fails_closed_with_pointer() -> None:
@@ -138,6 +149,30 @@ def test_load_valid_route_ids(tmp_path: Path) -> None:
     assert load_valid_route_ids(reg) == frozenset({"a.b.c", "d.e.f"})
 
 
+def test_load_active_route_ids_excludes_blocked_routes(tmp_path: Path) -> None:
+    reg = tmp_path / "reg.json"
+    reg.write_text(
+        json.dumps(
+            {
+                "required_route_ids": ["a.b.c", "d.e.f", "x.y.z"],
+                "routes": [
+                    {"route_id": "a.b.c", "route_state": "active", "blocked_reasons": []},
+                    {
+                        "route_id": "d.e.f",
+                        "route_state": "blocked",
+                        "blocked_reasons": ["receipt_absent"],
+                    },
+                    {"route_id": "not.required", "route_state": "active", "blocked_reasons": []},
+                    {"route_id": "x.y.z", "route_state": "active", "blocked_reasons": ["stale"]},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_active_route_ids(reg) == frozenset({"a.b.c"})
+
+
 def test_load_valid_route_ids_missing_file(tmp_path: Path) -> None:
     assert load_valid_route_ids(tmp_path / "nope.json") == frozenset()
 
@@ -198,12 +233,15 @@ def test_load_valid_route_ids_reflects_real_registry() -> None:
     # receipt-only api/local routes must never appear as launch capacity (makes the
     # "latent capability" claim recheckable, not a hand-picked number).
     valid = load_valid_route_ids()
+    active = load_active_route_ids()
     assert valid, "registry should expose required_route_ids"
-    launchable = launchable_aliases(valid)
+    assert "codex.headless.ornith" not in active
+    launchable = launchable_aliases(active)
     for route_id in launchable.values():
         assert route_id in valid
         platform, mode, _ = split_route_id(route_id)  # type: ignore[misc]
         assert (platform, mode) in LAUNCHABLE_PATHS
+    assert "ornith" not in launchable
     assert "api" not in launchable and "api-frontier" not in launchable
     assert "openrouter" not in launchable and "openrouter-frontier" not in launchable
     assert "local-worker" not in launchable and "glmcp-review" not in launchable
@@ -214,8 +252,10 @@ def test_load_valid_route_ids_reflects_real_registry() -> None:
 
 
 def test_launchable_aliases_excludes_non_spawnable() -> None:
-    out = launchable_aliases(VALID)
+    out = launchable_aliases(ACTIVE)
     assert "codex" in out and "vibe" in out
+    assert "ornith" not in out
+    assert "codex.headless.ornith" not in out.values()
     assert "agy" not in out
     assert "glmcp-review" not in out  # platform glmcp not spawnable
     assert "local-worker" not in out  # receipt-only local-inference, no lane
@@ -347,7 +387,7 @@ def test_utilization_active_vs_latent() -> None:
         {"platform": "codex", "mode": "headless", "profile": "full", "launched": True},
         {"platform": "antigrav", "mode": "interactive", "profile": "full", "launched": True},
     ]
-    u = utilization(records, valid_route_ids=VALID)
+    u = utilization(records, valid_route_ids=ACTIVE)
     assert "codex.headless.full" in u.active
     assert "antigrav.interactive.full" not in u.known
     assert "antigrav.interactive.full" not in u.active
@@ -362,9 +402,9 @@ def test_utilization_launched_only_filter() -> None:
     records = [
         {"platform": "vibe", "mode": "headless", "profile": "full", "launched": False},
     ]
-    u_strict = utilization(records, valid_route_ids=VALID, launched_only=True)
+    u_strict = utilization(records, valid_route_ids=ACTIVE, launched_only=True)
     assert "vibe.headless.full" in u_strict.latent
-    u_all = utilization(records, valid_route_ids=VALID, launched_only=False)
+    u_all = utilization(records, valid_route_ids=ACTIVE, launched_only=False)
     assert "vibe.headless.full" in u_all.active
 
 
@@ -373,12 +413,12 @@ def test_utilization_counts_unknown_routes_but_excludes_from_known() -> None:
     records = [
         {"platform": "glmcp", "mode": "review", "profile": "direct", "launched": True},
     ]
-    u = utilization(records, valid_route_ids=VALID)
+    u = utilization(records, valid_route_ids=ACTIVE)
     assert u.counts.get("glmcp.review.direct") == 1
     assert "glmcp.review.direct" not in u.known
 
 
 def test_utilization_alias_for_uses_primary_alias() -> None:
     records = [{"platform": "codex", "mode": "headless", "profile": "full", "launched": True}]
-    u = utilization(records, valid_route_ids=VALID)
+    u = utilization(records, valid_route_ids=ACTIVE)
     assert u.alias_for["codex.headless.full"] == "codex"

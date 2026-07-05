@@ -874,6 +874,22 @@ def evaluate_dispatch_policy(
             quality_floor_satisfied=False,
             authority_allowed=False,
         )
+    if capability.route_state == "blocked" or capability.blocked_reasons:
+        return _decision(
+            request,
+            DispatchAction.HOLD,
+            tuple(
+                dict.fromkeys(
+                    [
+                        "platform_route_state_blocked",
+                        *capability.blocked_reasons,
+                    ]
+                )
+            ),
+            checked_at,
+            quality_floor_satisfied=False,
+            authority_allowed=False,
+        )
 
     cloud_action, cloud_reasons = _cloud_burst_policy_gate(request)
     if cloud_reasons:
