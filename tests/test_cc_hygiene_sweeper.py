@@ -381,6 +381,114 @@ def test_duplicate_claim_bare_string_falls_back_to_relay_updated_within_window()
     assert events[0].severity == "violation"
 
 
+def test_duplicate_claim_stale_third_claimant_does_not_mask_fresh_pair() -> None:
+    """A stale extra claimant must not suppress a genuine within-window pair.
+
+    Review finding on PR #4427 (codex-1, major): the original span check
+    (``newest - oldest > window``) went silent whenever ANY claimant was old,
+    so a leftover stale relay masked a real near-simultaneous double-claim by
+    the other two. The check must fire for the fresh pair and name only the
+    roles chained together by within-window gaps.
+    """
+    now = _now()
+    payloads = {
+        "stale": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(minutes=120)).isoformat(),
+            }
+        },
+        "fresh-a": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(minutes=2)).isoformat(),
+            }
+        },
+        "fresh-b": {"current_claim": {"task_id": "cc-shared", "claimed_at": now.isoformat()}},
+    }
+    events = check_duplicate_claim(payloads, now=now)
+    assert len(events) == 1
+    assert events[0].metadata["sessions"] == "fresh-a,fresh-b"
+
+
+def test_duplicate_claim_chain_spanning_more_than_window_is_one_event() -> None:
+    """A chain of sub-window gaps is one cluster even when its span exceeds it.
+
+    Claimants at t-8min, t-4min, t: each gap is 4min (< window) but the total
+    span is 8min (> window). All three participated in a rolling double-claim,
+    so one event names all three — the chain must not be split or suppressed
+    by the total span.
+    """
+    now = _now()
+    payloads = {
+        "chain-a": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(minutes=8)).isoformat(),
+            }
+        },
+        "chain-b": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(minutes=4)).isoformat(),
+            }
+        },
+        "chain-c": {"current_claim": {"task_id": "cc-shared", "claimed_at": now.isoformat()}},
+    }
+    events = check_duplicate_claim(payloads, now=now)
+    assert len(events) == 1
+    assert events[0].metadata["sessions"] == "chain-a,chain-b,chain-c"
+
+
+def test_duplicate_claim_disjoint_bursts_fire_separate_events() -> None:
+    """Two fresh pairs hours apart must alert as two clusters, not one.
+
+    Review finding on PR #4428 (claude-1, minor): merging disjoint bursts into
+    a single roles list makes the alert claim near-simultaneity for sessions
+    that are hours apart. Each within-window cluster alerts on its own.
+    """
+    now = _now()
+    payloads = {
+        "early-a": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(hours=5, minutes=2)).isoformat(),
+            }
+        },
+        "early-b": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(hours=5)).isoformat(),
+            }
+        },
+        "late-a": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(minutes=2)).isoformat(),
+            }
+        },
+        "late-b": {"current_claim": {"task_id": "cc-shared", "claimed_at": now.isoformat()}},
+    }
+    events = check_duplicate_claim(payloads, now=now)
+    assert len(events) == 2
+    assert {e.metadata["sessions"] for e in events} == {"early-a,early-b", "late-a,late-b"}
+
+
+def test_duplicate_claim_mixed_datable_and_undatable_stays_silent() -> None:
+    """One datable + one undatable claimant cannot establish the window.
+
+    A single known timestamp has nothing to be "within 5min" of; treating the
+    undatable side as `now` is exactly the collapse that caused the P0 storm.
+    Silence is correct — staleness is `relay_yaml_stale`'s job.
+    """
+    now = _now()
+    payloads = {
+        "dated": {"current_claim": {"task_id": "cc-shared", "claimed_at": now.isoformat()}},
+        "undated": {"current_claim": "cc-shared"},
+    }
+    assert check_duplicate_claim(payloads, now=now) == []
+
+
 # ----------------------------------------------------------------------------
 # check_orphan_pr (§2.4)
 # ----------------------------------------------------------------------------
