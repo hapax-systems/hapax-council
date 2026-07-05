@@ -8,6 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_BRANCH_PROTECTION_JOBS = (
     "lint",
+    "capability-surface-delta",
     "typecheck",
     "test",
     "web-build",
@@ -157,6 +158,20 @@ def test_ci_typecheck_uses_minimal_pyrefly_fast_path() -> None:
     assert "uv sync --extra ci" not in typecheck_block
     assert "actions/cache@v4" not in typecheck_block
     assert "~/.cache/pyrefly" not in typecheck_block
+
+
+def test_ci_capability_surface_delta_gate_is_required() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    gate_block = _workflow_job_block(ci_text, "capability-surface-delta")
+    all_green_block = _workflow_job_block(ci_text, "all-green")
+
+    _assert_uses_pinned_action(gate_block, "actions/checkout")
+    _assert_uses_pinned_action(gate_block, "astral-sh/setup-uv")
+    assert "scripts/hapax-capability-surface-delta-gate" in gate_block
+    assert "uv run --frozen python scripts/hapax-capability-surface-delta-gate" in gate_block
+    assert "Post-merge duplicate required-check sentinel" in gate_block
+    assert "Docs-only required-check sentinel" in gate_block
+    assert "capability-surface-delta" in all_green_block
 
 
 def test_ci_runs_python_prod_optional_dependency_witness_for_dependency_changes() -> None:

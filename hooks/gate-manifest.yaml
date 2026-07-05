@@ -228,6 +228,7 @@ runtimes:
       - post_merge_duplicate_filter
       - docs_only_filter
       - lint
+      - capability-surface-delta
       - typecheck
       - test-full-shard
       - test-title-cards
@@ -245,6 +246,7 @@ runtimes:
       - 'uv run python scripts/check-unused-functions.py'
       - 'uv run python scripts/check-new-module-consumers.py'
       - 'uv run python scripts/check-producer-consumers.py'
+      - 'uv run --frozen python scripts/hapax-capability-surface-delta-gate'
       - 'uv run python scripts/check-audio-conf-consistency.py'
       - 'uv run python scripts/verify-aesthetic-library.py'
       - 'uv run python scripts/verify-redaction-transforms.py'

@@ -8,11 +8,19 @@ failure, not a manual find. To update after an intentional change, regenerate th
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
-from shared.capability_harness_descriptor import discover, validate_descriptor
+from shared.capability_harness_descriptor import (
+    descriptor_fingerprint,
+    discover,
+    validate_descriptor,
+)
+from shared.capability_inventory import main as inventory_main
 from shared.capability_inventory_aggregator import aggregate_all_capabilities
 
 
@@ -61,6 +69,33 @@ class CapabilityCIGateTest(unittest.TestCase):
                 "Update config/capability-inventory-baseline.json if the change is intentional. "
                 "Changes:\n  " + "\n  ".join(details[:20])
             )
+
+    def test_delta_cli_red_fixture_fails_when_route_missing_from_baseline(self) -> None:
+        """RED fixture: an observed dispatch route omitted from the baseline fails CI."""
+        observed = aggregate_all_capabilities()
+        fingerprints = {d.capability_id: descriptor_fingerprint(d) for d in observed}
+        missing_route = "api.headless.openrouter"
+        self.assertIn(missing_route, fingerprints)
+        fingerprints.pop(missing_route)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            baseline = Path(tmpdir) / "capability-inventory-baseline-red.json"
+            baseline.write_text(
+                json.dumps(
+                    {"count": len(fingerprints), "fingerprints": fingerprints},
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = inventory_main(["--delta", "--baseline", str(baseline)])
+
+        self.assertEqual(rc, 1)
+        output = stdout.getvalue()
+        self.assertIn("capability_surface_delta: 1 new, 0 changed, 0 missing", output)
+        self.assertIn(f"new: {missing_route}", output)
 
 
 if __name__ == "__main__":

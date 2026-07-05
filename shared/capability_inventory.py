@@ -136,12 +136,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run the full capability_surface_delta over ALL 7 vocabularies (the real failing check)",
     )
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        default=_BASELINE_PATH,
+        help="fingerprint baseline to compare against when --delta is set",
+    )
     args = parser.parse_args(argv)
 
     if args.delta:
         from shared.capability_inventory_aggregator import full_inventory_delta
 
-        observed, delta = full_inventory_delta(_load_registered_baseline())
+        observed, delta = full_inventory_delta(_load_registered_baseline(args.baseline))
         invalid = {
             descriptor.capability_id: validate_descriptor(descriptor)
             for descriptor in observed
