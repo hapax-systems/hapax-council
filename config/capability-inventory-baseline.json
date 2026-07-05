@@ -1,8 +1,7 @@
 {
-  "count": 177,
+  "count": 176,
   "fingerprints": {
     "anthropic_web_search": "4a84a85c58c98dd5a2a4f10dea7886e399d98ed37b8822b7f956e9577c9d3db0",
-    "antigrav.interactive.full": "a141484cb025d0d2e7fd8c226134e1b1187078640e411ec40afd9766f9aeafe4",
     "api.headless.api_frontier": "a4f9ea8fa4bf52f9455fc6b923362dc8898ee5ac8cb2a24e5d4e6a85fa0d8534",
     "api.headless.provider_gateway": "2815a8d7a2d8785e323fcf742d058621cd774d249ec880c33ccc7b4756353fca",
     "archive.hls_sidecar": "50da983068b0e724925d8c1ee5835f1c0ae5f2de494bfb15554ee62b51a38f81",
