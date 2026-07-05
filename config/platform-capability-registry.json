@@ -584,7 +584,9 @@
         "capability_scores_asserted_not_measured",
         "openrouter_litellm_route_receipt_absent",
         "openrouter_key_secret_receipt_absent",
+        "openrouter_key_credit_witness_absent",
         "openrouter_paid_budget_receipt_absent",
+        "capabilityio_adapter_wiring_absent",
         "openrouter_served_model_witness_absent"
       ],
       "model_or_engine": "openrouter/openai/gpt-5.5",

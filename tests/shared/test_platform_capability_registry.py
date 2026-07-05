@@ -308,6 +308,8 @@ def test_openrouter_frontier_route_is_blocked_until_measurement_budget_and_key()
     assert route.tool_access.shell.value == "full"
     assert "capabilityio_measurement_absent" in route.blocked_reasons
     assert "capability_scores_asserted_not_measured" in route.blocked_reasons
+    assert "openrouter_key_credit_witness_absent" in route.blocked_reasons
+    assert "capabilityio_adapter_wiring_absent" in route.blocked_reasons
     assert "openrouter_paid_budget_receipt_absent" in route.blocked_reasons
     assert "openrouter_served_model_witness_absent" in route.blocked_reasons
 
