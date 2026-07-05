@@ -20,7 +20,11 @@ from shared.dispatcher_policy import (
     route_authority_receipt_payload_hash,
     route_decision_receipt_payload,
 )
-from shared.platform_capability_receipts import PLATFORM_CAPABILITY_RECEIPT_DIR_ENV
+from shared.platform_capability_receipts import (
+    PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
+    load_platform_capability_receipt,
+    receipt_is_fresh,
+)
 from shared.platform_capability_registry import load_platform_capability_registry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -164,6 +168,22 @@ def test_fresh_subscription_receipt_clears_account_live_quota_blocker(
         for ref in route.freshness.evidence.quota.evidence_refs
     )
     assert route.tool_state[0].evidence_ref.startswith("platform-capability-receipt:codex:")
+
+
+def test_future_platform_receipt_is_not_fresh(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir)},
+        now="2026-07-05T15:00:00Z",
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = load_platform_capability_receipt(tmp_path / "codex.json")
+
+    assert receipt_is_fresh(receipt, now=NOW_DT) is False
 
 
 def test_fresh_subscription_receipt_allows_dispatch_without_rollback(

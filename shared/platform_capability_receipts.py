@@ -153,6 +153,8 @@ def receipt_is_fresh(
 ) -> bool:
     checked_now = ensure_utc(now or datetime.now(UTC))
     observed_at = ensure_utc(receipt.observed_at)
+    if observed_at > checked_now + timedelta(minutes=1):
+        return False
     return checked_now - observed_at <= parse_duration_spec(receipt.stale_after)
 
 

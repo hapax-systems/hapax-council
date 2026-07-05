@@ -213,6 +213,7 @@ class CapabilityShapeFreshnessState(StrEnum):
 class AuthSurface(StrEnum):
     API_KEY = "api_key"
     LOCAL = "local"
+    OAUTH = "oauth"
     OPERATOR_SESSION = "operator_session"
     SUBSCRIPTION = "subscription"
     UNKNOWN = "unknown"

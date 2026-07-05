@@ -20,6 +20,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
+from shared.capability_availability_guarantor import (
+    CapabilityAvailabilityReceipt,
+    availability_dispatch_reason_codes,
+    evaluate_route_availability,
+)
 from shared.capability_surface_delta import (
     CapabilitySurfaceDelta,
     CapabilitySurfaceDeltaError,
@@ -149,6 +154,11 @@ class RouteCapabilityState(_PolicyModel):
     surface_delta_blockers: tuple[str, ...] = Field(default=())
     telemetry_quota_source: str | None = None
     telemetry_resource_source: str | None = None
+    availability_status: str | None = None
+    availability_receipt_ref: str | None = None
+    availability_reason_codes: tuple[str, ...] = Field(default=())
+    availability_refresh_status: str | None = None
+    availability_recomposition_required: bool = False
 
 
 class QuotaSpendState(_PolicyModel):
@@ -2208,10 +2218,13 @@ def _capability_state(
         )
     freshness = check_registry_freshness(registry, route_ids=[route_id], now=now).routes[0]
     normalized_route_id = normalize_route_id(route_id)
+    availability = evaluate_route_availability(route, freshness, now=now)
     return _route_capability_state(
         route,
-        freshness.ok,
-        freshness.errors,
+        freshness.ok and availability.available,
+        tuple(
+            dict.fromkeys([*freshness.errors, *availability_dispatch_reason_codes(availability)])
+        ),
         surface_delta_refs=_surface_delta_values_for_route(
             surface_delta_refs_by_route,
             normalized_route_id,
@@ -2220,6 +2233,7 @@ def _capability_state(
             surface_delta_blockers_by_route,
             normalized_route_id,
         ),
+        availability=availability,
     )
 
 
@@ -2230,6 +2244,7 @@ def _route_capability_state(
     *,
     surface_delta_refs: tuple[str, ...] = (),
     surface_delta_blockers: tuple[str, ...] = (),
+    availability: CapabilityAvailabilityReceipt | None = None,
 ) -> RouteCapabilityState:
     return RouteCapabilityState(
         route_id=route.route_id,
@@ -2257,6 +2272,15 @@ def _route_capability_state(
         surface_delta_blockers=surface_delta_blockers,
         telemetry_quota_source=route.telemetry.quota_source.value,
         telemetry_resource_source=route.telemetry.resource_source.value,
+        availability_status=availability.status.value if availability is not None else None,
+        availability_receipt_ref=availability.reference if availability is not None else None,
+        availability_reason_codes=availability.reason_codes if availability is not None else (),
+        availability_refresh_status=availability.refresh_status.value
+        if availability is not None
+        else None,
+        availability_recomposition_required=availability.recomposition_required
+        if availability is not None
+        else False,
     )
 
 
@@ -2927,6 +2951,8 @@ def _resource_state_refs(
 ) -> tuple[str, ...]:
     refs: list[str] = []
     if capability is not None:
+        if capability.availability_receipt_ref:
+            refs.append(capability.availability_receipt_ref)
         refs.extend(error for error in capability.freshness_errors if "resource" in error)
         if capability.telemetry_resource_source:
             refs.append(f"capability.resource_source:{capability.telemetry_resource_source}")

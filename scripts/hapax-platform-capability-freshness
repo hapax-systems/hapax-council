@@ -66,8 +66,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--now", help="Override check time as an ISO-8601 UTC timestamp")
     args = parser.parse_args(argv)
 
+    route_ids = [normalize_route_id(route_id) for route_id in args.route]
+    now = parse_utc(args.now) if args.now else None
     try:
-        registry = load_platform_capability_registry(args.registry, receipt_dir=args.receipt_dir)
+        registry = load_platform_capability_registry(
+            args.registry,
+            receipt_dir=args.receipt_dir,
+            now=now,
+        )
     except PlatformCapabilityRegistryError as exc:
         if args.json:
             print_json({"ok": False, "error": str(exc)})
@@ -75,8 +81,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
-    route_ids = [normalize_route_id(route_id) for route_id in args.route]
-    now = parse_utc(args.now) if args.now else None
     result = check_registry_freshness(registry, route_ids=route_ids or None, now=now)
 
     if args.json:

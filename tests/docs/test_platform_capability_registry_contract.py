@@ -145,6 +145,7 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
         schema["$defs"]["approval_posture"]["enum"]
     )
     assert "read_only_sidecar" in set(schema["$defs"]["worker_tier"]["enum"])
+    assert "oauth" in set(schema["$defs"]["auth_surface"]["enum"])
     assert "evidence" in schema["$defs"]["freshness"]["required"]
 
 
