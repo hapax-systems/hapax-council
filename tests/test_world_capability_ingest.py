@@ -39,6 +39,17 @@ _FIXTURE = [
         "availability_state": "blocked",
     },
     {
+        "capability_id": "audio.broadcast_voice_gated",
+        "capability_name": "Broadcast voice route gated",
+        "realm": "world_expression",
+        "domain": "audio",
+        "direction": "communicate",
+        "daemon": "hapax-daimonion",
+        "authority_ceiling": "public_gate_required",
+        "public_claim_policy": {"requires_egress_public_claim": True},
+        "availability_state": "live",
+    },
+    {
         "capability_id": "mobile.watch_biometrics",
         "capability_name": "Mobile watch biometrics",
         "realm": "world_state",
@@ -65,6 +76,12 @@ class WorldCapabilityIngestTest(unittest.TestCase):
     def test_public_expression_has_public_publish_authority(self) -> None:
         d = self.descs["audio.broadcast_voice"]
         self.assertEqual(d.authority_ceiling, AuthorityCeiling.PUBLIC_PUBLISH)
+
+    def test_public_gate_required_is_not_granted_public_publish_authority(self) -> None:
+        d = self.descs["audio.broadcast_voice_gated"]
+        self.assertEqual(d.shape, CapabilityShape.BACKGROUND_SERVICE)
+        self.assertEqual(d.authority_ceiling, AuthorityCeiling.READ_ONLY)
+        self.assertTrue(d.public_egress_authority_required)
 
     def test_world_state_maps_to_background_service(self) -> None:
         d = self.descs["visual.surface_health"]

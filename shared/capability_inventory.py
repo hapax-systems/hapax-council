@@ -142,6 +142,16 @@ def main(argv: list[str] | None = None) -> int:
         from shared.capability_inventory_aggregator import full_inventory_delta
 
         observed, delta = full_inventory_delta(_load_registered_baseline())
+        invalid = {
+            descriptor.capability_id: validate_descriptor(descriptor)
+            for descriptor in observed
+            if validate_descriptor(descriptor)
+        }
+        if invalid:
+            print("capability_inventory_validation_gaps:")
+            for capability_id, gaps in sorted(invalid.items()):
+                print(f"  {capability_id}: {', '.join(gaps)}")
+            return 1
         print(
             f"capability_surface_delta: {len(delta.new_capability_ids)} new, "
             f"{len(delta.changed_capability_ids)} changed, "

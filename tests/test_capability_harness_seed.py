@@ -6,9 +6,15 @@ import contextlib
 import io
 import json
 import unittest
+from unittest.mock import patch
 
 import shared.capability_inventory as inventory_cli
-from shared.capability_harness_descriptor import CapabilityShape, validate_descriptor
+from shared.capability_harness_descriptor import (
+    CapabilityHarnessDescriptor,
+    CapabilityShape,
+    CapabilitySurfaceDelta,
+    validate_descriptor,
+)
 from shared.capability_harness_seed import SEED_CAPABILITY_DESCRIPTORS, seed_descriptors_by_shape
 from shared.capability_inventory import inventory_report, project_inventory
 
@@ -116,6 +122,25 @@ class InventoryCliTest(unittest.TestCase):
             rc = inventory_cli.main(["--gaps-only"])
         self.assertEqual(rc, 0)
         self.assertEqual(buf.getvalue().strip(), "")
+
+    def test_delta_report_fails_when_observed_descriptor_has_validation_gap(self) -> None:
+        bad = CapabilityHarnessDescriptor(
+            capability_id="bad.hosted",
+            display_name="bad.hosted",
+            shape=CapabilityShape.HOSTED_MODEL,
+            domain="llm_worker",  # type: ignore[arg-type]
+            model="model",
+            spend_authority_required=True,
+        )
+        with patch(
+            "shared.capability_inventory_aggregator.full_inventory_delta",
+            return_value=([bad], CapabilitySurfaceDelta()),
+        ):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = inventory_cli.main(["--delta"])
+        self.assertEqual(rc, 1)
+        self.assertIn("capability_inventory_validation_gaps", buf.getvalue())
 
 
 if __name__ == "__main__":

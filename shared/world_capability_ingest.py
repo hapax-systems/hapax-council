@@ -65,12 +65,29 @@ def _actions_for_direction(direction: str) -> list[CapabilityAction]:
 
 def _authority_ceiling(rec: dict[str, object]) -> AuthorityCeiling:
     ceiling = str(rec.get("authority_ceiling") or "").lower()
-    public_claim = str(rec.get("public_claim_policy") or "").lower()
-    if "public" in ceiling or "publish" in public_claim:
+    public_claim = rec.get("public_claim_policy") or {}
+    if ceiling in {"public_publish", "public_publish_allowed"}:
+        return AuthorityCeiling.PUBLIC_PUBLISH
+    if isinstance(public_claim, str) and public_claim in {"publish_allowed", "public_publish"}:
         return AuthorityCeiling.PUBLIC_PUBLISH
     if "mutate" in ceiling or "repo" in ceiling:
         return AuthorityCeiling.REPO_MUTATION
     return AuthorityCeiling.READ_ONLY
+
+
+def _public_gate_required(rec: dict[str, object], shape: CapabilityShape) -> bool:
+    ceiling = str(rec.get("authority_ceiling") or "").lower()
+    public_claim = rec.get("public_claim_policy") or {}
+    policy_requires_public = False
+    if isinstance(public_claim, dict):
+        policy_requires_public = bool(public_claim.get("requires_egress_public_claim"))
+    elif isinstance(public_claim, str):
+        policy_requires_public = public_claim.lower() == "public_gate_required"
+    return (
+        shape == CapabilityShape.PUBLIC_EGRESS
+        or ceiling == "public_gate_required"
+        or policy_requires_public
+    )
 
 
 def _freshness_state(rec: dict[str, object]) -> FreshnessState:
@@ -103,7 +120,7 @@ def _descriptor_from_record(rec: dict[str, object]) -> CapabilityHarnessDescript
         execution_harness_id=daemon or capability_id or None,
         authority_ceiling=authority,
         mutation_surfaces=mutation_surfaces,
-        public_egress_authority_required=shape == CapabilityShape.PUBLIC_EGRESS,
+        public_egress_authority_required=_public_gate_required(rec, shape),
         resource_pools=[daemon] if daemon else [],
         freshness_state=_freshness_state(rec),
         freshness_remediation_task="cc-task-capability-harness-descriptor-20260703",

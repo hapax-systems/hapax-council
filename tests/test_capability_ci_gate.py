@@ -23,11 +23,13 @@ class CapabilityCIGateTest(unittest.TestCase):
         self.baseline_path = (
             Path(__file__).resolve().parent.parent / "config" / "capability-inventory-baseline.json"
         )
-        if not self.baseline_path.is_file():
-            self.skipTest("baseline not committed yet")
 
     def test_delta_is_empty(self) -> None:
         """Every capability in the live aggregation must match the committed baseline."""
+        self.assertTrue(
+            self.baseline_path.is_file(),
+            "capability-inventory-baseline.json is required; deleting it disables the gate",
+        )
         payload = json.loads(self.baseline_path.read_text(encoding="utf-8"))
         registered = payload.get("fingerprints", {})
         observed = aggregate_all_capabilities()

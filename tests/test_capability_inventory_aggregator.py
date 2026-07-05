@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
+from unittest.mock import patch
 
 from shared.capability_harness_descriptor import validate_descriptor
 from shared.capability_inventory_aggregator import (
@@ -82,6 +83,54 @@ class AggregateAllCapabilitiesTest(unittest.TestCase):
                 aggregate_all_capabilities(root=root)
             self.assertTrue(
                 any("missing MODELS literal" in message for message in cm.output),
+                cm.output,
+            )
+
+    def test_aggregate_warns_when_models_literal_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config").mkdir()
+            (root / "shared").mkdir()
+            (root / "shared" / "config.py").write_text("MODELS = {}\n", encoding="utf-8")
+            with self.assertLogs("shared.capability_inventory_aggregator", level="WARNING") as cm:
+                aggregate_all_capabilities(root=root)
+            self.assertTrue(
+                any("MODELS literal is empty" in message for message in cm.output),
+                cm.output,
+            )
+
+    def test_aggregate_warns_when_models_config_is_malformed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config").mkdir()
+            (root / "shared").mkdir()
+            (root / "shared" / "config.py").write_text("MODELS = {\n", encoding="utf-8")
+            with self.assertLogs("shared.capability_inventory_aggregator", level="WARNING") as cm:
+                aggregate_all_capabilities(root=root)
+            self.assertTrue(
+                any("source unavailable" in message for message in cm.output),
+                cm.output,
+            )
+
+    def test_aggregate_warns_when_publication_bus_import_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config").mkdir()
+            (root / "shared").mkdir()
+            (root / "shared" / "config.py").write_text(
+                "MODELS = {'fast': 'gemini-flash'}\n",
+                encoding="utf-8",
+            )
+            with (
+                patch(
+                    "shared.capability_inventory_aggregator.ingest_publication_bus_from_module",
+                    side_effect=ImportError("missing publication bus"),
+                ),
+                self.assertLogs("shared.capability_inventory_aggregator", level="WARNING") as cm,
+            ):
+                aggregate_all_capabilities(root=root)
+            self.assertTrue(
+                any("publication_bus" in message for message in cm.output),
                 cm.output,
             )
 

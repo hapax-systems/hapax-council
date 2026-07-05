@@ -66,7 +66,7 @@ def aggregate_all_capabilities(root: Path | None = None) -> list[CapabilityHarne
     """Ingest ALL 7 capability vocabularies into one unified observed descriptor set.
 
     Each vocabulary is adapted independently; the union is the real observed capability inventory.
-    Missing/unreadable files are skipped (the absence itself is a finding the delta surfaces).
+    Missing files are skipped with a warning; unreadable or malformed sources fail loudly.
     """
     root = root or repo_root()
     config = root / "config"

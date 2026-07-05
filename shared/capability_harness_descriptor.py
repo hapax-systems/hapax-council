@@ -372,7 +372,9 @@ def discover(
     duplicates = sorted(cid for cid, count in counts.items() if count > 1)
     if duplicates:
         raise ValueError(
-            "duplicate capability_id(s) in observed descriptors: " + ", ".join(duplicates)
+            "duplicate capability_id(s) in observed descriptors: "
+            + ", ".join(duplicates)
+            + "; deduplicate the source registry or repair the adapter before regenerating the baseline"
         )
     observed_fp: dict[str, str] = {d.capability_id: descriptor_fingerprint(d) for d in observed}
     new_ids = [cid for cid in observed_fp if cid not in registered]
