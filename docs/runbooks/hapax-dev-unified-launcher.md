@@ -35,6 +35,7 @@ Recheck the admitted governed route set with:
 ```bash
 uv run python scripts/hapax-methodology-dispatch --list-platform-paths
 uv run pytest tests/scripts/test_hapax_dev.py -q
+uv run pytest tests/scripts/test_hapax_methodology_dispatch.py::test_dispatch_worker_adapter_map_includes_live_worker_families tests/test_capability_adapter_protocol.py::test_platform_classvars_are_pinned -q
 ```
 
 ## Identities (interactive pools, distinct from the supervised fleet)

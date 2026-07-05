@@ -1077,6 +1077,88 @@ def test_dispatch_admission_reuses_worker_adapter_map(monkeypatch) -> None:
     assert calls == [request]
 
 
+def test_dispatch_main_uses_adapter_admit_for_route_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _dispatcher_module()
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    seen_platforms: list[str] = []
+    seen_requests: list[object] = []
+
+    class HoldingAdapter:
+        def admit(self, policy_request):
+            seen_requests.append(policy_request)
+            return module.RouteDecision(
+                decision_id="rd-adapter-fixture",
+                created_at=datetime(2026, 7, 5, tzinfo=UTC),
+                task_id=policy_request.task_id,
+                lane=policy_request.lane,
+                route_id=policy_request.route_id,
+                platform=policy_request.platform,
+                mode=policy_request.mode,
+                profile=policy_request.profile,
+                action=module.DispatchAction.HOLD,
+                policy_outcome="adapter_fixture_hold",
+                launch_allowed=False,
+                prompt_allowed=False,
+                quality_floor_satisfied=True,
+                authority_allowed=True,
+                reason_codes=("adapter_fixture_hold",),
+                message="fixture adapter admission hold",
+            )
+
+    def adapter_for_admission(platform: str) -> HoldingAdapter:
+        seen_platforms.append(platform)
+        return HoldingAdapter()
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setattr(module, "_capability_adapter_for_admission", adapter_for_admission)
+
+    rc = module.main(
+        [
+            "--task",
+            "governed-build",
+            "--lane",
+            "cx-green",
+            "--platform",
+            "codex",
+            "--mode",
+            "headless",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 10
+    assert seen_platforms == ["codex"]
+    assert len(seen_requests) == 1
+    assert "fixture adapter admission hold" in captured.err
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["route_decision_id"] == "rd-adapter-fixture"
+    assert receipt["route_policy_action"] == "hold"
+    assert receipt["route_policy_reason_codes"] == ["adapter_fixture_hold"]
+
+
 def test_dispatch_admission_falls_back_to_base_adapter_for_non_worker_route() -> None:
     module = _dispatcher_module()
 
