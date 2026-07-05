@@ -1630,7 +1630,35 @@ def _release_auto_arm_current_evidence_blockers(
     probe = dict(frontmatter)
     probe["release_authorized"] = False
     assessment = assess_release_auto_arm(probe, verified_checks=verified_checks)
-    return assessment.blockers
+    blockers = assessment.blockers
+    if assess_release_auto_arm(frontmatter, verified_checks=verified_checks).armed:
+        # A sensitive path is an auto-arm veto, not a post-authorization veto.
+        # Once a task is explicitly head-locked with release_authorized: true,
+        # release-head revalidation should still replay current check/risk
+        # evidence, but it must not strand the accepted manual release solely
+        # because the authorized mutation scope includes CLAUDE.md/CODEOWNERS.
+        blockers = tuple(
+            blocker for blocker in blockers if not blocker.startswith("sensitive_path:")
+        )
+    return blockers
+
+
+def _release_auto_arm_sensitive_path_waivers(
+    frontmatter: dict[str, Any],
+    *,
+    verified_checks: set[str],
+) -> tuple[str, ...]:
+    if not assess_release_auto_arm(frontmatter, verified_checks=verified_checks).armed:
+        return ()
+    probe = dict(frontmatter)
+    probe["release_authorized"] = False
+    assessment = assess_release_auto_arm(probe, verified_checks=verified_checks)
+    prefix = "sensitive_path:"
+    return tuple(
+        f"sensitive_path_waived_by_release_authorization:{blocker.removeprefix(prefix)}"
+        for blocker in assessment.blockers
+        if blocker.startswith(prefix)
+    )
 
 
 def _decision_requires_head_guard(decision: Decision) -> bool:
@@ -1656,6 +1684,7 @@ def _release_head_boundary_blocker(
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
+    release_authorization_waivers: list[str] | None = None,
 ) -> str | None:
     if decision.action not in {
         "queue",
@@ -1738,6 +1767,13 @@ def _release_head_boundary_blocker(
     )
     if evidence_blockers:
         return "current_release_auto_arm_blocked:" + ",".join(evidence_blockers)
+    if release_authorization_waivers is not None:
+        release_authorization_waivers.extend(
+            _release_auto_arm_sensitive_path_waivers(
+                current_frontmatter,
+                verified_checks=current_verified_checks,
+            )
+        )
     return None
 
 
@@ -2439,6 +2475,7 @@ def run_reconciler(
                             "message": armed_message,
                         }
                     )
+                release_authorization_waivers: list[str] = []
                 head_blocker = _release_head_boundary_blocker(
                     decision,
                     require_route_metadata=require_route_metadata,
@@ -2447,6 +2484,7 @@ def run_reconciler(
                     repo=repo,
                     repo_root=repo_root,
                     runner=runner,
+                    release_authorization_waivers=release_authorization_waivers,
                 )
                 if head_blocker is not None:
                     mutation_results.append(
@@ -2469,6 +2507,15 @@ def run_reconciler(
                         )
                     )
                     continue
+                if release_authorization_waivers:
+                    mutation_results.append(
+                        {
+                            **decision.as_dict(),
+                            "action": "release_authorization_waiver",
+                            "ok": True,
+                            "waivers": release_authorization_waivers,
+                        }
+                    )
             status_result = set_autoqueue_admission_status(
                 decision,
                 repo=repo,

@@ -1,7 +1,9 @@
 """shared/chronicle.py — Unified observability event store.
 
 Provides a frozen ChronicleEvent dataclass, record/query/trim functions,
-and OTel span context extraction. Events are persisted as JSONL to /dev/shm.
+and OTel span context extraction. Default-path events are persisted as JSONL
+to /dev/shm, while Stage0 receipt/data rows are first mirrored to the durable
+JSONL sink so reboot/trim loss of tmpfs is not authoritative for those rows.
 
 Per cc-task ``chronicle-event-evidence-envelope-migration`` (WSJF 9.4),
 events now carry an optional **evidence envelope** — durable event_id,
@@ -21,16 +23,48 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+from shared.durable_jsonl_sink import (
+    DurableJsonlSink,
+    DurableSinkPathError,
+    configured_durable_sink_root,
+    validate_chain,
+)
+from shared.transcript_scrubber import scrub
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 CHRONICLE_DIR = Path("/dev/shm/hapax-chronicle")
 CHRONICLE_FILE = CHRONICLE_DIR / "events.jsonl"
 RETENTION_S = 12 * 3600
+STAGE0_SOURCES = frozenset(
+    {
+        "apperception",
+        "gate_log",
+        "narration_triad",
+        "payment_processors.liberapay",
+        "payment_processors.lightning",
+        "payment_processors.nostr_zap",
+        "payment_processors.usdc",
+        "public_speech_events",
+    }
+)
+# Source names and event-type prefixes are complementary classifiers: some
+# producers have stable Stage0 source names, while generic emitters such as
+# engines classify durable rows through their event type.
+STAGE0_EVENT_TYPE_PREFIXES = ("apperception.", "gate.", "payment.", "speech.")
+_DURABLE_PAYLOAD_REDACTION = "[REDACTED:secret_assignment]"
+_SENSITIVE_PAYLOAD_KEY_RE = re.compile(
+    r"(?i)(secret|token|passwd|password|api[_-]?key|apikey|access[_-]?key|"
+    r"private[_-]?key|client[_-]?secret|auth|credential|bearer|session[_-]?key)"
+)
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -266,14 +300,164 @@ def current_otel_ids() -> tuple[str, str]:
 # ── Writer ────────────────────────────────────────────────────────────────────
 
 
-def record(event: ChronicleEvent, *, path: Path = CHRONICLE_FILE) -> None:
+def is_stage0_event(event: ChronicleEvent) -> bool:
+    """Return whether *event* belongs to the Stage0 durable-sink contract."""
+
+    return event.source in STAGE0_SOURCES or event.event_type.startswith(STAGE0_EVENT_TYPE_PREFIXES)
+
+
+def _scrub_durable_payload_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        scrubbed: dict[str, Any] = {}
+        for key, nested in value.items():
+            key_text = str(key)
+            if _SENSITIVE_PAYLOAD_KEY_RE.search(key_text):
+                scrubbed[key_text] = _DURABLE_PAYLOAD_REDACTION
+            else:
+                scrubbed[key_text] = _scrub_durable_payload_value(nested)
+        return scrubbed
+    if isinstance(value, list | tuple):
+        return [_scrub_durable_payload_value(item) for item in value]
+    if isinstance(value, str):
+        return scrub(value).text
+    return value
+
+
+def _durable_chronicle_payload(event: ChronicleEvent) -> dict[str, Any]:
+    payload = json.loads(event.to_json())
+    payload["payload"] = _scrub_durable_payload_value(payload.get("payload", {}))
+    return payload
+
+
+def _append_durable_chronicle_event(event: ChronicleEvent) -> None:
+    DurableJsonlSink().append(
+        stream_id="chronicle",
+        data_class="chronicle_event",
+        source_receipt_ref=f"chronicle:event:{event.event_id}",
+        payload=_durable_chronicle_payload(event),
+        timestamp=time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(event.effective_transaction_time)
+        ),
+    )
+
+
+def record(event: ChronicleEvent, *, path: Path | None = None) -> None:
     """Append *event* to the JSONL file at *path*, creating parent dirs."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
+    actual_path = path if path is not None else CHRONICLE_FILE
+    if actual_path == CHRONICLE_FILE and is_stage0_event(event):
+        _append_durable_chronicle_event(event)
+
+    actual_path.parent.mkdir(parents=True, exist_ok=True)
+    with actual_path.open("a", encoding="utf-8") as fh:
         fh.write(event.to_json() + "\n")
 
 
 # ── Reader ────────────────────────────────────────────────────────────────────
+
+
+def _matches_filters(
+    ev: ChronicleEvent,
+    *,
+    since: float,
+    effective_until: float,
+    source: str | None,
+    event_type: str | None,
+    trace_id: str | None,
+    aperture_ref: str | None,
+    public_scope: str | None,
+    speech_event_ref: str | None,
+    evidence_class: str | None,
+    temporal_span_ref: str | None,
+) -> bool:
+    if ev.ts > effective_until or ev.ts < since:
+        return False
+    if source is not None and ev.source != source:
+        return False
+    if event_type is not None and ev.event_type != event_type:
+        return False
+    if trace_id is not None and ev.trace_id != trace_id:
+        return False
+    if aperture_ref is not None and ev.aperture_ref != aperture_ref:
+        return False
+    if public_scope is not None and ev.public_scope != public_scope:
+        return False
+    if speech_event_ref is not None and ev.speech_event_ref != speech_event_ref:
+        return False
+    if evidence_class is not None and ev.evidence_class != evidence_class:
+        return False
+    return temporal_span_ref is None or ev.temporal_span_ref == temporal_span_ref
+
+
+def _query_durable_chronicle(
+    *,
+    since: float,
+    effective_until: float,
+    source: str | None,
+    event_type: str | None,
+    trace_id: str | None,
+    aperture_ref: str | None,
+    public_scope: str | None,
+    speech_event_ref: str | None,
+    evidence_class: str | None,
+    temporal_span_ref: str | None,
+    limit: int,
+) -> list[ChronicleEvent]:
+    durable_file = DurableJsonlSink().path_for_stream("chronicle")
+    validate_chain(durable_file, stream_id="chronicle").raise_for_issues()
+    if not durable_file.exists():
+        return []
+    lines = durable_file.read_text(encoding="utf-8").splitlines()
+
+    results: list[ChronicleEvent] = []
+    for raw in reversed(lines):
+        if not raw:
+            continue
+        try:
+            row = json.loads(raw)
+            ev = ChronicleEvent.from_json(json.dumps(row["payload"]))
+        except (AttributeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        if _matches_filters(
+            ev,
+            since=since,
+            effective_until=effective_until,
+            source=source,
+            event_type=event_type,
+            trace_id=trace_id,
+            aperture_ref=aperture_ref,
+            public_scope=public_scope,
+            speech_event_ref=speech_event_ref,
+            evidence_class=evidence_class,
+            temporal_span_ref=temporal_span_ref,
+        ):
+            results.append(ev)
+    results.sort(key=lambda item: item.ts, reverse=True)
+    return results[:limit]
+
+
+def _durable_chronicle_root_exists() -> bool:
+    try:
+        return configured_durable_sink_root().expanduser().exists()
+    except OSError:
+        return False
+
+
+def _should_query_durable_chronicle(
+    *,
+    actual_path: Path,
+    source: str | None,
+    event_type: str | None,
+) -> bool:
+    if actual_path != CHRONICLE_FILE:
+        return False
+    query_is_stage0 = source in STAGE0_SOURCES or (
+        event_type is not None and event_type.startswith(STAGE0_EVENT_TYPE_PREFIXES)
+    )
+    if query_is_stage0:
+        return True
+    if source is None or event_type is None:
+        return _durable_chronicle_root_exists()
+    return False
 
 
 def query(
@@ -289,7 +473,7 @@ def query(
     evidence_class: str | None = None,
     temporal_span_ref: str | None = None,
     limit: int = 500,
-    path: Path = CHRONICLE_FILE,
+    path: Path | None = None,
 ) -> list[ChronicleEvent]:
     """Return matching events, newest-first.
 
@@ -326,50 +510,88 @@ def query(
     trim() helper keeps the file bounded; the doc estimates `~14 MB`
     typical, well within memory.
     """
-    if not path.exists():
+    actual_path = path if path is not None else CHRONICLE_FILE
+    if not actual_path.exists() and actual_path != CHRONICLE_FILE:
         return []
 
     effective_until = until if until is not None else time.time()
 
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-
     results: list[ChronicleEvent] = []
-    for raw in reversed(lines):
-        if not raw:
-            continue
+    if actual_path.exists():
         try:
-            ev = ChronicleEvent.from_json(raw)
-        except (json.JSONDecodeError, KeyError):
-            continue
+            lines = actual_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
 
-        if ev.ts > effective_until:
-            continue
-        if ev.ts < since:
-            break  # Reverse walk: every earlier line is also too old.
+        for raw in reversed(lines):
+            if not raw:
+                continue
+            try:
+                ev = ChronicleEvent.from_json(raw)
+            except (json.JSONDecodeError, KeyError):
+                continue
+            if ev.ts < since:
+                break  # Reverse walk: every earlier line is also too old.
+            if _matches_filters(
+                ev,
+                since=since,
+                effective_until=effective_until,
+                source=source,
+                event_type=event_type,
+                trace_id=trace_id,
+                aperture_ref=aperture_ref,
+                public_scope=public_scope,
+                speech_event_ref=speech_event_ref,
+                evidence_class=evidence_class,
+                temporal_span_ref=temporal_span_ref,
+            ):
+                results.append(ev)
+                if len(results) >= limit:
+                    break  # Reverse walk produces newest-first; stop at limit.
 
-        if source is not None and ev.source != source:
-            continue
-        if event_type is not None and ev.event_type != event_type:
-            continue
-        if trace_id is not None and ev.trace_id != trace_id:
-            continue
-        if aperture_ref is not None and ev.aperture_ref != aperture_ref:
-            continue
-        if public_scope is not None and ev.public_scope != public_scope:
-            continue
-        if speech_event_ref is not None and ev.speech_event_ref != speech_event_ref:
-            continue
-        if evidence_class is not None and ev.evidence_class != evidence_class:
-            continue
-        if temporal_span_ref is not None and ev.temporal_span_ref != temporal_span_ref:
-            continue
+    should_query_durable = _should_query_durable_chronicle(
+        actual_path=actual_path,
+        source=source,
+        event_type=event_type,
+    )
+    if (
+        not should_query_durable
+        and actual_path == CHRONICLE_FILE
+        and (source is None or event_type is None)
+        and any(is_stage0_event(ev) for ev in results)
+    ):
+        should_query_durable = True
 
-        results.append(ev)
-        if len(results) >= limit:
-            break  # Reverse walk produces newest-first; stop at limit.
+    if should_query_durable:
+        seen_ids = {ev.event_id for ev in results}
+        durable_events = _query_durable_chronicle(
+            since=since,
+            effective_until=effective_until,
+            source=source,
+            event_type=event_type,
+            trace_id=trace_id,
+            aperture_ref=aperture_ref,
+            public_scope=public_scope,
+            speech_event_ref=speech_event_ref,
+            evidence_class=evidence_class,
+            temporal_span_ref=temporal_span_ref,
+            limit=limit,
+        )
+        durable_ids = {ev.event_id for ev in durable_events}
+        volatile_stage0_ids = {ev.event_id for ev in results if is_stage0_event(ev)}
+        missing_durable_stage0_ids = volatile_stage0_ids - durable_ids
+        if missing_durable_stage0_ids:
+            raise DurableSinkPathError(
+                "durable chronicle stream is missing volatile Stage0 event(s): "
+                f"{', '.join(sorted(missing_durable_stage0_ids))}; next action: "
+                "restore the durable chronicle stream or quarantine volatile Stage0 rows"
+            )
+        for ev in durable_events:
+            if ev.event_id not in seen_ids:
+                results.append(ev)
+                seen_ids.add(ev.event_id)
+        results.sort(key=lambda item: item.ts, reverse=True)
+        results = results[:limit]
 
     return results
 
@@ -377,19 +599,20 @@ def query(
 # ── Retention ─────────────────────────────────────────────────────────────────
 
 
-def trim(*, retention_s: float = RETENTION_S, path: Path = CHRONICLE_FILE) -> None:
+def trim(*, retention_s: float = RETENTION_S, path: Path | None = None) -> None:
     """Drop events older than *retention_s* seconds, atomically rewriting the file.
 
     No-op when the file does not exist.
     """
-    if not path.exists():
+    actual_path = path if path is not None else CHRONICLE_FILE
+    if not actual_path.exists():
         return
 
     cutoff = time.time() - retention_s
     kept: list[str] = []
 
     try:
-        with path.open("r", encoding="utf-8") as fh:
+        with actual_path.open("r", encoding="utf-8") as fh:
             for raw in fh:
                 stripped = raw.strip()
                 if not stripped:
@@ -404,12 +627,12 @@ def trim(*, retention_s: float = RETENTION_S, path: Path = CHRONICLE_FILE) -> No
     except OSError:
         return
 
-    tmp = path.with_suffix(".tmp")
+    tmp = actual_path.with_suffix(".tmp")
     try:
         with tmp.open("w", encoding="utf-8") as fh:
             for line in kept:
                 fh.write(line + "\n")
-        os.replace(tmp, path)
+        os.replace(tmp, actual_path)
     except OSError:
         tmp.unlink(missing_ok=True)
         raise

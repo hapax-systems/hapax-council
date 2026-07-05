@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest import mock
@@ -9,12 +10,12 @@ from unittest import mock
 import pytest
 
 from shared.capability_adapter_protocol import (
-    AntigravAdapter,
     AuthorityViolation,
     BudgetAuthorityAdapter,
     CapabilityAdapter,
     ClaudeAdapter,
     CodexAdapter,
+    RetiredAntigravFailureClassifier,
     ReviewSeatAdapter,
     SendCapableAdapter,
     WorkerAdapter,
@@ -129,9 +130,15 @@ def test_review_seat_has_no_launch_or_send() -> None:
     assert not hasattr(ReviewSeatAdapter, "send")
 
 
-def test_antigrav_has_launch_but_no_send() -> None:
-    assert hasattr(AntigravAdapter, "launch")  # it IS a worker
-    assert not hasattr(AntigravAdapter, "send")  # but does not mix SendCapableAdapter
+def test_retired_antigrav_has_no_adapter_launch_or_send_surface() -> None:
+    adapter_protocol = sys.modules[_MOD]
+    assert "AntigravAdapter" not in adapter_protocol.__all__
+    assert not hasattr(adapter_protocol, "AntigravAdapter")
+    assert not hasattr(RetiredAntigravFailureClassifier, "launch")
+    assert not hasattr(RetiredAntigravFailureClassifier, "send")
+    assert not issubclass(RetiredAntigravFailureClassifier, CapabilityAdapter)
+    assert not issubclass(RetiredAntigravFailureClassifier, WorkerAdapter)
+    assert not issubclass(RetiredAntigravFailureClassifier, SendCapableAdapter)
 
 
 def test_platform_classvars_are_pinned() -> None:
@@ -139,7 +146,7 @@ def test_platform_classvars_are_pinned() -> None:
     assert CodexAdapter.PLATFORM is Platform.CODEX
     assert BudgetAuthorityAdapter.PLATFORM is Platform.API
     assert ReviewSeatAdapter.PLATFORM is Platform.GLMCP
-    assert AntigravAdapter.PLATFORM is Platform.ANTIGRAV
+    assert RetiredAntigravFailureClassifier.PLATFORM is Platform.ANTIGRAV
 
 
 # --- criterion 5: launch() FIRST asserts authority, else AuthorityViolation --------------------
@@ -273,8 +280,8 @@ def test_codex_classify_failure_shares_the_cli_table() -> None:
     assert adapter.classify_failure("x").platform == Platform.CODEX.value
 
 
-def test_antigrav_classify_failure_maps_launcher_exit_codes() -> None:
-    a = AntigravAdapter()
+def test_retired_antigrav_failure_classifier_maps_historical_launcher_exit_codes() -> None:
+    a = RetiredAntigravFailureClassifier()
     # the two codes with a genuine availability/claim meaning map; everything else stays UNKNOWN
     assert a.classify_failure("agy not found", exit_code=4).code is FailureCode.ROUTE_UNAVAILABLE
     assert a.classify_failure("cc-claim failed", exit_code=8).code is FailureCode.CLAIM_CONFLICT

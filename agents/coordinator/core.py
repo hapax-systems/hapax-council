@@ -123,7 +123,7 @@ ORPHAN_CLAIM_REOFFER_GRACE_S = _positive_env_float(
 MAX_ORPHAN_CLAIM_REOFFERS_PER_TICK = 5
 COORDINATOR_DISPATCH_MODE = "headless"
 COORDINATOR_DISPATCH_PROFILE = "full"
-SUPPORTED_DISPATCH_PLATFORMS = ("claude", "codex", "gemini", "vibe", "antigrav", "api")
+SUPPORTED_DISPATCH_PLATFORMS = ("claude", "codex", "gemini", "vibe", "api")
 
 # Dispatch through the running release checkout by default. A hard-coded primary
 # clone can drift dirty and make the coordinator follow unactivated source.
@@ -1408,6 +1408,7 @@ def _live_headless_launcher(role: str) -> tuple[int, str | None] | None:
 
 
 COORDINATOR_DISPATCHABLE_PLATFORMS = dispatch_guards.COORDINATOR_HEADLESS_DISPATCHABLE_PLATFORMS
+RETIRED_DISPATCH_PLATFORM_ALIASES = frozenset({"agy", "antigrav", "antigravity", "gemini-cli"})
 _DISPATCH_CLAIM_GUARD_MARKERS = dispatch_guards.DISPATCH_CLAIM_GUARD_MARKERS
 _DISPATCH_CLOSE_GUARD_MARKERS = dispatch_guards.DISPATCH_CLOSE_GUARD_MARKERS
 
@@ -1444,6 +1445,11 @@ def _lane_not_alive_next_action(role: str, platform: str, worktree: Path) -> str
 
 
 def _unsupported_dispatch_platform_next_action(platform: str) -> str:
+    if platform.strip().lower() in RETIRED_DISPATCH_PLATFORM_ALIASES:
+        return (
+            "route work to Claude, Codex, or Vibe; for agy, mint measured supply-leaf intake "
+            "with route/resource/governance receipts before any future interactive worker path"
+        )
     supported = ", ".join(COORDINATOR_DISPATCHABLE_PLATFORMS)
     return (
         f"route work to a supported coordinator headless platform ({supported}), "

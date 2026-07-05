@@ -2449,6 +2449,290 @@ def test_already_queued_refetches_mitigation_checks_before_success_proof(
     )
 
 
+def test_head_locked_sensitive_path_release_passes_revalidation(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="already-armed-sensitive-doc",
+        status="pr_open",
+        pr=760,
+        branch="feat/760",
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-760",
+            "release_authorized_head_ref": "feat/760",
+            "stage": "S7_RELEASE",
+            "mutation_scope_refs": ["hapax-council/CLAUDE.md"],
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(760, branch="feat/760", files=["CLAUDE.md"])]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert not any(
+        item["pr"] == 760 and item["action"] == "release_head_revalidation"
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 760
+        and item["action"] == "release_authorization_waiver"
+        and item["ok"] is True
+        and item["waivers"]
+        == ["sensitive_path_waived_by_release_authorization:hapax-council/CLAUDE.md"]
+        for item in report["mutations"]
+    )
+    evidence_index = runner.calls.index(
+        [
+            "gh",
+            "pr",
+            "view",
+            "760",
+            "--repo",
+            "owner/repo",
+            "--json",
+            "headRefOid,statusCheckRollup",
+        ]
+    )
+    success_status_index = next(
+        index
+        for index, call in enumerate(runner.calls)
+        if call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-760"]
+        and "state=success" in call
+    )
+    assert evidence_index < success_status_index
+    assert any(
+        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-760"]
+        and "state=success" in call
+        for call in runner.calls
+    )
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "760",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-760",
+    ] in runner.calls
+
+
+def test_unarmed_sensitive_path_still_blocks_auto_arm(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="unarmed-sensitive-doc",
+        status="pr_open",
+        pr=761,
+        branch="feat/761",
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "mutation_scope_refs": ["hapax-council/CLAUDE.md"],
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(761, branch="feat/761", files=["CLAUDE.md"])]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=tmp_path / "ledger.jsonl",
+    )
+
+    assert report["counts"]["blocked"] == 1
+    decision = next(item for item in report["decisions"] if item["pr"] == 761)
+    assert decision["reasons"] == [
+        "release_auto_arm_ineligible:sensitive_path:hapax-council/CLAUDE.md"
+    ]
+    assert not any(call[:4] == ["gh", "pr", "merge", "761"] for call in runner.calls)
+
+
+def test_sensitive_path_waiver_uses_current_note_at_revalidation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="already-armed-current-sensitive-doc",
+        status="pr_open",
+        pr=762,
+        branch="feat/762",
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-762",
+            "release_authorized_head_ref": "feat/762",
+            "stage": "S7_RELEASE",
+            "mutation_scope_refs": ["hapax-council/docs/example.md"],
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(762, branch="feat/762", files=["CLAUDE.md"])]
+    original_boundary = autoqueue._release_head_boundary_blocker
+    changed_scope = False
+
+    def add_sensitive_path_before_boundary(decision: Any, **kwargs: Any) -> str | None:
+        nonlocal changed_scope
+        if decision.pr.number == 762 and not changed_scope:
+            note.write_text(
+                note.read_text(encoding="utf-8").replace(
+                    "- hapax-council/docs/example.md",
+                    "- hapax-council/CLAUDE.md",
+                ),
+                encoding="utf-8",
+            )
+            changed_scope = True
+        return original_boundary(decision, **kwargs)
+
+    monkeypatch.setattr(
+        autoqueue, "_release_head_boundary_blocker", add_sensitive_path_before_boundary
+    )
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert any(
+        item["pr"] == 762
+        and item["action"] == "release_authorization_waiver"
+        and item["waivers"]
+        == ["sensitive_path_waived_by_release_authorization:hapax-council/CLAUDE.md"]
+        for item in report["mutations"]
+    )
+
+
+def test_head_locked_sensitive_path_stale_head_still_blocks_admission(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="already-armed-sensitive-doc-stale-head",
+        status="pr_open",
+        pr=763,
+        branch="feat/763",
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-before-force-push",
+            "release_authorized_head_ref": "feat/763",
+            "stage": "S7_RELEASE",
+            "mutation_scope_refs": ["hapax-council/CLAUDE.md"],
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(763, branch="feat/763", files=["CLAUDE.md"])]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decision = next(item for item in report["decisions"] if item["pr"] == 763)
+    assert decision["action"] == "blocked"
+    assert decision["reasons"] == [
+        "release_authorized_head_mismatch:authorized=sha-before-force-push:current=sha-763"
+    ]
+    assert not any(
+        item["pr"] == 763 and item["action"] == "release_authorization_waiver"
+        for item in report["mutations"]
+    )
+    assert not any(call[:4] == ["gh", "pr", "merge", "763"] for call in runner.calls)
+
+
+def test_sensitive_path_stale_head_during_revalidation_blocks_before_waiver(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="already-armed-sensitive-doc-stale-during-boundary",
+        status="pr_open",
+        pr=764,
+        branch="feat/764",
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-764",
+            "release_authorized_head_ref": "feat/764",
+            "stage": "S7_RELEASE",
+            "mutation_scope_refs": ["hapax-council/CLAUDE.md"],
+        },
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(764, branch="feat/764", files=["CLAUDE.md"])]
+    original_boundary = autoqueue._release_head_boundary_blocker
+    repointed = False
+
+    def repoint_before_boundary(decision: Any, **kwargs: Any) -> str | None:
+        nonlocal repointed
+        if decision.pr.number == 764 and not repointed:
+            note.write_text(
+                note.read_text(encoding="utf-8").replace(
+                    "release_authorized_head_sha: sha-764",
+                    "release_authorized_head_sha: sha-old",
+                ),
+                encoding="utf-8",
+            )
+            repointed = True
+        return original_boundary(decision, **kwargs)
+
+    monkeypatch.setattr(autoqueue, "_release_head_boundary_blocker", repoint_before_boundary)
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert not any(
+        item["pr"] == 764 and item["action"] == "release_authorization_waiver"
+        for item in report["mutations"]
+    )
+    assert not any(
+        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-764"]
+        and "state=success" in call
+        for call in runner.calls
+    )
+    assert any(
+        item["pr"] == 764
+        and item["action"] == "release_head_revalidation"
+        and item["ok"] is False
+        and item["message"]
+        == "current_task_gate_blocked:release_authorized_head_mismatch:"
+        "authorized=sha-old:current=sha-764"
+        for item in report["mutations"]
+    )
+
+
 def test_already_queued_replays_full_current_auto_arm_blockers_before_success_proof(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

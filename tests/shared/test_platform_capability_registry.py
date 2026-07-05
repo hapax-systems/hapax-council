@@ -93,11 +93,11 @@ def test_seed_registry_loads_sanctioned_platform_routes() -> None:
 
     assert set(registry.route_map()) == REQUIRED_ROUTE_IDS
     assert {route.platform.value for route in registry.routes} >= {
-        "antigrav",
         "claude",
         "codex",
         "vibe",
     }
+    assert "antigrav" not in {route.platform.value for route in registry.routes}
     assert all(not route_id.startswith("gemini.") for route_id in registry.route_map())
 
 

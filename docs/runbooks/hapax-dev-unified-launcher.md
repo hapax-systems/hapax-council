@@ -1,14 +1,14 @@
 # hapax-dev — unified visible-session launcher
 
 `scripts/hapax-dev` is the operator's one front door for **visible** sessions
-across the three coding runtimes. You no longer need to remember per-platform
-launch particulars (`--role` vs `--session`, which lane is free, `--terminal
-tmux`, identity export):
+across the admitted Claude and Codex visible-dev runtimes. Vibe remains an
+admitted coding runtime through `hapax-vibe`, not through this visible-dev
+launcher. You no longer need to remember per-platform launch particulars
+(`--role` vs `--session`, which lane is free, `--terminal tmux`, identity export):
 
 ```bash
 hapax-dev claude      # visible claude session, auto non-conflicting identity
 hapax-dev codex       # visible codex session
-hapax-dev agy         # visible agy (Antigravity CLI) session
 ```
 
 …and all the right things happen: a **fresh, unique `HAPAX_SESSION_ID`** plus a
@@ -19,9 +19,21 @@ parallel stream (e.g. audio) that never collides with the headless fleet.
 
 It does **not** reimplement launch logic. Identity export, governance wiring,
 the tmux spawn, and the runtime exec all stay in `hapax-claude` /
-`hapax-codex` / `hapax-antigrav`. `hapax-dev` only (a) picks a free identity,
+`hapax-codex`. `hapax-dev` only (a) picks a free identity,
 (b) refuses collisions by construction, (c) guarantees a fresh session id, and
 (d) handles visibility (attach / window / detach).
+
+`agy` / `antigrav` / `antigravity` is retired as a live dispatch platform,
+lane, route family, and supply leaf. `hapax-dev agy`, `hapax-dev antigrav`, and
+`hapax-dev antigravity` fail closed; any future agy capability must re-enter as
+measured supply leaves with fresh route/resource/governance receipts.
+
+Recheck the admitted governed route set with:
+
+```bash
+uv run python scripts/hapax-methodology-dispatch --list-platform-paths
+uv run pytest tests/scripts/test_hapax_dev.py -q
+```
 
 ## Identities (interactive pools, distinct from the supervised fleet)
 
@@ -29,7 +41,6 @@ the tmux spawn, and the runtime exec all stay in `hapax-claude` /
 |----------|---------|------------------|--------------|
 | `claude` | `hapax-claude` | `dev`, `dev2`, `dev3`, … | `hapax-claude-<name>` |
 | `codex`  | `hapax-codex`  | `cx-blue`, `cx-green`, `cx-cyan`, … | `hapax-codex-<name>` |
-| `agy` (alias `antigrav`) | `hapax-antigrav` | `antigrav`, `antigrav-2`, … | `hapax-antigrav-<name>` |
 
 - **Why a `dev` pool for claude?** The greek roles `alpha..theta` are the
   *supervised headless reform fleet* — `hapax-lane-supervisor` auto-respawns them
@@ -45,6 +56,17 @@ the tmux spawn, and the runtime exec all stay in `hapax-claude` /
   (`~/.cache/hapax/claude-headless/<name>/output.jsonl`). The claim/heartbeat
   checks mean a headless lane that holds a claim *without* a tmux session is
   still correctly seen as busy.
+  Claim-cache writers must also keep the matching
+  `~/.cache/hapax/cc-claim-epoch-<name>` sidecar in step, including
+  session-keyed variants. The sidecar is written before the claim cache and
+  stores `<epoch> <task_id>` so terminal checks can age unassigned claim-stamp
+  drift without trusting claim-file mtime.
+  Recheck a lane's sidecar contract with:
+  `for f in ~/.cache/hapax/cc-active-task-<name>*; do k=${f##*/cc-active-task-}; printf '%s -> %s :: ' "$f" "$(head -n1 "$f")"; head -n1 ~/.cache/hapax/cc-claim-epoch-"$k"; done`.
+  Emergency-only bypass: set `HAPAX_CLAIM_EPOCH_CHECK_BYPASS=1` only while
+  repairing a sidecar writer; unset it after recreating the matching
+  `cc-claim-epoch-*` files. The bypass does not override reassignment,
+  closed-note, or merged-PR terminal states.
 - **Explicit name** is honored as-is. A *free* greek claude role may be used
   **only** when named explicitly (`hapax-dev claude zeta`).
 - **Collisions are refused**: if the resolved name is already live, no second
@@ -73,8 +95,8 @@ flags:
   attaching.
 - **Pass-through**: everything after `--` reaches the underlying spawner, e.g.
   `hapax-dev claude audio -- --task my-task "kick off prompt"`.
-- **Workdir**: defaults to the current directory. Note that `codex` and `agy`
-  write workspace rule files (`AGENTS.md`, `.agents/`) into the workdir — pass
+- **Workdir**: defaults to the current directory. Note that `codex`
+  writes workspace rule files (`AGENTS.md`) into the workdir — pass
   `--cd <scratch-dir>` if you want to keep the current repo clean. (A dedicated
   `hapax-council--dev` git worktree is intentionally *not* auto-created: the
   visible-worktree cap is already saturated — see
@@ -87,7 +109,6 @@ flags:
 hapax-dev claude                     # lowest free dev slot, attach here
 hapax-dev claude dev3 --detach       # named slot, leave detached
 hapax-dev codex --window             # new color, in a new window
-hapax-dev agy -- --no-claim          # forward a spawner flag
 hapax-dev ls                         # what's live, what's free
 hapax-dev attach dev                 # re-attach to a running dev session
 ```

@@ -40,7 +40,11 @@ Defined in `RouteConstraints.preferred_platforms` / `allowed_platforms` / `prohi
 | `claude` | Claude Code (Opus/Sonnet) | Frontier | 1M | Multi-file refactors, governance, architecture |
 | `codex` | Codex headless | Frontier | 192K | Bounded implementation, parallel lanes |
 | `vibe` | Mistral Medium 3.5 | JR+ | 256K | Mechanical: tests, deps, CI fixes |
-| `antigrav` | Antigravity/agy (Gemini-family) | JR+ | large | Directed, bounded, agy-backed CLI/IDE work |
+
+`antigrav` / Antigravity is retired and excised as a live platform, lane, and
+route family. Legitimate Gemini-family capability in that neighborhood must be
+registered as measured `agy` supply-leaf intake with route, resource, and
+governance receipts before it can satisfy demand.
 
 ## Reaching the Opus Route (signed route-authority receipts)
 

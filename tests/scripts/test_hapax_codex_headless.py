@@ -207,6 +207,19 @@ exit 0
     sid = proof["session_id"]
     assert (cache / f"session-role-{sid}").read_text(encoding="utf-8") == "cx-amber\n"
     assert (cache / f"cc-active-task-cx-amber-{sid}").read_text(encoding="utf-8") == "task-x\n"
+    legacy_epoch, _, legacy_task = (
+        (cache / "cc-claim-epoch-cx-amber").read_text(encoding="utf-8").strip().partition(" ")
+    )
+    session_epoch, _, session_task = (
+        (cache / f"cc-claim-epoch-cx-amber-{sid}")
+        .read_text(encoding="utf-8")
+        .strip()
+        .partition(" ")
+    )
+    assert legacy_epoch.isdigit()
+    assert session_epoch.isdigit()
+    assert legacy_task == "task-x"
+    assert session_task == "task-x"
 
 
 def test_codex_headless_treats_appendix_alias_as_local_on_appendix(tmp_path: Path) -> None:

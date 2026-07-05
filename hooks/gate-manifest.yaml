@@ -113,6 +113,9 @@ runtimes:
         - matcher: "Bash"
           hooks:
             - pr-size-advisory.sh
+        - matcher: "Bash"
+          hooks:
+            - cc-task-pr-link.sh
         - matcher: "Edit|Write|MultiEdit"
           hooks:
             - ruff-autoformat.sh
@@ -133,6 +136,10 @@ runtimes:
         - matcher: ""
           hooks:
             - conductor-stop.sh
+      UserPromptSubmit:
+        - matcher: ""
+          hooks:
+            - sense-reissue-capture.sh
 
   codex:
     source: "hooks/scripts/codex-hook-adapter.sh plus config/codex/config.toml and scripts/hapax-codex"
@@ -193,32 +200,6 @@ runtimes:
       Stop:
         - session-summary.sh
         - conductor-stop.sh
-
-  antigravity:
-    source: "scripts/hapax-antigrav plus hooks/scripts/antigrav-hook-adapter.sh; local Antigravity surface verified as agy CLI"
-    script: scripts/hapax-antigrav
-    hook_adapter: hooks/scripts/antigrav-hook-adapter.sh
-    capability_markers:
-      - 'export HAPAX_AGENT_INTERFACE="antigravity"'
-      - 'export HAPAX_AGENT_NAME="$SESSION"'
-      - 'export HAPAX_AGENT_SLOT="$SESSION"'
-      - 'export HAPAX_AGENT_ROLE="$SESSION"'
-      - 'export HAPAX_WORKTREE_ROLE="$SESSION"'
-      - 'export HAPAX_SESSION_ID="$SESSION_UUID"'
-      - '.agents/rules'
-      - '.agents/workflows'
-      - 'hapax-antigrav-lane.md'
-      - 'governed-dispatch-first.md'
-      - '--add-dir'
-      - '--prompt-interactive'
-      - 'HAPAX_ANTIGRAV_SANDBOX'
-      - 'cc-claim'
-    adapter_markers:
-      - 'ANTIGRAV_TOOL_NAME'
-      - 'ANTIGRAV_COMMAND'
-      - 'ANTIGRAV_FILE_PATH'
-      - 'ANTIGRAV_CONTENT'
-      - 'exec "$DELEGATE"'
 
   vibe:
     source: "scripts/hapax-vibe"

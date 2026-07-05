@@ -43,6 +43,11 @@ WIP_LIMIT = 3
 OFFERED_STALE_DAYS = 14
 """§2.7: offered task older than this with no claim is stale-on-arrival."""
 
+GHOST_CLAIM_GRACE_MINUTES = 10
+"""§2.2 grace window: ghost-claimed notes modified within this window are
+skipped — a mid-claim partial stamp must not be reverted out from under a
+freshly launched lane (2026-07-01 eta/ndcvb-phase1 incident)."""
+
 REFUSAL_DORMANCY_DAYS = 7
 """§2.8: zero canonical refusal notes in this window is a dormancy signal."""
 
@@ -121,7 +126,10 @@ def _git_log_count_since(repo_root: Path, branch: str, since_hours: int) -> int:
 
 
 def _gh_pr_list(repo_root: Path) -> list[dict[str, Any]]:
-    """Return open PRs as a list of dicts (number, headRefName, createdAt, updatedAt).
+    """Return open PRs as a list of dicts (number, headRefName, createdAt, updatedAt, author).
+
+    ``author`` is included so the orphan-PR predicate can exclude bot-authored
+    PRs (Dependabot/Renovate), which live outside the cc-task workflow.
 
     Returns ``[]`` on any error (gh missing, unauthenticated, network).
     """
@@ -134,7 +142,7 @@ def _gh_pr_list(repo_root: Path) -> list[dict[str, Any]]:
                 "--state",
                 "open",
                 "--json",
-                "number,headRefName,createdAt,updatedAt",
+                "number,headRefName,createdAt,updatedAt,author",
                 "--limit",
                 "100",
             ],
@@ -335,6 +343,21 @@ def check_ghost_claimed(
     """§2.2 — `status: claimed` AND (`assigned_to: unassigned` OR `claimed_at: null`).
 
     Severity: violation (definitional — `cc-claim` cannot produce this).
+
+    Grace window: a ghost whose note file changed within
+    ``GHOST_CLAIM_GRACE_MINUTES`` is skipped. A partially stamped claim
+    (target keys absent when cc-claim's substitutions ran) looks ghost for
+    the moments between the stamp and the sweep, and the H1 revert then
+    kills the freshly launched lane via the launcher's terminal check
+    (2026-07-01 eta/ndcvb-phase1 incident). A real ghost goes quiet and is
+    flagged on the first sweep after the window.
+
+    Known limitation: the window is anchored to file mtime, so a writer that
+    touches a genuinely ghost note more often than the window (vault sync,
+    hook appends) defers detection while it keeps writing. Accepted: those
+    writers are themselves sweep-visible, and anchoring to frontmatter
+    timestamps is impossible here — the ghost predicate is precisely that
+    claimed_at is missing.
     """
     now = now or _now()
     events: list[HygieneEvent] = []
@@ -343,6 +366,12 @@ def check_ghost_claimed(
             continue
         ghost = note.assigned_to in (None, "unassigned") or note.claimed_at is None
         if not ghost:
+            continue
+        try:
+            mtime = datetime.fromtimestamp(Path(note.path).stat().st_mtime, tz=UTC)
+        except OSError:
+            mtime = None
+        if mtime is not None and now - mtime < timedelta(minutes=GHOST_CLAIM_GRACE_MINUTES):
             continue
         events.append(
             HygieneEvent(
@@ -411,6 +440,33 @@ def check_duplicate_claim(
     return events
 
 
+def _pr_author_is_bot(pr: dict[str, Any]) -> bool:
+    """True if the PR was opened by a bot (Dependabot, Renovate, github-actions).
+
+    Bot-authored PRs are automated dependency/maintenance updates that live
+    outside the cc-task workflow by design: they will never carry a vault
+    cc-task ``pr`` link, so the orphan-PR predicate must not treat them as
+    hygiene violations (that produced a false-positive P0, incident
+    ``cc_hygiene_violation:orphan_pr:4408`` — Dependabot bumped hapax-logos npm
+    deps and the never-linkable PR aged past the 6h ntfy threshold).
+
+    Robust to two independent GitHub signals so a single API-shape change
+    cannot silently reopen the false positive:
+
+    * the ``author.is_bot`` boolean (primary, from ``gh pr list --json author``),
+      and
+    * the login conventions ``<name>[bot]`` / ``app/<name>`` used for GitHub
+      App / bot accounts (fallback when ``is_bot`` is absent).
+    """
+    author = pr.get("author")
+    if not isinstance(author, dict):
+        return False
+    if author.get("is_bot") is True:
+        return True
+    login = str(author.get("login", ""))
+    return login.endswith("[bot]") or login.startswith("app/")
+
+
 def check_orphan_pr(
     notes: Iterable[TaskNote],
     repo_root: Path,
@@ -429,6 +485,10 @@ def check_orphan_pr(
     notification storm for the PR's whole open lifetime (P0 incident
     ``orphan_pr:4111``, count 215). ``closed_notes`` defaults to empty so
     callers that only have active notes keep the prior behavior.
+
+    Bot-authored PRs (Dependabot/Renovate) are excluded via
+    ``_pr_author_is_bot``: they are never cc-task-tracked, so flagging them as
+    orphans is a false positive (P0 incident ``orphan_pr:4408``).
     """
     now = now or _now()
     events: list[HygieneEvent] = []
@@ -442,6 +502,8 @@ def check_orphan_pr(
         number = pr.get("number")
         if not isinstance(number, int) or number in linked:
             continue
+        if _pr_author_is_bot(pr):
+            continue  # Dependabot/Renovate — outside the cc-task workflow
         created_raw = pr.get("createdAt")
         created = _parse_dt(created_raw) if created_raw else None
         if created and created > cutoff:

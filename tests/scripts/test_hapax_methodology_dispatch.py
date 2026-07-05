@@ -2885,81 +2885,28 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert "claude/interactive/full" in result.stdout
     assert "claude/headless/sonnet" in result.stdout
     assert "gemini/" not in result.stdout
-    assert "antigrav/interactive/full" in result.stdout
+    assert "antigrav/" not in result.stdout
     assert "api/headless/api_frontier" in result.stdout
     assert "api/headless/provider_gateway" in result.stdout
 
 
-def test_antigrav_lane_worktree_tracks_requested_lane(monkeypatch, tmp_path: Path) -> None:
-    dispatcher = _dispatcher_module()
-    monkeypatch.delenv("HAPAX_DISPATCH_WORKTREE", raising=False)
-    monkeypatch.setenv("HAPAX_DISPATCH_PROJECT_ROOT", str(tmp_path))
+def test_antigrav_platform_is_not_dispatchable(tmp_path: Path) -> None:
+    for platform in ("agy", "antigrav", "Antigrav", "antigravity", "gemini-cli"):
+        result = _run(
+            tmp_path,
+            "--task",
+            "research-only",
+            "--lane",
+            platform,
+            "--platform",
+            platform,
+            "--mode",
+            "interactive",
+        )
 
-    assert dispatcher.lane_worktree("antigrav", "antigrav") == (
-        tmp_path / "hapax-council--antigrav"
-    )
-    assert dispatcher.lane_worktree("antigrav-5", "antigrav") == (
-        tmp_path / "hapax-council--antigrav-5"
-    )
-    assert dispatcher.lane_worktree("antigravity", "antigrav") == (
-        tmp_path / "hapax-council--antigrav"
-    )
-
-
-def test_antigrav_launch_passes_governed_dispatch_inflection(tmp_path: Path) -> None:
-    _worktree(tmp_path / "worktree")
-    spec = _spec(tmp_path / "isap-test.md")
-    _task(
-        tmp_path / "tasks",
-        "governed-build",
-        f"""
-        kind: build
-        authority_case: CASE-TEST-001
-        parent_spec: {spec}
-        """,
-    )
-    launcher_args = tmp_path / "antigrav-args.txt"
-    fake_launcher = tmp_path / "bin" / "hapax-antigrav"
-    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
-    fake_launcher.write_text(
-        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {launcher_args}\n",
-        encoding="utf-8",
-    )
-    fake_launcher.chmod(0o755)
-
-    result = _run(
-        tmp_path,
-        "--task",
-        "governed-build",
-        "--lane",
-        "antigrav-5",
-        "--platform",
-        "antigrav",
-        "--mode",
-        "interactive",
-        "--launch",
-        extra_env={
-            "HAPAX_METHODOLOGY_ANTIGRAV_LAUNCHER": str(fake_launcher),
-            "HAPAX_ANTIGRAV_SPAWN_DIR": str(tmp_path / "antigrav-spawns"),
-        },
-    )
-
-    assert result.returncode == 0, result.stderr
-    args = launcher_args.read_text(encoding="utf-8").splitlines()
-    assert args[:6] == [
-        "--session",
-        "antigrav-5",
-        "--task",
-        "governed-build",
-        "--terminal",
-        "tmux",
-    ]
-    inflection = Path(args[args.index("--inflection") + 1])
-    text = inflection.read_text(encoding="utf-8")
-    assert "SDLC GOVERNED DISPATCH." in text
-    assert "Task: governed-build" in text
-    assert "AuthorityCase: CASE-TEST-001" in text
-    assert "Do not choose unrelated queue work" in text
+        assert result.returncode == 10
+        assert f"platform '{platform.lower()}' is retired/excised" in result.stderr
+        assert "measured agy supply-leaf intake" in result.stderr
 
 
 def test_codex_launch_unsupported_mode_fails_closed(tmp_path: Path) -> None:

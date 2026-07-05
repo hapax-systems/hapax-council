@@ -225,6 +225,41 @@ class TestSendNotification:
             replace_id=456,
         )
 
+    @patch("shared.notify._dismiss_existing_consumed_notifications")
+    @patch("shared.notify._dismiss_existing_intake_notifications")
+    @patch("shared.p0_incident_intake.record_notification")
+    @patch("shared.notify._send_desktop", return_value=True)
+    def test_no_remint_alert_with_existing_intake_is_consumed_by_default(
+        self,
+        mock_desktop,
+        mock_record,
+        mock_dismiss,
+        mock_dismiss_consumed,
+        _dedup,
+        _watershed,
+        _logos,
+    ):
+        mock_record.return_value = SimpleNamespace(
+            technical=False,
+            task_id="p0-incident-refusal-demo",
+            replace_id=789,
+            reason="dispatch_refusal_incident_task_no_remint",
+        )
+
+        result = send_notification(
+            "SDLC: dispatch refusal circuit breaker",
+            "Task p0-incident-demo refused 3x on lane cx-p0.",
+            priority="high",
+            tags=["sdlc", "no-spin"],
+        )
+
+        assert result is True
+        mock_desktop.assert_not_called()
+        mock_dismiss.assert_called_once_with("p0-incident-refusal-demo")
+        mock_dismiss_consumed.assert_called_once_with(
+            "SDLC: dispatch refusal circuit breaker", "p0-incident-refusal-demo"
+        )
+
     @patch("shared.p0_incident_intake.record_notification", side_effect=OSError("state locked"))
     @patch("shared.notify._send_desktop", return_value=True)
     def test_technical_intake_failure_logs_next_action(

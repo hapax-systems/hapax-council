@@ -32,7 +32,6 @@ from executor_contract import (  # noqa: E402
 )
 
 from shared.capability_adapter_protocol import (
-    AntigravAdapter,
     CapabilityAdapter,
     ClaudeAdapter,
     CodexAdapter,
@@ -188,15 +187,6 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "Mistral Vibe headless tmux one-shot lane",
         True,
         "JR+ bounded worker path; task fit must exclude governance-critical or off-limits work.",
-    ),
-    ("antigrav", "interactive", "full"): PlatformPath(
-        "antigrav",
-        "interactive",
-        "full",
-        "~/.local/bin/hapax-antigrav --session <lane> --task <task> --terminal tmux",
-        "Google Antigravity CLI lane",
-        True,
-        "agy CLI interactive path; requires governed dispatch bootstrap and task claim.",
     ),
     ("api", "headless", "api_frontier"): PlatformPath(
         "api",
@@ -1389,7 +1379,6 @@ def _await_sdlc_admission(args: argparse.Namespace) -> None:
 _WORKER_FAILURE_ADAPTERS: dict[str, type[CapabilityAdapter]] = {
     "claude": ClaudeAdapter,
     "codex": CodexAdapter,
-    "antigrav": AntigravAdapter,
 }
 
 
@@ -1418,8 +1407,8 @@ def _classify_and_witness_terminal_failure(
     text = _read_worker_failure_text(platform, mode, lane)
     adapter_cls = _WORKER_FAILURE_ADAPTERS.get(platform)
     if adapter_cls is not None:
-        # exit_code feeds the antigrav launcher exit-code table; text-classifier adapters
-        # (claude/codex) ignore it and classify from the output text.
+        # Text-classifier adapters classify from the output text; exit_code remains
+        # available for adapter-specific launch wrappers that need it.
         receipt = adapter_cls().classify_failure(
             text, process_failed=True, route_id=route_id, exit_code=rc
         )
@@ -1774,79 +1763,6 @@ def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Valid
     return _sliced_call(args)
 
 
-def write_antigrav_inflection(task_id: str, lane: str, prompt: str) -> Path:
-    spawn_dir = Path(
-        os.environ.get(
-            "HAPAX_ANTIGRAV_SPAWN_DIR",
-            str(
-                Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
-                / "hapax"
-                / "antigrav-spawns"
-            ),
-        )
-    )
-    spawn_dir.mkdir(parents=True, exist_ok=True)
-    path = (
-        spawn_dir
-        / f"{now_utc().replace(':', '').replace('-', '')}-{slugify(lane)}-{slugify(task_id)}-dispatch.md"
-    )
-    path.write_text(
-        "\n".join(
-            [
-                "# Hapax Antigrav Methodology Dispatch",
-                "",
-                prompt,
-                "",
-                "Antigrav launch contract:",
-                "",
-                "- This bootstrap was produced by `hapax-methodology-dispatch` after task authority validation.",
-                "- Treat the task note and parent spec named above as the only work authority.",
-                "- Do not choose unrelated queue work from inside Antigravity.",
-                "- Keep relay/status surfaces current while blocked, waiting, or idle.",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
-def launch_antigrav_interactive(
-    task_id: str,
-    lane: str,
-    validation: Validation,
-    prompt: str,
-) -> int:
-    launcher = Path(
-        os.environ.get(
-            "HAPAX_METHODOLOGY_ANTIGRAV_LAUNCHER",
-            str(Path.home() / ".local" / "bin" / "hapax-antigrav"),
-        )
-    )
-    if not launcher.is_file():
-        print(f"Antigrav launcher not found: {launcher}", file=sys.stderr)
-        return 8
-
-    status = ""
-    if validation.task is not None:
-        status = strip_scalar(str(validation.task.fields.get("status", "")))
-    inflection_path = write_antigrav_inflection(task_id, lane, prompt)
-    args = [
-        str(launcher),
-        "--session",
-        lane,
-        "--task",
-        task_id,
-        "--terminal",
-        "tmux",
-        "--inflection",
-        str(inflection_path),
-    ]
-    if status in {"claimed", "in_progress"}:
-        args.append("--no-claim")
-    return subprocess.call(args)
-
-
 def advance_task_stage(task_id: str, stage: str) -> int:
     """Perform the drain mutation: advance the orphan's stage via the canonical
     governed setter (scripts/cc-stage-advance). Returns its exit code (0 advanced /
@@ -1967,7 +1883,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--platform",
         default="claude",
-        choices=["api", "claude", "codex", "vibe", "antigrav"],
+        type=str.lower,
+        choices=[
+            "agy",
+            "antigrav",
+            "antigravity",
+            "api",
+            "claude",
+            "codex",
+            "gemini-cli",
+            "vibe",
+        ],
     )
     parser.add_argument(
         "--mode", default="headless", choices=["headless", "interactive", "receipt-only"]
@@ -2081,6 +2007,28 @@ def main(argv: list[str] | None = None) -> int:
             run_claim_sweep(task_root, notify=True)
         except Exception:
             pass
+
+    if args.platform in {"agy", "antigrav", "antigravity", "gemini-cli"}:
+        reason = (
+            f"platform '{args.platform}' is retired/excised; do not dispatch it as live supply. "
+            "Use admitted Claude, Codex, or Vibe routes, or mint measured agy supply-leaf "
+            "intake with receipts before any future interactive agy worker path."
+        )
+        task_for_receipt = read_task(task_root, args.task)
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=None,
+                validation=Validation(False, reason, task_for_receipt),
+                prompt=None,
+                launched=False,
+            )
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 10
 
     # SYSTEM drain is a distinct, capability-gated mutation path — it advances an
     # orphaned dead-lane task via cc-stage-advance and returns. It must intercept
@@ -2347,9 +2295,6 @@ def main(argv: list[str] | None = None) -> int:
             ),
             ("vibe", "headless"): lambda: launch_vibe_headless(
                 args.task, args.lane, prompt or "", validation
-            ),
-            ("antigrav", "interactive"): lambda: launch_antigrav_interactive(
-                args.task, args.lane, validation, prompt or ""
             ),
         }
 
