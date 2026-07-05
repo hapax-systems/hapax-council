@@ -157,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
             print("capability_inventory_validation_gaps:")
             for capability_id, gaps in sorted(invalid.items()):
                 print(f"  {capability_id}: {', '.join(gaps)}")
+            print("NEXT: fill the missing descriptor facts before regenerating the baseline.")
             return 1
         print(
             f"capability_surface_delta: {len(delta.new_capability_ids)} new, "
@@ -166,6 +167,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         for cid, kind in delta.kinds():
             print(f"  {kind.value}: {cid}")
+        if not delta.is_empty:
+            print(
+                "NEXT: repair the descriptor source or regenerate "
+                "config/capability-inventory-baseline.json after an intentional capability change."
+            )
         return 1 if not delta.is_empty else 0
 
     descriptors = SEED_CAPABILITY_DESCRIPTORS

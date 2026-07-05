@@ -170,6 +170,7 @@ def test_ci_capability_surface_delta_gate_is_required() -> None:
     assert "scripts/hapax-capability-surface-delta-gate" in gate_block
     assert (
         "uv run --no-project --with pydantic==2.13.4 "
+        "--with pyyaml==6.0.3 "
         "python scripts/hapax-capability-surface-delta-gate"
     ) in gate_block
     assert "uv run --frozen python scripts/hapax-capability-surface-delta-gate" not in gate_block

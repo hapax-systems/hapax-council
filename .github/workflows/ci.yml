@@ -416,7 +416,7 @@ jobs:
             uv.lock
       - name: Run capability surface delta gate
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
-        run: uv run --no-project --with pydantic==2.13.4 python scripts/hapax-capability-surface-delta-gate
+        run: uv run --no-project --with pydantic==2.13.4 --with pyyaml==6.0.3 python scripts/hapax-capability-surface-delta-gate
 
 
   typecheck:
