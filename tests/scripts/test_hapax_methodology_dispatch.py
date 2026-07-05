@@ -3167,6 +3167,47 @@ printf '%s\\n' "$@" > {launcher_args}
     assert "--force" in args
 
 
+def test_agy_dispatch_remains_route_gated_without_spawnable_route(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "agy",
+        "--mode",
+        "headless",
+        "--launch",
+    )
+
+    assert result.returncode == 10
+    assert "route policy" in result.stderr
+    assert "Supported governed routes:" in result.stderr
+    assert "agy/" not in result.stderr
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["platform"] == "agy"
+    assert receipt["launched"] is False
+    assert receipt["route_policy_action"] != "launch"
+    assert "unsupported_route" in receipt["route_policy_reason_codes"]
+
+
 def test_gemini_platform_is_not_dispatchable(tmp_path: Path) -> None:
     result = _run(
         tmp_path,
@@ -3195,6 +3236,7 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert "claude/headless/sonnet" in result.stdout
     assert "gemini/" not in result.stdout
     assert "antigrav/" not in result.stdout
+    assert "agy/" not in result.stdout
     assert "api/headless/api_frontier" in result.stdout
     assert "api/headless/openrouter" in result.stdout
     assert "api/headless/provider_gateway" in result.stdout
