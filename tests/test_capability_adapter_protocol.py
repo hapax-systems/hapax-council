@@ -10,6 +10,7 @@ from unittest import mock
 import pytest
 
 from shared.capability_adapter_protocol import (
+    AgyAdapter,
     AuthorityViolation,
     BudgetAuthorityAdapter,
     CapabilityAdapter,
@@ -112,6 +113,8 @@ def test_describe_returns_route_on_platform_match() -> None:
 
 
 def test_worker_has_launch_and_sendcapable_has_send() -> None:
+    assert hasattr(AgyAdapter, "launch")
+    assert not hasattr(AgyAdapter, "send")
     assert hasattr(ClaudeAdapter, "launch")
     assert hasattr(ClaudeAdapter, "send")
     assert hasattr(CodexAdapter, "launch")
@@ -142,6 +145,7 @@ def test_retired_antigrav_has_no_adapter_launch_or_send_surface() -> None:
 
 
 def test_platform_classvars_are_pinned() -> None:
+    assert AgyAdapter.PLATFORM is Platform.AGY
     assert ClaudeAdapter.PLATFORM is Platform.CLAUDE
     assert CodexAdapter.PLATFORM is Platform.CODEX
     assert BudgetAuthorityAdapter.PLATFORM is Platform.API
@@ -278,6 +282,16 @@ def test_codex_classify_failure_shares_the_cli_table() -> None:
     assert adapter.classify_failure("service unavailable").code is FailureCode.TRANSIENT
     assert adapter.classify_failure("nothing notable").code is FailureCode.UNKNOWN
     assert adapter.classify_failure("x").platform == Platform.CODEX.value
+
+
+def test_agy_classify_failure_shares_the_cli_table() -> None:
+    adapter = AgyAdapter()
+    assert (
+        adapter.classify_failure("HTTP 429 Too Many Requests").code is FailureCode.QUOTA_EXHAUSTION
+    )
+    assert adapter.classify_failure("service unavailable").code is FailureCode.TRANSIENT
+    assert adapter.classify_failure("nothing notable").code is FailureCode.UNKNOWN
+    assert adapter.classify_failure("x").platform == Platform.AGY.value
 
 
 def test_retired_antigrav_failure_classifier_maps_historical_launcher_exit_codes() -> None:

@@ -78,6 +78,7 @@ class StrictModel(BaseModel):
 
 
 class Platform(StrEnum):
+    AGY = "agy"
     ANTIGRAV = "antigrav"
     API = "api"
     CLAUDE = "claude"

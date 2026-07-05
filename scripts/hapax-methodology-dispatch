@@ -32,6 +32,7 @@ from executor_contract import (  # noqa: E402
 )
 
 from shared.capability_adapter_protocol import (
+    AgyAdapter,
     AuthorityViolation,
     CapabilityAdapter,
     ClaudeAdapter,
@@ -1386,6 +1387,7 @@ def _await_sdlc_admission(args: argparse.Namespace) -> None:
 # classification NEVER changes the dispatch returncode or outcome. The guard, single-key write, and
 # no-sibling-flip invariants live in shared.worker_failure_witness.
 _WORKER_FAILURE_ADAPTERS: dict[str, type[WorkerAdapter]] = {
+    "agy": AgyAdapter,
     "claude": ClaudeAdapter,
     "codex": CodexAdapter,
 }
@@ -2046,11 +2048,10 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
 
-    if args.platform in {"agy", "antigrav", "antigravity", "gemini-cli"}:
+    if args.platform in {"antigrav", "antigravity", "gemini-cli"}:
         reason = (
             f"platform '{args.platform}' is retired/excised; do not dispatch it as live supply. "
-            "Use admitted Claude, Codex, or Vibe routes, or mint measured agy supply-leaf "
-            "intake with receipts before any future interactive agy worker path."
+            "Use admitted Claude, Codex, Agy, or Vibe routes."
         )
         task_for_receipt = read_task(task_root, args.task)
         if not args.no_receipt:

@@ -25,8 +25,8 @@ Capability differences are expressed at the TYPE level, not via runtime flags: o
 :class:`WorkerAdapter` has ``launch``; only :class:`SendCapableAdapter` (a mixin) has
 ``send``. :class:`BudgetAuthorityAdapter` (api) and :class:`ReviewSeatAdapter` (glmcp) have
 neither, so ``hasattr(adapter, "launch")`` is the honest test (genuine ``AttributeError``,
-not a ``False`` flag). Retired Antigrav/agy launcher exit codes have only a historical receipt
-classifier; there is deliberately no Antigrav ``CapabilityAdapter`` or ``WorkerAdapter``.
+not a ``False`` flag). Retired Antigrav GUI launcher exit codes have only a historical
+receipt classifier; live ``agy`` is represented by :class:`AgyAdapter`.
 
 NB: the module name is ``capability_adapter_protocol`` because ``capability_adapters`` is
 already taken by the unrelated ``PerceptionBackendAdapter``.
@@ -71,6 +71,7 @@ __all__ = [
     "SendCapableAdapter",
     "BudgetAuthorityAdapter",
     "ReviewSeatAdapter",
+    "AgyAdapter",
     "ClaudeAdapter",
     "CodexAdapter",
 ]
@@ -335,6 +336,30 @@ class ReviewSeatAdapter(CapabilityAdapter):
         )
 
 
+class AgyAdapter(WorkerAdapter):
+    """Agy worker lanes: pure reuse + the shared CLI failure table."""
+
+    PLATFORM: ClassVar[Platform] = Platform.AGY
+
+    def classify_failure(
+        self,
+        text: str,
+        *,
+        process_failed: bool = False,
+        model_stdout: str = "",
+        route_id: str | None = None,
+        error_class: str | None = None,
+        exit_code: int | None = None,
+    ) -> FailureReceipt:
+        return FailureReceipt(
+            code=_classify_cli_failure(text, model_stdout),
+            raw_signal=text,
+            platform=self.PLATFORM.value,
+            route_id=route_id,
+            error_class=error_class,
+        )
+
+
 class ClaudeAdapter(WorkerAdapter, SendCapableAdapter):
     """Claude worker lanes: pure reuse (inherits launch + the four FINAL delegations verbatim) plus
     a small CLI failure table.
@@ -385,10 +410,10 @@ class CodexAdapter(WorkerAdapter, SendCapableAdapter):
         )
 
 
-# Historical Antigrav launcher exit codes (scripts/hapax-antigrav) -> FailureCode. Only the two
-# codes with a genuine availability/claim meaning are mapped; usage/env/setup errors (2/3/5/6/9)
-# stay UNKNOWN (no auto-degrade). Verbatim from the retired launcher: exit 4 = agy binary not found
-# (route gone), exit 8 = cc-claim failed (claim conflict).
+# Historical Antigrav GUI launcher exit codes (scripts/hapax-antigrav) -> FailureCode. Only the
+# two codes with a genuine availability/claim meaning are mapped; usage/env/setup errors
+# (2/3/5/6/9) stay UNKNOWN (no auto-degrade). Verbatim from the retired launcher: exit 4 = agy
+# binary not found (route gone), exit 8 = cc-claim failed (claim conflict).
 _ANTIGRAV_EXIT_CODE_TO_FAILURE: dict[int, FailureCode] = {
     4: FailureCode.ROUTE_UNAVAILABLE,
     8: FailureCode.CLAIM_CONFLICT,
@@ -396,7 +421,7 @@ _ANTIGRAV_EXIT_CODE_TO_FAILURE: dict[int, FailureCode] = {
 
 
 class RetiredAntigravFailureClassifier:
-    """Historical receipt classifier for retired Antigrav/agy launcher signals.
+    """Historical receipt classifier for retired Antigrav GUI launcher signals.
 
     This class is intentionally NOT a :class:`CapabilityAdapter`, NOT a :class:`WorkerAdapter`,
     and not exported through ``__all__``. It cannot describe, admit, launch, send, observe, or

@@ -1077,6 +1077,22 @@ def test_dispatch_admission_reuses_worker_adapter_map(monkeypatch) -> None:
     assert calls == [request]
 
 
+def test_dispatch_admission_falls_back_to_base_adapter_for_non_worker_route() -> None:
+    module = _dispatcher_module()
+
+    adapter = module._capability_adapter_for_admission("api")
+
+    assert type(adapter) is module.CapabilityAdapter
+    assert not isinstance(adapter, module.WorkerAdapter)
+
+
+def test_dispatch_worker_adapter_map_includes_live_agy() -> None:
+    module = _dispatcher_module()
+
+    assert module._WORKER_FAILURE_ADAPTERS["agy"] is module.AgyAdapter
+    assert isinstance(module._worker_adapter_for_launch("agy"), module.AgyAdapter)
+
+
 def test_dispatch_launch_requires_worker_adapter() -> None:
     module = _dispatcher_module()
 
@@ -1119,6 +1135,73 @@ def test_dispatch_launch_adapter_rejects_non_launch_decision_before_side_effect(
         )
 
     assert launch_called is False
+
+
+def test_launch_authority_violation_writes_blocked_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _dispatcher_module()
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    args = (
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+    )
+    mq_db, message_id = _maybe_write_durable_mq_binding(tmp_path, args)
+    assert message_id is not None
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_COORD_LEDGER_DB", str(tmp_path / "coord" / "ledger.db"))
+    monkeypatch.setenv("HAPAX_COORD_JSONL_MIRROR", str(tmp_path / "coord" / "ledger.jsonl"))
+    monkeypatch.setenv("HAPAX_COORD_SPOOL_DIR", str(tmp_path / "coord" / "spool"))
+    monkeypatch.setenv("HAPAX_RELAY_MQ_DB", str(mq_db))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID", message_id)
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setattr(module, "_await_sdlc_admission", lambda args: None)
+
+    class RefusingAdapter:
+        def launch(self, *, decision, request, launch_callable):
+            raise module.AuthorityViolation("fixture refusal")
+
+    monkeypatch.setattr(module, "_worker_adapter_for_launch", lambda platform: RefusingAdapter())
+
+    rc = module.main(list(args))
+
+    captured = capsys.readouterr()
+    assert rc == 10
+    assert "BLOCKED: capability adapter launch refused: fixture refusal" in captured.err
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["launched"] is False
+    assert receipt["route_policy_action"] == "launch"
+    assert receipt["durable_mq_dispatch_bound"] is True
+    assert receipt["reason"] == "capability adapter launch refused: fixture refusal"
 
 
 def test_policy_hold_writes_route_decision_before_prompt_or_launch(tmp_path: Path) -> None:
@@ -2964,8 +3047,8 @@ def test_normalizes_openrouter_api_profile_aliases() -> None:
     assert dispatcher.normalize_profile("api", "openrouter") == "openrouter"
 
 
-def test_antigrav_platform_is_not_dispatchable(tmp_path: Path) -> None:
-    for platform in ("agy", "antigrav", "Antigrav", "antigravity", "gemini-cli"):
+def test_legacy_antigrav_platforms_are_not_dispatchable(tmp_path: Path) -> None:
+    for platform in ("antigrav", "Antigrav", "antigravity", "gemini-cli"):
         result = _run(
             tmp_path,
             "--task",
@@ -2980,7 +3063,7 @@ def test_antigrav_platform_is_not_dispatchable(tmp_path: Path) -> None:
 
         assert result.returncode == 10
         assert f"platform '{platform.lower()}' is retired/excised" in result.stderr
-        assert "measured agy supply-leaf intake" in result.stderr
+        assert "Use admitted Claude, Codex, Agy, or Vibe routes." in result.stderr
 
 
 def test_codex_launch_unsupported_mode_fails_closed(tmp_path: Path) -> None:
