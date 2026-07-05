@@ -46,20 +46,20 @@ def _extend_from_file(
     descriptors.extend(ingest(path))
 
 
-def _read_models_dict_literal(path: Path) -> dict[str, object]:
+def _read_models_dict_literal(path: Path) -> dict[str, object] | None:
     """Read MODELS from shared/config.py without importing secret-loading runtime code."""
     module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in module.body:
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             if node.target.id == "MODELS" and node.value is not None:
                 value = ast.literal_eval(node.value)
-                return value if isinstance(value, dict) else {}
+                return value if isinstance(value, dict) else None
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "MODELS":
                     value = ast.literal_eval(node.value)
-                    return value if isinstance(value, dict) else {}
-    return {}
+                    return value if isinstance(value, dict) else None
+    return None
 
 
 def aggregate_all_capabilities(root: Path | None = None) -> list[CapabilityHarnessDescriptor]:
@@ -116,10 +116,12 @@ def aggregate_all_capabilities(root: Path | None = None) -> list[CapabilityHarne
     except (OSError, SyntaxError, ValueError) as exc:
         LOG.warning("capability inventory source unavailable: %s (%s)", config_py, exc)
     else:
-        if models:
+        if models is None:
+            LOG.warning("capability inventory source missing MODELS literal: %s", config_py)
+        elif models:
             descriptors.extend(ingest_models_dict(models))
         else:
-            LOG.warning("capability inventory source missing MODELS literal: %s", config_py)
+            LOG.warning("capability inventory source MODELS literal is empty: %s", config_py)
 
     return descriptors
 

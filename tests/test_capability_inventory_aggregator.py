@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
 from collections import Counter
+from pathlib import Path
 
 from shared.capability_harness_descriptor import validate_descriptor
-from shared.capability_inventory_aggregator import aggregate_all_capabilities, full_inventory_delta
+from shared.capability_inventory_aggregator import (
+    _read_models_dict_literal,
+    aggregate_all_capabilities,
+    full_inventory_delta,
+)
 
 
 class AggregateAllCapabilitiesTest(unittest.TestCase):
@@ -41,6 +47,43 @@ class AggregateAllCapabilitiesTest(unittest.TestCase):
         descs = aggregate_all_capabilities()
         invalid = {d.capability_id: validate_descriptor(d) for d in descs if validate_descriptor(d)}
         self.assertEqual(invalid, {})
+
+    def test_reads_models_literal_from_annotated_assignment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.py"
+            path.write_text(
+                "MODELS: dict[str, str] = {'fast': 'gemini-flash'}\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(_read_models_dict_literal(path), {"fast": "gemini-flash"})
+
+    def test_reads_models_literal_from_plain_assignment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.py"
+            path.write_text("MODELS = {'balanced': 'claude-sonnet'}\n", encoding="utf-8")
+            self.assertEqual(_read_models_dict_literal(path), {"balanced": "claude-sonnet"})
+
+    def test_missing_models_literal_is_reported_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.py"
+            path.write_text("OTHER = {'fast': 'gemini-flash'}\n", encoding="utf-8")
+            self.assertIsNone(_read_models_dict_literal(path))
+
+    def test_aggregate_warns_when_models_literal_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config").mkdir()
+            (root / "shared").mkdir()
+            (root / "shared" / "config.py").write_text(
+                "OTHER = {'fast': 'gemini-flash'}\n",
+                encoding="utf-8",
+            )
+            with self.assertLogs("shared.capability_inventory_aggregator", level="WARNING") as cm:
+                aggregate_all_capabilities(root=root)
+            self.assertTrue(
+                any("missing MODELS literal" in message for message in cm.output),
+                cm.output,
+            )
 
 
 class FullInventoryDeltaTest(unittest.TestCase):

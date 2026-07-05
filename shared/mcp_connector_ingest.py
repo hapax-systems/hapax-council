@@ -73,9 +73,13 @@ def _authority_for_shape(shape: CapabilityShape) -> AuthorityCeiling:
 
 def _descriptor_from_tool(tool: dict[str, object]) -> CapabilityHarnessDescriptor:
     canonical = str(tool.get("canonical_name") or "")
-    effects = tool.get("effect_classes") or []
-    if not isinstance(effects, list):
+    effects = tool.get("effect_classes")
+    if effects is None:
         effects = []
+    if not isinstance(effects, list):
+        raise ValueError(
+            f"MCP connector tool {canonical or '<unknown>'} effect_classes must be a list"
+        )
     effects_str = [str(e) for e in effects]
     shape = _shape_for_effects(effects_str)
     mutation_surfaces = (

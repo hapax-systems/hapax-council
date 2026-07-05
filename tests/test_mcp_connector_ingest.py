@@ -63,6 +63,12 @@ class McpConnectorIngestTest(unittest.TestCase):
                 [{"canonical_name": "tool.unknown", "effect_classes": ["network_mystery"]}]
             )
 
+    def test_malformed_effect_classes_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "effect_classes must be a list"):
+            ingest_mcp_connector_routes(
+                [{"canonical_name": "tool.malformed", "effect_classes": "external_mutation"}]
+            )
+
 
 class McpConnectorSmokeTest(unittest.TestCase):
     def test_ingests_real_manifest(self) -> None:
