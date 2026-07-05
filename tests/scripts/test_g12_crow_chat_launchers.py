@@ -562,3 +562,47 @@ def test_hapax_claude_headless_valid_attestation_scrubs_hmac_before_worker(
     assert "required=1" in worker_env
     assert "hmac=" in worker_env
     assert TEST_HMAC_KEY not in worker_env
+
+
+def test_hapax_claude_headless_validates_g12_before_launch_state(
+    tmp_path: Path,
+) -> None:
+    env = _base_env(tmp_path)
+    home = Path(env["HOME"])
+    workdir = home / "projects" / "hapax-council--beta"
+    workdir.mkdir(parents=True)
+    pipe_dir = tmp_path / "pipe"
+    council = tmp_path / "council"
+    (council / "scripts").mkdir(parents=True)
+    relay_marker = tmp_path / "relay-retire-ran.txt"
+    relay_retire = council / "scripts" / "hapax-relay-retire"
+    relay_retire.write_text(
+        f"#!/usr/bin/env bash\nprintf 'relay-retire\\n' > {relay_marker}\n",
+        encoding="utf-8",
+    )
+    relay_retire.chmod(0o755)
+    env.update(
+        {
+            "HAPAX_COUNCIL_DIR": str(council),
+            "HAPAX_CLAUDE_HEADLESS_ALLOW": "1",
+            "HAPAX_CLAUDE_HEADLESS_PIPE_DIR": str(pipe_dir),
+            "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1",
+        }
+    )
+    _fake_claude(tmp_path / "bin", tmp_path / "claude-ran.txt")
+
+    result = subprocess.run(
+        [str(CLAUDE_HEADLESS), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 18
+    assert "crow_chat_origin_required_for_dispatch" in result.stderr
+    assert not pipe_dir.exists()
+    assert not (home / ".cache" / "hapax" / "claude-headless" / "beta").exists()
+    assert not list((home / ".cache" / "hapax").glob("session-role-*"))
+    assert not relay_marker.exists()

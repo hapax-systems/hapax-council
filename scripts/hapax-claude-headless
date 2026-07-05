@@ -81,6 +81,42 @@ if ! headless_allowed; then
   exit 77
 fi
 
+WORKDIR="${HAPAX_CLAUDE_HEADLESS_WORKDIR:-}"
+if [[ -n "$WORKDIR" && "$WORKDIR" == "~/"* ]]; then
+  WORKDIR="$HOME/${WORKDIR#"~/"}"
+fi
+if [[ -z "$WORKDIR" ]]; then
+  WORKDIR="$HOME/projects/hapax-council"
+  [[ "$ROLE" != "alpha" ]] && WORKDIR="$HOME/projects/hapax-council--$ROLE"
+fi
+[[ -d "$WORKDIR" ]] || { echo "hapax-claude-headless: worktree not found: $WORKDIR" >&2; exit 3; }
+
+export PATH="$WORKDIR/scripts:$PATH"
+
+CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE"
+CLAIMED_TASK=""
+if [[ -s "$CLAIM_FILE" ]]; then
+  CLAIMED_TASK="$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')"
+fi
+if [[ -z "$CLAUDE_TASK" && -n "$CLAIMED_TASK" ]]; then
+  CLAUDE_TASK="$CLAIMED_TASK"
+fi
+if [[ -z "$CLAUDE_TASK" ]]; then
+  echo "hapax-claude-headless: refusing mutating launch without --task <cc-task-id> or existing active claim for role '$ROLE'" >&2
+  exit 15
+fi
+if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CLAUDE_TASK" ]]; then
+  echo "hapax-claude-headless: refusing launch; role '$ROLE' already claims '$CLAIMED_TASK', not dispatch task '$CLAUDE_TASK'" >&2
+  exit 13
+fi
+require_g12_crow_chat_attestation "$CLAUDE_TASK" "$ROLE" "hapax-claude-headless"
+
+INITIAL_MSG="${1:-}"
+if [[ -z "$INITIAL_MSG" ]]; then
+  echo "hapax-claude-headless: governed initial message required" >&2
+  exit 5
+fi
+
 # L1 attachment point (c): self-attach this lane + everything it spawns (claude +
 # its git/pytest/cargo grandchildren) into hapax-sdlc.slice so cpu.idle + the
 # audio-core cpuset fence inherit. Re-exec into a transient user scope with the
@@ -120,18 +156,6 @@ export HAPAX_SESSION_ID="$SESSION_UUID"
 # hapax_session_role_marker in hooks/scripts/agent-role.sh.
 mkdir -p "$HOME/.cache/hapax" 2>/dev/null || true
 printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID" 2>/dev/null || true
-
-WORKDIR="${HAPAX_CLAUDE_HEADLESS_WORKDIR:-}"
-if [[ -n "$WORKDIR" && "$WORKDIR" == \~/* ]]; then
-  WORKDIR="$HOME/${WORKDIR#"~/"}"
-fi
-if [[ -z "$WORKDIR" ]]; then
-  WORKDIR="$HOME/projects/hapax-council"
-  [[ "$ROLE" != "alpha" ]] && WORKDIR="$HOME/projects/hapax-council--$ROLE"
-fi
-[[ -d "$WORKDIR" ]] || { echo "hapax-claude-headless: worktree not found: $WORKDIR" >&2; exit 3; }
-
-export PATH="$WORKDIR/scripts:$PATH"
 
 PIPE_DIR="${HAPAX_CLAUDE_HEADLESS_PIPE_DIR:-/run/user/$(id -u)/hapax-claude}"
 LOG_DIR="$HOME/.cache/hapax/claude-headless/$ROLE"
@@ -234,36 +258,19 @@ if [[ -n "$MODEL" ]]; then
   CLAUDE_ARGS+=(--model "$MODEL")
 fi
 
-INITIAL_MSG="${1:-}"
-if [[ -z "$INITIAL_MSG" ]]; then
-  echo "hapax-claude-headless: governed initial message required" >&2
-  exit 5
-fi
 # Session-keyed claim FIRST (review #4097-1): the legacy role-keyed file is
 # shared by every session of this role — reading it alone defeats the
 # isolation this PR exists to provide. A fresh launcher has a fresh
 # SESSION_UUID, so its session file cannot exist yet; any hit on the legacy
 # file is informational fallback for --task-less relaunches only.
 SESSION_CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE-$SESSION_UUID"
-CLAIM_FILE="$HOME/.cache/hapax/cc-active-task-$ROLE"
-CLAIMED_TASK=""
 if [[ -s "$SESSION_CLAIM_FILE" ]]; then
   CLAIMED_TASK="$(head -n1 "$SESSION_CLAIM_FILE" | tr -d '[:space:]')"
-elif [[ -s "$CLAIM_FILE" ]]; then
-  CLAIMED_TASK="$(head -n1 "$CLAIM_FILE" | tr -d '[:space:]')"
-fi
-if [[ -z "$CLAUDE_TASK" && -n "$CLAIMED_TASK" ]]; then
-  CLAUDE_TASK="$CLAIMED_TASK"
-fi
-if [[ -z "$CLAUDE_TASK" ]]; then
-  echo "hapax-claude-headless: refusing mutating launch without --task <cc-task-id> or existing active claim for role '$ROLE'" >&2
-  exit 15
 fi
 if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CLAUDE_TASK" ]]; then
   echo "hapax-claude-headless: refusing launch; role '$ROLE' already claims '$CLAIMED_TASK', not dispatch task '$CLAUDE_TASK'" >&2
   exit 13
 fi
-require_g12_crow_chat_attestation "$CLAUDE_TASK" "$ROLE" "hapax-claude-headless"
 if [[ -z "$CLAIMED_TASK" ]]; then
   [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-claude-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
   (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")
