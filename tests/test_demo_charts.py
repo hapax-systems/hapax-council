@@ -8,6 +8,7 @@ pytest.importorskip("matplotlib", reason="matplotlib not installed")
 
 import matplotlib.image as mpimg  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.figure import Figure  # noqa: E402
 
 from agents.demo_pipeline import charts  # noqa: E402
 from agents.demo_pipeline.charts import (  # noqa: E402, I001
@@ -95,6 +96,30 @@ class TestCharts:
         result = charts.render_chart(spec, tmp_path / "fallback.png")
 
         assert result.exists()
+        assert plt.get_fignums() == []
+
+    def test_savefig_raster_overflow_uses_non_matplotlib_fallback(self, monkeypatch, tmp_path):
+        plt.close("all")
+
+        def bad_savefig(*_args, **_kwargs):
+            raise RuntimeError(
+                "FT_Render_Glyph (ft2font_wrapper.cpp line 1934) failed "
+                "with error 0x62: raster overflow"
+            )
+
+        monkeypatch.setattr(Figure, "savefig", bad_savefig)
+        spec = json.dumps(
+            {
+                "type": "bar",
+                "title": "Fallback Canvas",
+                "data": {"labels": ["A", "B"], "values": [1, 2]},
+            }
+        )
+
+        result = render_chart(spec, tmp_path / "raster-overflow.png")
+
+        image = mpimg.imread(result)
+        assert image.shape[:2] == (1080, 1920)
         assert plt.get_fignums() == []
 
     def test_unknown_chart_type_falls_back_to_bar(self, tmp_path):

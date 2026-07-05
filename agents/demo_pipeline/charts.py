@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from contextlib import nullcontext
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,23 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 MPLSTYLE_PATH = Path(__file__).resolve().parent.parent.parent / "profiles" / "gruvbox.mplstyle"
+
+SAFE_RC = {
+    "axes.labelsize": 14,
+    "axes.titlesize": 20,
+    "figure.dpi": 150,
+    "font.family": ["DejaVu Sans"],
+    "font.size": 12,
+    "legend.fontsize": 12,
+    "mathtext.fontset": "dejavusans",
+    "savefig.bbox": None,
+    "savefig.dpi": 150,
+    "savefig.pad_inches": 0.1,
+    "text.parse_math": False,
+    "text.usetex": False,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+}
 
 # Gruvbox colors for manual use
 COLORS = {
@@ -98,8 +115,7 @@ def render_chart(chart_spec: str, output_path: Path, size: tuple[int, int] = (19
     except (json.JSONDecodeError, TypeError) as e:
         log.warning("Chart spec is not valid JSON, generating fallback: %s", e)
         spec = {"title": "Data Visualization"}
-        with _style_context():
-            _render_fallback(spec, output_path, figsize, dpi)
+        _render_fallback(spec, output_path, size)
         return output_path
 
     spec = _normalize_chart_spec(spec)
@@ -159,19 +175,21 @@ def render_chart(chart_spec: str, output_path: Path, size: tuple[int, int] = (19
                 if "labels" in data and "values" in data:
                     _render_bar(spec, output_path, figsize, dpi)
                 else:
-                    _render_fallback(spec, output_path, figsize, dpi)
+                    _render_fallback(spec, output_path, size)
         except Exception as e:
             log.warning("Chart render failed (%s), generating fallback: %s", chart_type, e)
             plt.close("all")
-            _render_fallback(spec, output_path, figsize, dpi)
+            _render_fallback(spec, output_path, size)
 
     return output_path
 
 
-def _style_context() -> Any:
+def _style_context() -> ExitStack:
+    stack = ExitStack()
+    stack.enter_context(plt.rc_context(SAFE_RC))
     if MPLSTYLE_PATH.exists():
-        return plt.style.context(str(MPLSTYLE_PATH))
-    return nullcontext()
+        stack.enter_context(plt.style.context(str(MPLSTYLE_PATH)))
+    return stack
 
 
 def _save_and_close(fig: Any, output_path: Path) -> None:
@@ -185,22 +203,32 @@ def _save_and_close(fig: Any, output_path: Path) -> None:
         plt.close(fig)
 
 
-def _render_fallback(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None:
-    """Render a simple text-only fallback when chart spec can't be parsed."""
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    title = spec.get("title", "Data Visualization")
-    ax.text(
-        0.5,
-        0.5,
-        title,
-        ha="center",
-        va="center",
-        fontsize=32,
-        color=COLORS["fg"],
-        transform=ax.transAxes,
-    )
-    ax.set_axis_off()
-    _save_and_close(fig, output_path)
+def _render_fallback(spec: dict, output_path: Path, size: tuple[int, int]) -> None:
+    """Render a simple fallback without using Matplotlib's font stack."""
+    from PIL import Image, ImageDraw
+
+    title = str(spec.get("title", "Data Visualization"))
+    image = Image.new("RGB", size, COLORS["bg"])
+    draw = ImageDraw.Draw(image)
+    stripe_height = max(12, size[1] // 32)
+    palette = [
+        COLORS["orange"],
+        COLORS["yellow"],
+        COLORS["green"],
+        COLORS["blue"],
+        COLORS["purple"],
+        COLORS["aqua"],
+    ]
+    for idx, color in enumerate(palette):
+        x0 = int(idx * size[0] / len(palette))
+        x1 = int((idx + 1) * size[0] / len(palette))
+        draw.rectangle((x0, size[1] - stripe_height, x1, size[1]), fill=color)
+
+    try:
+        draw.text((size[0] // 24, size[1] // 2), title[:120], fill=COLORS["fg"])
+    except Exception:
+        pass
+    image.save(output_path)
 
 
 def _render_bar(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None:
