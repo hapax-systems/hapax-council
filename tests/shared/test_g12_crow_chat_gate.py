@@ -104,6 +104,23 @@ def test_required_attestation_rejects_ref_without_crow_chat_origin() -> None:
         )
 
 
+def test_required_attestation_rejects_malformed_crow_chat_ref_shape() -> None:
+    with pytest.raises(
+        G12CrowChatGateError,
+        match="operator_attestation_ref_shape_invalid",
+    ):
+        validate_g12_crow_chat_attestation(
+            task_id="task-x",
+            lane="cx-green",
+            env={
+                "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1",
+                "HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY": TEST_HMAC_KEY,
+                "HAPAX_METHODOLOGY_ORIGIN_SURFACE": "crow_chat",
+                "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF": "operator-attestation:bad",
+            },
+        )
+
+
 def test_signed_breakglass_ref_satisfies_required_gate() -> None:
     ref = expected_g12_signed_breakglass_ref(
         task_id="task-x",

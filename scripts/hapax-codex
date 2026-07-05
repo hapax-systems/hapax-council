@@ -768,6 +768,8 @@ case "$TERMINAL" in
     ;;
 esac
 
+require_g12_crow_chat_attestation "$TASK_ID" "$SESSION" "hapax-codex"
+
 CODEX_WORKTREE_STRATEGY="explicit"
 if [ -z "$WORKDIR" ]; then
   WORKDIR="$(codex_default_worktree_path "$SESSION" "$SLOT")"
@@ -926,8 +928,6 @@ export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
 export LOGOS_BASE_URL
 export COCKPIT_BASE_URL
 export HAPAX_CC_TASK_GATE="$TASK_GATE"
-
-require_g12_crow_chat_attestation "$TASK_ID" "$SESSION" "hapax-codex"
 
 CLAIM_SCRIPT=""
 NEEDS_CLAIM=0

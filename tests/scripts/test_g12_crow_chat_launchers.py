@@ -124,6 +124,77 @@ def test_hapax_codex_rejects_taskless_launch_when_g12_enforced(tmp_path: Path) -
     assert "next action:" in result.stderr
 
 
+def test_hapax_codex_validates_g12_before_codex_native_worktree_creation(
+    tmp_path: Path,
+) -> None:
+    env = _base_env(tmp_path)
+    env["HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION"] = "1"
+    _fake_codex(tmp_path / "bin", tmp_path / "codex-env.txt")
+    expected_worktree = Path(env["HOME"]) / "projects" / "hapax-council--cx-green"
+
+    result = subprocess.run(
+        [
+            str(CODEX_LAUNCHER),
+            "--session",
+            "cx-green",
+            "--slot",
+            "beta",
+            "--terminal",
+            "none",
+            "--no-claim",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 18
+    assert "operator_attestation_task_required_for_dispatch" in result.stderr
+    assert not expected_worktree.exists()
+
+
+def test_hapax_codex_validates_g12_before_remote_dispatch_preflight(
+    tmp_path: Path,
+) -> None:
+    env = _base_env(tmp_path)
+    env["HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION"] = "1"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+    ssh_marker = tmp_path / "ssh-ran.txt"
+    fake_ssh = tmp_path / "bin" / "ssh"
+    fake_ssh.write_text(
+        f"#!/usr/bin/env bash\nprintf 'ssh-ran\\n' > {ssh_marker}\nexit 0\n",
+        encoding="utf-8",
+    )
+    fake_ssh.chmod(0o755)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+    _fake_codex(tmp_path / "bin", tmp_path / "codex-env.txt")
+
+    result = subprocess.run(
+        [
+            str(CODEX_LAUNCHER),
+            "--session",
+            "cx-green",
+            "--cd",
+            str(workdir),
+            "--terminal",
+            "none",
+            "--no-claim",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 18
+    assert "operator_attestation_task_required_for_dispatch" in result.stderr
+    assert not ssh_marker.exists()
+
+
 def test_hapax_codex_valid_attestation_scrubs_hmac_before_worker(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     ref = expected_operator_attestation_ref(
