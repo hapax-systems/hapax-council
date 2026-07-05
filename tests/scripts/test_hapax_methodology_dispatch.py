@@ -1086,18 +1086,20 @@ def test_dispatch_admission_falls_back_to_base_adapter_for_non_worker_route() ->
     assert not isinstance(adapter, module.WorkerAdapter)
 
 
-def test_dispatch_worker_adapter_map_includes_live_agy() -> None:
+def test_dispatch_worker_adapter_map_includes_live_worker_families() -> None:
     module = _dispatcher_module()
 
     assert module._WORKER_FAILURE_ADAPTERS["agy"] is module.AgyAdapter
     assert isinstance(module._worker_adapter_for_launch("agy"), module.AgyAdapter)
+    assert module._WORKER_FAILURE_ADAPTERS["vibe"] is module.VibeAdapter
+    assert isinstance(module._worker_adapter_for_launch("vibe"), module.VibeAdapter)
 
 
 def test_dispatch_launch_requires_worker_adapter() -> None:
     module = _dispatcher_module()
 
     with pytest.raises(module.AuthorityViolation, match="no WorkerAdapter registered"):
-        module._worker_adapter_for_launch("vibe")
+        module._worker_adapter_for_launch("api")
 
 
 def test_dispatch_launch_adapter_rejects_non_launch_decision_before_side_effect() -> None:
@@ -3006,6 +3008,83 @@ printf '%s\\n' "$@" > {launcher_args}
     assert "quality_floor_not_satisfied" in result.stderr
 
 
+def test_vibe_mutable_launch_reaches_existing_launcher(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "bounded-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: deterministic_ok
+        authority_level: support_non_authoritative
+        mutation_surface: source
+        mutation_scope_refs: []
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: []
+          prohibited_platforms: []
+          required_mode: null
+          required_profile: null
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
+        """,
+        route_metadata_defaults=False,
+    )
+    launcher_args = tmp_path / "vibe-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-vibe"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "bounded-build",
+        "--lane",
+        "vbe-1",
+        "--platform",
+        "vibe",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_VIBE_LAUNCHER": str(fake_launcher)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert args[:6] == ["--session", "vbe-1", "--terminal", "tmux", "--task", "bounded-build"]
+    assert "--prompt" in args
+    assert "--force" in args
+
+
 def test_gemini_platform_is_not_dispatchable(tmp_path: Path) -> None:
     result = _run(
         tmp_path,
@@ -3063,7 +3142,8 @@ def test_legacy_antigrav_platforms_are_not_dispatchable(tmp_path: Path) -> None:
 
         assert result.returncode == 10
         assert f"platform '{platform.lower()}' is retired/excised" in result.stderr
-        assert "Use admitted Claude, Codex, Agy, or Vibe routes." in result.stderr
+        assert "Use admitted Claude, Codex, or Vibe routes." in result.stderr
+        assert "Agy adapter support is live" in result.stderr
 
 
 def test_codex_launch_unsupported_mode_fails_closed(tmp_path: Path) -> None:

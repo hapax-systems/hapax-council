@@ -19,6 +19,7 @@ from shared.capability_adapter_protocol import (
     RetiredAntigravFailureClassifier,
     ReviewSeatAdapter,
     SendCapableAdapter,
+    VibeAdapter,
     WorkerAdapter,
 )
 from shared.dispatcher_policy import DispatchAction, RouteDecision
@@ -119,6 +120,8 @@ def test_worker_has_launch_and_sendcapable_has_send() -> None:
     assert hasattr(ClaudeAdapter, "send")
     assert hasattr(CodexAdapter, "launch")
     assert hasattr(CodexAdapter, "send")
+    assert hasattr(VibeAdapter, "launch")
+    assert not hasattr(VibeAdapter, "send")
 
 
 def test_budget_authority_has_no_launch_or_send() -> None:
@@ -148,6 +151,7 @@ def test_platform_classvars_are_pinned() -> None:
     assert AgyAdapter.PLATFORM is Platform.AGY
     assert ClaudeAdapter.PLATFORM is Platform.CLAUDE
     assert CodexAdapter.PLATFORM is Platform.CODEX
+    assert VibeAdapter.PLATFORM is Platform.VIBE
     assert BudgetAuthorityAdapter.PLATFORM is Platform.API
     assert ReviewSeatAdapter.PLATFORM is Platform.GLMCP
     assert RetiredAntigravFailureClassifier.PLATFORM is Platform.ANTIGRAV
@@ -292,6 +296,13 @@ def test_agy_classify_failure_shares_the_cli_table() -> None:
     assert adapter.classify_failure("service unavailable").code is FailureCode.TRANSIENT
     assert adapter.classify_failure("nothing notable").code is FailureCode.UNKNOWN
     assert adapter.classify_failure("x").platform == Platform.AGY.value
+
+
+def test_vibe_classify_failure_shares_the_cli_table() -> None:
+    adapter = VibeAdapter()
+    assert adapter.classify_failure("service unavailable").code is FailureCode.TRANSIENT
+    assert adapter.classify_failure("nothing notable").code is FailureCode.UNKNOWN
+    assert adapter.classify_failure("x").platform == Platform.VIBE.value
 
 
 def test_retired_antigrav_failure_classifier_maps_historical_launcher_exit_codes() -> None:

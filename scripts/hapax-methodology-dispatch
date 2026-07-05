@@ -37,6 +37,7 @@ from shared.capability_adapter_protocol import (
     CapabilityAdapter,
     ClaudeAdapter,
     CodexAdapter,
+    VibeAdapter,
     WorkerAdapter,
 )
 from shared.coord_dispatch import (
@@ -1390,6 +1391,7 @@ _WORKER_FAILURE_ADAPTERS: dict[str, type[WorkerAdapter]] = {
     "agy": AgyAdapter,
     "claude": ClaudeAdapter,
     "codex": CodexAdapter,
+    "vibe": VibeAdapter,
 }
 
 
@@ -2051,7 +2053,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.platform in {"antigrav", "antigravity", "gemini-cli"}:
         reason = (
             f"platform '{args.platform}' is retired/excised; do not dispatch it as live supply. "
-            "Use admitted Claude, Codex, Agy, or Vibe routes."
+            "Use admitted Claude, Codex, or Vibe routes. Agy adapter support is live, but a "
+            "spawnable agy route still requires governed route/resource receipts before dispatch."
         )
         task_for_receipt = read_task(task_root, args.task)
         if not args.no_receipt:

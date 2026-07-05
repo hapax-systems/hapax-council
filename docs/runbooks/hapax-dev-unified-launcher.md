@@ -23,10 +23,12 @@ the tmux spawn, and the runtime exec all stay in `hapax-claude` /
 (b) refuses collisions by construction, (c) guarantees a fresh session id, and
 (d) handles visibility (attach / window / detach).
 
-`agy` / `antigrav` / `antigravity` is retired as a live dispatch platform,
-lane, route family, and supply leaf. `hapax-dev agy`, `hapax-dev antigrav`, and
-`hapax-dev antigravity` fail closed; any future agy capability must re-enter as
-measured supply leaves with fresh route/resource/governance receipts.
+`antigrav` / `antigravity` is retired as a live dispatch platform, lane, route
+family, and supply leaf. `hapax-dev agy`, `hapax-dev antigrav`, and
+`hapax-dev antigravity` still fail closed in this dev launcher because there is
+no `hapax-dev` Agy session path; Agy's methodology adapter support is live but
+spawnable dispatch still requires a measured route with fresh
+route/resource/governance receipts.
 
 Recheck the admitted governed route set with:
 
