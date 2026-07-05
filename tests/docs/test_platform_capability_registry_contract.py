@@ -138,6 +138,7 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
         "read_only",
     }
     assert "worker" in set(schema["$defs"]["profile"]["enum"])
+    assert "openrouter" in set(schema["$defs"]["profile"]["enum"])
     assert "provider_gateway" in set(schema["$defs"]["profile"]["enum"])
     assert "plan_mode_read_only" in set(schema["$defs"]["approval_posture"]["enum"])
     assert "programmatic_auto_approve_task_scoped" in set(

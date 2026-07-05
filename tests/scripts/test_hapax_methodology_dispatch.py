@@ -2887,7 +2887,16 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert "gemini/" not in result.stdout
     assert "antigrav/" not in result.stdout
     assert "api/headless/api_frontier" in result.stdout
+    assert "api/headless/openrouter" in result.stdout
     assert "api/headless/provider_gateway" in result.stdout
+
+
+def test_normalizes_openrouter_api_profile_aliases() -> None:
+    dispatcher = _dispatcher_module()
+
+    assert dispatcher.normalize_profile("api", "or") == "openrouter"
+    assert dispatcher.normalize_profile("api", "open-router") == "openrouter"
+    assert dispatcher.normalize_profile("api", "openrouter") == "openrouter"
 
 
 def test_antigrav_platform_is_not_dispatchable(tmp_path: Path) -> None:
