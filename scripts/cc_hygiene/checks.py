@@ -407,19 +407,33 @@ def check_duplicate_claim(
     for role, payload in relay_payloads.items():
         task_id, claimed_at = _extract_current_claim(payload)
         if task_id:
-            by_task[task_id].append((role, claimed_at))
+            # A bare-string `current_claim` carries no `claimed_at`; fall back
+            # to the relay's own `updated` stamp so the window has a real time
+            # to compare. Never substitute `now` — that collapses every unknown
+            # timestamp to the same instant, defeating the window and firing a
+            # false "claimed simultaneously within 5min" on every sweep for a
+            # stale collision (the duplicate_claim P0 storm: two relays 91min
+            # apart stormed 52 pages because both timestamps read as `now`).
+            ts = claimed_at or _extract_relay_updated(payload)
+            by_task[task_id].append((role, ts))
     window = timedelta(minutes=DUPLICATE_CLAIM_WINDOW_MIN)
     for task_id, claimers in by_task.items():
         if len(claimers) < 2:
             continue
-        # if any pair is within window (or claimed_at unknown), fire
-        sortable = [(role, ts or now) for role, ts in claimers]
-        sortable.sort(key=lambda pair: pair[1])
-        oldest_ts = sortable[0][1]
-        newest_ts = sortable[-1][1]
+        # Only claimants with a known timestamp can establish that the claims
+        # fall within the window. If fewer than two are datable, we cannot
+        # distinguish a genuine near-simultaneous double-claim from a stale
+        # leftover, so we stay silent (a stale relay is `relay_yaml_stale`'s
+        # job, not a false duplicate_claim).
+        datable = [(role, ts) for role, ts in claimers if ts is not None]
+        if len(datable) < 2:
+            continue
+        datable.sort(key=lambda pair: pair[1])
+        oldest_ts = datable[0][1]
+        newest_ts = datable[-1][1]
         if newest_ts - oldest_ts > window:
             continue
-        roles = [role for role, _ in sortable]
+        roles = [role for role, _ in datable]
         events.append(
             HygieneEvent(
                 timestamp=now,
