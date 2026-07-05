@@ -1,0 +1,432 @@
+#!/usr/bin/env python3
+"""GitHub PR/status helpers that keep routine polling off GraphQL.
+
+The GitHub CLI implements many ``gh pr`` status fields through GraphQL.  Fleet
+timers should use REST/core for routine status polling and reserve GraphQL for
+operations that have no REST replacement, such as native merge-queue metadata
+or the dequeue mutation.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+DEFAULT_REPO = "hapax-systems/hapax-council"
+DEFAULT_CACHE_DIR = Path.home() / ".cache" / "hapax" / "pr-status"
+DEFAULT_CACHE_TTL_SECONDS = 60
+DEFAULT_GRAPHQL_MIN_REMAINING = 500
+DEFAULT_TIMEOUT_SECONDS = 60
+
+_SAFE_CACHE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+@dataclass(frozen=True)
+class GraphQLBackoff:
+    remaining: int
+    reset_epoch: int | None
+    reason: str
+
+    @property
+    def reset_in_seconds(self) -> int | None:
+        if self.reset_epoch is None:
+            return None
+        return max(0, self.reset_epoch - int(time.time()))
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _runner_uses_real_gh(runner: Any) -> bool:
+    return runner is subprocess.run
+
+
+def _run(
+    runner: Any,
+    cmd: list[str],
+    *,
+    repo_root: Path,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess:
+    return runner(
+        cmd,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def _json_from_proc(proc: subprocess.CompletedProcess) -> Any | None:
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout or "null")
+    except json.JSONDecodeError:
+        return None
+
+
+def _cache_key(repo: str, ref: str) -> Path:
+    repo_part = _SAFE_CACHE_RE.sub("_", repo)
+    ref_part = _SAFE_CACHE_RE.sub("_", ref)
+    return DEFAULT_CACHE_DIR / repo_part / f"{ref_part}.json"
+
+
+def _cache_ttl_seconds() -> int:
+    return max(0, _env_int("HAPAX_GITHUB_PR_STATUS_CACHE_TTL_SECONDS", DEFAULT_CACHE_TTL_SECONDS))
+
+
+def _read_cached_rollup(repo: str, ref: str) -> list[dict[str, Any]] | None:
+    ttl = _cache_ttl_seconds()
+    if ttl <= 0:
+        return None
+    path = _cache_key(repo, ref)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    fetched_at = payload.get("fetched_at")
+    if not isinstance(fetched_at, (int, float)):
+        return None
+    if time.time() - float(fetched_at) > ttl:
+        return None
+    rollup = payload.get("statusCheckRollup")
+    return rollup if isinstance(rollup, list) else None
+
+
+def _write_cached_rollup(repo: str, ref: str, rollup: list[dict[str, Any]]) -> None:
+    ttl = _cache_ttl_seconds()
+    if ttl <= 0:
+        return
+    path = _cache_key(repo, ref)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(
+                {
+                    "fetched_at": time.time(),
+                    "repo": repo,
+                    "ref": ref,
+                    "statusCheckRollup": rollup,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+    except OSError:
+        return
+
+
+def _rest_get_json(
+    path: str,
+    *,
+    repo_root: Path,
+    runner: Any,
+    fields: dict[str, str] | None = None,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> Any | None:
+    cmd = [
+        "gh",
+        "api",
+        "--method",
+        "GET",
+        "-H",
+        "Accept: application/vnd.github+json",
+        path,
+    ]
+    for key, value in (fields or {}).items():
+        cmd.extend(["-f", f"{key}={value}"])
+    proc = _run(runner, cmd, repo_root=repo_root, timeout=timeout)
+    return _json_from_proc(proc)
+
+
+def _check_run_to_rollup(item: dict[str, Any]) -> dict[str, Any]:
+    app = item.get("app") if isinstance(item.get("app"), dict) else {}
+    return {
+        "name": item.get("name") or item.get("external_id") or "unnamed-check",
+        "status": item.get("status"),
+        "conclusion": item.get("conclusion"),
+        "started_at": item.get("started_at"),
+        "completed_at": item.get("completed_at"),
+        "app": {"name": app.get("name")} if app else {},
+    }
+
+
+def _status_to_rollup(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "context": item.get("context") or "unnamed-status",
+        "state": item.get("state"),
+        "created_at": item.get("created_at"),
+        "updated_at": item.get("updated_at"),
+    }
+
+
+def fetch_status_check_rollup_rest(
+    ref: str,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    use_cache: bool | None = None,
+) -> list[dict[str, Any]]:
+    """Return a GraphQL-like ``statusCheckRollup`` using REST check/status APIs."""
+
+    if not ref:
+        return []
+    if use_cache is None:
+        use_cache = _runner_uses_real_gh(runner)
+    if use_cache:
+        cached = _read_cached_rollup(repo, ref)
+        if cached is not None:
+            return cached
+
+    rollup: list[dict[str, Any]] = []
+    check_runs = _rest_get_json(
+        f"repos/{repo}/commits/{ref}/check-runs",
+        repo_root=repo_root,
+        runner=runner,
+        fields={"per_page": "100"},
+    )
+    if isinstance(check_runs, dict):
+        raw_runs = check_runs.get("check_runs")
+        if isinstance(raw_runs, list):
+            rollup.extend(_check_run_to_rollup(item) for item in raw_runs if isinstance(item, dict))
+
+    combined_status = _rest_get_json(
+        f"repos/{repo}/commits/{ref}/status",
+        repo_root=repo_root,
+        runner=runner,
+        fields={"per_page": "100"},
+    )
+    if isinstance(combined_status, dict):
+        raw_statuses = combined_status.get("statuses")
+        if isinstance(raw_statuses, list):
+            rollup.extend(
+                _status_to_rollup(item) for item in raw_statuses if isinstance(item, dict)
+            )
+
+    if use_cache and rollup:
+        _write_cached_rollup(repo, ref, rollup)
+    return rollup
+
+
+def get_pull_rest(
+    pr_number: int | str,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+) -> dict[str, Any] | None:
+    payload = _rest_get_json(
+        f"repos/{repo}/pulls/{pr_number}",
+        repo_root=repo_root,
+        runner=runner,
+    )
+    return payload if isinstance(payload, dict) else None
+
+
+def rest_merge_state_status(payload: dict[str, Any] | None) -> str:
+    if not isinstance(payload, dict):
+        return "UNKNOWN"
+    raw = str(payload.get("mergeable_state") or "").strip().upper()
+    if raw:
+        return raw
+    mergeable = payload.get("mergeable")
+    if mergeable is True:
+        return "CLEAN"
+    if mergeable is False:
+        return "DIRTY"
+    return "UNKNOWN"
+
+
+def rest_pull_state(payload: dict[str, Any] | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    state = str(payload.get("state") or "").lower()
+    if state == "open":
+        return "DRAFT" if payload.get("draft") else "OPEN"
+    if state == "closed":
+        if payload.get("merged") or payload.get("merged_at"):
+            return "MERGED"
+        return "CLOSED"
+    return None
+
+
+def list_pulls_for_branch_rest(
+    branch: str,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    state: str = "all",
+    limit: int = 1,
+) -> list[dict[str, Any]]:
+    owner = repo.split("/", 1)[0]
+    head = branch if ":" in branch else f"{owner}:{branch}"
+    payload = _rest_get_json(
+        f"repos/{repo}/pulls",
+        repo_root=repo_root,
+        runner=runner,
+        fields={"head": head, "state": state, "per_page": str(limit)},
+    )
+    return payload if isinstance(payload, list) else []
+
+
+def list_pulls_rest(
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    state: str = "open",
+    limit: int = 100,
+    sort: str | None = None,
+    direction: str | None = None,
+) -> list[dict[str, Any]]:
+    fields = {"state": state, "per_page": str(limit)}
+    if sort:
+        fields["sort"] = sort
+    if direction:
+        fields["direction"] = direction
+    payload = _rest_get_json(
+        f"repos/{repo}/pulls",
+        repo_root=repo_root,
+        runner=runner,
+        fields=fields,
+    )
+    return payload if isinstance(payload, list) else []
+
+
+def list_open_pr_statuses_rest(
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    payload = list_pulls_rest(
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+        state="open",
+        limit=limit,
+    )
+
+    out: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        head = item.get("head") if isinstance(item.get("head"), dict) else {}
+        sha = str(head.get("sha") or "")
+        out.append(
+            {
+                "number": item.get("number"),
+                "title": item.get("title") or "",
+                "headRefName": head.get("ref") or "",
+                "headRefOid": sha,
+                "isDraft": bool(item.get("draft")),
+                "autoMergeRequest": item.get("auto_merge"),
+                "mergeStateStatus": rest_merge_state_status(item),
+                "statusCheckRollup": fetch_status_check_rollup_rest(
+                    sha,
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
+                )
+                if sha
+                else [],
+            }
+        )
+    return out
+
+
+def graphql_backoff(
+    *,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    min_remaining: int | None = None,
+) -> GraphQLBackoff | None:
+    """Return a backoff decision when GraphQL remaining is below threshold.
+
+    A rate-limit lookup failure returns ``None`` so callers fail open: a network
+    or auth hiccup must not be mistaken for confirmed GraphQL exhaustion.
+    """
+
+    min_remaining = (
+        DEFAULT_GRAPHQL_MIN_REMAINING if min_remaining is None else max(0, min_remaining)
+    )
+    proc = _run(runner, ["gh", "api", "rate_limit"], repo_root=repo_root, timeout=30)
+    payload = _json_from_proc(proc)
+    resource = None
+    if isinstance(payload, dict):
+        resources = payload.get("resources")
+        if isinstance(resources, dict):
+            resource = resources.get("graphql")
+    if not isinstance(resource, dict):
+        return None
+    try:
+        remaining = int(resource.get("remaining"))
+    except (TypeError, ValueError):
+        return None
+    reset_epoch: int | None
+    try:
+        reset_epoch = int(resource.get("reset"))
+    except (TypeError, ValueError):
+        reset_epoch = None
+    if remaining >= min_remaining:
+        return None
+    return GraphQLBackoff(
+        remaining=remaining,
+        reset_epoch=reset_epoch,
+        reason=f"github_graphql_remaining_below_threshold:{remaining}<{min_remaining}",
+    )
+
+
+def run_graphql_rate_aware(
+    graphql_args: list[str],
+    *,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+    min_remaining: int | None = None,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess:
+    """Run ``gh api graphql`` only when the GraphQL pool is not exhausted."""
+
+    backoff = graphql_backoff(
+        repo_root=repo_root,
+        runner=runner,
+        min_remaining=min_remaining
+        if min_remaining is not None
+        else _env_int("HAPAX_GITHUB_GRAPHQL_MIN_REMAINING", DEFAULT_GRAPHQL_MIN_REMAINING),
+    )
+    if backoff is not None:
+        reset = backoff.reset_in_seconds
+        retry = f"; retry_after={reset}s" if reset is not None else ""
+        return subprocess.CompletedProcess(
+            ["gh", "api", "graphql", *graphql_args],
+            75,
+            "",
+            f"{backoff.reason}{retry}",
+        )
+    return _run(
+        runner,
+        ["gh", "api", "graphql", *graphql_args],
+        repo_root=repo_root,
+        timeout=timeout,
+    )

@@ -96,6 +96,25 @@ def _gh_stub(
         textwrap.dedent(f"""\
         #!/usr/bin/env bash
         # Stub gh for testing
+        if [[ "$1" == "api" ]]; then
+            if printf '%s\n' "$@" | grep -q 'repos/.*/pulls/[0-9]'; then
+                echo '{state}'
+                exit 0
+            fi
+            if printf '%s\n' "$@" | grep -q 'repos/.*/pulls$'; then
+                head=""
+                while [[ $# -gt 0 ]]; do
+                    if [[ "$1" == "-f" && "$2" == head=* ]]; then head="${{2#head=}}"; shift; fi
+                    shift
+                done
+                head_branch="${{head#*:}}"
+                if [[ -n "{branch_match}" && "$head_branch" == "{branch_match}" ]]; then
+                    echo '{open_pr_number}'
+                fi
+                exit 0
+            fi
+            exit 1
+        fi
         if [[ "$1" == "pr" && "$2" == "view" ]]; then
             echo '{state}'
             exit 0

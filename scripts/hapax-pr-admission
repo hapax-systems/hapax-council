@@ -35,6 +35,11 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from github_pr_status import list_open_pr_statuses_rest
 
 from shared.merge_queue_lineage import (
     DEFAULT_LEDGER_PATH,
@@ -48,6 +53,7 @@ from shared.merge_queue_lineage import (
 CONTROL_PATH = Path(os.path.expanduser("~/.cache/hapax/pr-admission-governor.yaml"))
 MERGE_QUEUE_SUMMARY_PATH = DEFAULT_SUMMARY_PATH
 MERGE_QUEUE_LEDGER_PATH = DEFAULT_LEDGER_PATH
+DEFAULT_REPO = os.environ.get("HAPAX_CC_PR_REPO", "hapax-systems/hapax-council")
 DEFAULT_EXIT_BELOW_COUNT = 6
 DEFAULT_STABLE_TICKS = 2
 ALLOWED_MODES = {"normal", "drain", "frozen"}
@@ -102,26 +108,16 @@ def save_state(state: dict[str, Any]) -> None:
 
 
 def query_open_prs() -> list[dict[str, Any]]:
-    """Returns list of open PRs with number/headRefName/mergeStateStatus/statusCheckRollup."""
+    """Return open PR status snapshots via REST/core, not GraphQL."""
     if not shutil.which("gh"):
         return []
     try:
-        out = subprocess.check_output(
-            [
-                "gh",
-                "pr",
-                "list",
-                "--state",
-                "open",
-                "--limit",
-                "100",
-                "--json",
-                "number,headRefName,mergeStateStatus,statusCheckRollup,title",
-            ],
-            text=True,
-            timeout=15,
+        return list_open_pr_statuses_rest(
+            repo=DEFAULT_REPO,
+            repo_root=REPO_ROOT,
+            runner=subprocess.run,
+            limit=100,
         )
-        return json.loads(out)
     except (subprocess.SubprocessError, json.JSONDecodeError):
         return []
 

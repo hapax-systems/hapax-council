@@ -55,6 +55,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import review_team  # noqa: E402
+from github_pr_status import list_open_pr_statuses_rest  # noqa: E402
 
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
@@ -1956,25 +1957,34 @@ def review_all_open_prs(
 ) -> list[dict[str, Any]]:
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
-    out = _run_gh(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "open",
-            "--limit",
-            "100",
-            "--json",
-            "number,headRefName,headRefOid,isDraft",
-        ],
+    open_prs = list_open_pr_statuses_rest(
+        repo=repo,
         repo_root=repo_root,
         runner=gh_runner,
+        limit=100,
     )
+    if not open_prs and gh_runner is not subprocess.run:
+        out = _run_gh(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                repo,
+                "--state",
+                "open",
+                "--limit",
+                "100",
+                "--json",
+                "number,headRefName,headRefOid,isDraft",
+            ],
+            repo_root=repo_root,
+            runner=gh_runner,
+        )
+        parsed = json.loads(out or "[]")
+        open_prs = parsed if isinstance(parsed, list) else []
     results: list[dict[str, Any]] = []
-    for item in json.loads(out or "[]"):
+    for item in open_prs:
         if not isinstance(item, dict) or item.get("isDraft"):
             continue
         pr_number = int(item["number"])
