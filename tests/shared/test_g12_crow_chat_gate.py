@@ -81,6 +81,29 @@ def test_required_attestation_rejects_wrong_task_lane_binding() -> None:
         )
 
 
+def test_required_attestation_rejects_ref_without_crow_chat_origin() -> None:
+    ref = expected_operator_attestation_ref(
+        origin_surface="crow_chat",
+        task_id="task-x",
+        lane="cx-green",
+        hmac_key=TEST_HMAC_KEY,
+    )
+
+    with pytest.raises(
+        G12CrowChatGateError,
+        match="crow_chat_origin_required_for_dispatch",
+    ):
+        validate_g12_crow_chat_attestation(
+            task_id="task-x",
+            lane="cx-green",
+            env={
+                "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1",
+                "HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY": TEST_HMAC_KEY,
+                "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF": ref,
+            },
+        )
+
+
 def test_signed_breakglass_ref_satisfies_required_gate() -> None:
     ref = expected_g12_signed_breakglass_ref(
         task_id="task-x",
@@ -99,6 +122,70 @@ def test_signed_breakglass_ref_satisfies_required_gate() -> None:
             "HAPAX_G12_SIGNED_BREAKGLASS_REASON": "crow-chat attestations unavailable",
         },
     )
+
+
+def test_signed_breakglass_ref_requires_bound_reason() -> None:
+    ref = expected_g12_signed_breakglass_ref(
+        task_id="task-x",
+        lane="cx-green",
+        reason="crow-chat attestations unavailable",
+        hmac_key=TEST_BREAKGLASS_KEY,
+    )
+
+    with pytest.raises(
+        G12CrowChatGateError,
+        match="g12_breakglass_reason_required_for_dispatch",
+    ):
+        validate_g12_crow_chat_attestation(
+            task_id="task-x",
+            lane="cx-green",
+            env={
+                "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1",
+                "HAPAX_G12_BREAKGLASS_HMAC_KEY": TEST_BREAKGLASS_KEY,
+                "HAPAX_G12_SIGNED_BREAKGLASS_REF": ref,
+            },
+        )
+
+
+def test_signed_breakglass_ref_rejects_invalid_shape() -> None:
+    with pytest.raises(
+        G12CrowChatGateError,
+        match="g12_breakglass_ref_shape_invalid",
+    ):
+        validate_g12_crow_chat_attestation(
+            task_id="task-x",
+            lane="cx-green",
+            env={
+                "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1",
+                "HAPAX_G12_BREAKGLASS_HMAC_KEY": TEST_BREAKGLASS_KEY,
+                "HAPAX_G12_SIGNED_BREAKGLASS_REF": "operator-breakglass:bad",
+                "HAPAX_G12_SIGNED_BREAKGLASS_REASON": "crow-chat attestations unavailable",
+            },
+        )
+
+
+def test_signed_breakglass_ref_rejects_wrong_task_lane_reason_binding() -> None:
+    wrong_ref = expected_g12_signed_breakglass_ref(
+        task_id="other-task",
+        lane="cx-green",
+        reason="crow-chat attestations unavailable",
+        hmac_key=TEST_BREAKGLASS_KEY,
+    )
+
+    with pytest.raises(
+        G12CrowChatGateError,
+        match="g12_breakglass_ref_hmac_mismatch",
+    ):
+        validate_g12_crow_chat_attestation(
+            task_id="task-x",
+            lane="cx-green",
+            env={
+                "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1",
+                "HAPAX_G12_BREAKGLASS_HMAC_KEY": TEST_BREAKGLASS_KEY,
+                "HAPAX_G12_SIGNED_BREAKGLASS_REF": wrong_ref,
+                "HAPAX_G12_SIGNED_BREAKGLASS_REASON": "crow-chat attestations unavailable",
+            },
+        )
 
 
 def test_relay_dispatch_requires_single_lane_when_attested() -> None:
