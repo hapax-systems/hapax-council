@@ -399,7 +399,10 @@ def check_duplicate_claim(
 ) -> list[HygieneEvent]:
     """§2.3 — same `task_id` in 2+ relay yamls' ``current_claim`` within 5min.
 
-    Severity: violation. Only fires when both relays are within window.
+    Severity: violation. Fires one event per *cluster* of claimants whose
+    sorted claim times are each within the window of their neighbor. A
+    chain (a→b→c with sub-window gaps) is one event even if its total span
+    exceeds the window; disjoint bursts hours apart are separate events.
     """
     now = now or _now()
     events: list[HygieneEvent] = []
@@ -429,37 +432,45 @@ def check_duplicate_claim(
         if len(datable) < 2:
             continue
         datable.sort(key=lambda pair: pair[1])
-        # Fire on any adjacent pair within the window, not on the total
+        # Cluster on adjacent within-window gaps, not on the total
         # oldest→newest span: a span check lets one stale claimant mask a
         # genuine near-simultaneous pair among the others (three claimants,
         # one hours old + two minutes apart, must still fire for the fresh
-        # pair). Sorted order guarantees the closest pair is adjacent, and
-        # only the roles chained together by within-window gaps are named.
-        roles: list[str] = []
-        for (prev_role, prev_ts), (next_role, next_ts) in zip(datable, datable[1:], strict=False):
-            if next_ts - prev_ts <= window:
-                if not roles or roles[-1] != prev_role:
-                    roles.append(prev_role)
-                roles.append(next_role)
-        if len(roles) < 2:
-            continue
-        events.append(
-            HygieneEvent(
-                timestamp=now,
-                check_id="duplicate_claim",
-                severity="violation",
-                task_id=task_id,
-                session=None,
-                message=(
-                    f"task '{task_id}' claimed simultaneously by sessions "
-                    f"{roles} within {DUPLICATE_CLAIM_WINDOW_MIN}min"
-                ),
-                metadata={
-                    "sessions": ",".join(roles),
-                    "window_minutes": str(DUPLICATE_CLAIM_WINDOW_MIN),
-                },
+        # pair). Sorted order guarantees the closest pair is adjacent. Each
+        # cluster alerts separately so one event never lumps together
+        # claimants that are hours apart.
+        clusters: list[list[str]] = []
+        cluster_roles = [datable[0][0]]
+        cluster_end = datable[0][1]
+        for role, ts in datable[1:]:
+            if ts - cluster_end <= window:
+                cluster_roles.append(role)
+            else:
+                clusters.append(cluster_roles)
+                cluster_roles = [role]
+            cluster_end = ts
+        clusters.append(cluster_roles)
+        for roles in clusters:
+            if len(roles) < 2:
+                continue
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="duplicate_claim",
+                    severity="violation",
+                    task_id=task_id,
+                    session=None,
+                    message=(
+                        f"task '{task_id}' claimed by sessions {roles} with "
+                        f"claim times chained within "
+                        f"{DUPLICATE_CLAIM_WINDOW_MIN}min of a neighbor"
+                    ),
+                    metadata={
+                        "sessions": ",".join(roles),
+                        "window_minutes": str(DUPLICATE_CLAIM_WINDOW_MIN),
+                    },
+                )
             )
-        )
     return events
 
 
