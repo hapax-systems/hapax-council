@@ -381,6 +381,51 @@ def test_duplicate_claim_bare_string_falls_back_to_relay_updated_within_window()
     assert events[0].severity == "violation"
 
 
+def test_duplicate_claim_stale_third_claimant_does_not_mask_fresh_pair() -> None:
+    """A stale extra claimant must not suppress a genuine within-window pair.
+
+    Review finding on PR #4427 (codex-1, major): the original span check
+    (``newest - oldest > window``) went silent whenever ANY claimant was old,
+    so a leftover stale relay masked a real near-simultaneous double-claim by
+    the other two. The check must fire for the fresh pair and name only the
+    roles chained together by within-window gaps.
+    """
+    now = _now()
+    payloads = {
+        "stale": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(minutes=120)).isoformat(),
+            }
+        },
+        "fresh-a": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(minutes=2)).isoformat(),
+            }
+        },
+        "fresh-b": {"current_claim": {"task_id": "cc-shared", "claimed_at": now.isoformat()}},
+    }
+    events = check_duplicate_claim(payloads, now=now)
+    assert len(events) == 1
+    assert events[0].metadata["sessions"] == "fresh-a,fresh-b"
+
+
+def test_duplicate_claim_mixed_datable_and_undatable_stays_silent() -> None:
+    """One datable + one undatable claimant cannot establish the window.
+
+    A single known timestamp has nothing to be "within 5min" of; treating the
+    undatable side as `now` is exactly the collapse that caused the P0 storm.
+    Silence is correct — staleness is `relay_yaml_stale`'s job.
+    """
+    now = _now()
+    payloads = {
+        "dated": {"current_claim": {"task_id": "cc-shared", "claimed_at": now.isoformat()}},
+        "undated": {"current_claim": "cc-shared"},
+    }
+    assert check_duplicate_claim(payloads, now=now) == []
+
+
 # ----------------------------------------------------------------------------
 # check_orphan_pr (§2.4)
 # ----------------------------------------------------------------------------

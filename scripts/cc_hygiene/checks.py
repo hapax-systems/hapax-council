@@ -429,11 +429,20 @@ def check_duplicate_claim(
         if len(datable) < 2:
             continue
         datable.sort(key=lambda pair: pair[1])
-        oldest_ts = datable[0][1]
-        newest_ts = datable[-1][1]
-        if newest_ts - oldest_ts > window:
+        # Fire on any adjacent pair within the window, not on the total
+        # oldest→newest span: a span check lets one stale claimant mask a
+        # genuine near-simultaneous pair among the others (three claimants,
+        # one hours old + two minutes apart, must still fire for the fresh
+        # pair). Sorted order guarantees the closest pair is adjacent, and
+        # only the roles chained together by within-window gaps are named.
+        roles: list[str] = []
+        for (prev_role, prev_ts), (next_role, next_ts) in zip(datable, datable[1:], strict=False):
+            if next_ts - prev_ts <= window:
+                if not roles or roles[-1] != prev_role:
+                    roles.append(prev_role)
+                roles.append(next_role)
+        if len(roles) < 2:
             continue
-        roles = [role for role, _ in datable]
         events.append(
             HygieneEvent(
                 timestamp=now,
