@@ -1,5 +1,13 @@
 # G12 Crow-Chat Attestation Gate
 
+This runbook covers the council-side G12 attestation-passing gate. It is not a
+standalone receipt for Reins apply-seam implementation deliverables such as
+approve-with-changes, AVSDLC receipt-integrity/operator-HMAC release gating, or
+U7 fixtures. When a task couples this council gate to private Reins changes,
+review those Reins deliverables on the private Reins branch and receipt trail.
+Do not treat Reins `go test` evidence as reproducible from this council
+repository; label it as external private-branch evidence.
+
 G12 dispatch enforcement is enabled with either
 `HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION=1` or
 `HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION=1`.

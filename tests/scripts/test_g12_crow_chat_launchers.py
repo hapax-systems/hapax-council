@@ -324,10 +324,11 @@ exec env \
 def test_hapax_claude_readonly_skips_g12_attestation_gate(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     env["HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION"] = "1"
+    env["HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY"] = TEST_HMAC_KEY
     workdir = tmp_path / "worktree"
     workdir.mkdir()
-    marker = tmp_path / "claude-ran.txt"
-    _fake_claude(tmp_path / "bin", marker)
+    env_file = tmp_path / "claude-readonly-env.txt"
+    _fake_claude_env(tmp_path / "bin", env_file)
 
     result = subprocess.run(
         [
@@ -348,7 +349,47 @@ def test_hapax_claude_readonly_skips_g12_attestation_gate(tmp_path: Path) -> Non
     )
 
     assert result.returncode == 0, result.stderr
-    assert marker.read_text(encoding="utf-8") == "claude-ran\n"
+    worker_env = env_file.read_text(encoding="utf-8")
+    assert "hmac=" in worker_env
+    assert TEST_HMAC_KEY not in worker_env
+
+
+def test_hapax_claude_validates_g12_before_worktree_claim(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    env["HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION"] = "1"
+    workdir = tmp_path / "worktree"
+    (workdir / "scripts").mkdir(parents=True)
+    claim_marker = tmp_path / "claim-ran.txt"
+    cc_claim = workdir / "scripts" / "cc-claim"
+    cc_claim.write_text(
+        f"#!/usr/bin/env bash\nprintf 'claim-ran\\n' > {claim_marker}\nexit 0\n",
+        encoding="utf-8",
+    )
+    cc_claim.chmod(0o755)
+    _fake_claude(tmp_path / "bin", tmp_path / "claude-ran.txt")
+
+    result = subprocess.run(
+        [
+            str(CLAUDE_LAUNCHER),
+            "--role",
+            "dev",
+            "--cd",
+            str(workdir),
+            "--terminal",
+            "none",
+            "--task",
+            "task-x",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 18
+    assert "crow_chat_origin_required_for_dispatch" in result.stderr
+    assert not claim_marker.exists()
 
 
 def test_hapax_claude_non_readonly_rejects_taskless_when_g12_enforced(

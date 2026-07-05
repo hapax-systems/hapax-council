@@ -170,6 +170,28 @@ class TestSend(unittest.TestCase):
         ):
             send_message(self.db_path, env)
 
+    def test_dispatch_send_rejects_before_large_payload_blob_spill(self) -> None:
+        blob_dir = Path(self._tmp.name) / "blobs"
+        env = _make_envelope(
+            message_type="dispatch",
+            authority_case="CASE-TEST-001",
+            authority_item="task-x",
+            recipients_spec="cx-green",
+            payload="x" * (51 * 1024),
+        )
+
+        with (
+            patch("shared.relay_mq.BLOB_DIR", blob_dir),
+            patch.dict(os.environ, {"HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1"}),
+            self.assertRaisesRegex(
+                ValueError,
+                "crow_chat_origin_required_for_dispatch; next action:",
+            ),
+        ):
+            send_message(self.db_path, env)
+
+        self.assertFalse(blob_dir.exists(), "rejected G12 dispatch must not spill a blob")
+
     def test_dispatch_send_accepts_task_lane_bound_g12_attestation(self) -> None:
         attestation_ref = expected_operator_attestation_ref(
             origin_surface="crow_chat",

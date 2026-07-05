@@ -1244,6 +1244,11 @@ def write_receipt(
     route_decision_receipt_path: Path | None = None,
     durable_binding: DurableDispatchBinding | None = None,
     dispatch_launch: DispatchLaunchResult | None = None,
+    origin_surface: str | None = None,
+    operator_attestation_ref: str | None = None,
+    crow_chat_attestation_required: bool | None = None,
+    signed_breakglass_ref: str | None = None,
+    signed_breakglass_reason: str | None = None,
 ) -> Path:
     ledger_dir = orchestration_ledger_dir()
     ledger_dir.mkdir(parents=True, exist_ok=True)
@@ -1287,6 +1292,17 @@ def write_receipt(
         record["crow_chat_attestation_required"] = dispatch_launch.crow_chat_attestation_required
         record["signed_breakglass_ref"] = dispatch_launch.signed_breakglass_ref
         record["signed_breakglass_reason"] = dispatch_launch.signed_breakglass_reason
+    else:
+        if origin_surface is not None:
+            record["origin_surface"] = origin_surface
+        if operator_attestation_ref is not None:
+            record["operator_attestation_ref"] = operator_attestation_ref
+        if crow_chat_attestation_required is not None:
+            record["crow_chat_attestation_required"] = crow_chat_attestation_required
+        if signed_breakglass_ref is not None:
+            record["signed_breakglass_ref"] = signed_breakglass_ref
+        if signed_breakglass_reason is not None:
+            record["signed_breakglass_reason"] = signed_breakglass_reason
     if route_decision is not None:
         record.update(route_decision_receipt_payload(route_decision))
         record["route_decision_receipt_path"] = (
@@ -2643,6 +2659,11 @@ def main(argv: list[str] | None = None) -> int:
                         route_decision=route_decision,
                         route_decision_receipt_path=route_decision_receipt_path,
                         durable_binding=durable_binding,
+                        origin_surface=attestation_origin_surface,
+                        operator_attestation_ref=attestation_ref,
+                        crow_chat_attestation_required=attestation_required,
+                        signed_breakglass_ref=signed_breakglass_ref,
+                        signed_breakglass_reason=signed_breakglass_reason,
                     )
                 print(f"BLOCKED: {reason}", file=sys.stderr)
                 return 10

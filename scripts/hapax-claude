@@ -331,14 +331,6 @@ if [ "$READONLY" -ne 1 ]; then
       echo "  Close or resolve the existing claim before launching a new visible lane." >&2
       exit 13
     fi
-    if [ -z "$CLAIMED_TASK" ]; then
-      if [ ! -x "$WORKDIR/scripts/cc-claim" ]; then
-        echo "hapax-claude: refusing mutating launch; missing worktree cc-claim at $WORKDIR/scripts/cc-claim" >&2
-        exit 14
-      fi
-      (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")
-      CLAIMED_TASK="$CLAUDE_TASK"
-    fi
   elif [ -n "$CLAIMED_TASK" ]; then
     CLAUDE_TASK="$CLAIMED_TASK"
   elif [ "$IS_DEV_POOL" -eq 1 ]; then
@@ -356,14 +348,21 @@ hapax-claude: refusing mutating visible lane without governed task binding.
 EOF
     exit 13
   fi
-fi
-if [ "$READONLY" -ne 1 ]; then
   require_g12_crow_chat_attestation "$CLAUDE_TASK" "$ROLE" "hapax-claude"
+  if [ -n "$CLAUDE_TASK" ] && [ -z "$CLAIMED_TASK" ]; then
+    if [ ! -x "$WORKDIR/scripts/cc-claim" ]; then
+      echo "hapax-claude: refusing mutating launch; missing worktree cc-claim at $WORKDIR/scripts/cc-claim" >&2
+      exit 14
+    fi
+    (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")
+    CLAIMED_TASK="$CLAUDE_TASK"
+  fi
   scrub_g12_attestation_secrets
 fi
 if [ -n "$CLAUDE_TASK" ]; then
   export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
 fi
+scrub_g12_attestation_secrets
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 
@@ -383,6 +382,9 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   printf '%s\n' '#!/usr/bin/env bash'
   printf '%s\n' 'set -euo pipefail'
   printf 'trap '\''%q %q --reason "clean exit (tmux)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$ROLE"
+  printf '%s\n' 'unset HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY'
+  printf '%s\n' 'unset HAPAX_OPERATOR_ATTESTATION_HMAC_KEY'
+  printf '%s\n' 'unset HAPAX_G12_BREAKGLASS_HMAC_KEY'
   printf 'cd %q\n' "$WORKDIR"
   printf 'export HAPAX_AGENT_INTERFACE=claude\n'
   printf 'export HAPAX_AGENT_NAME=%q\n' "$ROLE"
@@ -401,8 +403,9 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
     HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION \
     HAPAX_G12_SIGNED_BREAKGLASS_REF \
     HAPAX_G12_SIGNED_BREAKGLASS_REASON; do
-    if [ -n "${!_att_env:-}" ]; then
-      printf 'export %s=%q\n' "$_att_env" "${!_att_env}"
+    _att_value="$(printenv "$_att_env" 2>/dev/null || true)"
+    if [ -n "$_att_value" ]; then
+      printf 'export %s=%q\n' "$_att_env" "$_att_value"
     fi
   done
   printf 'exec %q' "$CLAUDE_BIN"

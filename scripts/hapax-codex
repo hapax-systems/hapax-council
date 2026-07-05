@@ -1132,8 +1132,9 @@ if [ -n "$DISPATCH_HOST" ]; then
       HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION \
       HAPAX_G12_SIGNED_BREAKGLASS_REF \
       HAPAX_G12_SIGNED_BREAKGLASS_REASON; do
-      if [ -n "${!_att_env:-}" ]; then
-        printf 'export %s=%q\n' "$_att_env" "${!_att_env}"
+      _att_value="$(printenv "$_att_env" 2>/dev/null || true)"
+      if [ -n "$_att_value" ]; then
+        printf 'export %s=%q\n' "$_att_env" "$_att_value"
       fi
     done
     printf 'cd %q\n' "$WORKDIR"
@@ -1185,8 +1186,9 @@ else
       HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION \
       HAPAX_G12_SIGNED_BREAKGLASS_REF \
       HAPAX_G12_SIGNED_BREAKGLASS_REASON; do
-      if [ -n "${!_att_env:-}" ]; then
-        printf 'export %s=%q\n' "$_att_env" "${!_att_env}"
+      _att_value="$(printenv "$_att_env" 2>/dev/null || true)"
+      if [ -n "$_att_value" ]; then
+        printf 'export %s=%q\n' "$_att_env" "$_att_value"
       fi
     done
     printf 'cd %q\n' "$WORKDIR"
