@@ -8,9 +8,9 @@ failure, not a manual find. To update after an intentional change, regenerate th
 
 from __future__ import annotations
 
-import contextlib
-import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,7 +20,6 @@ from shared.capability_harness_descriptor import (
     discover,
     validate_descriptor,
 )
-from shared.capability_inventory import main as inventory_main
 from shared.capability_inventory_aggregator import aggregate_all_capabilities
 
 
@@ -70,13 +69,18 @@ class CapabilityCIGateTest(unittest.TestCase):
                 "Changes:\n  " + "\n  ".join(details[:20])
             )
 
-    def test_delta_cli_red_fixture_fails_when_route_missing_from_baseline(self) -> None:
-        """RED fixture: an observed dispatch route omitted from the baseline fails CI."""
+    def test_delta_cli_red_fixture_fails_through_ci_entrypoint(self) -> None:
+        """RED fixture: new/changed/missing capability surfaces fail the CI entrypoint."""
         observed = aggregate_all_capabilities()
         fingerprints = {d.capability_id: descriptor_fingerprint(d) for d in observed}
         missing_route = "api.headless.openrouter"
+        changed_route = "codex.headless.full"
+        stale_route = "boutique.unregistered.launcher"
         self.assertIn(missing_route, fingerprints)
+        self.assertIn(changed_route, fingerprints)
         fingerprints.pop(missing_route)
+        fingerprints[changed_route] = "stale-fingerprint"
+        fingerprints[stale_route] = "orphaned-fingerprint"
 
         with tempfile.TemporaryDirectory() as tmpdir:
             baseline = Path(tmpdir) / "capability-inventory-baseline-red.json"
@@ -88,14 +92,25 @@ class CapabilityCIGateTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
-                rc = inventory_main(["--delta", "--baseline", str(baseline)])
+            gate = (
+                Path(__file__).resolve().parent.parent
+                / "scripts"
+                / "hapax-capability-surface-delta-gate"
+            )
+            proc = subprocess.run(
+                [sys.executable, str(gate), "--baseline", str(baseline)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
 
-        self.assertEqual(rc, 1)
-        output = stdout.getvalue()
-        self.assertIn("capability_surface_delta: 1 new, 0 changed, 0 missing", output)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        output = proc.stdout
+        self.assertIn("capability_surface_delta: 1 new, 1 changed, 1 missing", output)
         self.assertIn(f"new: {missing_route}", output)
+        self.assertIn(f"changed: {changed_route}", output)
+        self.assertIn(f"missing: {stale_route}", output)
 
 
 if __name__ == "__main__":

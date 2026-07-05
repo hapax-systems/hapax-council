@@ -168,7 +168,11 @@ def test_ci_capability_surface_delta_gate_is_required() -> None:
     _assert_uses_pinned_action(gate_block, "actions/checkout")
     _assert_uses_pinned_action(gate_block, "astral-sh/setup-uv")
     assert "scripts/hapax-capability-surface-delta-gate" in gate_block
-    assert "uv run --frozen python scripts/hapax-capability-surface-delta-gate" in gate_block
+    assert (
+        "uv run --no-project --with pydantic==2.13.4 "
+        "python scripts/hapax-capability-surface-delta-gate"
+    ) in gate_block
+    assert "uv run --frozen python scripts/hapax-capability-surface-delta-gate" not in gate_block
     assert "Post-merge duplicate required-check sentinel" in gate_block
     assert "Docs-only required-check sentinel" in gate_block
     assert "capability-surface-delta" in all_green_block

@@ -246,7 +246,7 @@ runtimes:
       - 'uv run python scripts/check-unused-functions.py'
       - 'uv run python scripts/check-new-module-consumers.py'
       - 'uv run python scripts/check-producer-consumers.py'
-      - 'uv run --frozen python scripts/hapax-capability-surface-delta-gate'
+      - 'uv run --no-project --with pydantic==2.13.4 python scripts/hapax-capability-surface-delta-gate'
       - 'uv run python scripts/check-audio-conf-consistency.py'
       - 'uv run python scripts/verify-aesthetic-library.py'
       - 'uv run python scripts/verify-redaction-transforms.py'
