@@ -452,6 +452,11 @@ def load_dispatch_policy_sources(
             quota_ledger = resolved.ledger
             quota_ledger_source = resolved.source
             quota_live_error = resolved.live_error
+    except RuntimeError as exc:
+        if "quota-spend-ledger-fixtures.json" not in str(exc):
+            raise
+        quota_ledger = None
+        quota_error = str(exc)
     except (IndexError, QuotaSpendLedgerError, OSError, ValueError) as exc:
         quota_ledger = None
         quota_error = str(exc)
