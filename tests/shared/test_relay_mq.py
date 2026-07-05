@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from shared.operator_attestation import expected_operator_attestation_ref
 from shared.relay_mq import (
     MessageFilters,
     _connect,
@@ -153,6 +155,43 @@ class TestSend(unittest.TestCase):
         )
         mid = send_message(self.db_path, env)
         self.assertIsNotNone(mid)
+
+    def test_dispatch_send_fails_closed_without_required_g12_attestation(self) -> None:
+        env = _make_envelope(
+            message_type="dispatch",
+            authority_case="CASE-TEST-001",
+            authority_item="task-x",
+            recipients_spec="cx-green",
+        )
+        with (
+            patch.dict(os.environ, {"HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1"}),
+            self.assertRaisesRegex(ValueError, "crow_chat_origin_required_for_dispatch"),
+        ):
+            send_message(self.db_path, env)
+
+    def test_dispatch_send_accepts_task_lane_bound_g12_attestation(self) -> None:
+        attestation_ref = expected_operator_attestation_ref(
+            origin_surface="crow_chat",
+            task_id="task-x",
+            lane="cx-green",
+        )
+        env = _make_envelope(
+            message_type="dispatch",
+            authority_case="CASE-TEST-001",
+            authority_item="task-x",
+            recipients_spec="cx-green",
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1",
+                "HAPAX_METHODOLOGY_ORIGIN_SURFACE": "crow_chat",
+                "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF": attestation_ref,
+            },
+        ):
+            mid = send_message(self.db_path, env)
+
+        self.assertEqual(mid, env.message_id)
 
     def test_send_dispatch_without_authority_rejected(self) -> None:
         with self.assertRaises(ValueError):

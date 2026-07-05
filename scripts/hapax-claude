@@ -22,6 +22,22 @@ set -euo pipefail
 
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
 
+g12_attestation_required() {
+  case "${HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+  esac
+  case "${HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+  esac
+  return 1
+}
+
+require_g12_crow_chat_attestation() {
+  g12_attestation_required || return 0
+  PYTHONPATH="$COUNCIL_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -m shared.g12_crow_chat_gate \
+    --task "$1" --lane "$2" --surface "$3"
+}
+
 usage() {
   cat <<'EOF'
 usage: hapax-claude [--role alpha|…|theta | dev|dev2|…] [--cd DIR]
@@ -336,6 +352,9 @@ EOF
   fi
 fi
 if [ -n "$CLAUDE_TASK" ]; then
+  if [ "$READONLY" -ne 1 ]; then
+    require_g12_crow_chat_attestation "$CLAUDE_TASK" "$ROLE" "hapax-claude"
+  fi
   export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
 fi
 
@@ -368,6 +387,15 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   if [ -n "$CLAUDE_TASK" ]; then
     printf 'export HAPAX_METHODOLOGY_DISPATCH_TASK=%q\n' "$CLAUDE_TASK"
   fi
+  for _att_env in \
+    HAPAX_METHODOLOGY_ORIGIN_SURFACE \
+    HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF \
+    HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION \
+    HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION; do
+    if [ -n "${!_att_env:-}" ]; then
+      printf 'export %s=%q\n' "$_att_env" "${!_att_env}"
+    fi
+  done
   printf 'exec %q' "$CLAUDE_BIN"
   for arg in "${CLAUDE_DEFAULT_ARGS[@]}"; do
     printf ' %q' "$arg"

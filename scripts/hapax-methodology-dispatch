@@ -59,6 +59,7 @@ from shared.dispatcher_policy import (
 )
 from shared.failure_classification import FailureCode, FailureReceipt
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
+from shared.g12_crow_chat_gate import child_attestation_env, gate_required
 from shared.gate_event_producer import build_gate_event
 from shared.gate_log import append_gate_event
 from shared.quota_wall import QUOTA_WALL_EXIT_CODE
@@ -2140,6 +2141,22 @@ def main(argv: list[str] | None = None) -> int:
             "--task and --lane are required unless --list-platform-paths or --capabilities is used"
         )
 
+    attestation_origin_surface = optional_cli_or_env(
+        args.origin_surface, "HAPAX_METHODOLOGY_ORIGIN_SURFACE"
+    )
+    attestation_ref = optional_cli_or_env(
+        args.operator_attestation_ref,
+        "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF",
+    )
+    attestation_required = args.require_crow_chat_attestation or gate_required(os.environ)
+    os.environ.update(
+        child_attestation_env(
+            origin_surface=attestation_origin_surface,
+            operator_attestation_ref=attestation_ref,
+            require_crow_chat_attestation=attestation_required,
+        )
+    )
+
     task_root = Path(
         os.environ.get(
             "HAPAX_CC_TASK_ROOT",
@@ -2532,17 +2549,9 @@ def main(argv: list[str] | None = None) -> int:
                         event_log=coord_event_log_from_env(),
                         idempotency_key=args.idempotency_key,
                         reactivate_retired=reactivate_retired_codex_relay,
-                        origin_surface=optional_cli_or_env(
-                            args.origin_surface, "HAPAX_METHODOLOGY_ORIGIN_SURFACE"
-                        ),
-                        operator_attestation_ref=optional_cli_or_env(
-                            args.operator_attestation_ref,
-                            "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF",
-                        ),
-                        require_crow_chat_attestation=(
-                            args.require_crow_chat_attestation
-                            or env_flag("HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION")
-                        ),
+                        origin_surface=attestation_origin_surface,
+                        operator_attestation_ref=attestation_ref,
+                        require_crow_chat_attestation=attestation_required,
                     ),
                     launch_callable=functools.partial(
                         classify_and_witness_launch,

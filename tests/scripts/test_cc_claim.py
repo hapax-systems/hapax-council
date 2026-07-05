@@ -4,6 +4,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+from shared.operator_attestation import expected_operator_attestation_ref
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "cc-claim"
 
@@ -91,10 +93,27 @@ def _write_task(
     return path
 
 
-def _claim(home: Path, task_id: str) -> subprocess.CompletedProcess[str]:
+def _claim(
+    home: Path,
+    task_id: str,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    for key in (
+        "CODEX_ROLE",
+        "CLAUDE_ROLE",
+        "CODEX_THREAD_NAME",
+        "CODEX_SESSION",
+        "CLAUDE_CODE_SESSION_ID",
+        "HAPAX_AGENT_NAME",
+        "HAPAX_WORKTREE_ROLE",
+        "HAPAX_SESSION_ID",
+    ):
+        env.pop(key, None)
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["bash", str(SCRIPT), task_id],
         env=env,
@@ -128,6 +147,44 @@ def test_body_bullets_are_not_claim_dependencies(tmp_path: Path) -> None:
     assert (home / ".cache" / "hapax" / "cc-active-task-cx-test").read_text(
         encoding="utf-8"
     ).strip() == "claim-target"
+
+
+def test_g12_attestation_requirement_blocks_claim_before_task_mutation(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "attested-claim-target")
+
+    result = _claim(
+        home,
+        "attested-claim-target",
+        {"HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1"},
+    )
+
+    assert result.returncode == 18
+    assert "crow_chat_origin_required_for_dispatch" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
+
+
+def test_g12_attested_claim_accepts_task_lane_bound_ref(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "attested-claim-target")
+    attestation_ref = expected_operator_attestation_ref(
+        origin_surface="crow_chat",
+        task_id="attested-claim-target",
+        lane="cx-test",
+    )
+
+    result = _claim(
+        home,
+        "attested-claim-target",
+        {
+            "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1",
+            "HAPAX_METHODOLOGY_ORIGIN_SURFACE": "crow_chat",
+            "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF": attestation_ref,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
 
 
 def test_missing_depends_on_field_means_no_dependencies(tmp_path: Path) -> None:

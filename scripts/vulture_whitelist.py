@@ -3330,6 +3330,12 @@ list_messages
 purge_expired
 RelayMQEnvelope._validate_envelope
 
+# G12 Crow-chat dispatch gate - called by extensionless methodology and shell
+# launchers that vulture does not treat as stable Python call paths.
+from shared.g12_crow_chat_gate import child_attestation_env as _g12_child_attestation_env
+
+_g12_child_attestation_env
+
 # --- Interview prep prerequisites (new contracts, integration follows) ---
 # Guarded: layout_identity_contract and form_capability_contract land via sibling PRs.
 try:

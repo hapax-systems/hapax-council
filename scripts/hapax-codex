@@ -216,6 +216,22 @@ EOF
   exit 12
 }
 
+g12_attestation_required() {
+  case "${HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+  esac
+  case "${HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+  esac
+  return 1
+}
+
+require_g12_crow_chat_attestation() {
+  g12_attestation_required || return 0
+  PYTHONPATH="$COUNCIL_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -m shared.g12_crow_chat_gate \
+    --task "$1" --lane "$2" --surface "$3"
+}
+
 foot_color_theme_for_current_mode() {
   local mode
   mode="$(cat "$HOME/.cache/hapax/working-mode" 2>/dev/null || printf '%s\n' rnd)"
@@ -414,6 +430,10 @@ for name in (
     "HAPAX_PARENT_AGENT_INTERFACE",
     "HAPAX_PARENT_AGENT_NAME",
     "HAPAX_METHODOLOGY_DISPATCH_TASK",
+    "HAPAX_METHODOLOGY_ORIGIN_SURFACE",
+    "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF",
+    "HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION",
+    "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION",
     "HAPAX_CODEX_WORKTREE_STRATEGY",
     "HAPAX_CC_TASK_GATE",
     "HAPAX_IDLE_UPDATE_SECONDS",
@@ -891,6 +911,10 @@ export LOGOS_BASE_URL
 export COCKPIT_BASE_URL
 export HAPAX_CC_TASK_GATE="$TASK_GATE"
 
+if [ -n "$TASK_ID" ]; then
+  require_g12_crow_chat_attestation "$TASK_ID" "$SESSION" "hapax-codex"
+fi
+
 if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   CLAIM_SCRIPT="$WORKDIR/scripts/cc-claim"
   if [ ! -x "$CLAIM_SCRIPT" ]; then
@@ -1111,6 +1135,15 @@ if [ -n "$DISPATCH_HOST" ]; then
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
+    for _att_env in \
+      HAPAX_METHODOLOGY_ORIGIN_SURFACE \
+      HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF \
+      HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION \
+      HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION; do
+      if [ -n "${!_att_env:-}" ]; then
+        printf 'export %s=%q\n' "$_att_env" "${!_att_env}"
+      fi
+    done
     printf 'cd %q\n' "$WORKDIR"
     printf 'exec ssh'
     for arg in \
@@ -1136,6 +1169,15 @@ else
     # Propagate the session id so the re-exec'd inner hapax-codex keeps ONE stable
     # uuid (reform Phase 1, FM-2) instead of minting a fresh one.
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
+    for _att_env in \
+      HAPAX_METHODOLOGY_ORIGIN_SURFACE \
+      HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF \
+      HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION \
+      HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION; do
+      if [ -n "${!_att_env:-}" ]; then
+        printf 'export %s=%q\n' "$_att_env" "${!_att_env}"
+      fi
+    done
     printf 'cd %q\n' "$WORKDIR"
     printf 'exec %q' "$COUNCIL_DIR/scripts/hapax-codex"
     for arg in "${CHILD_ARGS[@]}"; do

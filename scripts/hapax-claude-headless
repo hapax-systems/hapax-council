@@ -18,6 +18,22 @@ headless_allowed() {
   [[ "${HAPAX_CLAUDE_HEADLESS_ALLOW:-}" == "1" || -e "$ENABLE_FILE" ]]
 }
 
+g12_attestation_required() {
+  case "${HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+  esac
+  case "${HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+  esac
+  return 1
+}
+
+require_g12_crow_chat_attestation() {
+  g12_attestation_required || return 0
+  PYTHONPATH="$WORKDIR${PYTHONPATH:+:$PYTHONPATH}" python3 -m shared.g12_crow_chat_gate \
+    --task "$1" --lane "$2" --surface "$3"
+}
+
 ROLE=""
 CLAUDE_TASK="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
 while [[ $# -gt 0 ]]; do
@@ -239,6 +255,7 @@ if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CLAUDE_TASK" ]]; then
   echo "hapax-claude-headless: refusing launch; role '$ROLE' already claims '$CLAIMED_TASK', not dispatch task '$CLAUDE_TASK'" >&2
   exit 13
 fi
+require_g12_crow_chat_attestation "$CLAUDE_TASK" "$ROLE" "hapax-claude-headless"
 if [[ -z "$CLAIMED_TASK" ]]; then
   [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-claude-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
   (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")
@@ -577,6 +594,10 @@ elif kind == "exec":
         "CLAUDE_ROLE",
         "HAPAX_WORKTREE_ROLE",
         "HAPAX_METHODOLOGY_DISPATCH_TASK",
+        "HAPAX_METHODOLOGY_ORIGIN_SURFACE",
+        "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF",
+        "HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION",
+        "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION",
     )
     payload["env"].update(
         {k: os.environ[k] for k in identity_keys if os.environ.get(k)}

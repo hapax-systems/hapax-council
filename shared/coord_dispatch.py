@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from shared.coord_event_log import CoordEvent, CoordEventLog, CoordWriter, DuplicateEventError
+from shared.operator_attestation import expected_operator_attestation_ref
 from shared.relay_lifecycle import lane_is_retired
 from shared.relay_mq import ensure_schema
 
@@ -19,7 +19,6 @@ TERMINAL_EVENT_TYPES = {
     "coord_dispatch.launch_succeeded",
     "coord_dispatch.launch_failed",
 }
-OPERATOR_ATTESTATION_RULING = "RULING-REINS-OPERATOR-ATTESTATION-20260701"
 
 
 class CoordDispatchError(RuntimeError):
@@ -28,28 +27,6 @@ class CoordDispatchError(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
-
-
-def expected_operator_attestation_ref(
-    *,
-    origin_surface: str,
-    task_id: str,
-    lane: str,
-    ruling: str = OPERATOR_ATTESTATION_RULING,
-) -> str:
-    """Return the Crow-chat operator attestation ref bound to origin, task, lane, and ruling."""
-
-    origin = origin_surface.strip()
-    payload = {
-        "origin_surface": origin,
-        "task_id": task_id.strip(),
-        "lane": lane.strip(),
-        "ruling": ruling.strip(),
-    }
-    digest = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()[:32]
-    return f"operator-attestation:reins:{origin}:{digest}"
 
 
 @dataclass(frozen=True)

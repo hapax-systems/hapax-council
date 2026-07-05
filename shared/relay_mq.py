@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from shared.g12_crow_chat_gate import validate_relay_dispatch_envelope
 from shared.relay_mq_envelope import (
     DiskPressureError,
     Envelope,
@@ -273,6 +274,12 @@ def send_message(
             )
 
     recipients = expand_recipients(envelope.recipients_spec, relay_dir)
+    validate_relay_dispatch_envelope(
+        message_type=envelope.message_type,
+        authority_item=envelope.authority_item,
+        subject=envelope.subject,
+        recipients=recipients,
+    )
     now = _now_iso()
 
     with _connect(db_path) as conn:

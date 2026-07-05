@@ -32,6 +32,22 @@ if [[ -f "$ROLE_HELPER" ]]; then
   . "$ROLE_HELPER"
 fi
 
+g12_attestation_required() {
+  case "${HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+  esac
+  case "${HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+  esac
+  return 1
+}
+
+require_g12_crow_chat_attestation() {
+  g12_attestation_required || return 0
+  PYTHONPATH="$SCRIPT_DIR/..${PYTHONPATH:+:$PYTHONPATH}" python3 -m shared.g12_crow_chat_gate \
+    --task "$1" --lane "$2" --surface "$3"
+}
+
 force=false
 task_id=""
 for arg in "$@"; do
@@ -82,6 +98,8 @@ else
   session_claim_file=""
 fi
 lease_ttl="${HAPAX_CLAIM_LEASE_TTL_SECS:-21600}"
+
+require_g12_crow_chat_attestation "$task_id" "$role" "cc-claim"
 
 # --- Multi-claim prevention + lease expiry (reform Phase 1, cluster 6) ---
 # A role must close its current task before claiming a new one. Without this,
