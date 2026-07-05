@@ -2339,6 +2339,7 @@ def main(argv: list[str] | None = None) -> int:
                         mq_db_path=_relay_mq_db_path(),
                         event_log=coord_event_log_from_env(),
                         idempotency_key=args.idempotency_key,
+                        reactivate_retired=reactivate_retired_codex_relay,
                     ),
                     functools.partial(
                         classify_and_witness_launch,
