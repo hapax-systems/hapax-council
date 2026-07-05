@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import shared.dispatcher_policy as dispatcher_policy
 from shared.dispatcher_policy import (
     LOCAL_DEV_PLATFORMS,
     ClogRouteState,
@@ -2435,6 +2436,32 @@ def test_policy_sources_flag_invalid_live_ledger_on_fallback(
     assert sources.quota_ledger_source == "fixtures"
     assert sources.quota_live_error is not None
     assert "invalid quota/spend ledger" in sources.quota_live_error
+
+
+def test_policy_sources_fail_soft_when_quota_fixture_resolution_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_fixture_resolution(*, live_path: Path | None = None) -> object:
+        raise RuntimeError(
+            "hapax-spine: cannot load 'quota-spend-ledger-fixtures.json' "
+            "-- set HAPAX_SPINE_CONFIG_DIR"
+        )
+
+    monkeypatch.setattr(
+        dispatcher_policy,
+        "load_quota_spend_ledger_resolved",
+        fail_fixture_resolution,
+    )
+
+    sources = load_dispatch_policy_sources()
+
+    assert sources.registry is not None
+    assert sources.registry.routes
+    assert sources.registry_error is None
+    assert sources.quota_ledger is None
+    assert sources.quota_ledger_source is None
+    assert sources.quota_error is not None
+    assert "quota-spend-ledger-fixtures.json" in sources.quota_error
 
 
 def test_policy_sources_explicit_path_bypasses_live_resolution(

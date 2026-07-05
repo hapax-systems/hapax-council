@@ -452,7 +452,7 @@ def load_dispatch_policy_sources(
             quota_ledger = resolved.ledger
             quota_ledger_source = resolved.source
             quota_live_error = resolved.live_error
-    except (IndexError, QuotaSpendLedgerError, OSError, ValueError) as exc:
+    except (IndexError, QuotaSpendLedgerError, OSError, RuntimeError, ValueError) as exc:
         quota_ledger = None
         quota_error = str(exc)
 
