@@ -29,6 +29,7 @@ DEFAULT_TIMEOUT_SECONDS = 60
 STATUS_CACHE_SCHEMA_VERSION = 2
 GRAPHQL_BACKOFF_RC = 75
 REST_INDETERMINATE_CHECK_NAME = "github-rest-status-indeterminate"
+DEFAULT_REVIEW_DECISION_REST_LIMIT = 5000
 
 _SAFE_CACHE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -493,7 +494,7 @@ def review_decision_rest(
     repo: str = DEFAULT_REPO,
     repo_root: Path,
     runner: Any = subprocess.run,
-    limit: int = 100,
+    limit: int = DEFAULT_REVIEW_DECISION_REST_LIMIT,
 ) -> str | None:
     payload = _rest_get_json_pages_or_none(
         f"repos/{repo}/pulls/{pr_number}/reviews",
@@ -501,7 +502,7 @@ def review_decision_rest(
         runner=runner,
         limit=limit,
     )
-    if payload is None:
+    if payload is None or len(payload) >= limit:
         return "REVIEW_REQUIRED"
     latest_by_reviewer: dict[str, str] = {}
     for index, item in enumerate(payload):

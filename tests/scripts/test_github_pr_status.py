@@ -313,6 +313,67 @@ def test_review_decision_rest_dismissed_review_revokes_approval(tmp_path: Path) 
     )
 
 
+def test_review_decision_rest_paginates_late_dismissed_review(tmp_path: Path) -> None:
+    class ReviewRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/reviews"):
+                fields = {
+                    cmd[index + 1].split("=", 1)[0]: cmd[index + 1].split("=", 1)[1]
+                    for index, token in enumerate(cmd[:-1])
+                    if token == "-f" and "=" in cmd[index + 1]
+                }
+                page = int(fields.get("page", "1"))
+                if page == 1:
+                    payload = [
+                        {"state": "commented", "user": {"login": f"reviewer-{index}"}}
+                        for index in range(99)
+                    ]
+                    payload.append({"state": "approved", "user": {"login": "reviewer"}})
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+                if page == 2:
+                    payload = [{"state": "dismissed", "user": {"login": "reviewer"}}]
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return super().__call__(cmd, **kwargs)
+
+    runner = ReviewRunner()
+
+    assert (
+        github_pr_status.review_decision_rest(
+            9,
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=runner,
+        )
+        == "REVIEW_REQUIRED"
+    )
+    assert any("page=2" in call for call in runner.calls for call in call)
+
+
+def test_review_decision_rest_fails_closed_at_review_page_boundary(tmp_path: Path) -> None:
+    class ReviewRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/reviews"):
+                payload = [
+                    {"state": "approved", "user": {"login": f"reviewer-{index}"}}
+                    for index in range(100)
+                ]
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return super().__call__(cmd, **kwargs)
+
+    assert (
+        github_pr_status.review_decision_rest(
+            9,
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=ReviewRunner(),
+            limit=100,
+        )
+        == "REVIEW_REQUIRED"
+    )
+
+
 def test_graphql_backoff_skips_graphql_when_remaining_is_low(tmp_path: Path) -> None:
     runner = FakeRunner()
 
