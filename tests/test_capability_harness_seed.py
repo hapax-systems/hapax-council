@@ -16,7 +16,6 @@ from shared.capability_harness_descriptor import (
     validate_descriptor,
 )
 from shared.capability_harness_seed import SEED_CAPABILITY_DESCRIPTORS, seed_descriptors_by_shape
-from shared.capability_inventory import inventory_report, project_inventory
 
 
 class SeedRegistryTest(unittest.TestCase):
@@ -58,12 +57,12 @@ class InventoryReportTest(unittest.TestCase):
     """The structured inventory report."""
 
     def test_report_totals(self) -> None:
-        report = inventory_report(SEED_CAPABILITY_DESCRIPTORS)
+        report = inventory_cli.inventory_report(SEED_CAPABILITY_DESCRIPTORS)
         self.assertEqual(report["total"], len(SEED_CAPABILITY_DESCRIPTORS))
         self.assertEqual(report["with_validation_gaps"], 0)
 
     def test_report_shape_counts_cover_all(self) -> None:
-        report = inventory_report(SEED_CAPABILITY_DESCRIPTORS)
+        report = inventory_cli.inventory_report(SEED_CAPABILITY_DESCRIPTORS)
         shape_counts = report["shape_counts"]
         self.assertEqual(set(shape_counts), {s.value for s in CapabilityShape})
 
@@ -80,17 +79,20 @@ class InventoryReportTest(unittest.TestCase):
             spend_authority_required=True,
             provider=None,  # missing required fact
         )
-        report = inventory_report([broken])
+        report = inventory_cli.inventory_report([broken])
         self.assertEqual(report["with_validation_gaps"], 1)
         gaps = report["rows"][0]["gaps"]
         self.assertIn("provider", gaps)
 
     def test_project_inventory_gaps_only(self) -> None:
         # the seed has no gaps -> gaps_only returns empty
-        self.assertEqual(project_inventory(SEED_CAPABILITY_DESCRIPTORS, gaps_only=True), [])
+        self.assertEqual(
+            inventory_cli.project_inventory(SEED_CAPABILITY_DESCRIPTORS, gaps_only=True), []
+        )
         # all rows returned without the filter
         self.assertEqual(
-            len(project_inventory(SEED_CAPABILITY_DESCRIPTORS)), len(SEED_CAPABILITY_DESCRIPTORS)
+            len(inventory_cli.project_inventory(SEED_CAPABILITY_DESCRIPTORS)),
+            len(SEED_CAPABILITY_DESCRIPTORS),
         )
 
 
