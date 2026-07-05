@@ -127,7 +127,7 @@ checklist: {}
 
 
 class FakeGh:
-    """Stub for the gh CLI: REST PR scan plus pr view / pr diff / pr comment."""
+    """Stub for the gh CLI: REST PR reads plus pr diff / pr comment."""
 
     def __init__(
         self,
@@ -167,9 +167,17 @@ class FakeGh:
             "body": "PR body acceptance evidence",
             "head": {"ref": f"feat/{self.pr_number}", "sha": "c" * 40},
             "draft": False,
+            "changed_files": (
+                len(self.files) if self.changed_files_count is None else self.changed_files_count
+            ),
             "mergeable_state": "clean",
             "state": "open",
         }
+
+    def _rest_pull_files(self, number: int) -> list[dict[str, Any]] | None:
+        if number != self.pr_number:
+            return None
+        return [{"filename": path} for path in self.files]
 
     def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         self.calls.append(list(cmd))
@@ -177,6 +185,15 @@ class FakeGh:
             path = cmd[6]
             if path == "repos/owner/repo/pulls":
                 return subprocess.CompletedProcess(cmd, 0, json.dumps(self._rest_open_prs()), "")
+            if path.startswith("repos/owner/repo/pulls/") and path.endswith("/files"):
+                try:
+                    number = int(path.rsplit("/", 2)[-2])
+                except ValueError:
+                    number = -1
+                payload = self._rest_pull_files(number)
+                if payload is None:
+                    return subprocess.CompletedProcess(cmd, 1, "", "pull files not found")
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
             if path.startswith("repos/owner/repo/pulls/"):
                 try:
                     number = int(path.rsplit("/", 1)[-1])
@@ -990,6 +1007,18 @@ checklist:
                 }
             ]
 
+    def test_pr_metadata_uses_rest_not_graphql_pr_view(self, tmp_path: Path) -> None:
+        gh = FakeGh()
+        gh.fail_view_prs.add(42)
+        result, gh, _, _ = _review(tmp_path, gh=gh)
+
+        assert result["status"] == "dispatched"
+        assert not any(call[:3] == ["gh", "pr", "view"] for call in gh.calls)
+        assert any(len(call) > 6 and call[6] == "repos/owner/repo/pulls/42" for call in gh.calls)
+        assert any(
+            len(call) > 6 and call[6] == "repos/owner/repo/pulls/42/files" for call in gh.calls
+        )
+
     def test_diff_is_truncated(self, tmp_path: Path) -> None:
         gh = FakeGh()
         gh.diff = (
@@ -1191,7 +1220,7 @@ class TestAllMode:
                 ]
 
             def _rest_pull(self, number: int) -> dict[str, Any] | None:
-                if number not in {41, 42}:
+                if number != 42:
                     return None
                 return {
                     "number": number,
@@ -1201,6 +1230,7 @@ class TestAllMode:
                         "sha": ("b" if number == 41 else "c") * 40,
                     },
                     "draft": False,
+                    "changed_files": len(self.files),
                     "mergeable_state": "clean",
                     "state": "open",
                 }
