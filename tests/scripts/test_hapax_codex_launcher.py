@@ -815,6 +815,60 @@ printf '%s\\n' "$@" > {tmux_args}
     assert "exec " in runner_text
 
 
+def test_terminal_tmux_spawn_failure_does_not_claim_task(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    workdir = tmp_path / "target-worktree"
+    (workdir / "scripts").mkdir(parents=True)
+    claim_marker = tmp_path / "claim-ran.txt"
+    claim_script = workdir / "scripts" / "cc-claim"
+    claim_script.write_text(
+        f"""#!/usr/bin/env bash
+printf 'claim-ran\\n' > {claim_marker}
+exit 0
+""",
+        encoding="utf-8",
+    )
+    claim_script.chmod(0o755)
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        """#!/usr/bin/env bash
+if [ "$1" = "has-session" ]; then
+  exit 1
+fi
+if [ "$1" = "new-session" ]; then
+  exit 42
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_tmux.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-amber",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(workdir),
+            "--task",
+            "demo-task",
+            "--terminal",
+            "tmux",
+            "--force",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 42
+    assert not claim_marker.exists()
+
+
 def test_terminal_tmux_can_be_podium_thin_client_for_appendix_codex(tmp_path: Path) -> None:
     env, args_file, env_file = _env_with_fake_codex(tmp_path)
     _write_active_task(env, "demo-task")

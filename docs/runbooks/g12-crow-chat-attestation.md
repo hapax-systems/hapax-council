@@ -41,6 +41,7 @@ scripts/hapax-methodology-dispatch \
   --platform codex \
   --mode headless \
   --launch \
+  --mq-message-id <relay-mq-message-id> \
   --origin-surface crow_chat \
   --operator-attestation-ref <crow-chat-issued-ref> \
   --require-crow-chat-attestation
@@ -55,14 +56,16 @@ scripts/hapax-methodology-dispatch \
   --platform codex \
   --mode headless \
   --launch \
+  --mq-message-id <relay-mq-message-id> \
   --signed-breakglass-ref <signed-breakglass-ref> \
   --signed-breakglass-reason "<reason>" \
   --require-crow-chat-attestation
 ```
 
-A taskless mutable launch is refused while enforcement is on. Split relay MQ
-broadcasts into one attested dispatch per lane because each ref binds exactly
-one `task_id` to one lane.
+A taskless mutable launch is refused while enforcement is on. Mutable launch
+commands also need the relay MQ message id that carried the governed dispatch
+authority. Split relay MQ broadcasts into one attested dispatch per lane because
+each ref binds exactly one `task_id` to one lane.
 
 Recheck commands:
 

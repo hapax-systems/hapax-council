@@ -238,6 +238,14 @@ scrub_g12_attestation_secrets() {
   unset HAPAX_G12_BREAKGLASS_HMAC_KEY
 }
 
+tmux_new_session_without_g12_secrets() {
+  env \
+    -u HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY \
+    -u HAPAX_OPERATOR_ATTESTATION_HMAC_KEY \
+    -u HAPAX_G12_BREAKGLASS_HMAC_KEY \
+    "$TMUX_BIN" new-session "$@"
+}
+
 foot_color_theme_for_current_mode() {
   local mode
   mode="$(cat "$HOME/.cache/hapax/working-mode" 2>/dev/null || printf '%s\n' rnd)"
@@ -921,12 +929,17 @@ export HAPAX_CC_TASK_GATE="$TASK_GATE"
 
 require_g12_crow_chat_attestation "$TASK_ID" "$SESSION" "hapax-codex"
 
+CLAIM_SCRIPT=""
+NEEDS_CLAIM=0
 if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   CLAIM_SCRIPT="$WORKDIR/scripts/cc-claim"
   if [ ! -x "$CLAIM_SCRIPT" ]; then
     echo "hapax-codex: cannot claim task from selected worktree; missing executable $CLAIM_SCRIPT" >&2
     exit 8
   fi
+  NEEDS_CLAIM=1
+fi
+if [ "$NEEDS_CLAIM" -eq 1 ] && [ "$TERMINAL" = "none" ]; then
   "$CLAIM_SCRIPT" "$TASK_ID"
 fi
 
@@ -958,6 +971,7 @@ EOF
   esac
 fi
 
+BOOTSTRAP_CREATED_BY_LAUNCHER=0
 if [ -n "$BOOTSTRAP_FILE" ]; then
   if [ ! -f "$BOOTSTRAP_FILE" ]; then
     echo "hapax-codex: bootstrap file not found: $BOOTSTRAP_FILE" >&2
@@ -969,6 +983,7 @@ elif { [ -n "$TASK_ID" ] || [ "$TERMINAL" != "none" ]; } && [ "$explicit_codex_c
   task_slug="$(slugify "${TASK_ID:-no-task}")"
   session_slug="$(slugify "$SESSION")"
   BOOTSTRAP_FILE="$SPAWN_DIR/$stamp-$session_slug-$task_slug.md"
+  BOOTSTRAP_CREATED_BY_LAUNCHER=1
   cat >"$BOOTSTRAP_FILE" <<EOF
 # Hapax Codex Spawn Bootstrap
 
@@ -1110,6 +1125,10 @@ if [ "$TERMINAL" = "foot" ]; then
 fi
 
 RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION").sh"
+VISIBLE_CLAIM_READY_FILE=""
+if [ "$NEEDS_CLAIM" -eq 1 ]; then
+  VISIBLE_CLAIM_READY_FILE="$SPAWN_DIR/claim-ready-$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION")-$$"
+fi
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 if [ -n "$DISPATCH_HOST" ]; then
@@ -1122,6 +1141,10 @@ if [ -n "$DISPATCH_HOST" ]; then
     printf '%s\n' 'unset HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY'
     printf '%s\n' 'unset HAPAX_OPERATOR_ATTESTATION_HMAC_KEY'
     printf '%s\n' 'unset HAPAX_G12_BREAKGLASS_HMAC_KEY'
+    if [ -n "$VISIBLE_CLAIM_READY_FILE" ]; then
+      printf 'for _claim_wait in {1..600}; do [ -f %q ] && break; sleep 0.1; done\n' "$VISIBLE_CLAIM_READY_FILE"
+      printf 'if [ ! -f %q ]; then echo "hapax-codex runner: timed out waiting for post-spawn cc-claim" >&2; exit 16; fi\n' "$VISIBLE_CLAIM_READY_FILE"
+    fi
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
@@ -1160,6 +1183,10 @@ else
     printf '%s\n' 'unset HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY'
     printf '%s\n' 'unset HAPAX_OPERATOR_ATTESTATION_HMAC_KEY'
     printf '%s\n' 'unset HAPAX_G12_BREAKGLASS_HMAC_KEY'
+    if [ -n "$VISIBLE_CLAIM_READY_FILE" ]; then
+      printf 'for _claim_wait in {1..600}; do [ -f %q ] && break; sleep 0.1; done\n' "$VISIBLE_CLAIM_READY_FILE"
+      printf 'if [ ! -f %q ]; then echo "hapax-codex runner: timed out waiting for post-spawn cc-claim" >&2; exit 16; fi\n' "$VISIBLE_CLAIM_READY_FILE"
+    fi
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
@@ -1201,9 +1228,34 @@ else
 fi
 chmod 700 "$RUNNER"
 
+complete_visible_claim_after_spawn() {
+  if [ "$NEEDS_CLAIM" -ne 1 ]; then
+    scrub_g12_attestation_secrets
+    return 0
+  fi
+  set +e
+  "$CLAIM_SCRIPT" "$TASK_ID"
+  claim_status=$?
+  set -e
+  if [ "$claim_status" -eq 0 ]; then
+    : >"$VISIBLE_CLAIM_READY_FILE"
+    scrub_g12_attestation_secrets
+    return 0
+  fi
+  "$TMUX_BIN" kill-session -t "$TMUX_NAME" >/dev/null 2>&1 || true
+  rm -f "$VISIBLE_CLAIM_READY_FILE" 2>/dev/null || true
+  rm -f "$RUNNER" 2>/dev/null || true
+  if [ "$BOOTSTRAP_CREATED_BY_LAUNCHER" -eq 1 ]; then
+    rm -f "$BOOTSTRAP_FILE" 2>/dev/null || true
+  fi
+  scrub_g12_attestation_secrets
+  exit "$claim_status"
+}
+
 case "$TERMINAL" in
   tmux)
-    "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    tmux_new_session_without_g12_secrets -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    complete_visible_claim_after_spawn
     if [ -n "$DISPATCH_HOST_REQUESTED" ] || [ -n "$DISPATCH_HOST" ] || [ -n "$DISPATCH_FALLBACK_REASON" ]; then
       if [ -n "$DISPATCH_FALLBACK_REASON" ]; then
         write_local_dispatch_proof "$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf local)" "1" "$DISPATCH_FALLBACK_REASON" "$RUNNER"
@@ -1215,8 +1267,9 @@ case "$TERMINAL" in
     ;;
   foot)
     if ! "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
-      "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+      tmux_new_session_without_g12_secrets -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
     fi
+    complete_visible_claim_after_spawn
     if [ -n "$DISPATCH_HOST_REQUESTED" ] || [ -n "$DISPATCH_HOST" ] || [ -n "$DISPATCH_FALLBACK_REASON" ]; then
       if [ -n "$DISPATCH_FALLBACK_REASON" ]; then
         write_local_dispatch_proof "$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf local)" "1" "$DISPATCH_FALLBACK_REASON" "$RUNNER"

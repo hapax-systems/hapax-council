@@ -196,8 +196,25 @@ def test_hapax_codex_tmux_runner_propagates_attestation_without_hmac_key(
     workdir = tmp_path / "worktree"
     workdir.mkdir()
     tmux_log = tmp_path / "tmux.log"
+    tmux_env = tmp_path / "tmux-env.txt"
     _fake_codex(tmp_path / "bin", tmp_path / "codex-env.txt")
-    _fake_tmux(tmp_path / "bin", tmux_log)
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "has-session" ]; then
+  exit 1
+fi
+if [ "${{1:-}}" = "new-session" ]; then
+  printf '%s\\n' "$*" >> {tmux_log}
+  printf 'hmac=%s\\n' "${{HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY:-}}" > {tmux_env}
+  printf 'operator_hmac=%s\\n' "${{HAPAX_OPERATOR_ATTESTATION_HMAC_KEY:-}}" >> {tmux_env}
+  printf 'breakglass_hmac=%s\\n' "${{HAPAX_G12_BREAKGLASS_HMAC_KEY:-}}" >> {tmux_env}
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_tmux.chmod(0o755)
 
     result = subprocess.run(
         [
@@ -220,6 +237,11 @@ def test_hapax_codex_tmux_runner_propagates_attestation_without_hmac_key(
     )
 
     assert result.returncode == 0, result.stderr
+    tmux_launch_env = tmux_env.read_text(encoding="utf-8")
+    assert "hmac=\n" in tmux_launch_env
+    assert "operator_hmac=\n" in tmux_launch_env
+    assert "breakglass_hmac=\n" in tmux_launch_env
+    assert TEST_HMAC_KEY not in tmux_launch_env
     runner = Path(tmux_log.read_text(encoding="utf-8").splitlines()[-1].split()[-1])
     runner_text = runner.read_text(encoding="utf-8")
     assert "HAPAX_METHODOLOGY_ORIGIN_SURFACE=crow_chat" in runner_text
