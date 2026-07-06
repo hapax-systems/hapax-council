@@ -11,11 +11,13 @@ from shared.platform_capability_registry import load_platform_capability_registr
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-platform-capability-freshness"
 FRESH_NOW = "2026-05-09T21:00:00Z"
+INERT_RECEIPT_DIR = REPO_ROOT / ".pytest-nonexistent-platform-receipts"
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
+    receipt_args = () if "--receipt-dir" in args else ("--receipt-dir", str(INERT_RECEIPT_DIR))
     return subprocess.run(
-        [str(SCRIPT), *args],
+        [str(SCRIPT), *receipt_args, *args],
         text=True,
         capture_output=True,
         check=False,

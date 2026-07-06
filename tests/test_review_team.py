@@ -967,6 +967,15 @@ class TestVerdictBlockers:
         assert dossier["degraded_family_route_blocked"] == ["gemini"]
         assert dossier["post_route_receipt_rereview_required"] is True
         assert blockers == ()
+        prefixed_blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={
+                "gemini": ("agy.review.direct:route_specific_quota_receipt_absent",)
+            },
+        )
+        assert prefixed_blockers == ()
 
     def test_recovered_route_block_invalidates_pending_degraded_admission(
         self, tmp_path: Path

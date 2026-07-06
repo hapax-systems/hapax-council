@@ -43,12 +43,14 @@ BINARY_BY_PLATFORM = {
     "api": "python3",
     "claude": "claude",
     "codex": "codex",
+    "glmcp": "scripts/hapax-glmcp-reviewer",
     "vibe": "vibe",
 }
 VERSION_ARGS_BY_PLATFORM = {
     "api": ["--version"],
     "claude": ["--version"],
     "codex": ["--version"],
+    "glmcp": ["--check"],
     "vibe": ["--version"],
 }
 CONFIG_REFS_BY_PLATFORM = {
@@ -61,6 +63,13 @@ CONFIG_REFS_BY_PLATFORM = {
     ],
     "claude": ["~/.claude/settings.json", "~/.claude.json", "CLAUDE.md"],
     "codex": ["~/.codex/config.toml", "~/.codex/AGENTS.md", "AGENTS.md"],
+    "glmcp": [
+        "scripts/hapax-glmcp-reviewer",
+        "scripts/hapax-glmcp-quota-admission",
+        "scripts/hapax-quota-telemetry-writer",
+        "config/platform-capability-registry.json",
+        "config/quota-spend-ledger-fixtures.json",
+    ],
     "vibe": [
         "~/.vibe/config.toml",
         "~/.vibe/.env",
@@ -141,6 +150,9 @@ def resolve_binary(binary: str) -> str | None:
     path = Path(binary).expanduser()
     if path.is_absolute():
         return str(path) if path.is_file() and os.access(path, os.X_OK) else None
+    if "/" in binary:
+        resolved = resolve_ref(binary)
+        return str(resolved) if resolved.is_file() and os.access(resolved, os.X_OK) else None
     return shutil.which(binary)
 
 
@@ -327,18 +339,29 @@ def build_receipt(
 
 
 def known_unknowns_for(platform: str) -> list[str]:
-    unknowns = [
-        "Receipt command records config paths and existence only; it never reads secret values.",
-    ]
+    unknowns = []
     if platform == "api":
         unknowns.insert(
             0,
             "Provider spend is authorized by the quota/spend ledger, not by this local receipt.",
         )
+        unknowns.append(
+            "Receipt command records config paths and existence only; it never reads secret values."
+        )
+    elif platform == "glmcp":
+        unknowns.extend(
+            [
+                "GLMCP quota freshness is admitted by short-lived quota-spend-ledger receipts; this local receipt only checks wrapper/config/docs/resource surfaces.",
+                "GLMCP receipt refresh may read the pass-backed secret to verify wrapper availability; it records only redacted metadata and never persists the secret value.",
+            ]
+        )
     else:
         unknowns.insert(
             0,
             "Account-live subscription quota is not exposed by the local receipt probe.",
+        )
+        unknowns.append(
+            "Receipt command records config paths and existence only; it never reads secret values."
         )
     return unknowns
 

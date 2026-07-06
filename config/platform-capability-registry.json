@@ -3330,17 +3330,17 @@
       "profile": "direct",
       "launcher": "scripts/hapax-glmcp-reviewer (review seat: blind-review prompt on stdin -> YAML verdict on stdout)",
       "sanctioned_wrapper": "scripts/hapax-glmcp-reviewer",
-      "summary": "GLMCP Z.ai Coding-Plan review seat (glm-5)",
-      "notes": "Receipt-bounded GLM-5 review seat, live in cc-pr-review-dispatch as the 'glm' reviewer family. Non-worker, read-only reviewer; NOT a coding workhorse -- the GLMCP coding/dispatch promotion is separately gated by glmcp-workhorse-bakeoff-20260618 (must emit promote_to_dispatch_shadow). Admission is receipt-bounded via quota_spend_ledger RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES + dispatcher_policy ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED.",
+      "summary": "GLMCP Z.ai GLM-5.2 review seat",
+      "notes": "Receipt-bounded GLM-5.2 review seat, live in cc-pr-review-dispatch as the 'glm' reviewer family. Non-worker, read-only reviewer; NOT a coding workhorse -- the GLMCP coding/dispatch promotion is separately gated by glmcp-workhorse-bakeoff-20260618 (must emit promote_to_dispatch_shadow). Admission is receipt-bounded via quota_spend_ledger RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES + dispatcher_policy ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED. Coding Plan endpoint is primary; HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE remains Coding-Plan-path-only and cannot make PAYG primary. API-credit PAYG fallback is allowed only through hapax-glmcp-reviewer, endpoint-matched admission receipts, active spend-gate evidence in the live quota ledger, and pre-call GLMCP PAYG spend receipt reservations. Set HAPAX_GLMCP_REVIEW_PAYG_FALLBACK=0 to force subscription-only behavior; HAPAX_GLMCP_REVIEW_ALLOW_PAYG_BASE_URL_OVERRIDE only changes the fallback endpoint after the same gate. Recheck with scripts/hapax-quota-telemetry-writer --json, scripts/hapax-platform-capability-freshness --route glmcp.review.direct --json, and find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*glmcp-payg-spend*.yaml' -print.",
       "route_state": "blocked",
       "blocked_reasons": [
         "glmcp_review_seat_receipt_admission_required",
         "fresh_capability_evidence_absent",
         "quota_telemetry_unknown"
       ],
-      "model_or_engine": "z_ai-glm-coding-plan:glm-5",
+      "model_or_engine": "z_ai-glm-coding-plan:glm-5.2",
       "execution_descriptor": {
-        "model_id": "z_ai-glm-5",
+        "model_id": "z_ai-glm-5.2",
         "effort": "none",
         "context_mode": "standard",
         "fast_mode": "off",
@@ -3382,7 +3382,7 @@
       },
       "telemetry": {
         "quota_source": "ledger",
-        "cost_source": "none",
+        "cost_source": "ledger",
         "resource_source": "local_probe"
       },
       "freshness": {
@@ -3424,7 +3424,8 @@
       "known_unknowns": [
         "Z.ai provider training/privacy posture is not equivalent to local execution; privacy/secret-sensitive review is excluded by policy.",
         "Coding/dispatch workhorse promotion is separate and bakeoff-gated (glmcp-workhorse-bakeoff-20260618); this route is the review seat only.",
-        "Subscription quota is not exposed as account-live local telemetry; admission is receipt-bounded via the spend ledger."
+        "Subscription quota is not exposed as account-live local telemetry; admission is receipt-bounded via the spend ledger.",
+        "When Coding Plan quota is exhausted, this review route may fall back to the official Z.ai PAYG API endpoint only with explicit API-credit receipt evidence and an active paid-spend budget gate; PAYG cannot be configured as the primary review URL."
       ],
       "capability_scores": {
         "grounding": {

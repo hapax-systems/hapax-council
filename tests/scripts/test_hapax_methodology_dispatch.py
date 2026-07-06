@@ -2806,6 +2806,59 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt.get("route_policy_compatibility_mode") in {None, "none"}
 
 
+def test_glmcp_platform_receipt_uses_sanctioned_review_wrapper_check(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    pass_stub = bin_dir / "pass"
+    pass_stub.write_text(
+        """#!/usr/bin/env bash
+if [ "$1" = "show" ] && [ "$2" = "glmcp/api-key" ]; then
+  printf '%s\n' 'test-secret-token'
+  exit 0
+fi
+exit 1
+""",
+        encoding="utf-8",
+    )
+    pass_stub.chmod(0o755)
+    receipt_dir = tmp_path / "receipts"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(RECEIPT_SCRIPT),
+            "--registry",
+            str(REGISTRY),
+            "--receipt-dir",
+            str(receipt_dir),
+            "--platform",
+            "glmcp",
+            "--json",
+        ],
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["receipts"][0]["platform"] == "glmcp"
+    assert summary["receipts"][0]["cli_available"] is True
+    assert summary["receipts"][0]["wrapper_exists"] is True
+    receipt = json.loads((receipt_dir / "glmcp.json").read_text(encoding="utf-8"))
+    assert receipt["platform"] == "glmcp"
+    assert receipt["routes"] == ["glmcp.review.direct"]
+    assert receipt["cli"]["binary"] == "scripts/hapax-glmcp-reviewer"
+    assert "model=glm-5.2" in receipt["cli"]["version"]
+    assert "payg_fallback=enabled" in receipt["cli"]["version"]
+    receipt_text = json.dumps(receipt)
+    assert "test-secret-token" not in receipt_text
+    assert any(
+        item["path"].endswith("scripts/hapax-glmcp-reviewer") for item in receipt["config_refs"]
+    )
+
+
 def test_policy_rollback_is_retired_before_launcher(
     tmp_path: Path,
 ) -> None:

@@ -54,7 +54,7 @@ GLMCP_ADMISSION_EVIDENCE_REF = (
     "witness:supported-tool-usage-witness:"
     "supported_tool:hapax-glmcp-reviewer:"
     "endpoint:https://api.z.ai/api/coding/paas/v4:"
-    "model:glm-5:"
+    "model:glm-5.2:"
     "observed_at:2026-05-09T22:00:00Z:"
     "fresh_until:2026-05-09T23:00:00Z"
 )

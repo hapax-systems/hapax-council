@@ -2300,6 +2300,7 @@ def _quota_state(
     if capability is not None and capability.capacity_pool in PAID_CAPACITY_POOLS:
         request = PaidRouteRequest(
             route_id=capability.route_id,
+            task_id=task_id,
             provider=_paid_provider_for(capability),
             profile=capability.paid_profile or _profile_from_route_id(capability.route_id),
             task_class=_task_class_for(metadata),
