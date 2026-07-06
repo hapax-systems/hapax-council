@@ -1,20 +1,22 @@
 [Unit]
 Description=Hapax PR admission governor — auto-cycle (anti-pileup)
-Documentation=file://%h/projects/hapax-council/scripts/hapax-pr-admission
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-pr-admission
 # Run after the gh CLI dependencies are present; pipewire/network not required.
 After=network-online.target
 PartOf=hapax.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=CLAUDE_ROLE=auto
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin
+Environment=HOME=%h
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 # Auto-cycle:
-#   - if open PR count >= 10 and mode=normal → freeze
-#   - if open PR count < 6 for 2 consecutive ticks → clear to normal
+#   - if merge-group failure rate crosses the freeze threshold → freeze
+#   - when the failure-rate throttle calms → clear to normal
 # No-op (exit 0) for unrelated cases.
-ExecStart=%h/.local/bin/hapax-pr-admission auto
+ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/hapax-pr-admission auto
 TimeoutStartSec=30s
 # Don't restart on failure — the timer drives cadence; one missed tick is harmless.
 SuccessExitStatus=0

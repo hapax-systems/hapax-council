@@ -55,6 +55,11 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import review_team  # noqa: E402
+from github_pr_status import (  # noqa: E402
+    get_pull_rest,
+    list_open_pr_statuses_rest,
+    list_pull_files_rest,
+)
 
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
@@ -426,29 +431,24 @@ def _run_gh(cmd: list[str], *, repo_root: Path, runner: Any, timeout: int = 120)
 
 
 def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRInfo:
-    out = _run_gh(
-        [
-            "gh",
-            "pr",
-            "view",
-            str(pr_number),
-            "--repo",
-            repo,
-            "--json",
-            "number,title,body,headRefName,headRefOid,changedFiles,isDraft,files",
-        ],
-        repo_root=repo_root,
-        runner=runner,
-    )
-    item = json.loads(out)
+    item = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+    if item is None:
+        raise RuntimeError(
+            f"REST pull fetch failed for PR #{pr_number}; next action: run "
+            f"`gh auth status`, then retry `gh api repos/{repo}/pulls/{pr_number}` "
+            "from the repository root and preserve stderr if auth, network, or GitHub API "
+            "access still fails."
+        )
+    head = item.get("head") if isinstance(item.get("head"), dict) else {}
+    file_items = list_pull_files_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     files = tuple(
-        str(entry["path"])
-        for entry in item.get("files") or []
-        if isinstance(entry, dict) and entry.get("path")
+        str(entry["filename"])
+        for entry in file_items
+        if isinstance(entry, dict) and entry.get("filename")
     )
     try:
         changed_file_count = (
-            int(item["changedFiles"]) if item.get("changedFiles") is not None else None
+            int(item["changed_files"]) if item.get("changed_files") is not None else None
         )
     except (TypeError, ValueError):
         changed_file_count = None
@@ -456,17 +456,25 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
         number=int(item["number"]),
         title=str(item.get("title") or ""),
         body=str(item.get("body") or ""),
-        head_ref=str(item.get("headRefName") or ""),
-        head_sha=str(item.get("headRefOid") or ""),
+        head_ref=str(head.get("ref") or ""),
+        head_sha=str(head.get("sha") or ""),
         changed_file_count=changed_file_count,
-        is_draft=bool(item.get("isDraft")),
+        is_draft=bool(item.get("draft")),
         files=files,
     )
 
 
 def fetch_pr_diff(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> str:
     return _run_gh(
-        ["gh", "pr", "diff", str(pr_number), "--repo", repo],
+        [
+            "gh",
+            "api",
+            "--method",
+            "GET",
+            "-H",
+            "Accept: application/vnd.github.v3.diff",
+            f"repos/{repo}/pulls/{pr_number}",
+        ],
         repo_root=repo_root,
         runner=runner,
     )
@@ -493,7 +501,7 @@ def truncate_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> str:
         return diff
     marker = (
         f"[diff truncated to balanced per-file excerpts at {limit} chars — "
-        "run `gh pr diff` for the full diff]\n"
+        "fetch the full diff via the REST pull diff endpoint]\n"
     )
     starts = [match.start() for match in re.finditer(r"(?m)^diff --git ", diff)]
     if not starts:
@@ -1956,25 +1964,14 @@ def review_all_open_prs(
 ) -> list[dict[str, Any]]:
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
-    out = _run_gh(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "open",
-            "--limit",
-            "100",
-            "--json",
-            "number,headRefName,headRefOid,isDraft",
-        ],
+    open_prs = list_open_pr_statuses_rest(
+        repo=repo,
         repo_root=repo_root,
         runner=gh_runner,
+        limit=100,
     )
     results: list[dict[str, Any]] = []
-    for item in json.loads(out or "[]"):
+    for item in open_prs:
         if not isinstance(item, dict) or item.get("isDraft"):
             continue
         pr_number = int(item["number"])
