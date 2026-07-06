@@ -1335,7 +1335,13 @@ def _subscription_quota_missing_required_payg_spend_gate(
         f"spend-gate:{GLMCP_PAYG_BUDGET_ROUTE_ID}:eligible_active_budget",
         f"spend-gate-budget:{decision.budget_id}",
     }
-    return not required_refs.issubset(set(snapshot.evidence_refs))
+    if not required_refs.issubset(set(snapshot.evidence_refs)):
+        return True
+    return not _has_glmcp_payg_spend_receipt_witness(
+        ledger,
+        snapshot,
+        budget_id=decision.budget_id,
+    )
 
 
 def _is_glmcp_admission_evidence_ref(ref: str) -> bool:
@@ -1355,6 +1361,46 @@ def _is_glmcp_payg_admission_evidence_ref(ref: str) -> bool:
         _is_glmcp_admission_evidence_ref(ref)
         and f":endpoint:{GLMCP_ADMISSION_PAYG_ENDPOINT}:" in ref
     )
+
+
+def _glmcp_payg_spend_receipt_witness_refs(receipt: SpendReceipt) -> set[str]:
+    if (
+        _normalize_route_id(receipt.route_id) != GLMCP_PAYG_BUDGET_ROUTE_ID
+        or receipt.capacity_pool is not CapacityPool.API_PAID_SPEND
+        or receipt.provider != GLMCP_PAYG_BUDGET_PROVIDER
+        or receipt.spend_reason is not SpendReason.QUOTA_EXHAUSTION
+    ):
+        return set()
+    refs = {receipt.spend_id}
+    match = re.fullmatch(r"spend-([0-9]{8}T[0-9]{6}Z)-glmcp-payg-review-(.+)", receipt.spend_id)
+    if match is not None:
+        stamp, suffix = match.groups()
+        refs.add(f"glmcp-payg-spend-{stamp.lower()}-{suffix}.yaml")
+    return refs
+
+
+def _has_glmcp_payg_spend_receipt_witness(
+    ledger: QuotaSpendLedger,
+    snapshot: QuotaSnapshot,
+    *,
+    budget_id: str | None,
+) -> bool:
+    witnesses = {
+        match.group(1)
+        for ref in snapshot.evidence_refs
+        if _is_glmcp_payg_admission_evidence_ref(ref)
+        for match in [GLMCP_ADMISSION_WITNESS_REF_RE.search(ref)]
+        if match is not None
+    }
+    if not witnesses:
+        return False
+    receipt_refs = {
+        ref
+        for receipt in ledger.spend_receipts
+        if receipt.budget_id == budget_id
+        for ref in _glmcp_payg_spend_receipt_witness_refs(receipt)
+    }
+    return bool(witnesses & receipt_refs)
 
 
 def _glmcp_payg_budget_request() -> PaidRouteRequest:

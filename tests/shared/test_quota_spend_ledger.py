@@ -59,6 +59,10 @@ GLMCP_PAYG_ADMISSION_EVIDENCE_REF = (
         "endpoint:https://api.z.ai/api/paas/v4:",
     )
     .replace(
+        "witness:supported-tool-usage-witness:",
+        "witness:glmcp-payg-spend-20260517t075900z-test.yaml:",
+    )
+    .replace(
         "model:glm-5.2:",
         "model:glm-5.2:primary_error_class:quota_exhausted:"
         "quota_wall_evidence_ref:cx-glmcp-quota-wall.yaml:",
@@ -154,6 +158,41 @@ def _add_glmcp_payg_budget(
         }
     )
     return budget_id
+
+
+def _add_glmcp_payg_spend_receipt(
+    payload: dict[str, Any],
+    budget_id: str,
+    *,
+    spend_id: str = "spend-20260517T075900Z-glmcp-payg-review-test",
+) -> None:
+    payload["spend_receipts"].append(
+        {
+            "spend_receipt_schema": 1,
+            "spend_id": spend_id,
+            "task_id": "glmcp-review-direct",
+            "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-TEST",
+            "route_id": "glmcp.review.direct",
+            "capacity_pool": "api_paid_spend",
+            "budget_id": budget_id,
+            "provider": "z_ai",
+            "model_or_engine": "glm-5.2",
+            "model_id": "z_ai-glm-5.2",
+            "effort": "none",
+            "quantization": "not_applicable",
+            "auth_surface": "api_key",
+            "quality_floor": "frontier_review_required",
+            "quality_preservation_reason": (
+                "receipt-bounded GLMCP review fallback after Coding Plan quota wall"
+            ),
+            "spend_reason": "quota_exhaustion",
+            "estimated_cost_usd": "0.05",
+            "created_at": "2026-05-17T07:59:00Z",
+            "reconcile_by": "2026-05-18T07:59:00Z",
+            "reconciliation_state": "pending",
+            "support_artifact_authority": "none",
+        }
+    )
 
 
 def _request(**overrides: object) -> PaidRouteRequest:
@@ -586,6 +625,7 @@ def test_receipt_bounded_route_accepts_writer_hashed_admission_label() -> None:
 def test_receipt_bounded_route_accepts_payg_endpoint_admission_evidence() -> None:
     payload = _active_budget_payload()
     budget_id = _add_glmcp_payg_budget(payload)
+    _add_glmcp_payg_spend_receipt(payload, budget_id)
     payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
     payload["quota_snapshots"].append(
         {
@@ -619,9 +659,86 @@ def test_receipt_bounded_route_accepts_payg_endpoint_admission_evidence() -> Non
     assert f"spend-gate-budget:{budget_id}" in refs
 
 
+def test_receipt_bounded_route_rejects_payg_without_spend_receipt_witness() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-payg-no-spend-receipt",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                GLMCP_PAYG_ADMISSION_EVIDENCE_REF,
+                "spend-gate:glmcp.review.direct:eligible_active_budget",
+                f"spend-gate-budget:{budget_id}",
+            ],
+            "operator_visible_reason": "fixture GLMCP PAYG admission receipt",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-payg-no-spend-receipt:"
+        "payg_spend_gate_missing_or_ineligible"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_payg_spend_receipt_from_wrong_budget() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    wrong_budget_id = payload["transition_budgets"][0]["budget_id"]
+    _add_glmcp_payg_spend_receipt(payload, wrong_budget_id)
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-payg-wrong-budget-receipt",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                GLMCP_PAYG_ADMISSION_EVIDENCE_REF,
+                "spend-gate:glmcp.review.direct:eligible_active_budget",
+                f"spend-gate-budget:{budget_id}",
+            ],
+            "operator_visible_reason": "fixture GLMCP PAYG admission receipt",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-payg-wrong-budget-receipt:"
+        "payg_spend_gate_missing_or_ineligible"
+    ) in refs
+
+
 def test_receipt_bounded_route_rejects_payg_without_quota_wall_witness() -> None:
     payload = _active_budget_payload()
     budget_id = _add_glmcp_payg_budget(payload)
+    _add_glmcp_payg_spend_receipt(payload, budget_id)
     payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
     payload["quota_snapshots"].append(
         {
@@ -692,6 +809,7 @@ def test_receipt_bounded_route_rejects_payg_without_spend_gate_evidence() -> Non
 def test_receipt_bounded_route_rechecks_payg_budget_at_read_time() -> None:
     payload = _active_budget_payload()
     budget_id = _add_glmcp_payg_budget(payload, expires_at="2026-05-17T08:01:00Z")
+    _add_glmcp_payg_spend_receipt(payload, budget_id)
     payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
     payload["quota_snapshots"].append(
         {

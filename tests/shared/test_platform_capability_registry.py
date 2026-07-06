@@ -41,7 +41,7 @@ FRESH_NOW = datetime(2026, 5, 9, 21, 0, tzinfo=UTC)
 ROUTE_EVIDENCE_NOW = datetime(2026, 5, 17, 8, 14, tzinfo=UTC)
 GLMCP_PAYG_ADMISSION_EVIDENCE_REF = (
     "relay-receipt:glmcp-quota-admission-payg.yaml:"
-    "witness:supported-tool-usage-witness:"
+    "witness:glmcp-payg-spend-20260517t075900z-test.yaml:"
     "supported_tool:hapax-glmcp-reviewer:"
     "endpoint:https://api.z.ai/api/paas/v4:"
     "model:glm-5.2:"
@@ -636,6 +636,33 @@ def _write_glmcp_live_quota_ledger(path: Path) -> None:
             "ledger_owner": "test",
             "dashboard_visibility": "required",
             "lifecycle_state": "active",
+        }
+    )
+    payload["spend_receipts"].append(
+        {
+            "spend_receipt_schema": 1,
+            "spend_id": "spend-20260517T075900Z-glmcp-payg-review-test",
+            "task_id": "glmcp-review-direct",
+            "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-TEST",
+            "route_id": "glmcp.review.direct",
+            "capacity_pool": "api_paid_spend",
+            "budget_id": GLMCP_PAYG_BUDGET_ID,
+            "provider": "z_ai",
+            "model_or_engine": "glm-5.2",
+            "model_id": "z_ai-glm-5.2",
+            "effort": "none",
+            "quantization": "not_applicable",
+            "auth_surface": "api_key",
+            "quality_floor": "frontier_review_required",
+            "quality_preservation_reason": (
+                "receipt-bounded GLMCP review fallback after Coding Plan quota wall"
+            ),
+            "spend_reason": "quota_exhaustion",
+            "estimated_cost_usd": "0.05",
+            "created_at": "2026-05-17T07:59:00Z",
+            "reconcile_by": "2026-05-18T07:59:00Z",
+            "reconciliation_state": "pending",
+            "support_artifact_authority": "none",
         }
     )
     payload["quota_snapshots"] = [

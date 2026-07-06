@@ -1314,6 +1314,77 @@ def test_payg_spend_receipt_omits_secret_prompt_and_output(
     assert "test-secret-token" not in receipt
 
 
+def test_payg_spend_reservation_rolls_back_ledger_on_receipt_write_crash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    ledger_path = tmp_path / "quota-spend-ledger-live.json"
+    now = module.datetime.now(module.UTC).replace(microsecond=0)
+    payload = json.loads(
+        (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
+    )
+    payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
+    for budget in payload["transition_budgets"]:
+        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+            budget["created_at"] = (
+                (now - module.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["expires_at"] = (
+                (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
+    ledger_path.write_text(json.dumps(payload), encoding="utf-8")
+    before_ids = {
+        receipt.spend_id for receipt in module.load_quota_spend_ledger(ledger_path).spend_receipts
+    }
+    monkeypatch.setenv(
+        "HAPAX_GLMCP_REVIEW_TASK_ID",
+        "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+    )
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+    primary = module.ZaiHttpError(
+        status=429,
+        detail=json.dumps({"error": {"code": "1310", "message": "Quota exhausted."}}),
+        secret="test-secret-token",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        provider_label="Coding Plan",
+    )
+
+    def fail_write(**_kwargs: object) -> None:
+        raise RuntimeError("simulated receipt write crash")
+
+    monkeypatch.setattr(module, "_write_payg_spend_receipt_file", fail_write)
+    with pytest.raises(RuntimeError, match="simulated receipt write crash"):
+        module._reserve_payg_spend_receipt(
+            gate=module.PaygSpendGate(
+                state="eligible_active_budget",
+                budget_id="tb-20260706-zai-glmcp-payg-review",
+                budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+                cap_remaining_usd="99.95",
+                ledger_source="live",
+                ledger_path=ledger_path,
+            ),
+            config=config,
+            primary_error=primary,
+        )
+
+    after_ids = {
+        receipt.spend_id for receipt in module.load_quota_spend_ledger(ledger_path).spend_receipts
+    }
+    assert after_ids == before_ids
+
+
 def test_payg_spend_reservation_appends_to_live_ledger(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

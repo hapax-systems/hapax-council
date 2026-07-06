@@ -897,7 +897,7 @@ def _reserve_payg_spend_receipt(
             primary_error=primary_error,
             status="spend_estimated",
         )
-    except ApiError:
+    except Exception:  # noqa: BLE001 - any receipt publication failure must roll back ledger
         _remove_spend_receipt_from_live_ledger(
             ledger_path=gate.ledger_path,
             spend_id=reservation.spend_receipt.spend_id,
