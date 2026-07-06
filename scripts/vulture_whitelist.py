@@ -4681,3 +4681,18 @@ from shared.entitlement_capability import (
 from shared.entitlement_capability import is_routable_supply as _is_routable_supply  # noqa: E402
 
 _ = (_classify_entitlement, _is_routable_supply)
+
+# Dispatch launch redemption authority/server methods are invoked by the fixed
+# governor/coord process and focused tests; production vulture does not follow
+# that dynamic service boundary.
+from shared.governance.dispatch_redemption import (  # noqa: E402
+    DispatchLaunchRedemptionAuthority as _DispatchLaunchRedemptionAuthority,
+)
+from shared.governance.dispatch_redemption import (  # noqa: E402
+    DispatchLaunchRedemptionServer as _DispatchLaunchRedemptionServer,
+)
+
+_ = (
+    _DispatchLaunchRedemptionAuthority.mint,
+    _DispatchLaunchRedemptionServer.serve_once,
+)
