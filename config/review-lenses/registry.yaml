@@ -99,20 +99,9 @@ families:
     reviewer_command: ["codex", "exec", "--sandbox", "read-only", "-"]
     timeout_seconds: 1200
   - family: gemini
-    # Fail-closed binding: this family is backed by the agy reviewer wrapper,
-    # but the route_id is not live-capacity evidence by itself. The review-team
-    # gate seats gemini only when the platform-capability registry admits
-    # agy.review.direct with fresh route/resource/quota receipts; otherwise the
-    # family is degraded as blocked supply.
-    route_id: agy.review.direct
     reviewer_command: ["scripts/hapax-agy-reviewer"]
     timeout_seconds: 1200
   - family: glm
-    # Fail-closed binding: GLM review supply counts only when the
-    # platform-capability registry admits glmcp.review.direct with fresh
-    # route/resource/quota receipts. A blocked or stale route degrades out
-    # rather than silently becoming review capacity.
-    route_id: glmcp.review.direct
     # Emergency outage procedure: GLM degrades out of a constitution only with
     # a fresh family-outage witness in
     # ~/.cache/hapax/review-team/family-outage.json, normally written when the
@@ -132,7 +121,24 @@ families:
 # resource, quota, and provider-doc receipts and the reviewer command starts
 # with that route's sanctioned_wrapper. Leave empty until a route has explicit
 # review-seat metadata; worker/local/boutique routes are not inferred.
-route_backed_review_families: []
+route_backed_review_families:
+  - family: gemini
+    # Fail-closed binding: this family is backed by the agy reviewer wrapper,
+    # but the route_id is not live-capacity evidence by itself. The review-team
+    # gate seats gemini only when the platform-capability registry admits
+    # agy.review.direct with fresh route/resource/quota receipts; otherwise the
+    # family is degraded as blocked supply.
+    route_id: agy.review.direct
+    reviewer_command: ["scripts/hapax-agy-reviewer"]
+    timeout_seconds: 1200
+  - family: glm
+    # Fail-closed binding: GLM review supply counts only when the
+    # platform-capability registry admits glmcp.review.direct with fresh
+    # route/resource/quota receipts. A blocked or stale route degrades out
+    # rather than silently becoming review capacity.
+    route_id: glmcp.review.direct
+    reviewer_command: ["scripts/hapax-glmcp-reviewer"]
+    timeout_seconds: 1200
 
 # Authoring-lane -> model family (writer's family never holds the majority
 # alone). vibe lanes never review (off-limits surfaces per CLAUDE.md).

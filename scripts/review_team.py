@@ -566,9 +566,10 @@ def review_family_entries(
     """Effective review roster entries, including governed route-backed additions.
 
     ``families`` remains the static base roster. ``route_backed_review_families``
-    may add explicit review-seat descriptors; platform-registry discovery may
-    add future ``mode=review`` routes. Additions are family- and route-distinct
-    so they cannot silently override the historical claude/codex/gemini/glm
+    may either bind an existing static family to a governed route or add a new
+    explicit review-seat descriptor; platform-registry discovery may add future
+    ``mode=review`` routes. New additions are family- and route-distinct so
+    they cannot silently override the historical claude/codex/gemini/glm
     behavior.
     """
 
@@ -576,6 +577,7 @@ def review_family_entries(
         dict(entry) for entry in (registry.get("families") or []) if isinstance(entry, Mapping)
     ]
     seen_families = {str(entry.get("family") or "").strip() for entry in entries}
+    entries_by_family = {str(entry.get("family") or "").strip(): entry for entry in entries}
     seen_route_ids = {
         normalize_route_id(str(entry.get("route_id") or "").strip())
         for entry in entries
@@ -590,10 +592,25 @@ def review_family_entries(
             continue
         family = entry["family"]
         route_id = entry["route_id"]
-        if family in seen_families or route_id in seen_route_ids:
+        if family in seen_families:
+            existing = entries_by_family.get(family)
+            if (
+                existing is not None
+                and not str(existing.get("route_id") or "").strip()
+                and route_id not in seen_route_ids
+                and _reviewer_command(existing) == _reviewer_command(entry)
+            ):
+                existing["route_id"] = route_id
+                existing["route_binding_source"] = entry.get(
+                    "review_family_source", "route_descriptor"
+                )
+                seen_route_ids.add(route_id)
+            continue
+        if route_id in seen_route_ids:
             continue
         entries.append(entry)
         seen_families.add(family)
+        entries_by_family[family] = entry
         seen_route_ids.add(route_id)
 
     if platform_registry is not None:

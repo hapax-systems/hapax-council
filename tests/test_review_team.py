@@ -252,11 +252,13 @@ class TestLensRegistry:
             assert entry["timeout_seconds"] > 0
         gemini = next(entry for entry in roster if entry["family"] == "gemini")
         assert gemini["reviewer_command"] == ["scripts/hapax-agy-reviewer"]
+        assert "route_id" not in gemini
         gemini_wrapper = (REPO_ROOT / "scripts" / "hapax-agy-reviewer").read_text(encoding="utf-8")
         assert "fenced yaml code block" in gemini_wrapper
         assert "ONLY the dossier YAML" not in gemini_wrapper
         glm = next(entry for entry in roster if entry["family"] == "glm")
         assert glm["reviewer_command"] == ["scripts/hapax-glmcp-reviewer"]
+        assert "route_id" not in glm
 
     def test_claude_family_forces_bare_fence_output(self) -> None:
         """Claude (a reasoning model) must be given a bare-fence output directive,
