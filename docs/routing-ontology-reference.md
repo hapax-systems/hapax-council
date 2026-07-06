@@ -49,8 +49,9 @@ worker route is registered with route, resource, and governance receipts.
 `agy.review.direct` is the live replacement review route, with
 Gemini/Claude/GPT-OSS as engines behind the `agy` harness rather than capability
 family names. It is read-only and remains blocked for admission until a
-route-specific quota/resource receipt is present. Legacy `gemini-cli` aliases
-remain retired.
+fresh agy platform-capability receipt clears the review-seat admission blocker
+and route-specific quota/resource evidence clears the quota blocker. Legacy
+`gemini-cli` aliases remain retired.
 
 Recheck the agy review-route/non-worker claims with:
 

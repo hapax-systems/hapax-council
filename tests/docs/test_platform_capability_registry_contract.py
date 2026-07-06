@@ -322,6 +322,16 @@ def test_seed_registry_records_agy_review_route_as_blocked_review_supply() -> No
         "agy@claude-sonnet-4.6-thinking",
         "agy@gpt-oss-120b-medium",
     }
+    variants = {variant["variant_id"]: variant for variant in route["descriptor_variants"]}
+    assert variants["agy@gemini-3.5-flash-low"]["blocked_reasons"] == [
+        "engine_exact_token_smoke_failed"
+    ]
+    assert variants["agy@gemini-3.5-flash-medium"]["blocked_reasons"] == [
+        "engine_exact_token_smoke_failed"
+    ]
+    assert variants["agy@gemini-3.5-flash-high"]["blocked_reasons"] == [
+        "engine_exact_token_smoke_failed"
+    ]
 
 
 def test_surface_delta_for_omitted_shape_holds_until_measurement() -> None:

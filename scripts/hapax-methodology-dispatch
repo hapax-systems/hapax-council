@@ -2058,8 +2058,7 @@ def main(argv: list[str] | None = None) -> int:
             reason = (
                 "platform 'agy' is the non-launchable read-only agy.review.direct review route, "
                 "not a methodology-dispatch worker lane. Use scripts/hapax-agy-reviewer for "
-                "review-plane work; spawnable agy worker dispatch still requires governed "
-                "route/resource receipts before dispatch."
+                "review-plane work."
             )
         else:
             reason = (

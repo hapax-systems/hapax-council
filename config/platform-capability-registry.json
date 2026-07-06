@@ -3355,7 +3355,7 @@
           },
           "score_delta": {},
           "scores_inherited_from": "agy.review.direct",
-          "blocked_reasons": []
+          "blocked_reasons": ["engine_exact_token_smoke_failed"]
         },
         {
           "variant_id": "agy@gemini-3.5-flash-medium",
@@ -3365,7 +3365,7 @@
           },
           "score_delta": {},
           "scores_inherited_from": "agy.review.direct",
-          "blocked_reasons": []
+          "blocked_reasons": ["engine_exact_token_smoke_failed"]
         },
         {
           "variant_id": "agy@gemini-3.5-flash-high",
@@ -3375,7 +3375,7 @@
           },
           "score_delta": {},
           "scores_inherited_from": "agy.review.direct",
-          "blocked_reasons": []
+          "blocked_reasons": ["engine_exact_token_smoke_failed"]
         },
         {
           "variant_id": "agy@gemini-3.1-pro-high",
