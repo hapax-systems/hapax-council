@@ -4681,3 +4681,23 @@ from shared.entitlement_capability import (
 from shared.entitlement_capability import is_routable_supply as _is_routable_supply  # noqa: E402
 
 _ = (_classify_entitlement, _is_routable_supply)
+
+# G12 attestation substrate (cc-task-reins-g12-parallel-dispatch-retirement-20260705):
+# the substrate slice ships AHEAD of its callers (the 4-path wiring +
+# hooks/scripts/dispatch-origin-attest.sh + scripts/coord-attestation-mint are
+# follow-up slices). These 3 are the entrypoints those slices call; the substrate
+# ships pure + 21 tests green first. Same ahead-of-consumer pattern as
+# _decide_with_escape / _edt_score_edt above.
+from shared.governance.dispatch_origin_attest import (
+    attestation_or_breakglass_allows as _g12_attestation_or_breakglass_allows,
+)
+from shared.governance.dispatch_origin_attest import (
+    mint_origin_attestation as _g12_mint_origin_attestation,
+)
+from shared.governance.dispatch_origin_attest import (
+    write_attestation_file as _g12_write_attestation_file,
+)
+
+_g12_mint_origin_attestation
+_g12_write_attestation_file
+_g12_attestation_or_breakglass_allows
