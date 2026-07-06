@@ -16,6 +16,7 @@ def test_agy_reviewer_invokes_sandboxed_print_mode(tmp_path: Path) -> None:
     calls = tmp_path / "calls.txt"
     cwd_file = tmp_path / "cwd.txt"
     home_file = tmp_path / "home.txt"
+    prompt_copy = tmp_path / "prompt.md"
     secret_file = tmp_path / "secret.txt"
     operator_home = tmp_path / "operator-home"
     fake_agy = bin_dir / "agy"
@@ -23,6 +24,7 @@ def test_agy_reviewer_invokes_sandboxed_print_mode(tmp_path: Path) -> None:
         f"""#!/usr/bin/env bash
 printf '%s\\n' "$@" > {calls}
 pwd > {cwd_file}
+cp review-dossier.md {prompt_copy}
 printf '%s\\n' "$HOME" > {home_file}
 printf '%s\\n' "${{HAPAX_SHOULD_NOT_LEAK:-unset}}" > {secret_file}
 printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
@@ -50,19 +52,51 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert "--model" in args
     assert "gemini-3.1-pro-preview" in args
     assert "--print" in args
-    assert "UNIFIED DIFF" in args
-    assert "no repository access" in args
-    assert "Do not inspect files" in args
-    assert "Your entire stdout must be exactly one fenced yaml code block" in args
-    assert "must be nested by lens id" in args
-    assert "checklist item slugs" in args
-    assert "directly under checklist" in args
-    assert "Never emit legacy" in args
-    assert "minor_finding" in args
-    assert "severity, lens, file, line, title, and detail" in args
+    assert "Read ./review-dossier.md" in args
+    assert "diff --git a/x b/x" not in args
+    prompt = prompt_copy.read_text(encoding="utf-8")
+    assert "UNIFIED DIFF" in prompt
+    assert "no repository access" in prompt
+    assert "Do not inspect files" in prompt
+    assert "Your entire stdout must be exactly one fenced yaml code block" in prompt
+    assert "must be nested by lens id" in prompt
+    assert "checklist item slugs" in prompt
+    assert "directly under checklist" in prompt
+    assert "Never emit legacy" in prompt
+    assert "minor_finding" in prompt
+    assert "severity, lens, file, line, title, and detail" in prompt
+    assert "diff --git a/x b/x" in prompt
     assert not cwd_file.read_text(encoding="utf-8").strip().startswith(str(REPO_ROOT))
     assert home_file.read_text(encoding="utf-8").strip() != str(operator_home)
     assert secret_file.read_text(encoding="utf-8").strip() == "unset"
+
+
+def test_agy_reviewer_spools_large_dossier_out_of_argv(tmp_path: Path) -> None:
+    fake_agy = tmp_path / "agy"
+    arg_lengths = tmp_path / "arg-lengths.txt"
+    prompt_bytes = tmp_path / "prompt-bytes.txt"
+    fake_agy.write_text(
+        f"""#!/usr/bin/env bash
+for arg in "$@"; do printf '%s\\n' "${{#arg}}"; done > {arg_lengths}
+wc -c < review-dossier.md > {prompt_bytes}
+printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
+""",
+        encoding="utf-8",
+    )
+    fake_agy.chmod(0o755)
+    large_dossier = "diff --git a/x b/x\n+" + ("x" * 2_500_000)
+
+    result = subprocess.run(
+        [str(WRAPPER), "--agy-bin", str(fake_agy)],
+        input=large_dossier,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert max(int(line) for line in arg_lengths.read_text(encoding="utf-8").splitlines()) < 1000
+    assert int(prompt_bytes.read_text(encoding="utf-8")) > len(large_dossier)
 
 
 def test_agy_reviewer_rejects_non_agy_binary_name(tmp_path: Path) -> None:

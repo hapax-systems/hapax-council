@@ -15,8 +15,9 @@ DEFAULT_PRINT_TIMEOUT = "20m0s"
 DEFAULT_AGY_BIN = "/usr/bin/agy"
 
 REVIEW_PROMPT = """You are a blind PR reviewer invoked non-interactively through agy --print.
-Review ONLY the dossier supplied below on stdin. You have no repository access and must not
-assume facts not visible in the supplied dossier, unified diff, or gate summary.
+Review ONLY the dossier supplied in the review-dossier.md file in your current sandbox
+workspace. You have no repository access and must not assume facts not visible in the
+supplied dossier, unified diff, or gate summary.
 Do not inspect files, list directories, run commands, describe tool use, or narrate your process.
 Do all reasoning silently.
 
@@ -59,6 +60,11 @@ Spend the review on logic correctness, security, error handling, and interface o
 contract issues visible in the dossier/diff. Reply with exactly one fenced yaml code block
 and no prose.
 """
+
+PRINT_PROMPT = """Read ./review-dossier.md in the current sandbox workspace, then review ONLY that file.
+The file contains the complete reviewer instructions, dossier, unified diff, and gate summary.
+Do not inspect any other files, directories, commands, or external context.
+Return exactly one fenced yaml code block and no prose."""
 
 
 def _default_agy_bin() -> str:
@@ -114,6 +120,8 @@ def main(argv: list[str] | None = None) -> int:
     prompt = "\n\n".join([REVIEW_PROMPT.strip(), "# Reviewer dossier", dossier.strip()])
     with tempfile.TemporaryDirectory(prefix="hapax-agy-review-") as tmp:
         workdir = Path(tmp)
+        prompt_path = workdir / "review-dossier.md"
+        prompt_path.write_text(prompt, encoding="utf-8")
         cmd = [
             str(agy_bin),
             "--print-timeout",
@@ -124,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
         ]
         if args.model:
             cmd.extend(["--model", args.model])
-        cmd.extend(["--print", prompt])
+        cmd.extend(["--print", PRINT_PROMPT])
 
         try:
             result = subprocess.run(
