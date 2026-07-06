@@ -45,6 +45,8 @@ GLMCP_PAYG_ADMISSION_EVIDENCE_REF = (
     "supported_tool:hapax-glmcp-reviewer:"
     "endpoint:https://api.z.ai/api/paas/v4:"
     "model:glm-5.2:"
+    "primary_error_class:quota_exhausted:"
+    "quota_wall_evidence_ref:cx-glmcp-quota-wall.yaml:"
     "observed_at:2026-05-17T07:59:00Z:"
     "fresh_until:2026-05-17T08:05:00Z"
 )

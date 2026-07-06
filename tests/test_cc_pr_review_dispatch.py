@@ -135,10 +135,12 @@ class FakeGh:
         pr_number: int = 42,
         files: list[str] | None = None,
         changed_files_count: int | None = None,
+        head_sha: str = "c" * 40,
     ) -> None:
         self.pr_number = pr_number
         self.files = files if files is not None else ["shared/foo.py", "tests/test_foo.py"]
         self.changed_files_count = changed_files_count
+        self.head_sha = head_sha
         self.diff = "diff --git a/shared/foo.py b/shared/foo.py\n+changed\n"
         self.fail_comment = False
         self.fail_view_prs: set[int] = set()
@@ -155,7 +157,7 @@ class FakeGh:
                 "title": f"PR {self.pr_number}",
                 "body": "PR body acceptance evidence",
                 "headRefName": f"feat/{self.pr_number}",
-                "headRefOid": "c" * 40,
+                "headRefOid": self.head_sha,
                 "changedFiles": (
                     len(self.files)
                     if self.changed_files_count is None
@@ -172,7 +174,7 @@ class FakeGh:
                 {
                     "number": self.pr_number,
                     "headRefName": f"feat/{self.pr_number}",
-                    "headRefOid": "c" * 40,
+                    "headRefOid": self.head_sha,
                     "isDraft": False,
                 }
             ]
@@ -541,6 +543,36 @@ class TestApply:
         assert "0005|     ledger = load_quota_spend_ledger_resolved()" in rendered
         assert any(record.get("symbol") == "_require_payg_spend_gate" for record in records)
 
+    def test_changed_file_excerpts_show_review_critical_symbols(self, tmp_path: Path) -> None:
+        rel = "scripts/hapax-glmcp-reviewer"
+        source = "\n".join(
+            [
+                "def load_config():",
+                "    return 'glm-5.2'",
+                "",
+                "def _valid_coding_plan_primary_base_url(base_url):",
+                "    return base_url.endswith('/coding/paas/v4')",
+                "",
+                "def _require_payg_spend_gate():",
+                "    ledger = load_quota_spend_ledger_resolved()",
+                "    return evaluate_paid_route_eligibility(ledger, request)",
+            ]
+        )
+        head_sha = self._git_repo_with_commit(tmp_path, rel, source)
+
+        rendered, records = dispatch.build_changed_file_excerpts(
+            [rel, "tests/bulk_fixture.py"],
+            repo_root=tmp_path,
+            head_sha=head_sha,
+            limit=3,
+        )
+
+        assert "Current source excerpts for review-critical changed files" in rendered
+        assert f"{rel}:1 (load_config) @ {head_sha[:9]}" in rendered
+        assert "0008|     ledger = load_quota_spend_ledger_resolved()" in rendered
+        assert "tests/bulk_fixture.py" not in rendered
+        assert any(record.get("symbol") == "_require_payg_spend_gate" for record in records)
+
     def test_prior_file_excerpts_oversize_blob_is_unavailable(self, tmp_path: Path) -> None:
         """A prior finding citing a huge tracked file must NOT be read whole into
         an advisory excerpt — it fails closed to evidence_unavailable."""
@@ -831,6 +863,36 @@ checklist:
         assert dossier["constitution_writer_family"] == "claude"
         assert dossier["changed_file_count"] == 1
         assert dossier["changed_files"] == ["scripts/review_team.py"]
+
+    def test_dispatch_records_changed_source_excerpt_evidence(self, tmp_path: Path) -> None:
+        rel = "scripts/hapax-glmcp-reviewer"
+        source = "\n".join(
+            [
+                "def load_config():",
+                "    return 'glm-5.2'",
+                "",
+                "def _valid_coding_plan_primary_base_url(base_url):",
+                "    return base_url.endswith('/coding/paas/v4')",
+                "",
+                "def call_glm(prompt, config, api_key):",
+                "    return _require_payg_spend_gate()",
+                "",
+                "def _require_payg_spend_gate():",
+                "    return 'eligible_active_budget'",
+            ]
+        )
+        head_sha = self._git_repo_with_commit(tmp_path, rel, source)
+        result, _, reviewers, _ = _review(
+            tmp_path,
+            repo_root=tmp_path,
+            gh=FakeGh(files=[rel], head_sha=head_sha),
+        )
+
+        prompt = reviewers.invocations[0][2]
+        assert "Current source excerpts for review-critical changed files" in prompt
+        assert "(_require_payg_spend_gate)" in prompt
+        evidence = result["dossier"]["prior_evidence"]["changed_source_excerpts"]
+        assert any(record.get("symbol") == "_require_payg_spend_gate" for record in evidence)
 
     def test_dossier_records_successful_reviewer_stderr_diagnostics(self, tmp_path: Path) -> None:
         class StderrReviewers(RecordingReviewers):
