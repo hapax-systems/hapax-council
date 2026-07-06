@@ -200,9 +200,11 @@ def test_call_glm_falls_back_to_payg_api_on_coding_plan_quota_wall(
 ) -> None:
     module = _load_module()
     seen_urls: list[str] = []
+    events: list[str] = []
 
     def fake_open(request: object, *, timeout: float) -> FakeResponse:
         seen_urls.append(request.full_url)
+        events.append(f"http:{request.full_url}")
         if len(seen_urls) == 1:
             body = {
                 "error": {
@@ -235,11 +237,12 @@ def test_call_glm_falls_back_to_payg_api_on_coding_plan_quota_wall(
             ledger_path=Path("quota-spend-ledger-live.json"),
         ),
     )
-    monkeypatch.setattr(
-        module,
-        "_write_payg_spend_receipt",
-        lambda **_kwargs: Path("glmcp-payg-spend-test.yaml"),
-    )
+
+    def fake_spend_receipt(**_kwargs: object) -> Path:
+        events.append("reserve-spend-receipt")
+        return Path("glmcp-payg-spend-test.yaml")
+
+    monkeypatch.setattr(module, "_write_payg_spend_receipt", fake_spend_receipt)
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
@@ -265,6 +268,11 @@ def test_call_glm_falls_back_to_payg_api_on_coding_plan_quota_wall(
     assert seen_urls == [
         "https://api.z.ai/api/coding/paas/v4/chat/completions",
         "https://api.z.ai/api/paas/v4/chat/completions",
+    ]
+    assert events == [
+        "http:https://api.z.ai/api/coding/paas/v4/chat/completions",
+        "reserve-spend-receipt",
+        "http:https://api.z.ai/api/paas/v4/chat/completions",
     ]
 
 
@@ -307,6 +315,11 @@ def test_call_glm_reports_payg_fallback_failure_after_coding_plan_quota_wall(
             ledger_path=Path("quota-spend-ledger-live.json"),
         ),
     )
+    monkeypatch.setattr(
+        module,
+        "_write_payg_spend_receipt",
+        lambda **_kwargs: Path("glmcp-payg-spend-test.yaml"),
+    )
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
@@ -326,6 +339,7 @@ def test_call_glm_reports_payg_fallback_failure_after_coding_plan_quota_wall(
     assert "Coding Plan quota fallback to Z.ai PAYG API failed" in message
     assert "primary=(" in message
     assert "fallback=(" in message
+    assert "spend_receipt=glmcp-payg-spend-test.yaml" in message
     assert "account_balance_or_arrears" in message
     assert "test-secret-token" not in message
     assert seen_urls == [
@@ -378,6 +392,67 @@ def test_call_glm_refuses_payg_before_http_when_spend_gate_closed(
 
     with pytest.raises(module.ApiError, match="paid-spend gate"):
         module.call_glm("review prompt", config, "test-secret-token")
+    assert seen_urls == ["https://api.z.ai/api/coding/paas/v4/chat/completions"]
+
+
+def test_call_glm_refuses_payg_before_http_when_spend_receipt_reservation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    seen_urls: list[str] = []
+
+    def fake_open(request: object, *, timeout: float) -> object:
+        seen_urls.append(request.full_url)
+        body = {
+            "error": {
+                "code": "1310",
+                "message": "Quota exhausted. Your limit will reset at 2026-07-09T13:02:51Z.",
+                "next_flush_time": "2026-07-09T13:02:51Z",
+            }
+        }
+        raise urllib.error.HTTPError(
+            request.full_url,
+            429,
+            "Too Many Requests",
+            {},
+            io.BytesIO(json.dumps(body).encode("utf-8")),
+        )
+
+    monkeypatch.setattr(module, "open_no_redirect", fake_open)
+    monkeypatch.setattr(
+        module,
+        "_require_payg_spend_gate",
+        lambda: module.PaygSpendGate(
+            state="eligible_active_budget",
+            budget_id="tb-20260706-zai-glmcp-payg-review",
+            budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+            cap_remaining_usd="99.95",
+            ledger_source="live",
+            ledger_path=Path("quota-spend-ledger-live.json"),
+        ),
+    )
+
+    def fail_reservation(**_kwargs: object) -> object:
+        raise module.ApiError("PAYG fallback refused by paid-spend gate: could not reserve")
+
+    monkeypatch.setattr(module, "_write_payg_spend_receipt", fail_reservation)
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+
+    with pytest.raises(module.ApiError) as excinfo:
+        module.call_glm("review prompt", config, "test-secret-token")
+    message = str(excinfo.value)
+    assert "could not reserve" in message
+    assert "spend_receipt=not-written" in message
     assert seen_urls == ["https://api.z.ai/api/coding/paas/v4/chat/completions"]
 
 
@@ -438,6 +513,56 @@ def test_payg_spend_receipt_omits_secret_prompt_and_output(
     assert "secret_value_persisted: false" in receipt
     assert "prompt_or_output_persisted: false" in receipt
     assert "test-secret-token" not in receipt
+
+
+def test_payg_spend_receipt_write_error_has_next_action(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(tmp_path))
+
+    def fail_mkstemp(*_args: object, **_kwargs: object) -> object:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(module.tempfile, "mkstemp", fail_mkstemp)
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+    primary = module.ZaiHttpError(
+        status=429,
+        detail=json.dumps({"error": {"code": "1310", "message": "Quota exhausted."}}),
+        secret="test-secret-token",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        provider_label="Coding Plan",
+    )
+
+    with pytest.raises(module.ApiError) as excinfo:
+        module._write_payg_spend_receipt(
+            gate=module.PaygSpendGate(
+                state="eligible_active_budget",
+                budget_id="tb-20260706-zai-glmcp-payg-review",
+                budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+                cap_remaining_usd="99.95",
+                ledger_source="live",
+                ledger_path=Path("quota-spend-ledger-live.json"),
+            ),
+            config=config,
+            primary_error=primary,
+        )
+
+    message = str(excinfo.value)
+    assert "could not reserve spend receipt" in message
+    assert "fix receipt directory permissions before retrying" in message
+    assert "test-secret-token" not in message
 
 
 def test_call_glm_does_not_fallback_for_non_quota_failures(

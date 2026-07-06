@@ -19,8 +19,8 @@ Each tick does two writes:
    ``$HAPAX_QUOTA_SPEND_LEDGER_LIVE``). Governance records (transition budgets,
    dependencies, provenance, renewals) are carried over from the checked-in
    base unchanged. Spend receipts are carried over from the base plus validated
-   GLMCP PAYG spend receipts written by ``scripts/hapax-glmcp-reviewer`` after a
-   successful paid fallback; telemetry never grants spend authority. The
+   GLMCP PAYG spend receipts reserved by ``scripts/hapax-glmcp-reviewer`` before
+   a paid fallback call; telemetry never grants spend authority. The
    telemetry fields are re-derived live:
 
    - ``captured_at``: now.

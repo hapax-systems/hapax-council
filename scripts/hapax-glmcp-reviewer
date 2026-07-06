@@ -622,19 +622,20 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
             raise ApiError(
                 f"{exc}; retry later or check the Z.ai Coding Plan endpoint/status"
             ) from exc
+        spend_receipt: Path | None = None
         try:
             gate = _require_payg_spend_gate()
+            spend_receipt = _write_payg_spend_receipt(
+                gate=gate,
+                config=config,
+                primary_error=exc,
+            )
             reply = _call_glm_once(
                 prompt,
                 config,
                 api_key,
                 base_url=config.payg_base_url,
                 provider_label="PAYG API",
-            )
-            spend_receipt = _write_payg_spend_receipt(
-                gate=gate,
-                config=config,
-                primary_error=exc,
             )
             print(
                 "hapax-glmcp-reviewer: PAYG fallback used "
@@ -646,9 +647,10 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
             )
             return reply
         except ApiError as fallback_exc:
+            receipt_ref = spend_receipt.name if spend_receipt is not None else "not-written"
             raise ApiError(
                 "Coding Plan quota fallback to Z.ai PAYG API failed; "
-                f"primary=({exc}); fallback=({fallback_exc}); "
+                f"primary=({exc}); fallback=({fallback_exc}); spend_receipt={receipt_ref}; "
                 "retry later, check PAYG balance, or write a classified GLMCP hold receipt"
             ) from fallback_exc
 
@@ -737,14 +739,25 @@ def _flat_yaml(value: object) -> str:
 
 
 def _write_flat_yaml_atomic(path: Path, fields: list[tuple[str, object]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    body = "".join(f"{key}: {_flat_yaml(value)}\n" for key, value in fields)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = "".join(f"{key}: {_flat_yaml(value)}\n" for key, value in fields)
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    except OSError as exc:
+        raise ApiError(
+            "PAYG fallback refused by paid-spend gate: could not reserve spend receipt; "
+            f"receipt_dir={path.parent}; fix receipt directory permissions before retrying"
+        ) from exc
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(body)
         os.chmod(tmp_name, 0o600)
         os.replace(tmp_name, path)
+    except OSError as exc:
+        raise ApiError(
+            "PAYG fallback refused by paid-spend gate: could not reserve spend receipt; "
+            f"receipt={path.name}; fix receipt directory permissions before retrying"
+        ) from exc
     finally:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
