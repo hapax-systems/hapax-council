@@ -316,7 +316,7 @@ class TestApply:
         assert "degraded_family_route_blocked:haiku-review" in dossier["constitution_notes"]
         assert (
             "route_blocked_family_reason:haiku-review:claude.headless.nope:"
-            "claude.headless.nope:route_missing_from_platform_registry"
+            "route_missing_from_platform_registry"
         ) in dossier["constitution_notes"]
 
     def test_reviews_are_blind(self, tmp_path: Path) -> None:

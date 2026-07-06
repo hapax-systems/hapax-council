@@ -696,31 +696,25 @@ def review_route_blocked_families(
     routes are treated as blocked supply, not as an ad hoc reviewer.
     """
 
-    effective_registry = (
-        review_registry_with_route_families(registry, platform_registry=platform_registry)
-        if platform_registry is not None
-        else registry
+    resolved_platform_registry = platform_registry or load_platform_capability_registry(
+        receipt_dir=DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+    )
+    effective_registry = review_registry_with_route_families(
+        registry, platform_registry=resolved_platform_registry
     )
     route_ids = review_family_route_ids(effective_registry)
     if not route_ids:
         return {}
-    platform_registry = platform_registry or load_platform_capability_registry(
-        receipt_dir=DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
-    )
-    effective_registry = review_registry_with_route_families(
-        registry, platform_registry=platform_registry
-    )
-    route_ids = review_family_route_ids(effective_registry)
     family_entries = {
         str(entry.get("family") or "").strip(): entry
         for entry in review_family_entries(effective_registry)
     }
 
-    route_map = platform_registry.route_map()
+    route_map = resolved_platform_registry.route_map()
     freshness_checks = {
         check.route_id: check
         for check in check_registry_freshness(
-            platform_registry, route_ids=route_ids.values()
+            resolved_platform_registry, route_ids=route_ids.values()
         ).routes
     }
     blocked: dict[str, tuple[str, ...]] = {}
@@ -758,7 +752,10 @@ def _degradation_notes(
         route_id = route_ids.get(family, "unknown")
         notes.append(f"degraded_family_route_blocked:{family}")
         for reason in route_blocked_families[family]:
-            notes.append(f"route_blocked_family_reason:{family}:{route_id}:{reason}")
+            normalized_reason = str(reason).strip()
+            if normalized_reason.startswith(f"{route_id}:"):
+                normalized_reason = normalized_reason[len(route_id) + 1 :]
+            notes.append(f"route_blocked_family_reason:{family}:{route_id}:{normalized_reason}")
     if outage_families:
         notes.append("post_recovery_rereview_required")
     if route_blocked_families:
