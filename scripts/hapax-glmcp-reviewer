@@ -23,6 +23,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -699,19 +700,25 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
             receipt_ref = reservation.path.name if reservation is not None else "not-written"
             reservation_note = ""
             if reservation is not None and gate is not None:
-                try:
-                    with _quota_spend_live_lock():
-                        reservation = _mark_payg_spend_receipt_failed(
-                            reservation=reservation,
-                            ledger_path=gate.ledger_path,
-                            config=config,
-                            primary_error=exc,
+                if isinstance(fallback_exc, ZaiHttpError):
+                    try:
+                        with _quota_spend_live_lock():
+                            reservation = _mark_payg_spend_receipt_failed(
+                                reservation=reservation,
+                                ledger_path=gate.ledger_path,
+                                config=config,
+                                primary_error=exc,
+                            )
+                        reservation_note = " spend receipt reservation reconciled as failed;"
+                    except ApiError as reconcile_exc:
+                        reservation_note = (
+                            " spend receipt failure reconciliation failed "
+                            f"({type(reconcile_exc).__name__});"
                         )
-                    reservation_note = " spend receipt reservation reconciled as failed;"
-                except ApiError as reconcile_exc:
+                else:
                     reservation_note = (
-                        " spend receipt failure reconciliation failed "
-                        f"({type(reconcile_exc).__name__});"
+                        " spend receipt reservation remains pending because the PAYG "
+                        "request may have reached a billable provider response;"
                     )
             raise ApiError(
                 "Coding Plan quota fallback to Z.ai PAYG API failed; "
@@ -953,14 +960,23 @@ def _payg_reservation_suffix(
             f"spend reservations ({type(exc).__name__}); rerun "
             "scripts/hapax-quota-telemetry-writer --json and retry"
         ) from exc
-    matching = [
-        receipt
+    existing_spend_ids = {
+        receipt.spend_id
         for receipt in ledger.spend_receipts
         if receipt.spend_id.startswith(prefix)
         and receipt.task_id == task_id
         and receipt.budget_id == gate.budget_id
-    ]
-    return f"{base_suffix}-{len(matching) + 1:02d}"
+    }
+    for _ in range(8):
+        suffix = f"{base_suffix}-{uuid.uuid4().hex[:12]}"
+        spend_id = f"spend-{stamp}-glmcp-payg-review-{suffix}"
+        if spend_id not in existing_spend_ids:
+            return suffix
+    raise ApiError(
+        "PAYG fallback refused by paid-spend gate: could not allocate a unique spend "
+        "reservation id after repeated attempts; rerun scripts/hapax-quota-telemetry-writer "
+        "--json and retry"
+    )
 
 
 def _payg_spend_receipt_fields(
