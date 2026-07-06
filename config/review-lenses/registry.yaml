@@ -99,9 +99,14 @@ families:
     reviewer_command: ["codex", "exec", "--sandbox", "read-only", "-"]
     timeout_seconds: 1200
   - family: gemini
+    # This family is backed by the agy reviewer wrapper. It may only count as
+    # review capacity when the platform-capability registry admits
+    # agy.review.direct with fresh route/resource/quota receipts.
+    route_id: agy.review.direct
     reviewer_command: ["scripts/hapax-agy-reviewer"]
     timeout_seconds: 1200
   - family: glm
+    route_id: glmcp.review.direct
     # Emergency outage procedure: GLM degrades out of a constitution only with
     # a fresh family-outage witness in
     # ~/.cache/hapax/review-team/family-outage.json, normally written when the

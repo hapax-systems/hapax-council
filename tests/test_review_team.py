@@ -13,6 +13,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -41,6 +42,12 @@ ALWAYS_ON_CHECKLIST = {
     },
 }
 ALWAYS_ON_LENSES = tuple(ALWAYS_ON_CHECKLIST)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_live_route_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    rt = _load_review_team_module()
+    monkeypatch.setattr(rt, "review_route_blocked_families", lambda registry: {})
 
 
 def _registry() -> dict:
@@ -340,6 +347,27 @@ class TestConstitution:
         assert 4 <= len(team.seats) <= 5
         roster = {entry["family"] for entry in reg["families"]}
         assert roster <= {seat.family for seat in team.seats}
+
+    def test_t1_route_blocked_family_degrades_with_receipt_reason(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        team = rt.constitute_team(
+            "t1_critical",
+            "codex",
+            reg,
+            pr_number=7,
+            route_blocked_families={"gemini": ("route_specific_quota_receipt_absent",)},
+        )
+        families = {seat.family for seat in team.seats}
+        assert "gemini" not in families
+        assert team.quorum_required == int(reg["sizing"]["t2_standard"]["quorum_accept"])
+        assert "degraded_to:t2_standard" in team.notes
+        assert "degraded_family_route_blocked:gemini" in team.notes
+        assert (
+            "route_blocked_family_reason:gemini:agy.review.direct:"
+            "route_specific_quota_receipt_absent"
+        ) in team.notes
+        assert "post_route_receipt_rereview_required" in team.notes
 
     def test_t2_team_can_seat_glm_as_independent_family(self) -> None:
         rt = _load_review_team_module()
@@ -670,6 +698,66 @@ class TestVerdictBlockers:
         note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
         blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert blockers == ()
+
+    def test_blocked_route_family_seated_blocks_admission(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._good_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"gemini": ("route_specific_quota_receipt_absent",)},
+        )
+        assert "review_dossier_blocked_route_family_seated:gemini" in blockers
+
+    def _route_blocked_degraded_dossier(self, rt) -> dict:
+        notes = (
+            "degraded_family_route_blocked:gemini",
+            "route_blocked_family_reason:gemini:agy.review.direct:"
+            "route_specific_quota_receipt_absent",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        return _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("claude-1", "claude", "accept"),
+                _review("glm-1", "glm", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+
+    def test_route_blocked_degraded_dossier_passes_while_route_still_blocked(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = self._route_blocked_degraded_dossier(rt)
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"gemini": ("route_specific_quota_receipt_absent",)},
+        )
+        assert dossier["review_team_verdict"] == rt.QUORUM_ACCEPT
+        assert dossier["degraded_family_route_blocked"] == ["gemini"]
+        assert dossier["post_route_receipt_rereview_required"] is True
+        assert blockers == ()
+
+    def test_recovered_route_block_invalidates_pending_degraded_admission(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._route_blocked_degraded_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+        )
+        assert "review_dossier_route_block_degradation_unwitnessed:gemini" in blockers
 
     def test_no_quorum_dossier_blocks_with_recomputed_count(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()

@@ -219,6 +219,7 @@ def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingRe
         "wake_dir": tmp_path / "wake",
         "send_runner": lambda cmd: None,
         "now_iso": "2026-06-11T21:00:00+00:00",
+        "route_blocked_families": {},
     }
     kwargs.update(overrides)
     try:
@@ -254,6 +255,29 @@ class TestApply:
         families = {r["family"] for r in dossier["reviewers"]}
         assert len(families) >= 2
         assert dossier["review_team_verdict"] == "quorum-accept"
+
+    def test_blocked_agy_route_is_not_invoked_as_reviewer(self, tmp_path: Path) -> None:
+        result, _, reviewers, note = _review(
+            tmp_path,
+            route_blocked_families={"gemini": ("route_specific_quota_receipt_absent",)},
+        )
+        assert result["status"] == "dispatched"
+        assert all(family != "gemini" for _, family, _ in reviewers.invocations)
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        assert {r["family"] for r in dossier["reviewers"]}.isdisjoint({"gemini"})
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert dossier["degraded_family_route_blocked"] == ["gemini"]
+        assert dossier["post_route_receipt_rereview_required"] is True
+        assert "degraded_family_route_blocked:gemini" in dossier["constitution_notes"]
+        assert (
+            "route_blocked_family_reason:gemini:agy.review.direct:"
+            "route_specific_quota_receipt_absent"
+        ) in dossier["constitution_notes"]
+        assert result["plan"]["route_blocked_families"] == {
+            "gemini": ["route_specific_quota_receipt_absent"]
+        }
 
     def test_reviews_are_blind(self, tmp_path: Path) -> None:
         _, _, reviewers, _ = _review(tmp_path)
@@ -772,6 +796,7 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
         )
         assert result2["status"] == "skipped_fresh"
         assert reviewers2.invocations == []
@@ -793,6 +818,7 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
         )
         assert second["status"] == "skipped_blocked"
         assert second["review_team_verdict"] == "blocked"
@@ -814,6 +840,7 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
         )
         assert result["status"] == "multi_dispatched"
         assert {item["task_id"] for item in result["results"]} == {"task-a", "task-b"}
@@ -844,6 +871,7 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T23:00:00+00:00",
+            route_blocked_families={},
         )
         assert second["status"] == "multi_skipped_fresh"
         assert second_reviewers.invocations == []
@@ -867,6 +895,7 @@ checklist:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
         )
         assert result2["status"] == "skipped_fresh"
         assert receipt_path.is_file()
@@ -888,6 +917,7 @@ class TestAllMode:
             reviewer_runner=reviewers,
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
+            route_blocked_families={},
         )
         assert [r["status"] for r in results] == ["dispatched"]
         assert len(reviewers.invocations) == 3
@@ -903,6 +933,7 @@ class TestAllMode:
             reviewer_runner=RecordingReviewers(),
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
+            route_blocked_families={},
         )
         assert [r["status"] for r in results] == ["no_task"]
 
@@ -940,6 +971,7 @@ class TestAllMode:
             reviewer_runner=RecordingReviewers(),
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
+            route_blocked_families={},
         )
         assert [r["status"] for r in results] == ["error", "dispatched"]
 
@@ -1058,6 +1090,7 @@ class TestReceiptAndWake:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
         )
         assert "operator" in receipt_path.read_text(encoding="utf-8")
 
@@ -1088,6 +1121,7 @@ class TestReceiptAndWake:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
         )
 
         assert result["side_effects"]["receipt_path"] == str(receipt_path)
@@ -1193,6 +1227,9 @@ class TestExitPredicate:
     ) -> None:
         monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
         autoqueue = _load("cc_pr_autoqueue", "cc-pr-autoqueue.py")
+        monkeypatch.setattr(
+            autoqueue.review_team, "review_route_blocked_families", lambda registry: {}
+        )
         vault = _make_vault(tmp_path)
         _write_task(vault)
         pr_payload = {
@@ -1232,6 +1269,7 @@ class TestExitPredicate:
             wake_dir=tmp_path / "wake",
             send_runner=lambda cmd: None,
             now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
         )
         assert result["status"] == "dispatched"
         dossier = result["dossier"]
