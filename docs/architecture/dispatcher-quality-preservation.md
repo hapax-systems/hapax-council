@@ -22,9 +22,9 @@ uv run pytest \
   tests/shared/test_platform_capability_registry.py::test_agy_local_receipt_clears_review_seat_but_not_route_quota \
   tests/shared/test_platform_capability_registry.py::test_agy_observed_route_quota_receipt_admits_review_route \
   tests/shared/test_platform_capability_receipts.py::test_agy_receipt_records_live_review_route_without_unblocking_quota \
-  tests/test_review_team.py::TestFamilyOutageDegradation::test_review_route_blocked_families_uses_default_receipt_dir \
-  tests/test_review_team.py::TestFamilyOutageDegradation::test_review_route_blocked_families_blocks_stale_active_agy_route \
-  tests/test_cc_pr_review_dispatch.py::TestApply::test_default_route_gate_seats_receipt_cleared_agy_route
+  tests/test_review_team.py::TestConstitution::test_t1_route_blocked_family_degrades_with_receipt_reason \
+  tests/test_review_team.py::TestVerdictBlockers::test_route_blocked_degraded_dossier_passes_while_route_still_blocked \
+  tests/test_cc_pr_review_dispatch.py::TestApply::test_blocked_agy_route_is_not_invoked_as_reviewer
 ```
 
 ## 2. Enforcement Points

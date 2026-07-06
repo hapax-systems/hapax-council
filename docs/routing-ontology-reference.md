@@ -63,7 +63,7 @@ uv run pytest \
   tests/scripts/test_cc_dispatch.py::test_agy_review_route_is_valid_but_non_spawnable \
   tests/scripts/test_hapax_methodology_dispatch.py::test_agy_platform_is_review_route_not_dispatchable_worker \
   tests/scripts/test_hapax_cross_runtime_dispatch.py::test_agy_platform_is_review_route_not_cross_runtime_worker \
-  tests/test_review_team.py::TestFamilyOutageDegradation::test_review_route_blocked_families_reads_current_agy_route
+  tests/test_review_team.py::test_gemini_review_family_uses_agy_wrapper_not_legacy_cli
 ```
 
 ## Reaching the Opus Route (signed route-authority receipts)
