@@ -560,8 +560,47 @@ def resolve_declared_path(raw: str | list[str] | None, *, base: Path) -> Path | 
     return base / path
 
 
+def is_agy_lane_name(lane: str) -> bool:
+    normalized = strip_scalar(str(lane)).strip().lower()
+    return normalized == "agy" or normalized.startswith("agy-")
+
+
 def lane_worktree(lane: str, platform: str) -> Path:
+    if platform == "agy" and is_agy_lane_name(lane):
+        override = os.environ.get("HAPAX_DISPATCH_WORKTREE")
+        if override:
+            return Path(override).expanduser()
+        configured_root = os.environ.get("HAPAX_DISPATCH_PROJECT_ROOT")
+        root = Path(configured_root).expanduser() if configured_root else Path.home() / "projects"
+        return root / f"hapax-council--{lane}"
     return dispatch_worktree(lane, platform)
+
+
+def check_agy_worktree_hygiene(worktree: Path) -> tuple[bool, str]:
+    issues: list[str] = []
+    for marker in (".agent", ".agents"):
+        marker_path = worktree / marker
+        if marker_path.exists():
+            issues.append(f"legacy compatibility residue present: {marker_path}")
+
+    if (worktree / ".git").exists():
+        result = subprocess.run(
+            ["git", "-C", str(worktree), "status", "-sb", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            first_line = result.stdout.splitlines()[0] if result.stdout.splitlines() else ""
+            if "[gone]" in first_line:
+                issues.append(f"branch upstream is gone: {first_line}")
+        else:
+            reason = (result.stderr or result.stdout).strip()
+            issues.append(f"git status unavailable for agy worktree: {reason or result.returncode}")
+
+    if issues:
+        return False, "agy worktree hygiene failed: " + "; ".join(issues)
+    return True, "agy worktree hygiene clean"
 
 
 def is_claude_operator_pool_lane(lane: str, platform: str) -> bool:
@@ -1135,7 +1174,12 @@ def validate_task(
         )
 
     if strict_worktree:
-        ok, reason = check_worktree_cc_task_tool_guards(lane_worktree(lane, platform))
+        worktree = lane_worktree(lane, platform)
+        if platform == "agy" and is_agy_lane_name(lane):
+            ok, reason = check_agy_worktree_hygiene(worktree)
+            if not ok:
+                return Validation(False, reason, task, parent_spec_path, exempt)
+        ok, reason = check_worktree_cc_task_tool_guards(worktree)
         if not ok:
             return Validation(False, reason, task, parent_spec_path, exempt)
 
