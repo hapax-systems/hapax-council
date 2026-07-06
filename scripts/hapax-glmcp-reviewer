@@ -664,14 +664,10 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
         try:
             with _quota_spend_live_lock():
                 gate = _require_payg_spend_gate()
-                reservation = _write_payg_spend_receipt(
+                reservation = _reserve_payg_spend_receipt(
                     gate=gate,
                     config=config,
                     primary_error=exc,
-                )
-                _append_spend_receipt_to_live_ledger(
-                    ledger_path=gate.ledger_path,
-                    receipt=reservation.spend_receipt,
                 )
             reply = _call_glm_once(
                 prompt,
@@ -873,7 +869,38 @@ def _write_flat_yaml_atomic(path: Path, fields: list[tuple[str, object]]) -> Non
             os.unlink(tmp_name)
 
 
-def _write_payg_spend_receipt(
+def _reserve_payg_spend_receipt(
+    *,
+    gate: PaygSpendGate,
+    config: ReviewConfig,
+    primary_error: ZaiHttpError,
+) -> PaygSpendReservation:
+    reservation = _build_payg_spend_receipt(
+        gate=gate,
+        config=config,
+        primary_error=primary_error,
+    )
+    _append_spend_receipt_to_live_ledger(
+        ledger_path=gate.ledger_path,
+        receipt=reservation.spend_receipt,
+    )
+    try:
+        _write_payg_spend_receipt_file(
+            reservation=reservation,
+            config=config,
+            primary_error=primary_error,
+            status="spend_estimated",
+        )
+    except ApiError:
+        _remove_spend_receipt_from_live_ledger(
+            ledger_path=gate.ledger_path,
+            spend_id=reservation.spend_receipt.spend_id,
+        )
+        raise
+    return reservation
+
+
+def _build_payg_spend_receipt(
     *,
     gate: PaygSpendGate,
     config: ReviewConfig,
@@ -934,14 +961,25 @@ def _write_payg_spend_receipt(
     if gate.cap_remaining_usd is not None:
         receipt_payload["cap_remaining_usd"] = gate.cap_remaining_usd
     spend_receipt = SpendReceipt.model_validate(receipt_payload)
-    fields = _payg_spend_receipt_fields(
-        receipt_payload=receipt_payload,
-        config=config,
-        primary_error=primary_error,
-        status="spend_estimated",
-    )
-    _write_flat_yaml_atomic(path, fields)
     return PaygSpendReservation(path=path, spend_receipt=spend_receipt)
+
+
+def _write_payg_spend_receipt_file(
+    *,
+    reservation: PaygSpendReservation,
+    config: ReviewConfig,
+    primary_error: ZaiHttpError,
+    status: str,
+) -> None:
+    _write_flat_yaml_atomic(
+        reservation.path,
+        _payg_spend_receipt_fields(
+            receipt_payload=reservation.spend_receipt.model_dump(mode="json"),
+            config=config,
+            primary_error=primary_error,
+            status=status,
+        ),
+    )
 
 
 def _payg_reservation_suffix(
@@ -1148,6 +1186,22 @@ def _replace_spend_receipt_in_live_ledger(*, ledger_path: Path, receipt: SpendRe
             "PAYG fallback could not reconcile spend receipt in live quota/spend "
             f"ledger ({type(exc).__name__}); run scripts/hapax-quota-telemetry-writer "
             "--json before retrying"
+        ) from exc
+
+
+def _remove_spend_receipt_from_live_ledger(*, ledger_path: Path, spend_id: str) -> None:
+    try:
+        ledger = load_quota_spend_ledger(ledger_path)
+        payload = ledger.model_dump(mode="json")
+        payload["spend_receipts"] = [
+            receipt for receipt in payload["spend_receipts"] if receipt["spend_id"] != spend_id
+        ]
+        _write_json_atomic(ledger_path, payload)
+    except (OSError, QuotaSpendLedgerError, ValueError) as exc:
+        raise ApiError(
+            "PAYG fallback refused by paid-spend gate: could not roll back unissued "
+            f"spend reservation in live quota/spend ledger ({type(exc).__name__}); run "
+            "scripts/hapax-quota-telemetry-writer --json before retrying"
         ) from exc
 
 

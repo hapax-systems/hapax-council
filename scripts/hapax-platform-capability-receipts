@@ -339,23 +339,29 @@ def build_receipt(
 
 
 def known_unknowns_for(platform: str) -> list[str]:
-    unknowns = [
-        "Receipt command records config paths and existence only; it never reads secret values.",
-    ]
+    unknowns = []
     if platform == "api":
         unknowns.insert(
             0,
             "Provider spend is authorized by the quota/spend ledger, not by this local receipt.",
         )
+        unknowns.append(
+            "Receipt command records config paths and existence only; it never reads secret values."
+        )
     elif platform == "glmcp":
-        unknowns.insert(
-            0,
-            "GLMCP quota freshness is admitted by short-lived quota-spend-ledger receipts; this local receipt only checks wrapper/config/docs/resource surfaces.",
+        unknowns.extend(
+            [
+                "GLMCP quota freshness is admitted by short-lived quota-spend-ledger receipts; this local receipt only checks wrapper/config/docs/resource surfaces.",
+                "GLMCP receipt refresh may read the pass-backed secret to verify wrapper availability; it records only redacted metadata and never persists the secret value.",
+            ]
         )
     else:
         unknowns.insert(
             0,
             "Account-live subscription quota is not exposed by the local receipt probe.",
+        )
+        unknowns.append(
+            "Receipt command records config paths and existence only; it never reads secret values."
         )
     return unknowns
 

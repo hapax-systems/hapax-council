@@ -32,7 +32,8 @@ Each tick does two writes:
      it is ``unknown`` unless a fresh, short-lived admission receipt exists.
      Coding Plan quota walls block Coding Plan receipts, but a fresh
      endpoint-matched PAYG admission can supersede that subscription wall only
-     when it is bound to the active Coding Plan quota-wall witness.
+     when it is bound to the active Coding Plan quota-wall witness and a
+     validated PAYG spend receipt reservation.
      Recheck admission evidence with
      ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*glmcp-quota-admission*.yaml' -print``
      and ``scripts/hapax-quota-telemetry-writer --json``.
@@ -253,6 +254,7 @@ class GlmcpAdmission:
     evidence_ref: str
     fresh_until: datetime
     endpoint: str
+    witness_ref: str
     primary_error_class: str | None = None
     quota_wall_evidence_ref: str | None = None
 
@@ -463,6 +465,26 @@ def _payg_admission_matches_active_wall(
         wall.receipt_label == admission.quota_wall_evidence_ref
         and admission.primary_error_class in {wall.failure_class, wall.rate_limit_type}
         for wall in platform_walls
+    )
+
+
+def _payg_spend_receipt_witness_refs(receipt: SpendReceipt) -> set[str]:
+    refs = {receipt.spend_id}
+    match = re.fullmatch(r"spend-([0-9]{8}T[0-9]{6}Z)-glmcp-payg-review-(.+)", receipt.spend_id)
+    if match is not None:
+        stamp, suffix = match.groups()
+        refs.add(f"glmcp-payg-spend-{stamp.lower()}-{suffix}.yaml")
+    return refs
+
+
+def _payg_admission_has_validated_spend_receipt(
+    admission: GlmcpAdmission,
+    receipts: list[SpendReceipt],
+) -> bool:
+    if admission.endpoint != GLMCP_PAYG_ENDPOINT:
+        return False
+    return any(
+        admission.witness_ref in _payg_spend_receipt_witness_refs(receipt) for receipt in receipts
     )
 
 
@@ -750,6 +772,7 @@ def active_glmcp_admission_receipts(
                 ),
                 fresh_until=fresh_until,
                 endpoint=endpoint,
+                witness_ref=receipt_evidence_ref,
                 primary_error_class=primary_error_class or None,
                 quota_wall_evidence_ref=quota_wall_evidence_ref or None,
             )
@@ -1000,6 +1023,14 @@ def build_live_ledger(
             for admission in glmcp_payg_admissions
             if _payg_admission_matches_active_wall(admission, platform_walls)
         ]
+        glmcp_spend_bound_payg_admissions = [
+            admission
+            for admission in glmcp_wall_matched_payg_admissions
+            if _payg_admission_has_validated_spend_receipt(
+                admission,
+                glmcp_payg_spend_receipts,
+            )
+        ]
         glmcp_coding_plan_admissions = [
             admission
             for admission in glmcp_admissions
@@ -1015,37 +1046,49 @@ def build_live_ledger(
         )
         if (
             platform_walls
-            and glmcp_wall_matched_payg_admissions
+            and glmcp_spend_bound_payg_admissions
             and glmcp_payg_budget_decision is not None
             and glmcp_payg_budget_decision.eligible
         ):
             state = "fresh"
             evidence = [
                 *platform_wall_evidence,
-                *(admission.evidence_ref for admission in glmcp_wall_matched_payg_admissions),
+                *(admission.evidence_ref for admission in glmcp_spend_bound_payg_admissions),
+                *(
+                    f"spend-gate-payg-receipt:{admission.witness_ref}"
+                    for admission in glmcp_spend_bound_payg_admissions
+                ),
                 *glmcp_payg_budget_evidence,
                 writer_ref,
             ]
             fresh_until = max(
-                admission.fresh_until for admission in glmcp_wall_matched_payg_admissions
+                admission.fresh_until for admission in glmcp_spend_bound_payg_admissions
             )
             reason = (
                 "GLMCP Coding Plan quota wall is present, but a fresh API-credit PAYG "
-                "supported-tool admission receipt and paid-spend gate keep the review route "
-                "available. " + _glmcp_payg_budget_reason(glmcp_payg_budget_decision)
+                "supported-tool admission receipt, validated spend receipt reservation, and "
+                "paid-spend gate keep the review route available. "
+                + _glmcp_payg_budget_reason(glmcp_payg_budget_decision)
             )
         elif platform_walls and glmcp_payg_admissions:
+            spend_receipt_blocker = []
+            if glmcp_wall_matched_payg_admissions and not glmcp_spend_bound_payg_admissions:
+                spend_receipt_blocker.append(
+                    "spend-gate-blocker:validated-payg-spend-receipt-absent"
+                )
             state = "exhausted"
             evidence = [
                 *platform_wall_evidence,
                 *(admission.evidence_ref for admission in glmcp_payg_admissions),
                 *glmcp_payg_budget_evidence,
+                *spend_receipt_blocker,
                 writer_ref,
             ]
             fresh_until = None
             reason = (
                 "GLMCP Coding Plan quota wall is present, and PAYG admission cannot supersede "
-                "it without a matching active quota-wall witness and active paid-spend gate. "
+                "it without a matching active quota-wall witness, validated PAYG spend receipt "
+                "reservation, and active paid-spend gate. "
                 + _glmcp_payg_budget_reason(glmcp_payg_budget_decision)
             )
         elif platform_walls:

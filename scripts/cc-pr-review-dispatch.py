@@ -986,7 +986,7 @@ _REL_DISPLAY_SAFE_RE = re.compile(r"[^A-Za-z0-9_./-]")
 _PRIOR_CRITICAL_SYMBOL_HINTS = (
     "_require_payg_spend_gate",
     "_valid_coding_plan_primary_base_url",
-    "_write_payg_spend_receipt",
+    "_reserve_payg_spend_receipt",
     "_payg_reservation_suffix",
 )
 

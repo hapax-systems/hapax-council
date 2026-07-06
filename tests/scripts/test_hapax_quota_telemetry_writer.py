@@ -87,6 +87,7 @@ def _glmcp_admission(
     *,
     observed_at: str,
     stale_after_seconds: int = 900,
+    evidence_ref: str = "supported-tool-usage-witness",
     supported_tool: str = "hapax-glmcp-reviewer",
     endpoint: str = "https://api.z.ai/api/coding/paas/v4",
     model: str = "glm-5.2",
@@ -131,7 +132,7 @@ endpoint: {endpoint}
 model: {model}
 {timestamp_field}: {observed_at}
 stale_after_seconds: {stale_after_seconds}
-evidence_ref: supported-tool-usage-witness
+evidence_ref: {evidence_ref}
 secret_source: pass:glmcp/api-key
 secret_value_persisted: false
 prompt_or_output_persisted: false
@@ -363,13 +364,16 @@ def test_glmcp_payg_spend_receipt_counts_against_budget_gate(tmp_path: Path) -> 
 def test_glmcp_payg_admission_supersedes_coding_plan_quota_wall(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
+    spend_receipt_name = "glmcp-payg-spend-20260706t140430z-test.yaml"
     _wall_receipt(relay, "cx-glmcp", "2026-07-06T16:00:00Z")
     _glmcp_admission(
         relay,
         observed_at="2026-07-06T14:04:00Z",
         endpoint="https://api.z.ai/api/paas/v4",
         name="glmcp-quota-admission-payg.yaml",
+        evidence_ref=spend_receipt_name,
     )
+    _glmcp_payg_spend(relay, name=spend_receipt_name)
 
     result, out = _run_writer(tmp_path, now=PAYG_NOW)
 
@@ -398,6 +402,40 @@ def test_glmcp_payg_admission_supersedes_coding_plan_quota_wall(tmp_path: Path) 
     summary = json.loads(result.stdout)
     assert summary["quota_walls"] == {"glmcp": 1}
     assert summary["glmcp_admissions"] == 1
+    assert summary["glmcp_payg_spend_receipts"] == 1
+
+
+def test_glmcp_payg_admission_does_not_supersede_without_validated_spend_receipt(
+    tmp_path: Path,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _wall_receipt(relay, "cx-glmcp", "2026-07-06T16:00:00Z")
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        evidence_ref="glmcp-payg-spend-missing.yaml",
+    )
+
+    result, out = _run_writer(tmp_path, now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "exhausted"
+    assert (
+        "spend-gate-blocker:validated-payg-spend-receipt-absent" in glmcp_snapshot["evidence_refs"]
+    )
+    assert "validated PAYG spend receipt reservation" in glmcp_snapshot["operator_visible_reason"]
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 1
+    assert summary["glmcp_payg_spend_receipts"] == 0
 
 
 def test_glmcp_payg_admission_does_not_supersede_wrong_wall_class(tmp_path: Path) -> None:

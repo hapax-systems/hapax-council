@@ -276,8 +276,7 @@ def test_call_glm_falls_back_to_payg_api_on_coding_plan_quota_wall(
         events.append("reserve-spend-receipt")
         return _payg_reservation(module)
 
-    monkeypatch.setattr(module, "_write_payg_spend_receipt", fake_spend_receipt)
-    monkeypatch.setattr(module, "_append_spend_receipt_to_live_ledger", lambda **_kwargs: None)
+    monkeypatch.setattr(module, "_reserve_payg_spend_receipt", fake_spend_receipt)
     monkeypatch.setattr(
         module,
         "_mark_payg_spend_receipt_succeeded",
@@ -357,10 +356,9 @@ def test_call_glm_reports_payg_fallback_failure_after_coding_plan_quota_wall(
     )
     monkeypatch.setattr(
         module,
-        "_write_payg_spend_receipt",
+        "_reserve_payg_spend_receipt",
         lambda **_kwargs: _payg_reservation(module),
     )
-    monkeypatch.setattr(module, "_append_spend_receipt_to_live_ledger", lambda **_kwargs: None)
     monkeypatch.setattr(
         module,
         "_mark_payg_spend_receipt_failed",
@@ -483,7 +481,7 @@ def test_call_glm_refuses_payg_before_http_when_spend_receipt_reservation_fails(
     def fail_reservation(**_kwargs: object) -> object:
         raise module.ApiError("PAYG fallback refused by paid-spend gate: could not reserve")
 
-    monkeypatch.setattr(module, "_write_payg_spend_receipt", fail_reservation)
+    monkeypatch.setattr(module, "_reserve_payg_spend_receipt", fail_reservation)
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
@@ -502,6 +500,96 @@ def test_call_glm_refuses_payg_before_http_when_spend_receipt_reservation_fails(
     assert "could not reserve" in message
     assert "spend_receipt=not-written" in message
     assert seen_urls == ["https://api.z.ai/api/coding/paas/v4/chat/completions"]
+
+
+def test_call_glm_failed_live_ledger_reservation_leaves_no_spend_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    seen_urls: list[str] = []
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    ledger_path = tmp_path / "quota-spend-ledger-live.json"
+    now = module.datetime.now(module.UTC).replace(microsecond=0)
+    payload = json.loads(
+        (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
+    )
+    payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
+    for budget in payload["transition_budgets"]:
+        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+            budget["created_at"] = (
+                (now - module.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["expires_at"] = (
+                (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
+    ledger_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(receipt_dir))
+    monkeypatch.setenv(
+        "HAPAX_GLMCP_REVIEW_TASK_ID",
+        "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+    )
+
+    def fake_open(request: object, *, timeout: float) -> object:
+        seen_urls.append(request.full_url)
+        body = {
+            "error": {
+                "code": "1310",
+                "message": "Quota exhausted. Your limit will reset at 2026-07-09T13:02:51Z.",
+                "next_flush_time": "2026-07-09T13:02:51Z",
+            }
+        }
+        raise urllib.error.HTTPError(
+            request.full_url,
+            429,
+            "Too Many Requests",
+            {},
+            io.BytesIO(json.dumps(body).encode("utf-8")),
+        )
+
+    monkeypatch.setattr(module, "open_no_redirect", fake_open)
+    monkeypatch.setattr(
+        module,
+        "_require_payg_spend_gate",
+        lambda: module.PaygSpendGate(
+            state="eligible_active_budget",
+            budget_id="tb-20260706-zai-glmcp-payg-review",
+            budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+            cap_remaining_usd="99.95",
+            ledger_source="live",
+            ledger_path=ledger_path,
+        ),
+    )
+
+    def fail_append(**_kwargs: object) -> None:
+        raise module.ApiError(
+            "PAYG fallback refused by paid-spend gate: could not reserve spend in live "
+            "quota/spend ledger (test)"
+        )
+
+    monkeypatch.setattr(module, "_append_spend_receipt_to_live_ledger", fail_append)
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+
+    with pytest.raises(module.ApiError) as excinfo:
+        module.call_glm("review prompt", config, "test-secret-token")
+
+    message = str(excinfo.value)
+    assert "could not reserve spend in live quota/spend ledger" in message
+    assert "spend_receipt=not-written" in message
+    assert seen_urls == ["https://api.z.ai/api/coding/paas/v4/chat/completions"]
+    assert list(receipt_dir.glob("glmcp-payg-spend-*.yaml")) == []
 
 
 def test_call_glm_real_reservation_blocks_second_payg_when_daily_cap_used(
@@ -977,8 +1065,8 @@ def test_payg_spend_reservation_suffix_survives_same_ledger_snapshot(
         ledger_path=ledger_path,
     )
 
-    first = module._write_payg_spend_receipt(gate=gate, config=config, primary_error=primary)
-    second = module._write_payg_spend_receipt(gate=gate, config=config, primary_error=primary)
+    first = module._build_payg_spend_receipt(gate=gate, config=config, primary_error=primary)
+    second = module._build_payg_spend_receipt(gate=gate, config=config, primary_error=primary)
 
     assert first.spend_receipt.spend_id != second.spend_receipt.spend_id
     assert first.spend_receipt.spend_id.endswith("-111111111111")
@@ -1050,16 +1138,8 @@ def test_payg_spend_reservation_does_not_reuse_existing_pending_receipt(
         ledger_path=ledger_path,
     )
 
-    first = module._write_payg_spend_receipt(gate=gate, config=config, primary_error=primary)
-    module._append_spend_receipt_to_live_ledger(
-        ledger_path=ledger_path,
-        receipt=first.spend_receipt,
-    )
-    second = module._write_payg_spend_receipt(gate=gate, config=config, primary_error=primary)
-    module._append_spend_receipt_to_live_ledger(
-        ledger_path=ledger_path,
-        receipt=second.spend_receipt,
-    )
+    first = module._reserve_payg_spend_receipt(gate=gate, config=config, primary_error=primary)
+    second = module._reserve_payg_spend_receipt(gate=gate, config=config, primary_error=primary)
 
     assert first.spend_receipt.spend_id != second.spend_receipt.spend_id
     loaded = module.load_quota_spend_ledger(ledger_path)
@@ -1209,7 +1289,7 @@ def test_payg_spend_receipt_omits_secret_prompt_and_output(
         provider_label="Coding Plan",
     )
 
-    reservation = module._write_payg_spend_receipt(
+    reservation = module._reserve_payg_spend_receipt(
         gate=module.PaygSpendGate(
             state="eligible_active_budget",
             budget_id="tb-20260706-zai-glmcp-payg-review",
@@ -1315,18 +1395,26 @@ def test_payg_spend_receipt_write_error_has_next_action(
         provider_label="Coding Plan",
     )
 
+    gate = module.PaygSpendGate(
+        state="eligible_active_budget",
+        budget_id="tb-20260706-zai-glmcp-payg-review",
+        budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+        cap_remaining_usd="99.95",
+        ledger_source="live",
+        ledger_path=ledger_path,
+    )
+    reservation = module._build_payg_spend_receipt(
+        gate=gate,
+        config=config,
+        primary_error=primary,
+    )
+
     with pytest.raises(module.ApiError) as excinfo:
-        module._write_payg_spend_receipt(
-            gate=module.PaygSpendGate(
-                state="eligible_active_budget",
-                budget_id="tb-20260706-zai-glmcp-payg-review",
-                budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
-                cap_remaining_usd="99.95",
-                ledger_source="live",
-                ledger_path=ledger_path,
-            ),
+        module._write_payg_spend_receipt_file(
+            reservation=reservation,
             config=config,
             primary_error=primary,
+            status="spend_estimated",
         )
 
     message = str(excinfo.value)
