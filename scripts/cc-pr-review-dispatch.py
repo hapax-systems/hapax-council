@@ -224,7 +224,9 @@ def clear_route_recovered_family_outage(
     A route-backed reviewer can be excluded by a fresh family-outage witness
     before it gets a chance to answer and clear itself. A fresh route admission
     receipt is a recovery witness for that backing route; if the route is still
-    blocked, the outage latch stays intact.
+    blocked, the outage latch stays intact. The route_blocked_families input is
+    the operational killswitch for a bad recovery detector: route-block the
+    family and this helper will not clear its outage latch.
     """
 
     if not outage_witness:

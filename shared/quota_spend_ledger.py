@@ -32,11 +32,19 @@ RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
     "glmcp.review.direct": "z_ai-glm-coding-plan",
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
+GLMCP_ADMISSION_CODING_PLAN_ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
+GLMCP_ADMISSION_PAYG_ENDPOINT = "https://api.z.ai/api/paas/v4"
+GLMCP_PAYG_BUDGET_ROUTE_ID = "glmcp.review.direct"
+GLMCP_PAYG_BUDGET_PROVIDER = "z_ai"
+GLMCP_PAYG_BUDGET_PROFILE = "glmcp-review-direct"
+GLMCP_PAYG_BUDGET_TASK_CLASS = "independent-review"
+GLMCP_PAYG_BUDGET_QUALITY_FLOOR = "frontier_review_required"
+GLMCP_PAYG_ESTIMATED_COST_USD = "0.05"
 GLMCP_ADMISSION_TOOL_ENDPOINTS = {
     "hapax-glmcp-reviewer": frozenset(
         {
-            "https://api.z.ai/api/coding/paas/v4",
-            "https://api.z.ai/api/paas/v4",
+            GLMCP_ADMISSION_CODING_PLAN_ENDPOINT,
+            GLMCP_ADMISSION_PAYG_ENDPOINT,
         }
     ),
 }
@@ -1195,11 +1203,17 @@ def subscription_quota_state_for_route(
         for snapshot in snapshots
         if _subscription_quota_missing_required_admission_evidence(ledger, snapshot)
     )
+    missing_payg_spend_gate_refs = tuple(
+        f"quota-snapshot:{snapshot.snapshot_id}:payg_spend_gate_missing_or_ineligible"
+        for snapshot in snapshots
+        if _subscription_quota_missing_required_payg_spend_gate(ledger, snapshot, now=checked_at)
+    )
     return _strict_subscription_quota_state(ledger, snapshots, now=checked_at), (
         *evidence_refs,
         *expired_refs,
         *missing_fresh_until_refs,
         *untrusted_fresh_refs,
+        *missing_payg_spend_gate_refs,
     )
 
 
@@ -1244,6 +1258,8 @@ def _effective_subscription_quota_state(
 ) -> SubscriptionQuotaState:
     if _subscription_quota_missing_required_admission_evidence(ledger, snapshot):
         return SubscriptionQuotaState.UNKNOWN
+    if _subscription_quota_missing_required_payg_spend_gate(ledger, snapshot, now=now):
+        return SubscriptionQuotaState.UNKNOWN
     if _subscription_quota_missing_required_fresh_until(snapshot):
         return SubscriptionQuotaState.UNKNOWN
     if _subscription_quota_fresh_until_expired(snapshot, now=now):
@@ -1276,6 +1292,28 @@ def _subscription_quota_missing_required_admission_evidence(
     return not any(_is_glmcp_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
 
 
+def _subscription_quota_missing_required_payg_spend_gate(
+    ledger: QuotaSpendLedger,
+    snapshot: QuotaSnapshot,
+    *,
+    now: datetime,
+) -> bool:
+    if snapshot.subscription_quota_state is not SubscriptionQuotaState.FRESH:
+        return False
+    if _normalize_route_id(snapshot.route_id) != GLMCP_PAYG_BUDGET_ROUTE_ID:
+        return False
+    if not any(_is_glmcp_payg_admission_evidence_ref(ref) for ref in snapshot.evidence_refs):
+        return False
+    decision = evaluate_paid_route_eligibility(ledger, _glmcp_payg_budget_request(), now=now)
+    if not decision.eligible:
+        return True
+    required_refs = {
+        f"spend-gate:{GLMCP_PAYG_BUDGET_ROUTE_ID}:eligible_active_budget",
+        f"spend-gate-budget:{decision.budget_id}",
+    }
+    return not required_refs.issubset(set(snapshot.evidence_refs))
+
+
 def _is_glmcp_admission_evidence_ref(ref: str) -> bool:
     return (
         GLMCP_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
@@ -1284,6 +1322,27 @@ def _is_glmcp_admission_evidence_ref(ref: str) -> bool:
         and any(f":model:{model}:" in ref for model in GLMCP_ADMISSION_MODELS)
         and ":observed_at:" in ref
         and ":fresh_until:" in ref
+    )
+
+
+def _is_glmcp_payg_admission_evidence_ref(ref: str) -> bool:
+    return (
+        _is_glmcp_admission_evidence_ref(ref)
+        and f":endpoint:{GLMCP_ADMISSION_PAYG_ENDPOINT}:" in ref
+    )
+
+
+def _glmcp_payg_budget_request() -> PaidRouteRequest:
+    return PaidRouteRequest.model_validate(
+        {
+            "route_id": GLMCP_PAYG_BUDGET_ROUTE_ID,
+            "provider": GLMCP_PAYG_BUDGET_PROVIDER,
+            "profile": GLMCP_PAYG_BUDGET_PROFILE,
+            "task_class": GLMCP_PAYG_BUDGET_TASK_CLASS,
+            "quality_floor": GLMCP_PAYG_BUDGET_QUALITY_FLOOR,
+            "estimated_cost_usd": GLMCP_PAYG_ESTIMATED_COST_USD,
+            "capacity_pool": CapacityPool.API_PAID_SPEND,
+        }
     )
 
 

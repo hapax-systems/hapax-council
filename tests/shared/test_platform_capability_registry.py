@@ -48,6 +48,7 @@ GLMCP_PAYG_ADMISSION_EVIDENCE_REF = (
     "observed_at:2026-05-17T07:59:00Z:"
     "fresh_until:2026-05-17T08:05:00Z"
 )
+GLMCP_PAYG_BUDGET_ID = "tb-20260517-zai-glmcp-payg-review"
 
 
 def _dispatcher_module() -> ModuleType:
@@ -604,6 +605,37 @@ def _write_glmcp_live_quota_ledger(path: Path) -> None:
     payload["generated_from"] = list(
         dict.fromkeys([*payload["generated_from"], "scripts/hapax-quota-telemetry-writer"])
     )
+    payload["transition_budgets"].append(
+        {
+            "budget_schema": 1,
+            "budget_id": GLMCP_PAYG_BUDGET_ID,
+            "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-TEST",
+            "approved_by": "operator",
+            "created_at": "2026-05-17T07:00:00Z",
+            "expires_at": "2026-05-17T09:00:00Z",
+            "capacity_pool": "api_paid_spend",
+            "providers_allowed": ["z_ai"],
+            "profiles_allowed": ["glmcp-review-direct"],
+            "task_classes_allowed": ["independent-review"],
+            "quality_floors_allowed": ["frontier_review_required"],
+            "total_cap_usd": "100.00",
+            "per_task_cap_usd": "2.00",
+            "daily_cap_usd": "20.00",
+            "auto_top_up_allowed": False,
+            "subscription_path_checked_at": "2026-05-17T07:00:00Z",
+            "reason_subscription_path_not_used": (
+                "fixture Coding Plan quota exhausted; PAYG spend gate under test"
+            ),
+            "steady_state_replacement": {
+                "target_route_id": None,
+                "blocker_to_remove": None,
+                "exit_criterion": None,
+            },
+            "ledger_owner": "test",
+            "dashboard_visibility": "required",
+            "lifecycle_state": "active",
+        }
+    )
     payload["quota_snapshots"] = [
         {
             "quota_snapshot_schema": 1,
@@ -614,7 +646,11 @@ def _write_glmcp_live_quota_ledger(path: Path) -> None:
             "provider": "z_ai-glm-coding-plan",
             "capacity_pool": "subscription_quota",
             "subscription_quota_state": "fresh",
-            "evidence_refs": [GLMCP_PAYG_ADMISSION_EVIDENCE_REF],
+            "evidence_refs": [
+                GLMCP_PAYG_ADMISSION_EVIDENCE_REF,
+                "spend-gate:glmcp.review.direct:eligible_active_budget",
+                f"spend-gate-budget:{GLMCP_PAYG_BUDGET_ID}",
+            ],
             "operator_visible_reason": "fixture GLMCP PAYG admission receipt",
         }
     ]
@@ -785,6 +821,35 @@ def test_glmcp_receipt_with_fresh_live_payg_admission_clears_review_latch(
     assert route.blocked_reasons == []
     assert GLMCP_PAYG_ADMISSION_EVIDENCE_REF in route.freshness.evidence.quota.evidence_refs
     assert result.ok is True
+
+
+def test_glmcp_receipt_surfaces_invalid_live_quota_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    live_ledger.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+
+    receipt_time = datetime(2026, 5, 17, 8, 0, tzinfo=UTC)
+    (receipt_dir / "glmcp.json").write_text(
+        _make_glmcp_receipt(observed_at=receipt_time).model_dump_json(),
+        encoding="utf-8",
+    )
+    registry = load_platform_capability_registry(
+        receipt_dir=receipt_dir,
+        now=datetime(2026, 5, 17, 8, 1, tzinfo=UTC),
+    )
+    route = registry.require("glmcp.review.direct")
+
+    assert route.route_state is RouteState.BLOCKED
+    assert "glmcp_review_seat_receipt_admission_required" in route.blocked_reasons
+    assert (
+        "quota-spend-ledger:glmcp.review.direct:live-ledger-invalid"
+        in route.freshness.evidence.quota.evidence_refs
+    )
 
 
 def test_api_receipt_score_suppression_honors_top_level_unmeasured_blocker() -> None:

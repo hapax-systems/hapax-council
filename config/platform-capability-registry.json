@@ -3331,7 +3331,7 @@
       "launcher": "scripts/hapax-glmcp-reviewer (review seat: blind-review prompt on stdin -> YAML verdict on stdout)",
       "sanctioned_wrapper": "scripts/hapax-glmcp-reviewer",
       "summary": "GLMCP Z.ai GLM-5.2 review seat",
-      "notes": "Receipt-bounded GLM-5.2 review seat, live in cc-pr-review-dispatch as the 'glm' reviewer family. Non-worker, read-only reviewer; NOT a coding workhorse -- the GLMCP coding/dispatch promotion is separately gated by glmcp-workhorse-bakeoff-20260618 (must emit promote_to_dispatch_shadow). Admission is receipt-bounded via quota_spend_ledger RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES + dispatcher_policy ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED. Coding Plan endpoint is primary; API-credit PAYG fallback is allowed only through hapax-glmcp-reviewer and endpoint-matched admission receipts.",
+      "notes": "Receipt-bounded GLM-5.2 review seat, live in cc-pr-review-dispatch as the 'glm' reviewer family. Non-worker, read-only reviewer; NOT a coding workhorse -- the GLMCP coding/dispatch promotion is separately gated by glmcp-workhorse-bakeoff-20260618 (must emit promote_to_dispatch_shadow). Admission is receipt-bounded via quota_spend_ledger RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES + dispatcher_policy ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED. Coding Plan endpoint is primary; API-credit PAYG fallback is allowed only through hapax-glmcp-reviewer, endpoint-matched admission receipts, and active spend-gate evidence in the live quota ledger. Recheck with scripts/hapax-quota-telemetry-writer --json and scripts/hapax-platform-capability-freshness --route glmcp.review.direct --json.",
       "route_state": "blocked",
       "blocked_reasons": [
         "glmcp_review_seat_receipt_admission_required",
@@ -3425,7 +3425,7 @@
         "Z.ai provider training/privacy posture is not equivalent to local execution; privacy/secret-sensitive review is excluded by policy.",
         "Coding/dispatch workhorse promotion is separate and bakeoff-gated (glmcp-workhorse-bakeoff-20260618); this route is the review seat only.",
         "Subscription quota is not exposed as account-live local telemetry; admission is receipt-bounded via the spend ledger.",
-        "When Coding Plan quota is exhausted, this review route may fall back to the official Z.ai PAYG API endpoint only with explicit API-credit receipt evidence."
+        "When Coding Plan quota is exhausted, this review route may fall back to the official Z.ai PAYG API endpoint only with explicit API-credit receipt evidence and an active paid-spend budget gate."
       ],
       "capability_scores": {
         "grounding": {

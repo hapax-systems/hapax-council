@@ -1491,8 +1491,7 @@ def _apply_receipt_to_route_payload(
         route_payload,
         now=now,
     )
-    if quota_admission_fresh:
-        removable_top_blockers.add(GLMCP_REVIEW_ADMISSION_BLOCKER)
+    if quota_admission_refs:
         freshness["evidence"]["quota"]["evidence_refs"] = list(
             dict.fromkeys(
                 [
@@ -1501,6 +1500,8 @@ def _apply_receipt_to_route_payload(
                 ]
             )
         )
+    if quota_admission_fresh:
+        removable_top_blockers.add(GLMCP_REVIEW_ADMISSION_BLOCKER)
     top_blockers = [reason for reason in top_blockers if reason not in removable_top_blockers]
     route_payload["blocked_reasons"] = list(dict.fromkeys(top_blockers))
     route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
@@ -1515,9 +1516,13 @@ def _route_specific_quota_admission_fresh(
         return False, ()
     try:
         resolved = load_quota_spend_ledger_resolved(live_path=_quota_spend_live_path_from_env())
-    except (OSError, QuotaSpendLedgerError, ValueError):
-        return False, ()
+    except (OSError, QuotaSpendLedgerError, ValueError) as exc:
+        return False, (
+            f"quota-spend-ledger:{GLMCP_REVIEW_ROUTE_ID}:read-error:{type(exc).__name__}",
+        )
     if resolved.source != "live":
+        if resolved.live_error:
+            return False, (f"quota-spend-ledger:{GLMCP_REVIEW_ROUTE_ID}:live-ledger-invalid",)
         return False, ()
     state, evidence_refs = subscription_quota_state_for_route(
         resolved.ledger,
