@@ -44,6 +44,8 @@ def test_paid_route_check_refuses_default_fixture() -> None:
         "--check-paid-route",
         "--route-id",
         "opaque.route.bootstrap",
+        "--task-id",
+        "cc-task-check-quota-spend-ledger-test",
         "--provider",
         "opaque-provider-a",
         "--profile",
@@ -76,6 +78,8 @@ def test_dashboard_json_and_paid_route_check_emit_combined_payload() -> None:
         "--check-paid-route",
         "--route-id",
         "opaque.route.bootstrap",
+        "--task-id",
+        "cc-task-check-quota-spend-ledger-test",
         "--provider",
         "opaque-provider-a",
         "--profile",
@@ -106,6 +110,8 @@ def test_provider_gateway_paid_route_check_accepts_current_google_budget() -> No
         "--check-paid-route",
         "--route-id",
         "api.headless.provider_gateway",
+        "--task-id",
+        "cc-task-check-quota-spend-ledger-test",
         "--provider",
         "google",
         "--profile",
@@ -127,6 +133,34 @@ def test_provider_gateway_paid_route_check_accepts_current_google_budget() -> No
     assert payload["dashboard"]["budget_ledger_stale"] is False
     assert payload["eligibility"]["eligible"] is True
     assert payload["eligibility"]["budget_id"] == "tb-20260510-anthropic-api-steady-state"
+
+
+def test_paid_route_check_requires_task_id() -> None:
+    result = _run(
+        "--fixture",
+        str(FIXTURE),
+        "--check-paid-route",
+        "--route-id",
+        "api.headless.provider_gateway",
+        "--provider",
+        "google",
+        "--profile",
+        "frontier-fast",
+        "--task-class",
+        "authority-case-implementation",
+        "--quality-floor",
+        "frontier_required",
+        "--estimated-cost-usd",
+        "1.00",
+        "--capacity-pool",
+        "api_paid_spend",
+        "--now",
+        NOW,
+    )
+
+    assert result.returncode == 2
+    assert "--check-paid-route requires --task-id" in result.stderr
+    assert "invalid quota/spend ledger" not in result.stderr
 
 
 def test_invalid_fixture_exits_2(tmp_path: Path) -> None:
