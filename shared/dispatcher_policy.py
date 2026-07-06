@@ -240,6 +240,7 @@ class RouteAuthorityReceipt(_PolicyModel):
         "runtime_actuation",
         "connector_mutation",
         "local_inference_entitlement",
+        "local_tool_invocation",
     ]
     route_id: str
     issued_at: datetime
@@ -271,7 +272,11 @@ class RouteAuthorityReceipt(_PolicyModel):
                 f"(got route_id={self.route_id!r}); re-mint with --route-id local_tool.local.worker "
                 "(or the intended local_tool.* route)."
             )
-        if self.receipt_type in {"runtime_actuation", "connector_mutation"}:
+        if self.receipt_type in {
+            "runtime_actuation",
+            "connector_mutation",
+            "local_tool_invocation",
+        }:
             if not self.task_ids:
                 raise ValueError(f"{self.receipt_type} receipts require task_ids")
             if not self.mutation_surfaces:
@@ -1089,6 +1094,7 @@ def build_route_authority_receipt(
         "runtime_actuation",
         "connector_mutation",
         "local_inference_entitlement",
+        "local_tool_invocation",
     ],
     route_id: str,
     evidence_refs: Sequence[str],
@@ -1165,7 +1171,11 @@ def apply_route_authority_receipts(
     payload = registry.model_dump(mode="json")
     routes_by_id = {route["route_id"]: route for route in payload["routes"]}
     for receipt in authority_receipts:
-        if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
+        if receipt.receipt_type in {
+            "runtime_actuation",
+            "connector_mutation",
+            "local_tool_invocation",
+        }:
             continue
         route_id = normalize_route_id(receipt.route_id)
         route_payload = routes_by_id.get(route_id)
@@ -1195,7 +1205,11 @@ def _load_fresh_route_authority_receipts(
             raise ValueError(f"invalid route authority receipt at {path}: {exc}") from exc
         if not _route_authority_receipt_is_fresh(receipt, now=checked_now):
             continue
-        if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
+        if receipt.receipt_type in {
+            "runtime_actuation",
+            "connector_mutation",
+            "local_tool_invocation",
+        }:
             key = (
                 normalize_route_id(receipt.route_id),
                 receipt.receipt_type,
@@ -1309,7 +1323,11 @@ def _route_authority_removable_reasons(receipt: RouteAuthorityReceipt) -> set[st
             "fresh_capability_evidence_absent",
             "quota_telemetry_unknown",
         }
-    if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
+    if receipt.receipt_type in {
+        "runtime_actuation",
+        "connector_mutation",
+        "local_tool_invocation",
+    }:
         return set()
     return {"quality_equivalence_record_absent", "fresh_capability_evidence_absent"}
 

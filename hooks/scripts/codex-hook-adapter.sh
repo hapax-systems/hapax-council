@@ -219,6 +219,7 @@ run_pre_shell() {
     pip-guard.sh
     no-stale-branches.sh
     canonical-worktree-protect.sh
+    local-tool-invocation-gate.sh
     safe-stash-guard.sh
     cc-task-closure-gate.sh
     conductor-pre.sh
