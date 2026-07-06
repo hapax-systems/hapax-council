@@ -624,6 +624,22 @@ def sanitize_reviewer_diagnostic(text: str) -> str:
     return truncate_context(redacted, limit=MAX_REVIEW_RUNNER_STDERR_CHARS).strip()
 
 
+def reviewer_diagnostic_fields(excerpt: str) -> dict[str, Any]:
+    if not excerpt:
+        return {}
+    signal = "payg_fallback" if "PAYG fallback used" in excerpt else "stderr"
+    return {
+        "runner_stderr_excerpt": excerpt,
+        "runner_diagnostics": [
+            {
+                "stream": "stderr",
+                "signal": signal,
+                "excerpt": excerpt,
+            }
+        ],
+    }
+
+
 def default_reviewer_runner(
     seat: review_team.Seat, family_cfg: dict[str, Any], prompt: str
 ) -> ReviewerRunnerResult:
@@ -760,15 +776,10 @@ def dispatch_reviews(
                 "findings": [],
                 "checklist": {},
                 "raw_reply_excerpt": reply_excerpt,
-                **(
-                    {"runner_stderr_excerpt": runner_stderr_excerpt}
-                    if runner_stderr_excerpt
-                    else {}
-                ),
+                **reviewer_diagnostic_fields(runner_stderr_excerpt),
             }
         review = {"id": seat.id, "family": seat.family, **parsed}
-        if runner_stderr_excerpt:
-            review["runner_stderr_excerpt"] = runner_stderr_excerpt
+        review.update(reviewer_diagnostic_fields(runner_stderr_excerpt))
         if parsed.get("parse_path") != "fence":
             review["raw_reply_excerpt"] = truncate_context(
                 reply or "", limit=MAX_REVIEW_REPLY_EXCERPT_CHARS

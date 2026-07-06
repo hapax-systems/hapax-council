@@ -313,9 +313,11 @@ def _success_fields(
     supported_tool: str,
     endpoint: str,
     model: str,
+    primary_error_class: str | None = None,
+    quota_wall_evidence_ref: str | None = None,
 ) -> list[tuple[str, object]]:
     contract = SUCCESS_RECEIPT_CONTRACT_BY_ENDPOINT[endpoint]
-    return [
+    fields: list[tuple[str, object]] = [
         ("schema", ADMISSION_SCHEMA),
         ("status", "quota_available"),
         ("provider", PROVIDER),
@@ -333,6 +335,14 @@ def _success_fields(
         ("billing_mode", contract["billing_mode"]),
         ("payg_fallback", _bool(bool(contract["payg_fallback"]))),
     ]
+    if contract["payg_fallback"]:
+        fields.extend(
+            [
+                ("primary_error_class", primary_error_class or ""),
+                ("quota_wall_evidence_ref", quota_wall_evidence_ref or ""),
+            ]
+        )
+    return fields
 
 
 def observe_success(args: argparse.Namespace) -> int:
@@ -350,6 +360,25 @@ def observe_success(args: argparse.Namespace) -> int:
         raise ValueError(f"--endpoint must be one of {ENDPOINT} or {PAYG_ENDPOINT}")
     if model != MODEL:
         raise ValueError(f"--model must be {MODEL}")
+    primary_error_class: str | None = None
+    quota_wall_evidence_ref: str | None = None
+    if endpoint == PAYG_ENDPOINT:
+        if not args.primary_error_class or not args.quota_wall_evidence_ref:
+            raise ValueError(
+                "PAYG admission requires --primary-error-class and "
+                "--quota-wall-evidence-ref from the preceding Coding Plan quota wall"
+            )
+        primary_error_class = _safe_token(args.primary_error_class, label="primary error class")
+        if primary_error_class not in RESET_ERROR_CLASSES:
+            raise ValueError(
+                "PAYG admission requires a Coding Plan reset/quota wall primary error class"
+            )
+        quota_wall_evidence_ref = _safe_reference(
+            args.quota_wall_evidence_ref,
+            label="quota wall evidence ref",
+        )
+    elif args.primary_error_class or args.quota_wall_evidence_ref:
+        raise ValueError("Coding Plan admission must not carry PAYG fallback witness fields")
     name = _receipt_name(
         args,
         default="glmcp-quota-admission.yaml",
@@ -363,6 +392,8 @@ def observe_success(args: argparse.Namespace) -> int:
         supported_tool=supported_tool,
         endpoint=endpoint,
         model=model,
+        primary_error_class=primary_error_class,
+        quota_wall_evidence_ref=quota_wall_evidence_ref,
     )
     _write_flat_yaml_atomic(path, fields)
     _print_summary(
@@ -519,6 +550,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_STALE_AFTER_SECONDS,
         help=f"Positive receipt TTL, 1-{MAX_STALE_AFTER_SECONDS}s",
+    )
+    success.add_argument(
+        "--primary-error-class",
+        help="Required for PAYG fallback: sanitized primary Coding Plan quota-wall class",
+    )
+    success.add_argument(
+        "--quota-wall-evidence-ref",
+        help="Required for PAYG fallback: sanitized quota-wall receipt/witness reference",
     )
     success.set_defaults(func=observe_success)
 

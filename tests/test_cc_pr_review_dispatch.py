@@ -2070,6 +2070,13 @@ class TestFamilyOutageDegradation:
         assert "https://api.z.ai/api/paas/v4" in reviews[0]["runner_stderr_excerpt"]
         assert "sk-live-secret-token" not in reviews[0]["runner_stderr_excerpt"]
         assert "<redacted>" in reviews[0]["runner_stderr_excerpt"]
+        assert reviews[0]["runner_diagnostics"] == [
+            {
+                "stream": "stderr",
+                "signal": "payg_fallback",
+                "excerpt": reviews[0]["runner_stderr_excerpt"],
+            }
+        ]
 
     def test_provider_outage_on_stderr_becomes_provider_outage(self) -> None:
         constitution = dispatch.review_team.Constitution(

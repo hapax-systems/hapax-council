@@ -29,7 +29,8 @@ Each tick does two writes:
      Claude/Codex/Gemini subscription routes are ``fresh``. GLMCP is stricter:
      it is ``unknown`` unless a fresh, short-lived admission receipt exists.
      Coding Plan quota walls block Coding Plan receipts, but a fresh
-     endpoint-matched PAYG admission can supersede that subscription wall.
+     endpoint-matched PAYG admission can supersede that subscription wall only
+     when it is bound to the active Coding Plan quota-wall witness.
      Recheck admission evidence with
      ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*glmcp-quota-admission*.yaml' -print``
      and ``scripts/hapax-quota-telemetry-writer --json``.
@@ -158,6 +159,8 @@ GLMCP_ADMISSION_FIELDS = frozenset(
         "payg_fallback",
         "provider",
         "prompt_or_output_persisted",
+        "primary_error_class",
+        "quota_wall_evidence_ref",
         "route_id",
         "schema",
         "secret_source",
@@ -168,6 +171,7 @@ GLMCP_ADMISSION_FIELDS = frozenset(
     }
 )
 GLMCP_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
+GLMCP_PAYG_PRIMARY_ERROR_CLASSES = frozenset({"daily_limit_exhausted", "quota_exhausted"})
 GLMCP_ADMISSION_RECEIPT_GLOB = "*glmcp-quota-admission*.yaml"
 GLMCP_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
 GLMCP_ADMISSION_SAFE_RECEIPT_NAME_RE = re.compile(
@@ -195,6 +199,8 @@ class GlmcpAdmission:
     evidence_ref: str
     fresh_until: datetime
     endpoint: str
+    primary_error_class: str | None = None
+    quota_wall_evidence_ref: str | None = None
 
 
 @dataclass(frozen=True)
@@ -357,6 +363,18 @@ def _glmcp_payg_budget_reason(decision: PaidRouteEligibility) -> str:
         )
     blockers = "; ".join(decision.blocking_reasons) or decision.state
     return f"PAYG fallback refused by paid-spend gate: {blockers}"
+
+
+def _payg_admission_matches_active_wall(
+    admission: GlmcpAdmission,
+    platform_walls: list[str],
+) -> bool:
+    if admission.endpoint != GLMCP_PAYG_ENDPOINT or not admission.quota_wall_evidence_ref:
+        return False
+    return any(
+        admission.quota_wall_evidence_ref in wall or wall in admission.quota_wall_evidence_ref
+        for wall in platform_walls
+    )
 
 
 def _receipt_label(path: Path) -> str:
@@ -594,17 +612,46 @@ def active_glmcp_admission_receipts(
         if fields.get("payg_fallback", "") != endpoint_contract["payg_fallback"]:
             reject(path, "payg_fallback missing or unsupported for endpoint")
             continue
+        primary_error_class = fields.get("primary_error_class", "").strip()
+        quota_wall_evidence_ref = fields.get("quota_wall_evidence_ref", "").strip()
+        if endpoint == GLMCP_PAYG_ENDPOINT:
+            if primary_error_class not in GLMCP_PAYG_PRIMARY_ERROR_CLASSES:
+                reject(
+                    path,
+                    "PAYG admission missing supported primary Coding Plan quota-wall class",
+                )
+                continue
+            if (
+                GLMCP_ADMISSION_EVIDENCE_REF_RE.fullmatch(quota_wall_evidence_ref) is None
+                or GLMCP_ADMISSION_SECRETISH_RE.search(quota_wall_evidence_ref) is not None
+            ):
+                reject(
+                    path,
+                    "PAYG admission missing sanitized quota-wall evidence reference",
+                )
+                continue
+        elif primary_error_class or quota_wall_evidence_ref:
+            reject(path, "Coding Plan admission carried PAYG-only witness fields")
+            continue
         refs.append(
             GlmcpAdmission(
                 evidence_ref=(
                     "relay-receipt:"
                     f"{_receipt_label(path)}:witness:{receipt_evidence_ref}:"
                     f"supported_tool:{supported_tool}:endpoint:{endpoint}:model:{model}:"
-                    f"observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}:"
+                    + (
+                        f"primary_error_class:{primary_error_class}:"
+                        f"quota_wall_evidence_ref:{quota_wall_evidence_ref}:"
+                        if endpoint == GLMCP_PAYG_ENDPOINT
+                        else ""
+                    )
+                    + f"observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}:"
                     f"fresh_until:{fresh_until.isoformat().replace('+00:00', 'Z')}"
                 ),
                 fresh_until=fresh_until,
                 endpoint=endpoint,
+                primary_error_class=primary_error_class or None,
+                quota_wall_evidence_ref=quota_wall_evidence_ref or None,
             )
         )
     return GlmcpAdmissionScan(admissions=refs, ignored_evidence_refs=ignored_refs)
@@ -688,6 +735,11 @@ def build_live_ledger(
             for admission in glmcp_admissions
             if platform == "glmcp" and admission.endpoint == GLMCP_PAYG_ENDPOINT
         ]
+        glmcp_wall_matched_payg_admissions = [
+            admission
+            for admission in glmcp_payg_admissions
+            if _payg_admission_matches_active_wall(admission, platform_walls)
+        ]
         glmcp_coding_plan_admissions = [
             admission
             for admission in glmcp_admissions
@@ -703,18 +755,20 @@ def build_live_ledger(
         )
         if (
             platform_walls
-            and glmcp_payg_admissions
+            and glmcp_wall_matched_payg_admissions
             and glmcp_payg_budget_decision is not None
             and glmcp_payg_budget_decision.eligible
         ):
             state = "fresh"
             evidence = [
                 *platform_walls,
-                *(admission.evidence_ref for admission in glmcp_payg_admissions),
+                *(admission.evidence_ref for admission in glmcp_wall_matched_payg_admissions),
                 *glmcp_payg_budget_evidence,
                 writer_ref,
             ]
-            fresh_until = max(admission.fresh_until for admission in glmcp_payg_admissions)
+            fresh_until = max(
+                admission.fresh_until for admission in glmcp_wall_matched_payg_admissions
+            )
             reason = (
                 "GLMCP Coding Plan quota wall is present, but a fresh API-credit PAYG "
                 "supported-tool admission receipt and paid-spend gate keep the review route "
@@ -731,7 +785,7 @@ def build_live_ledger(
             fresh_until = None
             reason = (
                 "GLMCP Coding Plan quota wall is present, and PAYG admission cannot supersede "
-                "it without an active paid-spend gate. "
+                "it without a matching active quota-wall witness and active paid-spend gate. "
                 + _glmcp_payg_budget_reason(glmcp_payg_budget_decision)
             )
         elif platform_walls:
@@ -756,22 +810,6 @@ def build_live_ledger(
                     "fresh GLMCP supported-tool quota admission receipt present; "
                     "GLM Coding Plan Max remains finite and receipt-bounded"
                 )
-            elif (
-                glmcp_payg_admissions
-                and glmcp_payg_budget_decision is not None
-                and glmcp_payg_budget_decision.eligible
-            ):
-                state = "fresh"
-                evidence = [
-                    *(admission.evidence_ref for admission in glmcp_payg_admissions),
-                    *glmcp_payg_budget_evidence,
-                    writer_ref,
-                ]
-                fresh_until = max(admission.fresh_until for admission in glmcp_payg_admissions)
-                reason = (
-                    "fresh GLMCP PAYG supported-tool admission receipt present; "
-                    + _glmcp_payg_budget_reason(glmcp_payg_budget_decision)
-                )
             elif glmcp_payg_admissions:
                 state = "unknown"
                 evidence = [
@@ -780,8 +818,9 @@ def build_live_ledger(
                     writer_ref,
                 ]
                 reason = (
-                    "GLMCP PAYG admission receipt was present but did not pass the "
-                    "paid-spend gate; unknown quota must hold/backoff. "
+                    "GLMCP PAYG admission receipt was present without an active Coding Plan "
+                    "quota-wall witness; PAYG cannot be treated as the primary rail and "
+                    "unknown quota must hold/backoff. "
                     + _glmcp_payg_budget_reason(glmcp_payg_budget_decision)
                 )
                 fresh_until = None

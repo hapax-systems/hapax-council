@@ -88,6 +88,8 @@ def _glmcp_admission(
     capacity_pool: str | None = None,
     billing_mode: str | None = None,
     payg_fallback: str | None = None,
+    primary_error_class: str | None = None,
+    quota_wall_evidence_ref: str | None = None,
 ) -> None:
     if capacity_pool is None:
         capacity_pool = (
@@ -101,6 +103,16 @@ def _glmcp_admission(
         )
     if payg_fallback is None:
         payg_fallback = "true" if endpoint == "https://api.z.ai/api/paas/v4" else "false"
+    extra_payg_fields = ""
+    if endpoint == "https://api.z.ai/api/paas/v4":
+        if primary_error_class is None:
+            primary_error_class = "quota_exhausted"
+        if quota_wall_evidence_ref is None:
+            quota_wall_evidence_ref = "cx-glmcp-quota-wall.yaml"
+        extra_payg_fields = (
+            f"primary_error_class: {primary_error_class}\n"
+            f"quota_wall_evidence_ref: {quota_wall_evidence_ref}\n"
+        )
     (relay / name).write_text(
         f"""schema: hapax.glmcp_quota_admission.v1
 status: quota_available
@@ -118,7 +130,7 @@ secret_value_persisted: false
 prompt_or_output_persisted: false
 billing_mode: {billing_mode}
 payg_fallback: {payg_fallback}
-""",
+{extra_payg_fields}""",
         encoding="utf-8",
     )
 
@@ -278,7 +290,10 @@ def test_glmcp_payg_admission_supersedes_coding_plan_quota_wall(tmp_path: Path) 
     assert glmcp_snapshot["subscription_quota_state"] == "fresh"
     assert any("cx-glmcp-quota-wall.yaml" in ref for ref in glmcp_snapshot["evidence_refs"])
     assert any(
-        "glmcp-quota-admission-payg.yaml" in ref and "endpoint:https://api.z.ai/api/paas/v4" in ref
+        "glmcp-quota-admission-payg.yaml" in ref
+        and "endpoint:https://api.z.ai/api/paas/v4" in ref
+        and "primary_error_class:quota_exhausted" in ref
+        and "quota_wall_evidence_ref:cx-glmcp-quota-wall.yaml" in ref
         for ref in glmcp_snapshot["evidence_refs"]
     )
     assert "PAYG" in glmcp_snapshot["operator_visible_reason"]
@@ -374,7 +389,7 @@ def test_fresh_glmcp_admission_receipt_marks_glmcp_fresh(tmp_path: Path) -> None
     assert summary["glmcp_admissions"] == 1
 
 
-def test_fresh_glmcp_payg_admission_receipt_marks_glmcp_fresh(tmp_path: Path) -> None:
+def test_fresh_glmcp_payg_admission_without_active_wall_stays_unknown(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
     _glmcp_admission(
@@ -395,15 +410,21 @@ def test_fresh_glmcp_payg_admission_receipt_marks_glmcp_fresh(tmp_path: Path) ->
     )
     assert glmcp_snapshot["provider"] == "z_ai-glm-coding-plan"
     assert glmcp_snapshot["capacity_pool"] == "subscription_quota"
-    assert glmcp_snapshot["subscription_quota_state"] == "fresh"
+    assert glmcp_snapshot["subscription_quota_state"] == "unknown"
     assert any(
         "glmcp-quota-admission-payg.yaml" in ref
         and "endpoint:https://api.z.ai/api/paas/v4" in ref
         and "model:glm-5.2" in ref
+        and "primary_error_class:quota_exhausted" in ref
+        and "quota_wall_evidence_ref:cx-glmcp-quota-wall.yaml" in ref
         for ref in glmcp_snapshot["evidence_refs"]
     )
     assert (
         "spend-gate:glmcp.review.direct:eligible_active_budget" in glmcp_snapshot["evidence_refs"]
+    )
+    assert (
+        "without an active Coding Plan quota-wall witness"
+        in glmcp_snapshot["operator_visible_reason"]
     )
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 1
