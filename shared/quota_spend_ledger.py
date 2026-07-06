@@ -1328,20 +1328,23 @@ def _subscription_quota_missing_required_payg_spend_gate(
         return False
     if not any(_is_glmcp_payg_admission_evidence_ref(ref) for ref in snapshot.evidence_refs):
         return False
-    decision = evaluate_paid_route_eligibility(ledger, _glmcp_payg_budget_request(), now=now)
-    if not decision.eligible:
-        return True
-    required_refs = {
-        f"spend-gate:{GLMCP_PAYG_BUDGET_ROUTE_ID}:eligible_active_budget",
-        f"spend-gate-budget:{decision.budget_id}",
-    }
-    if not required_refs.issubset(set(snapshot.evidence_refs)):
-        return True
-    return not _has_glmcp_payg_spend_receipt_witness(
-        ledger,
-        snapshot,
-        budget_id=decision.budget_id,
-    )
+    for receipt in _matching_glmcp_payg_spend_receipts(ledger, snapshot):
+        decision = evaluate_paid_route_eligibility(
+            ledger,
+            _glmcp_payg_budget_request(receipt.task_id),
+            now=now,
+        )
+        required_refs = {
+            f"spend-gate:{GLMCP_PAYG_BUDGET_ROUTE_ID}:eligible_active_budget",
+            f"spend-gate-budget:{decision.budget_id}",
+        }
+        if (
+            decision.eligible
+            and decision.budget_id == receipt.budget_id
+            and required_refs.issubset(set(snapshot.evidence_refs))
+        ):
+            return False
+    return True
 
 
 def _is_glmcp_admission_evidence_ref(ref: str) -> bool:
@@ -1379,12 +1382,10 @@ def _glmcp_payg_spend_receipt_witness_refs(receipt: SpendReceipt) -> set[str]:
     return refs
 
 
-def _has_glmcp_payg_spend_receipt_witness(
+def _matching_glmcp_payg_spend_receipts(
     ledger: QuotaSpendLedger,
     snapshot: QuotaSnapshot,
-    *,
-    budget_id: str | None,
-) -> bool:
+) -> tuple[SpendReceipt, ...]:
     witnesses = {
         match.group(1)
         for ref in snapshot.evidence_refs
@@ -1393,21 +1394,19 @@ def _has_glmcp_payg_spend_receipt_witness(
         if match is not None
     }
     if not witnesses:
-        return False
-    receipt_refs = {
-        ref
+        return ()
+    return tuple(
+        receipt
         for receipt in ledger.spend_receipts
-        if receipt.budget_id == budget_id
-        for ref in _glmcp_payg_spend_receipt_witness_refs(receipt)
-    }
-    return bool(witnesses & receipt_refs)
+        if witnesses & _glmcp_payg_spend_receipt_witness_refs(receipt)
+    )
 
 
-def _glmcp_payg_budget_request() -> PaidRouteRequest:
+def _glmcp_payg_budget_request(task_id: str) -> PaidRouteRequest:
     return PaidRouteRequest.model_validate(
         {
             "route_id": GLMCP_PAYG_BUDGET_ROUTE_ID,
-            "task_id": "glmcp-review-direct",
+            "task_id": task_id,
             "provider": GLMCP_PAYG_BUDGET_PROVIDER,
             "profile": GLMCP_PAYG_BUDGET_PROFILE,
             "task_class": GLMCP_PAYG_BUDGET_TASK_CLASS,

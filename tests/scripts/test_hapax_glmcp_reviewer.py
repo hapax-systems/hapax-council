@@ -35,6 +35,8 @@ ENV_KEYS = (
     "HAPAX_GLMCP_REVIEW_ALLOW_PAYG_BASE_URL_OVERRIDE",
     "HAPAX_REVIEW_SEAT_ID",
     "HAPAX_REVIEW_FAMILY",
+    "HAPAX_CC_TASK_ID",
+    "HAPAX_QUOTA_SPEND_LEDGER_LIVE",
 )
 
 
@@ -590,6 +592,15 @@ def test_call_glm_failed_live_ledger_reservation_leaves_no_spend_receipt(
     assert "spend_receipt=not-written" in message
     assert seen_urls == ["https://api.z.ai/api/coding/paas/v4/chat/completions"]
     assert list(receipt_dir.glob("glmcp-payg-spend-*.yaml")) == []
+
+
+def test_payg_budget_request_requires_governed_task_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_module()
+    monkeypatch.delenv("HAPAX_GLMCP_REVIEW_TASK_ID", raising=False)
+    monkeypatch.delenv("HAPAX_CC_TASK_ID", raising=False)
+
+    with pytest.raises(module.ApiError, match="missing governed task id"):
+        module._payg_budget_request()
 
 
 def test_call_glm_real_reservation_blocks_second_payg_when_daily_cap_used(
@@ -1243,6 +1254,10 @@ def test_payg_spend_receipt_omits_secret_prompt_and_output(
 ) -> None:
     module = _load_module()
     monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "HAPAX_GLMCP_REVIEW_TASK_ID",
+        "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+    )
     ledger_path = tmp_path / "quota-spend-ledger-live.json"
     now = module.datetime.now(module.UTC).replace(microsecond=0)
     payload = json.loads(
@@ -1426,6 +1441,10 @@ def test_payg_spend_receipt_write_error_has_next_action(
 ) -> None:
     module = _load_module()
     monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "HAPAX_GLMCP_REVIEW_TASK_ID",
+        "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+    )
     ledger_path = tmp_path / "quota-spend-ledger-live.json"
     now = module.datetime.now(module.UTC).replace(microsecond=0)
     payload = json.loads(

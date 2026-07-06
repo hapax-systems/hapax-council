@@ -165,12 +165,14 @@ def _add_glmcp_payg_spend_receipt(
     budget_id: str,
     *,
     spend_id: str = "spend-20260517T075900Z-glmcp-payg-review-test",
+    task_id: str = "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+    estimated_cost_usd: str = "0.05",
 ) -> None:
     payload["spend_receipts"].append(
         {
             "spend_receipt_schema": 1,
             "spend_id": spend_id,
-            "task_id": "glmcp-review-direct",
+            "task_id": task_id,
             "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-TEST",
             "route_id": "glmcp.review.direct",
             "capacity_pool": "api_paid_spend",
@@ -186,7 +188,7 @@ def _add_glmcp_payg_spend_receipt(
                 "receipt-bounded GLMCP review fallback after Coding Plan quota wall"
             ),
             "spend_reason": "quota_exhaustion",
-            "estimated_cost_usd": "0.05",
+            "estimated_cost_usd": estimated_cost_usd,
             "created_at": "2026-05-17T07:59:00Z",
             "reconcile_by": "2026-05-18T07:59:00Z",
             "reconciliation_state": "pending",
@@ -657,6 +659,44 @@ def test_receipt_bounded_route_accepts_payg_endpoint_admission_evidence() -> Non
     assert GLMCP_PAYG_ADMISSION_EVIDENCE_REF in refs
     assert "spend-gate:glmcp.review.direct:eligible_active_budget" in refs
     assert f"spend-gate-budget:{budget_id}" in refs
+
+
+def test_receipt_bounded_route_rejects_payg_when_witness_task_cap_exhausted() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    _add_glmcp_payg_spend_receipt(payload, budget_id, estimated_cost_usd="2.00")
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-payg-task-cap-exhausted",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                GLMCP_PAYG_ADMISSION_EVIDENCE_REF,
+                "spend-gate:glmcp.review.direct:eligible_active_budget",
+                f"spend-gate-budget:{budget_id}",
+            ],
+            "operator_visible_reason": "fixture GLMCP PAYG admission receipt",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-payg-task-cap-exhausted:"
+        "payg_spend_gate_missing_or_ineligible"
+    ) in refs
 
 
 def test_receipt_bounded_route_rejects_payg_without_spend_receipt_witness() -> None:

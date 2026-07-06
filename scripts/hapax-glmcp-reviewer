@@ -797,10 +797,13 @@ def _payg_budget_request() -> PaidRouteRequest:
 
 
 def _payg_task_id() -> str:
-    return (
-        os.environ.get("HAPAX_GLMCP_REVIEW_TASK_ID")
-        or os.environ.get("HAPAX_CC_TASK_ID")
-        or "glmcp-review-direct"
+    for env_name in ("HAPAX_GLMCP_REVIEW_TASK_ID", "HAPAX_CC_TASK_ID"):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            return value
+    raise ApiError(
+        "PAYG fallback refused by paid-spend gate: missing governed task id; "
+        "set HAPAX_GLMCP_REVIEW_TASK_ID or HAPAX_CC_TASK_ID before any PAYG call"
     )
 
 

@@ -394,11 +394,11 @@ def _warn_ignored_glmcp_payg_spend(path: Path, reason: str) -> str:
     return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
 
 
-def _glmcp_payg_budget_request() -> PaidRouteRequest:
+def _glmcp_payg_budget_request(task_id: str) -> PaidRouteRequest:
     return PaidRouteRequest.model_validate(
         {
             "route_id": "glmcp.review.direct",
-            "task_id": "glmcp-review-direct",
+            "task_id": task_id,
             "provider": GLMCP_PAYG_BUDGET_PROVIDER,
             "profile": GLMCP_PAYG_BUDGET_PROFILE,
             "task_class": GLMCP_PAYG_BUDGET_TASK_CLASS,
@@ -422,10 +422,11 @@ def _glmcp_payg_budget_decision(
     base: QuotaSpendLedger,
     *,
     now: datetime,
+    task_id: str,
 ) -> PaidRouteEligibility:
     return evaluate_paid_route_eligibility(
         _glmcp_payg_spend_gate_ledger(base, now=now),
-        _glmcp_payg_budget_request(),
+        _glmcp_payg_budget_request(task_id),
         now=now,
     )
 
@@ -477,15 +478,27 @@ def _payg_spend_receipt_witness_refs(receipt: SpendReceipt) -> set[str]:
     return refs
 
 
+def _payg_admission_matching_spend_receipt(
+    admission: GlmcpAdmission,
+    receipts: list[SpendReceipt],
+) -> SpendReceipt | None:
+    if admission.endpoint != GLMCP_PAYG_ENDPOINT:
+        return None
+    return next(
+        (
+            receipt
+            for receipt in receipts
+            if admission.witness_ref in _payg_spend_receipt_witness_refs(receipt)
+        ),
+        None,
+    )
+
+
 def _payg_admission_has_validated_spend_receipt(
     admission: GlmcpAdmission,
     receipts: list[SpendReceipt],
 ) -> bool:
-    if admission.endpoint != GLMCP_PAYG_ENDPOINT:
-        return False
-    return any(
-        admission.witness_ref in _payg_spend_receipt_witness_refs(receipt) for receipt in receipts
-    )
+    return _payg_admission_matching_spend_receipt(admission, receipts) is not None
 
 
 def _receipt_label(path: Path) -> str:
@@ -1023,52 +1036,70 @@ def build_live_ledger(
             for admission in glmcp_payg_admissions
             if _payg_admission_matches_active_wall(admission, platform_walls)
         ]
-        glmcp_spend_bound_payg_admissions = [
-            admission
-            for admission in glmcp_wall_matched_payg_admissions
-            if _payg_admission_has_validated_spend_receipt(
+        glmcp_spend_bound_payg_admissions: list[tuple[GlmcpAdmission, SpendReceipt]] = []
+        for admission in glmcp_wall_matched_payg_admissions:
+            receipt = _payg_admission_matching_spend_receipt(
                 admission,
                 glmcp_payg_spend_receipts,
             )
-        ]
+            if receipt is not None:
+                glmcp_spend_bound_payg_admissions.append((admission, receipt))
         glmcp_coding_plan_admissions = [
             admission
             for admission in glmcp_admissions
             if platform == "glmcp" and admission.endpoint == GLMCP_CODING_PLAN_ENDPOINT
         ]
-        glmcp_payg_budget_decision = (
-            _glmcp_payg_budget_decision(spend_base, now=now) if glmcp_payg_admissions else None
+        glmcp_payg_budget_decisions = [
+            (
+                admission,
+                receipt,
+                _glmcp_payg_budget_decision(spend_base, now=now, task_id=receipt.task_id),
+            )
+            for admission, receipt in glmcp_spend_bound_payg_admissions
+        ]
+        glmcp_eligible_payg_budget_decisions = [
+            (admission, receipt, decision)
+            for admission, receipt, decision in glmcp_payg_budget_decisions
+            if decision.eligible
+        ]
+        glmcp_payg_budget_evidence = list(
+            dict.fromkeys(
+                evidence
+                for _, _, decision in glmcp_payg_budget_decisions
+                for evidence in _glmcp_payg_budget_evidence(decision)
+            )
         )
-        glmcp_payg_budget_evidence = (
-            _glmcp_payg_budget_evidence(glmcp_payg_budget_decision)
-            if glmcp_payg_budget_decision is not None
-            else []
+        glmcp_payg_budget_reason = "; ".join(
+            dict.fromkeys(
+                _glmcp_payg_budget_reason(decision)
+                for _, _, decision in glmcp_payg_budget_decisions
+            )
         )
-        if (
-            platform_walls
-            and glmcp_spend_bound_payg_admissions
-            and glmcp_payg_budget_decision is not None
-            and glmcp_payg_budget_decision.eligible
-        ):
+        if not glmcp_payg_budget_reason:
+            glmcp_payg_budget_reason = (
+                "PAYG fallback did not reach paid-spend gate because no matching "
+                "task-bound spend receipt witness was available"
+            )
+        if platform_walls and glmcp_eligible_payg_budget_decisions:
             state = "fresh"
+            eligible_admissions = [
+                admission for admission, _, _ in glmcp_eligible_payg_budget_decisions
+            ]
             evidence = [
                 *platform_wall_evidence,
-                *(admission.evidence_ref for admission in glmcp_spend_bound_payg_admissions),
+                *(admission.evidence_ref for admission in eligible_admissions),
                 *(
                     f"spend-gate-payg-receipt:{admission.witness_ref}"
-                    for admission in glmcp_spend_bound_payg_admissions
+                    for admission in eligible_admissions
                 ),
                 *glmcp_payg_budget_evidence,
                 writer_ref,
             ]
-            fresh_until = max(
-                admission.fresh_until for admission in glmcp_spend_bound_payg_admissions
-            )
+            fresh_until = max(admission.fresh_until for admission in eligible_admissions)
             reason = (
                 "GLMCP Coding Plan quota wall is present, but a fresh API-credit PAYG "
                 "supported-tool admission receipt, validated spend receipt reservation, and "
-                "paid-spend gate keep the review route available. "
-                + _glmcp_payg_budget_reason(glmcp_payg_budget_decision)
+                "paid-spend gate keep the review route available. " + glmcp_payg_budget_reason
             )
         elif platform_walls and glmcp_payg_admissions:
             spend_receipt_blocker = []
@@ -1088,8 +1119,7 @@ def build_live_ledger(
             reason = (
                 "GLMCP Coding Plan quota wall is present, and PAYG admission cannot supersede "
                 "it without a matching active quota-wall witness, validated PAYG spend receipt "
-                "reservation, and active paid-spend gate. "
-                + _glmcp_payg_budget_reason(glmcp_payg_budget_decision)
+                "reservation, and active paid-spend gate. " + glmcp_payg_budget_reason
             )
         elif platform_walls:
             state = "exhausted"
@@ -1123,8 +1153,7 @@ def build_live_ledger(
                 reason = (
                     "GLMCP PAYG admission receipt was present without an active Coding Plan "
                     "quota-wall witness; PAYG cannot be treated as the primary rail and "
-                    "unknown quota must hold/backoff. "
-                    + _glmcp_payg_budget_reason(glmcp_payg_budget_decision)
+                    "unknown quota must hold/backoff. " + glmcp_payg_budget_reason
                 )
                 fresh_until = None
             else:
