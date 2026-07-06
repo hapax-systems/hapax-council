@@ -545,6 +545,12 @@ def _legacy_dossier_families(roster: set[str]) -> dict[str, str]:
     }
 
 
+def _canonical_dossier_family(family: str, legacy_dossier_families: Mapping[str, str]) -> str:
+    """Map a dossier-only legacy family name to its current review family."""
+
+    return str(legacy_dossier_families.get(family, family))
+
+
 def review_route_blocked_families(
     registry: Mapping[str, Any],
     *,
@@ -1615,9 +1621,12 @@ def _dossier_validity_blockers(
         blockers.append(
             "review_dossier_unknown_reviewer_family:" + ",".join(sorted(unknown_reviewer_families))
         )
+    canonical_reviewer_families = {
+        _canonical_dossier_family(family, legacy_dossier_families) for family in reviewer_families
+    }
     degraded_families = set(degraded_outage) | set(degraded_route_blocked)
     if degraded_families:
-        seated_degraded = sorted({str(r.get("family")) for r in reviews} & degraded_families)
+        seated_degraded = sorted(canonical_reviewer_families & degraded_families)
         if seated_degraded:
             blockers.append(
                 "review_dossier_degraded_family_was_seated:" + ",".join(seated_degraded)
@@ -1626,7 +1635,7 @@ def _dossier_validity_blockers(
         legacy_dossier_families = _legacy_dossier_families(roster)
         admitted_dossier_families = roster | set(legacy_dossier_families)
     blocked_route_families = set(live_route_blocked) - degraded_families
-    seated_blocked_routes = sorted({str(r.get("family")) for r in reviews} & blocked_route_families)
+    seated_blocked_routes = sorted(canonical_reviewer_families & blocked_route_families)
     if seated_blocked_routes:
         blockers.append(
             "review_dossier_blocked_route_family_seated:" + ",".join(seated_blocked_routes)
@@ -1685,6 +1694,9 @@ def _dossier_validity_blockers(
         blockers.append(
             "review_dossier_unknown_accept_family:" + ",".join(sorted(unknown_accept_families))
         )
+    canonical_accept_families = {
+        _canonical_dossier_family(family, legacy_dossier_families) for family in accept_families
+    }
     required_quorum = _int_field(sizing.get("quorum_accept"), "sizing.quorum_accept", blockers)
     if required_quorum is None:
         return tuple(blockers)
@@ -1702,9 +1714,10 @@ def _dossier_validity_blockers(
         current for legacy, current in legacy_dossier_families.items() if legacy in accept_families
     }
     min_families = _int_field(sizing.get("min_families", 1), "sizing.min_families", blockers)
-    if min_families is not None and len(accept_families) < min_families:
+    if min_families is not None and len(canonical_accept_families) < min_families:
         blockers.append(
-            f"review_dossier_family_diversity:accept_families={len(accept_families)}/{min_families}"
+            "review_dossier_family_diversity:"
+            f"accept_families={len(canonical_accept_families)}/{min_families}"
         )
     if sizing.get("require_all_families"):
         missing_families = roster - accept_family_targets
@@ -1715,7 +1728,12 @@ def _dossier_validity_blockers(
             )
     if frontmatter is not None and accepts:
         writer_family = writer_family_for_lane(str(frontmatter.get("assigned_to") or ""), registry)
-        writer_accepts = sum(1 for r in accepts if str(r.get("family")) == writer_family)
+        writer_accepts = sum(
+            1
+            for r in accepts
+            if _canonical_dossier_family(str(r.get("family")), legacy_dossier_families)
+            == writer_family
+        )
         if writer_accepts > len(accepts) // 2:
             blockers.append(
                 f"review_dossier_writer_family_majority:{writer_family}:{writer_accepts}/{len(accepts)}"

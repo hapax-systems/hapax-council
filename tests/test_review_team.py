@@ -857,7 +857,33 @@ class TestVerdictBlockers:
         blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert "review_dossier_unknown_reviewer_family:mystery" in blockers
 
-    def test_legacy_gemini_dossier_family_remains_admissible_after_agy_rename(
+    def test_legacy_gemini_dossier_family_remains_admissible_when_agy_route_is_clear(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+        )
+
+        assert "review_dossier_unknown_reviewer_family:gemini" not in blockers
+        assert "review_dossier_unknown_accept_family:gemini" not in blockers
+        assert "review_dossier_blocked_route_family_seated:agy" not in blockers
+        assert not any(b.startswith("review_dossier_family_diversity:") for b in blockers)
+
+    def test_legacy_gemini_dossier_family_blocks_when_agy_route_is_blocked(
         self, tmp_path: Path
     ) -> None:
         rt = _load_review_team_module()
@@ -880,8 +906,7 @@ class TestVerdictBlockers:
 
         assert "review_dossier_unknown_reviewer_family:gemini" not in blockers
         assert "review_dossier_unknown_accept_family:gemini" not in blockers
-        assert "review_dossier_blocked_route_family_seated:agy" not in blockers
-        assert not any(b.startswith("review_dossier_family_diversity:") for b in blockers)
+        assert "review_dossier_blocked_route_family_seated:agy" in blockers
 
     def test_unknown_reviewer_verdict_blocks(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
