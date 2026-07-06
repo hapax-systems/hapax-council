@@ -2102,6 +2102,7 @@ printf '%s\\n' "$@" > {launcher_args}
         "fallback=",
     ]
 
+
 def test_degraded_codex_recomposes_to_claude_coverage_substitute(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
