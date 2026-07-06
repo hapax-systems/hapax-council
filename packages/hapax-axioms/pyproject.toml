@@ -44,10 +44,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ryanklee/hapax-council"
-Repository = "https://github.com/ryanklee/hapax-council"
-"Bug Tracker" = "https://github.com/ryanklee/hapax-council/issues"
-"Constitution" = "https://github.com/ryanklee/hapax-constitution"
+Homepage = "https://github.com/hapax-systems/hapax-council"
+Repository = "https://github.com/hapax-systems/hapax-council"
+"Bug Tracker" = "https://github.com/hapax-systems/hapax-council/issues"
+"Constitution" = "https://github.com/hapax-systems/hapax-constitution"
 
 [project.scripts]
 hapax-axioms = "hapax_axioms.cli:main"

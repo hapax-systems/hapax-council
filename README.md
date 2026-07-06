@@ -115,7 +115,7 @@ One `AffordancePipeline` gates everything across 6 domains (perception, expressi
 |---|---|
 | Code release | Source-available archive. No external support, feature-request, patch, issue, or discussion intake is accepted (see [`CONTRIBUTING.md`](CONTRIBUTING.md)). |
 | Empirical claims | Research compendium under [`research/`](research/). Cycle 1 SCED pilot complete (37 sessions, BF=3.66, inconclusive). Cycle 2 in progress. |
-| Governance | 5 constitutional axioms enforced via [hapax-constitution](https://github.com/ryanklee/hapax-constitution) and [`axioms/`](axioms/). |
+| Governance | 5 constitutional axioms enforced via [hapax-constitution](https://github.com/hapax-systems/hapax-constitution) and [`axioms/`](axioms/). |
 | License | PolyForm Strict 1.0.0. See [`NOTICE.md`](NOTICE.md), [`CITATION.cff`](CITATION.cff), and [`license-reconciliation-status`](docs/governance/license-reconciliation-status.md). |
 | Authorship | Indeterminate by design: co-produced by Hapax (the system), Claude Code, and the operator. The prior Manifesto short URL is held as noncanonical until re-published; see [`docs/legibility/public-canonical-url-smoke-2026-06-11.md`](docs/legibility/public-canonical-url-smoke-2026-06-11.md). |
 | Support / sponsorship | Public support page: [hapax.weblog.lol/support](https://hapax.weblog.lol/support). The org GitHub Sponsors surface is pending; launch copy routes through the verified no-perk support page and does not claim perks, access, requests, priority, deliverables, or control. |
@@ -126,9 +126,9 @@ One `AffordancePipeline` gates everything across 6 domains (perception, expressi
 |-----------|------|
 | **hapax-council** (this repo) | Primary runtime, 180+ agent modules, 330+ systemd unit files |
 | [agentgov](https://github.com/hapax-systems/agentgov) | Extracted governance hooks/package for AI coding agents |
-| [hapax-constitution](https://github.com/ryanklee/hapax-constitution) | Governance specification (axioms, implications, canons; publishes `hapax-sdlc`) |
-| [hapax-officium](https://github.com/ryanklee/hapax-officium) | Management decision support (`:8050`) |
-| [hapax-assets](https://github.com/ryanklee/hapax-assets) | SHA-pinned aesthetic-library CDN |
+| [hapax-constitution](https://github.com/hapax-systems/hapax-constitution) | Governance specification (axioms, implications, canons; publishes `hapax-sdlc`) |
+| [hapax-officium](https://github.com/hapax-systems/hapax-officium) | Management decision support (`:8050`) |
+| [hapax-assets](https://github.com/hapax-systems/hapax-assets) | SHA-pinned aesthetic-library CDN |
 | hapax-watch | Wear OS biometric companion; private/not a public repo as of 2026-05-11 |
 | hapax-phone | Android health + context companion; private/not a public repo as of 2026-05-11 |
 | hapax-mcp | MCP server bridging logos APIs to Claude Code; private/not a public repo as of 2026-05-11 |

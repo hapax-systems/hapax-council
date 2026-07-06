@@ -14,7 +14,7 @@ The library bundles a frozen snapshot of the five constitution-published
 axioms (single_user, executive_function, management_governance,
 interpersonal_transparency, corporate_boundary) and the T0 violation
 patterns extracted from the council repo's pre-commit gate. The original
-spec at https://github.com/ryanklee/hapax-constitution remains the
+spec at https://github.com/hapax-systems/hapax-constitution remains the
 canonical, evolving source of truth.
 """
 

@@ -41,9 +41,9 @@ def test_profile_maps_current_public_repos() -> None:
     for repo in (
         "https://github.com/hapax-systems/hapax-council",
         "https://github.com/hapax-systems/agentgov",
-        "https://github.com/ryanklee/hapax-constitution",
-        "https://github.com/ryanklee/hapax-officium",
-        "https://github.com/ryanklee/hapax-assets",
+        "https://github.com/hapax-systems/hapax-constitution",
+        "https://github.com/hapax-systems/hapax-officium",
+        "https://github.com/hapax-systems/hapax-assets",
     ):
         assert repo in body
 
