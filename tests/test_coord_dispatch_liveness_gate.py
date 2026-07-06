@@ -56,6 +56,23 @@ def test_reactivate_retired_defaults_false() -> None:
     assert _request().reactivate_retired is False
 
 
+def test_attestation_ref_without_origin_is_refused_during_request_build() -> None:
+    with pytest.raises(CoordDispatchError, match="operator_attestation_ref_without_origin_surface"):
+        DispatchLaunchRequest(
+            task_id="T1",
+            lane="cx-live",
+            platform="codex",
+            mode="headless",
+            profile="p",
+            authority_case="CASE-CAPACITY-ROUTING-001",
+            parent_spec="spec",
+            message_id="M1",
+            mq_db_path=Path("/dev/null"),
+            event_log=mock.Mock(),
+            operator_attestation_ref="operator-attestation:reins:crow_chat:v1:test",
+        )
+
+
 def test_retired_lane_refused_before_launch() -> None:
     request = _request()
     launch = mock.Mock(return_value=0)

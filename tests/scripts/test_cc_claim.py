@@ -4,8 +4,11 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+from shared.operator_attestation import expected_operator_attestation_ref
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "cc-claim"
+TEST_HMAC_KEY = "test-crow-chat-hmac-key"
 
 
 def _task_root(home: Path) -> Path:
@@ -91,10 +94,27 @@ def _write_task(
     return path
 
 
-def _claim(home: Path, task_id: str) -> subprocess.CompletedProcess[str]:
+def _claim(
+    home: Path,
+    task_id: str,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    for key in (
+        "CODEX_ROLE",
+        "CLAUDE_ROLE",
+        "CODEX_THREAD_NAME",
+        "CODEX_SESSION",
+        "CLAUDE_CODE_SESSION_ID",
+        "HAPAX_AGENT_NAME",
+        "HAPAX_WORKTREE_ROLE",
+        "HAPAX_SESSION_ID",
+    ):
+        env.pop(key, None)
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["bash", str(SCRIPT), task_id],
         env=env,
@@ -128,6 +148,120 @@ def test_body_bullets_are_not_claim_dependencies(tmp_path: Path) -> None:
     assert (home / ".cache" / "hapax" / "cc-active-task-cx-test").read_text(
         encoding="utf-8"
     ).strip() == "claim-target"
+
+
+def test_g12_attestation_requirement_blocks_claim_before_task_mutation(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "attested-claim-target")
+
+    result = _claim(
+        home,
+        "attested-claim-target",
+        {"HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1"},
+    )
+
+    assert result.returncode == 18
+    assert "crow_chat_origin_required_for_dispatch" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
+
+
+def test_g12_attested_claim_accepts_task_lane_bound_ref(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "attested-claim-target")
+    attestation_ref = expected_operator_attestation_ref(
+        origin_surface="crow_chat",
+        task_id="attested-claim-target",
+        lane="cx-test",
+        hmac_key=TEST_HMAC_KEY,
+    )
+
+    result = _claim(
+        home,
+        "attested-claim-target",
+        {
+            "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1",
+            "HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY": TEST_HMAC_KEY,
+            "HAPAX_METHODOLOGY_ORIGIN_SURFACE": "crow_chat",
+            "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF": attestation_ref,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_g12_same_task_claim_refresh_skips_scrubbed_hmac_reverification(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(
+        home,
+        "active",
+        "attested-worker-task",
+        status="claimed",
+        assigned_to="cx-test",
+    )
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-cx-test").write_text(
+        "attested-worker-task\n",
+        encoding="utf-8",
+    )
+    attestation_ref = expected_operator_attestation_ref(
+        origin_surface="crow_chat",
+        task_id="attested-worker-task",
+        lane="cx-test",
+        hmac_key=TEST_HMAC_KEY,
+    )
+    before = note.read_text(encoding="utf-8")
+
+    result = _claim(
+        home,
+        "attested-worker-task",
+        {
+            "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1",
+            "HAPAX_METHODOLOGY_ORIGIN_SURFACE": "crow_chat",
+            "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF": attestation_ref,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "refreshed claim cache" in result.stdout
+    assert note.read_text(encoding="utf-8") == before
+    assert (cache / "cc-active-task-cx-test").read_text(
+        encoding="utf-8"
+    ).strip() == "attested-worker-task"
+    assert (cache / "cc-claim-epoch-cx-test").exists()
+
+
+def test_g12_different_task_claim_still_requires_hmac_before_mutation(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "new-attested-task")
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-cx-test").write_text("other-task\n", encoding="utf-8")
+    attestation_ref = expected_operator_attestation_ref(
+        origin_surface="crow_chat",
+        task_id="new-attested-task",
+        lane="cx-test",
+        hmac_key=TEST_HMAC_KEY,
+    )
+
+    result = _claim(
+        home,
+        "new-attested-task",
+        {
+            "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION": "1",
+            "HAPAX_METHODOLOGY_ORIGIN_SURFACE": "crow_chat",
+            "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF": attestation_ref,
+        },
+    )
+
+    assert result.returncode == 18
+    assert "operator_attestation_hmac_key_required_for_dispatch" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
 
 
 def test_missing_depends_on_field_means_no_dependencies(tmp_path: Path) -> None:
@@ -752,6 +886,16 @@ def test_claim_writes_session_keyed_epoch_sidecar(tmp_path: Path) -> None:
     _write_task(home, "active", "cc-sidecar-session")
     sid = "0f9f9f9f-1111-2222-3333-444455556666"
     env = os.environ.copy()
+    for key in (
+        "CODEX_ROLE",
+        "CLAUDE_ROLE",
+        "CODEX_THREAD_NAME",
+        "CODEX_SESSION",
+        "CLAUDE_CODE_SESSION_ID",
+        "HAPAX_AGENT_NAME",
+        "HAPAX_WORKTREE_ROLE",
+    ):
+        env.pop(key, None)
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
     env["HAPAX_SESSION_ID"] = sid

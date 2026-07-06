@@ -59,6 +59,13 @@ from shared.dispatcher_policy import (
 )
 from shared.failure_classification import FailureCode, FailureReceipt
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
+from shared.g12_crow_chat_gate import (
+    SIGNED_BREAKGLASS_REASON_ENV,
+    SIGNED_BREAKGLASS_REF_ENV,
+    child_attestation_env,
+    gate_required,
+    next_action_for_reason,
+)
 from shared.gate_event_producer import build_gate_event
 from shared.gate_log import append_gate_event
 from shared.quota_wall import QUOTA_WALL_EXIT_CODE
@@ -1237,6 +1244,11 @@ def write_receipt(
     route_decision_receipt_path: Path | None = None,
     durable_binding: DurableDispatchBinding | None = None,
     dispatch_launch: DispatchLaunchResult | None = None,
+    origin_surface: str | None = None,
+    operator_attestation_ref: str | None = None,
+    crow_chat_attestation_required: bool | None = None,
+    signed_breakglass_ref: str | None = None,
+    signed_breakglass_reason: str | None = None,
 ) -> Path:
     ledger_dir = orchestration_ledger_dir()
     ledger_dir.mkdir(parents=True, exist_ok=True)
@@ -1275,6 +1287,22 @@ def write_receipt(
         record["coord_dispatch_reason"] = dispatch_launch.reason
         record["coord_dispatch_event_id"] = dispatch_launch.event_id
         record["coord_dispatch_cleanup_state"] = dispatch_launch.cleanup_state
+        record["origin_surface"] = dispatch_launch.origin_surface
+        record["operator_attestation_ref"] = dispatch_launch.operator_attestation_ref
+        record["crow_chat_attestation_required"] = dispatch_launch.crow_chat_attestation_required
+        record["signed_breakglass_ref"] = dispatch_launch.signed_breakglass_ref
+        record["signed_breakglass_reason"] = dispatch_launch.signed_breakglass_reason
+    else:
+        if origin_surface is not None:
+            record["origin_surface"] = origin_surface
+        if operator_attestation_ref is not None:
+            record["operator_attestation_ref"] = operator_attestation_ref
+        if crow_chat_attestation_required is not None:
+            record["crow_chat_attestation_required"] = crow_chat_attestation_required
+        if signed_breakglass_ref is not None:
+            record["signed_breakglass_ref"] = signed_breakglass_ref
+        if signed_breakglass_reason is not None:
+            record["signed_breakglass_reason"] = signed_breakglass_reason
     if route_decision is not None:
         record.update(route_decision_receipt_payload(route_decision))
         record["route_decision_receipt_path"] = (
@@ -1743,6 +1771,11 @@ def dispatch_message_id(cli_value: str | None) -> str | None:
     return value or None
 
 
+def optional_cli_or_env(cli_value: str | None, env_name: str) -> str | None:
+    value = (cli_value or os.environ.get(env_name, "")).strip()
+    return value or None
+
+
 def coord_event_log_from_env() -> CoordEventLog:
     # Per-surface overrides still win (test isolation sets them explicitly); the
     # bare default is the single user-writable coord SSOT (coord_base_dir() →
@@ -2078,6 +2111,33 @@ def main(argv: list[str] | None = None) -> int:
         help="Stable idempotency key for atomic bind/consume/launch replay",
     )
     parser.add_argument(
+        "--origin-surface",
+        help="Origin surface for an externally witnessed dispatch intent, e.g. crow_chat",
+    )
+    parser.add_argument(
+        "--operator-attestation-ref",
+        help="Operator attestation reference bound by the origin surface to task/lane",
+    )
+    parser.add_argument(
+        "--require-crow-chat-attestation",
+        action="store_true",
+        help=(
+            "Fail closed for mutable dispatch unless it carries a Crow-chat origin "
+            "and task/lane-bound operator attestation ref"
+        ),
+    )
+    parser.add_argument(
+        "--signed-breakglass-ref",
+        help=(
+            "Signed per-dispatch G12 breakglass ref bound to task/lane/reason; "
+            "used only when Crow-chat attestation production is unavailable"
+        ),
+    )
+    parser.add_argument(
+        "--signed-breakglass-reason",
+        help="Emergency reason bound into --signed-breakglass-ref",
+    )
+    parser.add_argument(
         "--dispatch-capability",
         help="Path to a single-use DispatchCapability file authorizing a SYSTEM drain "
         "(--lane __system__) of an orphaned task whose owning lane is verifiably dead.",
@@ -2115,6 +2175,30 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(
             "--task and --lane are required unless --list-platform-paths or --capabilities is used"
         )
+
+    attestation_origin_surface = optional_cli_or_env(
+        args.origin_surface, "HAPAX_METHODOLOGY_ORIGIN_SURFACE"
+    )
+    attestation_ref = optional_cli_or_env(
+        args.operator_attestation_ref,
+        "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF",
+    )
+    attestation_required = args.require_crow_chat_attestation or gate_required(os.environ)
+    signed_breakglass_ref = optional_cli_or_env(
+        args.signed_breakglass_ref, SIGNED_BREAKGLASS_REF_ENV
+    )
+    signed_breakglass_reason = optional_cli_or_env(
+        args.signed_breakglass_reason, SIGNED_BREAKGLASS_REASON_ENV
+    )
+    os.environ.update(
+        child_attestation_env(
+            origin_surface=attestation_origin_surface,
+            operator_attestation_ref=attestation_ref,
+            require_crow_chat_attestation=attestation_required,
+            signed_breakglass_ref=signed_breakglass_ref,
+            signed_breakglass_reason=signed_breakglass_reason,
+        )
+    )
 
     task_root = Path(
         os.environ.get(
@@ -2508,6 +2592,11 @@ def main(argv: list[str] | None = None) -> int:
                         event_log=coord_event_log_from_env(),
                         idempotency_key=args.idempotency_key,
                         reactivate_retired=reactivate_retired_codex_relay,
+                        origin_surface=attestation_origin_surface,
+                        operator_attestation_ref=attestation_ref,
+                        require_crow_chat_attestation=attestation_required,
+                        signed_breakglass_ref=signed_breakglass_ref,
+                        signed_breakglass_reason=signed_breakglass_reason,
                     ),
                     launch_callable=functools.partial(
                         classify_and_witness_launch,
@@ -2547,7 +2636,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"BLOCKED: {reason}", file=sys.stderr)
                 return 10
             except CoordDispatchError as exc:
-                reason = f"atomic dispatch launch failed: {exc.reason}"
+                next_action = next_action_for_reason(exc.reason)
+                reason = f"atomic dispatch launch failed: {exc.reason}; next action: {next_action}"
                 blocked = Validation(
                     False,
                     reason,
@@ -2569,6 +2659,11 @@ def main(argv: list[str] | None = None) -> int:
                         route_decision=route_decision,
                         route_decision_receipt_path=route_decision_receipt_path,
                         durable_binding=durable_binding,
+                        origin_surface=attestation_origin_surface,
+                        operator_attestation_ref=attestation_ref,
+                        crow_chat_attestation_required=attestation_required,
+                        signed_breakglass_ref=signed_breakglass_ref,
+                        signed_breakglass_reason=signed_breakglass_reason,
                     )
                 print(f"BLOCKED: {reason}", file=sys.stderr)
                 return 10

@@ -8,6 +8,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from shared.g12_crow_chat_gate import (
+    G12CrowChatGateError,
+    next_action_for_reason,
+    validate_relay_dispatch_envelope,
+)
 from shared.relay_mq_envelope import (
     DiskPressureError,
     Envelope,
@@ -259,6 +264,19 @@ def send_message(
         content = Path(envelope.payload_path).read_bytes()
         envelope.payload_hash = compute_payload_hash(content)
 
+    recipients = expand_recipients(envelope.recipients_spec, relay_dir)
+    try:
+        validate_relay_dispatch_envelope(
+            message_type=envelope.message_type,
+            authority_item=envelope.authority_item,
+            subject=envelope.subject,
+            recipients=recipients,
+        )
+    except G12CrowChatGateError as exc:
+        raise ValueError(
+            f"{exc.reason}; next action: {next_action_for_reason(exc.reason)}"
+        ) from exc
+
     if envelope.payload and len(envelope.payload) > 50 * 1024:
         BLOB_DIR.mkdir(parents=True, exist_ok=True)
         blob_path = BLOB_DIR / envelope.message_id
@@ -271,8 +289,6 @@ def send_message(
             raise DiskPressureError(
                 f"Disk pressure: {free} bytes free at {db_path.parent} (< 10MB)"
             )
-
-    recipients = expand_recipients(envelope.recipients_spec, relay_dir)
     now = _now_iso()
 
     with _connect(db_path) as conn:

@@ -216,6 +216,38 @@ EOF
   exit 12
 }
 
+g12_attestation_required() {
+  local g12_require="${HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION:-}"
+  local methodology_require="${HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION:-}"
+  case "${g12_require,,}" in
+    1|true|yes|on) return 0 ;;
+  esac
+  case "${methodology_require,,}" in
+    1|true|yes|on) return 0 ;;
+  esac
+  return 1
+}
+
+require_g12_crow_chat_attestation() {
+  g12_attestation_required || return 0
+  PYTHONPATH="$COUNCIL_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -m shared.g12_crow_chat_gate \
+    --task "$1" --lane "$2" --surface "$3"
+}
+
+scrub_g12_attestation_secrets() {
+  unset HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY
+  unset HAPAX_OPERATOR_ATTESTATION_HMAC_KEY
+  unset HAPAX_G12_BREAKGLASS_HMAC_KEY
+}
+
+tmux_new_session_without_g12_secrets() {
+  env \
+    -u HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY \
+    -u HAPAX_OPERATOR_ATTESTATION_HMAC_KEY \
+    -u HAPAX_G12_BREAKGLASS_HMAC_KEY \
+    "$TMUX_BIN" new-session "$@"
+}
+
 foot_color_theme_for_current_mode() {
   local mode
   mode="$(cat "$HOME/.cache/hapax/working-mode" 2>/dev/null || printf '%s\n' rnd)"
@@ -414,6 +446,12 @@ for name in (
     "HAPAX_PARENT_AGENT_INTERFACE",
     "HAPAX_PARENT_AGENT_NAME",
     "HAPAX_METHODOLOGY_DISPATCH_TASK",
+    "HAPAX_METHODOLOGY_ORIGIN_SURFACE",
+    "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF",
+    "HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION",
+    "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION",
+    "HAPAX_G12_SIGNED_BREAKGLASS_REF",
+    "HAPAX_G12_SIGNED_BREAKGLASS_REASON",
     "HAPAX_CODEX_WORKTREE_STRATEGY",
     "HAPAX_CC_TASK_GATE",
     "HAPAX_IDLE_UPDATE_SECONDS",
@@ -732,6 +770,8 @@ case "$TERMINAL" in
     ;;
 esac
 
+require_g12_crow_chat_attestation "$TASK_ID" "$SESSION" "hapax-codex"
+
 CODEX_WORKTREE_STRATEGY="explicit"
 if [ -z "$WORKDIR" ]; then
   WORKDIR="$(codex_default_worktree_path "$SESSION" "$SLOT")"
@@ -891,17 +931,18 @@ export LOGOS_BASE_URL
 export COCKPIT_BASE_URL
 export HAPAX_CC_TASK_GATE="$TASK_GATE"
 
+CLAIM_SCRIPT=""
+NEEDS_CLAIM=0
 if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   CLAIM_SCRIPT="$WORKDIR/scripts/cc-claim"
   if [ ! -x "$CLAIM_SCRIPT" ]; then
     echo "hapax-codex: cannot claim task from selected worktree; missing executable $CLAIM_SCRIPT" >&2
     exit 8
   fi
-  if [ "$TERMINAL" = "none" ]; then
-    "$CLAIM_SCRIPT" "$TASK_ID"
-  else
-    preflight_claimable_task "$TASK_ID" "$SESSION"
-  fi
+  NEEDS_CLAIM=1
+fi
+if [ "$NEEDS_CLAIM" -eq 1 ] && [ "$TERMINAL" = "none" ]; then
+  "$CLAIM_SCRIPT" "$TASK_ID"
 fi
 
 SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/codex-spawns"
@@ -932,6 +973,7 @@ EOF
   esac
 fi
 
+BOOTSTRAP_CREATED_BY_LAUNCHER=0
 if [ -n "$BOOTSTRAP_FILE" ]; then
   if [ ! -f "$BOOTSTRAP_FILE" ]; then
     echo "hapax-codex: bootstrap file not found: $BOOTSTRAP_FILE" >&2
@@ -943,6 +985,7 @@ elif { [ -n "$TASK_ID" ] || [ "$TERMINAL" != "none" ]; } && [ "$explicit_codex_c
   task_slug="$(slugify "${TASK_ID:-no-task}")"
   session_slug="$(slugify "$SESSION")"
   BOOTSTRAP_FILE="$SPAWN_DIR/$stamp-$session_slug-$task_slug.md"
+  BOOTSTRAP_CREATED_BY_LAUNCHER=1
   cat >"$BOOTSTRAP_FILE" <<EOF
 # Hapax Codex Spawn Bootstrap
 
@@ -1010,6 +1053,9 @@ unset GITHUB_PERSONAL_ACCESS_TOKEN
 unset CODEX_GITHUB_PERSONAL_ACCESS_TOKEN
 unset TAVILY_API_KEY
 unset CONTEXT7_API_KEY
+if [ "$TERMINAL" = "none" ]; then
+  scrub_g12_attestation_secrets
+fi
 
 MCP_CONFIG_SCRUB="$COUNCIL_DIR/scripts/hapax-codex-mcp-config-scrub"
 if [ -x "$MCP_CONFIG_SCRUB" ]; then
@@ -1081,24 +1127,10 @@ if [ "$TERMINAL" = "foot" ]; then
 fi
 
 RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION").sh"
-CHILD_ARGS=(--session "$SESSION" --slot "$SLOT" --cd "$WORKDIR" --terminal none)
-if [ "$FORCE" -eq 1 ]; then
-  CHILD_ARGS+=(--force)
+VISIBLE_CLAIM_READY_FILE=""
+if [ "$NEEDS_CLAIM" -eq 1 ]; then
+  VISIBLE_CLAIM_READY_FILE="$SPAWN_DIR/claim-ready-$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION")-$$"
 fi
-if [ "$CLAIM_TASK" -eq 0 ]; then
-  CHILD_ARGS+=(--no-claim)
-fi
-if [ "$TASK_GATE" -eq 1 ]; then
-  CHILD_ARGS+=(--task-gate)
-fi
-if [ -n "$TASK_ID" ]; then
-  CHILD_ARGS+=(--task "$TASK_ID")
-fi
-if [ -n "$BOOTSTRAP_FILE" ]; then
-  CHILD_ARGS+=(--bootstrap "$BOOTSTRAP_FILE")
-fi
-CHILD_ARGS+=(--)
-CHILD_ARGS+=("${CODEX_EXTRA[@]}")
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 if [ -n "$DISPATCH_HOST" ]; then
@@ -1108,9 +1140,28 @@ if [ -n "$DISPATCH_HOST" ]; then
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
     printf 'trap '\''%q %q --reason "clean exit (codex remote)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$SESSION"
+    printf '%s\n' 'unset HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY'
+    printf '%s\n' 'unset HAPAX_OPERATOR_ATTESTATION_HMAC_KEY'
+    printf '%s\n' 'unset HAPAX_G12_BREAKGLASS_HMAC_KEY'
+    if [ -n "$VISIBLE_CLAIM_READY_FILE" ]; then
+      printf 'for _claim_wait in {1..600}; do [ -f %q ] && break; sleep 0.1; done\n' "$VISIBLE_CLAIM_READY_FILE"
+      printf 'if [ ! -f %q ]; then echo "hapax-codex runner: timed out waiting for post-spawn cc-claim" >&2; exit 16; fi\n' "$VISIBLE_CLAIM_READY_FILE"
+    fi
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
+    for _att_env in \
+      HAPAX_METHODOLOGY_ORIGIN_SURFACE \
+      HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF \
+      HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION \
+      HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION \
+      HAPAX_G12_SIGNED_BREAKGLASS_REF \
+      HAPAX_G12_SIGNED_BREAKGLASS_REASON; do
+      _att_value="$(printenv "$_att_env" 2>/dev/null || true)"
+      if [ -n "$_att_value" ]; then
+        printf 'export %s=%q\n' "$_att_env" "$_att_value"
+      fi
+    done
     printf 'cd %q\n' "$WORKDIR"
     printf 'exec ssh'
     for arg in \
@@ -1131,14 +1182,47 @@ else
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
     printf 'trap '\''%q %q --reason "clean exit (codex)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$SESSION"
+    printf '%s\n' 'unset HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY'
+    printf '%s\n' 'unset HAPAX_OPERATOR_ATTESTATION_HMAC_KEY'
+    printf '%s\n' 'unset HAPAX_G12_BREAKGLASS_HMAC_KEY'
+    if [ -n "$VISIBLE_CLAIM_READY_FILE" ]; then
+      printf 'for _claim_wait in {1..600}; do [ -f %q ] && break; sleep 0.1; done\n' "$VISIBLE_CLAIM_READY_FILE"
+      printf 'if [ ! -f %q ]; then echo "hapax-codex runner: timed out waiting for post-spawn cc-claim" >&2; exit 16; fi\n' "$VISIBLE_CLAIM_READY_FILE"
+    fi
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
-    # Propagate the session id so the re-exec'd inner hapax-codex keeps ONE stable
-    # uuid (reform Phase 1, FM-2) instead of minting a fresh one.
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
+    printf 'export HAPAX_AGENT_INTERFACE=codex\n'
+    printf 'export HAPAX_AGENT_NAME=%q\n' "$SESSION"
+    printf 'export CODEX_THREAD_NAME=%q\n' "$SESSION"
+    printf 'export CODEX_ROLE=%q\n' "$SESSION"
+    printf 'export HAPAX_AGENT_ROLE=%q\n' "$SESSION"
+    printf 'export HAPAX_AGENT_SLOT=%q\n' "$SLOT"
+    printf 'export HAPAX_WORKTREE_ROLE=%q\n' "$SLOT"
+    printf 'export CLAUDE_ROLE=%q\n' "$CLAUDE_ROLE"
+    printf 'export HAPAX_IDLE_UPDATE_SECONDS=%q\n' "$HAPAX_IDLE_UPDATE_SECONDS"
+    printf 'export PASSWORD_STORE_DIR=%q\n' "$PASSWORD_STORE_DIR"
+    printf 'export LOGOS_BASE_URL=%q\n' "$LOGOS_BASE_URL"
+    printf 'export COCKPIT_BASE_URL=%q\n' "$COCKPIT_BASE_URL"
+    printf 'export HAPAX_CC_TASK_GATE=%q\n' "$TASK_GATE"
+    if [ -n "$TASK_ID" ]; then
+      printf 'export HAPAX_METHODOLOGY_DISPATCH_TASK=%q\n' "$TASK_ID"
+    fi
+    for _att_env in \
+      HAPAX_METHODOLOGY_ORIGIN_SURFACE \
+      HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF \
+      HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION \
+      HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION \
+      HAPAX_G12_SIGNED_BREAKGLASS_REF \
+      HAPAX_G12_SIGNED_BREAKGLASS_REASON; do
+      _att_value="$(printenv "$_att_env" 2>/dev/null || true)"
+      if [ -n "$_att_value" ]; then
+        printf 'export %s=%q\n' "$_att_env" "$_att_value"
+      fi
+    done
     printf 'cd %q\n' "$WORKDIR"
-    printf 'exec %q' "$COUNCIL_DIR/scripts/hapax-codex"
-    for arg in "${CHILD_ARGS[@]}"; do
+    printf 'exec %q' "$CODEX_BIN"
+    for arg in "${CODEX_ARGS[@]}"; do
       printf ' %q' "$arg"
     done
     printf '\n'
@@ -1146,9 +1230,34 @@ else
 fi
 chmod 700 "$RUNNER"
 
+complete_visible_claim_after_spawn() {
+  if [ "$NEEDS_CLAIM" -ne 1 ]; then
+    scrub_g12_attestation_secrets
+    return 0
+  fi
+  set +e
+  "$CLAIM_SCRIPT" "$TASK_ID"
+  claim_status=$?
+  set -e
+  if [ "$claim_status" -eq 0 ]; then
+    : >"$VISIBLE_CLAIM_READY_FILE"
+    scrub_g12_attestation_secrets
+    return 0
+  fi
+  "$TMUX_BIN" kill-session -t "$TMUX_NAME" >/dev/null 2>&1 || true
+  rm -f "$VISIBLE_CLAIM_READY_FILE" 2>/dev/null || true
+  rm -f "$RUNNER" 2>/dev/null || true
+  if [ "$BOOTSTRAP_CREATED_BY_LAUNCHER" -eq 1 ]; then
+    rm -f "$BOOTSTRAP_FILE" 2>/dev/null || true
+  fi
+  scrub_g12_attestation_secrets
+  exit "$claim_status"
+}
+
 case "$TERMINAL" in
   tmux)
-    "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    tmux_new_session_without_g12_secrets -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    complete_visible_claim_after_spawn
     if [ -n "$DISPATCH_HOST_REQUESTED" ] || [ -n "$DISPATCH_HOST" ] || [ -n "$DISPATCH_FALLBACK_REASON" ]; then
       if [ -n "$DISPATCH_FALLBACK_REASON" ]; then
         write_local_dispatch_proof "$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf local)" "1" "$DISPATCH_FALLBACK_REASON" "$RUNNER"
@@ -1160,8 +1269,9 @@ case "$TERMINAL" in
     ;;
   foot)
     if ! "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
-      "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+      tmux_new_session_without_g12_secrets -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
     fi
+    complete_visible_claim_after_spawn
     if [ -n "$DISPATCH_HOST_REQUESTED" ] || [ -n "$DISPATCH_HOST" ] || [ -n "$DISPATCH_FALLBACK_REASON" ]; then
       if [ -n "$DISPATCH_FALLBACK_REASON" ]; then
         write_local_dispatch_proof "$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf local)" "1" "$DISPATCH_FALLBACK_REASON" "$RUNNER"

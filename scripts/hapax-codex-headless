@@ -29,6 +29,30 @@ headless_allowed() {
   [[ "${HAPAX_CODEX_HEADLESS_ALLOW:-}" == "1" || -e "$ENABLE_FILE" ]]
 }
 
+g12_attestation_required() {
+  local g12_require="${HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION:-}"
+  local methodology_require="${HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION:-}"
+  case "${g12_require,,}" in
+    1|true|yes|on) return 0 ;;
+  esac
+  case "${methodology_require,,}" in
+    1|true|yes|on) return 0 ;;
+  esac
+  return 1
+}
+
+require_g12_crow_chat_attestation() {
+  g12_attestation_required || return 0
+  PYTHONPATH="$COUNCIL_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -m shared.g12_crow_chat_gate \
+    --task "$1" --lane "$2" --surface "$3"
+}
+
+scrub_g12_attestation_secrets() {
+  unset HAPAX_CROW_CHAT_OPERATOR_HMAC_KEY
+  unset HAPAX_OPERATOR_ATTESTATION_HMAC_KEY
+  unset HAPAX_G12_BREAKGLASS_HMAC_KEY
+}
+
 relay_retired() {
   # Delegate to the single-source predicate (shared/relay_lifecycle.lane_is_retired)
   # so the launcher agrees with the dispatch gate + the coordinator: one
@@ -224,6 +248,12 @@ for name in (
     "HAPAX_PARENT_AGENT_INTERFACE",
     "HAPAX_PARENT_AGENT_NAME",
     "HAPAX_METHODOLOGY_DISPATCH_TASK",
+    "HAPAX_METHODOLOGY_ORIGIN_SURFACE",
+    "HAPAX_METHODOLOGY_OPERATOR_ATTESTATION_REF",
+    "HAPAX_METHODOLOGY_REQUIRE_CROW_CHAT_ATTESTATION",
+    "HAPAX_G12_REQUIRE_CROW_CHAT_ATTESTATION",
+    "HAPAX_G12_SIGNED_BREAKGLASS_REF",
+    "HAPAX_G12_SIGNED_BREAKGLASS_REASON",
     "HAPAX_IDLE_UPDATE_SECONDS",
     "PASSWORD_STORE_DIR",
 ):
@@ -458,11 +488,13 @@ if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CODEX_TASK" ]]; then
   echo "hapax-codex-headless: refusing launch; '$SESSION' already claims '$CLAIMED_TASK', not dispatch task '$CODEX_TASK'" >&2
   exit 13
 fi
+require_g12_crow_chat_attestation "$CODEX_TASK" "$SESSION" "hapax-codex-headless"
 if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
   [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
   (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
 fi
 export HAPAX_METHODOLOGY_DISPATCH_TASK="$CODEX_TASK"
+scrub_g12_attestation_secrets
 
 # Keep the lane from becoming a credential sink (same scrub as hapax-codex).
 unset GITHUB_PERSONAL_ACCESS_TOKEN
