@@ -3058,10 +3058,9 @@
       "profile": "full",
       "launcher": "~/.local/bin/hapax-vibe --session <lane> --terminal tmux --task <task> --prompt <governed-prompt>",
       "summary": "Mistral Vibe headless tmux one-shot lane",
-      "notes": "JR+ bounded worker path; programmatic prompt mode auto-approves tools and must stay task-scoped, PR-only, and off sensitive surfaces.",
+      "notes": "JR+ bounded worker path; programmatic prompt mode auto-approves tools and must stay task-scoped, PR-only, deterministic-floor only, and off sensitive surfaces.",
       "route_state": "blocked",
       "blocked_reasons": [
-        "quality_equivalence_record_absent",
         "fresh_capability_evidence_absent",
         "account_live_quota_receipt_absent"
       ],
@@ -3092,11 +3091,11 @@
       "privacy_posture": "provider_private",
       "quality_envelope": {
         "eligible_quality_floors": [
-          "frontier_review_required",
           "deterministic_ok"
         ],
         "explicit_equivalence_records": [],
         "excluded_task_classes": [
+          "frontier_review_required_without_equivalence_record",
           "frontier_required_without_equivalence_record",
           "governance_authority_case",
           "privacy_secret_sensitive",
@@ -3125,7 +3124,6 @@
           "capability": {
             "evidence_refs": [],
             "blocked_reasons": [
-              "quality_equivalence_record_absent",
               "fresh_capability_evidence_absent"
             ]
           },
@@ -3150,7 +3148,7 @@
         }
       },
       "known_unknowns": [
-        "JR+ bounded worker path; governance-critical task fit must be excluded by policy layer.",
+        "JR+ bounded worker path; frontier-review and governance-critical task fit are explicitly excluded until a governed quality-equivalence receipt exists.",
         "Programmatic Vibe prompt mode auto-approves tools; route only through task-scoped worktrees and narrow enabled-tool policy."
       ],
       "capability_scores": {
