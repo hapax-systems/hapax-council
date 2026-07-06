@@ -314,6 +314,12 @@ def load_config() -> ReviewConfig:
         )
     payg_fallback_default = normalized_base == DEFAULT_CODING_PLAN_BASE_URL
     payg_fallback = _env_bool("HAPAX_GLMCP_REVIEW_PAYG_FALLBACK", payg_fallback_default)
+    if payg_fallback and secret_entry != DEFAULT_SECRET_ENTRY:
+        raise ConfigError(
+            "PAYG fallback requires the default pass entry so spend receipts can state "
+            "secret_source=pass:glmcp/api-key truthfully; set "
+            "HAPAX_GLMCP_REVIEW_PAYG_FALLBACK=0 for reviewed alternate glmcp/* entries"
+        )
     if normalized_base == normalized_payg_base:
         raise ConfigError("PAYG API base URL must differ from the primary review base URL")
 

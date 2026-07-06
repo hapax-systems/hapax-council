@@ -1956,6 +1956,33 @@ def test_rejects_secret_entry_override_without_gate(monkeypatch: pytest.MonkeyPa
         module.load_config()
 
 
+def test_rejects_secret_entry_override_with_payg_fallback_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_SECRET_ENTRY", "glmcp/alt-key")
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE", "1")
+
+    with pytest.raises(module.ConfigError, match="PAYG fallback requires the default pass entry"):
+        module.load_config()
+
+
+def test_allows_secret_entry_override_when_payg_fallback_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_SECRET_ENTRY", "glmcp/alt-key")
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE", "1")
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_FALLBACK", "0")
+
+    config = module.load_config()
+
+    assert config.secret_entry == "glmcp/alt-key"
+    assert config.payg_fallback is False
+
+
 def test_rejects_secret_entry_override_outside_glmcp_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
