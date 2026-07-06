@@ -649,15 +649,20 @@ def default_reviewer_runner(
 
     cmd = [str(part) for part in family_cfg["reviewer_command"]]
     timeout = int(family_cfg.get("timeout_seconds", 1200))
+    env = {
+        **os.environ,
+        "HAPAX_REVIEW_SEAT_ID": seat.id,
+        "HAPAX_REVIEW_FAMILY": seat.family,
+    }
+    review_task_id = str(family_cfg.get("_review_task_id") or "").strip()
+    if review_task_id:
+        env["HAPAX_GLMCP_REVIEW_TASK_ID"] = review_task_id
+        env["HAPAX_CC_TASK_ID"] = review_task_id
     proc = subprocess.run(
         cmd,
         input=prompt,
         cwd=str(REPO_ROOT),
-        env={
-            **os.environ,
-            "HAPAX_REVIEW_SEAT_ID": seat.id,
-            "HAPAX_REVIEW_FAMILY": seat.family,
-        },
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -692,6 +697,8 @@ def dispatch_reviews(
     prompts: list[str],
     registry: dict[str, Any],
     reviewer_runner: Any,
+    *,
+    task_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run all seats in parallel; reviewer failure becomes invalid-output, loudly."""
 
@@ -707,7 +714,10 @@ def dispatch_reviews(
         diagnostic_stdout = ""
         runner_stderr_excerpt = ""
         try:
-            runner_result = reviewer_runner(seat, family_cfgs[seat.family], prompts[index])
+            family_cfg = dict(family_cfgs[seat.family])
+            if task_id:
+                family_cfg["_review_task_id"] = task_id
+            runner_result = reviewer_runner(seat, family_cfg, prompts[index])
             if isinstance(runner_result, ReviewerRunnerResult):
                 reply = runner_result.stdout
                 runner_stderr_excerpt = sanitize_reviewer_diagnostic(runner_result.stderr)
@@ -1599,7 +1609,13 @@ def review_pr(
         )
         for seat in constitution.seats
     ]
-    reviews = dispatch_reviews(constitution, prompts, registry, reviewer_runner)
+    reviews = dispatch_reviews(
+        constitution,
+        prompts,
+        registry,
+        reviewer_runner,
+        task_id=task_ids[0] if len(task_ids) == 1 else None,
+    )
     update_family_outage(reviews, now_iso)
     results: list[dict[str, Any]] = []
     comment_bodies: list[str] = []

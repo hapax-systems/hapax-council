@@ -2135,6 +2135,30 @@ class TestFamilyOutageDegradation:
         assert "emitted stderr on successful run" in caplog.text
         assert "PAYG fallback used" in caplog.text
 
+    def test_default_runner_exports_review_task_and_seat_env(self) -> None:
+        family_cfg = {
+            "family": "glm",
+            "reviewer_command": [
+                "bash",
+                "-c",
+                (
+                    "printf '%s|%s|%s|%s' "
+                    '"$HAPAX_GLMCP_REVIEW_TASK_ID" "$HAPAX_CC_TASK_ID" '
+                    '"$HAPAX_REVIEW_SEAT_ID" "$HAPAX_REVIEW_FAMILY"'
+                ),
+            ],
+            "timeout_seconds": 30,
+            "_review_task_id": "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+        }
+        seat = dispatch.review_team.Seat(id="glm-1", family="glm")
+
+        result = dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+        assert result.stdout == (
+            "cc-task-glmcp-review-seat-glm52-model-contract-20260706|"
+            "cc-task-glmcp-review-seat-glm52-model-contract-20260706|glm-1|glm"
+        )
+
     def test_successful_reviewer_stderr_is_recorded_and_redacted(self) -> None:
         constitution = dispatch.review_team.Constitution(
             team_class="t2_standard",
@@ -2153,8 +2177,12 @@ class TestFamilyOutageDegradation:
         }
 
         def runner(
-            _seat: Any, _family_cfg: dict[str, Any], _prompt: str
+            _seat: Any, family_cfg: dict[str, Any], _prompt: str
         ) -> dispatch.ReviewerRunnerResult:
+            assert (
+                family_cfg["_review_task_id"]
+                == "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+            )
             return dispatch.ReviewerRunnerResult(
                 stdout=GOOD_REPLY,
                 stderr=(
@@ -2166,7 +2194,13 @@ class TestFamilyOutageDegradation:
                 ),
             )
 
-        reviews = dispatch.dispatch_reviews(constitution, ["prompt"], registry, runner)
+        reviews = dispatch.dispatch_reviews(
+            constitution,
+            ["prompt"],
+            registry,
+            runner,
+            task_id="cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+        )
 
         assert reviews[0]["verdict"] == "accept"
         assert "PAYG fallback used" in reviews[0]["runner_stderr_excerpt"]

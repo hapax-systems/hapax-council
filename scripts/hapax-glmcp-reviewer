@@ -271,18 +271,6 @@ def load_config() -> ReviewConfig:
             )
 
     normalized_base = base_url.rstrip("/")
-    if normalized_base != DEFAULT_BASE_URL:
-        if os.environ.get("HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE") != "1":
-            raise ConfigError(
-                f"refusing base URL {base_url!r}; expected {DEFAULT_BASE_URL}. "
-                "Set HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE=1 only after "
-                "reviewing the Z.ai endpoint."
-            )
-        if not normalized_base.startswith("https://api.z.ai/"):
-            raise ConfigError(
-                "refused base URL; this adapter only sends the pass-backed token to "
-                "https://api.z.ai/. Use a reviewed Z.ai endpoint or a separate adapter."
-            )
     normalized_payg_base = payg_base_url.rstrip("/")
     if normalized_base == DEFAULT_PAYG_BASE_URL:
         raise ConfigError(
@@ -290,6 +278,19 @@ def load_config() -> ReviewConfig:
             "Coding Plan endpoint first and allow PAYG only through the quota-wall "
             "fallback spend gate"
         )
+    if normalized_base != DEFAULT_BASE_URL:
+        if os.environ.get("HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE") != "1":
+            raise ConfigError(
+                f"refusing base URL {base_url!r}; expected {DEFAULT_BASE_URL}. "
+                "Set HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE=1 only after "
+                "reviewing the Z.ai endpoint."
+            )
+        if not _valid_coding_plan_primary_base_url(normalized_base):
+            raise ConfigError(
+                "refused base URL; the primary GLMCP review endpoint must stay on "
+                "the Z.ai Coding Plan path. PAYG/API-credit endpoints are allowed "
+                "only through the quota-wall fallback spend gate."
+            )
     if normalized_payg_base != DEFAULT_PAYG_BASE_URL:
         if os.environ.get("HAPAX_GLMCP_REVIEW_ALLOW_PAYG_BASE_URL_OVERRIDE") != "1":
             raise ConfigError(
@@ -365,6 +366,12 @@ def chat_url(base_url: str) -> str:
     if base.endswith("/chat/completions"):
         return base
     return f"{base}/chat/completions"
+
+
+def _valid_coding_plan_primary_base_url(base_url: str) -> bool:
+    return base_url == DEFAULT_CODING_PLAN_BASE_URL or base_url.startswith(
+        f"{DEFAULT_CODING_PLAN_BASE_URL}-"
+    )
 
 
 def redact(text: str, secret: str) -> str:
@@ -677,8 +684,9 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
             raise ApiError(
                 "Coding Plan quota fallback to Z.ai PAYG API failed; "
                 f"primary=({exc}); fallback=({fallback_exc}); spend_receipt={receipt_ref}; "
-                f"{reservation_note} retry later, check PAYG balance, or write a classified "
-                "GLMCP hold receipt"
+                f"{reservation_note} reconcile pending receipts with "
+                "scripts/hapax-quota-telemetry-writer --json, then retry later, check "
+                "PAYG balance, or write a classified GLMCP hold receipt"
             ) from fallback_exc
 
 
@@ -744,7 +752,11 @@ def _require_payg_spend_gate() -> PaygSpendGate:
     live_path = _quota_spend_live_path_from_env()
     try:
         resolved = load_quota_spend_ledger_resolved(live_path=live_path)
-        decision = evaluate_paid_route_eligibility(resolved.ledger, _payg_budget_request())
+        # This runs while _quota_spend_live_lock() is held, so the ledger read
+        # includes reservations appended by earlier lock holders before this call
+        # can admit another PAYG request.
+        request = _payg_budget_request()
+        decision = evaluate_paid_route_eligibility(resolved.ledger, request)
     except (OSError, QuotaSpendLedgerError, ValueError) as exc:
         raise ApiError(
             "PAYG fallback refused by paid-spend gate: quota/spend ledger could not be "
