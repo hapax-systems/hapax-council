@@ -67,6 +67,7 @@ the existing receipts script (which records config paths/existence only).
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -74,6 +75,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1166,6 +1168,18 @@ def write_ledger_atomic(ledger: QuotaSpendLedger, path: Path) -> None:
         raise
 
 
+@contextmanager
+def quota_spend_live_lock(path: Path) -> Any:
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def refresh_capability_receipts(*, timeout: float) -> bool:
     """Refresh per-provider capability receipts; failure degrades, not aborts."""
 
@@ -1245,36 +1259,36 @@ def main(argv: list[str] | None = None) -> int:
         print(f"hapax-quota-telemetry-writer: base ledger unusable: {exc}", file=sys.stderr)
         return 1
 
-    walls = active_quota_walls(args.relay_receipt_dir, now=now)
-    glmcp_scan = active_glmcp_admission_receipts(args.relay_receipt_dir, now=now)
-    glmcp_payg_spend_scan = active_glmcp_payg_spend_receipts(
-        args.relay_receipt_dir,
-        base=base,
-        now=now,
-    )
-    resource_state, resource_evidence = probe_local_resource_state(nvidia_smi=args.nvidia_smi)
-    try:
-        ledger = build_live_ledger(
-            base,
-            now=now,
-            walls=walls,
-            glmcp_admissions=glmcp_scan.admissions,
-            glmcp_ignored_receipts=glmcp_scan.ignored_evidence_refs,
-            glmcp_payg_spend_receipts=glmcp_payg_spend_scan.receipts,
-            glmcp_ignored_payg_spend_receipts=glmcp_payg_spend_scan.ignored_evidence_refs,
-            local_resource_state=resource_state,
-            local_resource_evidence=resource_evidence,
-        )
-    except (ValueError, QuotaSpendLedgerError) as exc:
-        print(f"hapax-quota-telemetry-writer: live ledger invalid: {exc}", file=sys.stderr)
-        return 1
-
     if args.out is not None:
         out_path = args.out
     else:
         configured = os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV)
         out_path = Path(configured).expanduser() if configured else DEFAULT_QUOTA_SPEND_LEDGER_LIVE
-    write_ledger_atomic(ledger, out_path)
+    with quota_spend_live_lock(out_path):
+        walls = active_quota_walls(args.relay_receipt_dir, now=now)
+        glmcp_scan = active_glmcp_admission_receipts(args.relay_receipt_dir, now=now)
+        glmcp_payg_spend_scan = active_glmcp_payg_spend_receipts(
+            args.relay_receipt_dir,
+            base=base,
+            now=now,
+        )
+        resource_state, resource_evidence = probe_local_resource_state(nvidia_smi=args.nvidia_smi)
+        try:
+            ledger = build_live_ledger(
+                base,
+                now=now,
+                walls=walls,
+                glmcp_admissions=glmcp_scan.admissions,
+                glmcp_ignored_receipts=glmcp_scan.ignored_evidence_refs,
+                glmcp_payg_spend_receipts=glmcp_payg_spend_scan.receipts,
+                glmcp_ignored_payg_spend_receipts=glmcp_payg_spend_scan.ignored_evidence_refs,
+                local_resource_state=resource_state,
+                local_resource_evidence=resource_evidence,
+            )
+        except (ValueError, QuotaSpendLedgerError) as exc:
+            print(f"hapax-quota-telemetry-writer: live ledger invalid: {exc}", file=sys.stderr)
+            return 1
+        write_ledger_atomic(ledger, out_path)
 
     summary = {
         "ledger_id": ledger.ledger_id,

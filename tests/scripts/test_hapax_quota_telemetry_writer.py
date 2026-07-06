@@ -1603,7 +1603,7 @@ def test_output_is_private_and_atomic(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     mode = stat.S_IMODE(out.stat().st_mode)
     assert mode == 0o600
-    leftovers = [p for p in out.parent.iterdir() if p.name != out.name]
+    leftovers = [p for p in out.parent.iterdir() if p.name not in {out.name, f"{out.name}.lock"}]
     assert leftovers == []
 
 

@@ -79,6 +79,37 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
+def _payg_reservation(module: ModuleType, path: str = "glmcp-payg-spend-test.yaml") -> object:
+    return module.PaygSpendReservation(
+        path=Path(path),
+        spend_receipt=module.SpendReceipt.model_validate(
+            {
+                "spend_receipt_schema": 1,
+                "spend_id": "spend-20260706T140430Z-glmcp-payg-review-test",
+                "task_id": "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+                "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+                "route_id": "glmcp.review.direct",
+                "capacity_pool": "api_paid_spend",
+                "budget_id": "tb-20260706-zai-glmcp-payg-review",
+                "provider": "z_ai",
+                "model_or_engine": "glm-5.2",
+                "model_id": "z_ai-glm-5.2",
+                "effort": "none",
+                "quantization": "not_applicable",
+                "auth_surface": "api_key",
+                "quality_floor": "frontier_review_required",
+                "quality_preservation_reason": "test reservation",
+                "spend_reason": "quota_exhaustion",
+                "estimated_cost_usd": "0.05",
+                "created_at": "2026-07-06T14:04:30Z",
+                "reconcile_by": "2026-07-07T14:04:30Z",
+                "reconciliation_state": "pending",
+                "support_artifact_authority": "none",
+            }
+        ),
+    )
+
+
 def test_call_glm_uses_coding_plan_endpoint_and_model(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
     seen: dict[str, object] = {}
@@ -238,11 +269,12 @@ def test_call_glm_falls_back_to_payg_api_on_coding_plan_quota_wall(
         ),
     )
 
-    def fake_spend_receipt(**_kwargs: object) -> Path:
+    def fake_spend_receipt(**_kwargs: object) -> object:
         events.append("reserve-spend-receipt")
-        return Path("glmcp-payg-spend-test.yaml")
+        return _payg_reservation(module)
 
     monkeypatch.setattr(module, "_write_payg_spend_receipt", fake_spend_receipt)
+    monkeypatch.setattr(module, "_append_spend_receipt_to_live_ledger", lambda **_kwargs: None)
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
@@ -318,8 +350,9 @@ def test_call_glm_reports_payg_fallback_failure_after_coding_plan_quota_wall(
     monkeypatch.setattr(
         module,
         "_write_payg_spend_receipt",
-        lambda **_kwargs: Path("glmcp-payg-spend-test.yaml"),
+        lambda **_kwargs: _payg_reservation(module),
     )
+    monkeypatch.setattr(module, "_append_spend_receipt_to_live_ledger", lambda **_kwargs: None)
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
@@ -492,7 +525,7 @@ def test_payg_spend_receipt_omits_secret_prompt_and_output(
         provider_label="Coding Plan",
     )
 
-    path = module._write_payg_spend_receipt(
+    reservation = module._write_payg_spend_receipt(
         gate=module.PaygSpendGate(
             state="eligible_active_budget",
             budget_id="tb-20260706-zai-glmcp-payg-review",
@@ -505,14 +538,44 @@ def test_payg_spend_receipt_omits_secret_prompt_and_output(
         primary_error=primary,
     )
 
-    receipt = path.read_text(encoding="utf-8")
-    assert path.parent == tmp_path
+    receipt = reservation.path.read_text(encoding="utf-8")
+    assert reservation.path.parent == tmp_path
+    assert reservation.spend_receipt.budget_id == "tb-20260706-zai-glmcp-payg-review"
+    assert reservation.spend_receipt.estimated_cost_usd is not None
     assert "schema: hapax.glmcp_payg_spend.v1" in receipt
     assert "status: spend_estimated" in receipt
     assert "task_id: cc-task-glmcp-review-seat-glm52-model-contract-20260706" in receipt
     assert "secret_value_persisted: false" in receipt
     assert "prompt_or_output_persisted: false" in receipt
     assert "test-secret-token" not in receipt
+
+
+def test_payg_spend_reservation_appends_to_live_ledger(tmp_path: Path) -> None:
+    module = _load_module()
+    ledger = tmp_path / "quota-spend-ledger-live.json"
+    payload = json.loads(
+        (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
+    )
+    payload["captured_at"] = "2026-07-06T14:05:00Z"
+    ledger.write_text(json.dumps(payload), encoding="utf-8")
+    reservation = _payg_reservation(module)
+
+    module._append_spend_receipt_to_live_ledger(
+        ledger_path=ledger,
+        receipt=reservation.spend_receipt,
+    )
+
+    loaded = module.load_quota_spend_ledger(ledger)
+    assert reservation.spend_receipt.spend_id in {
+        receipt.spend_id for receipt in loaded.spend_receipts
+    }
+    decision = module.evaluate_paid_route_eligibility(
+        loaded,
+        module._payg_budget_request(),
+        now=module.datetime.fromisoformat("2026-07-06T14:05:00+00:00"),
+    )
+    assert decision.eligible
+    assert str(decision.cap_remaining_usd) == "99.90"
 
 
 def test_payg_spend_receipt_write_error_has_next_action(
