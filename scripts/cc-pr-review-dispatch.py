@@ -1410,6 +1410,13 @@ def review_pr(
         keyed_matches.append((note_path, frontmatter, task_id))
     task_ids = [item[2] for item in keyed_matches]
 
+    outage_witness = clear_route_recovered_family_outage(
+        load_family_outage_witness(now_iso),
+        registry=registry,
+        route_blocked_families=effective_route_blocked_families,
+    )
+    outage_families = frozenset(outage_witness)
+
     if not force:
         fresh_results: list[dict[str, Any]] = []
         fresh_blockers: list[str] = []
@@ -1520,12 +1527,6 @@ def review_pr(
         "",
     )
     writer_family = review_team.writer_family_for_lane(assigned_lane, registry)
-    outage_witness = clear_route_recovered_family_outage(
-        load_family_outage_witness(now_iso),
-        registry=registry,
-        route_blocked_families=effective_route_blocked_families,
-    )
-    outage_families = frozenset(outage_witness)
     if outage_families:
         LOG.warning(
             "family outage active (%s) — constitution may degrade (never seals)",

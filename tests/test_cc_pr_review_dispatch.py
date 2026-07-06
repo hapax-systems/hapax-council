@@ -1824,6 +1824,72 @@ class TestFamilyOutageDegradation:
         assert any(family == "glm" for _, family, _ in reviewers.invocations)
         assert json.loads(state.read_text(encoding="utf-8")) == {}
 
+    def test_route_admission_invalidates_existing_degraded_dossier_before_skip(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-11T21:00:00+00:00"
+        state.write_text(
+            json.dumps(
+                {
+                    "glm": {
+                        "observed_at": "2026-06-11T20:55:00+00:00",
+                        "outage_started_at": "2026-06-11T20:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault, risk_tier="T1")
+        gh = FakeGh(files=["shared/foo.py", "tests/test_foo.py"])
+
+        real_clear = dispatch.clear_route_recovered_family_outage
+        monkeypatch.setattr(
+            dispatch,
+            "clear_route_recovered_family_outage",
+            lambda outage_witness, **_kwargs: dict(outage_witness),
+        )
+        first_reviewers = RecordingReviewers()
+        first = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=gh,
+            reviewer_runner=first_reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso=now,
+            route_blocked_families={},
+        )
+        assert first["status"] == "dispatched"
+        first_dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        assert first_dossier["degraded_family_outage"] == ["glm"]
+
+        monkeypatch.setattr(dispatch, "clear_route_recovered_family_outage", real_clear)
+        second_reviewers = RecordingReviewers()
+        second = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=gh,
+            reviewer_runner=second_reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso=now,
+            route_blocked_families={},
+        )
+
+        assert second["status"] == "dispatched"
+        assert any(family == "glm" for _, family, _ in second_reviewers.invocations)
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+
     def test_route_admission_keeps_outage_witness_when_clear_write_fails(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
