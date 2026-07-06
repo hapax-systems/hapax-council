@@ -60,8 +60,10 @@ Each tick does two writes:
 
 The output is validated through ``QuotaSpendLedger.model_validate`` before an
 atomic replace, so a bad tick can never clobber a good live ledger with junk.
-No secrets are read or persisted: the probes are local files, nvidia-smi, and
-the existing receipts script (which records config paths/existence only).
+No secrets are persisted. GLMCP capability receipt refresh invokes
+``hapax-glmcp-reviewer --check``, which reads the pass-backed secret only to
+verify availability and records redacted availability metadata; the other probes
+are local files and nvidia-smi.
 """
 
 from __future__ import annotations

@@ -663,10 +663,16 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
             return reply
         except ApiError as fallback_exc:
             receipt_ref = reservation.path.name if reservation is not None else "not-written"
+            reservation_note = (
+                " spend receipt reservation remains pending for reconciliation;"
+                if reservation is not None
+                else ""
+            )
             raise ApiError(
                 "Coding Plan quota fallback to Z.ai PAYG API failed; "
                 f"primary=({exc}); fallback=({fallback_exc}); spend_receipt={receipt_ref}; "
-                "retry later, check PAYG balance, or write a classified GLMCP hold receipt"
+                f"{reservation_note} retry later, check PAYG balance, or write a classified "
+                "GLMCP hold receipt"
             ) from fallback_exc
 
 
@@ -742,6 +748,12 @@ def _require_payg_spend_gate() -> PaygSpendGate:
         raise ApiError(
             "PAYG fallback refused by paid-spend gate: "
             f"{blockers}; run scripts/hapax-quota-telemetry-writer --json"
+        )
+    if decision.state != "eligible_active_budget" or decision.cap_remaining_usd is None:
+        raise ApiError(
+            "PAYG fallback refused by paid-spend gate: eligibility decision did not "
+            "return an active budget with remaining cap; run "
+            "scripts/hapax-quota-telemetry-writer --json"
         )
     budget = resolved.ledger.budget_by_id(decision.budget_id)
     return PaygSpendGate(

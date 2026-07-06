@@ -73,7 +73,9 @@ MAX_TASK_NOTE_CHARS = 60_000
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
 MAX_REVIEW_RUNNER_STDERR_CHARS = 1_000
 REVIEWER_DIAGNOSTIC_SECRETISH_RE = re.compile(
-    r"(bearer\s+)[^\s]+|sk-[a-z0-9_-]+|((?:api[_-]?key|token|secret)[=:])[^\s]+",
+    r"(bearer\s+|authorization[=:]\s*|"
+    r"(?:api[_-]?key|token|secret|password|credential)[=:]\s*)[^\s]+|"
+    r"(?:sk-[a-z0-9_-]+|gh[pousr]_[a-z0-9_]+|[a-z0-9_-]{40,})",
     re.IGNORECASE,
 )
 SEND_SCRIPTS = {
@@ -618,7 +620,7 @@ class ReviewerRunnerResult:
 
 def sanitize_reviewer_diagnostic(text: str) -> str:
     redacted = REVIEWER_DIAGNOSTIC_SECRETISH_RE.sub(
-        lambda match: (match.group(1) or match.group(2) or "") + "<redacted>",
+        lambda match: (match.group(1) or "") + "<redacted>",
         text.strip(),
     )
     return truncate_context(redacted, limit=MAX_REVIEW_RUNNER_STDERR_CHARS).strip()

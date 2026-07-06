@@ -2160,7 +2160,9 @@ class TestFamilyOutageDegradation:
                 stderr=(
                     "hapax-glmcp-reviewer: PAYG fallback used "
                     "endpoint=https://api.z.ai/api/paas/v4 model=glm-5.2 "
-                    "primary_error_class=quota_exhausted bearer sk-live-secret-token"
+                    "primary_error_class=quota_exhausted bearer sk-live-secret-token "
+                    "Authorization=ghp_abcdefghijklmnopqrstuvwxyz012345 "
+                    "password=p@ss credential=abcdef0123456789abcdef0123456789abcdef0123"
                 ),
             )
 
@@ -2170,6 +2172,11 @@ class TestFamilyOutageDegradation:
         assert "PAYG fallback used" in reviews[0]["runner_stderr_excerpt"]
         assert "https://api.z.ai/api/paas/v4" in reviews[0]["runner_stderr_excerpt"]
         assert "sk-live-secret-token" not in reviews[0]["runner_stderr_excerpt"]
+        assert "ghp_abcdefghijklmnopqrstuvwxyz012345" not in reviews[0]["runner_stderr_excerpt"]
+        assert "p@ss" not in reviews[0]["runner_stderr_excerpt"]
+        assert (
+            "abcdef0123456789abcdef0123456789abcdef0123" not in reviews[0]["runner_stderr_excerpt"]
+        )
         assert "<redacted>" in reviews[0]["runner_stderr_excerpt"]
         assert reviews[0]["runner_diagnostics"] == [
             {

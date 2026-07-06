@@ -373,6 +373,7 @@ def test_call_glm_reports_payg_fallback_failure_after_coding_plan_quota_wall(
     assert "primary=(" in message
     assert "fallback=(" in message
     assert "spend_receipt=glmcp-payg-spend-test.yaml" in message
+    assert "reservation remains pending for reconciliation" in message
     assert "account_balance_or_arrears" in message
     assert "test-secret-token" not in message
     assert seen_urls == [
@@ -487,6 +488,95 @@ def test_call_glm_refuses_payg_before_http_when_spend_receipt_reservation_fails(
     assert "could not reserve" in message
     assert "spend_receipt=not-written" in message
     assert seen_urls == ["https://api.z.ai/api/coding/paas/v4/chat/completions"]
+
+
+def test_call_glm_real_reservation_blocks_second_payg_when_daily_cap_used(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    now = module.datetime.now(module.UTC).replace(microsecond=0)
+    ledger_path = tmp_path / "quota-spend-ledger-live.json"
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    payload = json.loads(
+        (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
+    )
+    payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
+    for budget in payload["transition_budgets"]:
+        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+            budget["created_at"] = (
+                (now - module.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["expires_at"] = (
+                (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
+            budget["daily_cap_usd"] = "0.05"
+    ledger_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(ledger_path))
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(receipt_dir))
+    monkeypatch.setenv(
+        "HAPAX_GLMCP_REVIEW_TASK_ID",
+        "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+    )
+    seen_urls: list[str] = []
+
+    def fake_open(request: object, *, timeout: float) -> FakeResponse:
+        seen_urls.append(request.full_url)
+        if request.full_url == "https://api.z.ai/api/coding/paas/v4/chat/completions":
+            body = {
+                "error": {
+                    "code": "1310",
+                    "message": "Quota exhausted. Your limit will reset at 2026-07-09T13:02:51Z.",
+                    "next_flush_time": "2026-07-09T13:02:51Z",
+                }
+            }
+            raise urllib.error.HTTPError(
+                request.full_url,
+                429,
+                "Too Many Requests",
+                {},
+                io.BytesIO(json.dumps(body).encode("utf-8")),
+            )
+        return FakeResponse(
+            {"choices": [{"message": {"content": "```yaml\nverdict: accept\n```"}}]}
+        )
+
+    monkeypatch.setattr(module, "open_no_redirect", fake_open)
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+
+    assert module.call_glm("review prompt", config, "test-secret-token") == (
+        "```yaml\nverdict: accept\n```"
+    )
+    loaded = module.load_quota_spend_ledger(ledger_path)
+    assert any(
+        receipt.route_id == "glmcp.review.direct"
+        and receipt.budget_id == "tb-20260706-zai-glmcp-payg-review"
+        for receipt in loaded.spend_receipts
+    )
+    assert seen_urls == [
+        "https://api.z.ai/api/coding/paas/v4/chat/completions",
+        "https://api.z.ai/api/paas/v4/chat/completions",
+    ]
+
+    with pytest.raises(module.ApiError, match="cap exhausted"):
+        module.call_glm("review prompt", config, "test-secret-token")
+    assert seen_urls == [
+        "https://api.z.ai/api/coding/paas/v4/chat/completions",
+        "https://api.z.ai/api/paas/v4/chat/completions",
+        "https://api.z.ai/api/coding/paas/v4/chat/completions",
+    ]
 
 
 def test_payg_spend_receipt_omits_secret_prompt_and_output(
