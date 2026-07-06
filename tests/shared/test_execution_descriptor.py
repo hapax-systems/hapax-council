@@ -37,6 +37,7 @@ def test_axis_enums_cover_the_operator_steered_values() -> None:
         "none",
         "exl3_4_0bpw",
         "exl3_5_0bpw",
+        "gguf_q4_k_m",
         "not_applicable",
     }
 
