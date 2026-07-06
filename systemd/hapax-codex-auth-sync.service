@@ -1,0 +1,12 @@
+[Unit]
+Description=Sync codex auth.json read-only from appendix (podium consumer side)
+After=network-online.target
+Wants=network-online.target
+# Runs on PODIUM. Pulls the appendix-refreshed auth.json + chmod 444 so podium
+# consumers CANNOT self-refresh (the write fails closed; they continue on the
+# cached token until the next sync, which always lands days before expiry).
+# This is the cross-rig half of the weak-form: podium holds no refresh capability.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'rsync -e "ssh -o BatchMode=yes -o ConnectTimeout=8" -p hapax@hapax-appendix.tailf9491.ts.net:~/.codex/auth.json /tmp/auth.json.new && mv /tmp/auth.json.new %h/.codex/auth.json && chmod 444 %h/.codex/auth.json'
