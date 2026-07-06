@@ -4681,3 +4681,11 @@ from shared.entitlement_capability import (
 from shared.entitlement_capability import is_routable_supply as _is_routable_supply  # noqa: E402
 
 _ = (_classify_entitlement, _is_routable_supply)
+
+# PR registry (Work-Unit Totality slice 1): the status-model terminal/reap API consumed by the
+# slice-2 reaper (scripts/hapax-pr-reaper), a blocked follow-up. Tests exercise both now; the
+# static call path lands with the reaper.
+from shared.pr_registry import is_reapable_pr as _is_reapable_pr  # noqa: E402
+from shared.pr_registry import is_terminal_pr as _is_terminal_pr  # noqa: E402
+
+_ = (_is_reapable_pr, _is_terminal_pr)
