@@ -1028,6 +1028,20 @@ checklist:
             len(call) > 6 and call[6] == "repos/owner/repo/pulls/42/files" for call in gh.calls
         )
 
+    def test_rest_pull_failure_names_recheck_action(self, tmp_path: Path) -> None:
+        class MissingPullGh(FakeGh):
+            def _rest_pull(self, number: int) -> dict[str, Any] | None:
+                return None
+
+        with pytest.raises(RuntimeError) as excinfo:
+            _review(tmp_path, gh=MissingPullGh())
+
+        message = str(excinfo.value)
+        assert "REST pull fetch failed for PR #42" in message
+        assert "gh auth status" in message
+        assert "gh api repos/owner/repo/pulls/42" in message
+        assert "preserve stderr" in message
+
     def test_diff_is_truncated(self, tmp_path: Path) -> None:
         gh = FakeGh()
         gh.diff = (

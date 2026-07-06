@@ -433,7 +433,12 @@ def _run_gh(cmd: list[str], *, repo_root: Path, runner: Any, timeout: int = 120)
 def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRInfo:
     item = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if item is None:
-        raise RuntimeError(f"REST pull fetch failed for PR #{pr_number}")
+        raise RuntimeError(
+            f"REST pull fetch failed for PR #{pr_number}; next action: run "
+            f"`gh auth status`, then retry `gh api repos/{repo}/pulls/{pr_number}` "
+            "from the repository root and preserve stderr if auth, network, or GitHub API "
+            "access still fails."
+        )
     head = item.get("head") if isinstance(item.get("head"), dict) else {}
     file_items = list_pull_files_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     files = tuple(
