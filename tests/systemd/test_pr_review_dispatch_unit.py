@@ -8,6 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SYSTEMD_ROOT = REPO_ROOT / "systemd"
 UNITS_DIR = SYSTEMD_ROOT / "units"
 PRESET = SYSTEMD_ROOT / "user-preset.d" / "hapax.preset"
+README = SYSTEMD_ROOT / "README.md"
 
 
 def test_pr_review_dispatch_units_are_install_visible() -> None:
@@ -50,3 +51,13 @@ def test_pr_review_dispatch_timer_is_preset_enabled() -> None:
         if line.strip() and not line.lstrip().startswith("#")
     }
     assert "enable hapax-pr-review-dispatch.timer" in preset_lines
+
+
+def test_pr_review_dispatch_runbook_has_recheck_commands() -> None:
+    text = README.read_text(encoding="utf-8")
+    assert "systemctl --user list-timers --all hapax-pr-review-dispatch.timer" in text
+    assert (
+        "systemctl --user status hapax-pr-review-dispatch.timer "
+        "hapax-pr-review-dispatch.service --no-pager"
+    ) in text
+    assert "uv run python scripts/cc-pr-review-dispatch.py --pr <PR_NUMBER>" in text
