@@ -11,6 +11,8 @@ CODEX_CONFIG = REPO_ROOT / "config" / "codex" / "config.toml"
 CODEX_LAUNCHER = REPO_ROOT / "scripts" / "hapax-codex"
 CODEX_INSTALLER = REPO_ROOT / "scripts" / "install-codex-config.sh"
 CODEX_MCP_CONFIG_SCRUB = REPO_ROOT / "scripts" / "hapax-codex-mcp-config-scrub"
+REINS_FUGU = REPO_ROOT / "scripts" / "reins-fugu"
+REINS_FUGU_ULTRA = REPO_ROOT / "scripts" / "reins-fugu-ultra"
 TAVILY_WRAPPER = REPO_ROOT / "scripts" / "hapax-tavily-mcp"
 PLAYWRIGHT_WRAPPER = REPO_ROOT / "scripts" / "hapax-playwright-mcp"
 GITHUB_WRAPPER = REPO_ROOT / "scripts" / "hapax-github-mcp"
@@ -200,6 +202,8 @@ def test_codex_mcp_scripts_are_valid_bash() -> None:
             "-n",
             str(CODEX_LAUNCHER),
             str(CODEX_MCP_CONFIG_SCRUB),
+            str(REINS_FUGU),
+            str(REINS_FUGU_ULTRA),
             str(TAVILY_WRAPPER),
             str(PLAYWRIGHT_WRAPPER),
             str(GITHUB_WRAPPER),

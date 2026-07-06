@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Governed Reins-facing Sakana Fugu Ultra entrypoint.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export REINS_FUGU_PROFILE="fugu-ultra"
+export REINS_FUGU_SESSION="${REINS_FUGU_SESSION:-cx-fugu-ultra}"
+exec "$SCRIPT_DIR/reins-fugu" "$@"
