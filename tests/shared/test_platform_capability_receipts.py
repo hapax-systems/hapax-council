@@ -21,7 +21,11 @@ from shared.dispatcher_policy import (
     route_authority_receipt_payload_hash,
     route_decision_receipt_payload,
 )
-from shared.platform_capability_receipts import PLATFORM_CAPABILITY_RECEIPT_DIR_ENV
+from shared.platform_capability_receipts import (
+    PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
+    load_platform_capability_receipt,
+    receipt_is_fresh,
+)
 from shared.platform_capability_registry import load_platform_capability_registry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -127,6 +131,32 @@ def _write_route_authority_receipt(
     return target
 
 
+def _mark_platform_receipt_account_live_quota_observed(
+    receipt_dir: Path,
+    *,
+    platform: str = "codex",
+) -> None:
+    receipt_path = receipt_dir / f"{platform}.json"
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    quota = payload["quota"]
+    quota["status"] = "observed"
+    quota["reason_codes"] = []
+    quota["evidence_refs"] = list(
+        dict.fromkeys(
+            [
+                *quota.get("evidence_refs", []),
+                f"test:{platform}:account-live-quota:observed",
+            ]
+        )
+    )
+    payload["known_unknowns"] = [
+        item
+        for item in payload.get("known_unknowns", [])
+        if "Account-live subscription quota" not in item
+    ]
+    receipt_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
 def test_receipt_refresh_redacts_secret_env_and_records_missing_cli(tmp_path: Path) -> None:
     result = _run_receipts(
         tmp_path,
@@ -168,7 +198,23 @@ def test_fresh_subscription_receipt_clears_account_live_quota_blocker(
     assert route.tool_state[0].evidence_ref.startswith("platform-capability-receipt:codex:")
 
 
-def test_fresh_subscription_receipt_allows_dispatch_without_rollback(
+def test_future_platform_receipt_is_not_fresh(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir)},
+        now="2026-07-05T15:00:00Z",
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = load_platform_capability_receipt(tmp_path / "codex.json")
+
+    assert receipt_is_fresh(receipt, now=NOW_DT) is False
+
+
+def test_fresh_subscription_receipt_keeps_oauth_dispatch_degraded_without_account_live(
     tmp_path: Path,
 ) -> None:
     bin_dir = tmp_path / "bin"
@@ -207,9 +253,11 @@ def test_fresh_subscription_receipt_allows_dispatch_without_rollback(
 
     decision = evaluate_dispatch_policy(request)
 
-    assert decision.action is DispatchAction.LAUNCH
-    assert decision.route_policy_green is True
-    assert decision.registry_freshness_green is True
+    assert decision.action is DispatchAction.HOLD
+    assert decision.route_policy_green is False
+    assert decision.registry_freshness_green is False
+    assert "account_live_quota_evidence_absent" in decision.reason_codes
+    assert "capability_availability_degraded" in decision.reason_codes
 
 
 def test_antigrav_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -> None:
@@ -481,6 +529,7 @@ def test_signed_opus_entitlement_receipt_allows_dispatch_without_policy_rollback
         platform="claude",
     )
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path, platform="claude")
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="opus-entitlement-test",
@@ -549,6 +598,7 @@ def test_quality_equivalence_receipt_does_not_widen_authority_ceiling(
         platform="claude",
     )
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path, platform="claude")
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="sonnet-equivalence-test",
@@ -658,6 +708,7 @@ def test_runtime_actuation_receipt_allows_task_bound_runtime_dispatch(
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
     result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="minio-cleanup-runtime-test",
@@ -687,6 +738,7 @@ def test_runtime_actuation_receipt_wrong_task_fails_closed(tmp_path: Path) -> No
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
     result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="wrong-task-runtime-test",
@@ -712,6 +764,7 @@ def test_runtime_actuation_receipt_wrong_route_fails_closed(tmp_path: Path) -> N
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
     result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="wrong-route-runtime-test",
@@ -737,6 +790,7 @@ def test_runtime_actuation_receipt_wrong_surface_fails_closed(tmp_path: Path) ->
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
     result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="wrong-surface-runtime-test",
@@ -762,6 +816,7 @@ def test_runtime_actuation_receipt_stale_fails_closed_as_absent(tmp_path: Path) 
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
     result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="stale-runtime-test",
@@ -789,6 +844,7 @@ def test_runtime_actuation_receipt_stale_on_request_fails_closed(tmp_path: Path)
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
     result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now="2026-06-05T11:00:00Z")
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
 
     payload: dict[str, object] = {
         "route_authority_receipt_schema": 1,
@@ -831,6 +887,7 @@ def test_runtime_actuation_receipt_allows_dimensional_runtime_candidate(
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
     result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="minio-cleanup-runtime-dimensional-test",
@@ -896,6 +953,7 @@ def _fresh_claude_platform_receipt(tmp_path: Path) -> None:
         platform="claude",
     )
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path, platform="claude")
 
 
 def _opus_dispatch_request(sources):  # type: ignore[no-untyped-def]

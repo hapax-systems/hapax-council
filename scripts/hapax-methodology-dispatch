@@ -49,6 +49,7 @@ from shared.coord_event_log import CoordEventLog, coord_base_dir
 from shared.dispatch_service_time import is_claude_operator_pool_role
 from shared.dispatcher_policy import (
     DispatchAction,
+    DispatchPolicySources,
     DispatchRequest,
     RouteDecision,
     build_dispatch_request,
@@ -1601,6 +1602,38 @@ def route_for(platform: str, mode: str, profile: str) -> PlatformPath | None:
     return PLATFORM_PATHS.get((platform, mode, normalized_profile))
 
 
+def _route_for_route_id(route_id: str) -> PlatformPath | None:
+    parts = route_id.split(".", 2)
+    if len(parts) != 3:
+        return None
+    return route_for(parts[0], parts[1], parts[2])
+
+
+def _decision_selected_route_id(route_decision: RouteDecision) -> str:
+    return (
+        route_decision.dimensional_receipt.selected_route_id
+        if route_decision.dimensional_receipt is not None
+        else None
+    ) or route_decision.route_id
+
+
+def _decision_selected_route(route_decision: RouteDecision) -> PlatformPath | None:
+    return _route_for_route_id(_decision_selected_route_id(route_decision))
+
+
+def _unsupported_selected_route_reason(route_decision: RouteDecision) -> str | None:
+    selected_route = _decision_selected_route(route_decision)
+    if selected_route is not None:
+        return None
+    unsupported_route_id = _decision_selected_route_id(route_decision)
+    return (
+        f"route policy selected unsupported route: {unsupported_route_id}; "
+        "next action: inspect dimensional_selected_route_id in the route decision receipt "
+        "and either add a matching governed PLATFORM_PATHS launcher entry or constrain "
+        "the candidate set to supported governed routes."
+    )
+
+
 def supported_route_lines() -> list[str]:
     lines = [CAPACITY_INVARIANT, ""]
     for _, route in sorted(PLATFORM_PATHS.items()):
@@ -1625,6 +1658,56 @@ def platform_route_validation(
             "mutation tasks must route to a mutable platform profile",
         )
     return True, "eligible platform route"
+
+
+def _availability_recomposition_candidate_requests(
+    primary: DispatchRequest,
+    *,
+    task_fields: dict[str, Any],
+    policy_sources: DispatchPolicySources,
+    validation: Validation,
+    rollback_mode: bool,
+) -> tuple[DispatchRequest, ...] | None:
+    capability = primary.capability
+    if capability is None or not capability.availability_recomposition_required:
+        return None
+    registry = policy_sources.registry
+    if registry is None:
+        return ()
+
+    candidates: list[DispatchRequest] = []
+    for route_descriptor in sorted(registry.routes, key=lambda item: item.route_id):
+        if route_descriptor.route_id == primary.route_id:
+            continue
+        platform = route_descriptor.platform.value
+        mode = route_descriptor.mode.value
+        profile = route_descriptor.profile.value
+        route = route_for(platform, mode, profile)
+        if route is None or not supports_route(platform, mode):
+            continue
+        if not route.mutable and not validation.exempt_read_only:
+            continue
+        candidates.append(
+            build_dispatch_request(
+                task_id=primary.task_id,
+                lane=primary.lane,
+                platform=platform,
+                mode=mode,
+                profile=profile,
+                task_fields=task_fields,
+                registry=registry,
+                registry_error=policy_sources.registry_error,
+                quota_ledger=policy_sources.quota_ledger,
+                quota_error=policy_sources.quota_error,
+                route_authority_receipts=policy_sources.route_authority_receipts,
+                surface_delta_refs_by_route=policy_sources.surface_delta_refs_by_route,
+                surface_delta_blockers_by_route=policy_sources.surface_delta_blockers_by_route,
+                rollback_mode=rollback_mode,
+                legacy_route_supported=True,
+                legacy_route_mutable=route.mutable,
+            )
+        )
+    return tuple(candidates)
 
 
 def route_metadata_validation_reason(validation: Validation) -> str | None:
@@ -2208,6 +2291,7 @@ def main(argv: list[str] | None = None) -> int:
         quota_ledger_path=optional_env_path("HAPAX_QUOTA_SPEND_LEDGER"),
     )
     task_fields = policy_task_fields(validation)
+    rollback_mode = args.policy_rollback or env_flag("HAPAX_DISPATCH_POLICY_ROLLBACK")
     policy_request = build_dispatch_request(
         task_id=args.task,
         lane=args.lane,
@@ -2222,12 +2306,19 @@ def main(argv: list[str] | None = None) -> int:
         route_authority_receipts=policy_sources.route_authority_receipts,
         surface_delta_refs_by_route=policy_sources.surface_delta_refs_by_route,
         surface_delta_blockers_by_route=policy_sources.surface_delta_blockers_by_route,
-        rollback_mode=args.policy_rollback or env_flag("HAPAX_DISPATCH_POLICY_ROLLBACK"),
+        rollback_mode=rollback_mode,
         legacy_route_supported=route is not None,
         legacy_route_mutable=route.mutable if route else False,
     )
+    candidate_requests = _availability_recomposition_candidate_requests(
+        policy_request,
+        task_fields=task_fields,
+        policy_sources=policy_sources,
+        validation=validation,
+        rollback_mode=rollback_mode,
+    )
     adapter = _capability_adapter_for_admission(args.platform)
-    route_decision = adapter.admit(policy_request)
+    route_decision = adapter.admit(policy_request, candidate_requests=candidate_requests)
     route_decision_receipt_path = write_route_decision_receipt(
         route_decision,
         ledger_dir=orchestration_ledger_dir(),
@@ -2263,7 +2354,39 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(supported_route_lines()), file=sys.stderr)
         return 10
 
-    assert route is not None
+    selected_route = _decision_selected_route(route_decision)
+    if selected_route is None:
+        reason = _unsupported_selected_route_reason(route_decision)
+        assert reason is not None
+        blocked = Validation(
+            False,
+            reason,
+            validation.task,
+            validation.parent_spec_path,
+            validation.exempt_read_only,
+        )
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=route,
+                validation=blocked,
+                prompt=None,
+                launched=False,
+                route_decision=route_decision,
+                route_decision_receipt_path=route_decision_receipt_path,
+            )
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        print("Supported governed routes:", file=sys.stderr)
+        print("\n".join(supported_route_lines()), file=sys.stderr)
+        return 10
+    route = selected_route
+    args.platform = route.platform
+    args.mode = route.mode
+    args.profile = route.profile
     _emit_gate_event(route_decision, policy_request, task_fields, gate_result="accept")
     mq_message_id = dispatch_message_id(args.mq_message_id)
     if args.launch and route.mutable and not validation.exempt_read_only and mq_message_id is None:

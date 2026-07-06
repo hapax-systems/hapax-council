@@ -2435,7 +2435,7 @@
         "fast_mode": "off",
         "quantization": "none"
       },
-      "auth_surface": "subscription",
+      "auth_surface": "oauth",
       "capacity_pool": "subscription_quota",
       "mutability": {
         "vault_docs": true,
@@ -2754,7 +2754,7 @@
         "fast_mode": "off",
         "quantization": "none"
       },
-      "auth_surface": "subscription",
+      "auth_surface": "oauth",
       "capacity_pool": "subscription_quota",
       "mutability": {
         "vault_docs": true,
