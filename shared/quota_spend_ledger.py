@@ -1189,7 +1189,9 @@ def subscription_quota_state_for_route(
         if _subscription_quota_missing_required_fresh_until(snapshot)
     )
     untrusted_fresh_refs = tuple(
-        f"quota-snapshot:{snapshot.snapshot_id}:untrusted_glmcp_admission_evidence"
+        "quota-snapshot:"
+        f"{snapshot.snapshot_id}:"
+        f"{_subscription_quota_untrusted_admission_evidence_reason(snapshot)}"
         for snapshot in snapshots
         if _subscription_quota_missing_required_admission_evidence(ledger, snapshot)
     )
@@ -1264,14 +1266,25 @@ def _subscription_quota_missing_required_admission_evidence(
     if snapshot.subscription_quota_state is not SubscriptionQuotaState.FRESH:
         return False
     normalized_route_id = _normalize_route_id(snapshot.route_id)
+    if normalized_route_id not in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
+        return False
     expected_provider = RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS.get(normalized_route_id)
     if expected_provider is None:
-        return False
+        return True
     if GLMCP_QUOTA_TELEMETRY_WRITER_REF not in ledger.generated_from:
         return True
     if snapshot.provider != expected_provider:
         return True
     return not any(_is_glmcp_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+
+
+def _subscription_quota_untrusted_admission_evidence_reason(snapshot: QuotaSnapshot) -> str:
+    normalized_route_id = _normalize_route_id(snapshot.route_id)
+    if normalized_route_id == "glmcp.review.direct":
+        return "untrusted_glmcp_admission_evidence"
+    if normalized_route_id == "agy.review.direct":
+        return "untrusted_agy_admission_evidence"
+    return "untrusted_route_admission_evidence"
 
 
 def _is_glmcp_admission_evidence_ref(ref: str) -> bool:

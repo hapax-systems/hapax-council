@@ -50,7 +50,8 @@ worker route is registered with route, resource, and governance receipts.
 Gemini/Claude/GPT-OSS as engines behind the `agy` harness rather than capability
 family names. It is read-only and remains blocked for admission until a
 fresh agy platform-capability receipt clears the review-seat admission blocker
-and route-specific quota/resource evidence clears the quota blocker. Legacy
+and a governed agy quota-admission witness clears the quota blocker; generic
+fresh quota snapshots for `agy.review.direct` fail closed as unknown. Legacy
 `gemini-cli` aliases remain retired.
 
 Recheck the agy review-route/non-worker claims with:
