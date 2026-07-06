@@ -136,12 +136,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run the full capability_surface_delta over ALL 7 vocabularies (the real failing check)",
     )
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        default=_BASELINE_PATH,
+        help="fingerprint baseline to compare against when --delta is set",
+    )
     args = parser.parse_args(argv)
 
     if args.delta:
         from shared.capability_inventory_aggregator import full_inventory_delta
 
-        observed, delta = full_inventory_delta(_load_registered_baseline())
+        observed, delta = full_inventory_delta(_load_registered_baseline(args.baseline))
         invalid = {
             descriptor.capability_id: validate_descriptor(descriptor)
             for descriptor in observed
@@ -151,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
             print("capability_inventory_validation_gaps:")
             for capability_id, gaps in sorted(invalid.items()):
                 print(f"  {capability_id}: {', '.join(gaps)}")
+            print("NEXT: fill the missing descriptor facts before regenerating the baseline.")
             return 1
         print(
             f"capability_surface_delta: {len(delta.new_capability_ids)} new, "
@@ -160,6 +167,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         for cid, kind in delta.kinds():
             print(f"  {kind.value}: {cid}")
+        if not delta.is_empty:
+            print(
+                "NEXT: repair the descriptor source or regenerate "
+                "config/capability-inventory-baseline.json after an intentional capability change."
+            )
         return 1 if not delta.is_empty else 0
 
     descriptors = SEED_CAPABILITY_DESCRIPTORS
