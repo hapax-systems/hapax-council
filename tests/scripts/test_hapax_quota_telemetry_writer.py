@@ -152,6 +152,7 @@ def _glmcp_payg_spend(
     created_at: str = "2026-07-06T14:04:30Z",
     reconcile_by: str = "2026-07-07T14:04:30Z",
     estimated_cost_usd: str = "0.05",
+    extra_fields: str = "",
 ) -> None:
     (relay / name).write_text(
         f"""schema: hapax.glmcp_payg_spend.v1
@@ -184,6 +185,7 @@ primary_error_class: quota_exhausted
 secret_source: pass:glmcp/api-key
 secret_value_persisted: false
 prompt_or_output_persisted: false
+{extra_fields}
 """,
         encoding="utf-8",
     )
@@ -362,6 +364,52 @@ def test_glmcp_payg_spend_receipt_counts_against_budget_gate(tmp_path: Path) -> 
     assert "matching TransitionBudget cap exhausted" in glmcp_snapshot["operator_visible_reason"]
     summary = json.loads(result.stdout)
     assert summary["glmcp_payg_spend_receipts"] == 1
+
+
+def test_glmcp_payg_spend_receipt_legacy_null_optionals_are_counted(
+    tmp_path: Path,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    spend_receipt_name = "glmcp-payg-spend-20260706t140430z-test.yaml"
+    _wall_receipt(relay, "cx-glmcp", "2026-07-06T16:00:00Z")
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        evidence_ref=spend_receipt_name,
+    )
+    _glmcp_payg_spend(
+        relay,
+        name=spend_receipt_name,
+        extra_fields=("actual_cost_usd: None\nreconciled_at: None\nreconciliation_reason: None"),
+    )
+    base = tmp_path / "quota-spend-ledger-fixtures.json"
+    base_payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    for budget in base_payload["transition_budgets"]:
+        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+            budget["created_at"] = "2026-07-06T13:00:00Z"
+            budget["expires_at"] = "2026-07-07T13:00:00Z"
+            budget["subscription_path_checked_at"] = "2026-07-06T13:00:00Z"
+    base.write_text(json.dumps(base_payload), encoding="utf-8")
+
+    result, out = _run_writer(tmp_path, "--base", str(base), now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "fresh"
+    assert (
+        "spend-gate:glmcp.review.direct:eligible_active_budget" in glmcp_snapshot["evidence_refs"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_payg_spend_receipts"] == 1
+    assert summary["glmcp_ignored_payg_spend_receipts"] == 0
 
 
 def test_glmcp_payg_admission_rechecks_witness_task_cap(tmp_path: Path) -> None:

@@ -1078,7 +1078,7 @@ def _payg_spend_receipt_fields(
                 "reconciliation_reason",
                 "support_artifact_authority",
             )
-            if key in receipt_payload
+            if key in receipt_payload and receipt_payload[key] is not None
         ],
         ("supported_tool", "hapax-glmcp-reviewer"),
         ("endpoint", config.payg_base_url),

@@ -247,6 +247,18 @@ GLMCP_PAYG_SPEND_FIELDS = frozenset(
         "task_id",
     }
 )
+GLMCP_PAYG_SPEND_NULLABLE_FIELDS = frozenset(
+    {
+        "actual_cost_usd",
+        "cap_remaining_usd",
+        "model_id",
+        "model_or_engine",
+        "reconcile_by",
+        "reconciled_at",
+        "reconciliation_reason",
+    }
+)
+GLMCP_PAYG_SPEND_NULL_LITERALS = frozenset({"", "none", "null", "~"})
 
 
 @dataclass(frozen=True)
@@ -392,6 +404,13 @@ def _warn_ignored_glmcp_payg_spend(path: Path, reason: str) -> str:
         file=sys.stderr,
     )
     return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
+
+
+def _glmcp_payg_spend_field_is_nullish(key: str, value: str) -> bool:
+    return (
+        key in GLMCP_PAYG_SPEND_NULLABLE_FIELDS
+        and value.strip().strip("'\"").lower() in GLMCP_PAYG_SPEND_NULL_LITERALS
+    )
 
 
 def _glmcp_payg_budget_request(task_id: str) -> PaidRouteRequest:
@@ -918,6 +937,7 @@ def active_glmcp_payg_spend_receipts(
                 "support_artifact_authority",
                 "task_id",
             }
+            and not _glmcp_payg_spend_field_is_nullish(key, value)
         }
         receipt_payload["spend_receipt_schema"] = 1
         try:

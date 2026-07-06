@@ -1324,6 +1324,10 @@ def test_payg_spend_receipt_omits_secret_prompt_and_output(
     assert "schema: hapax.glmcp_payg_spend.v1" in receipt
     assert "status: spend_estimated" in receipt
     assert "task_id: cc-task-glmcp-review-seat-glm52-model-contract-20260706" in receipt
+    assert "actual_cost_usd:" not in receipt
+    assert "reconciled_at:" not in receipt
+    assert "reconciliation_reason:" not in receipt
+    assert "None" not in receipt
     assert "secret_value_persisted: false" in receipt
     assert "prompt_or_output_persisted: false" in receipt
     assert "test-secret-token" not in receipt
