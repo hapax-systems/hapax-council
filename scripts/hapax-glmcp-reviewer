@@ -720,7 +720,7 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
                 if isinstance(fallback_exc, ZaiHttpError):
                     try:
                         with _quota_spend_live_lock():
-                            reservation = _mark_payg_spend_receipt_failed(
+                            _mark_payg_spend_receipt_failed(
                                 reservation=reservation,
                                 ledger_path=gate.ledger_path,
                                 config=config,

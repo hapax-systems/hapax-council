@@ -250,7 +250,14 @@ def _write_registry_with_extra_review_descriptor(tmp_path: Path) -> Path:
 
 
 class TestDryRun:
-    def test_dry_run_plans_without_dispatching(self, tmp_path: Path) -> None:
+    def test_dry_run_plans_without_dispatching(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(
+            dispatch,
+            "clear_route_recovered_family_outage",
+            lambda *_args, **_kwargs: pytest.fail("dry-run plan must not mutate outage state"),
+        )
         result, gh, reviewers, note = _review(tmp_path, apply=False)
         assert result["status"] == "planned"
         assert result["plan"]["team_class"] == "t2_standard"
@@ -258,6 +265,33 @@ class TestDryRun:
         assert reviewers.invocations == []
         assert not list(note.parent.glob("*.review-dossier.yaml"))
         assert gh.comments == []
+
+    def test_dry_run_skip_fresh_does_not_clear_route_outage_latches(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        result, gh, _reviewers, note = _review(tmp_path)
+        assert result["status"] == "dispatched"
+        monkeypatch.setattr(
+            dispatch,
+            "clear_route_recovered_family_outage",
+            lambda *_args, **_kwargs: pytest.fail("dry-run skip must not mutate outage state"),
+        )
+
+        second = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=note.parent.parent,
+            apply=False,
+            gh_runner=gh,
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert second["status"] == "skipped_fresh"
 
 
 class TestApply:

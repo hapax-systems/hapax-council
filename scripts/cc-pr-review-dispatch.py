@@ -1626,11 +1626,13 @@ def review_pr(
         keyed_matches.append((note_path, frontmatter, task_id))
     task_ids = [item[2] for item in keyed_matches]
 
-    outage_witness = clear_route_recovered_family_outage(
-        load_family_outage_witness(now_iso),
-        registry=registry,
-        route_blocked_families=effective_route_blocked_families,
-    )
+    outage_witness = load_family_outage_witness(now_iso)
+    if apply:
+        outage_witness = clear_route_recovered_family_outage(
+            outage_witness,
+            registry=registry,
+            route_blocked_families=effective_route_blocked_families,
+        )
     outage_families = frozenset(outage_witness)
 
     if not force:
@@ -1653,6 +1655,7 @@ def review_pr(
                 changed_files=pr_info.files,
                 changed_file_count=pr_info.changed_file_count,
                 registry=registry,
+                outage_state_path=FAMILY_OUTAGE_STATE,
                 route_blocked_families=effective_route_blocked_families,
             )
             if blockers:
