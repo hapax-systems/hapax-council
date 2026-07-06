@@ -14,6 +14,10 @@ from sse_starlette.sse import EventSourceResponse
 
 from logos.api.cache import cache
 from logos.api.sessions import agent_run_manager
+from shared.cockpit_agent_capabilities import (
+    CockpitAdmissionError,
+    require_cockpit_agent_admission,
+)
 
 # Detect if running inside Docker (/.dockerenv exists or init is not systemd)
 _IN_CONTAINER = os.path.exists("/.dockerenv") or (
@@ -79,6 +83,16 @@ async def run_agent(name: str, req: AgentRunRequest):
         raise HTTPException(status_code=409, detail="Another agent is already running")
 
     validated_flags = _validate_flags(req.flags)
+    model_alias = agent.model_alias if hasattr(agent, "model_alias") else agent.get("model_alias")
+
+    try:
+        require_cockpit_agent_admission(
+            name,
+            manifest_model=model_alias,
+            flags=validated_flags,
+        )
+    except (CockpitAdmissionError, KeyError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
 
     # Build command args from agent's base command + validated flags
     command = agent.command if hasattr(agent, "command") else agent.get("command", "")
