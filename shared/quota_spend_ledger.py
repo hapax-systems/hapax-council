@@ -399,7 +399,11 @@ class SpendReceipt(StrictModel):
         return self
 
     def cost_against_cap(self) -> Decimal:
-        return self.actual_cost_usd or self.estimated_cost_usd or Decimal("0")
+        if self.actual_cost_usd is not None:
+            return self.actual_cost_usd
+        if self.estimated_cost_usd is not None:
+            return self.estimated_cost_usd
+        return Decimal("0")
 
     def is_unreconciled_overdue(self, now: datetime) -> bool:
         return (

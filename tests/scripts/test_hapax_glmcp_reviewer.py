@@ -361,6 +361,11 @@ def test_call_glm_reports_payg_fallback_failure_after_coding_plan_quota_wall(
         lambda **_kwargs: _payg_reservation(module),
     )
     monkeypatch.setattr(module, "_append_spend_receipt_to_live_ledger", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "_mark_payg_spend_receipt_failed",
+        lambda **kwargs: kwargs["reservation"],
+    )
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
@@ -381,7 +386,7 @@ def test_call_glm_reports_payg_fallback_failure_after_coding_plan_quota_wall(
     assert "primary=(" in message
     assert "fallback=(" in message
     assert "spend_receipt=glmcp-payg-spend-test.yaml" in message
-    assert "reservation remains pending for reconciliation" in message
+    assert "reservation reconciled as failed" in message
     assert "scripts/hapax-quota-telemetry-writer --json" in message
     assert "account_balance_or_arrears" in message
     assert "test-secret-token" not in message
@@ -713,7 +718,7 @@ def test_require_payg_spend_gate_reloads_live_ledger_and_rejects_existing_task_s
         module._require_payg_spend_gate()
 
 
-def test_call_glm_failed_payg_retry_reuses_same_spend_reservation(
+def test_call_glm_failed_payg_fallback_reconciles_failed_reservations(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -782,7 +787,7 @@ def test_call_glm_failed_payg_retry_reuses_same_spend_reservation(
     )
 
     for _ in range(2):
-        with pytest.raises(module.ApiError, match="spend receipt reservation remains pending"):
+        with pytest.raises(module.ApiError, match="spend receipt reservation reconciled as failed"):
             module.call_glm("review prompt", config, "test-secret-token")
 
     loaded = module.load_quota_spend_ledger(ledger_path)
@@ -792,8 +797,19 @@ def test_call_glm_failed_payg_retry_reuses_same_spend_reservation(
         if receipt.route_id == "glmcp.review.direct"
         and receipt.task_id == "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
     ]
-    assert len(receipts) == 1
-    assert len(list(receipt_dir.glob("glmcp-payg-spend-*.yaml"))) == 1
+    assert len(receipts) == 2
+    assert len({receipt.spend_id for receipt in receipts}) == 2
+    assert all(
+        receipt.reconciliation_state is module.SpendReconciliationState.RECONCILED
+        for receipt in receipts
+    )
+    assert all(str(receipt.actual_cost_usd) == "0.00" for receipt in receipts)
+    receipt_bodies = [
+        path.read_text(encoding="utf-8") for path in receipt_dir.glob("glmcp-payg-spend-*.yaml")
+    ]
+    assert len(receipt_bodies) == 2
+    assert all("status: spend_failed" in body for body in receipt_bodies)
+    assert all("reconciliation_state: reconciled" in body for body in receipt_bodies)
 
 
 def test_call_glm_repeated_successful_payg_uses_new_reconciled_spend_receipt(
@@ -881,6 +897,98 @@ def test_call_glm_repeated_successful_payg_uses_new_reconciled_spend_receipt(
         for receipt in receipts
     )
     assert all(receipt.actual_cost_usd == receipt.estimated_cost_usd for receipt in receipts)
+    assert len(list(receipt_dir.glob("glmcp-payg-spend-*.yaml"))) == 2
+
+
+def test_payg_spend_reservation_does_not_reuse_existing_pending_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    now = module.datetime.now(module.UTC).replace(microsecond=0)
+    ledger_path = tmp_path / "quota-spend-ledger-live.json"
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    payload = json.loads(
+        (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
+    )
+    payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
+    for budget in payload["transition_budgets"]:
+        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+            budget["created_at"] = (
+                (now - module.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["expires_at"] = (
+                (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
+            budget["per_task_cap_usd"] = "2.00"
+            budget["daily_cap_usd"] = "20.00"
+    ledger_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(receipt_dir))
+    monkeypatch.setenv(
+        "HAPAX_GLMCP_REVIEW_TASK_ID",
+        "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+    )
+    monkeypatch.setenv("HAPAX_REVIEW_SEAT_ID", "glm-1")
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+    primary = module.ZaiHttpError(
+        status=429,
+        detail=json.dumps(
+            {
+                "error": {
+                    "code": "1310",
+                    "message": "Quota exhausted. Your limit will reset at 2026-07-09T13:02:51Z.",
+                }
+            }
+        ),
+        secret="test-secret-token",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        provider_label="Coding Plan",
+    )
+    gate = module.PaygSpendGate(
+        state="eligible_active_budget",
+        budget_id="tb-20260706-zai-glmcp-payg-review",
+        budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+        cap_remaining_usd="1.95",
+        ledger_source="live",
+        ledger_path=ledger_path,
+    )
+
+    first = module._write_payg_spend_receipt(gate=gate, config=config, primary_error=primary)
+    module._append_spend_receipt_to_live_ledger(
+        ledger_path=ledger_path,
+        receipt=first.spend_receipt,
+    )
+    second = module._write_payg_spend_receipt(gate=gate, config=config, primary_error=primary)
+    module._append_spend_receipt_to_live_ledger(
+        ledger_path=ledger_path,
+        receipt=second.spend_receipt,
+    )
+
+    assert first.spend_receipt.spend_id != second.spend_receipt.spend_id
+    loaded = module.load_quota_spend_ledger(ledger_path)
+    receipts = [
+        receipt
+        for receipt in loaded.spend_receipts
+        if receipt.route_id == "glmcp.review.direct"
+        and receipt.task_id == "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    ]
+    assert len(receipts) == 2
+    assert all(
+        receipt.reconciliation_state is module.SpendReconciliationState.PENDING
+        for receipt in receipts
+    )
     assert len(list(receipt_dir.glob("glmcp-payg-spend-*.yaml"))) == 2
 
 
@@ -1646,6 +1754,21 @@ def test_rejects_non_coding_plan_primary_override_under_zai(
     module = _load_module()
     _clean_env(monkeypatch)
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_BASE_URL", "https://api.z.ai/api/paas/v4/experimental")
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE", "1")
+
+    with pytest.raises(module.ConfigError, match="Coding Plan path"):
+        module.load_config()
+
+
+def test_rejects_coding_plan_prefix_spoof_primary_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv(
+        "HAPAX_GLMCP_REVIEW_BASE_URL",
+        "https://api.z.ai/api/coding/paas/v4-evil",
+    )
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE", "1")
 
     with pytest.raises(module.ConfigError, match="Coding Plan path"):

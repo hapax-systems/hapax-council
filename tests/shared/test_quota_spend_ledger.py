@@ -371,6 +371,49 @@ def test_per_task_cap_sums_existing_spend_for_same_task_only() -> None:
     assert str(different_task.cap_remaining_usd) == "1.70"
 
 
+def test_reconciled_zero_actual_spend_counts_zero_against_caps() -> None:
+    payload = _active_budget_payload()
+    budget = payload["transition_budgets"][0]
+    budget["per_task_cap_usd"] = "0.05"
+    payload["spend_receipts"] = [
+        {
+            "spend_receipt_schema": 1,
+            "spend_id": "spend-20260517T073000Z-zero-actual",
+            "task_id": "capacity-routing-quota-spend-ledger",
+            "authority_case": "CASE-CAPACITY-ROUTING-001",
+            "route_id": "opaque.route.bootstrap",
+            "capacity_pool": "bootstrap_budget",
+            "budget_id": "tb-20260509-bootstrap-expired",
+            "provider": "opaque-provider-a",
+            "model_or_engine": "opaque-engine-a",
+            "auth_surface": "api_key",
+            "quality_floor": "frontier_required",
+            "quality_preservation_reason": "fixture failed request reconciled to zero cost",
+            "spend_reason": "bootstrap_equilibrium",
+            "estimated_cost_usd": "0.05",
+            "actual_cost_usd": "0.00",
+            "cap_remaining_usd": "0.05",
+            "created_at": "2026-05-17T07:30:00Z",
+            "reconcile_by": "2026-05-18T07:30:00Z",
+            "reconciliation_state": "reconciled",
+            "reconciled_at": "2026-05-17T07:45:00Z",
+            "reconciliation_reason": "fixture failed before billable completion",
+            "artifact_refs": [],
+            "support_artifact_authority": "none",
+        }
+    ]
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    decision = evaluate_paid_route_eligibility(
+        ledger,
+        _request(estimated_cost_usd="0.05"),
+        now=NOW,
+    )
+
+    assert decision.eligible is True
+    assert str(decision.cap_remaining_usd) == "0.00"
+
+
 def test_route_subscription_snapshot_fresh_until_expires_independently() -> None:
     payload = _active_budget_payload()
     payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")

@@ -21,10 +21,12 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -370,9 +372,19 @@ def chat_url(base_url: str) -> str:
 
 
 def _valid_coding_plan_primary_base_url(base_url: str) -> bool:
-    return base_url == DEFAULT_CODING_PLAN_BASE_URL or base_url.startswith(
-        f"{DEFAULT_CODING_PLAN_BASE_URL}-"
-    )
+    try:
+        parsed = urllib.parse.urlsplit(base_url)
+        expected = urllib.parse.urlsplit(DEFAULT_CODING_PLAN_BASE_URL)
+    except ValueError:
+        return False
+    if parsed.scheme != "https" or parsed.netloc != expected.netloc:
+        return False
+    if parsed.query or parsed.fragment:
+        return False
+    path = parsed.path.rstrip("/")
+    expected_path = expected.path.rstrip("/")
+    allowed_paths = {expected_path, f"{expected_path}-beta"}
+    return path in allowed_paths or path.startswith(f"{expected_path}/")
 
 
 def redact(text: str, secret: str) -> str:
@@ -646,6 +658,7 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
             raise ApiError(
                 f"{exc}; retry later or check the Z.ai Coding Plan endpoint/status"
             ) from exc
+        gate: PaygSpendGate | None = None
         reservation: PaygSpendReservation | None = None
         try:
             with _quota_spend_live_lock():
@@ -684,15 +697,26 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
             return reply
         except ApiError as fallback_exc:
             receipt_ref = reservation.path.name if reservation is not None else "not-written"
-            reservation_note = (
-                " spend receipt reservation remains pending for reconciliation;"
-                if reservation is not None
-                else ""
-            )
+            reservation_note = ""
+            if reservation is not None and gate is not None:
+                try:
+                    with _quota_spend_live_lock():
+                        reservation = _mark_payg_spend_receipt_failed(
+                            reservation=reservation,
+                            ledger_path=gate.ledger_path,
+                            config=config,
+                            primary_error=exc,
+                        )
+                    reservation_note = " spend receipt reservation reconciled as failed;"
+                except ApiError as reconcile_exc:
+                    reservation_note = (
+                        " spend receipt failure reconciliation failed "
+                        f"({type(reconcile_exc).__name__});"
+                    )
             raise ApiError(
                 "Coding Plan quota fallback to Z.ai PAYG API failed; "
                 f"primary=({exc}); fallback=({fallback_exc}); spend_receipt={receipt_ref}; "
-                f"{reservation_note} reconcile pending receipts with "
+                f"{reservation_note} reconcile receipts with "
                 "scripts/hapax-quota-telemetry-writer --json, then retry later, check "
                 "PAYG balance, or write a classified GLMCP hold receipt"
             ) from fallback_exc
@@ -936,9 +960,6 @@ def _payg_reservation_suffix(
         and receipt.task_id == task_id
         and receipt.budget_id == gate.budget_id
     ]
-    for receipt in sorted(matching, key=lambda item: item.spend_id):
-        if receipt.reconciliation_state is SpendReconciliationState.PENDING:
-            return receipt.spend_id.removeprefix(f"spend-{stamp}-glmcp-payg-review-")
     return f"{base_suffix}-{len(matching) + 1:02d}"
 
 
@@ -1019,6 +1040,40 @@ def _mark_payg_spend_receipt_succeeded(
             config=config,
             primary_error=primary_error,
             status="spend_reconciled",
+        ),
+    )
+    _replace_spend_receipt_in_live_ledger(ledger_path=ledger_path, receipt=spend_receipt)
+    return PaygSpendReservation(path=reservation.path, spend_receipt=spend_receipt)
+
+
+def _mark_payg_spend_receipt_failed(
+    *,
+    reservation: PaygSpendReservation,
+    ledger_path: Path,
+    config: ReviewConfig,
+    primary_error: ZaiHttpError,
+) -> PaygSpendReservation:
+    reconciled_at = datetime.now(UTC).replace(microsecond=0)
+    receipt_payload = reservation.spend_receipt.model_dump(mode="json")
+    estimated_cost = Decimal(str(receipt_payload.get("estimated_cost_usd") or "0"))
+    if receipt_payload.get("cap_remaining_usd") is not None:
+        cap_remaining = Decimal(str(receipt_payload["cap_remaining_usd"]))
+        receipt_payload["cap_remaining_usd"] = str(cap_remaining + estimated_cost)
+    receipt_payload["actual_cost_usd"] = "0.00"
+    receipt_payload["reconciliation_state"] = SpendReconciliationState.RECONCILED.value
+    receipt_payload["reconciled_at"] = reconciled_at.isoformat().replace("+00:00", "Z")
+    receipt_payload["reconciliation_reason"] = (
+        "PAYG API call failed before model output; no provider success observed, "
+        "reconciled reservation to zero actual cost for retry"
+    )
+    spend_receipt = SpendReceipt.model_validate(receipt_payload)
+    _write_flat_yaml_atomic(
+        reservation.path,
+        _payg_spend_receipt_fields(
+            receipt_payload=receipt_payload,
+            config=config,
+            primary_error=primary_error,
+            status="spend_failed",
         ),
     )
     _replace_spend_receipt_in_live_ledger(ledger_path=ledger_path, receipt=spend_receipt)
