@@ -50,8 +50,12 @@ from shared.failure_classification import (  # noqa: E402
 )
 from shared.platform_capability_registry import (  # noqa: E402
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+    AuthorityCeiling,
+    Mode,
     PlatformCapabilityRegistry,
     PlatformCapabilityRegistryError,
+    PlatformCapabilityRoute,
+    QualityFloor,
     RouteState,
     check_registry_freshness,
     load_platform_capability_registry,
@@ -91,10 +95,9 @@ REVIEWER_VERDICTS = frozenset(
 )
 FAMILY_OUTAGE_VERDICTS = frozenset({"quota-wall", "provider-outage", "reviewer-route-unavailable"})
 TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
-LEGACY_DOSSIER_FAMILY_ALIASES = {"gemini": "agy"}
 
 #: Provider usage-wall shapes (the 2026-06-12 claude weekly-wall text is the
-#: canonical fixture; the rest cover the codex/agy/glm families' phrasings).
+#: canonical fixture; the rest cover the codex/gemini/glm families' phrasings).
 _RESET_TIME_SHAPE = (
     r"(?:(?:[A-Z][a-z]{2}\s+\d{1,2},\s+)?"
     r"\d{1,2}(?::\d{2})?\s*(?:am|pm)"
@@ -487,7 +490,7 @@ def strongest_team_class(classes: Sequence[str]) -> str:
 
 
 def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str:
-    """Model family of the authoring lane (retired checks, exact map, prefixes, default)."""
+    """Model family of the authoring lane (exact map, then prefixes, then default)."""
 
     lane_families = registry["lane_families"]
     lane_norm = (lane or "").strip().lower()
@@ -495,9 +498,6 @@ def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str
         return lane_families["default"]
     if lane_norm in set(lane_families.get("retired") or []):
         raise ValueError(f"retired authoring lane is not admissible: {lane_norm}")
-    for prefix in lane_families.get("retired_prefixes") or []:
-        if lane_norm.startswith(prefix):
-            raise ValueError(f"retired authoring lane is not admissible: {lane_norm}")
     exact = lane_families.get("exact") or {}
     if lane_norm in exact:
         return exact[lane_norm]
@@ -521,13 +521,134 @@ class Constitution:
     notes: tuple[str, ...]
 
 
+def _reviewer_command(entry: Mapping[str, Any]) -> tuple[str, ...]:
+    raw = entry.get("reviewer_command") or []
+    if not isinstance(raw, Sequence) or isinstance(raw, str):
+        return ()
+    return tuple(str(part) for part in raw if str(part).strip())
+
+
+def _review_family_entry_from_descriptor(entry: Mapping[str, Any]) -> dict[str, Any] | None:
+    family = str(entry.get("family") or "").strip()
+    route_id = normalize_route_id(str(entry.get("route_id") or "").strip())
+    command = _reviewer_command(entry)
+    if not family or not route_id or not command:
+        return None
+    out = dict(entry)
+    out["family"] = family
+    out["route_id"] = route_id
+    out["reviewer_command"] = list(command)
+    out["timeout_seconds"] = int(entry.get("timeout_seconds") or 1200)
+    out.setdefault("review_family_source", "route_descriptor")
+    return out
+
+
+def _route_discovered_review_family_entry(route: PlatformCapabilityRoute) -> dict[str, Any] | None:
+    if route.mode is not Mode.REVIEW:
+        return None
+    wrapper = route.sanctioned_wrapper.strip()
+    if not wrapper:
+        return None
+    return {
+        "family": route.platform.value,
+        "route_id": route.route_id,
+        "reviewer_command": [wrapper],
+        "timeout_seconds": 1200,
+        "review_family_source": "platform_capability_registry",
+    }
+
+
+def review_family_entries(
+    registry: Mapping[str, Any],
+    *,
+    platform_registry: PlatformCapabilityRegistry | None = None,
+) -> tuple[dict[str, Any], ...]:
+    """Effective review roster entries, including governed route-backed additions.
+
+    ``families`` remains the static base roster. ``route_backed_review_families``
+    may either bind an existing static family to a governed route or add a new
+    explicit review-seat descriptor; platform-registry discovery may add future
+    ``mode=review`` routes. New additions are family- and route-distinct so
+    they cannot silently override the historical claude/codex/gemini/glm
+    behavior.
+    """
+
+    entries: list[dict[str, Any]] = [
+        dict(entry) for entry in (registry.get("families") or []) if isinstance(entry, Mapping)
+    ]
+    seen_families = {str(entry.get("family") or "").strip() for entry in entries}
+    entries_by_family = {str(entry.get("family") or "").strip(): entry for entry in entries}
+    seen_route_ids = {
+        normalize_route_id(str(entry.get("route_id") or "").strip())
+        for entry in entries
+        if str(entry.get("route_id") or "").strip()
+    }
+
+    for raw in registry.get("route_backed_review_families") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        entry = _review_family_entry_from_descriptor(raw)
+        if entry is None:
+            continue
+        family = entry["family"]
+        route_id = entry["route_id"]
+        if family in seen_families:
+            existing = entries_by_family.get(family)
+            if (
+                existing is not None
+                and not str(existing.get("route_id") or "").strip()
+                and route_id not in seen_route_ids
+                and _reviewer_command(existing) == _reviewer_command(entry)
+            ):
+                existing["route_id"] = route_id
+                existing["route_binding_source"] = entry.get(
+                    "review_family_source", "route_descriptor"
+                )
+                seen_route_ids.add(route_id)
+            continue
+        if route_id in seen_route_ids:
+            continue
+        entries.append(entry)
+        seen_families.add(family)
+        entries_by_family[family] = entry
+        seen_route_ids.add(route_id)
+
+    if platform_registry is not None:
+        for route in sorted(platform_registry.routes, key=lambda item: item.route_id):
+            entry = _route_discovered_review_family_entry(route)
+            if entry is None:
+                continue
+            family = entry["family"]
+            route_id = entry["route_id"]
+            if family in seen_families or route_id in seen_route_ids:
+                continue
+            entries.append(entry)
+            seen_families.add(family)
+            seen_route_ids.add(route_id)
+
+    return tuple(entries)
+
+
+def review_registry_with_route_families(
+    registry: Mapping[str, Any],
+    *,
+    platform_registry: PlatformCapabilityRegistry | None = None,
+) -> dict[str, Any]:
+    """Return a registry copy whose ``families`` is the effective roster."""
+
+    out = dict(registry)
+    out["families"] = [
+        dict(entry)
+        for entry in review_family_entries(registry, platform_registry=platform_registry)
+    ]
+    return out
+
+
 def review_family_route_ids(registry: Mapping[str, Any]) -> dict[str, str]:
-    """Review families with a platform-capability route gate."""
+    """Review families that require a platform-capability route admission."""
 
     out: dict[str, str] = {}
-    for entry in registry.get("families") or []:
-        if not isinstance(entry, Mapping):
-            continue
+    for entry in review_family_entries(registry):
         family = str(entry.get("family") or "").strip()
         route_id = str(entry.get("route_id") or "").strip()
         if family and route_id:
@@ -535,20 +656,49 @@ def review_family_route_ids(registry: Mapping[str, Any]) -> dict[str, str]:
     return out
 
 
-def _legacy_dossier_families(roster: set[str]) -> dict[str, str]:
-    """Families accepted only in already-written dossiers after a roster rename."""
+def _route_authority_review_safe(route: PlatformCapabilityRoute) -> bool:
+    if route.authority_ceiling is AuthorityCeiling.READ_ONLY:
+        return True
+    return (
+        not route.mutability.any_mutation()
+        and route.tool_access.filesystem.value != "read_write"
+        and route.tool_access.shell.value != "full"
+    )
 
-    return {
-        legacy: current
-        for legacy, current in LEGACY_DOSSIER_FAMILY_ALIASES.items()
-        if current in roster
-    }
 
+def _route_review_admission_reasons(
+    *,
+    family: str,
+    entry: Mapping[str, Any],
+    route: PlatformCapabilityRoute | None,
+    freshness_errors: Sequence[str] = (),
+) -> tuple[str, ...]:
+    route_id = normalize_route_id(str(entry.get("route_id") or "").strip())
+    if route is None:
+        return (f"{route_id}:route_missing_from_platform_registry",)
 
-def _canonical_dossier_family(family: str, legacy_dossier_families: Mapping[str, str]) -> str:
-    """Map a dossier-only legacy family name to its current review family."""
+    reasons: list[str] = [
+        *route.blocked_reasons,
+        *route.freshness.evidence.all_blocked_reasons(),
+    ]
+    if route.route_state is not RouteState.ACTIVE and not reasons:
+        reasons.append(f"{route_id}:route_state_{route.route_state.value}")
+    reasons.extend(f"freshness_check:{error}" for error in freshness_errors)
 
-    return str(legacy_dossier_families.get(family, family))
+    command = _reviewer_command(entry)
+    if not command:
+        reasons.append(f"{route_id}:reviewer_command_missing")
+    elif command[0] != route.sanctioned_wrapper:
+        reasons.append(f"{route_id}:reviewer_command_not_sanctioned_wrapper:{command[0]}")
+    if not route.sanctioned_wrapper.strip():
+        reasons.append(f"{route_id}:sanctioned_wrapper_missing")
+    if not _route_authority_review_safe(route):
+        reasons.append(f"{route_id}:authority_not_review_safe:{route.authority_ceiling.value}")
+    if QualityFloor.FRONTIER_REVIEW_REQUIRED not in route.quality_envelope.eligible_quality_floors:
+        reasons.append(f"{route_id}:frontier_review_required_quality_missing")
+    if not str(family).strip():
+        reasons.append(f"{route_id}:review_family_missing")
+    return tuple(dict.fromkeys(reasons))
 
 
 def review_route_blocked_families(
@@ -556,48 +706,55 @@ def review_route_blocked_families(
     *,
     platform_registry: PlatformCapabilityRegistry | None = None,
 ) -> dict[str, tuple[str, ...]]:
-    """Reviewer families whose backing route is not currently admitted.
+    """Reviewer families whose declared backing route is not admitted.
 
-    This is an admission gate, not a provider-outage detector: a blocked route
-    must not be spent as reviewer evidence just because the wrapper exists.
+    A wrapper's existence is not capacity. Families that declare a route_id
+    count only when that platform-capability route is active and fresh; missing
+    routes are treated as blocked supply, not as an ad hoc reviewer.
     """
 
-    route_ids = review_family_route_ids(registry)
-    if not route_ids:
-        return {}
-    platform_registry = platform_registry or load_platform_capability_registry(
+    resolved_platform_registry = platform_registry or load_platform_capability_registry(
         receipt_dir=DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
     )
+    effective_registry = review_registry_with_route_families(
+        registry, platform_registry=resolved_platform_registry
+    )
+    route_ids = review_family_route_ids(effective_registry)
+    if not route_ids:
+        return {}
+    family_entries = {
+        str(entry.get("family") or "").strip(): entry
+        for entry in review_family_entries(effective_registry)
+    }
 
-    route_map = platform_registry.route_map()
+    route_map = resolved_platform_registry.route_map()
     freshness_checks = {
         check.route_id: check
         for check in check_registry_freshness(
-            platform_registry, route_ids=route_ids.values()
+            resolved_platform_registry, route_ids=route_ids.values()
         ).routes
     }
     blocked: dict[str, tuple[str, ...]] = {}
     for family, route_id in route_ids.items():
         route = route_map.get(route_id)
-        if route is None:
-            raise PlatformCapabilityRegistryError(
-                f"review family {family!r} route {route_id!r} missing from platform registry"
-            )
-        reasons = [
-            *route.blocked_reasons,
-            *route.freshness.evidence.all_blocked_reasons(),
-        ]
         freshness_check = freshness_checks.get(route_id)
+        entry = family_entries.get(family) or {"family": family, "route_id": route_id}
+        freshness_errors: Sequence[str] = ()
         if (
-            route.route_state is RouteState.ACTIVE
+            route is not None
+            and route.route_state is RouteState.ACTIVE
             and freshness_check is not None
             and not freshness_check.ok
         ):
-            reasons.extend(f"freshness_check:{error}" for error in freshness_check.errors)
-        if route.route_state is not RouteState.ACTIVE or reasons:
-            blocked[family] = tuple(
-                dict.fromkeys(reasons or [f"{route_id}:route_state_{route.route_state.value}"])
-            )
+            freshness_errors = freshness_check.errors
+        reasons = _route_review_admission_reasons(
+            family=family,
+            entry=entry,
+            route=route,
+            freshness_errors=freshness_errors,
+        )
+        if reasons:
+            blocked[family] = reasons
     return blocked
 
 
@@ -612,7 +769,10 @@ def _degradation_notes(
         route_id = route_ids.get(family, "unknown")
         notes.append(f"degraded_family_route_blocked:{family}")
         for reason in route_blocked_families[family]:
-            notes.append(f"route_blocked_family_reason:{family}:{route_id}:{reason}")
+            normalized_reason = str(reason).strip()
+            if normalized_reason.startswith(f"{route_id}:"):
+                normalized_reason = normalized_reason[len(route_id) + 1 :]
+            notes.append(f"route_blocked_family_reason:{family}:{route_id}:{normalized_reason}")
     if outage_families:
         notes.append("post_recovery_rereview_required")
     if route_blocked_families:
@@ -667,7 +827,7 @@ def constitute_team(
     """
 
     sizing = registry["sizing"][team_class]
-    roster = [entry["family"] for entry in registry["families"]]
+    roster = [entry["family"] for entry in review_family_entries(registry)]
     if available_families is None:
         available = list(roster)
     else:
@@ -719,10 +879,9 @@ def constitute_team(
     else:
         size = int(sizing["team_size"])
         if out or blocked:
-            # t2/t3 keep their own sizing — the unavailable family simply is
-            # not seated; the markers still ride so synthesis/admission
-            # validate by the shrunken roster and the re-review obligation is
-            # recorded.
+            # t2/t3 keep their own sizing — the walled family simply is not
+            # seated; route-blocked families behave the same, but carry route
+            # receipt reasons so recovery is auditable.
             notes.extend(
                 _degradation_notes(
                     outage_families=out,
@@ -1242,7 +1401,7 @@ def synthesize_dossier(
     """
 
     sizing = registry["sizing"][team_class]
-    roster = [entry["family"] for entry in registry["families"]]
+    roster = [entry["family"] for entry in review_family_entries(registry)]
     # an outage-degraded constitution judges itself by the DEGRADED rules:
     # t2 sizing, roster minus the walled families (postmortem 2026-06-12 —
     # otherwise require_all_families would seal the verdict it already
@@ -1257,12 +1416,12 @@ def synthesize_dossier(
         for n in constitution_notes
         if str(n).startswith("degraded_family_route_blocked:")
     )
-    if degraded_outage or degraded_route_blocked:
+    degraded_families = set(degraded_outage) | set(degraded_route_blocked)
+    if degraded_families:
         # roster shrinks for ANY outage-degraded class; the t1->t2 sizing
         # swap applies only when the constitution actually degraded sizing
         # (round-3 review finding: t2/t3 outage dossiers must not be judged
         # by rules their class never had)
-        degraded_families = set(degraded_outage) | set(degraded_route_blocked)
         roster = [f for f in roster if f not in degraded_families]
         if any(str(n) == "degraded_to:t2_standard" for n in constitution_notes):
             sizing = registry["sizing"]["t2_standard"]
@@ -1445,12 +1604,10 @@ def _dossier_validity_blockers(
     _note_route_blocked = sorted(
         n.split(":", 1)[1] for n in _notes if n.startswith("degraded_family_route_blocked:")
     )
-    _note_route_block_reasons, _malformed_route_block_reason_notes = _route_block_reason_notes(
-        _notes
-    )
     _field_route_blocked = sorted(
         str(f) for f in (dossier.get("degraded_family_route_blocked") or [])
     )
+    _note_route_block_reasons, malformed_reason_notes = _route_block_reason_notes(_notes)
     degraded_outage: list[str] = []
     degraded_route_blocked: list[str] = []
     if _note_out or _field_out or _note_route_blocked or _field_route_blocked:
@@ -1463,8 +1620,7 @@ def _dossier_validity_blockers(
         if (
             _note_out != _field_out
             or _note_route_blocked != _field_route_blocked
-            or bool(_malformed_route_block_reason_notes)
-            or any(family not in _note_route_block_reasons for family in _note_route_blocked)
+            or malformed_reason_notes
             or (_note_out and not dossier.get("post_recovery_rereview_required"))
             or (_note_route_blocked and not dossier.get("post_route_receipt_rereview_required"))
             or (sizing_degraded and team_class != "t1_critical")
@@ -1477,7 +1633,7 @@ def _dossier_validity_blockers(
         # a degraded family must be a REAL roster family (round-5 finding:
         # a nonsense family name in the markers + witness state would buy a
         # t1->t2 downgrade while leaving the actual roster untouched)
-        _full_roster = {str(entry["family"]) for entry in registry["families"]}
+        _full_roster = {str(entry["family"]) for entry in review_family_entries(registry)}
         _unknown_degraded = sorted(
             (set(degraded_outage) | set(degraded_route_blocked)) - _full_roster
         )
@@ -1612,30 +1768,22 @@ def _dossier_validity_blockers(
     )
     if duplicate_reviewer_ids:
         blockers.append("review_dossier_duplicate_reviewer_id:" + ",".join(duplicate_reviewer_ids))
-    roster = {entry["family"] for entry in registry["families"]}
-    legacy_dossier_families = _legacy_dossier_families(roster)
-    admitted_dossier_families = roster | set(legacy_dossier_families)
-    reviewer_families = {str(r.get("family") or "missing") for r in reviews}
-    unknown_reviewer_families = reviewer_families - admitted_dossier_families
+    roster = {entry["family"] for entry in review_family_entries(registry)}
+    unknown_reviewer_families = {str(r.get("family") or "missing") for r in reviews} - roster
     if unknown_reviewer_families:
         blockers.append(
             "review_dossier_unknown_reviewer_family:" + ",".join(sorted(unknown_reviewer_families))
         )
-    canonical_reviewer_families = {
-        _canonical_dossier_family(family, legacy_dossier_families) for family in reviewer_families
-    }
     degraded_families = set(degraded_outage) | set(degraded_route_blocked)
     if degraded_families:
-        seated_degraded = sorted(canonical_reviewer_families & degraded_families)
+        seated_degraded = sorted({str(r.get("family")) for r in reviews} & degraded_families)
         if seated_degraded:
             blockers.append(
                 "review_dossier_degraded_family_was_seated:" + ",".join(seated_degraded)
             )
         roster = roster - degraded_families
-        legacy_dossier_families = _legacy_dossier_families(roster)
-        admitted_dossier_families = roster | set(legacy_dossier_families)
     blocked_route_families = set(live_route_blocked) - degraded_families
-    seated_blocked_routes = sorted(canonical_reviewer_families & blocked_route_families)
+    seated_blocked_routes = sorted({str(r.get("family")) for r in reviews} & blocked_route_families)
     if seated_blocked_routes:
         blockers.append(
             "review_dossier_blocked_route_family_seated:" + ",".join(seated_blocked_routes)
@@ -1688,15 +1836,11 @@ def _dossier_validity_blockers(
 
     quorum_reviews = _reviews_for_quorum(reviews, criticals, phantoms)
     accepts = _checklist_complete_accepts(quorum_reviews, lenses)
-    accept_families = {str(r.get("family")) for r in accepts}
-    unknown_accept_families = accept_families - admitted_dossier_families
+    unknown_accept_families = {str(r.get("family")) for r in accepts} - roster
     if unknown_accept_families:
         blockers.append(
             "review_dossier_unknown_accept_family:" + ",".join(sorted(unknown_accept_families))
         )
-    canonical_accept_families = {
-        _canonical_dossier_family(family, legacy_dossier_families) for family in accept_families
-    }
     required_quorum = _int_field(sizing.get("quorum_accept"), "sizing.quorum_accept", blockers)
     if required_quorum is None:
         return tuple(blockers)
@@ -1710,17 +1854,14 @@ def _dossier_validity_blockers(
         blockers.append(f"review_dossier_quorum_mismatch:{recorded_quorum}!={required_quorum}")
     if len(accepts) < required_quorum:
         blockers.append(f"review_dossier_quorum_not_met:{len(accepts)}/{required_quorum}")
-    accept_family_targets = accept_families | {
-        current for legacy, current in legacy_dossier_families.items() if legacy in accept_families
-    }
+    accept_families = {str(r.get("family")) for r in accepts}
     min_families = _int_field(sizing.get("min_families", 1), "sizing.min_families", blockers)
-    if min_families is not None and len(canonical_accept_families) < min_families:
+    if min_families is not None and len(accept_families) < min_families:
         blockers.append(
-            "review_dossier_family_diversity:"
-            f"accept_families={len(canonical_accept_families)}/{min_families}"
+            f"review_dossier_family_diversity:accept_families={len(accept_families)}/{min_families}"
         )
     if sizing.get("require_all_families"):
-        missing_families = roster - accept_family_targets
+        missing_families = roster - {str(r.get("family")) for r in accepts}
         if missing_families:
             blockers.append(
                 "review_dossier_family_diversity:missing_accept_from="
@@ -1728,12 +1869,7 @@ def _dossier_validity_blockers(
             )
     if frontmatter is not None and accepts:
         writer_family = writer_family_for_lane(str(frontmatter.get("assigned_to") or ""), registry)
-        writer_accepts = sum(
-            1
-            for r in accepts
-            if _canonical_dossier_family(str(r.get("family")), legacy_dossier_families)
-            == writer_family
-        )
+        writer_accepts = sum(1 for r in accepts if str(r.get("family")) == writer_family)
         if writer_accepts > len(accepts) // 2:
             blockers.append(
                 f"review_dossier_writer_family_majority:{writer_family}:{writer_accepts}/{len(accepts)}"

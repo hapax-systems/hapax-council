@@ -63,9 +63,14 @@ def _review_team_gate_off(monkeypatch: pytest.MonkeyPatch) -> None:
 
     The review-team quorum gate (review_team.review_team_verdict_blockers) is
     exercised explicitly by TestReviewTeamGate, which re-enables it per test.
+    Route-receipt behavior is covered in tests/test_review_team.py; these
+    generic autoqueue fixtures must not depend on live capability receipts.
     """
 
     monkeypatch.setenv("HAPAX_REVIEW_TEAM_GATE_OFF", "1")
+    monkeypatch.setattr(
+        autoqueue.review_team, "review_route_blocked_families", lambda *_a, **_k: {}
+    )
 
 
 def _write_review_dossier(
@@ -398,6 +403,8 @@ class _FakeRunner:
     def __init__(self) -> None:
         self.open_prs: list[dict[str, Any]] = []
         self.queued_prs: set[int] = set()
+        self.queue_refs: list[str] = []
+        self.fail_queue_refs = False
         self.calls: list[list[str]] = []
         self.fail_status_posts = False
         # head_sha -> existing commit statuses (most-recent-first), for the G3
@@ -454,6 +461,14 @@ class _FakeRunner:
                 },
             }
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if (
+            cmd[:2] == ["gh", "api"]
+            and len(cmd) >= 3
+            and cmd[2].endswith("/git/matching-refs/heads/gh-readonly-queue")
+        ):
+            if self.fail_queue_refs:
+                return subprocess.CompletedProcess(cmd, 1, "", "queue refs unavailable")
+            return subprocess.CompletedProcess(cmd, 0, "\n".join(self.queue_refs), "")
         if cmd[:3] == ["gh", "pr", "merge"]:
             return subprocess.CompletedProcess(cmd, 0, f"merged {cmd[3]}\n", "")
         if (
@@ -1074,6 +1089,56 @@ def test_skips_prs_already_in_queue_or_auto_merge_enabled(tmp_path: Path) -> Non
     assert report["counts"]["already_queued"] == 1
     assert report["counts"]["already_auto_merge_enabled"] == 1
     assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
+
+def test_gh_readonly_queue_ref_marks_pr_already_queued_when_graphql_empty(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queue-ref", pr=4296)
+    runner = _FakeRunner()
+    runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-4296-deadbeef"]
+    runner.open_prs = [_pr(4296)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["already_queued"] == 1
+    assert report["decisions"][0]["action"] == "already_queued"
+    assert any(
+        call[:2] == ["gh", "api"]
+        and len(call) >= 3
+        and call[2] == "repos/owner/repo/git/matching-refs/heads/gh-readonly-queue"
+        for call in runner.calls
+    )
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
+
+def test_merge_queue_ref_numbers_returns_empty_set_when_matching_refs_fails(
+    tmp_path: Path,
+) -> None:
+    runner = _FakeRunner()
+    runner.fail_queue_refs = True
+    runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-4296-deadbeef"]
+
+    queued = autoqueue._merge_queue_ref_pr_numbers(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert queued == set()
+    assert any(
+        call[:2] == ["gh", "api"]
+        and len(call) >= 3
+        and call[2] == "repos/owner/repo/git/matching-refs/heads/gh-readonly-queue"
+        for call in runner.calls
+    )
 
 
 def test_merge_queue_status_is_ready_for_already_queued_pr(tmp_path: Path) -> None:
