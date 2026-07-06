@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-quota-telemetry-writer"
 FIXTURES = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
 NOW = "2026-06-10T00:00:00Z"
+PAYG_NOW = "2026-07-06T14:05:00Z"
 
 
 def _fake_nvidia_smi(tmp_path: Path, body: str) -> Path:
@@ -29,6 +30,7 @@ def _run_writer(
     tmp_path: Path,
     *extra_args: str,
     nvidia_body: str = "echo '1000, 32000'",
+    now: str = NOW,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     out = tmp_path / "out" / "quota-spend-ledger-live.json"
     relay = tmp_path / "relay-receipts"
@@ -40,7 +42,7 @@ def _run_writer(
             str(SCRIPT),
             "--skip-receipts",
             "--now",
-            NOW,
+            now,
             "--out",
             str(out),
             "--relay-receipt-dir",
@@ -256,6 +258,45 @@ def test_glmcp_quota_wall_beats_fresh_admission_receipt(tmp_path: Path) -> None:
 def test_glmcp_payg_admission_supersedes_coding_plan_quota_wall(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
+    _wall_receipt(relay, "cx-glmcp", "2026-07-06T16:00:00Z")
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+    )
+
+    result, out = _run_writer(tmp_path, now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "fresh"
+    assert any("cx-glmcp-quota-wall.yaml" in ref for ref in glmcp_snapshot["evidence_refs"])
+    assert any(
+        "glmcp-quota-admission-payg.yaml" in ref and "endpoint:https://api.z.ai/api/paas/v4" in ref
+        for ref in glmcp_snapshot["evidence_refs"]
+    )
+    assert "PAYG" in glmcp_snapshot["operator_visible_reason"]
+    assert any(
+        ref == "spend-gate:glmcp.review.direct:eligible_active_budget"
+        for ref in glmcp_snapshot["evidence_refs"]
+    )
+    assert "spend-gate-budget:tb-20260706-zai-glmcp-payg-review" in glmcp_snapshot["evidence_refs"]
+    summary = json.loads(result.stdout)
+    assert summary["quota_walls"] == {"glmcp": 1}
+    assert summary["glmcp_admissions"] == 1
+
+
+def test_glmcp_payg_admission_does_not_supersede_without_active_paid_budget(
+    tmp_path: Path,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
     _wall_receipt(relay, "cx-glmcp", "2026-06-10T06:00:00Z")
     _glmcp_admission(
         relay,
@@ -273,16 +314,14 @@ def test_glmcp_payg_admission_supersedes_coding_plan_quota_wall(tmp_path: Path) 
         for snapshot in payload["quota_snapshots"]
         if snapshot["route_id"] == "glmcp.review.direct"
     )
-    assert glmcp_snapshot["subscription_quota_state"] == "fresh"
+    assert glmcp_snapshot["subscription_quota_state"] == "exhausted"
     assert any("cx-glmcp-quota-wall.yaml" in ref for ref in glmcp_snapshot["evidence_refs"])
-    assert any(
-        "glmcp-quota-admission-payg.yaml" in ref and "endpoint:https://api.z.ai/api/paas/v4" in ref
-        for ref in glmcp_snapshot["evidence_refs"]
+    assert any("glmcp-quota-admission-payg.yaml" in ref for ref in glmcp_snapshot["evidence_refs"])
+    assert (
+        "spend-gate:glmcp.review.direct:refused_expired_budget" in glmcp_snapshot["evidence_refs"]
     )
-    assert "PAYG" in glmcp_snapshot["operator_visible_reason"]
-    summary = json.loads(result.stdout)
-    assert summary["quota_walls"] == {"glmcp": 1}
-    assert summary["glmcp_admissions"] == 1
+    assert "spend-gate-budget:tb-20260706-zai-glmcp-payg-review" in glmcp_snapshot["evidence_refs"]
+    assert "paid-spend gate" in glmcp_snapshot["operator_visible_reason"]
 
 
 def test_glmcp_role_aliases_map_to_glmcp_not_codex(tmp_path: Path) -> None:
@@ -340,12 +379,12 @@ def test_fresh_glmcp_payg_admission_receipt_marks_glmcp_fresh(tmp_path: Path) ->
     relay.mkdir()
     _glmcp_admission(
         relay,
-        observed_at="2026-06-09T23:55:00Z",
+        observed_at="2026-07-06T14:04:00Z",
         endpoint="https://api.z.ai/api/paas/v4",
         name="glmcp-quota-admission-payg.yaml",
     )
 
-    result, out = _run_writer(tmp_path)
+    result, out = _run_writer(tmp_path, now=PAYG_NOW)
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
@@ -362,6 +401,9 @@ def test_fresh_glmcp_payg_admission_receipt_marks_glmcp_fresh(tmp_path: Path) ->
         and "endpoint:https://api.z.ai/api/paas/v4" in ref
         and "model:glm-5.2" in ref
         for ref in glmcp_snapshot["evidence_refs"]
+    )
+    assert (
+        "spend-gate:glmcp.review.direct:eligible_active_budget" in glmcp_snapshot["evidence_refs"]
     )
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 1

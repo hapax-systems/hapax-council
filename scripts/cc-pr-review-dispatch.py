@@ -239,6 +239,7 @@ def clear_route_recovered_family_outage(
         return dict(outage_witness)
 
     state_path = state_path or FAMILY_OUTAGE_STATE
+    durable_clear = False
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = state_path.with_name(f"{state_path.name}.lock")
@@ -264,6 +265,7 @@ def clear_route_recovered_family_outage(
                     tmp.write(json.dumps(state, indent=1))
                     tmp_path = Path(tmp.name)
                 os.replace(tmp_path, state_path)
+                durable_clear = True
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     except OSError as exc:
@@ -272,6 +274,8 @@ def clear_route_recovered_family_outage(
             ",".join(recovered),
             exc,
         )
+    if not durable_clear:
+        return dict(outage_witness)
 
     recovered_set = set(recovered)
     return {

@@ -1792,6 +1792,37 @@ class TestFamilyOutageDegradation:
         assert any(family == "glm" for _, family, _ in reviewers.invocations)
         assert json.loads(state.read_text(encoding="utf-8")) == {}
 
+    def test_route_admission_keeps_outage_witness_when_clear_write_fails(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "glm": {
+                        "observed_at": "2026-06-11T20:55:00+00:00",
+                        "outage_started_at": "2026-06-11T20:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def fail_replace(_tmp: Path, _state: Path) -> None:
+            raise OSError("fixture write failure")
+
+        monkeypatch.setattr(dispatch.os, "replace", fail_replace)
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {"glm": "2026-06-11T20:55:00+00:00"},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            state_path=state,
+        )
+
+        assert witness == {"glm": "2026-06-11T20:55:00+00:00"}
+        assert "glm" in json.loads(state.read_text(encoding="utf-8"))
+
     def test_blocked_route_keeps_route_backed_outage_latch(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:

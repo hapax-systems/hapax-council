@@ -196,6 +196,7 @@ def test_zai_quota_error_classifies_reset_without_secret(
 
 def test_call_glm_falls_back_to_payg_api_on_coding_plan_quota_wall(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     module = _load_module()
     seen_urls: list[str] = []
@@ -236,7 +237,65 @@ def test_call_glm_falls_back_to_payg_api_on_coding_plan_quota_wall(
 
     reply = module.call_glm("review prompt", config, "test-secret-token")
 
+    captured = capsys.readouterr()
     assert reply == "```yaml\nverdict: accept\n```"
+    assert "PAYG fallback used" in captured.err
+    assert "primary_error_class=quota_exhausted" in captured.err
+    assert "test-secret-token" not in captured.err
+    assert seen_urls == [
+        "https://api.z.ai/api/coding/paas/v4/chat/completions",
+        "https://api.z.ai/api/paas/v4/chat/completions",
+    ]
+
+
+def test_call_glm_reports_payg_fallback_failure_after_coding_plan_quota_wall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    seen_urls: list[str] = []
+
+    def fake_open(request: object, *, timeout: float) -> object:
+        seen_urls.append(request.full_url)
+        if len(seen_urls) == 1:
+            body = {
+                "error": {
+                    "code": "1310",
+                    "message": "Quota exhausted. Your limit will reset at 2026-07-09T13:02:51Z.",
+                    "next_flush_time": "2026-07-09T13:02:51Z",
+                }
+            }
+        else:
+            body = {"error": {"code": "1113", "message": "Insufficient balance"}}
+        raise urllib.error.HTTPError(
+            request.full_url,
+            429,
+            "Too Many Requests",
+            {},
+            io.BytesIO(json.dumps(body).encode("utf-8")),
+        )
+
+    monkeypatch.setattr(module, "open_no_redirect", fake_open)
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+
+    with pytest.raises(module.ApiError) as excinfo:
+        module.call_glm("review prompt", config, "test-secret-token")
+
+    message = str(excinfo.value)
+    assert "Coding Plan quota fallback to Z.ai PAYG API failed" in message
+    assert "primary=(" in message
+    assert "fallback=(" in message
+    assert "account_balance_or_arrears" in message
+    assert "test-secret-token" not in message
     assert seen_urls == [
         "https://api.z.ai/api/coding/paas/v4/chat/completions",
         "https://api.z.ai/api/paas/v4/chat/completions",

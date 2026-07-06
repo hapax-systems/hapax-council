@@ -590,13 +590,20 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
                 f"{exc}; retry later or check the Z.ai Coding Plan endpoint/status"
             ) from exc
         try:
-            return _call_glm_once(
+            reply = _call_glm_once(
                 prompt,
                 config,
                 api_key,
                 base_url=config.payg_base_url,
                 provider_label="PAYG API",
             )
+            print(
+                "hapax-glmcp-reviewer: PAYG fallback used "
+                f"endpoint={config.payg_base_url} model={config.model} "
+                f"primary_error_class={exc.info.error_class}",
+                file=sys.stderr,
+            )
+            return reply
         except ApiError as fallback_exc:
             raise ApiError(
                 "Coding Plan quota fallback to Z.ai PAYG API failed; "
