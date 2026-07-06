@@ -13,6 +13,14 @@ if str(SCRIPTS) not in sys.path:
 import github_pr_status
 
 
+def _api_fields(cmd: list[str]) -> dict[str, str]:
+    return {
+        cmd[index + 1].split("=", 1)[0]: cmd[index + 1].split("=", 1)[1]
+        for index, token in enumerate(cmd[:-1])
+        if token == "-f" and "=" in cmd[index + 1]
+    }
+
+
 class FakeRunner:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
@@ -86,11 +94,7 @@ def test_rest_status_rollup_paginates_check_runs(tmp_path: Path) -> None:
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
             self.calls.append(list(cmd))
             if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/check-runs"):
-                fields = {
-                    cmd[index + 1].split("=", 1)[0]: cmd[index + 1].split("=", 1)[1]
-                    for index, token in enumerate(cmd[:-1])
-                    if token == "-f" and "=" in cmd[index + 1]
-                }
+                fields = _api_fields(cmd)
                 page = int(fields.get("page", "1"))
                 if page == 1:
                     payload = {
@@ -132,6 +136,58 @@ def test_rest_status_rollup_paginates_check_runs(tmp_path: Path) -> None:
 
     assert len(rollup) == 101
     assert any(item.get("name") == "late-failure" for item in rollup)
+    assert any("page=2" in call for call in runner.calls for call in call)
+
+
+def test_rest_status_rollup_paginates_combined_statuses(tmp_path: Path) -> None:
+    class PaginatedStatusRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/check-runs"):
+                return subprocess.CompletedProcess(
+                    cmd, 0, json.dumps({"total_count": 0, "check_runs": []}), ""
+                )
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/status"):
+                page = int(_api_fields(cmd).get("page", "1"))
+                if page == 1:
+                    payload = {
+                        "total_count": 101,
+                        "statuses": [
+                            {
+                                "context": f"legacy-{index}",
+                                "state": "success",
+                            }
+                            for index in range(100)
+                        ],
+                    }
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+                payload = {
+                    "total_count": 101,
+                    "statuses": [
+                        {
+                            "context": "late-legacy-failure",
+                            "state": "failure",
+                        }
+                    ],
+                }
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+    runner = PaginatedStatusRunner()
+
+    rollup = github_pr_status.fetch_status_check_rollup_rest(
+        "abc123",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        use_cache=False,
+    )
+
+    assert len(rollup) == 101
+    assert any(
+        item.get("context") == "late-legacy-failure" and item.get("state") == "FAILURE"
+        for item in rollup
+    )
     assert any("page=2" in call for call in runner.calls for call in call)
 
 
@@ -202,6 +258,52 @@ def test_rest_status_rollup_fails_closed_when_status_source_fails(tmp_path: Path
         }
     ]
     assert not list((tmp_path / "cache").glob("**/*.json"))
+
+
+def test_rest_status_rollup_fails_closed_when_status_pagination_fails(tmp_path: Path) -> None:
+    class PartialStatusRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/check-runs"):
+                return subprocess.CompletedProcess(
+                    cmd, 0, json.dumps({"total_count": 0, "check_runs": []}), ""
+                )
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/status"):
+                page = int(_api_fields(cmd).get("page", "1"))
+                if page == 1:
+                    payload = {
+                        "total_count": 101,
+                        "statuses": [
+                            {
+                                "context": f"legacy-{index}",
+                                "state": "success",
+                            }
+                            for index in range(100)
+                        ],
+                    }
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+                return subprocess.CompletedProcess(cmd, 1, "", "status page unavailable")
+            return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+    runner = PartialStatusRunner()
+
+    rollup = github_pr_status.fetch_status_check_rollup_rest(
+        "abc123",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        use_cache=False,
+    )
+
+    assert rollup == [
+        {
+            "name": github_pr_status.REST_INDETERMINATE_CHECK_NAME,
+            "status": "PENDING",
+            "conclusion": None,
+            "details": "combined_status_rest_indeterminate",
+        }
+    ]
+    assert any("page=2" in call for call in runner.calls for call in call)
 
 
 def test_rest_status_rollup_fails_closed_when_check_run_source_fails(tmp_path: Path) -> None:

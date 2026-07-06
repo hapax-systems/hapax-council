@@ -340,14 +340,14 @@ def fetch_status_check_rollup_rest(
     if raw_runs is None:
         return _indeterminate_rollup("check_runs_rest_indeterminate")
 
-    combined_status = _rest_get_json(
+    raw_statuses = _rest_get_json_object_array_pages_or_none(
         f"repos/{repo}/commits/{ref}/status",
+        array_key="statuses",
+        total_key="total_count",
         repo_root=repo_root,
         runner=runner,
-        fields={"per_page": "100"},
     )
-    raw_statuses = combined_status.get("statuses") if isinstance(combined_status, dict) else None
-    if not isinstance(raw_statuses, list):
+    if raw_statuses is None:
         return _indeterminate_rollup("combined_status_rest_indeterminate")
 
     rollup: list[dict[str, Any]] = []
