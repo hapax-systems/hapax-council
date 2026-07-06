@@ -10,6 +10,7 @@ same OpenAI-compatible PAYG API endpoint when Coding Plan quota is exhausted.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -17,9 +18,11 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +38,21 @@ from shared.failure_classification import (  # noqa: E402
     FailureCode,
     failure_code_for_zai,
 )
+from shared.quota_spend_ledger import (  # noqa: E402
+    DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
+    GLMCP_PAYG_BUDGET_PROFILE,
+    GLMCP_PAYG_BUDGET_PROVIDER,
+    GLMCP_PAYG_BUDGET_QUALITY_FLOOR,
+    GLMCP_PAYG_BUDGET_ROUTE_ID,
+    GLMCP_PAYG_BUDGET_TASK_CLASS,
+    GLMCP_PAYG_ESTIMATED_COST_USD,
+    QUOTA_SPEND_LEDGER_LIVE_ENV,
+    CapacityPool,
+    PaidRouteRequest,
+    QuotaSpendLedgerError,
+    evaluate_paid_route_eligibility,
+    load_quota_spend_ledger_resolved,
+)
 
 DEFAULT_SECRET_ENTRY = "glmcp/api-key"
 DEFAULT_CODING_PLAN_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
@@ -45,6 +63,8 @@ DEFAULT_TIMEOUT_SECONDS = 900
 DEFAULT_MAX_TOKENS = 8192
 DEFAULT_THINKING = "disabled"
 PAYG_FALLBACK_ERROR_CLASSES = frozenset({"daily_limit_exhausted", "quota_exhausted"})
+PAYG_SPEND_RECEIPT_SCHEMA = "hapax.glmcp_payg_spend.v1"
+PAYG_SPEND_RECEIPT_RECONCILE_AFTER = timedelta(hours=24)
 # Z.ai's GLM-5 repository and Coding Plan docs now identify GLM-5.2 as the
 # current high-value coding model. The direct OpenAI-compatible review endpoint
 # uses ``glm-5.2``; the Claude Code/Anthropic wrapper uses ``glm-5.2[1m]``.
@@ -117,6 +137,16 @@ class ZaiErrorInfo:
     failure_code: FailureCode = FailureCode.UNKNOWN
 
 
+@dataclass(frozen=True)
+class PaygSpendGate:
+    state: str
+    budget_id: str
+    budget_authority_case: str
+    cap_remaining_usd: str | None
+    ledger_source: str
+    ledger_path: Path
+
+
 class NoRedirectHTTPHandler(urllib.request.HTTPRedirectHandler):
     """Refuse redirects so Authorization cannot be replayed to another origin."""
 
@@ -139,6 +169,9 @@ Environment overrides:
   HAPAX_GLMCP_REVIEW_THINKING          disabled|enabled (default: disabled)
   HAPAX_GLMCP_REVIEW_PAYG_FALLBACK     1 enables API-credit fallback on quota wall (default: 1)
   HAPAX_GLMCP_REVIEW_PAYG_BASE_URL     Z.ai PAYG API base URL (default: https://api.z.ai/api/paas/v4)
+  HAPAX_GLMCP_REVIEW_TASK_ID           task id for PAYG spend receipts
+  HAPAX_RELAY_RECEIPT_DIR              receipt directory for PAYG spend receipts
+  HAPAX_QUOTA_SPEND_LEDGER_LIVE        live quota/spend ledger path for paid-spend gate
   HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL=1 allow a non-docs-pinned model
   HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE=1 allow a reviewed glmcp/* entry
   HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE=1 allow a reviewed https://api.z.ai/ endpoint
@@ -590,6 +623,7 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
                 f"{exc}; retry later or check the Z.ai Coding Plan endpoint/status"
             ) from exc
         try:
+            gate = _require_payg_spend_gate()
             reply = _call_glm_once(
                 prompt,
                 config,
@@ -597,10 +631,17 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
                 base_url=config.payg_base_url,
                 provider_label="PAYG API",
             )
+            spend_receipt = _write_payg_spend_receipt(
+                gate=gate,
+                config=config,
+                primary_error=exc,
+            )
             print(
                 "hapax-glmcp-reviewer: PAYG fallback used "
                 f"endpoint={config.payg_base_url} model={config.model} "
-                f"primary_error_class={exc.info.error_class}",
+                f"primary_error_class={exc.info.error_class} "
+                f"spend_gate={gate.state} budget_id={gate.budget_id} "
+                f"spend_receipt={spend_receipt.name}",
                 file=sys.stderr,
             )
             return reply
@@ -619,6 +660,154 @@ def _should_try_payg_fallback(exc: ZaiHttpError, config: ReviewConfig) -> bool:
         and exc.info.error_class in PAYG_FALLBACK_ERROR_CLASSES
         and config.payg_base_url != config.base_url
     )
+
+
+def _quota_spend_live_path_from_env() -> Path | None:
+    configured = os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV)
+    if not configured:
+        return DEFAULT_QUOTA_SPEND_LEDGER_LIVE
+    if configured.strip() in {"0", "none", "None", "false", "False"}:
+        return None
+    return Path(configured).expanduser()
+
+
+def _payg_budget_request() -> PaidRouteRequest:
+    return PaidRouteRequest.model_validate(
+        {
+            "route_id": GLMCP_PAYG_BUDGET_ROUTE_ID,
+            "provider": GLMCP_PAYG_BUDGET_PROVIDER,
+            "profile": GLMCP_PAYG_BUDGET_PROFILE,
+            "task_class": GLMCP_PAYG_BUDGET_TASK_CLASS,
+            "quality_floor": GLMCP_PAYG_BUDGET_QUALITY_FLOOR,
+            "estimated_cost_usd": GLMCP_PAYG_ESTIMATED_COST_USD,
+            "capacity_pool": CapacityPool.API_PAID_SPEND,
+        }
+    )
+
+
+def _require_payg_spend_gate() -> PaygSpendGate:
+    live_path = _quota_spend_live_path_from_env()
+    try:
+        resolved = load_quota_spend_ledger_resolved(live_path=live_path)
+        decision = evaluate_paid_route_eligibility(resolved.ledger, _payg_budget_request())
+    except (OSError, QuotaSpendLedgerError, ValueError) as exc:
+        raise ApiError(
+            "PAYG fallback refused by paid-spend gate: quota/spend ledger could not be "
+            f"loaded ({type(exc).__name__}); run scripts/hapax-quota-telemetry-writer --json"
+        ) from exc
+    if resolved.source != "live":
+        detail = "live quota/spend ledger unavailable"
+        if resolved.live_error:
+            detail = "live quota/spend ledger invalid"
+        raise ApiError(
+            "PAYG fallback refused by paid-spend gate: "
+            f"{detail}; run scripts/hapax-quota-telemetry-writer --json"
+        )
+    if not decision.eligible or not decision.budget_id:
+        blockers = "; ".join(decision.blocking_reasons) or decision.state
+        raise ApiError(
+            "PAYG fallback refused by paid-spend gate: "
+            f"{blockers}; run scripts/hapax-quota-telemetry-writer --json"
+        )
+    budget = resolved.ledger.budget_by_id(decision.budget_id)
+    return PaygSpendGate(
+        state=decision.state,
+        budget_id=decision.budget_id,
+        budget_authority_case=budget.authority_case,
+        cap_remaining_usd=(
+            str(decision.cap_remaining_usd) if decision.cap_remaining_usd is not None else None
+        ),
+        ledger_source=resolved.source,
+        ledger_path=resolved.path,
+    )
+
+
+def _relay_receipt_dir() -> Path:
+    configured = os.environ.get("HAPAX_RELAY_RECEIPT_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".cache" / "hapax" / "relay" / "receipts"
+
+
+def _flat_yaml(value: object) -> str:
+    text = str(value)
+    if "\n" in text or "\r" in text:
+        raise ApiError("PAYG spend receipt field contained a newline")
+    return text
+
+
+def _write_flat_yaml_atomic(path: Path, fields: list[tuple[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "".join(f"{key}: {_flat_yaml(value)}\n" for key, value in fields)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, path)
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+
+
+def _write_payg_spend_receipt(
+    *,
+    gate: PaygSpendGate,
+    config: ReviewConfig,
+    primary_error: ZaiHttpError,
+) -> Path:
+    created_at = datetime.now(UTC).replace(microsecond=0)
+    stamp = created_at.strftime("%Y%m%dT%H%M%SZ")
+    suffix = hashlib.sha256(f"{stamp}:{os.getpid()}:{gate.budget_id}".encode()).hexdigest()[:8]
+    spend_id = f"spend-{stamp}-glmcp-payg-review-{suffix}"
+    path = _relay_receipt_dir() / f"glmcp-payg-spend-{stamp.lower()}-{suffix}.yaml"
+    task_id = (
+        os.environ.get("HAPAX_GLMCP_REVIEW_TASK_ID")
+        or os.environ.get("HAPAX_CC_TASK_ID")
+        or "glmcp-review-direct"
+    )
+    fields: list[tuple[str, object]] = [
+        ("schema", PAYG_SPEND_RECEIPT_SCHEMA),
+        ("status", "spend_estimated"),
+        ("spend_id", spend_id),
+        ("task_id", task_id),
+        ("authority_case", gate.budget_authority_case),
+        ("route_id", GLMCP_PAYG_BUDGET_ROUTE_ID),
+        ("capacity_pool", CapacityPool.API_PAID_SPEND.value),
+        ("budget_id", gate.budget_id),
+        ("provider", GLMCP_PAYG_BUDGET_PROVIDER),
+        ("model_or_engine", config.model),
+        ("model_id", "z_ai-glm-5.2"),
+        ("effort", "none"),
+        ("quantization", "not_applicable"),
+        ("auth_surface", "api_key"),
+        ("quality_floor", GLMCP_PAYG_BUDGET_QUALITY_FLOOR),
+        (
+            "quality_preservation_reason",
+            "receipt-bounded GLMCP review fallback after Coding Plan quota wall",
+        ),
+        ("spend_reason", "quota_exhaustion"),
+        ("estimated_cost_usd", GLMCP_PAYG_ESTIMATED_COST_USD),
+        ("created_at", created_at.isoformat().replace("+00:00", "Z")),
+        (
+            "reconcile_by",
+            (created_at + PAYG_SPEND_RECEIPT_RECONCILE_AFTER).isoformat().replace("+00:00", "Z"),
+        ),
+        ("reconciliation_state", "pending"),
+        ("support_artifact_authority", "none"),
+        ("supported_tool", "hapax-glmcp-reviewer"),
+        ("endpoint", config.payg_base_url),
+        ("billing_mode", "api_credit_payg"),
+        ("payg_fallback", "true"),
+        ("primary_error_class", primary_error.info.error_class),
+        ("secret_source", "pass:glmcp/api-key"),
+        ("secret_value_persisted", "false"),
+        ("prompt_or_output_persisted", "false"),
+    ]
+    if gate.cap_remaining_usd is not None:
+        fields.append(("cap_remaining_usd", gate.cap_remaining_usd))
+    _write_flat_yaml_atomic(path, fields)
+    return path
 
 
 def main(argv: list[str] | None = None) -> int:
