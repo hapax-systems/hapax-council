@@ -467,63 +467,50 @@ fugu_pass_secret_available() {
 
 fugu_load_required_pass_secret() {
   local entry="$1"
-  local value
-  value="$(pass_first_line "$entry" || true)"
-  [ -n "$value" ] || return 1
+  local output value status stderr_file
+  if ! command -v pass >/dev/null 2>&1; then
+    echo "hapax-codex: pass binary not found while loading pass:$entry" >&2
+    return 1
+  fi
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/hapax-fugu-pass.XXXXXX")"
+  if output="$(pass show "$entry" 2>"$stderr_file")"; then
+    value="$(printf '%s\n' "$output" | sed -n '1p')"
+  else
+    status=$?
+    echo "hapax-codex: pass show '$entry' failed with exit $status" >&2
+    if [ -s "$stderr_file" ]; then
+      sed 's/^/hapax-codex: pass: /' "$stderr_file" >&2
+    fi
+    rm -f "$stderr_file"
+    return 1
+  fi
+  rm -f "$stderr_file"
+  if [ -z "$value" ]; then
+    echo "hapax-codex: pass show '$entry' returned an empty secret" >&2
+    return 1
+  fi
   export SAKANA_API_KEY="$value"
 }
 
-fugu_config_override_is_blocked() {
-  local value="$1"
-  local compact
-  compact="$(printf '%s' "$value" | tr -d '[:space:]')"
-  compact="${compact//\"/}"
-  compact="${compact//\'/}"
-  case "$compact" in
-    model=*|model_provider=*|model_catalog_json=*|model_providers.*=*|features.image_generation=*|features.apps=*)
-      return 0
-      ;;
-  esac
-  return 1
-}
-
 fugu_refuse_codex_override_args() {
-  local expect_config=0 arg config_value
+  local arg
   for arg in "$@"; do
-    if [ "$expect_config" -eq 1 ]; then
-      if fugu_config_override_is_blocked "$arg"; then
-        echo "hapax-codex: Fugu mode refuses Codex config override for protected provider/model key" >&2
-        return 1
-      fi
-      expect_config=0
-      continue
-    fi
     case "$arg" in
       -p|--profile|--profile=*|--enable|--enable=*)
-        echo "hapax-codex: Fugu mode refuses Codex profile/feature override '$arg'" >&2
+        echo "hapax-codex: Fugu mode refuses Codex profile/feature override '$arg'; next action: remove the override and use the pinned Fugu profile/config path" >&2
         return 1
         ;;
       -m|--model|--model=*|--model-provider|--model-provider=*|--model_provider|--model_provider=*|--provider|--provider=*|--base-url|--base-url=*|--endpoint|--endpoint=*|--api-key|--api-key=*|--env-key|--env-key=*|--model-catalog-json|--model-catalog-json=*|--model_catalog_json|--model_catalog_json=*)
-        echo "hapax-codex: Fugu mode refuses Codex model/provider override '$arg'" >&2
+        echo "hapax-codex: Fugu mode refuses Codex model/provider override '$arg'; next action: remove the override and use the pinned Fugu profile/config path" >&2
         return 1
         ;;
-      -c|--config)
-        expect_config=1
+      -c|--config|-c=*|--config=*|-c?*)
+        echo "hapax-codex: Fugu mode refuses Codex config override '$arg'; next action: remove -c/--config and use the pinned Fugu profile/config path" >&2
+        return 1
         ;;
-      -c=*|--config=*)
-        config_value="${arg#*=}"
-        if fugu_config_override_is_blocked "$config_value"; then
-          echo "hapax-codex: Fugu mode refuses Codex config override for protected provider/model key" >&2
-          return 1
-        fi
-        ;;
-      -c?*)
-        config_value="${arg#-c}"
-        config_value="${config_value#=}"
-        if fugu_config_override_is_blocked "$config_value"; then
-          echo "hapax-codex: Fugu mode refuses Codex config override for protected provider/model key" >&2
-          return 1
-        fi
+      --remote|--remote=*|--remote-*|--remote-*=*|cloud|exec-server)
+        echo "hapax-codex: Fugu mode refuses Codex remote/control override '$arg'; next action: remove remote-control arguments and run the governed Fugu wrapper locally" >&2
+        return 1
         ;;
     esac
   done

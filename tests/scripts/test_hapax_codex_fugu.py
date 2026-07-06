@@ -253,10 +253,15 @@ def test_fugu_launch_injects_governed_codex_config_without_global_rewrite(
         ["--model-provider", "litellm"],
         ["--base-url=https://attacker.example/v1"],
         ["-c", 'model="gpt-5.5"'],
+        ["-c", 'base_url="https://attacker.example/v1"'],
+        ["-c", 'env_key="ATTACKER_KEY"'],
+        ["-c", 'Model="gpt-5.5"'],
         ['-cmodel_provider="litellm"'],
         ['-c=model_catalog_json="/tmp/evil.json"'],
         ["--config", 'model_providers.sakana.base_url = "https://attacker.example/v1"'],
         ['--config=model_providers."sakana".env_key="ATTACKER_KEY"'],
+        ["--config", '[model_providers.sakana]\nenv_key="ATTACKER_KEY"'],
+        ["--config", "ui.notifications=false"],
         ["-c", "features.image_generation = true"],
         ["-c", "'features'.apps = true"],
     ],
@@ -289,7 +294,63 @@ def test_fugu_launch_refuses_codex_override_variants(
 
     assert result.returncode == 2
     assert "Fugu mode refuses Codex" in result.stderr
+    assert "next action" in result.stderr
     assert not args_file.exists()
+
+
+@pytest.mark.parametrize(
+    "remote_args",
+    [
+        ["--remote", "wss://attacker.example/app"],
+        ["--remote=wss://attacker.example/app"],
+        ["--remote-auth-token-env", "SAKANA_API_KEY"],
+        ["--remote-auth-token-env=SAKANA_API_KEY"],
+        ["cloud"],
+        ["exec-server"],
+    ],
+)
+def test_fugu_launch_refuses_codex_remote_args_before_loading_secret(
+    tmp_path: Path, remote_args: list[str]
+) -> None:
+    env, _catalog, bin_dir = _base_env(tmp_path)
+    args_file, _env_file = _install_fake_codex(bin_dir, tmp_path)
+    pass_called = tmp_path / "pass-called"
+    _write_executable(
+        bin_dir / "pass",
+        f"""printf called > {pass_called}
+if [ "${{1:-}}" = "show" ] && [ "${{2:-}}" = "sakana/api-key" ]; then
+  printf '%s\\n' super-secret-value
+  exit 0
+fi
+exit 1
+""",
+    )
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-fugu-test",
+            "--cd",
+            str(workdir),
+            "--fugu-profile",
+            "fugu",
+            "--",
+            *remote_args,
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert "Fugu mode refuses Codex remote/control override" in result.stderr
+    assert "next action" in result.stderr
+    assert not args_file.exists()
+    assert not pass_called.exists()
 
 
 def test_fugu_launch_refuses_remote_dispatch(tmp_path: Path) -> None:
@@ -349,6 +410,49 @@ def test_fugu_launch_refuses_missing_pass_secret(tmp_path: Path) -> None:
     assert "pass:sakana/api-key" in result.stderr
     assert "next action" in result.stderr
     assert not args_file.exists()
+
+
+def test_fugu_launch_reports_pass_failure_without_exporting_partial_stdout(
+    tmp_path: Path,
+) -> None:
+    env, _catalog, bin_dir = _base_env(tmp_path)
+    args_file, env_file = _install_fake_codex(bin_dir, tmp_path)
+    _write_executable(
+        bin_dir / "pass",
+        """if [ "${1:-}" = "show" ] && [ "${2:-}" = "sakana/api-key" ]; then
+  printf '%s\\n' partial-stdout
+  printf '%s\\n' 'gpg timeout while decrypting' >&2
+  exit 2
+fi
+exit 1
+""",
+    )
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-fugu-test",
+            "--cd",
+            str(workdir),
+            "--fugu-profile",
+            "fugu",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 7
+    assert "pass show 'sakana/api-key' failed with exit 2" in result.stderr
+    assert "gpg timeout while decrypting" in result.stderr
+    assert "next action" in result.stderr
+    assert "partial-stdout" not in result.stderr
+    assert not args_file.exists()
+    assert not env_file.exists()
 
 
 def test_fugu_print_env_reports_missing_catalog_setup_action(tmp_path: Path) -> None:
