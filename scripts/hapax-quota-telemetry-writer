@@ -114,7 +114,7 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
 )
 # Keep this fail-closed. This receipt gates the direct GLM review route, so the
 # model must match scripts/hapax-glmcp-reviewer's Coding Plan adapter.
-GLMCP_ADMISSION_MODELS = frozenset({"glm-5"})
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2"})
 GLMCP_ADMISSION_FIELDS = frozenset(
     {
         "billing_mode",
@@ -413,7 +413,7 @@ def active_glmcp_admission_receipts(
         if model not in GLMCP_ADMISSION_MODELS:
             reject(
                 path,
-                "model missing or unsupported; expected documented GLM review model id glm-5",
+                "model missing or unsupported; expected documented GLM review model id glm-5.2",
             )
             continue
         receipt_evidence_ref = fields.get("evidence_ref", "").strip()

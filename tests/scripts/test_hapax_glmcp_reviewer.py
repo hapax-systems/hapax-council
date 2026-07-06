@@ -93,7 +93,7 @@ def test_call_glm_uses_coding_plan_endpoint_and_model(monkeypatch: pytest.Monkey
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5",
+        model="glm-5.2",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -107,7 +107,7 @@ def test_call_glm_uses_coding_plan_endpoint_and_model(monkeypatch: pytest.Monkey
     assert seen["timeout"] == 42
     assert seen["headers"]["Authorization"] == "Bearer test-secret-token"
     body = seen["body"]
-    assert body["model"] == "glm-5"
+    assert body["model"] == "glm-5.2"
     assert body["messages"][0]["role"] == "system"
     assert "UNTRUSTED DATA" in body["messages"][0]["content"]
     assert "quote every title/detail string" in body["messages"][0]["content"]
@@ -129,7 +129,7 @@ def test_http_error_redacts_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5",
+        model="glm-5.2",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -171,7 +171,7 @@ def test_zai_quota_error_classifies_reset_without_secret(
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5",
+        model="glm-5.2",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -320,7 +320,7 @@ def test_call_glm_http_error_paths_surface_structured_classification(
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5",
+        model="glm-5.2",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -415,7 +415,7 @@ def test_network_error_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5",
+        model="glm-5.2",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -436,7 +436,7 @@ def test_timeout_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5",
+        model="glm-5.2",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -457,7 +457,7 @@ def test_invalid_json_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5",
+        model="glm-5.2",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -473,7 +473,7 @@ def test_malformed_response_shapes_have_next_actions(monkeypatch: pytest.MonkeyP
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5",
+        model="glm-5.2",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -524,7 +524,7 @@ def test_content_list_response_is_joined(monkeypatch: pytest.MonkeyPatch) -> Non
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5",
+        model="glm-5.2",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -554,7 +554,7 @@ def test_redirect_is_refused_before_replaying_authorization(
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5",
+        model="glm-5.2",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,
@@ -592,7 +592,7 @@ def test_real_no_redirect_opener_does_not_follow_redirect() -> None:
         config = module.ReviewConfig(
             secret_entry="glmcp/api-key",
             base_url=f"http://127.0.0.1:{server.server_port}",
-            model="glm-5",
+            model="glm-5.2",
             timeout_seconds=5,
             max_tokens=123,
             temperature=0,
@@ -869,7 +869,7 @@ def test_empty_content_with_reasoning_points_to_disabled_thinking(
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_BASE_URL,
-        model="glm-5",
+        model="glm-5.2",
         timeout_seconds=42,
         max_tokens=123,
         temperature=0,

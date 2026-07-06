@@ -37,14 +37,15 @@ from shared.failure_classification import (  # noqa: E402
 
 DEFAULT_SECRET_ENTRY = "glmcp/api-key"
 DEFAULT_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
-DEFAULT_MODEL = "glm-5"
+DEFAULT_MODEL = "glm-5.2"
 DEFAULT_TIMEOUT_SECONDS = 900
 DEFAULT_MAX_TOKENS = 8192
 DEFAULT_THINKING = "disabled"
-# Z.ai's GLM-5 repo documents GLM-5.2 as the latest open-weights model; the
-# GLM Coding Plan docs currently document the custom-tool API model id as
-# ``glm-5``. Keep the adapter pinned to the Coding Plan id unless a reviewed
-# experiment explicitly overrides it.
+# Z.ai's GLM-5 repository and Coding Plan docs now identify GLM-5.2 as the
+# current high-value coding model. The direct OpenAI-compatible review endpoint
+# uses ``glm-5.2``; the Claude Code/Anthropic wrapper uses ``glm-5.2[1m]``.
+# Keep this adapter pinned to the direct Coding Plan id unless a reviewed
+# experiment explicitly changes the route contract.
 CODING_PLAN_MODELS = frozenset({DEFAULT_MODEL})
 
 SYSTEM_PROMPT = """You are a blind PR reviewer invoked non-interactively.
@@ -105,7 +106,7 @@ Reads a blind review prompt on stdin and writes the GLM reviewer reply to stdout
 Environment overrides:
   HAPAX_GLMCP_REVIEW_SECRET_ENTRY       pass entry name (default: glmcp/api-key)
   HAPAX_GLMCP_REVIEW_BASE_URL          OpenAI-compatible Coding Plan base URL
-  HAPAX_GLMCP_REVIEW_MODEL             model (default: glm-5)
+  HAPAX_GLMCP_REVIEW_MODEL             model (default: glm-5.2)
   HAPAX_GLMCP_REVIEW_TIMEOUT_SECONDS   request timeout (default: 900)
   HAPAX_GLMCP_REVIEW_MAX_TOKENS        max response tokens (default: 8192)
   HAPAX_GLMCP_REVIEW_TEMPERATURE       sampling temperature (default: 0)
@@ -163,8 +164,9 @@ def load_config() -> ReviewConfig:
         if os.environ.get("HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL") != "1":
             raise ConfigError(
                 f"refusing model {model!r}; expected documented GLM Coding Plan "
-                f"model id {DEFAULT_MODEL!r}. GLM-5.2 is the open-weights release "
-                "name, not currently a documented Coding Plan API model id. Set "
+                f"model id {DEFAULT_MODEL!r}. Use the Claude Code-specific "
+                "`glm-5.2[1m]` suffix only with the Anthropic-compatible "
+                "hapax-glmcp-claude launcher. Set "
                 "HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL=1 only for explicit "
                 "experiments after rechecking Z.ai Coding Plan docs."
             )

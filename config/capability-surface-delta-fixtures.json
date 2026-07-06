@@ -21,9 +21,9 @@
         "platform-capability-receipt:glmcp:expired"
       ],
       "route_id": "glmcp.review.direct",
-      "supply_leaf_id": "z_ai-glm-5.review.direct",
+      "supply_leaf_id": "z_ai-glm-5.2.review.direct",
       "carrier_platform": "glmcp",
-      "model_id": "z_ai-glm-5",
+      "model_id": "z_ai-glm-5.2",
       "provider_id": "z_ai",
       "effort": "xhigh",
       "context_window": "large",

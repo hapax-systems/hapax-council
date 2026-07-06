@@ -80,7 +80,7 @@ def _glmcp_admission(
     stale_after_seconds: int = 900,
     supported_tool: str = "hapax-glmcp-reviewer",
     endpoint: str = "https://api.z.ai/api/coding/paas/v4",
-    model: str = "glm-5",
+    model: str = "glm-5.2",
     name: str = "glmcp-quota-admission.yaml",
     timestamp_field: str = "observed_at",
 ) -> None:
@@ -280,7 +280,7 @@ def test_fresh_glmcp_admission_receipt_marks_glmcp_fresh(tmp_path: Path) -> None
         "witness:supported-tool-usage-witness" in ref
         and "supported_tool:hapax-glmcp-reviewer" in ref
         and "endpoint:https://api.z.ai/api/coding/paas/v4" in ref
-        and "model:glm-5" in ref
+        and "model:glm-5.2" in ref
         for ref in glmcp_snapshot["evidence_refs"]
     )
     assert "finite" in glmcp_snapshot["operator_visible_reason"]
@@ -403,7 +403,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: claude_code
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -423,7 +423,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/anthropic
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -443,7 +443,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4/
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -529,7 +529,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -737,7 +737,7 @@ def test_glmcp_admission_rejection_warnings_do_not_echo_untrusted_values(
         "route_id": "glmcp.review.direct",
         "supported_tool": "hapax-glmcp-reviewer",
         "endpoint": "https://api.z.ai/api/coding/paas/v4",
-        "model": "glm-5",
+        "model": "glm-5.2",
         "observed_at": "2026-06-09T23:55:00Z",
         "stale_after_seconds": "900",
         "evidence_ref": "supported-tool-usage-witness",
@@ -794,7 +794,7 @@ def test_glmcp_admission_rejects_noncanonical_false_booleans(
         "route_id": "glmcp.review.direct",
         "supported_tool": "hapax-glmcp-reviewer",
         "endpoint": "https://api.z.ai/api/coding/paas/v4",
-        "model": "glm-5",
+        "model": "glm-5.2",
         "observed_at": "2026-06-09T23:55:00Z",
         "stale_after_seconds": "900",
         "evidence_ref": "supported-tool-usage-witness",
@@ -846,7 +846,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/v1
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -874,7 +874,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 """,
@@ -977,7 +977,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 {legacy_timestamp_line}
 stale_after_seconds: 900
@@ -1015,7 +1015,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: definitely-not-a-date
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -1029,7 +1029,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at:
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -1048,7 +1048,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: soon
 evidence_ref: supported-tool-usage-witness
@@ -1062,7 +1062,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 0
 evidence_ref: supported-tool-usage-witness
@@ -1099,7 +1099,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 evidence_ref: supported-tool-usage-witness
 """,
@@ -1133,7 +1133,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: {numeric_secret}
 evidence_ref: supported-tool-usage-witness
@@ -1172,7 +1172,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: {secretish_ref}
@@ -1186,7 +1186,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: {colon_ref}
@@ -1200,7 +1200,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: {email_ref}
@@ -1214,7 +1214,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: {overlong_secretish_ref}
