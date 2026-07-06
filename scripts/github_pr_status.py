@@ -515,6 +515,8 @@ def review_decision_rest(
         reviewer = str(user.get("login") or item.get("user_login") or f"review-{index}")
         latest_by_reviewer[reviewer] = state
     states = set(latest_by_reviewer.values())
+    if not states:
+        return None
     if "CHANGES_REQUESTED" in states:
         return "CHANGES_REQUESTED"
     if "APPROVED" in states:
@@ -613,6 +615,7 @@ def list_open_pr_statuses_rest(
     include_files: bool = False,
     include_review_decision: bool = False,
     include_status: bool = True,
+    hydrate_pull: bool = False,
     fail_on_indeterminate: bool = False,
 ) -> list[dict[str, Any]]:
     payload = list_pulls_rest(
@@ -637,7 +640,7 @@ def list_open_pr_statuses_rest(
                 include_files=include_files,
                 include_review_decision=include_review_decision,
                 include_status=include_status,
-                hydrate_pull=include_files or include_review_decision,
+                hydrate_pull=hydrate_pull or include_files or include_review_decision,
             )
         )
     return out

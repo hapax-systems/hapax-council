@@ -334,7 +334,7 @@ def test_rest_status_rollup_fails_closed_when_check_run_source_fails(tmp_path: P
     ]
 
 
-def test_review_decision_rest_fails_closed_when_no_reviews(tmp_path: Path) -> None:
+def test_review_decision_rest_returns_unknown_when_no_reviews(tmp_path: Path) -> None:
     class ReviewRunner(FakeRunner):
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
             self.calls.append(list(cmd))
@@ -349,7 +349,7 @@ def test_review_decision_rest_fails_closed_when_no_reviews(tmp_path: Path) -> No
             repo_root=tmp_path,
             runner=ReviewRunner(),
         )
-        == "REVIEW_REQUIRED"
+        is None
     )
 
 
@@ -622,3 +622,60 @@ def test_open_pr_status_snapshot_does_not_hydrate_list_rows_by_default(tmp_path:
     assert rows[0]["updatedAt"] == "2026-07-05T15:00:00Z"
     assert rows[0]["url"] == "https://github.example/owner/repo/pull/9"
     assert not any(call[6] == "repos/owner/repo/pulls/9" for call in runner.calls)
+
+
+def test_open_pr_status_snapshot_hydrates_list_rows_when_requested(tmp_path: Path) -> None:
+    class SnapshotRunner(FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.calls.append(list(cmd))
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+                path = cmd[6]
+                if path == "repos/owner/repo/pulls":
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        json.dumps(
+                            [
+                                {
+                                    "number": 9,
+                                    "title": "REST PR",
+                                    "head": {"ref": "feat/rest", "sha": "abc123"},
+                                    "draft": False,
+                                    "state": "open",
+                                    "updated_at": "2026-07-05T15:00:00Z",
+                                }
+                            ]
+                        ),
+                        "",
+                    )
+                if path == "repos/owner/repo/pulls/9":
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        json.dumps(
+                            {
+                                "number": 9,
+                                "title": "REST PR",
+                                "head": {"ref": "feat/rest", "sha": "abc123"},
+                                "draft": False,
+                                "state": "open",
+                                "updated_at": "2026-07-05T15:00:00Z",
+                                "mergeable_state": "behind",
+                            }
+                        ),
+                        "",
+                    )
+            return super().__call__(cmd, **kwargs)
+
+    runner = SnapshotRunner()
+
+    rows = github_pr_status.list_open_pr_statuses_rest(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        include_status=False,
+        hydrate_pull=True,
+    )
+
+    assert rows[0]["mergeStateStatus"] == "BEHIND"
+    assert any(call[6] == "repos/owner/repo/pulls/9" for call in runner.calls)

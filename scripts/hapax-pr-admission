@@ -117,6 +117,7 @@ def query_open_prs() -> list[dict[str, Any]]:
             repo_root=REPO_ROOT,
             runner=subprocess.run,
             limit=100,
+            hydrate_pull=True,
         )
     except (subprocess.SubprocessError, json.JSONDecodeError):
         return []

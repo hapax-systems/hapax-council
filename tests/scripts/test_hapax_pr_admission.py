@@ -145,11 +145,12 @@ class TestClassifyPR:
         ]
         with (
             patch.object(gov_module.shutil, "which", return_value="/usr/bin/gh"),
-            patch.object(gov_module, "list_open_pr_statuses_rest", return_value=rows),
+            patch.object(gov_module, "list_open_pr_statuses_rest", return_value=rows) as list_open,
         ):
             prs = gov_module.query_open_prs()
 
         assert prs == rows
+        assert list_open.call_args.kwargs["hydrate_pull"] is True
         assert gov_module.classify_pr(prs[0]) == "failed"
 
     def test_failed(self, gov_module):
