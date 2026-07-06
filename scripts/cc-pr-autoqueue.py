@@ -719,8 +719,6 @@ def fetch_open_prs(
     prs: list[PullRequest] = []
     for item in raw:
         if isinstance(item, dict):
-            if "reviewDecision" not in item or item.get("reviewDecision") is None:
-                item["reviewDecision"] = "REVIEW_REQUIRED"
             rest_pr = None
             try:
                 number = int(item.get("number"))

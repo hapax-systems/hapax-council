@@ -669,22 +669,33 @@ def test_fetch_open_prs_uses_rest_core_not_gh_pr_list(tmp_path: Path) -> None:
     assert not any(call[:3] == ["gh", "pr", "view"] for call in runner.calls)
 
 
-def test_fetch_open_prs_missing_review_decision_defaults_to_required(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runner = _FakeRunner()
-    row = _pr(42)
-    row.pop("reviewDecision", None)
-    runner.open_prs = [row]
+def test_empty_rest_reviews_do_not_synthesize_review_required(tmp_path: Path) -> None:
+    class EmptyReviewsRunner(_FakeRunner):
+        def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+                path = cmd[6]
+                if re.fullmatch(r"repos/owner/repo/pulls/\d+/reviews", path):
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps([]), "")
+            return super()._rest_response(cmd)
 
-    def fake_open_prs(**_: Any) -> list[dict[str, Any]]:
-        return [dict(row)]
-
-    monkeypatch.setattr(autoqueue, "list_open_pr_statuses_rest", fake_open_prs)
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+    runner = EmptyReviewsRunner()
+    runner.open_prs = [_pr(42)]
 
     prs = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
+    assert prs[0].review_decision is None
 
-    assert prs[0].review_decision == "REVIEW_REQUIRED"
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert "review_decision:REVIEW_REQUIRED" not in report["decisions"][0].get("reasons", [])
 
 
 def test_graphql_backoff_skips_autoqueue_reconciler(tmp_path: Path) -> None:
