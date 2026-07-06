@@ -27,7 +27,7 @@
   ],
   "related_identifiers": [
     {
-      "identifier": "https://github.com/ryanklee/hapax-constitution",
+      "identifier": "https://github.com/hapax-systems/hapax-constitution",
       "relation": "isPartOf",
       "scheme": "url"
     },

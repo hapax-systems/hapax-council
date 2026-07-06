@@ -21,9 +21,9 @@ This is research infrastructure, not a product or community project. It is not s
 |---|---|
 | [hapax-council](https://github.com/hapax-systems/hapax-council) | Primary runtime and research artifact |
 | [agentgov](https://github.com/hapax-systems/agentgov) | Extracted governance hooks/package for AI coding agents |
-| [hapax-constitution](https://github.com/ryanklee/hapax-constitution) | Governance specification: axioms, implications, canons; publishes `hapax-sdlc` |
-| [hapax-officium](https://github.com/ryanklee/hapax-officium) | Management decision support cockpit |
-| [hapax-assets](https://github.com/ryanklee/hapax-assets) | SHA-pinned aesthetic-library CDN |
+| [hapax-constitution](https://github.com/hapax-systems/hapax-constitution) | Governance specification: axioms, implications, canons; publishes `hapax-sdlc` |
+| [hapax-officium](https://github.com/hapax-systems/hapax-officium) | Management decision support cockpit |
+| [hapax-assets](https://github.com/hapax-systems/hapax-assets) | SHA-pinned aesthetic-library CDN |
 
 Not public as of 2026-05-11: `hapax-mcp`, `hapax-watch`, and `hapax-phone` are private surfaces. They are not listed here as live public repos.
 
@@ -31,7 +31,7 @@ Not public as of 2026-05-11: `hapax-mcp`, `hapax-watch`, and `hapax-phone` are p
 
 - [Start here](https://github.com/hapax-systems/hapax-council/blob/main/START_HERE.md): short dossier for reviewers and researchers.
 - [Primary runtime](https://github.com/hapax-systems/hapax-council): the Hapax operating environment.
-- [Governance spec](https://github.com/ryanklee/hapax-constitution): axioms, implications, canons.
+- [Governance spec](https://github.com/hapax-systems/hapax-constitution): axioms, implications, canons.
 - [Refusal brief](https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure): refusal-as-data public artifact.
 - Manifesto: public short path held pending fresh publication; do not cite the old short URL.
 
