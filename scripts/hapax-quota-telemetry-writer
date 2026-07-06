@@ -220,6 +220,7 @@ GLMCP_PAYG_SPEND_FIELDS = frozenset(
         "effort",
         "endpoint",
         "estimated_cost_usd",
+        "actual_cost_usd",
         "model_id",
         "model_or_engine",
         "payg_fallback",
@@ -231,6 +232,8 @@ GLMCP_PAYG_SPEND_FIELDS = frozenset(
         "quantization",
         "reconcile_by",
         "reconciliation_state",
+        "reconciled_at",
+        "reconciliation_reason",
         "route_id",
         "schema",
         "secret_source",
@@ -789,8 +792,8 @@ def active_glmcp_payg_spend_receipts(
                 path, f"schema missing or unsupported; expected {GLMCP_PAYG_SPEND_RECEIPT_SCHEMA}"
             )
             continue
-        if fields.get("status", "") != "spend_estimated":
-            reject(path, "status missing or unsupported; expected spend_estimated")
+        if fields.get("status", "") not in {"spend_estimated", "spend_reconciled"}:
+            reject(path, "status missing or unsupported; expected spend_estimated/spend_reconciled")
             continue
         if fields.get("supported_tool", "") != "hapax-glmcp-reviewer":
             reject(path, "supported_tool missing or unsupported")
@@ -862,6 +865,7 @@ def active_glmcp_payg_spend_receipts(
                 "created_at",
                 "effort",
                 "estimated_cost_usd",
+                "actual_cost_usd",
                 "model_id",
                 "model_or_engine",
                 "provider",
@@ -870,6 +874,8 @@ def active_glmcp_payg_spend_receipts(
                 "quantization",
                 "reconcile_by",
                 "reconciliation_state",
+                "reconciled_at",
+                "reconciliation_reason",
                 "route_id",
                 "spend_id",
                 "spend_reason",

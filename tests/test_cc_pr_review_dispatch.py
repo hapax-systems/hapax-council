@@ -507,6 +507,40 @@ class TestApply:
             {"file": "scripts/missing.py", "line": 2, "status": "evidence_unavailable"},
         ]
 
+    def test_prior_file_excerpts_add_allowlisted_symbol_body(self, tmp_path: Path) -> None:
+        rel = "scripts/hapax-glmcp-reviewer"
+        source = "\n".join(
+            [
+                "def call_glm():",
+                "    _require_payg_spend_gate()",
+                "",
+                "def _require_payg_spend_gate():",
+                "    ledger = load_quota_spend_ledger_resolved()",
+                "    return evaluate_paid_route_eligibility(ledger, request)",
+                "",
+                "def after():",
+                "    pass",
+            ]
+        )
+        head_sha = self._git_repo_with_commit(tmp_path, rel, source)
+
+        rendered, records = dispatch.build_prior_file_excerpts(
+            [
+                {
+                    "file": rel,
+                    "line": 2,
+                    "title": "_require_payg_spend_gate enforcement body remains unverified",
+                }
+            ],
+            repo_root=tmp_path,
+            head_sha=head_sha,
+            radius=0,
+        )
+
+        assert "(_require_payg_spend_gate)" in rendered
+        assert "0005|     ledger = load_quota_spend_ledger_resolved()" in rendered
+        assert any(record.get("symbol") == "_require_payg_spend_gate" for record in records)
+
     def test_prior_file_excerpts_oversize_blob_is_unavailable(self, tmp_path: Path) -> None:
         """A prior finding citing a huge tracked file must NOT be read whole into
         an advisory excerpt — it fails closed to evidence_unavailable."""

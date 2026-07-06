@@ -53,6 +53,7 @@ from shared.quota_spend_ledger import (  # noqa: E402
     PaidRouteRequest,
     QuotaSpendLedgerError,
     SpendReceipt,
+    SpendReconciliationState,
     evaluate_paid_route_eligibility,
     load_quota_spend_ledger,
     load_quota_spend_ledger_resolved,
@@ -665,6 +666,13 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
                 base_url=config.payg_base_url,
                 provider_label="PAYG API",
             )
+            with _quota_spend_live_lock():
+                reservation = _mark_payg_spend_receipt_succeeded(
+                    reservation=reservation,
+                    ledger_path=gate.ledger_path,
+                    config=config,
+                    primary_error=exc,
+                )
             print(
                 "hapax-glmcp-reviewer: PAYG fallback used "
                 f"endpoint={config.payg_base_url} model={config.model} "
@@ -844,7 +852,7 @@ def _write_payg_spend_receipt(
     stamp = _payg_reservation_event_stamp(primary_error, created_at)
     task_id = _payg_task_id()
     seat_id = os.environ.get("HAPAX_REVIEW_SEAT_ID") or "seat-unknown"
-    suffix = hashlib.sha256(
+    base_suffix = hashlib.sha256(
         "\n".join(
             (
                 task_id,
@@ -856,7 +864,13 @@ def _write_payg_spend_receipt(
                 primary_error.info.resets_at or "reset-unknown",
             )
         ).encode()
-    ).hexdigest()[:12]
+    ).hexdigest()[:10]
+    suffix = _payg_reservation_suffix(
+        gate=gate,
+        stamp=stamp,
+        base_suffix=base_suffix,
+        task_id=task_id,
+    )
     spend_id = f"spend-{stamp}-glmcp-payg-review-{suffix}"
     path = _relay_receipt_dir() / f"glmcp-payg-spend-{stamp.lower()}-{suffix}.yaml"
     receipt_payload: dict[str, object] = {
@@ -889,9 +903,55 @@ def _write_payg_spend_receipt(
     if gate.cap_remaining_usd is not None:
         receipt_payload["cap_remaining_usd"] = gate.cap_remaining_usd
     spend_receipt = SpendReceipt.model_validate(receipt_payload)
+    fields = _payg_spend_receipt_fields(
+        receipt_payload=receipt_payload,
+        config=config,
+        primary_error=primary_error,
+        status="spend_estimated",
+    )
+    _write_flat_yaml_atomic(path, fields)
+    return PaygSpendReservation(path=path, spend_receipt=spend_receipt)
+
+
+def _payg_reservation_suffix(
+    *,
+    gate: PaygSpendGate,
+    stamp: str,
+    base_suffix: str,
+    task_id: str,
+) -> str:
+    prefix = f"spend-{stamp}-glmcp-payg-review-{base_suffix}-"
+    try:
+        ledger = load_quota_spend_ledger(gate.ledger_path)
+    except (OSError, QuotaSpendLedgerError, ValueError) as exc:
+        raise ApiError(
+            "PAYG fallback refused by paid-spend gate: could not inspect existing "
+            f"spend reservations ({type(exc).__name__}); rerun "
+            "scripts/hapax-quota-telemetry-writer --json and retry"
+        ) from exc
+    matching = [
+        receipt
+        for receipt in ledger.spend_receipts
+        if receipt.spend_id.startswith(prefix)
+        and receipt.task_id == task_id
+        and receipt.budget_id == gate.budget_id
+    ]
+    for receipt in sorted(matching, key=lambda item: item.spend_id):
+        if receipt.reconciliation_state is SpendReconciliationState.PENDING:
+            return receipt.spend_id.removeprefix(f"spend-{stamp}-glmcp-payg-review-")
+    return f"{base_suffix}-{len(matching) + 1:02d}"
+
+
+def _payg_spend_receipt_fields(
+    *,
+    receipt_payload: dict[str, object],
+    config: ReviewConfig,
+    primary_error: ZaiHttpError,
+    status: str,
+) -> list[tuple[str, object]]:
     fields: list[tuple[str, object]] = [
         ("schema", PAYG_SPEND_RECEIPT_SCHEMA),
-        ("status", "spend_estimated"),
+        ("status", status),
         *[
             (key, receipt_payload[key])
             for key in (
@@ -911,11 +971,15 @@ def _write_payg_spend_receipt(
                 "quality_preservation_reason",
                 "spend_reason",
                 "estimated_cost_usd",
+                "actual_cost_usd",
                 "created_at",
                 "reconcile_by",
                 "reconciliation_state",
+                "reconciled_at",
+                "reconciliation_reason",
                 "support_artifact_authority",
             )
+            if key in receipt_payload
         ],
         ("supported_tool", "hapax-glmcp-reviewer"),
         ("endpoint", config.payg_base_url),
@@ -926,10 +990,39 @@ def _write_payg_spend_receipt(
         ("secret_value_persisted", "false"),
         ("prompt_or_output_persisted", "false"),
     ]
-    if gate.cap_remaining_usd is not None:
-        fields.append(("cap_remaining_usd", gate.cap_remaining_usd))
-    _write_flat_yaml_atomic(path, fields)
-    return PaygSpendReservation(path=path, spend_receipt=spend_receipt)
+    if receipt_payload.get("cap_remaining_usd") is not None:
+        fields.append(("cap_remaining_usd", receipt_payload["cap_remaining_usd"]))
+    return fields
+
+
+def _mark_payg_spend_receipt_succeeded(
+    *,
+    reservation: PaygSpendReservation,
+    ledger_path: Path,
+    config: ReviewConfig,
+    primary_error: ZaiHttpError,
+) -> PaygSpendReservation:
+    reconciled_at = datetime.now(UTC).replace(microsecond=0)
+    receipt_payload = reservation.spend_receipt.model_dump(mode="json")
+    receipt_payload["actual_cost_usd"] = receipt_payload["estimated_cost_usd"]
+    receipt_payload["reconciliation_state"] = SpendReconciliationState.RECONCILED.value
+    receipt_payload["reconciled_at"] = reconciled_at.isoformat().replace("+00:00", "Z")
+    receipt_payload["reconciliation_reason"] = (
+        "PAYG API call returned model output; provider invoice unavailable, "
+        "using pre-call estimate against cap"
+    )
+    spend_receipt = SpendReceipt.model_validate(receipt_payload)
+    _write_flat_yaml_atomic(
+        reservation.path,
+        _payg_spend_receipt_fields(
+            receipt_payload=receipt_payload,
+            config=config,
+            primary_error=primary_error,
+            status="spend_reconciled",
+        ),
+    )
+    _replace_spend_receipt_in_live_ledger(ledger_path=ledger_path, receipt=spend_receipt)
+    return PaygSpendReservation(path=reservation.path, spend_receipt=spend_receipt)
 
 
 def _payg_reservation_event_stamp(primary_error: ZaiHttpError, created_at: datetime) -> str:
@@ -960,6 +1053,30 @@ def _append_spend_receipt_to_live_ledger(*, ledger_path: Path, receipt: SpendRec
             "PAYG fallback refused by paid-spend gate: could not reserve spend in live "
             f"quota/spend ledger ({type(exc).__name__}); rerun "
             "scripts/hapax-quota-telemetry-writer --json and retry"
+        ) from exc
+
+
+def _replace_spend_receipt_in_live_ledger(*, ledger_path: Path, receipt: SpendReceipt) -> None:
+    try:
+        ledger = load_quota_spend_ledger(ledger_path)
+        payload = ledger.model_dump(mode="json")
+        replaced = False
+        next_receipts: list[dict[str, object]] = []
+        for existing in payload["spend_receipts"]:
+            if existing["spend_id"] == receipt.spend_id:
+                next_receipts.append(receipt.model_dump(mode="json"))
+                replaced = True
+            else:
+                next_receipts.append(existing)
+        if not replaced:
+            next_receipts.append(receipt.model_dump(mode="json"))
+        payload["spend_receipts"] = next_receipts
+        _write_json_atomic(ledger_path, payload)
+    except (OSError, QuotaSpendLedgerError, ValueError) as exc:
+        raise ApiError(
+            "PAYG fallback could not reconcile spend receipt in live quota/spend "
+            f"ledger ({type(exc).__name__}); run scripts/hapax-quota-telemetry-writer "
+            "--json before retrying"
         ) from exc
 
 

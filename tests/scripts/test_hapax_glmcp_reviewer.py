@@ -103,6 +103,7 @@ def _payg_reservation(module: ModuleType, path: str = "glmcp-payg-spend-test.yam
                 "quality_preservation_reason": "test reservation",
                 "spend_reason": "quota_exhaustion",
                 "estimated_cost_usd": "0.05",
+                "cap_remaining_usd": "99.95",
                 "created_at": "2026-07-06T14:04:30Z",
                 "reconcile_by": "2026-07-07T14:04:30Z",
                 "reconciliation_state": "pending",
@@ -277,6 +278,11 @@ def test_call_glm_falls_back_to_payg_api_on_coding_plan_quota_wall(
 
     monkeypatch.setattr(module, "_write_payg_spend_receipt", fake_spend_receipt)
     monkeypatch.setattr(module, "_append_spend_receipt_to_live_ledger", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "_mark_payg_spend_receipt_succeeded",
+        lambda reservation, **_kwargs: reservation,
+    )
     config = module.ReviewConfig(
         secret_entry="glmcp/api-key",
         base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
@@ -790,12 +796,116 @@ def test_call_glm_failed_payg_retry_reuses_same_spend_reservation(
     assert len(list(receipt_dir.glob("glmcp-payg-spend-*.yaml"))) == 1
 
 
+def test_call_glm_repeated_successful_payg_uses_new_reconciled_spend_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    now = module.datetime.now(module.UTC).replace(microsecond=0)
+    ledger_path = tmp_path / "quota-spend-ledger-live.json"
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    payload = json.loads(
+        (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
+    )
+    payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
+    for budget in payload["transition_budgets"]:
+        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+            budget["created_at"] = (
+                (now - module.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["expires_at"] = (
+                (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
+            budget["per_task_cap_usd"] = "2.00"
+            budget["daily_cap_usd"] = "20.00"
+    ledger_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(ledger_path))
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(receipt_dir))
+    monkeypatch.setenv(
+        "HAPAX_GLMCP_REVIEW_TASK_ID",
+        "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+    )
+    monkeypatch.setenv("HAPAX_REVIEW_SEAT_ID", "glm-1")
+
+    def fake_open(request: object, *, timeout: float) -> object:
+        if request.full_url == "https://api.z.ai/api/coding/paas/v4/chat/completions":
+            body = {
+                "error": {
+                    "code": "1310",
+                    "message": "Quota exhausted. Your limit will reset at 2026-07-09T13:02:51Z.",
+                    "next_flush_time": "2026-07-09T13:02:51Z",
+                }
+            }
+            raise urllib.error.HTTPError(
+                request.full_url,
+                429,
+                "Too Many Requests",
+                {},
+                io.BytesIO(json.dumps(body).encode("utf-8")),
+            )
+        return FakeResponse(
+            {"choices": [{"message": {"content": "```yaml\nverdict: accept\n```"}}]}
+        )
+
+    monkeypatch.setattr(module, "open_no_redirect", fake_open)
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+
+    for _ in range(2):
+        assert module.call_glm("review prompt", config, "test-secret-token") == (
+            "```yaml\nverdict: accept\n```"
+        )
+
+    loaded = module.load_quota_spend_ledger(ledger_path)
+    receipts = [
+        receipt
+        for receipt in loaded.spend_receipts
+        if receipt.route_id == "glmcp.review.direct"
+        and receipt.task_id == "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    ]
+    assert len(receipts) == 2
+    assert len({receipt.spend_id for receipt in receipts}) == 2
+    assert all(
+        receipt.reconciliation_state is module.SpendReconciliationState.RECONCILED
+        for receipt in receipts
+    )
+    assert all(receipt.actual_cost_usd == receipt.estimated_cost_usd for receipt in receipts)
+    assert len(list(receipt_dir.glob("glmcp-payg-spend-*.yaml"))) == 2
+
+
 def test_payg_spend_receipt_omits_secret_prompt_and_output(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     module = _load_module()
     monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(tmp_path))
+    ledger_path = tmp_path / "quota-spend-ledger-live.json"
+    now = module.datetime.now(module.UTC).replace(microsecond=0)
+    payload = json.loads(
+        (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
+    )
+    payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
+    for budget in payload["transition_budgets"]:
+        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+            budget["created_at"] = (
+                (now - module.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["expires_at"] = (
+                (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
+    ledger_path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setenv(
         "HAPAX_GLMCP_REVIEW_TASK_ID",
         "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
@@ -833,7 +943,7 @@ def test_payg_spend_receipt_omits_secret_prompt_and_output(
             budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
             cap_remaining_usd="99.95",
             ledger_source="live",
-            ledger_path=Path("quota-spend-ledger-live.json"),
+            ledger_path=ledger_path,
         ),
         config=config,
         primary_error=primary,
@@ -892,6 +1002,22 @@ def test_payg_spend_receipt_write_error_has_next_action(
 ) -> None:
     module = _load_module()
     monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(tmp_path))
+    ledger_path = tmp_path / "quota-spend-ledger-live.json"
+    now = module.datetime.now(module.UTC).replace(microsecond=0)
+    payload = json.loads(
+        (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
+    )
+    payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
+    for budget in payload["transition_budgets"]:
+        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+            budget["created_at"] = (
+                (now - module.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["expires_at"] = (
+                (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
+    ledger_path.write_text(json.dumps(payload), encoding="utf-8")
 
     def fail_mkstemp(*_args: object, **_kwargs: object) -> object:
         raise OSError("permission denied")
@@ -924,7 +1050,7 @@ def test_payg_spend_receipt_write_error_has_next_action(
                 budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
                 cap_remaining_usd="99.95",
                 ledger_source="live",
-                ledger_path=Path("quota-spend-ledger-live.json"),
+                ledger_path=ledger_path,
             ),
             config=config,
             primary_error=primary,

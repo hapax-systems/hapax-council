@@ -983,6 +983,12 @@ def ensure_head_object(repo_root: Path, head_sha: str, pr_number: int) -> bool:
 
 
 _REL_DISPLAY_SAFE_RE = re.compile(r"[^A-Za-z0-9_./-]")
+_PRIOR_CRITICAL_SYMBOL_HINTS = (
+    "_require_payg_spend_gate",
+    "_valid_coding_plan_primary_base_url",
+    "_write_payg_spend_receipt",
+    "_payg_reservation_suffix",
+)
 
 
 def _rel_for_display(rel: str) -> str | None:
@@ -995,6 +1001,31 @@ def _rel_for_display(rel: str) -> str | None:
     if not rel or len(rel) > 200 or _REL_DISPLAY_SAFE_RE.search(rel):
         return None
     return rel
+
+
+def _prior_symbol_hints(finding: dict[str, Any]) -> tuple[str, ...]:
+    text = f"{finding.get('title') or ''}\n{finding.get('detail') or ''}"
+    hints = [symbol for symbol in _PRIOR_CRITICAL_SYMBOL_HINTS if symbol in text]
+    if "PAYG endpoint" in text or "primary URL" in text:
+        hints.append("_valid_coding_plan_primary_base_url")
+    return tuple(dict.fromkeys(hints))
+
+
+def _function_excerpt_range(source_lines: list[str], symbol: str) -> tuple[int, int] | None:
+    needle = f"def {symbol}("
+    start = next(
+        (index + 1 for index, line in enumerate(source_lines) if line.startswith(needle)),
+        None,
+    )
+    if start is None:
+        return None
+    end = min(len(source_lines), start + 90)
+    for number in range(start + 1, min(len(source_lines), start + 90) + 1):
+        line = source_lines[number - 1]
+        if number > start and (line.startswith("def ") or line.startswith("class ")):
+            end = number - 1
+            break
+    return start, end
 
 
 def build_prior_file_excerpts(
@@ -1092,6 +1123,33 @@ def build_prior_file_excerpts(
         )
         sections.append(f"## {shown}:{line} @ {head_sha[:9]}\n\n{body}\n")
         records.append({"file": shown, "line": line, "status": "shown", "lines": f"{start}-{end}"})
+        for symbol in _prior_symbol_hints(finding):
+            if len(sections) >= limit:
+                break
+            symbol_range = _function_excerpt_range(source_lines, symbol)
+            if symbol_range is None:
+                continue
+            symbol_start, symbol_end = symbol_range
+            symbol_key = (rel, symbol_start)
+            if symbol_key in seen:
+                continue
+            seen.add(symbol_key)
+            symbol_body = "\n".join(
+                f"{number:04d}| {source_lines[number - 1].replace('```', '<BACKTICK_FENCE>')}"
+                for number in range(symbol_start, symbol_end + 1)
+            )
+            sections.append(
+                f"## {shown}:{symbol_start} ({symbol}) @ {head_sha[:9]}\n\n{symbol_body}\n"
+            )
+            records.append(
+                {
+                    "file": shown,
+                    "line": symbol_start,
+                    "status": "shown",
+                    "symbol": symbol,
+                    "lines": f"{symbol_start}-{symbol_end}",
+                }
+            )
         if len(sections) >= limit:
             break
     if not sections:
