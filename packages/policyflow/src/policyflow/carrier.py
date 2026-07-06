@@ -11,8 +11,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from agentgov.consent_label import ConsentLabel
-from agentgov.labeled import Labeled
+from policyflow.consent_label import ConsentLabel
+from policyflow.labeled import Labeled
 
 
 @dataclass(frozen=True)

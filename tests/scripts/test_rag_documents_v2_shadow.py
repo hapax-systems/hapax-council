@@ -112,7 +112,7 @@ def test_audit_publication_source_profile_excludes_raw_rag_firehose(
     assert str(personal / "20-projects" / "hapax-requests" / "active") in dirs
     assert str(personal / "20-projects" / "hapax-cc-tasks" / "active") in dirs
     assert str(repo / "docs") in dirs
-    assert str(repo / "packages" / "agentgov") in dirs
+    assert str(repo / "packages" / "policyflow") in dirs
 
 
 def test_parser_coverage_fail_closed_when_docling_required_but_unavailable(

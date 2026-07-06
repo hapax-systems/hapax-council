@@ -1,6 +1,6 @@
 """Egress gate for recruited segment media (image / YouTube on OARB).
 
-This module is the FIRST real consumer of agentgov ``Labeled[A]`` in the
+This module is the FIRST real consumer of policyflow ``Labeled[A]`` in the
 media dispatch path. A recruited media ref is wrapped in a ``Labeled`` that
 carries its consent label and provenance; the gate only unwraps it for
 broadcast when:
@@ -13,7 +13,7 @@ broadcast when:
 
 The gate is fail-closed: any error refuses. Wiring ``Labeled`` here — with a
 real consumer that checks the label before egress — is what turns the
-agentgov stack from a dormant formalism into a live consent thread.
+policyflow stack from a dormant formalism into a live consent thread.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from agentgov.consent_label import ConsentLabel
+from policyflow.consent_label import ConsentLabel
 
 from shared.governance.labeled import Labeled
 from shared.stream_mode import StreamMode, get_stream_mode

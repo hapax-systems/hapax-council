@@ -6,8 +6,8 @@ import unittest
 
 from hypothesis import given
 
-from agentgov.consent import ConsentContract
-from agentgov.consent_label import ConsentLabel
+from policyflow.consent import ConsentContract
+from policyflow.consent_label import ConsentLabel
 from tests.strategies import st_consent_label
 
 

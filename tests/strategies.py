@@ -1,6 +1,6 @@
 """Compatibility strategy exports for package tests collected from repo root."""
 
-from packages.agentgov.tests.strategies import (
+from packages.policyflow.tests.strategies import (
     safe_ids,
     scope_items,
     st_bound,

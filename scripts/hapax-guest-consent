@@ -33,11 +33,11 @@ from datetime import date
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-# Use the lightweight agentgov registry directly (avoids pulling the council's
+# Use the lightweight policyflow registry directly (avoids pulling the council's
 # health-signal / ntfy stack into a tiny CLI).
-sys.path.insert(0, str(REPO / "packages" / "agentgov" / "src"))
+sys.path.insert(0, str(REPO / "packages" / "policyflow" / "src"))
 
-from agentgov.consent import ConsentRegistry  # noqa: E402
+from policyflow.consent import ConsentRegistry  # noqa: E402
 
 SCOPE = frozenset({"world_render"})
 

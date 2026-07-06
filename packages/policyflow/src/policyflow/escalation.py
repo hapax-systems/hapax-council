@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from agentgov.replay import ReplayReport
+from policyflow.replay import ReplayReport
 
 log = logging.getLogger(__name__)
 

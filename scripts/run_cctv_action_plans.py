@@ -40,7 +40,7 @@ CLAIMS = [
         "id": "GOV-2",
         "domain": "governance",
         "text": "A governance replay harness re-evaluating historical decisions against current policies would detect regressions and make governance a verifiable runtime property.",
-        "source_ref": "packages/agentgov/src/agentgov/",
+        "source_ref": "packages/policyflow/src/policyflow/",
     },
     {
         "id": "RES-1",
@@ -69,8 +69,8 @@ CLAIMS = [
     {
         "id": "PUB-1",
         "domain": "publication",
-        "text": "agentgov is the safest first publication because its claims are algebraically verifiable via Hypothesis property tests — no trust/grounding/phenomenological claims to defend.",
-        "source_ref": "packages/agentgov/",
+        "text": "policyflow is the safest first publication because its claims are algebraically verifiable via Hypothesis property tests — no trust/grounding/phenomenological claims to defend.",
+        "source_ref": "packages/policyflow/",
     },
     {
         "id": "PUB-2",

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agentgov.consent import ConsentContract
+from policyflow.consent import ConsentContract
 
 
 @dataclass(frozen=True)

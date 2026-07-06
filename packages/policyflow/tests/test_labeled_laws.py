@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from hypothesis import given, settings
 
-from agentgov.labeled import Labeled
+from policyflow.labeled import Labeled
 from tests.strategies import st_labeled
 
 

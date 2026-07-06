@@ -7,7 +7,7 @@ reason string explaining the violation.
 
 Usage with Claude Code / Codex hooks::
 
-    from agentgov.hooks import scan_pii, scan_single_user_violations
+    from policyflow.hooks import scan_pii, scan_single_user_violations
 
     result = scan_pii(file_content)
     if not result.ok:
@@ -15,7 +15,7 @@ Usage with Claude Code / Codex hooks::
 
 Usage as standalone validators::
 
-    from agentgov.hooks import validate_all
+    from policyflow.hooks import validate_all
 
     results = validate_all(content, checks=["pii", "single_user", "attribution"])
     blocked = [r for r in results if not r.ok]

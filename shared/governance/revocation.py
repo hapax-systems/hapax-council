@@ -1,6 +1,6 @@
-"""Thin wrapper — re-exports from agentgov.revocation."""
+"""Thin wrapper — re-exports from policyflow.revocation."""
 
-from agentgov.revocation import (
+from policyflow.revocation import (
     PurgeHandler,
     PurgeResult,
     RevocationPropagator,

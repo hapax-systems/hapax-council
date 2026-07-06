@@ -11,7 +11,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_SRC_ROOTS = {
     ".",
-    "packages/agentgov/src",
+    "packages/policyflow/src",
     "packages/hapax-axioms/src",
     "packages/hapax-refusals/src",
     "packages/hapax-swarm/src",
@@ -40,8 +40,8 @@ def test_duplicate_package_test_basenames_collect_from_repo_root() -> None:
             "pytest",
             "-q",
             "--collect-only",
-            "packages/agentgov/tests/test_consent_label.py",
-            "packages/agentgov/tests/test_veto_chain_laws.py",
+            "packages/policyflow/tests/test_consent_label.py",
+            "packages/policyflow/tests/test_veto_chain_laws.py",
             "packages/hapax-axioms/tests/test_cli.py",
             "packages/hapax-velocity-meter/tests/test_cli.py",
             "packages/hapax-refusals/tests/test_claim.py",
@@ -54,8 +54,8 @@ def test_duplicate_package_test_basenames_collect_from_repo_root() -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "packages/agentgov/tests/test_consent_label.py::" in result.stdout
-    assert "packages/agentgov/tests/test_veto_chain_laws.py::" in result.stdout
+    assert "packages/policyflow/tests/test_consent_label.py::" in result.stdout
+    assert "packages/policyflow/tests/test_veto_chain_laws.py::" in result.stdout
     assert "packages/hapax-axioms/tests/test_cli.py::test_list_axioms" in result.stdout
     assert "packages/hapax-velocity-meter/tests/test_cli.py::test_list_axioms" in result.stdout
     assert "packages/hapax-refusals/tests/test_claim.py::TestClaimSpec::" in result.stdout
@@ -64,7 +64,7 @@ def test_duplicate_package_test_basenames_collect_from_repo_root() -> None:
 
 def test_package_src_roots_import_under_root_pytest() -> None:
     for module_name in (
-        "agentgov",
+        "policyflow",
         "hapax_axioms",
         "hapax_refusals",
         "hapax_swarm",
@@ -73,9 +73,9 @@ def test_package_src_roots_import_under_root_pytest() -> None:
         assert importlib.import_module(module_name)
 
 
-def test_agentgov_strategy_shim_reexports_package_strategies() -> None:
+def test_policyflow_strategy_shim_reexports_package_strategies() -> None:
     root_strategies = importlib.import_module("tests.strategies")
-    package_strategies = importlib.import_module("packages.agentgov.tests.strategies")
+    package_strategies = importlib.import_module("packages.policyflow.tests.strategies")
 
     assert Path(root_strategies.__file__).resolve() == REPO_ROOT / "tests" / "strategies.py"
     for name in root_strategies.__all__:
@@ -93,7 +93,7 @@ def test_configured_pythonpath_resolves_package_test_strategies() -> None:
             (
                 "import importlib.util, pathlib, sys; "
                 f"sys.path[:] = {configured_paths!r}; "
-                "spec = importlib.util.find_spec('packages.agentgov.tests.strategies'); "
+                "spec = importlib.util.find_spec('packages.policyflow.tests.strategies'); "
                 "assert spec is not None and spec.origin; "
                 "print(pathlib.Path(spec.origin).as_posix())"
             ),
@@ -105,4 +105,4 @@ def test_configured_pythonpath_resolves_package_test_strategies() -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.strip().endswith("packages/agentgov/tests/strategies.py")
+    assert result.stdout.strip().endswith("packages/policyflow/tests/strategies.py")

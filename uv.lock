@@ -1994,24 +1994,6 @@ wheels = [
 ]
 
 [[package]]
-name = "hapax-agentgov"
-version = "0.2.0"
-source = { editable = "packages/agentgov" }
-dependencies = [
-    { name = "pyyaml", marker = "sys_platform == 'linux'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.0" },
-    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "hapax-council"
 version = "0.3.7"
 source = { editable = "." }
@@ -2022,7 +2004,6 @@ dependencies = [
     { name = "evdev", marker = "sys_platform == 'linux'" },
     { name = "fastapi", marker = "sys_platform == 'linux'" },
     { name = "google-cloud-monitoring", marker = "sys_platform == 'linux'" },
-    { name = "hapax-agentgov", marker = "sys_platform == 'linux'" },
     { name = "httpx", marker = "sys_platform == 'linux'" },
     { name = "imagehash", marker = "sys_platform == 'linux'" },
     { name = "kokoro", marker = "sys_platform == 'linux'" },
@@ -2041,6 +2022,7 @@ dependencies = [
     { name = "opentelemetry-sdk", marker = "sys_platform == 'linux'" },
     { name = "openwakeword", marker = "sys_platform == 'linux'" },
     { name = "pillow", marker = "sys_platform == 'linux'" },
+    { name = "policyflow", marker = "sys_platform == 'linux'" },
     { name = "pycairo", marker = "sys_platform == 'linux'" },
     { name = "pydantic", marker = "sys_platform == 'linux'" },
     { name = "pydantic-ai", marker = "sys_platform == 'linux'" },
@@ -2218,7 +2200,6 @@ requires-dist = [
     { name = "google-cloud-monitoring", specifier = ">=2.31.0" },
     { name = "google-cloud-pubsub", marker = "extra == 'mail-monitor'", specifier = ">=2.39.0" },
     { name = "google-genai", marker = "extra == 'ci'", specifier = ">=1.0.0" },
-    { name = "hapax-agentgov", editable = "packages/agentgov" },
     { name = "hapax-council", extras = ["audio"], marker = "extra == 'host'" },
     { name = "hapax-council", extras = ["ci"], marker = "extra == 'host'" },
     { name = "hapax-council", extras = ["logos-api"], marker = "extra == 'ci'" },
@@ -2260,6 +2241,7 @@ requires-dist = [
     { name = "pillow", marker = "extra == 'ci'", specifier = ">=12.3.0" },
     { name = "pipecat-ai", extras = ["silero", "openai"], marker = "extra == 'audio'", specifier = ">=1.4.0" },
     { name = "playwright", marker = "extra == 'ci'", specifier = ">=1.61.0" },
+    { name = "policyflow", editable = "packages/policyflow" },
     { name = "praat-parselmouth", marker = "extra == 'audio'", specifier = ">=0.4.5" },
     { name = "prometheus-fastapi-instrumentator", marker = "extra == 'logos-api'", specifier = ">=7.0.0" },
     { name = "pvporcupine", marker = "extra == 'audio'", specifier = ">=4.0.3" },
@@ -4519,6 +4501,24 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/73/98/53ad9c8a6f151e098e4f65c5146f9e538f1ba148feb5289fd2a4c5e2d764/polars_runtime_32-1.39.0-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:4a0e9d6b56362f3ba1a33d0538ae14c9b9a8e0fb835f86abfc82fa7b2c7d89c9", size = 43389283, upload-time = "2026-03-12T14:22:59.767Z" },
     { url = "https://files.pythonhosted.org/packages/74/a2/21f77d6e588ee7c8e7f6232d135538690411de2ea6415d8bbe9b8d684f37/polars_runtime_32-1.39.0-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:0daea3919661ba672b00bd01b5547cd29bb6414732457abb72cbc75103cf3c90", size = 46509946, upload-time = "2026-03-12T14:23:05.215Z" },
 ]
+
+[[package]]
+name = "policyflow"
+version = "0.2.0"
+source = { editable = "packages/policyflow" }
+dependencies = [
+    { name = "pyyaml", marker = "sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "pooch"

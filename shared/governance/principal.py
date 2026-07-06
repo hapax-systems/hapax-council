@@ -1,5 +1,5 @@
-"""Thin wrapper — re-exports from agentgov.principal."""
+"""Thin wrapper — re-exports from policyflow.principal."""
 
-from agentgov.principal import Principal, PrincipalKind
+from policyflow.principal import Principal, PrincipalKind
 
 __all__ = ["Principal", "PrincipalKind"]

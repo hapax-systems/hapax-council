@@ -1,4 +1,4 @@
-"""agentgov — Computational constitutional governance for AI agent systems.
+"""policyflow — Computational constitutional governance for AI agent systems.
 
 Pure governance logic with algebraic guarantees:
 - ConsentLabel: join-semilattice (associative, commutative, idempotent)
@@ -10,11 +10,11 @@ Pure governance logic with algebraic guarantees:
 - Says: DCC-style principal attribution monad
 """
 
-from agentgov.agent_governor import create_agent_governor
-from agentgov.carrier import CarrierFact, CarrierRegistry, DisplacementResult
-from agentgov.consent import ConsentContract, ConsentRegistry, load_contracts
-from agentgov.consent_label import ConsentLabel
-from agentgov.governor import (
+from policyflow.agent_governor import create_agent_governor
+from policyflow.carrier import CarrierFact, CarrierRegistry, DisplacementResult
+from policyflow.consent import ConsentContract, ConsentRegistry, load_contracts
+from policyflow.consent_label import ConsentLabel
+from policyflow.governor import (
     GovernorDenial,
     GovernorPolicy,
     GovernorResult,
@@ -22,7 +22,7 @@ from agentgov.governor import (
     consent_input_policy,
     consent_output_policy,
 )
-from agentgov.hooks import (
+from policyflow.hooks import (
     HookResult,
     scan_attribution_entities,
     scan_management_boundary,
@@ -31,8 +31,8 @@ from agentgov.hooks import (
     scan_single_user_violations,
     validate_all,
 )
-from agentgov.labeled import Labeled
-from agentgov.primitives import (
+from policyflow.labeled import Labeled
+from policyflow.primitives import (
     Candidate,
     FallbackChain,
     GatedResult,
@@ -41,15 +41,15 @@ from agentgov.primitives import (
     VetoChain,
     VetoResult,
 )
-from agentgov.principal import Principal, PrincipalKind
-from agentgov.provenance import ProvenanceExpr
-from agentgov.revocation import (
+from policyflow.principal import Principal, PrincipalKind
+from policyflow.provenance import ProvenanceExpr
+from policyflow.revocation import (
     PurgeResult,
     RevocationPropagator,
     RevocationReport,
     check_provenance,
 )
-from agentgov.says import Says
+from policyflow.says import Says
 
 __version__ = "0.2.0"
 

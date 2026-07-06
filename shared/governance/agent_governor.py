@@ -1,20 +1,20 @@
-"""Agent governor factory — extends agentgov with hapax agent registry integration."""
+"""Agent governor factory — extends policyflow with hapax agent registry integration."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from agentgov.agent_governor import (
+from policyflow.agent_governor import (
     DEFAULT_AXIOM_BUILDERS,
     PolicyBuilder,
     corporate_boundary_policies,
     interpersonal_transparency_policies,
 )
-from agentgov.agent_governor import (
+from policyflow.agent_governor import (
     create_agent_governor as _base_create,
 )
-from agentgov.governor import GovernorPolicy, GovernorWrapper
+from policyflow.governor import GovernorPolicy, GovernorWrapper
 
 _log = logging.getLogger(__name__)
 

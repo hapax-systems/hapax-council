@@ -1,6 +1,6 @@
-"""Thin wrapper — re-exports from agentgov.governor."""
+"""Thin wrapper — re-exports from policyflow.governor."""
 
-from agentgov.governor import (
+from policyflow.governor import (
     GovernorDenial,
     GovernorPolicy,
     GovernorResult,

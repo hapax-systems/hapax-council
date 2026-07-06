@@ -10,8 +10,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from agentgov.consent_label import ConsentLabel
-from agentgov.provenance import ProvenanceExpr
+from policyflow.consent_label import ConsentLabel
+from policyflow.provenance import ProvenanceExpr
 
 
 @dataclass(frozen=True)

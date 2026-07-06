@@ -6,7 +6,7 @@ import unittest
 
 from hypothesis import given
 
-from agentgov.principal import Principal, PrincipalKind
+from policyflow.principal import Principal, PrincipalKind
 from tests.strategies import safe_ids, scope_items, st_sovereign
 
 

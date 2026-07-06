@@ -1,13 +1,13 @@
-"""Composable hypothesis strategies for agentgov types."""
+"""Composable hypothesis strategies for policyflow types."""
 
 from __future__ import annotations
 
 from hypothesis import strategies as st
 
-from agentgov.consent_label import ConsentLabel
-from agentgov.labeled import Labeled
-from agentgov.primitives import Veto, VetoChain
-from agentgov.principal import Principal, PrincipalKind
+from policyflow.consent_label import ConsentLabel
+from policyflow.labeled import Labeled
+from policyflow.primitives import Veto, VetoChain
+from policyflow.principal import Principal, PrincipalKind
 
 safe_ids = st.text(min_size=1, max_size=20, alphabet=st.characters(whitelist_categories=("L",)))
 scope_items = st.frozensets(safe_ids, min_size=0, max_size=5)
