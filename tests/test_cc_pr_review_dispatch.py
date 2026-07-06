@@ -2013,6 +2013,64 @@ class TestFamilyOutageDegradation:
         except dispatch.ReviewerProcessError as exc:
             assert dispatch.review_team.is_quota_wall(exc.output, process_failed=True)
 
+    def test_successful_default_runner_preserves_stderr_metadata(self) -> None:
+        family_cfg = {
+            "family": "glm",
+            "reviewer_command": [
+                "bash",
+                "-c",
+                (
+                    "printf '```yaml\\nverdict: accept\\nfindings: []\\nchecklist: {}\\n```\\n'; "
+                    "echo 'hapax-glmcp-reviewer: PAYG fallback used endpoint=https://api.z.ai/api/paas/v4 model=glm-5.2 primary_error_class=quota_exhausted' >&2"
+                ),
+            ],
+            "timeout_seconds": 30,
+        }
+        seat = dispatch.review_team.Seat(id="glm-1", family="glm")
+
+        result = dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+        assert isinstance(result, dispatch.ReviewerRunnerResult)
+        assert "verdict: accept" in result.stdout
+        assert "PAYG fallback used" in result.stderr
+
+    def test_successful_reviewer_stderr_is_recorded_and_redacted(self) -> None:
+        constitution = dispatch.review_team.Constitution(
+            team_class="t2_standard",
+            quorum_required=1,
+            seats=(dispatch.review_team.Seat(id="glm-1", family="glm"),),
+            notes=(),
+        )
+        registry = {
+            "families": [
+                {
+                    "family": "glm",
+                    "reviewer_command": ["scripts/hapax-glmcp-reviewer"],
+                    "timeout_seconds": 30,
+                }
+            ]
+        }
+
+        def runner(
+            _seat: Any, _family_cfg: dict[str, Any], _prompt: str
+        ) -> dispatch.ReviewerRunnerResult:
+            return dispatch.ReviewerRunnerResult(
+                stdout=GOOD_REPLY,
+                stderr=(
+                    "hapax-glmcp-reviewer: PAYG fallback used "
+                    "endpoint=https://api.z.ai/api/paas/v4 model=glm-5.2 "
+                    "primary_error_class=quota_exhausted bearer sk-live-secret-token"
+                ),
+            )
+
+        reviews = dispatch.dispatch_reviews(constitution, ["prompt"], registry, runner)
+
+        assert reviews[0]["verdict"] == "accept"
+        assert "PAYG fallback used" in reviews[0]["runner_stderr_excerpt"]
+        assert "https://api.z.ai/api/paas/v4" in reviews[0]["runner_stderr_excerpt"]
+        assert "sk-live-secret-token" not in reviews[0]["runner_stderr_excerpt"]
+        assert "<redacted>" in reviews[0]["runner_stderr_excerpt"]
+
     def test_provider_outage_on_stderr_becomes_provider_outage(self) -> None:
         constitution = dispatch.review_team.Constitution(
             team_class="t2_standard",

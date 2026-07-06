@@ -71,6 +71,11 @@ TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 MAX_DIFF_CHARS = 80_000
 MAX_TASK_NOTE_CHARS = 60_000
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
+MAX_REVIEW_RUNNER_STDERR_CHARS = 1_000
+REVIEWER_DIAGNOSTIC_SECRETISH_RE = re.compile(
+    r"(bearer\s+)[^\s]+|sk-[a-z0-9_-]+|((?:api[_-]?key|token|secret)[=:])[^\s]+",
+    re.IGNORECASE,
+)
 SEND_SCRIPTS = {
     "claude": "hapax-claude-send",
     "codex": "hapax-codex-send",
@@ -605,7 +610,23 @@ class ReviewerProcessError(RuntimeError):
         self.returncode = returncode
 
 
-def default_reviewer_runner(seat: review_team.Seat, family_cfg: dict[str, Any], prompt: str) -> str:
+@dataclass(frozen=True)
+class ReviewerRunnerResult:
+    stdout: str
+    stderr: str = ""
+
+
+def sanitize_reviewer_diagnostic(text: str) -> str:
+    redacted = REVIEWER_DIAGNOSTIC_SECRETISH_RE.sub(
+        lambda match: (match.group(1) or match.group(2) or "") + "<redacted>",
+        text.strip(),
+    )
+    return truncate_context(redacted, limit=MAX_REVIEW_RUNNER_STDERR_CHARS).strip()
+
+
+def default_reviewer_runner(
+    seat: review_team.Seat, family_cfg: dict[str, Any], prompt: str
+) -> ReviewerRunnerResult:
     """Run one reviewer CLI (argv from the registry, prompt on stdin)."""
 
     cmd = [str(part) for part in family_cfg["reviewer_command"]]
@@ -633,7 +654,7 @@ def default_reviewer_runner(seat: review_team.Seat, family_cfg: dict[str, Any], 
         raise ReviewerProcessError(
             proc.stderr.strip(), returncode=proc.returncode, stdout=proc.stdout
         )
-    return proc.stdout
+    return ReviewerRunnerResult(stdout=proc.stdout, stderr=proc.stderr)
 
 
 def dispatch_reviews(
@@ -654,8 +675,14 @@ def dispatch_reviews(
         quota_wall_stdout = ""
         diagnostic_output = ""
         diagnostic_stdout = ""
+        runner_stderr_excerpt = ""
         try:
-            reply = reviewer_runner(seat, family_cfgs[seat.family], prompts[index])
+            runner_result = reviewer_runner(seat, family_cfgs[seat.family], prompts[index])
+            if isinstance(runner_result, ReviewerRunnerResult):
+                reply = runner_result.stdout
+                runner_stderr_excerpt = sanitize_reviewer_diagnostic(runner_result.stderr)
+            else:
+                reply = str(runner_result)
         except ReviewerProcessError as exc:
             LOG.warning("reviewer %s (%s) process failed: %s", seat.id, seat.family, exc)
             reply = ""
@@ -733,8 +760,15 @@ def dispatch_reviews(
                 "findings": [],
                 "checklist": {},
                 "raw_reply_excerpt": reply_excerpt,
+                **(
+                    {"runner_stderr_excerpt": runner_stderr_excerpt}
+                    if runner_stderr_excerpt
+                    else {}
+                ),
             }
         review = {"id": seat.id, "family": seat.family, **parsed}
+        if runner_stderr_excerpt:
+            review["runner_stderr_excerpt"] = runner_stderr_excerpt
         if parsed.get("parse_path") != "fence":
             review["raw_reply_excerpt"] = truncate_context(
                 reply or "", limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
