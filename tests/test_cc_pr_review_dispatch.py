@@ -797,6 +797,37 @@ checklist:
         assert dossier["changed_file_count"] == 1
         assert dossier["changed_files"] == ["scripts/review_team.py"]
 
+    def test_dossier_records_successful_reviewer_stderr_diagnostics(self, tmp_path: Path) -> None:
+        class StderrReviewers(RecordingReviewers):
+            def __call__(
+                self, seat: Any, family_cfg: dict, prompt: str
+            ) -> dispatch.ReviewerRunnerResult:
+                self.invocations.append((seat.id, seat.family, prompt))
+                return dispatch.ReviewerRunnerResult(
+                    stdout=GOOD_REPLY,
+                    stderr=(
+                        "hapax-glmcp-reviewer: PAYG fallback used "
+                        "endpoint=https://api.z.ai/api/paas/v4 model=glm-5.2 "
+                        "primary_error_class=quota_exhausted"
+                    ),
+                )
+
+        result, _, _, note = _review(tmp_path, reviewers=StderrReviewers())
+        persisted = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+
+        assert result["status"] == "dispatched"
+        for review in persisted["reviewers"]:
+            assert review["runner_stderr_excerpt"].startswith("hapax-glmcp-reviewer: PAYG")
+            assert review["runner_diagnostics"] == [
+                {
+                    "stream": "stderr",
+                    "signal": "payg_fallback",
+                    "excerpt": review["runner_stderr_excerpt"],
+                }
+            ]
+
     def test_diff_is_truncated(self, tmp_path: Path) -> None:
         gh = FakeGh()
         gh.diff = (

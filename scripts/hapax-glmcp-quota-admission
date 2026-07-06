@@ -336,10 +336,12 @@ def _success_fields(
         ("payg_fallback", _bool(bool(contract["payg_fallback"]))),
     ]
     if contract["payg_fallback"]:
+        if not primary_error_class or not quota_wall_evidence_ref:
+            raise ValueError("PAYG success fields require primary wall class and wall evidence ref")
         fields.extend(
             [
-                ("primary_error_class", primary_error_class or ""),
-                ("quota_wall_evidence_ref", quota_wall_evidence_ref or ""),
+                ("primary_error_class", primary_error_class),
+                ("quota_wall_evidence_ref", quota_wall_evidence_ref),
             ]
         )
     return fields

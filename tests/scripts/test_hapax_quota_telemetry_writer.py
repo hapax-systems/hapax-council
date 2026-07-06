@@ -60,13 +60,20 @@ def _run_writer(
     return result, out
 
 
-def _wall_receipt(relay: Path, role: str, resets_at: str) -> None:
+def _wall_receipt(
+    relay: Path,
+    role: str,
+    resets_at: str,
+    *,
+    failure_class: str = "quota_exhausted",
+) -> None:
     (relay / f"{role}-quota-wall.yaml").write_text(
         f"""role: {role}
 status: quota_blocked
 detected_at: 2026-06-09T23:00:00Z
 signal_kind: rate_limit_event
-rate_limit_type: seven_day
+failure_class: {failure_class}
+rate_limit_type: {failure_class}
 resets_at: {resets_at}
 is_overage: False
 action: exit_clean_await_restart
@@ -305,6 +312,39 @@ def test_glmcp_payg_admission_supersedes_coding_plan_quota_wall(tmp_path: Path) 
     summary = json.loads(result.stdout)
     assert summary["quota_walls"] == {"glmcp": 1}
     assert summary["glmcp_admissions"] == 1
+
+
+def test_glmcp_payg_admission_does_not_supersede_wrong_wall_class(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _wall_receipt(
+        relay,
+        "cx-glmcp",
+        "2026-07-06T16:00:00Z",
+        failure_class="provider_high_traffic",
+    )
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        primary_error_class="quota_exhausted",
+    )
+
+    result, out = _run_writer(tmp_path, now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "exhausted"
+    assert any(
+        "failure_class:provider_high_traffic" in ref for ref in glmcp_snapshot["evidence_refs"]
+    )
+    assert "matching active quota-wall witness" in glmcp_snapshot["operator_visible_reason"]
 
 
 def test_glmcp_payg_admission_does_not_supersede_without_active_paid_budget(
