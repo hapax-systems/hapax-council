@@ -17,9 +17,9 @@
 #   #5 (STATE-ERASING-AUDIT-ON-LIVE-LANES).
 # Changes in v2:
 #   - GitHub PR reality check: before clearing any claim whose task note has a
-#     pr field, check `gh pr view` state. If the PR is OPEN or DRAFT, the claim
-#     is LIVE — never clear it. When the pr field is null but the task has a
-#     branch, probe the branch head (`gh pr list --head`) — an open branch PR
+#     pr field, check GitHub REST pull state. If the PR is OPEN or DRAFT, the
+#     claim is LIVE — never clear it. When the pr field is null but the task has a
+#     branch, probe the REST pulls head filter — an open branch PR
 #     or an unverifiable lookup both retain the claim (fail-safe). (Fixes class
 #     #5, incl. the gh-pr-create → note-sync race window.)
 #   - Attributed journal logging: every claim-cache mutation emits a structured
@@ -135,7 +135,10 @@ _gh_pr_is_open() {
   # gh unavailable → fail-safe (treat as open)
   command -v "$GH_CMD" >/dev/null 2>&1 || return 0
   local state=""
-  state="$("$GH_CMD" pr view "$pr_number" --repo "$GH_REPO_SLUG" --json state --jq .state 2>/dev/null || true)"
+  state="$("$GH_CMD" api --method GET -H 'Accept: application/vnd.github+json' \
+    "repos/${GH_REPO_SLUG}/pulls/${pr_number}" \
+    --jq 'if .state == "closed" and (.merged == true or .merged_at != null) then "MERGED" elif .state == "closed" then "CLOSED" elif .draft == true then "DRAFT" elif .state == "open" then "OPEN" else "" end' \
+    2>/dev/null || true)"
   case "$state" in
     MERGED|CLOSED) return 1 ;;  # positively confirmed not-open
     OPEN|DRAFT) return 0 ;;     # positively confirmed open
@@ -160,10 +163,16 @@ _gh_open_pr_for_branch() {
   local branch="$1"
   [[ -n "$branch" && "$branch" != "null" ]] || return 1
   command -v "$GH_CMD" >/dev/null 2>&1 || return 2
-  local out rc
+  local out rc owner head_filter
+  owner="${GH_REPO_SLUG%%/*}"
+  head_filter="${owner}:${branch}"
   set +e
-  out="$("$GH_CMD" pr list --head "$branch" --state open --repo "$GH_REPO_SLUG" \
-    --json number --jq '.[0].number // empty' 2>/dev/null)"
+  out="$("$GH_CMD" api --method GET -H 'Accept: application/vnd.github+json' \
+    "repos/${GH_REPO_SLUG}/pulls" \
+    -f "head=${head_filter}" \
+    -f "state=open" \
+    -f "per_page=1" \
+    --jq '.[0].number // empty' 2>/dev/null)"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || return 2   # lookup failed -> indeterminate
@@ -830,9 +839,6 @@ for note in "$VAULT_ROOT/active/"*.md; do
 
   has_pr=false
   [ "$pr" != "null" ] && [ -n "$pr" ] && has_pr=true
-
-  has_branch=false
-  [ "$branch" != "null" ] && [ -n "$branch" ] && has_branch=true
 
   if [ "$age" -ge "$stale_threshold" ] && [ "$has_pr" = false ]; then
     phantom_count=$((phantom_count + 1))

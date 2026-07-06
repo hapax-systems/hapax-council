@@ -127,7 +127,7 @@ checklist: {}
 
 
 class FakeGh:
-    """Stub for the gh CLI: pr view / pr diff / pr list / pr comment."""
+    """Stub for the gh CLI: REST PR reads plus pr diff / pr comment."""
 
     def __init__(
         self,
@@ -147,8 +147,68 @@ class FakeGh:
         self.comments: list[str] = []
         self.calls: list[list[str]] = []
 
+    def _rest_open_prs(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "number": self.pr_number,
+                "title": f"PR {self.pr_number}",
+                "head": {"ref": f"feat/{self.pr_number}", "sha": self.head_sha},
+                "draft": False,
+                "state": "open",
+            }
+        ]
+
+    def _rest_pull(self, number: int) -> dict[str, Any] | None:
+        if number != self.pr_number:
+            return None
+        return {
+            "number": self.pr_number,
+            "title": f"PR {self.pr_number}",
+            "body": "PR body acceptance evidence",
+            "head": {"ref": f"feat/{self.pr_number}", "sha": self.head_sha},
+            "draft": False,
+            "changed_files": (
+                len(self.files) if self.changed_files_count is None else self.changed_files_count
+            ),
+            "mergeable_state": "clean",
+            "state": "open",
+        }
+
+    def _rest_pull_files(self, number: int) -> list[dict[str, Any]] | None:
+        if number != self.pr_number:
+            return None
+        return [{"filename": path} for path in self.files]
+
     def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         self.calls.append(list(cmd))
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            path = cmd[6]
+            if path == "repos/owner/repo/pulls":
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(self._rest_open_prs()), "")
+            if path == f"repos/owner/repo/pulls/{self.pr_number}" and "v3.diff" in cmd[5]:
+                return subprocess.CompletedProcess(cmd, 0, self.diff, "")
+            if path.startswith("repos/owner/repo/pulls/") and path.endswith("/files"):
+                try:
+                    number = int(path.rsplit("/", 2)[-2])
+                except ValueError:
+                    number = -1
+                payload = self._rest_pull_files(number)
+                if payload is None:
+                    return subprocess.CompletedProcess(cmd, 1, "", "pull files not found")
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            if path.startswith("repos/owner/repo/pulls/"):
+                try:
+                    number = int(path.rsplit("/", 1)[-1])
+                except ValueError:
+                    number = -1
+                payload = self._rest_pull(number)
+                if payload is None:
+                    return subprocess.CompletedProcess(cmd, 1, "", "pull not found")
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            if "/check-runs" in path:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"check_runs": []}), "")
+            if path.endswith("/status"):
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"statuses": []}), "")
         if cmd[:3] == ["gh", "pr", "view"]:
             if self.pr_number in self.fail_view_prs:
                 return subprocess.CompletedProcess(cmd, 1, "", "view failed")
@@ -169,16 +229,6 @@ class FakeGh:
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         if cmd[:3] == ["gh", "pr", "diff"]:
             return subprocess.CompletedProcess(cmd, 0, self.diff, "")
-        if cmd[:3] == ["gh", "pr", "list"]:
-            payload = [
-                {
-                    "number": self.pr_number,
-                    "headRefName": f"feat/{self.pr_number}",
-                    "headRefOid": self.head_sha,
-                    "isDraft": False,
-                }
-            ]
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         if cmd[:3] == ["gh", "pr", "comment"]:
             if self.fail_comment:
                 return subprocess.CompletedProcess(cmd, 1, "", "comment failed")
@@ -959,6 +1009,39 @@ checklist:
                 }
             ]
 
+    def test_pr_metadata_uses_rest_not_graphql_pr_view(self, tmp_path: Path) -> None:
+        gh = FakeGh()
+        gh.fail_view_prs.add(42)
+        result, gh, _, _ = _review(tmp_path, gh=gh)
+
+        assert result["status"] == "dispatched"
+        assert not any(call[:3] == ["gh", "pr", "view"] for call in gh.calls)
+        assert not any(call[:3] == ["gh", "pr", "diff"] for call in gh.calls)
+        assert any(len(call) > 6 and call[6] == "repos/owner/repo/pulls/42" for call in gh.calls)
+        assert any(
+            len(call) > 6
+            and call[5] == "Accept: application/vnd.github.v3.diff"
+            and call[6] == "repos/owner/repo/pulls/42"
+            for call in gh.calls
+        )
+        assert any(
+            len(call) > 6 and call[6] == "repos/owner/repo/pulls/42/files" for call in gh.calls
+        )
+
+    def test_rest_pull_failure_names_recheck_action(self, tmp_path: Path) -> None:
+        class MissingPullGh(FakeGh):
+            def _rest_pull(self, number: int) -> dict[str, Any] | None:
+                return None
+
+        with pytest.raises(RuntimeError) as excinfo:
+            _review(tmp_path, gh=MissingPullGh())
+
+        message = str(excinfo.value)
+        assert "REST pull fetch failed for PR #42" in message
+        assert "gh auth status" in message
+        assert "gh api repos/owner/repo/pulls/42" in message
+        assert "preserve stderr" in message
+
     def test_diff_is_truncated(self, tmp_path: Path) -> None:
         gh = FakeGh()
         gh.diff = (
@@ -1141,23 +1224,41 @@ class TestAllMode:
 
     def test_review_all_continues_after_one_pr_error(self, tmp_path: Path) -> None:
         class MultiGh(FakeGh):
+            def _rest_open_prs(self) -> list[dict[str, Any]]:
+                return [
+                    {
+                        "number": 41,
+                        "title": "PR 41",
+                        "head": {"ref": "feat/41", "sha": "b" * 40},
+                        "draft": False,
+                        "state": "open",
+                    },
+                    {
+                        "number": 42,
+                        "title": "PR 42",
+                        "head": {"ref": "feat/42", "sha": "c" * 40},
+                        "draft": False,
+                        "state": "open",
+                    },
+                ]
+
+            def _rest_pull(self, number: int) -> dict[str, Any] | None:
+                if number != 42:
+                    return None
+                return {
+                    "number": number,
+                    "title": f"PR {number}",
+                    "head": {
+                        "ref": f"feat/{number}",
+                        "sha": ("b" if number == 41 else "c") * 40,
+                    },
+                    "draft": False,
+                    "changed_files": len(self.files),
+                    "mergeable_state": "clean",
+                    "state": "open",
+                }
+
             def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
-                if cmd[:3] == ["gh", "pr", "list"]:
-                    payload = [
-                        {
-                            "number": 41,
-                            "headRefName": "feat/41",
-                            "headRefOid": "b" * 40,
-                            "isDraft": False,
-                        },
-                        {
-                            "number": 42,
-                            "headRefName": "feat/42",
-                            "headRefOid": "c" * 40,
-                            "isDraft": False,
-                        },
-                    ]
-                    return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
                 if cmd[:3] == ["gh", "pr", "view"] and cmd[3] == "41":
                     return subprocess.CompletedProcess(cmd, 1, "", "view failed")
                 return super().__call__(cmd, **kwargs)

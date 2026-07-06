@@ -237,6 +237,13 @@ the operator's interactive checkout:
 | `hapax-cc-hygiene.timer` | `scripts/cc-hygiene-sweeper.py` | Read-only cc-task vault diagnostics. |
 | `hapax-cc-pr-autoqueue.timer` | `scripts/cc-pr-autoqueue.py --apply` | Governed PR auto-queue/auto-merge arming for task-linked PRs. |
 | `hapax-cc-pr-merge-watcher.timer` | `scripts/cc-pr-merge-watcher.py` | Auto-close active cc-tasks after linked PRs merge. |
+| `hapax-pr-review-dispatch.timer` | `scripts/cc-pr-review-dispatch.py --all --apply` | Review-team dossier refresh for open task-linked PRs. |
+
+Recheck the review-dispatch timer claim with:
+`systemctl --user list-timers --all hapax-pr-review-dispatch.timer` and
+`systemctl --user status hapax-pr-review-dispatch.timer hapax-pr-review-dispatch.service --no-pager`.
+For a source-level dry run, use
+`uv run python scripts/cc-pr-review-dispatch.py --pr <PR_NUMBER>`.
 
 `cc-pr-autoqueue` fails closed: a PR must be linked to exactly one cc-task, the
 task must carry AuthorityCase/parent-spec metadata plus
