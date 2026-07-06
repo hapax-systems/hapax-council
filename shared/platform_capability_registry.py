@@ -222,6 +222,7 @@ class CapabilityShapeFreshnessState(StrEnum):
 class AuthSurface(StrEnum):
     API_KEY = "api_key"
     LOCAL = "local"
+    OAUTH = "oauth"
     OPERATOR_SESSION = "operator_session"
     SUBSCRIPTION = "subscription"
     UNKNOWN = "unknown"
@@ -1485,7 +1486,7 @@ def _apply_receipt_to_route_payload(
         *_resource_receipt_removable_reasons(route_payload),
         "provider_docs_evidence_absent",
     }
-    if quota_unobservable_nonblocking:
+    if quota_unobservable_nonblocking or receipt.quota.status is EvidenceStatus.OBSERVED:
         removable_top_blockers.update(_quota_unobservable_removable_reasons(route_payload))
     quota_admission_fresh, quota_admission_refs = _route_specific_quota_admission_fresh(
         route_payload,

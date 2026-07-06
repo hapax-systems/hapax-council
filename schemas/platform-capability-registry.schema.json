@@ -91,7 +91,7 @@
       "enum": ["fresh", "stale", "missing", "asserted_only", "contradictory"]
     },
     "auth_surface": {
-      "enum": ["api_key", "local", "operator_session", "subscription", "unknown", "vertex"]
+      "enum": ["api_key", "local", "oauth", "operator_session", "subscription", "unknown", "vertex"]
     },
     "capacity_pool": {
       "enum": ["api_paid_spend", "bootstrap_budget", "local_compute", "subscription_quota"]
