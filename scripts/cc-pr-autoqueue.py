@@ -96,6 +96,7 @@ NON_BLOCKING_CHECKBOX_RE = re.compile(
     r"\b(optional|non[-_\s]?blocking|informational|follow[-_\s]?up|stretch)\b",
     re.IGNORECASE,
 )
+_MERGE_QUEUE_REF_PR_RE = re.compile(r"/pr-(\d+)-")
 # Sourced from the canonical SSOT so the autoqueue and the cc-task gate agree on
 # the ready family (shared/sdlc_lifecycle.py TASK_MERGE_READY_STATUSES). The two
 # fulfilling-closed states stay admissible for closeout reconciliation.
@@ -901,6 +902,40 @@ def fetch_merge_queue_pr_numbers(
             except (KeyError, TypeError, ValueError):
                 continue
             queued.add(number)
+    queued |= _merge_queue_ref_pr_numbers(repo=repo, repo_root=repo_root, runner=runner)
+    return queued
+
+
+def _merge_queue_ref_pr_numbers(
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> set[int]:
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    cmd = [
+        "gh",
+        "api",
+        f"repos/{repo}/git/matching-refs/heads/gh-readonly-queue",
+        "--jq",
+        ".[].ref",
+    ]
+    proc = runner(
+        cmd,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        return set()
+    refs = proc.stdout.splitlines()
+    queued: set[int] = set()
+    for ref in refs:
+        if match := _MERGE_QUEUE_REF_PR_RE.search(ref.strip()):
+            queued.add(int(match.group(1)))
     return queued
 
 
