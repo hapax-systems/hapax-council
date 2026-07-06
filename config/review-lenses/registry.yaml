@@ -121,6 +121,13 @@ families:
     reviewer_command: ["scripts/hapax-glmcp-reviewer"]
     timeout_seconds: 1200
 
+# Optional route-backed review-seat descriptors. These extend the roster only
+# when the named platform-capability route is admitted with fresh route,
+# resource, quota, and provider-doc receipts and the reviewer command starts
+# with that route's sanctioned_wrapper. Leave empty until a route has explicit
+# review-seat metadata; worker/local/boutique routes are not inferred.
+route_backed_review_families: []
+
 # Authoring-lane -> model family (writer's family never holds the majority
 # alone). vibe lanes never review (off-limits surfaces per CLAUDE.md).
 lane_families:

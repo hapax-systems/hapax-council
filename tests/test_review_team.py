@@ -47,11 +47,103 @@ ALWAYS_ON_LENSES = tuple(ALWAYS_ON_CHECKLIST)
 @pytest.fixture(autouse=True)
 def _isolate_live_route_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     rt = _load_review_team_module()
-    monkeypatch.setattr(rt, "review_route_blocked_families", lambda registry: {})
+    real_review_route_blocked_families = rt.review_route_blocked_families
+
+    def isolated_review_route_blocked_families(registry, **kwargs):
+        if kwargs.get("platform_registry") is not None:
+            return real_review_route_blocked_families(registry, **kwargs)
+        return {}
+
+    monkeypatch.setattr(rt, "review_route_blocked_families", isolated_review_route_blocked_families)
 
 
 def _registry() -> dict:
     return yaml.safe_load(REGISTRY_PATH.read_text(encoding="utf-8"))
+
+
+def _platform_registry_payload() -> dict:
+    return json.loads((REPO_ROOT / "config" / "platform-capability-registry.json").read_text())
+
+
+def _mark_route_fresh(route: dict, *, checked_at: str = "2026-05-09T20:55:00Z") -> None:
+    route["route_state"] = "active"
+    route["blocked_reasons"] = []
+    route["freshness"]["capability_checked_at"] = checked_at
+    route["freshness"]["quota_checked_at"] = checked_at
+    route["freshness"]["resource_checked_at"] = checked_at
+    route["freshness"]["provider_docs_checked_at"] = checked_at
+    route["freshness"]["capability_stale_after"] = "365d"
+    route["freshness"]["quota_stale_after"] = "365d"
+    route["freshness"]["resource_stale_after"] = "365d"
+    route["freshness"]["provider_docs_stale_after"] = "365d"
+    route["freshness"]["evidence"] = {
+        "capability": {"evidence_refs": ["test:fresh-capability"], "blocked_reasons": []},
+        "quota": {"evidence_refs": ["test:fresh-quota"], "blocked_reasons": []},
+        "resource": {"evidence_refs": ["test:fresh-resource"], "blocked_reasons": []},
+        "provider_docs": {"evidence_refs": ["test:fresh-provider-docs"], "blocked_reasons": []},
+    }
+    route["telemetry"]["quota_source"] = "manual"
+    route["telemetry"]["resource_source"] = "local_probe"
+    for score in route["capability_scores"].values():
+        score["observed_at"] = checked_at
+        score["stale_after"] = "365d"
+        if not score.get("evidence_refs"):
+            score["evidence_refs"] = ["test:fresh-score"]
+    for tool in route["tool_state"]:
+        tool["observed_at"] = checked_at
+        tool["stale_after"] = "365d"
+
+
+def _review_safe_route(route: dict) -> None:
+    route["authority_ceiling"] = "read_only"
+    route["mutability"] = {
+        "vault_docs": False,
+        "source": False,
+        "runtime": False,
+        "public": False,
+        "provider_spend": False,
+    }
+    route["tool_access"] = {
+        "filesystem": "read_only",
+        "shell": "none",
+        "browser": False,
+        "mcp": [],
+    }
+    route["worker_tier"] = "read_only_sidecar"
+    route["approval_posture"] = "plan_mode_read_only"
+
+
+def _platform_registry_with_route(route_id: str, *, admitted: bool):
+    rt = _load_review_team_module()
+    payload = _platform_registry_payload()
+    route = next(row for row in payload["routes"] if row["route_id"] == route_id)
+    _review_safe_route(route)
+    if admitted:
+        _mark_route_fresh(route)
+    return rt.PlatformCapabilityRegistry.model_validate(payload)
+
+
+def _registry_with_extra_review_descriptor(
+    *,
+    family: str = "haiku-review",
+    route_id: str = "claude.headless.haiku",
+    command: list[str] | None = None,
+) -> dict:
+    reg = _registry()
+    route = next(
+        (row for row in _platform_registry_payload()["routes"] if row["route_id"] == route_id),
+        None,
+    )
+    wrapper = route["sanctioned_wrapper"] if route is not None else "scripts/missing-reviewer"
+    reg["route_backed_review_families"] = [
+        {
+            "family": family,
+            "route_id": route_id,
+            "reviewer_command": command or [wrapper, "--review-seat"],
+            "timeout_seconds": 1200,
+        }
+    ]
+    return reg
 
 
 def _all_registry_lenses(reg: dict) -> set[str]:
@@ -368,6 +460,134 @@ class TestConstitution:
             "route_specific_quota_receipt_absent"
         ) in team.notes
         assert "post_route_receipt_rereview_required" in team.notes
+
+    def test_admitted_extra_review_route_joins_roster_and_restores_quorum(self) -> None:
+        rt = _load_review_team_module()
+        reg = _registry_with_extra_review_descriptor()
+        platform_registry = _platform_registry_with_route("claude.headless.haiku", admitted=True)
+        expanded = rt.review_registry_with_route_families(reg, platform_registry=platform_registry)
+
+        families = {entry["family"] for entry in rt.review_family_entries(expanded)}
+        assert "haiku-review" in families
+        blocked = rt.review_route_blocked_families(reg, platform_registry=platform_registry)
+        assert "haiku-review" not in blocked
+
+        team = rt.constitute_team(
+            "t2_standard",
+            "codex",
+            expanded,
+            pr_number=0,
+            available_families=("claude", "haiku-review"),
+            route_blocked_families=blocked,
+        )
+        assert {seat.family for seat in team.seats} == {"claude", "haiku-review"}
+        dossier = rt.synthesize_dossier(
+            task_id="task-x",
+            pr_number=99,
+            head_sha="a" * 40,
+            team_class="t2_standard",
+            registry=expanded,
+            reviews=[
+                _review("claude-1", "claude", "accept"),
+                _review("haiku-review-1", "haiku-review", "accept"),
+                _review("claude-2", "claude", "invalid-output"),
+            ],
+            lenses=ALWAYS_ON_LENSES,
+            constituted_at="2026-06-11T20:00:00+00:00",
+        )
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert dossier["accept_count"] == 2
+
+    def test_blocked_extra_review_route_degrades_with_route_specific_reason(self) -> None:
+        rt = _load_review_team_module()
+        reg = _registry_with_extra_review_descriptor()
+        platform_registry = _platform_registry_with_route("claude.headless.haiku", admitted=False)
+        expanded = rt.review_registry_with_route_families(reg, platform_registry=platform_registry)
+        blocked = rt.review_route_blocked_families(reg, platform_registry=platform_registry)
+
+        assert "haiku-review" in blocked
+        assert any(
+            "fresh_capability_evidence_absent" in reason for reason in blocked["haiku-review"]
+        )
+        team = rt.constitute_team(
+            "t2_standard",
+            "codex",
+            expanded,
+            pr_number=0,
+            route_blocked_families=blocked,
+        )
+        assert "haiku-review" not in {seat.family for seat in team.seats}
+        assert "degraded_family_route_blocked:haiku-review" in team.notes
+        assert any(
+            note.startswith("route_blocked_family_reason:haiku-review:claude.headless.haiku:")
+            for note in team.notes
+        )
+
+    def test_extra_review_route_requires_sanctioned_reviewer_command(self) -> None:
+        rt = _load_review_team_module()
+        reg = _registry_with_extra_review_descriptor(command=["scripts/not-sanctioned-reviewer"])
+        platform_registry = _platform_registry_with_route("claude.headless.haiku", admitted=True)
+        expanded = rt.review_registry_with_route_families(reg, platform_registry=platform_registry)
+        blocked = rt.review_route_blocked_families(reg, platform_registry=platform_registry)
+
+        assert blocked["haiku-review"] == (
+            "claude.headless.haiku:reviewer_command_not_sanctioned_wrapper:"
+            "scripts/not-sanctioned-reviewer",
+        )
+        team = rt.constitute_team(
+            "t2_standard",
+            "codex",
+            expanded,
+            pr_number=0,
+            route_blocked_families=blocked,
+        )
+        assert "haiku-review" not in {seat.family for seat in team.seats}
+
+    def test_missing_extra_review_route_degrades_without_seating(self) -> None:
+        rt = _load_review_team_module()
+        reg = _registry_with_extra_review_descriptor(route_id="claude.headless.nope")
+        platform_registry = _platform_registry_with_route("claude.headless.haiku", admitted=True)
+        expanded = rt.review_registry_with_route_families(reg, platform_registry=platform_registry)
+        blocked = rt.review_route_blocked_families(reg, platform_registry=platform_registry)
+
+        assert blocked["haiku-review"] == (
+            "claude.headless.nope:route_missing_from_platform_registry",
+        )
+        team = rt.constitute_team(
+            "t2_standard",
+            "codex",
+            expanded,
+            pr_number=0,
+            route_blocked_families=blocked,
+        )
+        assert "haiku-review" not in {seat.family for seat in team.seats}
+
+    def test_worker_and_boutique_routes_do_not_autobecome_review_families(self) -> None:
+        rt = _load_review_team_module()
+        payload = _platform_registry_payload()
+        for route_id in ("vibe.headless.full", "local_tool.local.worker"):
+            route = next(row for row in payload["routes"] if row["route_id"] == route_id)
+            _mark_route_fresh(route)
+        platform_registry = rt.PlatformCapabilityRegistry.model_validate(payload)
+
+        expanded = rt.review_registry_with_route_families(
+            _registry(), platform_registry=platform_registry
+        )
+        families = {entry["family"] for entry in rt.review_family_entries(expanded)}
+        assert {"vibe", "local_tool", "ornith", "fugu"}.isdisjoint(families)
+
+    def test_static_review_roster_behavior_remains_unchanged_without_extra_descriptor(self) -> None:
+        rt = _load_review_team_module()
+        reg = _registry()
+        entries = rt.review_family_entries(reg)
+
+        assert [entry["family"] for entry in entries] == [
+            entry["family"] for entry in reg["families"]
+        ]
+        assert rt.review_family_route_ids(reg) == {
+            "gemini": "agy.review.direct",
+            "glm": "glmcp.review.direct",
+        }
 
     def test_t2_team_can_seat_glm_as_independent_family(self) -> None:
         rt = _load_review_team_module()

@@ -569,7 +569,7 @@ def dispatch_reviews(
 ) -> list[dict[str, Any]]:
     """Run all seats in parallel; reviewer failure becomes invalid-output, loudly."""
 
-    family_cfgs = {entry["family"]: entry for entry in registry["families"]}
+    family_cfgs = {entry["family"]: entry for entry in review_team.review_family_entries(registry)}
 
     def run_one(index: int) -> dict[str, Any]:
         seat = constitution.seats[index]
@@ -1229,10 +1229,22 @@ def review_pr(
     now_iso = now_iso or datetime.now(UTC).isoformat(timespec="seconds")
     registry = review_team.load_lens_registry(registry_path)
     try:
+        platform_registry = (
+            None
+            if route_blocked_families is not None
+            else review_team.load_platform_capability_registry(
+                receipt_dir=review_team.DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+            )
+        )
+        registry = review_team.review_registry_with_route_families(
+            registry, platform_registry=platform_registry
+        )
         effective_route_blocked_families = (
             dict(route_blocked_families)
             if route_blocked_families is not None
-            else review_team.review_route_blocked_families(registry)
+            else review_team.review_route_blocked_families(
+                registry, platform_registry=platform_registry
+            )
         )
     except review_team.PlatformCapabilityRegistryError as exc:
         return {

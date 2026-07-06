@@ -231,6 +231,21 @@ def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingRe
     return result, gh, reviewers, note
 
 
+def _write_registry_with_extra_review_descriptor(tmp_path: Path) -> Path:
+    registry = dispatch.review_team.load_lens_registry()
+    registry["route_backed_review_families"] = [
+        {
+            "family": "haiku-review",
+            "route_id": "claude.headless.nope",
+            "reviewer_command": ["scripts/missing-reviewer"],
+            "timeout_seconds": 1200,
+        }
+    ]
+    path = tmp_path / "review-lenses-registry.yaml"
+    path.write_text(yaml.safe_dump(registry, sort_keys=False), encoding="utf-8")
+    return path
+
+
 class TestDryRun:
     def test_dry_run_plans_without_dispatching(self, tmp_path: Path) -> None:
         result, gh, reviewers, note = _review(tmp_path, apply=False)
@@ -278,6 +293,31 @@ class TestApply:
         assert result["plan"]["route_blocked_families"] == {
             "gemini": ["route_specific_quota_receipt_absent"]
         }
+
+    def test_blocked_extra_route_descriptor_is_not_invoked_as_reviewer(
+        self, tmp_path: Path
+    ) -> None:
+        registry_path = _write_registry_with_extra_review_descriptor(tmp_path)
+
+        result, _, reviewers, note = _review(
+            tmp_path,
+            registry_path=registry_path,
+            route_blocked_families={
+                "haiku-review": ("claude.headless.nope:route_missing_from_platform_registry",)
+            },
+        )
+
+        assert result["status"] == "dispatched"
+        assert all(family != "haiku-review" for _, family, _ in reviewers.invocations)
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        assert {r["family"] for r in dossier["reviewers"]}.isdisjoint({"haiku-review"})
+        assert "degraded_family_route_blocked:haiku-review" in dossier["constitution_notes"]
+        assert (
+            "route_blocked_family_reason:haiku-review:claude.headless.nope:"
+            "claude.headless.nope:route_missing_from_platform_registry"
+        ) in dossier["constitution_notes"]
 
     def test_reviews_are_blind(self, tmp_path: Path) -> None:
         _, _, reviewers, _ = _review(tmp_path)
