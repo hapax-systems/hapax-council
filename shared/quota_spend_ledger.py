@@ -608,6 +608,7 @@ class QuotaSnapshot(StrictModel):
 
 class PaidRouteRequest(StrictModel):
     route_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
     provider: str = Field(min_length=1)
     profile: str = Field(min_length=1)
     task_class: str = Field(min_length=1)
@@ -622,6 +623,7 @@ class PaidRouteRequest(StrictModel):
         _reject_private_or_identity_refs(
             [
                 self.route_id,
+                self.task_id,
                 self.provider,
                 self.profile,
                 self.task_class,
@@ -831,6 +833,16 @@ class QuotaSpendLedger(StrictModel):
             start=Decimal("0"),
         )
 
+    def _budget_spent_for_task_usd(self, budget: TransitionBudget, task_id: str) -> Decimal:
+        return sum(
+            (
+                receipt.cost_against_cap()
+                for receipt in self._budget_receipts(budget)
+                if receipt.task_id == task_id
+            ),
+            start=Decimal("0"),
+        )
+
     def _budget_remaining_usd(self, budget: TransitionBudget) -> Decimal:
         remaining = budget.total_cap_usd - self._budget_spent_usd(budget)
         return max(Decimal("0"), remaining)
@@ -906,13 +918,18 @@ def evaluate_paid_route_eligibility(
     for budget in unexpired:
         remaining = ledger._budget_remaining_usd(budget)
         daily_remaining = budget.daily_cap_usd - ledger._budget_spent_today_usd(budget, when)
-        if request.estimated_cost_usd > budget.per_task_cap_usd:
+        task_remaining = budget.per_task_cap_usd - ledger._budget_spent_for_task_usd(
+            budget,
+            request.task_id,
+        )
+        limiting_remaining = min(remaining, daily_remaining, task_remaining)
+        if request.estimated_cost_usd > task_remaining:
             continue
         if request.estimated_cost_usd > remaining:
             continue
         if request.estimated_cost_usd > daily_remaining:
             continue
-        cap_eligible.append((budget, remaining - request.estimated_cost_usd))
+        cap_eligible.append((budget, limiting_remaining - request.estimated_cost_usd))
 
     if not cap_eligible:
         blocking.append("matching TransitionBudget cap exhausted")
@@ -1340,6 +1357,7 @@ def _glmcp_payg_budget_request() -> PaidRouteRequest:
     return PaidRouteRequest.model_validate(
         {
             "route_id": GLMCP_PAYG_BUDGET_ROUTE_ID,
+            "task_id": "glmcp-review-direct",
             "provider": GLMCP_PAYG_BUDGET_PROVIDER,
             "profile": GLMCP_PAYG_BUDGET_PROFILE,
             "task_class": GLMCP_PAYG_BUDGET_TASK_CLASS,

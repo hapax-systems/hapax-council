@@ -159,6 +159,7 @@ def _add_glmcp_payg_budget(
 def _request(**overrides: object) -> PaidRouteRequest:
     payload: dict[str, object] = {
         "route_id": "opaque.route.bootstrap",
+        "task_id": "capacity-routing-quota-spend-ledger",
         "provider": "opaque-provider-a",
         "profile": "opaque-profile-full",
         "task_class": "authority-case-implementation",
@@ -293,6 +294,81 @@ def test_cap_exhaustion_refuses_paid_route() -> None:
 
     assert decision.eligible is False
     assert decision.state == "refused_exhausted_budget"
+
+
+def test_per_task_cap_sums_existing_spend_for_same_task_only() -> None:
+    payload = _active_budget_payload()
+    budget = payload["transition_budgets"][0]
+    budget["per_task_cap_usd"] = "2.00"
+    payload["spend_receipts"] = [
+        {
+            "spend_receipt_schema": 1,
+            "spend_id": "spend-20260517T073000Z-task-a-used",
+            "task_id": "capacity-routing-quota-spend-ledger",
+            "authority_case": "CASE-CAPACITY-ROUTING-001",
+            "route_id": "opaque.route.bootstrap",
+            "capacity_pool": "bootstrap_budget",
+            "budget_id": "tb-20260509-bootstrap-expired",
+            "provider": "opaque-provider-a",
+            "model_or_engine": "opaque-engine-a",
+            "auth_surface": "api_key",
+            "quality_floor": "frontier_required",
+            "quality_preservation_reason": "fixture task cap use",
+            "spend_reason": "bootstrap_equilibrium",
+            "estimated_cost_usd": None,
+            "actual_cost_usd": "1.75",
+            "cap_remaining_usd": "8.25",
+            "created_at": "2026-05-17T07:30:00Z",
+            "reconcile_by": None,
+            "reconciliation_state": "reconciled",
+            "reconciled_at": "2026-05-17T07:45:00Z",
+            "reconciliation_reason": "fixture task cap use reconciled",
+            "artifact_refs": [],
+            "support_artifact_authority": "none",
+        },
+        {
+            "spend_receipt_schema": 1,
+            "spend_id": "spend-20260517T073500Z-task-b-used",
+            "task_id": "other-task",
+            "authority_case": "CASE-CAPACITY-ROUTING-001",
+            "route_id": "opaque.route.bootstrap",
+            "capacity_pool": "bootstrap_budget",
+            "budget_id": "tb-20260509-bootstrap-expired",
+            "provider": "opaque-provider-a",
+            "model_or_engine": "opaque-engine-a",
+            "auth_surface": "api_key",
+            "quality_floor": "frontier_required",
+            "quality_preservation_reason": "fixture other task cap use",
+            "spend_reason": "bootstrap_equilibrium",
+            "estimated_cost_usd": None,
+            "actual_cost_usd": "1.75",
+            "cap_remaining_usd": "6.50",
+            "created_at": "2026-05-17T07:35:00Z",
+            "reconcile_by": None,
+            "reconciliation_state": "reconciled",
+            "reconciled_at": "2026-05-17T07:45:00Z",
+            "reconciliation_reason": "fixture other task cap use reconciled",
+            "artifact_refs": [],
+            "support_artifact_authority": "none",
+        },
+    ]
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    exhausted = evaluate_paid_route_eligibility(
+        ledger,
+        _request(estimated_cost_usd="0.30"),
+        now=NOW,
+    )
+    different_task = evaluate_paid_route_eligibility(
+        ledger,
+        _request(task_id="fresh-task", estimated_cost_usd="0.30"),
+        now=NOW,
+    )
+
+    assert exhausted.eligible is False
+    assert exhausted.state == "refused_exhausted_budget"
+    assert different_task.eligible is True
+    assert str(different_task.cap_remaining_usd) == "1.70"
 
 
 def test_route_subscription_snapshot_fresh_until_expires_independently() -> None:

@@ -653,6 +653,11 @@ def default_reviewer_runner(
         cmd,
         input=prompt,
         cwd=str(REPO_ROOT),
+        env={
+            **os.environ,
+            "HAPAX_REVIEW_SEAT_ID": seat.id,
+            "HAPAX_REVIEW_FAMILY": seat.family,
+        },
         capture_output=True,
         text=True,
         check=False,

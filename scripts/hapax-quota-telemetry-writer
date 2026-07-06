@@ -393,6 +393,7 @@ def _glmcp_payg_budget_request() -> PaidRouteRequest:
     return PaidRouteRequest.model_validate(
         {
             "route_id": "glmcp.review.direct",
+            "task_id": "glmcp-review-direct",
             "provider": GLMCP_PAYG_BUDGET_PROVIDER,
             "profile": GLMCP_PAYG_BUDGET_PROFILE,
             "task_class": GLMCP_PAYG_BUDGET_TASK_CLASS,

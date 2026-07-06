@@ -284,6 +284,12 @@ def load_config() -> ReviewConfig:
                 "https://api.z.ai/. Use a reviewed Z.ai endpoint or a separate adapter."
             )
     normalized_payg_base = payg_base_url.rstrip("/")
+    if normalized_base == DEFAULT_PAYG_BASE_URL:
+        raise ConfigError(
+            "refusing PAYG API endpoint as the primary GLMCP review URL; use the "
+            "Coding Plan endpoint first and allow PAYG only through the quota-wall "
+            "fallback spend gate"
+        )
     if normalized_payg_base != DEFAULT_PAYG_BASE_URL:
         if os.environ.get("HAPAX_GLMCP_REVIEW_ALLOW_PAYG_BASE_URL_OVERRIDE") != "1":
             raise ConfigError(
@@ -303,8 +309,8 @@ def load_config() -> ReviewConfig:
         )
     payg_fallback_default = normalized_base == DEFAULT_CODING_PLAN_BASE_URL
     payg_fallback = _env_bool("HAPAX_GLMCP_REVIEW_PAYG_FALLBACK", payg_fallback_default)
-    if payg_fallback and normalized_base == normalized_payg_base:
-        raise ConfigError("PAYG fallback base URL must differ from the primary review base URL")
+    if normalized_base == normalized_payg_base:
+        raise ConfigError("PAYG API base URL must differ from the primary review base URL")
 
     return ReviewConfig(
         secret_entry=secret_entry,
@@ -715,6 +721,7 @@ def _payg_budget_request() -> PaidRouteRequest:
     return PaidRouteRequest.model_validate(
         {
             "route_id": GLMCP_PAYG_BUDGET_ROUTE_ID,
+            "task_id": _payg_task_id(),
             "provider": GLMCP_PAYG_BUDGET_PROVIDER,
             "profile": GLMCP_PAYG_BUDGET_PROFILE,
             "task_class": GLMCP_PAYG_BUDGET_TASK_CLASS,
@@ -722,6 +729,14 @@ def _payg_budget_request() -> PaidRouteRequest:
             "estimated_cost_usd": GLMCP_PAYG_ESTIMATED_COST_USD,
             "capacity_pool": CapacityPool.API_PAID_SPEND,
         }
+    )
+
+
+def _payg_task_id() -> str:
+    return (
+        os.environ.get("HAPAX_GLMCP_REVIEW_TASK_ID")
+        or os.environ.get("HAPAX_CC_TASK_ID")
+        or "glmcp-review-direct"
     )
 
 
@@ -814,15 +829,24 @@ def _write_payg_spend_receipt(
     primary_error: ZaiHttpError,
 ) -> PaygSpendReservation:
     created_at = datetime.now(UTC).replace(microsecond=0)
-    stamp = created_at.strftime("%Y%m%dT%H%M%SZ")
-    suffix = hashlib.sha256(f"{stamp}:{os.getpid()}:{gate.budget_id}".encode()).hexdigest()[:8]
+    stamp = _payg_reservation_event_stamp(primary_error, created_at)
+    task_id = _payg_task_id()
+    seat_id = os.environ.get("HAPAX_REVIEW_SEAT_ID") or "seat-unknown"
+    suffix = hashlib.sha256(
+        "\n".join(
+            (
+                task_id,
+                seat_id,
+                gate.budget_id,
+                config.model,
+                config.payg_base_url,
+                primary_error.info.error_class,
+                primary_error.info.resets_at or "reset-unknown",
+            )
+        ).encode()
+    ).hexdigest()[:12]
     spend_id = f"spend-{stamp}-glmcp-payg-review-{suffix}"
     path = _relay_receipt_dir() / f"glmcp-payg-spend-{stamp.lower()}-{suffix}.yaml"
-    task_id = (
-        os.environ.get("HAPAX_GLMCP_REVIEW_TASK_ID")
-        or os.environ.get("HAPAX_CC_TASK_ID")
-        or "glmcp-review-direct"
-    )
     receipt_payload: dict[str, object] = {
         "spend_receipt_schema": 1,
         "spend_id": spend_id,
@@ -894,6 +918,18 @@ def _write_payg_spend_receipt(
         fields.append(("cap_remaining_usd", gate.cap_remaining_usd))
     _write_flat_yaml_atomic(path, fields)
     return PaygSpendReservation(path=path, spend_receipt=spend_receipt)
+
+
+def _payg_reservation_event_stamp(primary_error: ZaiHttpError, created_at: datetime) -> str:
+    reset = primary_error.info.resets_at
+    if reset:
+        try:
+            parsed = datetime.fromisoformat(reset.replace("Z", "+00:00"))
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            return parsed.astimezone(UTC).replace(microsecond=0).strftime("%Y%m%dT%H%M%SZ")
+    return created_at.replace(minute=0, second=0, microsecond=0).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _append_spend_receipt_to_live_ledger(*, ledger_path: Path, receipt: SpendReceipt) -> None:
