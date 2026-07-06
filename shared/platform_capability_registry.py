@@ -17,7 +17,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_serializer,
+    model_validator,
+)
 
 from shared.capability_surface_delta import (
     CapabilitySurfaceDelta as CapabilitySurfaceDeltaSignal,
@@ -361,6 +368,17 @@ class ExecutionDescriptor(StrictModel):
     quantization: Quantization = Quantization.NONE
 
 
+class DescriptorMetaMode(StrEnum):
+    """The meta-mode a descriptor variant exercises (A2, EDT STEP 0) — additive, optional."""
+
+    ULTRACODE = "ultracode"
+    FAST_PRICING = "fast_pricing"
+    COMPACTION = "compaction"
+    TASK_BUDGETS = "task_budgets"
+    MIDCONV_SYSMSG = "midconv_sysmsg"
+    NONE = "none"
+
+
 class DescriptorVariant(StrictModel):
     """A materially-different (model, effort, context, …) leaf of a route, carried sparsely:
     a variant exists only where a knob change crosses an authority/quality/quota boundary or
@@ -373,6 +391,10 @@ class DescriptorVariant(StrictModel):
     score_delta: dict[str, int] = Field(default_factory=dict)
     scores_inherited_from: str | None = None
     blocked_reasons: list[str] = Field(default_factory=list)
+    # A2 (EDT STEP 0): meta-mode fields — additive, optional (default none/empty).
+    meta_mode: DescriptorMetaMode = DescriptorMetaMode.NONE
+    interaction_record_ref: str = ""
+    equivalence_vs_manual: str = ""
 
 
 class CapabilityShapeDescriptor(StrictModel):
@@ -442,10 +464,23 @@ class CapabilitySurfaceDisposition(StrictModel):
     remediation_refs: tuple[str, ...]
 
 
+class EquivalencePendingEntry(StrictModel):
+    """A route's pending equivalence record (A4, EDT STEP 0) — distinct from a populated
+    ``explicit_equivalence_records`` entry. Tracks routes awaiting their equivalence
+    measurement, with the owner accountable for closing it. Additive + optional."""
+
+    routing_class: str
+    tracking_ref: str
+    owner: str
+
+
 class QualityEnvelope(StrictModel):
     eligible_quality_floors: list[QualityFloor] = Field(min_length=1)
     explicit_equivalence_records: list[str] = Field(default_factory=list)
     excluded_task_classes: list[str] = Field(default_factory=list)
+    # A4 (EDT STEP 0): pending equivalence records — distinct from the populated
+    # explicit_equivalence_records. Routes awaiting their equivalence measurement.
+    equivalence_pending: list[EquivalencePendingEntry] = Field(default_factory=list)
 
 
 class ContextLimits(StrictModel):
@@ -552,6 +587,29 @@ class CapabilityScores(StrictModel):
     privacy_safety: ScoreConfidence
     public_claim_safety: ScoreConfidence
     local_calibration: ScoreConfidence
+    # A1 (EDT STEP 0): 4 optional D2 fitness axes — absent on routes that do not
+    # exercise them (claude/codex/antigrav/local_tool); populated later by
+    # sonar/council/perplexity/cohere routes. Additive + optional (backward-compatible).
+    multi_source_aggregation: ScoreConfidence | None = None
+    search_grounding_recall: ScoreConfidence | None = None
+    citation_provenance: ScoreConfidence | None = None
+    reasoning_profile_novelty: ScoreConfidence | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_optional_axes(self, handler, info):
+        """A1 (EDT STEP 0): omit the 4 optional D2 axes from the dump when absent
+        (None), so the serialized shape matches the pre-A1 14-field registry —
+        backward-compatible (downstream `.values()` iterations see only populated scores)."""
+        data = handler(self)
+        for axis in (
+            "multi_source_aggregation",
+            "search_grounding_recall",
+            "citation_provenance",
+            "reasoning_profile_novelty",
+        ):
+            if data.get(axis) is None:
+                data.pop(axis, None)
+        return data
 
 
 class ToolState(StrictModel):
@@ -809,6 +867,16 @@ class PlatformCapabilityRoute(StrictModel):
         return self
 
 
+class PlatformExclusion(StrictModel):
+    """A platform excluded from the expected set (A3, EDT STEP 0) — additive, seed empty.
+    The D0 canary reads ``expected_platform_set`` + ``platform_exclusions``, NOT routes."""
+
+    platform: str
+    excluded: bool
+    rationale: str
+    authority_ref: str
+
+
 class PlatformCapabilityRegistry(StrictModel):
     registry_schema: Literal[1] = 1
     registry_id: str
@@ -819,6 +887,10 @@ class PlatformCapabilityRegistry(StrictModel):
     required_route_ids: list[str] = Field(min_length=1)
     omitted_capability_shapes: list[CapabilityShapeDescriptor] = Field(min_length=1)
     routes: list[PlatformCapabilityRoute] = Field(min_length=1)
+    # A3 (EDT STEP 0): D0 canary fields — expected_platform_set (seed empty until
+    # wf_ff057885-a5e lands the researched set) + platform_exclusions (seed empty).
+    expected_platform_set: list[str] = Field(default_factory=list)
+    platform_exclusions: list[PlatformExclusion] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _route_set_matches_contract(self) -> Self:

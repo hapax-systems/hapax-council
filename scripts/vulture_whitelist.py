@@ -4681,3 +4681,13 @@ from shared.entitlement_capability import (
 from shared.entitlement_capability import is_routable_supply as _is_routable_supply  # noqa: E402
 
 _ = (_classify_entitlement, _is_routable_supply)
+
+# G7 (EDT STEP 0) A1: the CapabilityScores wrap serializer is invoked dynamically by
+# Pydantic during model_dump (omits the absent optional D2 axes so the serialized shape
+# matches the pre-A1 14-field registry — true backward-compat). Vulture cannot trace
+# the @model_serializer decoration.
+from shared.platform_capability_registry import (
+    CapabilityScores as _G7CapabilityScores,
+)
+
+_G7CapabilityScores._omit_absent_optional_axes
