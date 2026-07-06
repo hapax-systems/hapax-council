@@ -64,6 +64,12 @@ def test_codex_has_a_genuine_headless_path() -> None:
     assert "hapax-codex-headless" in codex.notes
 
 
+def test_codex_executor_declares_ornith_profile() -> None:
+    codex = ec.capabilities("codex")
+    assert codex is not None
+    assert "ornith" in codex.profiles
+
+
 def test_antigrav_is_excised_from_executor_registry() -> None:
     assert ec.capabilities("antigrav") is None
 

@@ -35,6 +35,7 @@ from shared.capability_dispatch import (  # noqa: E402
     default_dispatch_ledger,
     launchable_aliases,
     ledger_health,
+    load_active_route_ids,
     load_valid_route_ids,
     read_dispatch_ledger,
     registry_error,
@@ -64,11 +65,17 @@ def dispatcher_cmd() -> list[str]:
 
 
 def print_list() -> int:
-    valid = load_valid_route_ids()
-    aliases = launchable_aliases(valid)
+    active = load_active_route_ids()
+    aliases = launchable_aliases(active)
     if not aliases:
-        detail = registry_error() or "no launchable routes in required_route_ids"
-        print(f"cc-dispatch: no launchable capabilities ({detail})", file=sys.stderr)
+        detail = registry_error() or "no active launchable routes in registry"
+        print(
+            f"cc-dispatch: no launchable capabilities ({detail}); "
+            "verify config/platform-capability-registry.json route_state and blocked_reasons, "
+            "then refresh receipts with scripts/hapax-platform-capability-receipts or rerun "
+            "scripts/hapax-capability-surface-delta-gate",
+            file=sys.stderr,
+        )
         return 1
     for alias, route_id in sorted(aliases.items()):
         print(f"{alias:20s} -> {route_id}")
@@ -85,6 +92,7 @@ def print_utilization() -> int:
             file=sys.stderr,
         )
         return 1
+    active = load_active_route_ids()
     exists, corrupt = ledger_health()
     if not exists:
         print(
@@ -98,7 +106,7 @@ def print_utilization() -> int:
             "the scorecard may be incomplete",
             file=sys.stderr,
         )
-    u = utilization(read_dispatch_ledger(), valid_route_ids=valid)
+    u = utilization(read_dispatch_ledger(), valid_route_ids=active)
     print("capability utilization (launched dispatches in the spine ledger):")
     print(f"  ACTIVE ({len(u.active)}/{len(u.known)}):")
     for route_id in u.active:

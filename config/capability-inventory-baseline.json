@@ -1,5 +1,5 @@
 {
-  "count": 177,
+  "count": 178,
   "fingerprints": {
     "anthropic_web_search": "4a84a85c58c98dd5a2a4f10dea7886e399d98ed37b8822b7f956e9577c9d3db0",
     "api.headless.api_frontier": "33d6db6d0126fa3a366c475cc197a9da204a9e9bd10540e46f39b364b0bdbd0f",
@@ -60,6 +60,7 @@
     "claude.headless.sonnet": "16024fc88078a86b102f64b54e6b1c6c89867a3ac18c431fcfc6761594e71d7a",
     "claude.interactive.full": "c760e46d6418c7171c37c9d155ee64831e1c2b017a5d746c40a51b9b834696b1",
     "codex.headless.full": "dbfe91cb13cdb3586c721f56d822fe842fbb66757bda7dfc788c32eddd7544c0",
+    "codex.headless.ornith": "8ac0e40471514a6f1e96cdd0f2b3f9796d4c78d6f7f3b264ab6ba3d15dc94084",
     "codex.headless.spark": "eeb0b7930170431828acafc4c9b93dec3e8f7742a77f6029738a871827e4d17e",
     "context7.query_docs": "9d549b7c27612a8f8e47c6205a143d3a5b16f5b6b36cf2304a99bdd183f20fde",
     "context7.resolve_library_id": "e3fd627e68c33fb77a248d015ba13775b539a16067786ed02325225269808ade",

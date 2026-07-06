@@ -60,6 +60,7 @@
         "jr",
         "lite",
         "openrouter",
+        "ornith",
         "opus",
         "provider_gateway",
         "sonnet",
@@ -463,6 +464,7 @@
         "gpt-5.5",
         "gpt-5.3-codex-spark",
         "command-r-08-2024",
+        "ornith-35b-local",
         "mistral-medium-3.5",
         "gemini-3.1-pro-preview",
         "z_ai-glm-5.2",
@@ -479,7 +481,7 @@
       "enum": ["off", "fast", "not_applicable"]
     },
     "quantization": {
-      "enum": ["none", "exl3_4_0bpw", "exl3_5_0bpw", "not_applicable"]
+      "enum": ["none", "exl3_4_0bpw", "exl3_5_0bpw", "gguf_q4_k_m", "not_applicable"]
     },
     "execution_descriptor": {
       "type": "object",

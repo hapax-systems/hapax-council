@@ -104,6 +104,7 @@ class Quantization(StrEnum):
     NONE = "none"
     EXL3_4_0BPW = "exl3_4_0bpw"
     EXL3_5_0BPW = "exl3_5_0bpw"
+    GGUF_Q4_K_M = "gguf_q4_k_m"
     NOT_APPLICABLE = "not_applicable"
 
 
@@ -129,6 +130,7 @@ class ModelId(StrEnum):
     GPT_5_5 = "gpt-5.5"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
     COMMAND_R_08_2024 = "command-r-08-2024"
+    ORNITH_35B_LOCAL = "ornith-35b-local"
     QWEN3_5_9B = "qwen3.5-9b"
     MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"

@@ -329,6 +329,51 @@ def test_openrouter_frontier_route_is_blocked_until_measurement_budget_and_key()
     assert "openrouter_served_model_witness_absent" in route.blocked_reasons
 
 
+def test_ornith_local_route_is_bounded_codex_harness_descriptor() -> None:
+    registry = load_platform_capability_registry()
+    route = registry.require("codex.headless.ornith")
+
+    assert route.route_state is RouteState.BLOCKED
+    assert route.platform.value == "codex"
+    assert route.profile.value == "ornith"
+    assert route.model_or_engine == "litellm/ornith-35b-local"
+    assert route.execution_descriptor.model_id.value == "ornith-35b-local"
+    assert route.execution_descriptor.effort.value == "low"
+    assert route.execution_descriptor.quantization.value == "gguf_q4_k_m"
+    assert route.paid_provider is None
+    assert route.paid_profile is None
+    assert route.authority_ceiling is AuthorityCeiling.SUPPORT_ONLY
+    assert route.capacity_pool.value == "local_compute"
+    assert route.privacy_posture.value == "local_private"
+    assert route.mutability.source is True
+    assert route.mutability.runtime is False
+    assert route.mutability.provider_spend is False
+    assert route.capability_tier.value == "jr_plus"
+    assert route.worker_tier.value == "bounded_worker"
+    assert route.capability_scores.source_editing.score == 2
+    assert route.capability_scores.source_editing.observed_at is None
+    assert route.capability_scores.privacy_safety.score == 5
+
+    excluded = set(route.quality_envelope.excluded_task_classes)
+    assert "complete_spec_absent" in excluded
+    assert "deterministic_verifier_absent" in excluded
+    assert "codebase_invariants_absent" in excluded
+    assert "open_ended_design" in excluded
+
+    tool_ids = {tool.tool_id for tool in route.tool_state}
+    assert {
+        "litellm_gateway",
+        "codebase_invariant_injection",
+        "deterministic_verifier_gate",
+    } <= tool_ids
+    assert "capability_scores_asserted_not_measured" in route.blocked_reasons
+    assert "ornith_bounded_envelope_measurement_absent" in route.blocked_reasons
+    assert "ornith_codebase_invariants_injection_absent" in route.blocked_reasons
+    assert "ornith_deterministic_verifier_gate_absent" in route.blocked_reasons
+    assert "ornith_known_failure_mode_gate_absent" in route.blocked_reasons
+    assert any("thinking-trace/token-budget" in item for item in route.known_unknowns)
+
+
 def test_provider_gateway_route_is_explicit_fail_closed_paid_runtime_surface() -> None:
     registry = load_platform_capability_registry()
     route = registry.require("api.headless.provider_gateway")
@@ -594,6 +639,56 @@ def _make_glmcp_receipt(
         ),
         provider_docs=ProviderDocsEvidence(
             refs=["test:glmcp:provider-docs"],
+            fetched_at=observed_at,
+            stale_after="30d",
+        ),
+    )
+
+
+def _make_codex_receipt(
+    *, observed_at: datetime, stale_after: str = "24h"
+) -> PlatformCapabilityReceipt:
+    return PlatformCapabilityReceipt(
+        receipt_id="test-codex-receipt",
+        platform="codex",
+        routes=[
+            "codex.headless.full",
+            "codex.headless.ornith",
+            "codex.headless.spark",
+        ],
+        observed_at=observed_at,
+        stale_after=stale_after,
+        cli=CliEvidence(binary="codex", available=True, version="codex-cli 0.142.5"),
+        wrapper=WrapperEvidence(
+            path="scripts/hapax-codex-headless",
+            exists=True,
+            executable=True,
+            sha256="abc123",
+        ),
+        capability=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:codex:cap"],
+        ),
+        resource=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="5m",
+            evidence_refs=["test:codex:res"],
+        ),
+        quota=SurfaceEvidence(
+            status=EvidenceStatus.UNOBSERVABLE,
+            source="test",
+            observed_at=observed_at,
+            stale_after="15m",
+            evidence_refs=["test:codex:quota"],
+            reason_codes=["account_live_quota_receipt_absent"],
+        ),
+        provider_docs=ProviderDocsEvidence(
+            refs=["test:codex:docs"],
             fetched_at=observed_at,
             stale_after="30d",
         ),
@@ -897,6 +992,39 @@ def test_api_receipt_score_suppression_honors_top_level_unmeasured_blocker() -> 
     assert not any(
         ref.startswith("platform-capability-receipt:api:")
         for ref in route["capability_scores"]["source_editing"]["evidence_refs"]
+    )
+
+
+def test_codex_receipt_does_not_measure_ornith_without_envelope_or_verifier_gates() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "codex.headless.ornith")
+
+    receipt_time = datetime(2026, 7, 5, 18, 0, tzinfo=UTC)
+    _apply_receipt_to_route_payload(route, _make_codex_receipt(observed_at=receipt_time))
+
+    assert route["route_state"] == "blocked"
+    assert "capability_scores_asserted_not_measured" in route["blocked_reasons"]
+    assert "ornith_bounded_envelope_measurement_absent" in route["blocked_reasons"]
+    assert "ornith_codebase_invariants_injection_absent" in route["blocked_reasons"]
+    assert "ornith_deterministic_verifier_gate_absent" in route["blocked_reasons"]
+    assert "ornith_known_failure_mode_gate_absent" in route["blocked_reasons"]
+    assert route["capability_scores"]["source_editing"]["observed_at"] is None
+    assert route["capability_scores"]["privacy_safety"]["observed_at"] is None
+    assert not any(
+        ref.startswith("platform-capability-receipt:codex:")
+        for ref in route["capability_scores"]["source_editing"]["evidence_refs"]
+    )
+
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    result = check_registry_freshness(
+        registry,
+        route_ids=["codex.headless.ornith"],
+        now=datetime(2026, 7, 5, 18, 1, tzinfo=UTC),
+    )
+
+    assert result.ok is False
+    assert any(
+        "ornith_bounded_envelope_measurement_absent" in error for error in result.routes[0].errors
     )
 
 

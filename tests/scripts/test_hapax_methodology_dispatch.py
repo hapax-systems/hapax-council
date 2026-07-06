@@ -2712,6 +2712,98 @@ def test_governed_relay_reactivation_rejects_advisory_or_unbound_binding(
         assert not codex_args.exists()
 
 
+def test_codex_ornith_profile_uses_litellm_model_provider(tmp_path: Path, monkeypatch) -> None:
+    dispatcher = _dispatcher_module()
+    fake_launcher = tmp_path / "hapax-codex-headless"
+    launcher_args = tmp_path / "args.txt"
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CODEX_HEADLESS", str(fake_launcher))
+
+    result = dispatcher.launch_codex_headless(
+        "ornith-task",
+        "cx-route",
+        "prompt",
+        dispatcher.Validation(True, "ok", dispatcher.TaskNote(tmp_path / "task.md", {})),
+        dispatcher.PLATFORM_PATHS[("codex", "headless", "ornith")],
+    )
+
+    assert result == 0
+    recorded = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert recorded[-7:] == [
+        "--",
+        "-c",
+        'model_provider="litellm"',
+        "-c",
+        'model_reasoning_effort="low"',
+        "--model",
+        "ornith-35b-local",
+    ]
+
+
+def test_ornith_dispatch_holds_while_registry_route_is_blocked(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--profile",
+        "ornith",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
+            "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(REGISTRY),
+        },
+    )
+
+    assert result.returncode == 10
+    assert "route policy hold" in result.stderr
+    assert "platform_route_state_blocked" in result.stderr
+    assert "ornith_litellm_route_receipt_absent" in result.stderr
+    assert not launcher_args.exists()
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["route_policy_action"] == "hold"
+    assert receipt["route_policy_launch_allowed"] is False
+    assert "platform_route_state_blocked" in receipt["route_policy_reason_codes"]
+    assert "ornith_litellm_route_receipt_absent" in receipt["route_policy_reason_codes"]
+
+
 def test_codex_headless_dispatch_propagates_retired_relay_block(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     _task(
@@ -3807,6 +3899,7 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "Default to maximum appropriate quality-preserving utilization" in result.stdout
     assert "codex/headless/full" in result.stdout
+    assert "codex/headless/ornith" in result.stdout
     assert "codex/headless/spark" in result.stdout
     assert "claude/interactive/full" in result.stdout
     assert "claude/headless/sonnet" in result.stdout
@@ -3824,6 +3917,15 @@ def test_normalizes_openrouter_api_profile_aliases() -> None:
     assert dispatcher.normalize_profile("api", "or") == "openrouter"
     assert dispatcher.normalize_profile("api", "open-router") == "openrouter"
     assert dispatcher.normalize_profile("api", "openrouter") == "openrouter"
+
+
+def test_normalizes_ornith_codex_profile_aliases() -> None:
+    dispatcher = _dispatcher_module()
+
+    assert dispatcher.normalize_profile("codex", "ornith") == "ornith"
+    assert dispatcher.normalize_profile("codex", "ornith-local") == "ornith"
+    assert dispatcher.normalize_profile("codex", "ornith-35b") == "ornith"
+    assert dispatcher.normalize_profile("codex", "ornith-35b-local") == "ornith"
 
 
 def test_legacy_antigrav_platforms_are_not_dispatchable(tmp_path: Path) -> None:

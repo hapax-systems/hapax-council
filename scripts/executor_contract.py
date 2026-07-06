@@ -111,7 +111,7 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
     "codex": ExecutorCapabilities(
         platform="codex",
         modes=("headless",),
-        profiles=("full", "spark"),
+        profiles=("full", "ornith", "spark"),
         mutates=True,
         claims=True,
         hooks_wired=True,

@@ -304,6 +304,49 @@ def _route_with_scores(
     return PlatformCapabilityRoute.model_validate(payload)
 
 
+def test_blocked_registry_route_holds_before_launch() -> None:
+    request = _request(
+        route_id="codex.headless.ornith",
+        profile="ornith",
+        capability=_capability(
+            route_id="codex.headless.ornith",
+            route_state="blocked",
+            blocked_reasons=("ornith_litellm_route_receipt_absent",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert decision.route_policy_green is False
+    assert decision.reason_codes == (
+        "platform_route_state_blocked",
+        "ornith_litellm_route_receipt_absent",
+    )
+
+
+def test_blocked_primary_route_reasons_survive_dimensional_candidate_hold() -> None:
+    request = _request(
+        route_id="codex.headless.ornith",
+        profile="ornith",
+        capability=_capability(
+            route_id="codex.headless.ornith",
+            route_state="blocked",
+            blocked_reasons=("ornith_litellm_route_receipt_absent",),
+        ),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW, candidate_requests=())
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "platform_route_state_blocked" in decision.reason_codes
+    assert "ornith_litellm_route_receipt_absent" in decision.reason_codes
+    assert "no_eligible_dimensional_candidates" in decision.reason_codes
+    assert "policy_hold" not in decision.reason_codes
+
+
 def _registry_with_fresh_route(route_id: str) -> PlatformCapabilityRegistry:
     registry = load_platform_capability_registry()
     if route_id in registry.route_map():

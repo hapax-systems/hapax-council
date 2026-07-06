@@ -182,6 +182,15 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "Use only when full Codex quota is blocked and Spark is quality-equivalent for the bounded task.",
     ),
+    ("codex", "headless", "ornith"): PlatformPath(
+        "codex",
+        "headless",
+        "ornith",
+        'scripts/hapax-codex --session <lane> --terminal tmux --task <task> -- -c model_provider="litellm" -c model_reasoning_effort="low" --model ornith-35b-local',
+        "Ornith 35B local coding leaf through the universal Codex harness",
+        True,
+        "Bounded complete-spec source slices only; blocked until local LiteLLM/model, codebase-invariant, verifier, and envelope-measurement receipts exist.",
+    ),
     ("vibe", "headless", "full"): PlatformPath(
         "vibe",
         "headless",
@@ -1585,6 +1594,13 @@ def normalize_profile(platform: str, profile: str) -> str:
             return "sonnet"
         if platform == "codex":
             return "spark"
+    if platform == "codex" and profile in {
+        "ornith",
+        "ornith-local",
+        "ornith-35b",
+        "ornith-35b-local",
+    }:
+        return "ornith"
     return profile
 
 
@@ -1843,6 +1859,18 @@ def launch_codex_headless(
                 'model="gpt-5.3-codex-spark"',
                 "-c",
                 'model_reasoning_effort="high"',
+            ]
+        )
+    if route.profile == "ornith":
+        args.extend(
+            [
+                "--",
+                "-c",
+                'model_provider="litellm"',
+                "-c",
+                'model_reasoning_effort="low"',
+                "--model",
+                "ornith-35b-local",
             ]
         )
     env = os.environ.copy()

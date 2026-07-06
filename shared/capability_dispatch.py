@@ -60,6 +60,10 @@ LAUNCHABLE_PATHS: frozenset[tuple[str, str]] = frozenset(
 # only; the route_id (``<platform>.<mode>.<profile>``) is the authority.
 CAPABILITY_ALIASES: dict[str, str] = {
     "codex": "codex.headless.full",
+    "ornith": "codex.headless.ornith",
+    "ornith-35b": "codex.headless.ornith",
+    "ornith-35b-local": "codex.headless.ornith",
+    "ornith-local": "codex.headless.ornith",
     "codex-spark": "codex.headless.spark",
     "claude": "claude.headless.full",
     "claude-opus": "claude.headless.opus",
@@ -104,6 +108,31 @@ def load_valid_route_ids(registry_path: Path | str | None = None) -> frozenset[s
     if not isinstance(route_ids, list):
         return frozenset()
     return frozenset(str(r) for r in route_ids)
+
+
+def load_active_route_ids(registry_path: Path | str | None = None) -> frozenset[str]:
+    """Return active, unblocked registry routes that are also in ``required_route_ids``."""
+    target = Path(registry_path) if registry_path is not None else DEFAULT_REGISTRY_PATH
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    required = data.get("required_route_ids")
+    routes = data.get("routes")
+    if not isinstance(required, list) or not isinstance(routes, list):
+        return frozenset()
+    required_ids = frozenset(str(r) for r in required)
+    active: list[str] = []
+    for route in routes:
+        if not isinstance(route, dict):
+            continue
+        route_id = route.get("route_id")
+        if not isinstance(route_id, str) or route_id not in required_ids:
+            continue
+        blocked_reasons = route.get("blocked_reasons")
+        if route.get("route_state") == "active" and blocked_reasons == []:
+            active.append(route_id)
+    return frozenset(active)
 
 
 def registry_error(registry_path: Path | str | None = None) -> str | None:
@@ -210,8 +239,8 @@ def resolve_capability(name: str, *, valid_route_ids: Iterable[str] | None = Non
 
 
 def launchable_aliases(valid_route_ids: Iterable[str] | None = None) -> dict[str, str]:
-    """The alias->route_id map restricted to routes cc-dispatch can actually spawn."""
-    valid = frozenset(valid_route_ids) if valid_route_ids is not None else load_valid_route_ids()
+    """The alias->route_id map restricted to active routes cc-dispatch may spawn."""
+    valid = frozenset(valid_route_ids) if valid_route_ids is not None else load_active_route_ids()
     out: dict[str, str] = {}
     for alias, route_id in CAPABILITY_ALIASES.items():
         parts = split_route_id(route_id)

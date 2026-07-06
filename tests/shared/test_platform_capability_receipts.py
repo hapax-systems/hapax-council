@@ -425,7 +425,10 @@ def test_dispatch_policy_holds_when_receipts_are_absent(tmp_path: Path) -> None:
     decision = evaluate_dispatch_policy(request)
 
     assert decision.action is DispatchAction.HOLD
-    assert "quota_telemetry_stale_or_unknown" in decision.reason_codes
+    assert decision.reason_codes[0] in {
+        "quota_telemetry_stale_or_unknown",
+        "platform_route_state_blocked",
+    }
     assert any("account_live_quota_receipt_absent" in reason for reason in decision.reason_codes)
 
 
