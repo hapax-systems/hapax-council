@@ -12,6 +12,14 @@ from types import ModuleType
 import pytest
 from pydantic import ValidationError
 
+from shared.capability_weakness_taxonomy import (
+    ALL_LEVER_IDS,
+    ALL_WEAKNESS_IDS,
+    ORNITH_RAW_MODEL_REQUIRED_LEVERS,
+    WEAKNESS_TO_MITIGATING_LEVERS,
+    LeverId,
+    WeaknessId,
+)
 from shared.platform_capability_receipts import (
     CliEvidence,
     EvidenceStatus,
@@ -99,6 +107,70 @@ def test_seed_registry_loads_sanctioned_platform_routes() -> None:
     }
     assert "antigrav" not in {route.platform.value for route in registry.routes}
     assert all(not route_id.startswith("gemini.") for route_id in registry.route_map())
+
+
+def test_weakness_taxonomy_carries_critique_driven_extension() -> None:
+    assert {
+        WeaknessId.PROMPT_INJECTION_INGRESS,
+        WeaknessId.REFUSAL_OVER_REFUSAL_SAFETY_MISFIRE,
+        WeaknessId.HALLUCINATION_GROUNDING_FAILURE,
+        WeaknessId.NONDETERMINISM_REPLAY_DIVERGENCE,
+    } <= set(ALL_WEAKNESS_IDS)
+    assert LeverId.INDEPENDENCE_DIVERSITY_ENFORCEMENT in set(ALL_LEVER_IDS)
+    assert (
+        LeverId.INDEPENDENCE_DIVERSITY_ENFORCEMENT
+        in WEAKNESS_TO_MITIGATING_LEVERS[WeaknessId.CORRELATED_FAILURES]
+    )
+
+
+def test_registry_routes_declare_weakness_lever_coverage() -> None:
+    registry = load_platform_capability_registry()
+
+    for route in registry.routes:
+        assert route.weakness_applicability, route.route_id
+        assert any(entry.dominant for entry in route.weakness_applicability), route.route_id
+        implemented = {entry.lever_id for entry in route.implemented_levers}
+        waived = {(entry.weakness_id, entry.lever_id) for entry in route.waived_levers}
+        for weakness in {
+            entry.weakness_id for entry in route.weakness_applicability if entry.dominant
+        }:
+            mitigating = WEAKNESS_TO_MITIGATING_LEVERS[weakness]
+            assert implemented & mitigating or any(
+                (weakness, lever) in waived for lever in mitigating
+            ), route.route_id
+
+
+def test_ornith_raw_model_shape_declares_required_harness_levers() -> None:
+    registry = load_platform_capability_registry()
+    ornith_shape = next(
+        shape
+        for shape in registry.omitted_capability_shapes
+        if shape.shape_id == "local_compute.ornith_fugu_sakana_surface"
+    )
+
+    implemented = {entry.lever_id for entry in ornith_shape.implemented_levers}
+    assert implemented >= ORNITH_RAW_MODEL_REQUIRED_LEVERS
+
+
+def test_dominant_weakness_without_mitigating_lever_fails_validation() -> None:
+    payload = _route_payload(_payload(), "codex.headless.full")
+    payload["weakness_applicability"] = [
+        {
+            "weakness_id": WeaknessId.NONDETERMINISM_REPLAY_DIVERGENCE.value,
+            "dominant": True,
+            "evidence_refs": ["test:dominant-w18"],
+        }
+    ]
+    payload["implemented_levers"] = [
+        {
+            "lever_id": LeverId.INJECTED_INVARIANTS.value,
+            "evidence_refs": ["test:not-a-w18-mitigation"],
+        }
+    ]
+    payload["waived_levers"] = []
+
+    with pytest.raises(ValidationError, match="dominant weakness W18"):
+        PlatformCapabilityRoute.model_validate(payload)
 
 
 def test_registry_route_ids_match_dispatcher_platform_paths() -> None:

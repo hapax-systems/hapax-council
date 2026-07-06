@@ -38,6 +38,56 @@
       "shape_state": "measurement_pending",
       "demand_eligible": false,
       "route_ids": [],
+      "weakness_applicability": [
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W13",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W13"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L11",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L11"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "resource_semantics": ["public-egress", "claim-review", "surface-specific adapter"],
       "spend_semantics": ["zero-provider-spend-by-default", "public-claim-cost-nonzero"],
       "observability": ["public_events_jsonl", "published-artifact-metadata", "publication-hardening-gate"],
@@ -62,6 +112,56 @@
       "shape_state": "measurement_pending",
       "demand_eligible": false,
       "route_ids": [],
+      "weakness_applicability": [
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W13",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W13"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L11",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L11"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "resource_semantics": ["receipt-ledger", "idempotent-ingress", "receive-only"],
       "spend_semantics": ["no-spend-authority", "cash-receipt-visible", "resource-cost-nonzero"],
       "observability": ["money-rail-resource-receipts", "payment-event-log", "support-copy-readiness"],
@@ -86,6 +186,69 @@
       "shape_state": "intake_required",
       "demand_eligible": false,
       "route_ids": [],
+      "weakness_applicability": [
+        {
+          "weakness_id": "W4",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W4"
+          ]
+        },
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W13",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W13"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L5",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L5"
+          ]
+        },
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L11",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L11"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "resource_semantics": ["external-api", "connector-auth", "tool-call-receipts"],
       "spend_semantics": ["unknown-provider-quota", "external-api-cost-possible"],
       "observability": ["tool-call-ledger", "connector-permission-surface", "egress-policy-gate"],
@@ -110,6 +273,62 @@
       "shape_state": "intake_required",
       "demand_eligible": false,
       "route_ids": [],
+      "weakness_applicability": [
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W9",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W9"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L9",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L9"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L11",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L11"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "resource_semantics": ["child-session-supply", "coordination-overhead", "claim-bound-worktrees"],
       "spend_semantics": ["fanout-cost", "token-and-local-resource-amplification"],
       "observability": ["dispatch-packets", "claim-files", "relay-status", "child-session-receipts"],
@@ -134,6 +353,62 @@
       "shape_state": "intake_required",
       "demand_eligible": false,
       "route_ids": [],
+      "weakness_applicability": [
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W9",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W9"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L9",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L9"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L11",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L11"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "resource_semantics": ["bounded-context", "support-evidence", "no-direct-source-authority"],
       "spend_semantics": ["token-cost", "parallelism-cost"],
       "observability": ["subagent-prompt", "subagent-summary", "evidence-disposition"],
@@ -158,6 +433,56 @@
       "shape_state": "intake_required",
       "demand_eligible": false,
       "route_ids": [],
+      "weakness_applicability": [
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W13",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W13"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L11",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L11"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "resource_semantics": ["command-wrapper", "underlying-model-hidden", "tool-authority-envelope"],
       "spend_semantics": ["underlying-model-cost-unknown", "command-overhead"],
       "observability": ["cockpit-command-log", "route-decision-receipt", "underlying-model-receipt"],
@@ -182,6 +507,49 @@
       "shape_state": "measurement_pending",
       "demand_eligible": false,
       "route_ids": [],
+      "weakness_applicability": [
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W11",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W11"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L13",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L13"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "resource_semantics": ["session-context", "claim-file", "tool-gate"],
       "spend_semantics": ["interactive-token-cost", "operator-attention-cost"],
       "observability": ["claim-file", "task-note", "tool-gate-decision", "git-diff"],
@@ -206,6 +574,81 @@
       "shape_state": "intake_required",
       "demand_eligible": false,
       "route_ids": [],
+      "weakness_applicability": [
+        {
+          "weakness_id": "W9",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W9"
+          ]
+        },
+        {
+          "weakness_id": "W10",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W10"
+          ]
+        },
+        {
+          "weakness_id": "W11",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W11"
+          ]
+        },
+        {
+          "weakness_id": "W13",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W13"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L3",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L3"
+          ]
+        },
+        {
+          "lever_id": "L7",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L7"
+          ]
+        },
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L11",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L11"
+          ]
+        },
+        {
+          "lever_id": "L13",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L13"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        },
+        {
+          "lever_id": "L16",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L16"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "resource_semantics": ["read-only-observation", "witness-receipt", "no-source-mutation"],
       "spend_semantics": ["observer-token-cost", "local-observation-cost"],
       "observability": ["witness-receipts", "review-dossier", "cctv-assignment"],
@@ -230,6 +673,69 @@
       "shape_state": "intake_required",
       "demand_eligible": false,
       "route_ids": [],
+      "weakness_applicability": [
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W9",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W9"
+          ]
+        },
+        {
+          "weakness_id": "W10",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W10"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L11",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L11"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        },
+        {
+          "lever_id": "L16",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L16"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "resource_semantics": ["provider-gateway", "model-leaf", "quota-and-rate-limit"],
       "spend_semantics": ["paid-provider-usage", "gateway-markup-possible"],
       "observability": ["provider-usage-ledger", "route-authority-receipt", "quota-spend-ledger"],
@@ -254,6 +760,95 @@
       "shape_state": "intake_required",
       "demand_eligible": false,
       "route_ids": [],
+      "weakness_applicability": [
+        {
+          "weakness_id": "W1",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W1"
+          ]
+        },
+        {
+          "weakness_id": "W2",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W2"
+          ]
+        },
+        {
+          "weakness_id": "W4",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W4"
+          ]
+        },
+        {
+          "weakness_id": "W5",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W5"
+          ]
+        },
+        {
+          "weakness_id": "W6",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W6"
+          ]
+        },
+        {
+          "weakness_id": "W11",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W11"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L1",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L1"
+          ]
+        },
+        {
+          "lever_id": "L2",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L2"
+          ]
+        },
+        {
+          "lever_id": "L3",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L3"
+          ]
+        },
+        {
+          "lever_id": "L5",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L5"
+          ]
+        },
+        {
+          "lever_id": "L6",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L6"
+          ]
+        },
+        {
+          "lever_id": "L7",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L7"
+          ]
+        },
+        {
+          "lever_id": "L13",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L13"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "resource_semantics": ["local-compute", "gpu-or-cpu-envelope", "burst-worker"],
       "spend_semantics": ["zero-cash-not-zero-resource", "thermal-and-opportunity-cost"],
       "observability": ["resource-telemetry", "harness-self-test", "route-authority-receipt"],
@@ -278,6 +873,43 @@
       "shape_state": "deprecated",
       "demand_eligible": false,
       "route_ids": [],
+      "weakness_applicability": [
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "resource_semantics": ["deprecated-route", "legacy-wrapper", "no-dispatch-supply"],
       "spend_semantics": ["no-spend-authority", "legacy-provider-quota-not-admitted"],
       "observability": ["task-note-correction", "capability-surface-delta"],
@@ -335,6 +967,89 @@
         ]
       },
       "privacy_posture": "provider_private",
+      "weakness_applicability": [
+        {
+          "weakness_id": "W3",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W3"
+          ]
+        },
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W9",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W9"
+          ]
+        },
+        {
+          "weakness_id": "W11",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W11"
+          ]
+        },
+        {
+          "weakness_id": "W12",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W12"
+          ]
+        },
+        {
+          "weakness_id": "W13",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W13"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L2",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L2"
+          ]
+        },
+        {
+          "lever_id": "L7",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L7"
+          ]
+        },
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L11",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L11"
+          ]
+        },
+        {
+          "lever_id": "L13",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L13"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "quality_envelope": {
         "eligible_quality_floors": [
           "frontier_required",
@@ -616,6 +1331,115 @@
         "mcp": []
       },
       "privacy_posture": "provider_training_unknown",
+      "weakness_applicability": [
+        {
+          "weakness_id": "W3",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W3"
+          ]
+        },
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W9",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W9"
+          ]
+        },
+        {
+          "weakness_id": "W10",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W10"
+          ]
+        },
+        {
+          "weakness_id": "W11",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W11"
+          ]
+        },
+        {
+          "weakness_id": "W12",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W12"
+          ]
+        },
+        {
+          "weakness_id": "W13",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W13"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L2",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L2"
+          ]
+        },
+        {
+          "lever_id": "L7",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L7"
+          ]
+        },
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L11",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L11"
+          ]
+        },
+        {
+          "lever_id": "L13",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L13"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        },
+        {
+          "lever_id": "L16",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L16"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "quality_envelope": {
         "eligible_quality_floors": [
           "frontier_required",
@@ -901,6 +1725,69 @@
         "mcp": []
       },
       "privacy_posture": "provider_private",
+      "weakness_applicability": [
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W9",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W9"
+          ]
+        },
+        {
+          "weakness_id": "W10",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W10"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L11",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L11"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        },
+        {
+          "lever_id": "L16",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L16"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "quality_envelope": {
         "eligible_quality_floors": [
           "frontier_required"
@@ -1174,6 +2061,69 @@
         ]
       },
       "privacy_posture": "provider_private",
+      "weakness_applicability": [
+        {
+          "weakness_id": "W1",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W1"
+          ]
+        },
+        {
+          "weakness_id": "W6",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W6"
+          ]
+        },
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L1",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L1"
+          ]
+        },
+        {
+          "lever_id": "L2",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L2"
+          ]
+        },
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "quality_envelope": {
         "eligible_quality_floors": [
           "frontier_required",
@@ -1489,6 +2439,69 @@
         ]
       },
       "privacy_posture": "provider_private",
+      "weakness_applicability": [
+        {
+          "weakness_id": "W1",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W1"
+          ]
+        },
+        {
+          "weakness_id": "W6",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W6"
+          ]
+        },
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L1",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L1"
+          ]
+        },
+        {
+          "lever_id": "L2",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L2"
+          ]
+        },
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "quality_envelope": {
         "eligible_quality_floors": [
           "frontier_required",
@@ -1815,6 +2828,69 @@
         ]
       },
       "privacy_posture": "provider_private",
+      "weakness_applicability": [
+        {
+          "weakness_id": "W1",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W1"
+          ]
+        },
+        {
+          "weakness_id": "W6",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W6"
+          ]
+        },
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L1",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L1"
+          ]
+        },
+        {
+          "lever_id": "L2",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L2"
+          ]
+        },
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "quality_envelope": {
         "eligible_quality_floors": [
           "frontier_required",
@@ -2141,6 +3217,69 @@
         ]
       },
       "privacy_posture": "provider_private",
+      "weakness_applicability": [
+        {
+          "weakness_id": "W1",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W1"
+          ]
+        },
+        {
+          "weakness_id": "W6",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W6"
+          ]
+        },
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L1",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L1"
+          ]
+        },
+        {
+          "lever_id": "L2",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L2"
+          ]
+        },
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "quality_envelope": {
         "eligible_quality_floors": [
           "frontier_review_required",
@@ -2456,6 +3595,69 @@
         ]
       },
       "privacy_posture": "provider_private",
+      "weakness_applicability": [
+        {
+          "weakness_id": "W1",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W1"
+          ]
+        },
+        {
+          "weakness_id": "W6",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W6"
+          ]
+        },
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L1",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L1"
+          ]
+        },
+        {
+          "lever_id": "L2",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L2"
+          ]
+        },
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "quality_envelope": {
         "eligible_quality_floors": [
           "frontier_required",
@@ -2775,6 +3977,69 @@
         ]
       },
       "privacy_posture": "provider_private",
+      "weakness_applicability": [
+        {
+          "weakness_id": "W1",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W1"
+          ]
+        },
+        {
+          "weakness_id": "W6",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W6"
+          ]
+        },
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L1",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L1"
+          ]
+        },
+        {
+          "lever_id": "L2",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L2"
+          ]
+        },
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "quality_envelope": {
         "eligible_quality_floors": [
           "frontier_review_required",
@@ -3090,6 +4355,69 @@
         "mcp": []
       },
       "privacy_posture": "provider_private",
+      "weakness_applicability": [
+        {
+          "weakness_id": "W1",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W1"
+          ]
+        },
+        {
+          "weakness_id": "W6",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W6"
+          ]
+        },
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L1",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L1"
+          ]
+        },
+        {
+          "lever_id": "L2",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L2"
+          ]
+        },
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "quality_envelope": {
         "eligible_quality_floors": [
           "frontier_review_required",
@@ -3363,6 +4691,101 @@
         "mcp": []
       },
       "privacy_posture": "provider_training_unknown",
+      "weakness_applicability": [
+        {
+          "weakness_id": "W4",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W4"
+          ]
+        },
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W9",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W9"
+          ]
+        },
+        {
+          "weakness_id": "W10",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W10"
+          ]
+        },
+        {
+          "weakness_id": "W11",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W11"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L5",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L5"
+          ]
+        },
+        {
+          "lever_id": "L7",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L7"
+          ]
+        },
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L11",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L11"
+          ]
+        },
+        {
+          "lever_id": "L13",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L13"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        },
+        {
+          "lever_id": "L16",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L16"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "quality_envelope": {
         "eligible_quality_floors": [
           "frontier_review_required"
@@ -3626,6 +5049,69 @@
         ]
       },
       "privacy_posture": "provider_private",
+      "weakness_applicability": [
+        {
+          "weakness_id": "W1",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W1"
+          ]
+        },
+        {
+          "weakness_id": "W6",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W6"
+          ]
+        },
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W14",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W14"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L1",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L1"
+          ]
+        },
+        {
+          "lever_id": "L2",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L2"
+          ]
+        },
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L14",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L14"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "quality_envelope": {
         "eligible_quality_floors": [
           "frontier_review_required",
@@ -3950,6 +5436,121 @@
         "mcp": []
       },
       "privacy_posture": "local_private",
+      "weakness_applicability": [
+        {
+          "weakness_id": "W1",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W1"
+          ]
+        },
+        {
+          "weakness_id": "W2",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W2"
+          ]
+        },
+        {
+          "weakness_id": "W4",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W4"
+          ]
+        },
+        {
+          "weakness_id": "W5",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W5"
+          ]
+        },
+        {
+          "weakness_id": "W6",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W6"
+          ]
+        },
+        {
+          "weakness_id": "W7",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W7"
+          ]
+        },
+        {
+          "weakness_id": "W11",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W11"
+          ]
+        },
+        {
+          "weakness_id": "W13",
+          "dominant": true,
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:weakness:W13"
+          ]
+        }
+      ],
+      "implemented_levers": [
+        {
+          "lever_id": "L1",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L1"
+          ]
+        },
+        {
+          "lever_id": "L2",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L2"
+          ]
+        },
+        {
+          "lever_id": "L3",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L3"
+          ]
+        },
+        {
+          "lever_id": "L5",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L5"
+          ]
+        },
+        {
+          "lever_id": "L6",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L6"
+          ]
+        },
+        {
+          "lever_id": "L7",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L7"
+          ]
+        },
+        {
+          "lever_id": "L8",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L8"
+          ]
+        },
+        {
+          "lever_id": "L10",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L10"
+          ]
+        },
+        {
+          "lever_id": "L13",
+          "evidence_refs": [
+            "vault:capability-harness-leverage-weakness-mitigation-2026-06-30:lever:L13"
+          ]
+        }
+      ],
+      "waived_levers": [],
       "quality_envelope": {
         "eligible_quality_floors": [
           "deterministic_ok"

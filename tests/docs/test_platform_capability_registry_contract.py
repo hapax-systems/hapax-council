@@ -98,6 +98,9 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
         "authority_ceiling",
         "tool_access",
         "privacy_posture",
+        "weakness_applicability",
+        "implemented_levers",
+        "waived_levers",
         "quality_envelope",
         "capability_scores",
         "tool_state",
@@ -126,11 +129,20 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
     assert "antigrav" not in schema["$defs"]["platform"]["enum"]
     assert "paid_provider" in route["properties"]
     assert "paid_profile" in route["properties"]
+    assert "weakness_applicability" in route["properties"]
+    assert "implemented_levers" in route["properties"]
+    assert "waived_levers" in route["properties"]
     assert "omitted_capability_shapes" in schema["required"]
     assert schema["properties"]["omitted_capability_shapes"]["minItems"] == 1
     assert schema["properties"]["omitted_capability_shapes"]["items"] == {
         "$ref": "#/$defs/capability_shape_descriptor"
     }
+    shape = schema["$defs"]["capability_shape_descriptor"]
+    assert {"weakness_applicability", "implemented_levers", "waived_levers"} <= set(
+        shape["required"]
+    )
+    assert {"W15", "W16", "W17", "W18"} <= set(schema["$defs"]["weakness_id"]["enum"])
+    assert "L16" in set(schema["$defs"]["lever_id"]["enum"])
     assert set(schema["$defs"]["authority_ceiling"]["enum"]) == {
         "authoritative",
         "frontier_review_required",
