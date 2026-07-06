@@ -25,6 +25,9 @@ Defaults:
   - worktree slot is inferred from cwd when --slot is omitted
   - worktree selected from the slot when --cd is omitted
   - terminal is none: exec Codex in the current terminal
+  - Fugu mode uses pass:sakana/api-key and HAPAX_CODEX_FUGU_MODEL_CATALOG
+    (default ~/.codex/fugu.json), refuses caller Codex passthrough args, and
+    pins the reviewed Sakana provider/config internally
 EOF
 }
 
@@ -459,6 +462,15 @@ fugu_catalog_has_model() {
   fugu_catalog_model_error "$1" "$2" >/dev/null
 }
 
+fugu_toml_quote() {
+  python3 - "$1" <<'PYEOF'
+import json
+import sys
+
+print(json.dumps(sys.argv[1]))
+PYEOF
+}
+
 fugu_pass_secret_available() {
   local entry="$1"
   command -v pass >/dev/null 2>&1 || return 1
@@ -512,6 +524,10 @@ fugu_refuse_codex_override_args() {
         echo "hapax-codex: Fugu mode refuses Codex remote/control override '$arg'; next action: remove remote-control arguments and run the governed Fugu wrapper locally" >&2
         return 1
         ;;
+      *)
+        echo "hapax-codex: Fugu mode refuses caller-supplied Codex argument '$arg'; next action: remove extra Codex arguments and use the pinned Fugu profile/config path" >&2
+        return 1
+        ;;
     esac
   done
 }
@@ -534,26 +550,28 @@ fugu_collect_config_errors() {
   local errors=()
 
   if [ -z "$profile" ] || ! fugu_model_for_profile "$profile" >/dev/null; then
-    errors+=("profile must be exactly 'fugu' or 'fugu-ultra'")
+    errors+=("profile must be exactly 'fugu' or 'fugu-ultra'; next action: rerun with --fugu-profile fugu or --fugu-profile fugu-ultra")
   fi
   if [ -z "$model" ] || ! fugu_model_for_profile "$model" >/dev/null; then
-    errors+=("model must be exactly 'fugu' or 'fugu-ultra'")
+    errors+=("model must be exactly 'fugu' or 'fugu-ultra'; next action: use the governed Fugu profile mapping instead of overriding the model")
   fi
   normalized_base="$(fugu_normalized_base_url "$base_url")"
   if [ "$normalized_base" != "https://api.sakana.ai/v1" ]; then
-    errors+=("unsupported endpoint '$base_url'; expected https://api.sakana.ai/v1")
+    errors+=("unsupported endpoint '$base_url'; expected https://api.sakana.ai/v1; next action: unset HAPAX_CODEX_FUGU_BASE_URL or set it to https://api.sakana.ai/v1")
   fi
   if [ "$wire_api" != "responses" ]; then
-    errors+=("unsupported wire_api '$wire_api'; expected responses")
+    errors+=("unsupported wire_api '$wire_api'; expected responses; next action: unset HAPAX_CODEX_FUGU_WIRE_API or set it to responses")
   fi
   if ! fugu_reasoning_effort_valid "$reasoning_effort"; then
-    errors+=("unsupported reasoning effort '$reasoning_effort'; expected high, xhigh, or max")
+    errors+=("unsupported reasoning effort '$reasoning_effort'; expected high, xhigh, or max; next action: set HAPAX_CODEX_FUGU_REASONING_EFFORT to high, xhigh, or max")
   fi
   if [ "$secret_entry" != "sakana/api-key" ]; then
     errors+=("unsupported secret entry '$secret_entry'; expected pass:sakana/api-key; next action: set HAPAX_CODEX_FUGU_SECRET_ENTRY=sakana/api-key")
   fi
-  catalog_error="$(fugu_catalog_model_error "$catalog" "$model" || true)"
-  if [ -n "$catalog_error" ]; then
+  if ! catalog_error="$(fugu_catalog_model_error "$catalog" "$model" 2>&1)"; then
+    if [ -z "$catalog_error" ]; then
+      catalog_error="model catalog validation failed without details; next action: verify python3 is available and rerun --check"
+    fi
     errors+=("$catalog_error")
   fi
 
@@ -1742,6 +1760,9 @@ unset GITHUB_PERSONAL_ACCESS_TOKEN
 unset CODEX_GITHUB_PERSONAL_ACCESS_TOKEN
 unset TAVILY_API_KEY
 unset CONTEXT7_API_KEY
+if [ -n "$FUGU_PROFILE" ]; then
+  unset SAKANA_API_KEY
+fi
 
 MCP_CONFIG_SCRUB="$COUNCIL_DIR/scripts/hapax-codex-mcp-config-scrub"
 if [ -x "$MCP_CONFIG_SCRUB" ]; then
@@ -1765,10 +1786,6 @@ if [ -n "$FUGU_PROFILE" ]; then
   if [ -n "$DISPATCH_HOST" ]; then
     echo "hapax-codex: Fugu launch refuses remote dispatch; load pass-backed Sakana credentials only on the local execution host; next action: unset HAPAX_DISPATCH_HOST or run the governed wrapper on the local host" >&2
     exit 14
-  fi
-  if ! fugu_load_required_pass_secret "$FUGU_SECRET_ENTRY"; then
-    echo "hapax-codex: Fugu launch requires pass:$FUGU_SECRET_ENTRY (value not printed); next action: run 'pass insert sakana/api-key' or restore the operator password store before retrying" >&2
-    exit 7
   fi
 fi
 
@@ -1815,14 +1832,14 @@ CODEX_ARGS=(
 
 if [ -n "$FUGU_PROFILE" ]; then
   CODEX_ARGS+=(
-    -c "model=\"$FUGU_MODEL\""
-    -c "model_reasoning_effort=\"$FUGU_REASONING_EFFORT\""
+    -c "model=$(fugu_toml_quote "$FUGU_MODEL")"
+    -c "model_reasoning_effort=$(fugu_toml_quote "$FUGU_REASONING_EFFORT")"
     -c 'model_provider="sakana"'
-    -c "model_catalog_json=\"$FUGU_MODEL_CATALOG\""
+    -c "model_catalog_json=$(fugu_toml_quote "$FUGU_MODEL_CATALOG")"
     -c 'model_providers.sakana.name="Sakana API"'
-    -c "model_providers.sakana.base_url=\"$(fugu_normalized_base_url "$FUGU_BASE_URL")\""
+    -c "model_providers.sakana.base_url=$(fugu_toml_quote "$(fugu_normalized_base_url "$FUGU_BASE_URL")")"
     -c 'model_providers.sakana.env_key="SAKANA_API_KEY"'
-    -c "model_providers.sakana.wire_api=\"$FUGU_WIRE_API\""
+    -c "model_providers.sakana.wire_api=$(fugu_toml_quote "$FUGU_WIRE_API")"
     -c 'model_providers.sakana.stream_idle_timeout_ms=7200000'
     -c 'model_providers.sakana.stream_max_retries=5'
     -c 'model_providers.sakana.request_max_retries=4'
@@ -1862,6 +1879,12 @@ if [ "$TERMINAL" = "none" ]; then
   fi
   if [ -n "$DISPATCH_FALLBACK_REASON" ]; then
     write_local_dispatch_proof "$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf local)" "1" "$DISPATCH_FALLBACK_REASON"
+  fi
+  if [ -n "$FUGU_PROFILE" ]; then
+    if ! fugu_load_required_pass_secret "$FUGU_SECRET_ENTRY"; then
+      echo "hapax-codex: Fugu launch requires pass:$FUGU_SECRET_ENTRY (value not printed); next action: run 'pass insert sakana/api-key' or restore the operator password store before retrying" >&2
+      exit 7
+    fi
   fi
   exec "$CODEX_BIN" "${CODEX_ARGS[@]}"
 fi
