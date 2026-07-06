@@ -68,6 +68,9 @@ GLMCP_ADMISSION_SECRETISH_RE = re.compile(
 )
 GLMCP_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):supported_tool:")
 GLMCP_ADMISSION_SUPPORTED_TOOL_REF_RE = re.compile(r":supported_tool:([a-z0-9_.+-]+):")
+GLMCP_PAYG_PRIMARY_ERROR_CLASSES = frozenset({"daily_limit_exhausted", "quota_exhausted"})
+GLMCP_PAYG_PRIMARY_ERROR_CLASS_REF_RE = re.compile(r":primary_error_class:([^:]+):")
+GLMCP_PAYG_QUOTA_WALL_REF_RE = re.compile(r":quota_wall_evidence_ref:([^:]+):")
 
 
 class QuotaSpendLedgerError(ValueError):
@@ -1319,6 +1322,7 @@ def _is_glmcp_admission_evidence_ref(ref: str) -> bool:
         GLMCP_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
         and _has_safe_glmcp_admission_witness(ref)
         and _has_glmcp_admission_tool_endpoint_pair(ref)
+        and _has_glmcp_payg_witness_fields_for_endpoint(ref)
         and any(f":model:{model}:" in ref for model in GLMCP_ADMISSION_MODELS)
         and ":observed_at:" in ref
         and ":fresh_until:" in ref
@@ -1356,6 +1360,26 @@ def _has_glmcp_admission_tool_endpoint_pair(ref: str) -> bool:
     tool = tool_matches[0]
     endpoint = endpoint_matches[0]
     return endpoint in GLMCP_ADMISSION_TOOL_ENDPOINTS.get(tool, frozenset())
+
+
+def _has_glmcp_payg_witness_fields_for_endpoint(ref: str) -> bool:
+    endpoint_matches = [
+        endpoint for endpoint in GLMCP_ADMISSION_ENDPOINTS if f":endpoint:{endpoint}:" in ref
+    ]
+    primary_error_matches = GLMCP_PAYG_PRIMARY_ERROR_CLASS_REF_RE.findall(ref)
+    wall_ref_matches = GLMCP_PAYG_QUOTA_WALL_REF_RE.findall(ref)
+    if len(endpoint_matches) != 1:
+        return False
+    if endpoint_matches[0] != GLMCP_ADMISSION_PAYG_ENDPOINT:
+        return not primary_error_matches and not wall_ref_matches
+    if len(primary_error_matches) != 1 or len(wall_ref_matches) != 1:
+        return False
+    wall_ref = wall_ref_matches[0]
+    return (
+        primary_error_matches[0] in GLMCP_PAYG_PRIMARY_ERROR_CLASSES
+        and GLMCP_ADMISSION_EVIDENCE_REF_RE.fullmatch(wall_ref) is not None
+        and GLMCP_ADMISSION_SECRETISH_RE.search(wall_ref) is None
+    )
 
 
 def _has_safe_glmcp_admission_witness(ref: str) -> bool:

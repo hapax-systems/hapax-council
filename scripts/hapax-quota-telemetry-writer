@@ -209,6 +209,14 @@ class GlmcpAdmissionScan:
     ignored_evidence_refs: list[str]
 
 
+@dataclass(frozen=True)
+class QuotaWall:
+    evidence_ref: str
+    receipt_label: str
+    failure_class: str
+    rate_limit_type: str
+
+
 LOCAL_COMPUTE_ROUTE = "litellm.local.command-r-35b"
 LOCAL_COMPUTE_PROVIDER = "tabbyapi"
 
@@ -367,7 +375,7 @@ def _glmcp_payg_budget_reason(decision: PaidRouteEligibility) -> str:
 
 def _payg_admission_matches_active_wall(
     admission: GlmcpAdmission,
-    platform_walls: list[str],
+    platform_walls: list[QuotaWall],
 ) -> bool:
     if (
         admission.endpoint != GLMCP_PAYG_ENDPOINT
@@ -375,11 +383,9 @@ def _payg_admission_matches_active_wall(
         or not admission.primary_error_class
     ):
         return False
-    wall_prefix = f"relay-receipt:{admission.quota_wall_evidence_ref}:"
-    failure_token = f":failure_class:{admission.primary_error_class}:"
-    rate_limit_token = f":rate_limit_type:{admission.primary_error_class}:"
     return any(
-        wall.startswith(wall_prefix) and (failure_token in wall or rate_limit_token in wall)
+        wall.receipt_label == admission.quota_wall_evidence_ref
+        and admission.primary_error_class in {wall.failure_class, wall.rate_limit_type}
         for wall in platform_walls
     )
 
@@ -399,10 +405,10 @@ def active_quota_walls(
     receipt_dir: Path,
     *,
     now: datetime,
-) -> dict[str, list[str]]:
+) -> dict[str, list[QuotaWall]]:
     """Return platform -> wall evidence refs for unexpired quota-wall receipts."""
 
-    walls: dict[str, list[str]] = {}
+    walls: dict[str, list[QuotaWall]] = {}
     if not receipt_dir.is_dir():
         return walls
     for path in sorted(receipt_dir.glob("*-quota-wall.yaml")):
@@ -429,8 +435,16 @@ def active_quota_walls(
         failure_class = fields.get("failure_class") or "unknown"
         rate_limit_type = fields.get("rate_limit_type") or "unknown"
         walls.setdefault(platform, []).append(
-            f"relay-receipt:{path.name}:failure_class:{failure_class}:"
-            f"rate_limit_type:{rate_limit_type}:resets_at:{fields.get('resets_at') or 'unknown'}"
+            QuotaWall(
+                evidence_ref=(
+                    f"relay-receipt:{path.name}:failure_class:{failure_class}:"
+                    f"rate_limit_type:{rate_limit_type}:resets_at:"
+                    f"{fields.get('resets_at') or 'unknown'}"
+                ),
+                receipt_label=path.name,
+                failure_class=failure_class,
+                rate_limit_type=rate_limit_type,
+            )
         )
     return walls
 
@@ -724,7 +738,7 @@ def build_live_ledger(
     base: QuotaSpendLedger,
     *,
     now: datetime,
-    walls: dict[str, list[str]],
+    walls: dict[str, list[QuotaWall]],
     glmcp_admissions: list[GlmcpAdmission],
     glmcp_ignored_receipts: list[str],
     local_resource_state: str,
@@ -740,6 +754,7 @@ def build_live_ledger(
     snapshots: list[dict[str, Any]] = []
     for platform, route_id in sorted(SUBSCRIPTION_ROUTES.items()):
         platform_walls = walls.get(platform, [])
+        platform_wall_evidence = [wall.evidence_ref for wall in platform_walls]
         glmcp_payg_admissions = [
             admission
             for admission in glmcp_admissions
@@ -771,7 +786,7 @@ def build_live_ledger(
         ):
             state = "fresh"
             evidence = [
-                *platform_walls,
+                *platform_wall_evidence,
                 *(admission.evidence_ref for admission in glmcp_wall_matched_payg_admissions),
                 *glmcp_payg_budget_evidence,
                 writer_ref,
@@ -787,7 +802,7 @@ def build_live_ledger(
         elif platform_walls and glmcp_payg_admissions:
             state = "exhausted"
             evidence = [
-                *platform_walls,
+                *platform_wall_evidence,
                 *(admission.evidence_ref for admission in glmcp_payg_admissions),
                 *glmcp_payg_budget_evidence,
                 writer_ref,
@@ -800,7 +815,7 @@ def build_live_ledger(
             )
         elif platform_walls:
             state = "exhausted"
-            evidence = [*platform_walls, writer_ref]
+            evidence = [*platform_wall_evidence, writer_ref]
             fresh_until = None
             reason = (
                 f"{platform} subscription lane hit an unexpired quota wall; "

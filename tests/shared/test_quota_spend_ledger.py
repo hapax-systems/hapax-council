@@ -49,12 +49,24 @@ GLMCP_ADMISSION_EVIDENCE_REF = (
     "observed_at:2026-05-17T07:59:00Z:"
     "fresh_until:2026-05-17T08:05:00Z"
 )
-GLMCP_PAYG_ADMISSION_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
-    "glmcp-quota-admission.yaml",
-    "glmcp-quota-admission-payg.yaml",
-).replace(
-    "endpoint:https://api.z.ai/api/coding/paas/v4:",
-    "endpoint:https://api.z.ai/api/paas/v4:",
+GLMCP_PAYG_ADMISSION_EVIDENCE_REF = (
+    GLMCP_ADMISSION_EVIDENCE_REF.replace(
+        "glmcp-quota-admission.yaml",
+        "glmcp-quota-admission-payg.yaml",
+    )
+    .replace(
+        "endpoint:https://api.z.ai/api/coding/paas/v4:",
+        "endpoint:https://api.z.ai/api/paas/v4:",
+    )
+    .replace(
+        "model:glm-5.2:",
+        "model:glm-5.2:primary_error_class:quota_exhausted:"
+        "quota_wall_evidence_ref:cx-glmcp-quota-wall.yaml:",
+    )
+)
+GLMCP_PAYG_ADMISSION_WITHOUT_WALL_EVIDENCE_REF = GLMCP_PAYG_ADMISSION_EVIDENCE_REF.replace(
+    "primary_error_class:quota_exhausted:quota_wall_evidence_ref:cx-glmcp-quota-wall.yaml:",
+    "",
 )
 GLMCP_REVIEWER_TOOL_CLAUDE_ENDPOINT_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
     "endpoint:https://api.z.ai/api/coding/paas/v4:",
@@ -486,6 +498,43 @@ def test_receipt_bounded_route_accepts_payg_endpoint_admission_evidence() -> Non
     assert GLMCP_PAYG_ADMISSION_EVIDENCE_REF in refs
     assert "spend-gate:glmcp.review.direct:eligible_active_budget" in refs
     assert f"spend-gate-budget:{budget_id}" in refs
+
+
+def test_receipt_bounded_route_rejects_payg_without_quota_wall_witness() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-payg-no-wall-witness",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                GLMCP_PAYG_ADMISSION_WITHOUT_WALL_EVIDENCE_REF,
+                "spend-gate:glmcp.review.direct:eligible_active_budget",
+                f"spend-gate-budget:{budget_id}",
+            ],
+            "operator_visible_reason": "fixture GLMCP PAYG admission receipt without wall witness",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "glmcp.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-glmcp-review-direct-payg-no-wall-witness:"
+        "untrusted_glmcp_admission_evidence"
+    ) in refs
 
 
 def test_receipt_bounded_route_rejects_payg_without_spend_gate_evidence() -> None:

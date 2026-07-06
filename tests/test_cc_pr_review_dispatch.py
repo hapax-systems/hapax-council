@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -2044,7 +2045,8 @@ class TestFamilyOutageDegradation:
         except dispatch.ReviewerProcessError as exc:
             assert dispatch.review_team.is_quota_wall(exc.output, process_failed=True)
 
-    def test_successful_default_runner_preserves_stderr_metadata(self) -> None:
+    def test_successful_default_runner_preserves_stderr_metadata(self, caplog) -> None:
+        caplog.set_level(logging.WARNING, logger=dispatch.LOG.name)
         family_cfg = {
             "family": "glm",
             "reviewer_command": [
@@ -2064,6 +2066,8 @@ class TestFamilyOutageDegradation:
         assert isinstance(result, dispatch.ReviewerRunnerResult)
         assert "verdict: accept" in result.stdout
         assert "PAYG fallback used" in result.stderr
+        assert "emitted stderr on successful run" in caplog.text
+        assert "PAYG fallback used" in caplog.text
 
     def test_successful_reviewer_stderr_is_recorded_and_redacted(self) -> None:
         constitution = dispatch.review_team.Constitution(

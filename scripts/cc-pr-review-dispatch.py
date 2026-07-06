@@ -670,6 +670,13 @@ def default_reviewer_runner(
         raise ReviewerProcessError(
             proc.stderr.strip(), returncode=proc.returncode, stdout=proc.stdout
         )
+    if proc.stderr.strip():
+        LOG.warning(
+            "reviewer %s (%s) emitted stderr on successful run: %s",
+            seat.id,
+            seat.family,
+            sanitize_reviewer_diagnostic(proc.stderr)[:300],
+        )
     return ReviewerRunnerResult(stdout=proc.stdout, stderr=proc.stderr)
 
 
