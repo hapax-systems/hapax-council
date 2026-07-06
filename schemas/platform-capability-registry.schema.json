@@ -469,6 +469,7 @@
         "gemini-3.1-pro-preview",
         "gemini-3.5-flash",
         "z_ai-glm-5",
+        "z_ai-glm-5.2",
         "unknown"
       ]
     },

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import json
 import sys
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -31,11 +33,24 @@ from shared.platform_capability_registry import (
     check_registry_freshness,
     load_platform_capability_registry,
 )
+from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DISPATCHER = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 FRESH_NOW = datetime(2026, 5, 9, 21, 0, tzinfo=UTC)
 ROUTE_EVIDENCE_NOW = datetime(2026, 5, 17, 8, 14, tzinfo=UTC)
+GLMCP_PAYG_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:glmcp-quota-admission-payg.yaml:"
+    "witness:glmcp-payg-spend-20260517t075900z-test.yaml:"
+    "supported_tool:hapax-glmcp-reviewer:"
+    "endpoint:https://api.z.ai/api/paas/v4:"
+    "model:glm-5.2:"
+    "primary_error_class:quota_exhausted:"
+    "quota_wall_evidence_ref:cx-glmcp-quota-wall.yaml:"
+    "observed_at:2026-05-17T07:59:00Z:"
+    "fresh_until:2026-05-17T08:05:00Z"
+)
+GLMCP_PAYG_BUDGET_ID = "tb-20260517-zai-glmcp-payg-review"
 
 
 def _dispatcher_module() -> ModuleType:
@@ -595,6 +610,145 @@ def _make_agy_receipt(
     )
 
 
+def _make_glmcp_receipt(
+    *, observed_at: datetime, stale_after: str = "24h"
+) -> PlatformCapabilityReceipt:
+    return PlatformCapabilityReceipt(
+        receipt_id="test-glmcp-receipt",
+        platform="glmcp",
+        routes=["glmcp.review.direct"],
+        observed_at=observed_at,
+        stale_after=stale_after,
+        cli=CliEvidence(
+            binary="scripts/hapax-glmcp-reviewer",
+            available=True,
+            version=(
+                "hapax-glmcp-reviewer: ok model=glm-5.2 "
+                "payg_fallback=enabled payg_base_url=https://api.z.ai/api/paas/v4"
+            ),
+        ),
+        wrapper=WrapperEvidence(
+            path="scripts/hapax-glmcp-reviewer",
+            exists=True,
+            executable=True,
+            sha256="abc123",
+        ),
+        capability=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:glmcp:capability:glm-5.2"],
+        ),
+        resource=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:glmcp:resource:pass-backed-key"],
+        ),
+        quota=SurfaceEvidence(
+            status=EvidenceStatus.UNOBSERVABLE,
+            source="test",
+            observed_at=observed_at,
+            stale_after="15m",
+            evidence_refs=["test:glmcp:quota:local-probe-unobservable"],
+            reason_codes=["account_live_quota_receipt_absent", "quota_telemetry_unknown"],
+        ),
+        provider_docs=ProviderDocsEvidence(
+            refs=["test:glmcp:provider-docs"],
+            fetched_at=observed_at,
+            stale_after="30d",
+        ),
+    )
+
+
+def _write_glmcp_live_quota_ledger(path: Path) -> None:
+    payload = deepcopy(json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8")))
+    payload["ledger_id"] = "quota-spend-ledger-test-glmcp-payg-live"
+    payload["captured_at"] = "2026-05-17T07:59:30Z"
+    payload["generated_from"] = list(
+        dict.fromkeys([*payload["generated_from"], "scripts/hapax-quota-telemetry-writer"])
+    )
+    payload["transition_budgets"].append(
+        {
+            "budget_schema": 1,
+            "budget_id": GLMCP_PAYG_BUDGET_ID,
+            "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-TEST",
+            "approved_by": "operator",
+            "created_at": "2026-05-17T07:00:00Z",
+            "expires_at": "2026-05-17T09:00:00Z",
+            "capacity_pool": "api_paid_spend",
+            "providers_allowed": ["z_ai"],
+            "profiles_allowed": ["glmcp-review-direct"],
+            "task_classes_allowed": ["independent-review"],
+            "quality_floors_allowed": ["frontier_review_required"],
+            "total_cap_usd": "100.00",
+            "per_task_cap_usd": "2.00",
+            "daily_cap_usd": "20.00",
+            "auto_top_up_allowed": False,
+            "subscription_path_checked_at": "2026-05-17T07:00:00Z",
+            "reason_subscription_path_not_used": (
+                "fixture Coding Plan quota exhausted; PAYG spend gate under test"
+            ),
+            "steady_state_replacement": {
+                "target_route_id": None,
+                "blocker_to_remove": None,
+                "exit_criterion": None,
+            },
+            "ledger_owner": "test",
+            "dashboard_visibility": "required",
+            "lifecycle_state": "active",
+        }
+    )
+    payload["spend_receipts"].append(
+        {
+            "spend_receipt_schema": 1,
+            "spend_id": "spend-20260517T075900Z-glmcp-payg-review-test",
+            "task_id": "glmcp-review-direct",
+            "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-TEST",
+            "route_id": "glmcp.review.direct",
+            "capacity_pool": "api_paid_spend",
+            "budget_id": GLMCP_PAYG_BUDGET_ID,
+            "provider": "z_ai",
+            "model_or_engine": "glm-5.2",
+            "model_id": "z_ai-glm-5.2",
+            "effort": "none",
+            "quantization": "not_applicable",
+            "auth_surface": "api_key",
+            "quality_floor": "frontier_review_required",
+            "quality_preservation_reason": (
+                "receipt-bounded GLMCP review fallback after Coding Plan quota wall"
+            ),
+            "spend_reason": "quota_exhaustion",
+            "estimated_cost_usd": "0.05",
+            "created_at": "2026-05-17T07:59:00Z",
+            "reconcile_by": "2026-05-18T07:59:00Z",
+            "reconciliation_state": "pending",
+            "support_artifact_authority": "none",
+        }
+    )
+    payload["quota_snapshots"] = [
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-payg-live",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                GLMCP_PAYG_ADMISSION_EVIDENCE_REF,
+                "spend-gate:glmcp.review.direct:eligible_active_budget",
+                f"spend-gate-budget:{GLMCP_PAYG_BUDGET_ID}",
+            ],
+            "operator_visible_reason": "fixture GLMCP PAYG admission receipt",
+        }
+    ]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def test_subscription_quota_nonblocking_uses_receipt_stale_after() -> None:
     """Regression: unobservable subscription quota must not go stale at 15m."""
     payload = _payload()
@@ -745,6 +899,92 @@ def test_api_receipt_does_not_admit_openrouter_without_measurement_budget_or_key
 
     assert result.ok is False
     assert any("blocked:" in error for error in result.routes[0].errors)
+
+
+def test_glmcp_receipt_does_not_clear_admission_without_live_quota_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    receipt_time = datetime(2026, 5, 17, 8, 0, tzinfo=UTC)
+    (receipt_dir / "glmcp.json").write_text(
+        _make_glmcp_receipt(observed_at=receipt_time).model_dump_json(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(tmp_path / "missing-live.json"))
+
+    registry = load_platform_capability_registry(
+        receipt_dir=receipt_dir,
+        now=datetime(2026, 5, 17, 8, 1, tzinfo=UTC),
+    )
+    route = registry.require("glmcp.review.direct")
+
+    assert route.route_state is RouteState.BLOCKED
+    assert "glmcp_review_seat_receipt_admission_required" in route.blocked_reasons
+    assert "fresh_capability_evidence_absent" not in route.blocked_reasons
+    assert "quota_telemetry_unknown" not in route.blocked_reasons
+
+
+def test_glmcp_receipt_with_fresh_live_payg_admission_clears_review_latch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_glmcp_live_quota_ledger(live_ledger)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+
+    receipt_time = datetime(2026, 5, 17, 8, 0, tzinfo=UTC)
+    (receipt_dir / "glmcp.json").write_text(
+        _make_glmcp_receipt(observed_at=receipt_time).model_dump_json(),
+        encoding="utf-8",
+    )
+    registry = load_platform_capability_registry(
+        receipt_dir=receipt_dir,
+        now=datetime(2026, 5, 17, 8, 1, tzinfo=UTC),
+    )
+    route = registry.require("glmcp.review.direct")
+    result = check_registry_freshness(
+        registry,
+        route_ids=["glmcp.review.direct"],
+        now=datetime(2026, 5, 17, 8, 1, tzinfo=UTC),
+    )
+
+    assert route.route_state is RouteState.ACTIVE
+    assert route.blocked_reasons == []
+    assert GLMCP_PAYG_ADMISSION_EVIDENCE_REF in route.freshness.evidence.quota.evidence_refs
+    assert result.ok is True
+
+
+def test_glmcp_receipt_surfaces_invalid_live_quota_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    live_ledger.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+
+    receipt_time = datetime(2026, 5, 17, 8, 0, tzinfo=UTC)
+    (receipt_dir / "glmcp.json").write_text(
+        _make_glmcp_receipt(observed_at=receipt_time).model_dump_json(),
+        encoding="utf-8",
+    )
+    registry = load_platform_capability_registry(
+        receipt_dir=receipt_dir,
+        now=datetime(2026, 5, 17, 8, 1, tzinfo=UTC),
+    )
+    route = registry.require("glmcp.review.direct")
+
+    assert route.route_state is RouteState.BLOCKED
+    assert "glmcp_review_seat_receipt_admission_required" in route.blocked_reasons
+    assert (
+        "quota-spend-ledger:glmcp.review.direct:live-ledger-invalid"
+        in route.freshness.evidence.quota.evidence_refs
+    )
 
 
 def test_api_receipt_score_suppression_honors_top_level_unmeasured_blocker() -> None:

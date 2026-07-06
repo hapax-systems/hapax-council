@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import stat
 import subprocess
 import sys
@@ -397,6 +398,16 @@ def test_api_provider_gateway_receipt_allows_paid_gateway_dispatch(
     assert decision.action is DispatchAction.LAUNCH
     assert decision.route_policy_green is True
     assert "policy_launch" in decision.reason_codes
+
+
+def test_glmcp_known_unknowns_disclose_secret_read_without_persistence() -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+
+    unknowns = namespace["known_unknowns_for"]("glmcp")
+
+    assert any("may read the pass-backed secret" in item for item in unknowns)
+    assert any("never persists the secret value" in item for item in unknowns)
+    assert not any("never reads secret values" in item for item in unknowns)
 
 
 def test_stale_receipt_is_not_consumed(tmp_path: Path) -> None:

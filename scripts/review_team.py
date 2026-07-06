@@ -1718,7 +1718,12 @@ def _dossier_validity_blockers(
                 recorded_route_ids = {route_id for route_id, _ in recorded}
                 expected_route_id = route_ids.get(family)
                 recorded_reasons = {reason for _, reason in recorded}
-                live_reasons = {str(reason) for reason in live_route_blocked.get(family, ())}
+                live_reasons = set()
+                for reason in live_route_blocked.get(family, ()):
+                    normalized_reason = str(reason).strip()
+                    if expected_route_id and normalized_reason.startswith(f"{expected_route_id}:"):
+                        normalized_reason = normalized_reason[len(expected_route_id) + 1 :]
+                    live_reasons.add(normalized_reason)
                 if (
                     not expected_route_id
                     or recorded_route_ids != {expected_route_id}

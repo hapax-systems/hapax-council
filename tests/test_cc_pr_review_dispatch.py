@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -134,10 +135,12 @@ class FakeGh:
         pr_number: int = 42,
         files: list[str] | None = None,
         changed_files_count: int | None = None,
+        head_sha: str = "c" * 40,
     ) -> None:
         self.pr_number = pr_number
         self.files = files if files is not None else ["shared/foo.py", "tests/test_foo.py"]
         self.changed_files_count = changed_files_count
+        self.head_sha = head_sha
         self.diff = "diff --git a/shared/foo.py b/shared/foo.py\n+changed\n"
         self.fail_comment = False
         self.fail_view_prs: set[int] = set()
@@ -154,7 +157,7 @@ class FakeGh:
                 "title": f"PR {self.pr_number}",
                 "body": "PR body acceptance evidence",
                 "headRefName": f"feat/{self.pr_number}",
-                "headRefOid": "c" * 40,
+                "headRefOid": self.head_sha,
                 "changedFiles": (
                     len(self.files)
                     if self.changed_files_count is None
@@ -171,7 +174,7 @@ class FakeGh:
                 {
                     "number": self.pr_number,
                     "headRefName": f"feat/{self.pr_number}",
-                    "headRefOid": "c" * 40,
+                    "headRefOid": self.head_sha,
                     "isDraft": False,
                 }
             ]
@@ -247,7 +250,14 @@ def _write_registry_with_extra_review_descriptor(tmp_path: Path) -> Path:
 
 
 class TestDryRun:
-    def test_dry_run_plans_without_dispatching(self, tmp_path: Path) -> None:
+    def test_dry_run_plans_without_dispatching(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(
+            dispatch,
+            "clear_route_recovered_family_outage",
+            lambda *_args, **_kwargs: pytest.fail("dry-run plan must not mutate outage state"),
+        )
         result, gh, reviewers, note = _review(tmp_path, apply=False)
         assert result["status"] == "planned"
         assert result["plan"]["team_class"] == "t2_standard"
@@ -255,6 +265,33 @@ class TestDryRun:
         assert reviewers.invocations == []
         assert not list(note.parent.glob("*.review-dossier.yaml"))
         assert gh.comments == []
+
+    def test_dry_run_skip_fresh_does_not_clear_route_outage_latches(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        result, gh, _reviewers, note = _review(tmp_path)
+        assert result["status"] == "dispatched"
+        monkeypatch.setattr(
+            dispatch,
+            "clear_route_recovered_family_outage",
+            lambda *_args, **_kwargs: pytest.fail("dry-run skip must not mutate outage state"),
+        )
+
+        second = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=note.parent.parent,
+            apply=False,
+            gh_runner=gh,
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert second["status"] == "skipped_fresh"
 
 
 class TestApply:
@@ -505,6 +542,70 @@ class TestApply:
             {"file": rel, "line": 5, "status": "shown", "lines": "4-6"},
             {"file": "scripts/missing.py", "line": 2, "status": "evidence_unavailable"},
         ]
+
+    def test_prior_file_excerpts_add_allowlisted_symbol_body(self, tmp_path: Path) -> None:
+        rel = "scripts/hapax-glmcp-reviewer"
+        source = "\n".join(
+            [
+                "def call_glm():",
+                "    _require_payg_spend_gate()",
+                "",
+                "def _require_payg_spend_gate():",
+                "    ledger = load_quota_spend_ledger_resolved()",
+                "    return evaluate_paid_route_eligibility(ledger, request)",
+                "",
+                "def after():",
+                "    pass",
+            ]
+        )
+        head_sha = self._git_repo_with_commit(tmp_path, rel, source)
+
+        rendered, records = dispatch.build_prior_file_excerpts(
+            [
+                {
+                    "file": rel,
+                    "line": 2,
+                    "title": "_require_payg_spend_gate enforcement body remains unverified",
+                }
+            ],
+            repo_root=tmp_path,
+            head_sha=head_sha,
+            radius=0,
+        )
+
+        assert "(_require_payg_spend_gate)" in rendered
+        assert "0005|     ledger = load_quota_spend_ledger_resolved()" in rendered
+        assert any(record.get("symbol") == "_require_payg_spend_gate" for record in records)
+
+    def test_changed_file_excerpts_show_review_critical_symbols(self, tmp_path: Path) -> None:
+        rel = "scripts/hapax-glmcp-reviewer"
+        source = "\n".join(
+            [
+                "def load_config():",
+                "    return 'glm-5.2'",
+                "",
+                "def _valid_coding_plan_primary_base_url(base_url):",
+                "    return base_url.endswith('/coding/paas/v4')",
+                "",
+                "def _require_payg_spend_gate():",
+                "    ledger = load_quota_spend_ledger_resolved()",
+                "    return evaluate_paid_route_eligibility(ledger, request)",
+            ]
+        )
+        head_sha = self._git_repo_with_commit(tmp_path, rel, source)
+
+        rendered, records = dispatch.build_changed_file_excerpts(
+            [rel, "tests/bulk_fixture.py"],
+            repo_root=tmp_path,
+            head_sha=head_sha,
+            limit=3,
+        )
+
+        assert "Current source excerpts for review-critical changed files" in rendered
+        assert f"{rel}:1 (load_config) @ {head_sha[:9]}" in rendered
+        assert "0008|     ledger = load_quota_spend_ledger_resolved()" in rendered
+        assert "tests/bulk_fixture.py" not in rendered
+        assert any(record.get("symbol") == "_require_payg_spend_gate" for record in records)
 
     def test_prior_file_excerpts_oversize_blob_is_unavailable(self, tmp_path: Path) -> None:
         """A prior finding citing a huge tracked file must NOT be read whole into
@@ -796,6 +897,67 @@ checklist:
         assert dossier["constitution_writer_family"] == "claude"
         assert dossier["changed_file_count"] == 1
         assert dossier["changed_files"] == ["scripts/review_team.py"]
+
+    def test_dispatch_records_changed_source_excerpt_evidence(self, tmp_path: Path) -> None:
+        rel = "scripts/hapax-glmcp-reviewer"
+        source = "\n".join(
+            [
+                "def load_config():",
+                "    return 'glm-5.2'",
+                "",
+                "def _valid_coding_plan_primary_base_url(base_url):",
+                "    return base_url.endswith('/coding/paas/v4')",
+                "",
+                "def call_glm(prompt, config, api_key):",
+                "    return _require_payg_spend_gate()",
+                "",
+                "def _require_payg_spend_gate():",
+                "    return 'eligible_active_budget'",
+            ]
+        )
+        head_sha = self._git_repo_with_commit(tmp_path, rel, source)
+        result, _, reviewers, _ = _review(
+            tmp_path,
+            repo_root=tmp_path,
+            gh=FakeGh(files=[rel], head_sha=head_sha),
+        )
+
+        prompt = reviewers.invocations[0][2]
+        assert "Current source excerpts for review-critical changed files" in prompt
+        assert "(_require_payg_spend_gate)" in prompt
+        evidence = result["dossier"]["prior_evidence"]["changed_source_excerpts"]
+        assert any(record.get("symbol") == "_require_payg_spend_gate" for record in evidence)
+
+    def test_dossier_records_successful_reviewer_stderr_diagnostics(self, tmp_path: Path) -> None:
+        class StderrReviewers(RecordingReviewers):
+            def __call__(
+                self, seat: Any, family_cfg: dict, prompt: str
+            ) -> dispatch.ReviewerRunnerResult:
+                self.invocations.append((seat.id, seat.family, prompt))
+                return dispatch.ReviewerRunnerResult(
+                    stdout=GOOD_REPLY,
+                    stderr=(
+                        "hapax-glmcp-reviewer: PAYG fallback used "
+                        "endpoint=https://api.z.ai/api/paas/v4 model=glm-5.2 "
+                        "primary_error_class=quota_exhausted"
+                    ),
+                )
+
+        result, _, _, note = _review(tmp_path, reviewers=StderrReviewers())
+        persisted = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+
+        assert result["status"] == "dispatched"
+        for review in persisted["reviewers"]:
+            assert review["runner_stderr_excerpt"].startswith("hapax-glmcp-reviewer: PAYG")
+            assert review["runner_diagnostics"] == [
+                {
+                    "stream": "stderr",
+                    "signal": "payg_fallback",
+                    "excerpt": review["runner_stderr_excerpt"],
+                }
+            ]
 
     def test_diff_is_truncated(self, tmp_path: Path) -> None:
         gh = FakeGh()
@@ -1765,6 +1927,157 @@ class TestFamilyOutageDegradation:
         recorded = json.loads(state.read_text(encoding="utf-8"))
         assert "gemini" not in recorded
 
+    def test_route_admission_clears_route_backed_outage_before_constitution(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "glm": {
+                        "observed_at": "2026-06-11T20:55:00+00:00",
+                        "outage_started_at": "2026-06-11T20:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        reviewers = RecordingReviewers()
+
+        _review(
+            tmp_path,
+            reviewers=reviewers,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert any(family == "glm" for _, family, _ in reviewers.invocations)
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+
+    def test_route_admission_invalidates_existing_degraded_dossier_before_skip(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-06-11T21:00:00+00:00"
+        state.write_text(
+            json.dumps(
+                {
+                    "glm": {
+                        "observed_at": "2026-06-11T20:55:00+00:00",
+                        "outage_started_at": "2026-06-11T20:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault, risk_tier="T1")
+        gh = FakeGh(files=["shared/foo.py", "tests/test_foo.py"])
+
+        real_clear = dispatch.clear_route_recovered_family_outage
+        monkeypatch.setattr(
+            dispatch,
+            "clear_route_recovered_family_outage",
+            lambda outage_witness, **_kwargs: dict(outage_witness),
+        )
+        first_reviewers = RecordingReviewers()
+        first = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=gh,
+            reviewer_runner=first_reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso=now,
+            route_blocked_families={},
+        )
+        assert first["status"] == "dispatched"
+        first_dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        assert first_dossier["degraded_family_outage"] == ["glm"]
+
+        monkeypatch.setattr(dispatch, "clear_route_recovered_family_outage", real_clear)
+        second_reviewers = RecordingReviewers()
+        second = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=gh,
+            reviewer_runner=second_reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso=now,
+            route_blocked_families={},
+        )
+
+        assert second["status"] == "dispatched"
+        assert any(family == "glm" for _, family, _ in second_reviewers.invocations)
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+
+    def test_route_admission_keeps_outage_witness_when_clear_write_fails(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "glm": {
+                        "observed_at": "2026-06-11T20:55:00+00:00",
+                        "outage_started_at": "2026-06-11T20:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def fail_replace(_tmp: Path, _state: Path) -> None:
+            raise OSError("fixture write failure")
+
+        monkeypatch.setattr(dispatch.os, "replace", fail_replace)
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {"glm": "2026-06-11T20:55:00+00:00"},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            state_path=state,
+        )
+
+        assert witness == {"glm": "2026-06-11T20:55:00+00:00"}
+        assert "glm" in json.loads(state.read_text(encoding="utf-8"))
+
+    def test_blocked_route_keeps_route_backed_outage_latch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "glm": {
+                        "observed_at": "2026-06-11T20:55:00+00:00",
+                        "outage_started_at": "2026-06-11T20:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        reviewers = RecordingReviewers()
+
+        _review(
+            tmp_path,
+            reviewers=reviewers,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={"glm": ("glmcp.review.direct:quota_receipt_absent",)},
+        )
+
+        assert not any(family == "glm" for _, family, _ in reviewers.invocations)
+        assert "glm" in json.loads(state.read_text(encoding="utf-8"))
+
     def test_outage_expires_after_ttl(self, monkeypatch: Any, tmp_path: Path) -> None:
         state, _ = self._isolate_state(monkeypatch, tmp_path)
         state.write_text(json.dumps({"claude": "2026-06-12T08:58:00+00:00"}), encoding="utf-8")
@@ -1927,6 +2240,115 @@ class TestFamilyOutageDegradation:
             raise AssertionError("nonzero exit must raise ReviewerProcessError")
         except dispatch.ReviewerProcessError as exc:
             assert dispatch.review_team.is_quota_wall(exc.output, process_failed=True)
+
+    def test_successful_default_runner_preserves_stderr_metadata(self, caplog) -> None:
+        caplog.set_level(logging.WARNING, logger=dispatch.LOG.name)
+        family_cfg = {
+            "family": "glm",
+            "reviewer_command": [
+                "bash",
+                "-c",
+                (
+                    "printf '```yaml\\nverdict: accept\\nfindings: []\\nchecklist: {}\\n```\\n'; "
+                    "echo 'hapax-glmcp-reviewer: PAYG fallback used endpoint=https://api.z.ai/api/paas/v4 model=glm-5.2 primary_error_class=quota_exhausted' >&2"
+                ),
+            ],
+            "timeout_seconds": 30,
+        }
+        seat = dispatch.review_team.Seat(id="glm-1", family="glm")
+
+        result = dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+        assert isinstance(result, dispatch.ReviewerRunnerResult)
+        assert "verdict: accept" in result.stdout
+        assert "PAYG fallback used" in result.stderr
+        assert "emitted stderr on successful run" in caplog.text
+        assert "PAYG fallback used" in caplog.text
+
+    def test_default_runner_exports_review_task_and_seat_env(self) -> None:
+        family_cfg = {
+            "family": "glm",
+            "reviewer_command": [
+                "bash",
+                "-c",
+                (
+                    "printf '%s|%s|%s|%s' "
+                    '"$HAPAX_GLMCP_REVIEW_TASK_ID" "$HAPAX_CC_TASK_ID" '
+                    '"$HAPAX_REVIEW_SEAT_ID" "$HAPAX_REVIEW_FAMILY"'
+                ),
+            ],
+            "timeout_seconds": 30,
+            "_review_task_id": "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+        }
+        seat = dispatch.review_team.Seat(id="glm-1", family="glm")
+
+        result = dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+        assert result.stdout == (
+            "cc-task-glmcp-review-seat-glm52-model-contract-20260706|"
+            "cc-task-glmcp-review-seat-glm52-model-contract-20260706|glm-1|glm"
+        )
+
+    def test_successful_reviewer_stderr_is_recorded_and_redacted(self) -> None:
+        constitution = dispatch.review_team.Constitution(
+            team_class="t2_standard",
+            quorum_required=1,
+            seats=(dispatch.review_team.Seat(id="glm-1", family="glm"),),
+            notes=(),
+        )
+        registry = {
+            "families": [
+                {
+                    "family": "glm",
+                    "reviewer_command": ["scripts/hapax-glmcp-reviewer"],
+                    "timeout_seconds": 30,
+                }
+            ]
+        }
+
+        def runner(
+            _seat: Any, family_cfg: dict[str, Any], _prompt: str
+        ) -> dispatch.ReviewerRunnerResult:
+            assert (
+                family_cfg["_review_task_id"]
+                == "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+            )
+            return dispatch.ReviewerRunnerResult(
+                stdout=GOOD_REPLY,
+                stderr=(
+                    "hapax-glmcp-reviewer: PAYG fallback used "
+                    "endpoint=https://api.z.ai/api/paas/v4 model=glm-5.2 "
+                    "primary_error_class=quota_exhausted bearer sk-live-secret-token "
+                    "Authorization=ghp_abcdefghijklmnopqrstuvwxyz012345 "
+                    "password=p@ss credential=abcdef0123456789abcdef0123456789abcdef0123"
+                ),
+            )
+
+        reviews = dispatch.dispatch_reviews(
+            constitution,
+            ["prompt"],
+            registry,
+            runner,
+            task_id="cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+        )
+
+        assert reviews[0]["verdict"] == "accept"
+        assert "PAYG fallback used" in reviews[0]["runner_stderr_excerpt"]
+        assert "https://api.z.ai/api/paas/v4" in reviews[0]["runner_stderr_excerpt"]
+        assert "sk-live-secret-token" not in reviews[0]["runner_stderr_excerpt"]
+        assert "ghp_abcdefghijklmnopqrstuvwxyz012345" not in reviews[0]["runner_stderr_excerpt"]
+        assert "p@ss" not in reviews[0]["runner_stderr_excerpt"]
+        assert (
+            "abcdef0123456789abcdef0123456789abcdef0123" not in reviews[0]["runner_stderr_excerpt"]
+        )
+        assert "<redacted>" in reviews[0]["runner_stderr_excerpt"]
+        assert reviews[0]["runner_diagnostics"] == [
+            {
+                "stream": "stderr",
+                "signal": "payg_fallback",
+                "excerpt": reviews[0]["runner_stderr_excerpt"],
+            }
+        ]
 
     def test_provider_outage_on_stderr_becomes_provider_outage(self) -> None:
         constitution = dispatch.review_team.Constitution(

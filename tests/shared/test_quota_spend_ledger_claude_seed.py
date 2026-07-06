@@ -62,6 +62,7 @@ class TestClaudeRouteEligibility:
         ledger = load_quota_spend_ledger()
         request = PaidRouteRequest(
             route_id="litellm.anthropic.claude-opus-4",
+            task_id="claude-seed-opus-route",
             provider="anthropic",
             profile="frontier-full",
             task_class="agent-dispatch",
@@ -78,6 +79,7 @@ class TestClaudeRouteEligibility:
         ledger = load_quota_spend_ledger()
         request = PaidRouteRequest(
             route_id="litellm.anthropic.claude-sonnet-4",
+            task_id="claude-seed-coding-route",
             provider="anthropic",
             profile="coding",
             task_class="agent-dispatch",
@@ -91,6 +93,7 @@ class TestClaudeRouteEligibility:
         ledger = load_quota_spend_ledger()
         request = PaidRouteRequest(
             route_id="litellm.google.gemini-3-pro",
+            task_id="claude-seed-google-route",
             provider="google",
             profile="frontier-full",
             task_class="research",
@@ -104,6 +107,7 @@ class TestClaudeRouteEligibility:
         ledger = load_quota_spend_ledger()
         request = PaidRouteRequest(
             route_id="litellm.anthropic.claude-opus-4",
+            task_id="claude-seed-over-task-cap",
             provider="anthropic",
             profile="frontier-full",
             task_class="agent-dispatch",
@@ -118,6 +122,7 @@ class TestClaudeRouteEligibility:
         ledger = load_quota_spend_ledger()
         request = PaidRouteRequest(
             route_id="litellm.openai.gpt-5",
+            task_id="claude-seed-unknown-provider",
             provider="openai",
             profile="frontier-full",
             task_class="agent-dispatch",

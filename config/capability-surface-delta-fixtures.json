@@ -21,19 +21,19 @@
         "platform-capability-receipt:glmcp:expired"
       ],
       "route_id": "glmcp.review.direct",
-      "supply_leaf_id": "z_ai-glm-5.review.direct",
+      "supply_leaf_id": "z_ai-glm-5.2.review.direct",
       "carrier_platform": "glmcp",
-      "model_id": "z_ai-glm-5",
+      "model_id": "z_ai-glm-5.2",
       "provider_id": "z_ai",
       "effort": "xhigh",
       "context_window": "large",
-      "resource_pools": ["subscription_quota"],
+      "resource_pools": ["subscription_quota", "api_paid_spend"],
       "tool_refs": ["hapax-glmcp-reviewer"],
       "harness_refs": ["review-seat-adapter"],
       "orchestration_child_refs": [],
       "privacy_sensitive": true,
       "public_egress": false,
-      "money_rail": false
+      "money_rail": true
     }
   ],
   "deltas": [
@@ -70,10 +70,10 @@
       "observed_descriptor_ref": "platform-capability-receipt:glmcp:current-expired",
       "evidence_refs": ["platform-capability-receipt:glmcp:expired"],
       "authority_ceiling": "read_only",
-      "affected_resource_pools": ["subscription_quota"],
+      "affected_resource_pools": ["subscription_quota", "api_paid_spend"],
       "privacy_sensitive": true,
       "public_egress": false,
-      "money_rail": false,
+      "money_rail": true,
       "freshness_state": "stale",
       "required_intake_action": "refresh_receipt",
       "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",

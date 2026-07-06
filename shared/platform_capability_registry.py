@@ -30,6 +30,13 @@ from shared.platform_capability_receipts import (
     load_platform_capability_receipts,
     receipt_reference,
 )
+from shared.quota_spend_ledger import (
+    QUOTA_SPEND_LEDGER_LIVE_ENV,
+    QuotaSpendLedgerError,
+    SubscriptionQuotaState,
+    load_quota_spend_ledger_resolved,
+    subscription_quota_state_for_route,
+)
 from shared.route_metadata_schema import (
     BenchmarkCoverage,
     FixedRouteOverhead,
@@ -67,6 +74,8 @@ REQUIRED_ROUTE_IDS = frozenset(
 
 UNKNOWN_TELEMETRY_SOURCES = frozenset({"none", "unknown"})
 UNKNOWN_PRIVACY_POSTURES = frozenset({"unknown", "public_risk"})
+GLMCP_REVIEW_ROUTE_ID = "glmcp.review.direct"
+GLMCP_REVIEW_ADMISSION_BLOCKER = "glmcp_review_seat_receipt_admission_required"
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
 
 
@@ -172,6 +181,7 @@ class ModelId(StrEnum):
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
+    Z_AI_GLM_5_2 = "z_ai-glm-5.2"
     UNKNOWN = "unknown"
 
 
@@ -1393,13 +1403,15 @@ def apply_platform_capability_receipts(
             continue
         if route_payload["route_id"] not in receipt.routes:
             continue
-        _apply_receipt_to_route_payload(route_payload, receipt)
+        _apply_receipt_to_route_payload(route_payload, receipt, now=now)
     return PlatformCapabilityRegistry.model_validate(payload)
 
 
 def _apply_receipt_to_route_payload(
     route_payload: dict[str, Any],
     receipt: PlatformCapabilityReceipt,
+    *,
+    now: datetime | None = None,
 ) -> None:
     receipt_ref = receipt_reference(receipt)
     freshness = route_payload["freshness"]
@@ -1488,9 +1500,58 @@ def _apply_receipt_to_route_payload(
         removable_top_blockers.update(_quota_unobservable_removable_reasons(route_payload))
     elif receipt.quota.status is EvidenceStatus.OBSERVED:
         removable_top_blockers.update(_quota_receipt_removable_reasons(route_payload))
+    quota_admission_fresh, quota_admission_refs = _route_specific_quota_admission_fresh(
+        route_payload,
+        now=now,
+    )
+    if quota_admission_refs:
+        freshness["evidence"]["quota"]["evidence_refs"] = list(
+            dict.fromkeys(
+                [
+                    *freshness["evidence"]["quota"].get("evidence_refs", []),
+                    *quota_admission_refs,
+                ]
+            )
+        )
+    if quota_admission_fresh:
+        removable_top_blockers.add(GLMCP_REVIEW_ADMISSION_BLOCKER)
     top_blockers = [reason for reason in top_blockers if reason not in removable_top_blockers]
     route_payload["blocked_reasons"] = list(dict.fromkeys(top_blockers))
     route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
+
+
+def _route_specific_quota_admission_fresh(
+    route_payload: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> tuple[bool, tuple[str, ...]]:
+    if route_payload.get("route_id") != GLMCP_REVIEW_ROUTE_ID:
+        return False, ()
+    try:
+        resolved = load_quota_spend_ledger_resolved(live_path=_quota_spend_live_path_from_env())
+    except (OSError, QuotaSpendLedgerError, ValueError) as exc:
+        return False, (
+            f"quota-spend-ledger:{GLMCP_REVIEW_ROUTE_ID}:read-error:{type(exc).__name__}",
+        )
+    if resolved.source != "live":
+        if resolved.live_error:
+            return False, (f"quota-spend-ledger:{GLMCP_REVIEW_ROUTE_ID}:live-ledger-invalid",)
+        return False, ()
+    state, evidence_refs = subscription_quota_state_for_route(
+        resolved.ledger,
+        GLMCP_REVIEW_ROUTE_ID,
+        now=now,
+    )
+    return state is SubscriptionQuotaState.FRESH, evidence_refs
+
+
+def _quota_spend_live_path_from_env() -> Path | None:
+    configured = os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV)
+    if not configured:
+        return None
+    if configured.strip() in {"0", "none", "None", "false", "False"}:
+        return None
+    return Path(configured).expanduser()
 
 
 def _receipt_measures_capability_scores(
@@ -1644,6 +1705,7 @@ _MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
     "agy-universal-harness": ModelId.GEMINI_3_1_PRO_PREVIEW,
     "gemini-3.5-flash": ModelId.GEMINI_3_5_FLASH,
     "z_ai-glm-coding-plan:glm-5": ModelId.Z_AI_GLM_5,
+    "z_ai-glm-coding-plan:glm-5.2": ModelId.Z_AI_GLM_5_2,
     "litellm.anthropic.claude-opus-4-cloud-burst": ModelId.CLAUDE_OPUS_4_8,
     "litellm.provider-gateway-maintenance": ModelId.GEMINI_3_1_PRO_PREVIEW,
 }
