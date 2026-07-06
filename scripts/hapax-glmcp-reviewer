@@ -378,6 +378,19 @@ def chat_url(base_url: str) -> str:
     return f"{base}/chat/completions"
 
 
+def _has_forbidden_path_segment(path: str) -> bool:
+    for raw_segment in path.split("/"):
+        segment = raw_segment
+        for _ in range(3):
+            decoded = urllib.parse.unquote(segment)
+            if decoded in {".", ".."} or "/" in decoded or "\\" in decoded:
+                return True
+            if decoded == segment:
+                break
+            segment = decoded
+    return False
+
+
 def _valid_coding_plan_primary_base_url(base_url: str) -> bool:
     try:
         parsed = urllib.parse.urlsplit(base_url)
@@ -387,6 +400,8 @@ def _valid_coding_plan_primary_base_url(base_url: str) -> bool:
     if parsed.scheme != "https" or parsed.netloc != expected.netloc:
         return False
     if parsed.query or parsed.fragment:
+        return False
+    if _has_forbidden_path_segment(parsed.path):
         return False
     path = parsed.path.rstrip("/")
     expected_path = expected.path.rstrip("/")

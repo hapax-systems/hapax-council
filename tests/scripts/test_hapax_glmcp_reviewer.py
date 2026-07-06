@@ -2126,6 +2126,27 @@ def test_rejects_coding_plan_prefix_spoof_primary_override(
         module.load_config()
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://api.z.ai/api/coding/paas/v4/../../../paas/v4",
+        "https://api.z.ai/api/coding/paas/v4/%2e%2e/%2e%2e/paas/v4",
+        "https://api.z.ai/api/coding/paas/v4/%252e%252e/paas/v4",
+    ],
+)
+def test_rejects_coding_plan_dot_segment_primary_override(
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str,
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_BASE_URL", base_url)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE", "1")
+
+    with pytest.raises(module.ConfigError, match="Coding Plan path"):
+        module.load_config()
+
+
 def test_rejects_bad_env_values(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
     _clean_env(monkeypatch)
