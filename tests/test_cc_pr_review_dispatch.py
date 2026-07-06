@@ -1765,6 +1765,60 @@ class TestFamilyOutageDegradation:
         recorded = json.loads(state.read_text(encoding="utf-8"))
         assert "gemini" not in recorded
 
+    def test_route_admission_clears_route_backed_outage_before_constitution(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "glm": {
+                        "observed_at": "2026-06-11T20:55:00+00:00",
+                        "outage_started_at": "2026-06-11T20:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        reviewers = RecordingReviewers()
+
+        _review(
+            tmp_path,
+            reviewers=reviewers,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert any(family == "glm" for _, family, _ in reviewers.invocations)
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+
+    def test_blocked_route_keeps_route_backed_outage_latch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "glm": {
+                        "observed_at": "2026-06-11T20:55:00+00:00",
+                        "outage_started_at": "2026-06-11T20:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        reviewers = RecordingReviewers()
+
+        _review(
+            tmp_path,
+            reviewers=reviewers,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={"glm": ("glmcp.review.direct:quota_receipt_absent",)},
+        )
+
+        assert not any(family == "glm" for _, family, _ in reviewers.invocations)
+        assert "glm" in json.loads(state.read_text(encoding="utf-8"))
+
     def test_outage_expires_after_ttl(self, monkeypatch: Any, tmp_path: Path) -> None:
         state, _ = self._isolate_state(monkeypatch, tmp_path)
         state.write_text(json.dumps({"claude": "2026-06-12T08:58:00+00:00"}), encoding="utf-8")

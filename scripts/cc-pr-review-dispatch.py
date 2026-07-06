@@ -212,6 +212,75 @@ def update_family_outage(
     return load_family_outage(now_iso, state_path)
 
 
+def clear_route_recovered_family_outage(
+    outage_witness: dict[str, str],
+    *,
+    registry: dict[str, Any],
+    route_blocked_families: dict[str, tuple[str, ...]],
+    state_path: Path | None = None,
+) -> dict[str, str]:
+    """Clear outage latches for route-backed families whose route is admitted.
+
+    A route-backed reviewer can be excluded by a fresh family-outage witness
+    before it gets a chance to answer and clear itself. A fresh route admission
+    receipt is a recovery witness for that backing route; if the route is still
+    blocked, the outage latch stays intact.
+    """
+
+    if not outage_witness:
+        return {}
+    route_ids = review_team.review_family_route_ids(registry)
+    recovered = sorted(
+        family
+        for family in outage_witness
+        if family in route_ids and family not in route_blocked_families
+    )
+    if not recovered:
+        return dict(outage_witness)
+
+    state_path = state_path or FAMILY_OUTAGE_STATE
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = state_path.with_name(f"{state_path.name}.lock")
+        with lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                try:
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    if not isinstance(state, dict):
+                        state = {}
+                except (OSError, json.JSONDecodeError):
+                    state = {}
+                for family in recovered:
+                    state.pop(family, None)
+                with tempfile.NamedTemporaryFile(
+                    "w",
+                    encoding="utf-8",
+                    dir=state_path.parent,
+                    prefix=f"{state_path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as tmp:
+                    tmp.write(json.dumps(state, indent=1))
+                    tmp_path = Path(tmp.name)
+                os.replace(tmp_path, state_path)
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    except OSError as exc:
+        LOG.warning(
+            "could not clear recovered family outage latch for %s: %s",
+            ",".join(recovered),
+            exc,
+        )
+
+    recovered_set = set(recovered)
+    return {
+        family: observed_at
+        for family, observed_at in outage_witness.items()
+        if family not in recovered_set
+    }
+
+
 def append_degraded_merge_record(
     *,
     task_id: str,
@@ -1393,7 +1462,11 @@ def review_pr(
         "",
     )
     writer_family = review_team.writer_family_for_lane(assigned_lane, registry)
-    outage_witness = load_family_outage_witness(now_iso)
+    outage_witness = clear_route_recovered_family_outage(
+        load_family_outage_witness(now_iso),
+        registry=registry,
+        route_blocked_families=effective_route_blocked_families,
+    )
     outage_families = frozenset(outage_witness)
     if outage_families:
         LOG.warning(
