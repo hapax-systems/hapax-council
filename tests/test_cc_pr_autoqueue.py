@@ -63,9 +63,14 @@ def _review_team_gate_off(monkeypatch: pytest.MonkeyPatch) -> None:
 
     The review-team quorum gate (review_team.review_team_verdict_blockers) is
     exercised explicitly by TestReviewTeamGate, which re-enables it per test.
+    Route-receipt behavior is covered in tests/test_review_team.py; these
+    generic autoqueue fixtures must not depend on live capability receipts.
     """
 
     monkeypatch.setenv("HAPAX_REVIEW_TEAM_GATE_OFF", "1")
+    monkeypatch.setattr(
+        autoqueue.review_team, "review_route_blocked_families", lambda *_a, **_k: {}
+    )
 
 
 def _write_review_dossier(
