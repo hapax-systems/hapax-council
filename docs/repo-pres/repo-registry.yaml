@@ -82,7 +82,7 @@ repos:
     license_url: https://spdx.org/licenses/BUSL-1.1
     value_partition: commercial_moat
     license_posture: |
-      Source-available under BSL-1.1; not Open Source until the change
+      Source-available under BUSL-1.1; not Open Source until the change
       license/date applies. Commercial/hosted-service rights reserved.
     rationale: Extracted runtime mechanism and commercial product core.
 
@@ -91,7 +91,7 @@ repos:
     license_url: https://spdx.org/licenses/BUSL-1.1
     value_partition: commercial_moat
     license_posture: |
-      Source-available under BSL-1.1; current claim ceiling is
+      Source-available under BUSL-1.1; current claim ceiling is
       read/preview/cockpit, not full mutation cockpit.
     rationale: Public product/front-door cockpit and commercial moat.
 
