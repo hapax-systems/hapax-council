@@ -152,7 +152,7 @@ class FakeGh:
             {
                 "number": self.pr_number,
                 "title": f"PR {self.pr_number}",
-                "head": {"ref": f"feat/{self.pr_number}", "sha": "c" * 40},
+                "head": {"ref": f"feat/{self.pr_number}", "sha": self.head_sha},
                 "draft": False,
                 "state": "open",
             }
@@ -165,7 +165,7 @@ class FakeGh:
             "number": self.pr_number,
             "title": f"PR {self.pr_number}",
             "body": "PR body acceptance evidence",
-            "head": {"ref": f"feat/{self.pr_number}", "sha": "c" * 40},
+            "head": {"ref": f"feat/{self.pr_number}", "sha": self.head_sha},
             "draft": False,
             "changed_files": (
                 len(self.files) if self.changed_files_count is None else self.changed_files_count
