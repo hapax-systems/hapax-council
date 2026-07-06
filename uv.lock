@@ -2185,6 +2185,7 @@ tui = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "google-api-python-client", marker = "sys_platform == 'linux'" },
     { name = "hypothesis", marker = "sys_platform == 'linux'" },
     { name = "prometheus-client", marker = "sys_platform == 'linux'" },
     { name = "pyright", marker = "sys_platform == 'linux'" },
@@ -2196,6 +2197,7 @@ dev = [
     { name = "ruff", marker = "sys_platform == 'linux'" },
     { name = "schemathesis", marker = "sys_platform == 'linux'" },
     { name = "vulture", marker = "sys_platform == 'linux'" },
+    { name = "watchdog", marker = "sys_platform == 'linux'" },
 ]
 
 [package.metadata]
@@ -2302,6 +2304,7 @@ provides-extras = ["logos-api", "sync-pipeline", "mail-monitor", "audio", "ci", 
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "google-api-python-client", specifier = ">=2.198.0" },
     { name = "hypothesis", specifier = ">=6.100.0" },
     { name = "prometheus-client", specifier = ">=0.24.1" },
     { name = "pyright", specifier = ">=1.1.400" },
@@ -2313,6 +2316,7 @@ dev = [
     { name = "ruff", specifier = ">=0.15.0" },
     { name = "schemathesis", specifier = ">=4.7" },
     { name = "vulture", specifier = ">=2.16" },
+    { name = "watchdog", specifier = ">=6.0.0" },
 ]
 
 [[package]]
