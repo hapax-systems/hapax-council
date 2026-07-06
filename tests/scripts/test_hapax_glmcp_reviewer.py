@@ -27,9 +27,12 @@ ENV_KEYS = (
     "HAPAX_GLMCP_REVIEW_MAX_TOKENS",
     "HAPAX_GLMCP_REVIEW_TEMPERATURE",
     "HAPAX_GLMCP_REVIEW_THINKING",
+    "HAPAX_GLMCP_REVIEW_PAYG_FALLBACK",
+    "HAPAX_GLMCP_REVIEW_PAYG_BASE_URL",
     "HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL",
     "HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE",
     "HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE",
+    "HAPAX_GLMCP_REVIEW_ALLOW_PAYG_BASE_URL_OVERRIDE",
 )
 
 
@@ -189,6 +192,90 @@ def test_zai_quota_error_classifies_reset_without_secret(
     assert "resets_at=2026-06-18T20:00:00Z" in message
     assert "test-secret-token" not in message
     assert "<redacted>" in message
+
+
+def test_call_glm_falls_back_to_payg_api_on_coding_plan_quota_wall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    seen_urls: list[str] = []
+
+    def fake_open(request: object, *, timeout: float) -> FakeResponse:
+        seen_urls.append(request.full_url)
+        if len(seen_urls) == 1:
+            body = {
+                "error": {
+                    "code": "1310",
+                    "message": "Quota exhausted. Your limit will reset at 2026-07-09T13:02:51Z.",
+                    "next_flush_time": "2026-07-09T13:02:51Z",
+                }
+            }
+            raise urllib.error.HTTPError(
+                request.full_url,
+                429,
+                "Too Many Requests",
+                {},
+                io.BytesIO(json.dumps(body).encode("utf-8")),
+            )
+        return FakeResponse(
+            {"choices": [{"message": {"content": "```yaml\nverdict: accept\n```"}}]}
+        )
+
+    monkeypatch.setattr(module, "open_no_redirect", fake_open)
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+
+    reply = module.call_glm("review prompt", config, "test-secret-token")
+
+    assert reply == "```yaml\nverdict: accept\n```"
+    assert seen_urls == [
+        "https://api.z.ai/api/coding/paas/v4/chat/completions",
+        "https://api.z.ai/api/paas/v4/chat/completions",
+    ]
+
+
+def test_call_glm_does_not_fallback_for_non_quota_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    seen_urls: list[str] = []
+
+    def fake_open(request: object, *, timeout: float) -> object:
+        seen_urls.append(request.full_url)
+        body = {"error": {"code": "1113", "message": "Insufficient balance"}}
+        raise urllib.error.HTTPError(
+            request.full_url,
+            429,
+            "Too Many Requests",
+            {},
+            io.BytesIO(json.dumps(body).encode("utf-8")),
+        )
+
+    monkeypatch.setattr(module, "open_no_redirect", fake_open)
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+
+    with pytest.raises(module.ApiError, match="account_balance_or_arrears"):
+        module.call_glm("review prompt", config, "test-secret-token")
+    assert seen_urls == ["https://api.z.ai/api/coding/paas/v4/chat/completions"]
 
 
 @pytest.mark.parametrize(
@@ -677,6 +764,7 @@ def test_accepts_reviewed_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.thinking == "enabled"
     assert config.max_tokens == 321
     assert config.temperature == 0.2
+    assert config.payg_fallback is False
 
 
 def test_rejects_secret_entry_override_without_gate(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -751,6 +839,15 @@ def test_endpoint_override_stays_on_zai_host(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_BASE_URL", "https://example.invalid/v1")
 
     with pytest.raises(module.ConfigError, match="https://api.z.ai/"):
+        module.load_config()
+
+
+def test_rejects_payg_base_url_override_without_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_BASE_URL", "https://api.z.ai/api/paas/v4-beta")
+
+    with pytest.raises(module.ConfigError, match="refusing PAYG base URL"):
         module.load_config()
 
 

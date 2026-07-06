@@ -27,8 +27,10 @@ Each tick does two writes:
      written by ``shared.quota_wall`` on observed 429/quota-exhaustion). An
      unexpired wall marks the platform ``exhausted``; otherwise the established
      Claude/Codex/Gemini subscription routes are ``fresh``. GLMCP is stricter:
-     it is ``unknown`` unless a fresh, short-lived Coding Plan admission receipt
-     exists. Recheck admission evidence with
+     it is ``unknown`` unless a fresh, short-lived admission receipt exists.
+     Coding Plan quota walls block Coding Plan receipts, but a fresh
+     endpoint-matched PAYG admission can supersede that subscription wall.
+     Recheck admission evidence with
      ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*glmcp-quota-admission*.yaml' -print``
      and ``scripts/hapax-quota-telemetry-writer --json``.
      If a receipt exists but GLMCP remains ``unknown``, read this writer's
@@ -104,14 +106,34 @@ SUBSCRIPTION_PROVIDERS = {
 
 GLMCP_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["glmcp"]
 GLMCP_ADMISSION_CAPACITY_POOL = "subscription_quota"
+GLMCP_ADMISSION_PAYG_CAPACITY_POOL = "api_paid_spend"
 GLMCP_ADMISSION_SCHEMA = "hapax.glmcp_quota_admission.v1"
+GLMCP_CODING_PLAN_ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
+GLMCP_PAYG_ENDPOINT = "https://api.z.ai/api/paas/v4"
 GLMCP_ADMISSION_TOOL_ENDPOINTS = {
-    "hapax-glmcp-reviewer": frozenset({"https://api.z.ai/api/coding/paas/v4"}),
+    "hapax-glmcp-reviewer": frozenset(
+        {
+            GLMCP_CODING_PLAN_ENDPOINT,
+            GLMCP_PAYG_ENDPOINT,
+        }
+    ),
 }
 GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset(GLMCP_ADMISSION_TOOL_ENDPOINTS)
 GLMCP_ADMISSION_ENDPOINTS = frozenset(
     endpoint for endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.values() for endpoint in endpoints
 )
+GLMCP_ADMISSION_CONTRACT_BY_ENDPOINT = {
+    GLMCP_CODING_PLAN_ENDPOINT: {
+        "capacity_pool": GLMCP_ADMISSION_CAPACITY_POOL,
+        "billing_mode": "coding_plan_subscription",
+        "payg_fallback": "false",
+    },
+    GLMCP_PAYG_ENDPOINT: {
+        "capacity_pool": GLMCP_ADMISSION_PAYG_CAPACITY_POOL,
+        "billing_mode": "api_credit_payg",
+        "payg_fallback": "true",
+    },
+}
 # Keep this fail-closed. This receipt gates the direct GLM review route, so the
 # model must match scripts/hapax-glmcp-reviewer's Coding Plan adapter.
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2"})
@@ -155,7 +177,7 @@ GLMCP_ADMISSION_RECOVERY_HINT = (
     "short-lived admission receipt with schema, status, provider, capacity_pool, route_id, "
     "supported_tool, endpoint, model, observed_at, stale_after_seconds, "
     "3-240 character evidence_ref, secret_source, secret_value_persisted=false, "
-    "prompt_or_output_persisted=false, billing_mode, and payg_fallback=false, "
+    "prompt_or_output_persisted=false, billing_mode, and endpoint-matched payg_fallback, "
     "then rerun writer"
 )
 
@@ -164,6 +186,7 @@ GLMCP_ADMISSION_RECOVERY_HINT = (
 class GlmcpAdmission:
     evidence_ref: str
     fresh_until: datetime
+    endpoint: str
 
 
 @dataclass(frozen=True)
@@ -375,13 +398,6 @@ def active_glmcp_admission_receipts(
                     f"provider missing or unsupported; expected {GLMCP_ADMISSION_PROVIDER}",
                 )
             continue
-        capacity_pool = fields.get("capacity_pool", "")
-        if capacity_pool != GLMCP_ADMISSION_CAPACITY_POOL:
-            reject(
-                path,
-                f"capacity_pool missing or unsupported; expected {GLMCP_ADMISSION_CAPACITY_POOL}",
-            )
-            continue
         route_id = fields.get("route_id", "")
         if route_id != SUBSCRIPTION_ROUTES["glmcp"]:
             reject(
@@ -400,13 +416,21 @@ def active_glmcp_admission_receipts(
         if endpoint not in GLMCP_ADMISSION_ENDPOINTS:
             reject(
                 path,
-                "endpoint missing or unsupported; expected official Z.ai Coding Plan endpoint",
+                "endpoint missing or unsupported; expected official Z.ai Coding Plan or PAYG endpoint",
             )
             continue
         if endpoint not in GLMCP_ADMISSION_TOOL_ENDPOINTS[supported_tool]:
             reject(
                 path,
                 "supported_tool/endpoint mismatch; expected official endpoint for supported tool",
+            )
+            continue
+        endpoint_contract = GLMCP_ADMISSION_CONTRACT_BY_ENDPOINT[endpoint]
+        capacity_pool = fields.get("capacity_pool", "")
+        if capacity_pool != endpoint_contract["capacity_pool"]:
+            reject(
+                path,
+                "capacity_pool missing or unsupported for endpoint",
             )
             continue
         model = fields.get("model", "")
@@ -500,11 +524,11 @@ def active_glmcp_admission_receipts(
         if fields.get("prompt_or_output_persisted", "") != "false":
             reject(path, "prompt_or_output_persisted must be false")
             continue
-        if fields.get("billing_mode", "") != "coding_plan_subscription":
-            reject(path, "billing_mode missing or unsupported")
+        if fields.get("billing_mode", "") != endpoint_contract["billing_mode"]:
+            reject(path, "billing_mode missing or unsupported for endpoint")
             continue
-        if fields.get("payg_fallback", "") != "false":
-            reject(path, "payg_fallback must be false")
+        if fields.get("payg_fallback", "") != endpoint_contract["payg_fallback"]:
+            reject(path, "payg_fallback missing or unsupported for endpoint")
             continue
         refs.append(
             GlmcpAdmission(
@@ -516,6 +540,7 @@ def active_glmcp_admission_receipts(
                     f"fresh_until:{fresh_until.isoformat().replace('+00:00', 'Z')}"
                 ),
                 fresh_until=fresh_until,
+                endpoint=endpoint,
             )
         )
     return GlmcpAdmissionScan(admissions=refs, ignored_evidence_refs=ignored_refs)
@@ -594,7 +619,24 @@ def build_live_ledger(
     snapshots: list[dict[str, Any]] = []
     for platform, route_id in sorted(SUBSCRIPTION_ROUTES.items()):
         platform_walls = walls.get(platform, [])
-        if platform_walls:
+        glmcp_payg_admissions = [
+            admission
+            for admission in glmcp_admissions
+            if platform == "glmcp" and admission.endpoint == GLMCP_PAYG_ENDPOINT
+        ]
+        if platform_walls and glmcp_payg_admissions:
+            state = "fresh"
+            evidence = [
+                *platform_walls,
+                *(admission.evidence_ref for admission in glmcp_payg_admissions),
+                writer_ref,
+            ]
+            fresh_until = max(admission.fresh_until for admission in glmcp_payg_admissions)
+            reason = (
+                "GLMCP Coding Plan quota wall is present, but a fresh API-credit PAYG "
+                "supported-tool admission receipt keeps the review route available"
+            )
+        elif platform_walls:
             state = "exhausted"
             evidence = [*platform_walls, writer_ref]
             fresh_until = None

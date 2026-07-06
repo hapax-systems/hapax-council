@@ -4,7 +4,8 @@
 The review dispatcher passes a fully rendered prompt on stdin and expects the
 reviewer reply on stdout. This adapter intentionally avoids Claude Code local
 state, hooks, MCP startup, and settings discovery; it calls Z.ai's official
-OpenAI-compatible Coding Plan endpoint directly.
+OpenAI-compatible Coding Plan endpoint directly, with a governed fallback to the
+same OpenAI-compatible PAYG API endpoint when Coding Plan quota is exhausted.
 """
 
 from __future__ import annotations
@@ -36,11 +37,14 @@ from shared.failure_classification import (  # noqa: E402
 )
 
 DEFAULT_SECRET_ENTRY = "glmcp/api-key"
-DEFAULT_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
+DEFAULT_CODING_PLAN_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
+DEFAULT_PAYG_BASE_URL = "https://api.z.ai/api/paas/v4"
+DEFAULT_BASE_URL = DEFAULT_CODING_PLAN_BASE_URL
 DEFAULT_MODEL = "glm-5.2"
 DEFAULT_TIMEOUT_SECONDS = 900
 DEFAULT_MAX_TOKENS = 8192
 DEFAULT_THINKING = "disabled"
+PAYG_FALLBACK_ERROR_CLASSES = frozenset({"daily_limit_exhausted", "quota_exhausted"})
 # Z.ai's GLM-5 repository and Coding Plan docs now identify GLM-5.2 as the
 # current high-value coding model. The direct OpenAI-compatible review endpoint
 # uses ``glm-5.2``; the Claude Code/Anthropic wrapper uses ``glm-5.2[1m]``.
@@ -68,6 +72,26 @@ class ApiError(RuntimeError):
     """Provider/API failure."""
 
 
+class ZaiHttpError(ApiError):
+    """Structured Z.ai HTTP failure that may be eligible for a governed fallback."""
+
+    def __init__(
+        self,
+        *,
+        status: int,
+        detail: str,
+        secret: str,
+        base_url: str,
+        provider_label: str,
+    ) -> None:
+        self.status = status
+        self.detail = detail
+        self.info = classify_zai_error(status, detail)
+        self.base_url = base_url
+        self.provider_label = provider_label
+        super().__init__(format_zai_error(status, detail, secret=secret))
+
+
 @dataclass(frozen=True)
 class ReviewConfig:
     secret_entry: str
@@ -77,6 +101,8 @@ class ReviewConfig:
     max_tokens: int
     temperature: float
     thinking: str
+    payg_fallback: bool = True
+    payg_base_url: str = DEFAULT_PAYG_BASE_URL
 
 
 @dataclass(frozen=True)
@@ -111,9 +137,12 @@ Environment overrides:
   HAPAX_GLMCP_REVIEW_MAX_TOKENS        max response tokens (default: 8192)
   HAPAX_GLMCP_REVIEW_TEMPERATURE       sampling temperature (default: 0)
   HAPAX_GLMCP_REVIEW_THINKING          disabled|enabled (default: disabled)
+  HAPAX_GLMCP_REVIEW_PAYG_FALLBACK     1 enables API-credit fallback on quota wall (default: 1)
+  HAPAX_GLMCP_REVIEW_PAYG_BASE_URL     Z.ai PAYG API base URL (default: https://api.z.ai/api/paas/v4)
   HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL=1 allow a non-docs-pinned model
   HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE=1 allow a reviewed glmcp/* entry
   HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE=1 allow a reviewed https://api.z.ai/ endpoint
+  HAPAX_GLMCP_REVIEW_ALLOW_PAYG_BASE_URL_OVERRIDE=1 allow a reviewed PAYG endpoint override
 """
 
 
@@ -145,6 +174,18 @@ def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
     return value
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw in (None, ""):
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{name} must be boolean-like: 1/0, true/false, yes/no, or on/off")
+
+
 def _valid_glmcp_secret_entry(secret_entry: str) -> bool:
     if not secret_entry.startswith("glmcp/"):
         return False
@@ -157,6 +198,7 @@ def _valid_glmcp_secret_entry(secret_entry: str) -> bool:
 def load_config() -> ReviewConfig:
     secret_entry = os.environ.get("HAPAX_GLMCP_REVIEW_SECRET_ENTRY") or DEFAULT_SECRET_ENTRY
     base_url = os.environ.get("HAPAX_GLMCP_REVIEW_BASE_URL") or DEFAULT_BASE_URL
+    payg_base_url = os.environ.get("HAPAX_GLMCP_REVIEW_PAYG_BASE_URL") or DEFAULT_PAYG_BASE_URL
     model = os.environ.get("HAPAX_GLMCP_REVIEW_MODEL") or DEFAULT_MODEL
     thinking = os.environ.get("HAPAX_GLMCP_REVIEW_THINKING") or DEFAULT_THINKING
 
@@ -198,11 +240,28 @@ def load_config() -> ReviewConfig:
                 "refused base URL; this adapter only sends the pass-backed token to "
                 "https://api.z.ai/. Use a reviewed Z.ai endpoint or a separate adapter."
             )
+    normalized_payg_base = payg_base_url.rstrip("/")
+    if normalized_payg_base != DEFAULT_PAYG_BASE_URL:
+        if os.environ.get("HAPAX_GLMCP_REVIEW_ALLOW_PAYG_BASE_URL_OVERRIDE") != "1":
+            raise ConfigError(
+                f"refusing PAYG base URL {payg_base_url!r}; expected {DEFAULT_PAYG_BASE_URL}. "
+                "Set HAPAX_GLMCP_REVIEW_ALLOW_PAYG_BASE_URL_OVERRIDE=1 only after "
+                "reviewing the Z.ai endpoint."
+            )
+        if not normalized_payg_base.startswith("https://api.z.ai/"):
+            raise ConfigError(
+                "refused PAYG base URL; this adapter only sends the pass-backed token to "
+                "https://api.z.ai/. Use a reviewed Z.ai endpoint or a separate adapter."
+            )
     if thinking not in {"disabled", "enabled"}:
         raise ConfigError(
             "HAPAX_GLMCP_REVIEW_THINKING must be disabled or enabled; use disabled "
             "for review-quorum output."
         )
+    payg_fallback_default = normalized_base == DEFAULT_CODING_PLAN_BASE_URL
+    payg_fallback = _env_bool("HAPAX_GLMCP_REVIEW_PAYG_FALLBACK", payg_fallback_default)
+    if payg_fallback and normalized_base == normalized_payg_base:
+        raise ConfigError("PAYG fallback base URL must differ from the primary review base URL")
 
     return ReviewConfig(
         secret_entry=secret_entry,
@@ -214,6 +273,8 @@ def load_config() -> ReviewConfig:
         max_tokens=_env_int("HAPAX_GLMCP_REVIEW_MAX_TOKENS", DEFAULT_MAX_TOKENS, minimum=1),
         temperature=_env_float("HAPAX_GLMCP_REVIEW_TEMPERATURE", 0.0, minimum=0.0),
         thinking=thinking,
+        payg_fallback=payg_fallback,
+        payg_base_url=normalized_payg_base,
     )
 
 
@@ -391,7 +452,14 @@ def format_zai_error(status: int, detail: str, *, secret: str) -> str:
     return "; ".join(parts)
 
 
-def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
+def _call_glm_once(
+    prompt: str,
+    config: ReviewConfig,
+    api_key: str,
+    *,
+    base_url: str,
+    provider_label: str,
+) -> str:
     body = json.dumps(
         {
             "model": config.model,
@@ -406,7 +474,7 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
         }
     ).encode("utf-8")
     request = urllib.request.Request(
-        chat_url(config.base_url),
+        chat_url(base_url),
         data=body,
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -429,13 +497,16 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
                 "https://api.z.ai/ endpoint"
             ) from exc
         detail = exc.read().decode("utf-8", errors="replace")
-        raise ApiError(
-            f"{format_zai_error(exc.code, detail or str(exc.reason), secret=api_key)}; "
-            "retry later or check the Z.ai Coding Plan endpoint/status"
+        raise ZaiHttpError(
+            status=exc.code,
+            detail=detail or str(exc.reason),
+            secret=api_key,
+            base_url=base_url,
+            provider_label=provider_label,
         ) from exc
     except urllib.error.URLError as exc:
         raise ApiError(
-            f"network error: {exc.reason}; retry later or check the Z.ai Coding Plan endpoint"
+            f"network error: {exc.reason}; retry later or check the Z.ai {provider_label} endpoint"
         ) from exc
     except TimeoutError as exc:
         raise ApiError(
@@ -504,6 +575,45 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
     return reply
 
 
+def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
+    try:
+        return _call_glm_once(
+            prompt,
+            config,
+            api_key,
+            base_url=config.base_url,
+            provider_label="Coding Plan",
+        )
+    except ZaiHttpError as exc:
+        if not _should_try_payg_fallback(exc, config):
+            raise ApiError(
+                f"{exc}; retry later or check the Z.ai Coding Plan endpoint/status"
+            ) from exc
+        try:
+            return _call_glm_once(
+                prompt,
+                config,
+                api_key,
+                base_url=config.payg_base_url,
+                provider_label="PAYG API",
+            )
+        except ApiError as fallback_exc:
+            raise ApiError(
+                "Coding Plan quota fallback to Z.ai PAYG API failed; "
+                f"primary=({exc}); fallback=({fallback_exc}); "
+                "retry later, check PAYG balance, or write a classified GLMCP hold receipt"
+            ) from fallback_exc
+
+
+def _should_try_payg_fallback(exc: ZaiHttpError, config: ReviewConfig) -> bool:
+    return (
+        config.payg_fallback
+        and config.base_url == DEFAULT_CODING_PLAN_BASE_URL
+        and exc.info.error_class in PAYG_FALLBACK_ERROR_CLASSES
+        and config.payg_base_url != config.base_url
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv in (["--help"], ["-h"]):
@@ -524,7 +634,9 @@ def main(argv: list[str] | None = None) -> int:
                 "hapax-glmcp-reviewer: ok "
                 f"secret=available base_url={config.base_url} model={config.model} "
                 f"thinking={config.thinking} "
-                f"timeout_seconds={config.timeout_seconds:g}"
+                f"timeout_seconds={config.timeout_seconds:g} "
+                f"payg_fallback={'enabled' if config.payg_fallback else 'disabled'} "
+                f"payg_base_url={config.payg_base_url}"
             )
             return 0
         api_key = read_secret(config.secret_entry)

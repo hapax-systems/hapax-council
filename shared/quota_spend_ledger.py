@@ -33,7 +33,12 @@ RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
 GLMCP_ADMISSION_TOOL_ENDPOINTS = {
-    "hapax-glmcp-reviewer": frozenset({"https://api.z.ai/api/coding/paas/v4"}),
+    "hapax-glmcp-reviewer": frozenset(
+        {
+            "https://api.z.ai/api/coding/paas/v4",
+            "https://api.z.ai/api/paas/v4",
+        }
+    ),
 }
 GLMCP_ADMISSION_SUPPORTED_TOOLS = frozenset(GLMCP_ADMISSION_TOOL_ENDPOINTS)
 GLMCP_ADMISSION_ENDPOINTS = frozenset(
