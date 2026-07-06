@@ -129,7 +129,8 @@ def load_active_route_ids(registry_path: Path | str | None = None) -> frozenset[
         route_id = route.get("route_id")
         if not isinstance(route_id, str) or route_id not in required_ids:
             continue
-        if route.get("route_state") == "active" and not route.get("blocked_reasons"):
+        blocked_reasons = route.get("blocked_reasons")
+        if route.get("route_state") == "active" and blocked_reasons == []:
             active.append(route_id)
     return frozenset(active)
 

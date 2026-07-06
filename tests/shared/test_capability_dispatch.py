@@ -173,6 +173,33 @@ def test_load_active_route_ids_excludes_blocked_routes(tmp_path: Path) -> None:
     assert load_active_route_ids(reg) == frozenset({"a.b.c"})
 
 
+@pytest.mark.parametrize(
+    "route_payload",
+    [
+        {"route_id": "a.b.c", "route_state": "active"},
+        {"route_id": "a.b.c", "route_state": "active", "blocked_reasons": None},
+        {"route_id": "a.b.c", "route_state": "active", "blocked_reasons": ""},
+        {"route_id": "a.b.c", "route_state": "active", "blocked_reasons": {}},
+        {"route_id": "a.b.c", "route_state": "available", "blocked_reasons": []},
+    ],
+)
+def test_load_active_route_ids_excludes_malformed_route_state(
+    tmp_path: Path, route_payload: dict[str, object]
+) -> None:
+    reg = tmp_path / "reg.json"
+    reg.write_text(
+        json.dumps(
+            {
+                "required_route_ids": ["a.b.c"],
+                "routes": [route_payload],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_active_route_ids(reg) == frozenset()
+
+
 def test_load_valid_route_ids_missing_file(tmp_path: Path) -> None:
     assert load_valid_route_ids(tmp_path / "nope.json") == frozenset()
 

@@ -875,6 +875,12 @@ def evaluate_dispatch_policy(
             authority_allowed=False,
         )
     if capability.route_state == "blocked" or capability.blocked_reasons:
+        # This gate intentionally has no environment-variable bypass. False
+        # positives are recovered by the governed route-receipt path:
+        # refresh the route with scripts/hapax-platform-capability-receipts or
+        # mint the specific route-authority receipt, then rerun dispatch. In an
+        # incident, choose another active route rather than editing registry
+        # state around this hold.
         return _decision(
             request,
             DispatchAction.HOLD,
@@ -1415,10 +1421,11 @@ def _evaluate_dimensional_candidate_set(
             if incomparable_present
             else "no_eligible_dimensional_candidates"
         )
+        primary_reasons = _primary_candidate_veto_reasons(request, receipts)
         return _decision(
             request,
             DispatchAction.HOLD,
-            (reason,),
+            tuple(dict.fromkeys([*primary_reasons, reason])),
             checked_at,
             quality_floor_satisfied=False,
             authority_allowed=False,
@@ -1559,6 +1566,22 @@ def _candidate_set_with_primary(
         if candidate.route_id != request.route_id:
             by_route[candidate.route_id] = candidate
     return tuple(by_route[route_id] for route_id in sorted(by_route))
+
+
+def _primary_candidate_veto_reasons(
+    request: DispatchRequest,
+    receipts: Sequence[DimensionalCandidateReceipt],
+) -> tuple[str, ...]:
+    primary = next((receipt for receipt in receipts if receipt.route_id == request.route_id), None)
+    if primary is None or primary.status not in {CandidateStatus.VETOED, CandidateStatus.STALE}:
+        return ()
+    reasons: list[str] = []
+    for veto in primary.vetoes:
+        if veto.field == "dispatch_policy" and veto.message:
+            reasons.append(veto.message)
+        elif veto.code:
+            reasons.append(veto.code)
+    return tuple(dict.fromkeys(reasons))
 
 
 def _candidate_receipt(

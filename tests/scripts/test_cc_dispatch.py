@@ -271,7 +271,10 @@ def test_print_list_empty_registry_returns_1(monkeypatch, capsys) -> None:
     mod = _load()
     monkeypatch.setattr(mod, "load_active_route_ids", lambda *a, **k: frozenset())
     assert mod.main(["--list"]) == 1
-    assert "no launchable capabilities" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "no launchable capabilities" in err
+    assert "route_state and blocked_reasons" in err
+    assert "hapax-platform-capability-receipts" in err
 
 
 def test_utilization_warns_on_missing_ledger(monkeypatch, capsys) -> None:

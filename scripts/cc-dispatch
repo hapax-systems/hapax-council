@@ -69,7 +69,13 @@ def print_list() -> int:
     aliases = launchable_aliases(active)
     if not aliases:
         detail = registry_error() or "no active launchable routes in registry"
-        print(f"cc-dispatch: no launchable capabilities ({detail})", file=sys.stderr)
+        print(
+            f"cc-dispatch: no launchable capabilities ({detail}); "
+            "verify config/platform-capability-registry.json route_state and blocked_reasons, "
+            "then refresh receipts with scripts/hapax-platform-capability-receipts or rerun "
+            "scripts/hapax-capability-surface-delta-gate",
+            file=sys.stderr,
+        )
         return 1
     for alias, route_id in sorted(aliases.items()):
         print(f"{alias:20s} -> {route_id}")
