@@ -6,6 +6,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = REPO_ROOT / "scripts" / "hapax-codex"
 REINS_FUGU = REPO_ROOT / "scripts" / "reins-fugu"
@@ -54,7 +56,7 @@ def _base_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
     return env, catalog, bin_dir
 
 
-def _install_fake_codex_and_pass(bin_dir: Path, tmp_path: Path) -> tuple[Path, Path]:
+def _install_fake_codex(bin_dir: Path, tmp_path: Path) -> tuple[Path, Path]:
     args_file = tmp_path / "codex-args.txt"
     env_file = tmp_path / "codex-env.txt"
     _write_executable(
@@ -70,6 +72,11 @@ printf 'HAPAX_AGENT_SLOT=%s\\n' "${{HAPAX_AGENT_SLOT:-}}" >> {env_file}
 exit 0
 """,
     )
+    return args_file, env_file
+
+
+def _install_fake_codex_and_pass(bin_dir: Path, tmp_path: Path) -> tuple[Path, Path]:
+    args_file, env_file = _install_fake_codex(bin_dir, tmp_path)
     _write_executable(
         bin_dir / "pass",
         """if [ "${1:-}" = "show" ] && [ "${2:-}" = "sakana/api-key" ]; then
@@ -234,7 +241,29 @@ def test_fugu_launch_injects_governed_codex_config_without_global_rewrite(
     assert CODEX_CONFIG.read_text(encoding="utf-8") == config_before
 
 
-def test_fugu_launch_refuses_model_provider_override(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "override_args",
+    [
+        ["-p", "default"],
+        ["--profile=default"],
+        ["--enable", "apps"],
+        ["--enable=apps"],
+        ["-m", "gpt-5.5"],
+        ["--model=fugu-ultra"],
+        ["--model-provider", "litellm"],
+        ["--base-url=https://attacker.example/v1"],
+        ["-c", 'model="gpt-5.5"'],
+        ['-cmodel_provider="litellm"'],
+        ['-c=model_catalog_json="/tmp/evil.json"'],
+        ["--config", 'model_providers.sakana.base_url = "https://attacker.example/v1"'],
+        ['--config=model_providers."sakana".env_key="ATTACKER_KEY"'],
+        ["-c", "features.image_generation = true"],
+        ["-c", "'features'.apps = true"],
+    ],
+)
+def test_fugu_launch_refuses_codex_override_variants(
+    tmp_path: Path, override_args: list[str]
+) -> None:
     env, _catalog, bin_dir = _base_env(tmp_path)
     args_file, _env_file = _install_fake_codex_and_pass(bin_dir, tmp_path)
     workdir = tmp_path / "worktree"
@@ -250,8 +279,7 @@ def test_fugu_launch_refuses_model_provider_override(tmp_path: Path) -> None:
             "--fugu-profile",
             "fugu",
             "--",
-            "-c",
-            'model_provider="litellm"',
+            *override_args,
         ],
         capture_output=True,
         text=True,
@@ -260,5 +288,115 @@ def test_fugu_launch_refuses_model_provider_override(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 2
-    assert "refuses Codex config override" in result.stderr
+    assert "Fugu mode refuses Codex" in result.stderr
     assert not args_file.exists()
+
+
+def test_fugu_launch_refuses_remote_dispatch(tmp_path: Path) -> None:
+    env, _catalog, bin_dir = _base_env(tmp_path)
+    args_file, _env_file = _install_fake_codex_and_pass(bin_dir, tmp_path)
+    _write_executable(bin_dir / "ssh", "exit 0\n")
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-fugu-test",
+            "--cd",
+            str(workdir),
+            "--fugu-profile",
+            "fugu",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 14
+    assert "Fugu launch refuses remote dispatch" in result.stderr
+    assert "next action" in result.stderr
+    assert not args_file.exists()
+
+
+def test_fugu_launch_refuses_missing_pass_secret(tmp_path: Path) -> None:
+    env, _catalog, bin_dir = _base_env(tmp_path)
+    args_file, _env_file = _install_fake_codex(bin_dir, tmp_path)
+    _write_executable(bin_dir / "pass", "exit 1\n")
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-fugu-test",
+            "--cd",
+            str(workdir),
+            "--fugu-profile",
+            "fugu",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 7
+    assert "pass:sakana/api-key" in result.stderr
+    assert "next action" in result.stderr
+    assert not args_file.exists()
+
+
+def test_fugu_print_env_reports_missing_catalog_setup_action(tmp_path: Path) -> None:
+    env, catalog, _bin_dir = _base_env(tmp_path)
+    catalog.unlink()
+
+    result = subprocess.run(
+        [str(REINS_FUGU), "--print-env"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert "model catalog" in result.stderr
+    assert "does not exist" in result.stderr
+    assert "next action" in result.stderr
+
+
+def test_fugu_print_env_reports_malformed_catalog(tmp_path: Path) -> None:
+    env, catalog, _bin_dir = _base_env(tmp_path)
+    catalog.write_text("{not json", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(REINS_FUGU), "--print-env"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert "not valid JSON" in result.stderr
+    assert "next action" in result.stderr
+
+
+def test_fugu_check_requires_profile_with_next_action(tmp_path: Path) -> None:
+    env, _catalog, _bin_dir = _base_env(tmp_path)
+
+    result = subprocess.run(
+        [str(LAUNCHER), "--check"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert "--fugu-profile fugu|fugu-ultra" in result.stderr
+    assert "next action" in result.stderr

@@ -398,10 +398,9 @@ fugu_reasoning_effort_valid() {
   esac
 }
 
-fugu_catalog_has_model() {
+fugu_catalog_model_error() {
   local catalog="$1"
   local model="$2"
-  [ -f "$catalog" ] || return 1
   python3 - "$catalog" "$model" <<'PYEOF'
 import json
 import sys
@@ -409,12 +408,36 @@ from pathlib import Path
 
 catalog = Path(sys.argv[1])
 model = sys.argv[2]
+if not catalog.exists():
+    print(
+        f"model catalog '{catalog}' does not exist; next action: create it with "
+        "entries for fugu and fugu-ultra or set HAPAX_CODEX_FUGU_MODEL_CATALOG "
+        "to the reviewed catalog path"
+    )
+    sys.exit(1)
 try:
-    payload = json.loads(catalog.read_text(encoding="utf-8"))
-except Exception:
+    raw = catalog.read_text(encoding="utf-8")
+except OSError as exc:
+    print(f"model catalog '{catalog}' is unreadable: {exc}; next action: fix file permissions or set HAPAX_CODEX_FUGU_MODEL_CATALOG")
+    sys.exit(1)
+try:
+    payload = json.loads(raw)
+except json.JSONDecodeError as exc:
+    print(f"model catalog '{catalog}' is not valid JSON: {exc}; next action: repair the catalog before running Fugu")
     sys.exit(1)
 
-models = payload.get("models", payload if isinstance(payload, list) else [])
+if isinstance(payload, dict):
+    models = payload.get("models", [])
+elif isinstance(payload, list):
+    models = payload
+else:
+    print(f"model catalog '{catalog}' has unsupported JSON shape; next action: use a list or an object with a models list")
+    sys.exit(1)
+
+if not isinstance(models, list):
+    print(f"model catalog '{catalog}' has non-list models; next action: store models as a JSON list")
+    sys.exit(1)
+
 for row in models:
     if not isinstance(row, dict):
         continue
@@ -424,8 +447,16 @@ for row in models:
         str(row.get("model", "")),
     }:
         sys.exit(0)
+print(
+    f"model catalog '{catalog}' does not contain '{model}'; next action: add a "
+    f"model entry with slug/id/model '{model}' or choose a supported Fugu profile"
+)
 sys.exit(1)
 PYEOF
+}
+
+fugu_catalog_has_model() {
+  fugu_catalog_model_error "$1" "$2" >/dev/null
 }
 
 fugu_pass_secret_available() {
@@ -442,24 +473,59 @@ fugu_load_required_pass_secret() {
   export SAKANA_API_KEY="$value"
 }
 
+fugu_config_override_is_blocked() {
+  local value="$1"
+  local compact
+  compact="$(printf '%s' "$value" | tr -d '[:space:]')"
+  compact="${compact//\"/}"
+  compact="${compact//\'/}"
+  case "$compact" in
+    model=*|model_provider=*|model_catalog_json=*|model_providers.*=*|features.image_generation=*|features.apps=*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 fugu_refuse_codex_override_args() {
-  local prev="" arg
+  local expect_config=0 arg config_value
   for arg in "$@"; do
+    if [ "$expect_config" -eq 1 ]; then
+      if fugu_config_override_is_blocked "$arg"; then
+        echo "hapax-codex: Fugu mode refuses Codex config override for protected provider/model key" >&2
+        return 1
+      fi
+      expect_config=0
+      continue
+    fi
     case "$arg" in
       -p|--profile|--profile=*|--enable|--enable=*)
         echo "hapax-codex: Fugu mode refuses Codex profile/feature override '$arg'" >&2
         return 1
         ;;
-    esac
-    if [ "$prev" = "-c" ]; then
-      case "$arg" in
-        model=*|model_provider=*|model_catalog_json=*|model_providers.*|features.image_generation=*|features.apps=*)
-          echo "hapax-codex: Fugu mode refuses Codex config override '$arg'" >&2
+      -m|--model|--model=*|--model-provider|--model-provider=*|--model_provider|--model_provider=*|--provider|--provider=*|--base-url|--base-url=*|--endpoint|--endpoint=*|--api-key|--api-key=*|--env-key|--env-key=*|--model-catalog-json|--model-catalog-json=*|--model_catalog_json|--model_catalog_json=*)
+        echo "hapax-codex: Fugu mode refuses Codex model/provider override '$arg'" >&2
+        return 1
+        ;;
+      -c|--config)
+        expect_config=1
+        ;;
+      -c=*|--config=*)
+        config_value="${arg#*=}"
+        if fugu_config_override_is_blocked "$config_value"; then
+          echo "hapax-codex: Fugu mode refuses Codex config override for protected provider/model key" >&2
           return 1
-          ;;
-      esac
-    fi
-    prev="$arg"
+        fi
+        ;;
+      -c?*)
+        config_value="${arg#-c}"
+        config_value="${config_value#=}"
+        if fugu_config_override_is_blocked "$config_value"; then
+          echo "hapax-codex: Fugu mode refuses Codex config override for protected provider/model key" >&2
+          return 1
+        fi
+        ;;
+    esac
   done
 }
 
@@ -477,6 +543,7 @@ fugu_collect_config_errors() {
   local reasoning_effort="$7"
   local secret_entry="$8"
   local normalized_base
+  local catalog_error
   local errors=()
 
   if [ -z "$profile" ] || ! fugu_model_for_profile "$profile" >/dev/null; then
@@ -496,10 +563,11 @@ fugu_collect_config_errors() {
     errors+=("unsupported reasoning effort '$reasoning_effort'; expected high, xhigh, or max")
   fi
   if [ "$secret_entry" != "sakana/api-key" ]; then
-    errors+=("unsupported secret entry '$secret_entry'; expected pass:sakana/api-key")
+    errors+=("unsupported secret entry '$secret_entry'; expected pass:sakana/api-key; next action: set HAPAX_CODEX_FUGU_SECRET_ENTRY=sakana/api-key")
   fi
-  if ! fugu_catalog_has_model "$catalog" "$model"; then
-    errors+=("model catalog '$catalog' is missing or does not contain '$model'")
+  catalog_error="$(fugu_catalog_model_error "$catalog" "$model" || true)"
+  if [ -n "$catalog_error" ]; then
+    errors+=("$catalog_error")
   fi
 
   if [ "${#errors[@]}" -eq 0 ]; then
@@ -532,13 +600,13 @@ fugu_check() {
   errors="$config_errors"
 
   if ! command -v codex >/dev/null 2>&1; then
-    errors="${errors}codex binary not found in PATH"$'\n'
+    errors="${errors}codex binary not found in PATH; next action: install or expose the supported Codex CLI before retrying"$'\n'
   fi
   if ! fugu_pass_secret_available "$FUGU_SECRET_ENTRY"; then
-    errors="${errors}pass entry '$FUGU_SECRET_ENTRY' is unavailable"$'\n'
+    errors="${errors}pass entry '$FUGU_SECRET_ENTRY' is unavailable; next action: run 'pass insert sakana/api-key' or restore the operator password store before retrying"$'\n'
   fi
   if [ ! -x "$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh" ]; then
-    errors="${errors}Codex hook adapter is not executable"$'\n'
+    errors="${errors}Codex hook adapter is not executable; next action: fix hook permissions in $COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"$'\n'
   fi
 
   if [ -n "$errors" ]; then
@@ -1381,7 +1449,7 @@ fi
 
 if [ "$FUGU_CHECK" -eq 1 ] || [ "$FUGU_PRINT_ENV" -eq 1 ]; then
   if [ -z "$FUGU_PROFILE" ]; then
-    echo "hapax-codex: --check/--print-env requires --fugu-profile fugu|fugu-ultra" >&2
+    echo "hapax-codex: --check/--print-env requires --fugu-profile fugu|fugu-ultra; next action: rerun with --fugu-profile fugu or --fugu-profile fugu-ultra" >&2
     exit 2
   fi
 fi
@@ -1708,11 +1776,11 @@ if [ -n "$FUGU_PROFILE" ]; then
     exit 2
   fi
   if [ -n "$DISPATCH_HOST" ]; then
-    echo "hapax-codex: Fugu launch refuses remote dispatch; load pass-backed Sakana credentials only on the local execution host" >&2
+    echo "hapax-codex: Fugu launch refuses remote dispatch; load pass-backed Sakana credentials only on the local execution host; next action: unset HAPAX_DISPATCH_HOST or run the governed wrapper on the local host" >&2
     exit 14
   fi
   if ! fugu_load_required_pass_secret "$FUGU_SECRET_ENTRY"; then
-    echo "hapax-codex: Fugu launch requires pass:$FUGU_SECRET_ENTRY (value not printed)" >&2
+    echo "hapax-codex: Fugu launch requires pass:$FUGU_SECRET_ENTRY (value not printed); next action: run 'pass insert sakana/api-key' or restore the operator password store before retrying" >&2
     exit 7
   fi
 fi
