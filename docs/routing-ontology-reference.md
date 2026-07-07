@@ -49,10 +49,16 @@ worker route is registered with route, resource, and governance receipts.
 `agy.review.direct` is the live replacement review route, with
 Gemini/Claude/GPT-OSS as engines behind the `agy` harness rather than capability
 family names. It is read-only and remains blocked for admission until a
-fresh agy platform-capability receipt clears the review-seat admission blocker
-and a governed agy quota-admission witness clears the quota blocker; generic
-fresh quota snapshots for `agy.review.direct` fail closed as unknown. Legacy
-`gemini-cli` aliases remain retired.
+fresh agy platform-capability receipt clears the review-seat admission blocker.
+No sanctioned agy route-specific quota-admission witness exists yet, so
+`agy.review.direct` remains blocked on `route_specific_quota_receipt_absent`;
+generic fresh quota snapshots and observed platform-receipt quota surfaces for
+`agy.review.direct` fail closed as untrusted. A future agy quota admission path
+must add a route-specific validator, writer, and recheck command comparable to
+the GLMCP quota-admission path before it can clear this blocker. Legacy
+`gemini-cli` aliases remain retired. The receipt writer still records the agy
+CLI's bundled `~/.gemini/antigravity-cli/.../cli.md` config reference; that
+directory name is the installed CLI bundle path, not a live Antigravity route.
 
 Recheck the agy review-route/non-worker claims with:
 
@@ -61,6 +67,10 @@ uv run pytest \
   tests/docs/test_platform_capability_registry_contract.py::test_seed_registry_records_agy_review_route_as_blocked_review_supply \
   tests/shared/test_platform_capability_registry.py::test_gemini_routes_are_not_seeded_as_dispatchable_platform_paths \
   tests/shared/test_capability_dispatch.py::test_resolve_agy_review_route_is_valid_but_non_spawnable \
+  tests/shared/test_platform_capability_registry.py::test_agy_observed_route_quota_receipt_does_not_admit_review_route \
+  tests/shared/test_platform_capability_registry.py::test_agy_has_no_sanctioned_route_specific_quota_admission_path \
+  tests/shared/test_quota_spend_ledger.py::test_agy_receipt_bounded_route_rejects_generic_fresh_quota_snapshot \
+  tests/shared/test_platform_capability_receipts.py::test_agy_receipt_records_live_review_route_without_unblocking_quota \
   tests/scripts/test_cc_dispatch.py::test_agy_review_route_is_valid_but_non_spawnable \
   tests/scripts/test_hapax_methodology_dispatch.py::test_agy_platform_is_review_route_not_dispatchable_worker \
   tests/scripts/test_hapax_cross_runtime_dispatch.py::test_agy_platform_is_review_route_not_cross_runtime_worker \

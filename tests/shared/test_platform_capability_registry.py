@@ -29,6 +29,7 @@ from shared.platform_capability_registry import (
     PlatformCapabilityRoute,
     RouteState,
     _apply_receipt_to_route_payload,
+    _route_specific_quota_admission_fresh,
     build_supply_vector,
     check_registry_freshness,
     load_platform_capability_registry,
@@ -819,7 +820,7 @@ def test_agy_local_receipt_clears_review_seat_but_not_route_quota() -> None:
     )
 
 
-def test_agy_observed_route_quota_receipt_admits_review_route() -> None:
+def test_agy_observed_route_quota_receipt_does_not_admit_review_route() -> None:
     payload = _payload()
     route = _route_payload(payload, "agy.review.direct")
 
@@ -833,9 +834,14 @@ def test_agy_observed_route_quota_receipt_admits_review_route() -> None:
         ),
     )
 
-    assert route["route_state"] == "active"
-    assert route["blocked_reasons"] == []
-    assert route["freshness"]["evidence"]["quota"]["blocked_reasons"] == []
+    assert route["route_state"] == "blocked"
+    assert route["blocked_reasons"] == ["route_specific_quota_receipt_absent"]
+    assert route["freshness"]["evidence"]["quota"]["blocked_reasons"] == [
+        "route_specific_quota_receipt_absent"
+    ]
+    assert (
+        "test:agy:route-quota-observed" in route["freshness"]["evidence"]["quota"]["evidence_refs"]
+    )
 
     registry = PlatformCapabilityRegistry.model_validate(payload)
     result = check_registry_freshness(
@@ -843,7 +849,21 @@ def test_agy_observed_route_quota_receipt_admits_review_route() -> None:
         route_ids=["agy.review.direct"],
         now=datetime(2026, 7, 5, 14, 52, tzinfo=UTC),
     )
-    assert result.ok is True
+    assert result.ok is False
+    assert "route_specific_quota_receipt_absent" in result.routes[0].blocked_reasons
+
+
+def test_agy_has_no_sanctioned_route_specific_quota_admission_path() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "agy.review.direct")
+
+    admitted, refs = _route_specific_quota_admission_fresh(
+        route,
+        now=datetime(2026, 7, 5, 14, 52, tzinfo=UTC),
+    )
+
+    assert admitted is False
+    assert refs == ()
 
 
 def test_api_receipt_does_not_open_cloud_burst_release_gate() -> None:

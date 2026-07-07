@@ -284,12 +284,25 @@ def test_antigrav_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -> No
 
 def test_agy_receipt_records_live_review_route_without_unblocking_quota(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
+    home_dir = tmp_path / "home"
     bin_dir.mkdir()
+    bundled_cli_ref = (
+        home_dir
+        / ".gemini"
+        / "antigravity-cli"
+        / "builtin"
+        / "skills"
+        / "antigravity_guide"
+        / "references"
+        / "cli.md"
+    )
+    bundled_cli_ref.parent.mkdir(parents=True)
+    bundled_cli_ref.write_text("# agy CLI reference\n", encoding="utf-8")
     _fake_binary(bin_dir, "agy", "1.0.10")
 
     result = _run_receipts(
         tmp_path,
-        env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(tmp_path / "home")},
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home_dir)},
         platform="agy",
         now="2026-07-05T14:51:11Z",
     )
@@ -305,6 +318,14 @@ def test_agy_receipt_records_live_review_route_without_unblocking_quota(tmp_path
     assert receipt["routes"] == ["agy.review.direct"]
     assert receipt["cli"]["version"] == "1.0.10"
     assert receipt["quota"]["reason_codes"] == ["account_live_quota_receipt_absent"]
+    config_refs = {item["path"]: item for item in receipt["config_refs"]}
+    assert (
+        config_refs["~/.gemini/antigravity-cli/builtin/skills/antigravity_guide/references/cli.md"][
+            "exists"
+        ]
+        is True
+    )
+    assert all(item["redacted"] is True for item in receipt["config_refs"])
 
     registry = load_platform_capability_registry(
         REGISTRY,
