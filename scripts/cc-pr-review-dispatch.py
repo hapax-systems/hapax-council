@@ -281,10 +281,7 @@ def _apply_public_gate_authority_context(
 def _sign_public_gate_authority_evidence(data: dict[str, Any]) -> None:
     secret = os.environ.get(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, "").strip()
     if not secret:
-        LOG.warning(
-            "public-gate authority evidence left unsigned; %s is unset",
-            public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
-        )
+        LOG.warning("public-gate authority evidence left unsigned; signing secret is unset")
         return
     data["authority_issuer"] = _review_team_authority_issuer(
         [reviewer for reviewer in data.get("reviewers") or [] if isinstance(reviewer, dict)]
