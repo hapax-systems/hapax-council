@@ -99,6 +99,16 @@ def _safe_reference(value: str, *, label: str) -> str:
     return normalized
 
 
+def _redacted_excerpt(value: str | None, *, limit: int = 500) -> str:
+    normalized = " ".join((value or "").split())
+    if not normalized:
+        return "<empty>"
+    redacted = SECRETISH_RE.sub("<redacted>", normalized)
+    if len(redacted) > limit:
+        return f"{redacted[: limit - 3]}..."
+    return redacted
+
+
 def _receipt_name(args: argparse.Namespace, *, observed_at: datetime) -> str:
     default = f"agy-quota-admission-{observed_at.strftime('%Y%m%dT%H%M%SZ').lower()}.yaml"
     name = args.receipt_name or default
@@ -154,7 +164,9 @@ def _run_reviewer_smoke(args: argparse.Namespace, *, observed_at: datetime) -> N
     if result.returncode != 0:
         raise ValueError(
             "sanctioned agy reviewer smoke failed: "
-            f"returncode={result.returncode}; stderr_class={type(result.stderr).__name__}"
+            f"returncode={result.returncode}; stderr_excerpt={_redacted_excerpt(result.stderr)}; "
+            "next_action=run scripts/hapax-agy-reviewer after verifying agy auth/quota/model, "
+            "then rerun scripts/hapax-agy-quota-admission"
         )
     if not _smoke_stdout_valid(result.stdout):
         raise ValueError("sanctioned agy reviewer smoke produced invalid stdout")

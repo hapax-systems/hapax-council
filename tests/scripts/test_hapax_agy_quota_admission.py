@@ -95,7 +95,7 @@ def test_agy_quota_admission_rejects_failed_reviewer_smoke(
     module = _load_module()
 
     def fake_run(cmd, **kwargs):
-        return _completed("", returncode=17, stderr="boom\n")
+        return _completed("", returncode=17, stderr="boom sk-abc123\n")
 
     monkeypatch.setattr(module.subprocess, "run", fake_run)
 
@@ -109,7 +109,11 @@ def test_agy_quota_admission_rejects_failed_reviewer_smoke(
     )
 
     assert rc == 2
-    assert "sanctioned agy reviewer smoke failed" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "sanctioned agy reviewer smoke failed" in err
+    assert "stderr_excerpt=boom <redacted>" in err
+    assert "next_action=run scripts/hapax-agy-reviewer" in err
+    assert "sk-abc123" not in err
     assert not list(tmp_path.glob("*.yaml"))
 
 
