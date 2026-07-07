@@ -1360,7 +1360,12 @@ def load_platform_capability_registry(
         effective_receipt_dir = receipt_dir or _receipt_dir_from_env()
         if effective_receipt_dir is None:
             return registry
-        return apply_platform_capability_receipts(
+        registry = apply_platform_capability_receipts(
+            registry,
+            receipt_dir=effective_receipt_dir,
+            now=now,
+        )
+        return _apply_route_authority_receipts_from_dir(
             registry,
             receipt_dir=effective_receipt_dir,
             now=now,
@@ -1369,6 +1374,28 @@ def load_platform_capability_registry(
         raise PlatformCapabilityRegistryError(
             f"invalid platform capability registry at {path}: {exc}"
         ) from exc
+
+
+def _apply_route_authority_receipts_from_dir(
+    registry: PlatformCapabilityRegistry,
+    *,
+    receipt_dir: Path,
+    now: datetime | None = None,
+) -> PlatformCapabilityRegistry:
+    """Overlay signed route-authority receipts in capability projections.
+
+    The dispatcher policy owns route-authority receipt validation and mutation of
+    registry payloads. Keep the import local to avoid making the inert registry
+    module import the full dispatch policy during model definition.
+    """
+
+    from shared.dispatcher_policy import apply_route_authority_receipts
+
+    return apply_route_authority_receipts(
+        registry,
+        receipt_dir=receipt_dir,
+        now=now,
+    )
 
 
 def _receipt_dir_from_env() -> Path | None:

@@ -769,6 +769,54 @@ def test_subscription_quota_nonblocking_uses_receipt_stale_after() -> None:
     assert not quota_errors, f"quota should not be stale after 1h: {quota_errors}"
 
 
+def test_loader_applies_route_authority_receipts_after_platform_receipts(tmp_path: Path) -> None:
+    """Platform freshness projections must mirror dispatch route authority."""
+
+    from shared.dispatcher_policy import (
+        build_route_authority_receipt,
+        write_route_authority_receipt,
+    )
+
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    observed_at = datetime(2026, 5, 9, 20, 0, tzinfo=UTC)
+    platform_receipt = _make_receipt(observed_at=observed_at).model_copy(
+        update={
+            "receipt_id": "test-claude-opus",
+            "routes": ["claude.headless.opus"],
+        }
+    )
+    (receipt_dir / "claude.json").write_text(
+        json.dumps(platform_receipt.model_dump(mode="json"), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    write_route_authority_receipt(
+        build_route_authority_receipt(
+            receipt_type="opus_model_entitlement",
+            route_id="claude.headless.opus",
+            evidence_refs=["operator-signed:test-opus"],
+            receipt_id="test-opus-entitlement",
+            issued_at=observed_at,
+        ),
+        receipt_dir=receipt_dir,
+    )
+
+    check_at = datetime(2026, 5, 9, 20, 1, tzinfo=UTC)
+    registry = load_platform_capability_registry(receipt_dir=receipt_dir, now=check_at)
+    route = registry.require("claude.headless.opus")
+    result = check_registry_freshness(registry, route_ids=["claude.headless.opus"], now=check_at)
+
+    assert route.route_state is RouteState.ACTIVE
+    assert result.ok is True
+    assert "opus_model_entitlement_receipt_absent" not in route.blocked_reasons
+    assert "fresh_capability_evidence_absent" not in route.blocked_reasons
+    assert "account_live_quota_receipt_absent" not in route.blocked_reasons
+    assert any(
+        ref.startswith("route-authority-receipt:opus_model_entitlement")
+        for ref in result.routes[0].evidence_refs
+    )
+
+
 def test_vibe_receipt_backfills_capability_checked_at_from_observed_at() -> None:
     payload = _payload()
     route = _route_payload(payload, "vibe.headless.full")
