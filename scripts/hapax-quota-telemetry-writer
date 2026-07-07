@@ -452,14 +452,6 @@ def _reason_code(reason: str) -> str:
     return code[:80] or "ignored"
 
 
-def _log_reason_code(reason: str) -> str:
-    return re.sub(
-        r"(secret|token|bearer|api-key|apikey|sk-[a-z0-9_-]+)",
-        "credential",
-        _reason_code(reason),
-    )
-
-
 def _warn_ignored_glmcp_admission(path: Path, reason: str) -> str:
     receipt_label = _receipt_label(path)
     print(
@@ -659,9 +651,9 @@ def active_quota_walls(
 def _warn_ignored_agy_admission(path: Path, reason: str) -> str:
     receipt_label = _receipt_label(path)
     print(
-        f"hapax-quota-telemetry-writer: ignoring agy admission receipt {receipt_label}: "
-        f"validation failed; reason_code={_log_reason_code(reason)}; "
-        f"recheck: {AGY_ADMISSION_RECHECK_COMMAND}; {AGY_ADMISSION_RECOVERY_HINT}",
+        "hapax-quota-telemetry-writer: ignoring agy admission receipt: "
+        f"validation failed; recheck: {AGY_ADMISSION_RECHECK_COMMAND}; "
+        f"{AGY_ADMISSION_RECOVERY_HINT}",
         file=sys.stderr,
     )
     return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"

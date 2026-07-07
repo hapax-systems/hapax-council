@@ -736,10 +736,7 @@ def test_agy_admission_rejects_secret_persistence(tmp_path: Path) -> None:
     summary = json.loads(result.stdout)
     assert summary["agy_admissions"] == 0
     assert summary["agy_ignored_admissions"] == 1
-    assert (
-        "validation failed; reason_code=credential-value-persisted-missing-or-unsupported"
-        in result.stderr
-    )
+    assert "ignoring agy admission receipt: validation failed" in result.stderr
     assert "false-negative recovery" in result.stderr
     assert "secret_value_persisted" not in result.stderr
 
@@ -759,7 +756,7 @@ def test_ignored_agy_admission_warning_omits_secretish_receipt_dir(tmp_path: Pat
         if snapshot["route_id"] == "agy.review.direct"
     )
     assert agy_snapshot["subscription_quota_state"] == "unknown"
-    assert "validation failed; reason_code=unreadable-receipt-unicodedecodeerror" in result.stderr
+    assert "ignoring agy admission receipt: validation failed" in result.stderr
     assert secretish_dir.name not in result.stderr
     summary = json.loads(result.stdout)
     assert summary["agy_admissions"] == 0
