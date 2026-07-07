@@ -1449,6 +1449,75 @@ def _matching_glmcp_payg_spend_receipts(
     )
 
 
+def _glmcp_payg_budget_allows_review_spend(
+    budget: TransitionBudget,
+    receipt: SpendReceipt,
+) -> bool:
+    if budget.budget_id != receipt.budget_id:
+        return False
+    if budget.capacity_pool is not CapacityPool.API_PAID_SPEND:
+        return False
+    if receipt.provider not in budget.providers_allowed:
+        return False
+    if GLMCP_PAYG_BUDGET_PROFILE not in budget.profiles_allowed:
+        return False
+    if GLMCP_PAYG_BUDGET_TASK_CLASS not in budget.task_classes_allowed:
+        return False
+    if GLMCP_PAYG_BUDGET_QUALITY_FLOOR not in budget.quality_floors_allowed:
+        return False
+    return budget.created_at <= receipt.created_at < budget.expires_at
+
+
+def successful_task_scoped_glmcp_payg_review_spend_receipts(
+    ledger: QuotaSpendLedger,
+    task_id: str,
+) -> tuple[SpendReceipt, ...]:
+    """Reconciled GLMCP PAYG review spends already consumed for one task."""
+
+    normalized_task_id = task_id.strip()
+    if not normalized_task_id:
+        return ()
+    ledger_budgets = getattr(ledger, "transition_budgets", ())
+    ledger_receipts = getattr(ledger, "spend_receipts", ())
+    budgets = {budget.budget_id: budget for budget in ledger_budgets}
+    receipts: list[SpendReceipt] = []
+    for receipt in ledger_receipts:
+        budget = budgets.get(str(receipt.budget_id or ""))
+        if budget is None:
+            continue
+        if receipt.task_id != normalized_task_id:
+            continue
+        if not _glmcp_payg_spend_receipt_witness_refs(receipt):
+            continue
+        if receipt.auth_surface is not AuthSurface.API_KEY:
+            continue
+        if receipt.quality_floor != GLMCP_PAYG_BUDGET_QUALITY_FLOOR:
+            continue
+        if receipt.reconciliation_state is not SpendReconciliationState.RECONCILED:
+            continue
+        if receipt.actual_cost_usd is None or receipt.actual_cost_usd <= Decimal("0"):
+            continue
+        if receipt.reconciled_at is None or not receipt.reconciliation_reason:
+            continue
+        model_id = receipt.model_id.value if receipt.model_id is not None else None
+        if (
+            receipt.model_or_engine not in GLMCP_ADMISSION_MODELS
+            and model_id != ModelId.Z_AI_GLM_5_2.value
+        ):
+            continue
+        if not _glmcp_payg_budget_allows_review_spend(budget, receipt):
+            continue
+        receipts.append(receipt)
+    return tuple(receipts)
+
+
+def has_successful_task_scoped_glmcp_payg_review_spend(
+    ledger: QuotaSpendLedger,
+    task_id: str,
+) -> bool:
+    return bool(successful_task_scoped_glmcp_payg_review_spend_receipts(ledger, task_id))
+
+
 def _glmcp_payg_budget_request(task_id: str) -> PaidRouteRequest:
     return PaidRouteRequest.model_validate(
         {

@@ -73,6 +73,7 @@ from shared.quota_spend_ledger import (  # noqa: E402
     PaidRouteRequest,
     QuotaSpendLedgerError,
     evaluate_paid_route_eligibility,
+    has_successful_task_scoped_glmcp_payg_review_spend,
     load_quota_spend_ledger_resolved,
     subscription_quota_state_for_route,
 )
@@ -895,6 +896,8 @@ def task_scoped_paid_review_route_blocked_families(
         reason = f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_task_id_ambiguous"
         for family in glmcp_families:
             _add_route_blocker(blocked, family, (reason,))
+        return blocked
+    if has_successful_task_scoped_glmcp_payg_review_spend(resolved.ledger, unique_task_ids[0]):
         return blocked
 
     request = PaidRouteRequest.model_validate(

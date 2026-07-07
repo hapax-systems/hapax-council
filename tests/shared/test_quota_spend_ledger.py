@@ -35,9 +35,11 @@ from shared.quota_spend_ledger import (
     SupportArtifactDisposition,
     build_dashboard,
     evaluate_paid_route_eligibility,
+    has_successful_task_scoped_glmcp_payg_review_spend,
     load_quota_spend_ledger,
     load_quota_spend_ledger_resolved,
     subscription_quota_state_for_route,
+    successful_task_scoped_glmcp_payg_review_spend_receipts,
 )
 
 NOW = datetime(2026, 5, 17, 8, 0, 0, tzinfo=UTC)
@@ -673,6 +675,40 @@ def test_receipt_bounded_route_accepts_payg_endpoint_admission_evidence() -> Non
     assert GLMCP_PAYG_ADMISSION_EVIDENCE_REF in refs
     assert "spend-gate:glmcp.review.direct:eligible_active_budget" in refs
     assert f"spend-gate-budget:{budget_id}" in refs
+
+
+def test_successful_task_scoped_glmcp_payg_review_spend_witness_is_discovered() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+    receipt = payload["spend_receipts"][-1]
+    receipt["actual_cost_usd"] = "0.05"
+    receipt["cap_remaining_usd"] = "1.95"
+    receipt["reconciliation_state"] = "reconciled"
+    receipt["reconciled_at"] = "2026-05-17T08:00:00Z"
+    receipt["reconciliation_reason"] = (
+        "PAYG API call returned model output; provider invoice unavailable"
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    receipts = successful_task_scoped_glmcp_payg_review_spend_receipts(ledger, task_id)
+
+    assert [receipt.spend_id for receipt in receipts] == [
+        "spend-20260517T075900Z-glmcp-payg-review-test"
+    ]
+    assert has_successful_task_scoped_glmcp_payg_review_spend(ledger, task_id) is True
+
+
+def test_pending_task_scoped_glmcp_payg_review_spend_is_not_successful_witness() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    assert successful_task_scoped_glmcp_payg_review_spend_receipts(ledger, task_id) == ()
+    assert has_successful_task_scoped_glmcp_payg_review_spend(ledger, task_id) is False
 
 
 def test_receipt_bounded_route_rejects_payg_when_witness_task_cap_exhausted() -> None:
