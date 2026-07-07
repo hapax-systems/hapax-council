@@ -20,7 +20,10 @@ Recheck the agy receipt clearing path with:
 ```bash
 uv run pytest \
   tests/shared/test_platform_capability_registry.py::test_agy_local_receipt_clears_review_seat_but_not_route_quota \
-  tests/shared/test_platform_capability_registry.py::test_agy_observed_route_quota_receipt_admits_review_route \
+  tests/shared/test_platform_capability_registry.py::test_agy_observed_route_quota_receipt_does_not_admit_review_route \
+  tests/shared/test_platform_capability_registry.py::test_agy_quota_receipt_removable_reasons_preserve_route_specific_blocker \
+  tests/shared/test_platform_capability_registry.py::test_agy_has_no_sanctioned_route_specific_quota_admission_path \
+  tests/shared/test_quota_spend_ledger.py::test_agy_receipt_bounded_route_rejects_generic_fresh_quota_snapshot \
   tests/shared/test_platform_capability_receipts.py::test_agy_receipt_records_live_review_route_without_unblocking_quota \
   tests/test_review_team.py::TestConstitution::test_t1_route_blocked_family_degrades_with_receipt_reason \
   tests/test_review_team.py::TestVerdictBlockers::test_route_blocked_degraded_dossier_passes_while_route_still_blocked \

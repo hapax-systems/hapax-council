@@ -29,6 +29,7 @@ from shared.platform_capability_registry import (
     PlatformCapabilityRoute,
     RouteState,
     _apply_receipt_to_route_payload,
+    _quota_receipt_removable_reasons,
     _route_specific_quota_admission_fresh,
     build_supply_vector,
     check_registry_freshness,
@@ -945,6 +946,17 @@ def test_agy_observed_route_quota_receipt_does_not_admit_review_route() -> None:
     )
     assert result.ok is False
     assert "route_specific_quota_receipt_absent" in result.routes[0].blocked_reasons
+
+
+def test_agy_quota_receipt_removable_reasons_preserve_route_specific_blocker() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "agy.review.direct")
+
+    removable = _quota_receipt_removable_reasons(route)
+
+    assert removable == {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+    assert "route_specific_quota_receipt_absent" not in removable
+    assert "agy_review_seat_receipt_admission_required" not in removable
 
 
 def test_agy_has_no_sanctioned_route_specific_quota_admission_path() -> None:

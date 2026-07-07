@@ -59,6 +59,10 @@ the GLMCP quota-admission path before it can clear this blocker. Legacy
 `gemini-cli` aliases remain retired. The receipt writer still records the agy
 CLI's bundled `~/.gemini/antigravity-cli/.../cli.md` config reference; that
 directory name is the installed CLI bundle path, not a live Antigravity route.
+The "Provider-dependent" context entry is a non-assertion about the universal
+harness shape; current engine entitlements and context windows must be measured
+through future agy route-capability receipts before they can support dispatch or
+review admission.
 
 Recheck the agy review-route/non-worker claims with:
 
