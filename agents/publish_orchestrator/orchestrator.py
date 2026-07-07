@@ -48,7 +48,7 @@ import logging
 import os
 import signal as _signal
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -65,6 +65,7 @@ from shared.preprint_artifact import (
     ApprovalState,
     PreprintArtifact,
 )
+from shared.public_gate_receipts import public_gate_receipt_value_present
 from shared.publication_artifact_public_event import (
     PublicationArtifactEventStage,
     build_publication_artifact_public_event,
@@ -74,6 +75,7 @@ from shared.publication_hardening.egress_safety import (
     EgressSafetyEnvelope,
 )
 from shared.publication_hardening.gate import (
+    PublicationGateChildResult,
     PublicationGateDecision,
     PublicationGateResult,
     PublicationHardeningGate,
@@ -84,8 +86,26 @@ from shared.research_vehicle_public_event import ResearchVehiclePublicEvent
 
 log = logging.getLogger(__name__)
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TICK_S = 30.0
 METRICS_PORT_DEFAULT = 9510
+FANOUT_SURFACE_IDS = frozenset({"omg-lol-weblog-bearer-fanout"})
+PUBLICATION_BASELINE_REQUIRED_GATES = (
+    "source_artifact_public_safe",
+    "source_refs_present",
+    "rights_privacy_redaction_pass",
+    "target_surface_allowlist_pass",
+    "claim_review_current",
+    "no_direct_public_egress",
+)
+PUBLICATION_FANOUT_REQUIRED_GATES = (
+    *PUBLICATION_BASELINE_REQUIRED_GATES,
+    "fanout_loop_prevention_present",
+)
+PUBLIC_GATE_RECEIPT_ROOTS = (
+    Path.home() / ".cache" / "hapax" / "relay" / "receipts",
+    REPO_ROOT / "docs" / "research" / "evidence",
+)
 PUBLIC_EVENT_PATH = Path(
     os.environ.get(
         "HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH",
@@ -223,6 +243,7 @@ class Orchestrator:
         review_pass: ReviewPass | None = None,
         hardening_gate: PublicationHardeningGate | None = None,
         egress_envelope: EgressSafetyEnvelope | None = None,
+        public_gate_receipt_roots: tuple[Path, ...] | None = None,
         registry: CollectorRegistry = REGISTRY,
         tick_s: float = DEFAULT_TICK_S,
         max_workers: int = 8,
@@ -239,6 +260,11 @@ class Orchestrator:
             else PublicationHardeningGate(review_pass=self._review_pass)
         )
         self._egress_envelope = egress_envelope or EgressSafetyEnvelope()
+        self._public_gate_receipt_roots = (
+            tuple(public_gate_receipt_roots)
+            if public_gate_receipt_roots is not None
+            else (self._state_root / "public-gate-receipts", *PUBLIC_GATE_RECEIPT_ROOTS)
+        )
         self._tick_s = max(1.0, tick_s)
         self._max_workers = max(1, max_workers)
         self._stop_evt = threading.Event()
@@ -317,6 +343,7 @@ class Orchestrator:
             return
 
         gate_result = self._hardening_gate.evaluate(artifact)
+        gate_result = self._with_public_gate_receipts_child(artifact, gate_result)
         artifact.publication_gate_result = gate_result.to_frontmatter()
         artifact.publication_review = gate_result.review_report
         self._attach_gate_frontmatter(artifact)
@@ -432,6 +459,74 @@ class Orchestrator:
         except Exception:  # noqa: BLE001
             log.exception("publisher %s raised for artifact %s", surface, artifact.slug)
             return "error"
+
+    def _with_public_gate_receipts_child(
+        self,
+        artifact: PreprintArtifact,
+        gate_result: PublicationGateResult,
+    ) -> PublicationGateResult:
+        receipt_child = self._public_gate_receipts_child(artifact)
+        child_results = (*gate_result.child_results, receipt_child)
+        decision = gate_result.decision
+        override = gate_result.override
+        flagged_issues = gate_result.flagged_issues
+        if receipt_child.decision != PublicationGateDecision.PASS:
+            flagged_issues = (
+                *flagged_issues,
+                *(f"{receipt_child.name}: {finding}" for finding in receipt_child.findings),
+            )
+            if decision != PublicationGateDecision.REJECT:
+                decision = PublicationGateDecision.HOLD
+                override = None
+
+        return PublicationGateResult(
+            decision=decision,
+            generated_at=gate_result.generated_at,
+            child_results=child_results,
+            flagged_issues=flagged_issues,
+            override=override
+            if decision == PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
+            else None,
+            review_report=gate_result.review_report,
+        )
+
+    def _public_gate_receipts_child(
+        self,
+        artifact: PreprintArtifact,
+    ) -> PublicationGateChildResult:
+        required = _required_publication_gate_receipts(artifact.surfaces_targeted)
+        receipts, error = _artifact_publication_gate_receipts(artifact)
+        findings = (error,) if error is not None else ()
+        missing = tuple(
+            gate
+            for gate in required
+            if not public_gate_receipt_value_present(
+                receipts.get(gate),
+                expected_gate=gate,
+                roots=self._public_gate_receipt_roots,
+            )
+        )
+        if missing:
+            findings = (
+                *findings,
+                "publication_gate_receipts missing or invalid required receipt refs: "
+                + ", ".join(missing)
+                + "; next action: hold the artifact until durable public-gate "
+                "receipt refs are recorded",
+            )
+
+        if findings:
+            return PublicationGateChildResult(
+                name="public_gate_receipts",
+                decision=PublicationGateDecision.HOLD,
+                findings=findings,
+            )
+
+        return PublicationGateChildResult(
+            name="public_gate_receipts",
+            decision=PublicationGateDecision.PASS,
+            evidence_refs=tuple(str(receipts[gate]) for gate in required),
+        )
 
     def _withhold_for_gate(
         self,
@@ -715,6 +810,41 @@ def _default_state_root() -> Path:
     return Path.home() / "hapax-state"
 
 
+def _required_publication_gate_receipts(surfaces: list[str]) -> tuple[str, ...]:
+    selected = set(surfaces)
+    if selected.intersection(FANOUT_SURFACE_IDS):
+        return PUBLICATION_FANOUT_REQUIRED_GATES
+    return PUBLICATION_BASELINE_REQUIRED_GATES
+
+
+def _artifact_publication_gate_receipts(
+    artifact: PreprintArtifact,
+) -> tuple[dict[str, object], str | None]:
+    context = artifact.publication_gate_context
+    if not isinstance(context, Mapping):
+        return (
+            {},
+            "publication_gate_context.publication_gate_receipts missing; next action: "
+            "provide durable public-gate receipt refs keyed by gate id",
+        )
+
+    raw_receipts = context.get("publication_gate_receipts")
+    if raw_receipts is None:
+        return (
+            {},
+            "publication_gate_context.publication_gate_receipts missing; next action: "
+            "provide durable public-gate receipt refs keyed by gate id",
+        )
+    if not isinstance(raw_receipts, Mapping):
+        return (
+            {},
+            "publication_gate_context.publication_gate_receipts must be a mapping of gate "
+            "id to receipt refs; next action: provide durable public-gate receipt refs "
+            "keyed by gate id",
+        )
+    return {str(key): value for key, value in raw_receipts.items()}, None
+
+
 def _artifact_fingerprint(artifact: PreprintArtifact) -> str:
     """Fingerprint fields that define a surface publication attempt.
 
@@ -769,6 +899,9 @@ __all__ = [
     "METRICS_PORT_DEFAULT",
     "Orchestrator",
     "PUBLIC_EVENT_PATH",
+    "PUBLIC_GATE_RECEIPT_ROOTS",
+    "PUBLICATION_BASELINE_REQUIRED_GATES",
+    "PUBLICATION_FANOUT_REQUIRED_GATES",
     "SURFACE_REGISTRY",
     "SurfaceResult",
     "_artifact_fingerprint",

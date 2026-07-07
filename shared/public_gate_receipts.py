@@ -179,9 +179,10 @@ def _path_is_inside_root(path: Path, root: Path) -> bool:
 
 def _receipt_file_maps_to_gate(path: Path, expected_gate: str) -> bool:
     data = _load_receipt_data(path)
-    return not _receipt_has_failed_outcome(data) and _gate_receipt_object_allows(
-        data,
-        expected_gate,
+    return (
+        not _receipt_has_failed_outcome(data)
+        and not _receipt_has_gate_contradiction(data, expected_gate)
+        and _gate_receipt_object_allows(data, expected_gate)
     )
 
 
@@ -271,6 +272,29 @@ def _gate_value_matches(value: Any, expected_gate: str) -> bool:
 
 def _receipt_has_failed_outcome(data: Any) -> bool:
     return any(outcome is False for outcome in _iter_receipt_outcomes(data))
+
+
+def _receipt_has_gate_contradiction(data: Any, expected_gate: str) -> bool:
+    if isinstance(data, Mapping):
+        for raw_key, value in data.items():
+            key = str(raw_key).strip().casefold()
+            if (
+                _gate_value_matches(raw_key, expected_gate)
+                and _outcome_value_allows(value) is not True
+            ):
+                return True
+            if key in PUBLIC_GATE_LIST_KEYS and isinstance(value, Mapping):
+                for gate_key, gate_value in value.items():
+                    if (
+                        _gate_value_matches(gate_key, expected_gate)
+                        and _outcome_value_allows(gate_value) is not True
+                    ):
+                        return True
+            if _receipt_has_gate_contradiction(value, expected_gate):
+                return True
+    elif isinstance(data, (list, tuple, set)):
+        return any(_receipt_has_gate_contradiction(item, expected_gate) for item in data)
+    return False
 
 
 def _iter_receipt_outcomes(data: Any) -> Iterable[bool | None]:

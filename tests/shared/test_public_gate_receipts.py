@@ -107,6 +107,20 @@ def test_rejects_direct_gate_key_with_failed_value(tmp_path: Path) -> None:
     )
 
 
+def test_rejects_direct_gate_key_contradiction_with_matching_gate_id(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "receipt-1.yaml",
+        f"gate_id: {GATE}\n{GATE}: failed\nstatus: passed\n",
+    )
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
 def test_rejects_nested_gate_key_with_failed_value(tmp_path: Path) -> None:
     _write(tmp_path, "receipt-1.yaml", f"gates:\n  {GATE}: failed\nstatus: passed\n")
 

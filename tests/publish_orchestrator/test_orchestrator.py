@@ -9,7 +9,12 @@ from unittest import mock
 
 from prometheus_client import CollectorRegistry
 
-from agents.publish_orchestrator.orchestrator import Orchestrator
+from agents.publish_orchestrator.orchestrator import (
+    FANOUT_SURFACE_IDS,
+    PUBLICATION_BASELINE_REQUIRED_GATES,
+    PUBLICATION_FANOUT_REQUIRED_GATES,
+    Orchestrator,
+)
 from shared.preprint_artifact import PreprintArtifact
 from shared.publication_hardening.gate import (
     PublicationGateChildResult,
@@ -27,8 +32,14 @@ def _drop_artifact(
     body_md: str = "Body.",
     source_path: Path | None = None,
     author_model: str | None = None,
+    include_gate_receipts: bool = True,
 ) -> Path:
     """Write an approved PreprintArtifact JSON to inbox/."""
+    gate_context = None
+    if include_gate_receipts:
+        gate_context = {
+            "publication_gate_receipts": _write_public_gate_receipts(state_root, surfaces)
+        }
     artifact = PreprintArtifact(
         slug=slug,
         title=f"Test artifact {slug}",
@@ -37,12 +48,29 @@ def _drop_artifact(
         surfaces_targeted=surfaces,
         source_path=str(source_path) if source_path is not None else None,
         author_model=author_model,
+        publication_gate_context=gate_context,
     )
     artifact.mark_approved(by_referent="Oudepode")
     inbox_path = artifact.inbox_path(state_root=state_root)
     inbox_path.parent.mkdir(parents=True, exist_ok=True)
     inbox_path.write_text(artifact.model_dump_json(indent=2))
     return inbox_path
+
+
+def _write_public_gate_receipts(state_root: Path, surfaces: list[str]) -> dict[str, str]:
+    gates = (
+        PUBLICATION_FANOUT_REQUIRED_GATES
+        if set(surfaces).intersection(FANOUT_SURFACE_IDS)
+        else PUBLICATION_BASELINE_REQUIRED_GATES
+    )
+    receipt_root = state_root / "public-gate-receipts"
+    receipt_root.mkdir(parents=True, exist_ok=True)
+    for gate in gates:
+        (receipt_root / f"{gate}.yaml").write_text(
+            f"gate_id: {gate}\nstatus: passed\n",
+            encoding="utf-8",
+        )
+    return {gate: f"public-gate:{gate}.yaml" for gate in gates}
 
 
 class _ApprovingReviewPass:
@@ -258,6 +286,52 @@ class TestSingleSurface:
         assert gate_log["result"] == "rejected"
         assert gate_log["publication_gate_decision"] == "reject"
 
+    def test_missing_public_gate_receipts_hold_before_surface_dispatch(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        _drop_artifact(
+            tmp_path,
+            slug="missing-public-receipts",
+            surfaces=["fake"],
+            include_gate_receipts=False,
+        )
+        orch = _make_orchestrator(
+            tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+        )
+
+        assert orch.run_once() == 1
+        fake_module.publish_artifact.assert_not_called()
+
+        assert not (tmp_path / "publish/inbox/missing-public-receipts.json").exists()
+        assert not (tmp_path / "publish/published/missing-public-receipts.json").exists()
+        assert not (tmp_path / "publish/failed/missing-public-receipts.json").exists()
+
+        draft = json.loads((tmp_path / "publish/draft/missing-public-receipts.json").read_text())
+        assert draft["approval"] == "withheld"
+        assert draft["publication_gate_result"]["decision"] == "hold"
+        receipt_child = next(
+            child
+            for child in draft["publication_gate_result"]["child_results"]
+            if child["name"] == "public_gate_receipts"
+        )
+        assert receipt_child["decision"] == "hold"
+
+        gate_log = json.loads(
+            (
+                tmp_path / "publish/log/missing-public-receipts.publication-hardening-gate.json"
+            ).read_text()
+        )
+        assert gate_log["result"] == "operator_hold"
+        assert gate_log["publication_gate_decision"] == "hold"
+        assert any("public_gate_receipts:" in issue for issue in gate_log["flagged_issues"])
+
     def test_publication_gate_override_dispatches_with_surface_receipt(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()
         fake_module.publish_artifact = mock.Mock(return_value="ok")
@@ -279,6 +353,43 @@ class TestSingleSurface:
         assert surface_log["result"] == "ok"
         assert surface_log["publication_gate_decision"] == "operator_overridden_hold"
         assert surface_log["publication_gate_fingerprint"]
+
+    def test_publication_gate_override_cannot_bypass_missing_public_receipts(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        _drop_artifact(
+            tmp_path,
+            slug="override-missing-public-receipts",
+            surfaces=["fake"],
+            include_gate_receipts=False,
+        )
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            hardening_gate=_StaticGate(PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD),
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        fake_module.publish_artifact.assert_not_called()
+
+        gate_log = json.loads(
+            (
+                tmp_path
+                / "publish/log/override-missing-public-receipts.publication-hardening-gate.json"
+            ).read_text()
+        )
+        assert gate_log["result"] == "operator_hold"
+        assert gate_log["publication_gate_decision"] == "hold"
+        assert any(child["name"] == "public_gate_receipts" for child in gate_log["child_results"])
+        assert (tmp_path / "publish/draft/override-missing-public-receipts.json").exists()
 
     def test_publisher_raises_logs_error(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()

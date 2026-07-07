@@ -25,7 +25,13 @@ from unittest import mock
 from prometheus_client import CollectorRegistry
 
 from agents.publication_bus.publisher_kit import PublisherResult
-from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY, Orchestrator
+from agents.publish_orchestrator.orchestrator import (
+    FANOUT_SURFACE_IDS,
+    PUBLICATION_BASELINE_REQUIRED_GATES,
+    PUBLICATION_FANOUT_REQUIRED_GATES,
+    SURFACE_REGISTRY,
+    Orchestrator,
+)
 from shared.preprint_artifact import PreprintArtifact
 from shared.publication_hardening.gate import (
     PublicationGateChildResult,
@@ -41,6 +47,7 @@ def _drop_approved_artifact(
     slug: str,
     surfaces: list[str],
 ) -> None:
+    gate_receipts = _write_public_gate_receipts(state_root, surfaces)
     artifact = PreprintArtifact(
         slug=slug,
         title=f"E2E test artifact {slug}",
@@ -51,11 +58,28 @@ def _drop_approved_artifact(
             "unsettled contribution as feature)."
         ),
         surfaces_targeted=surfaces,
+        publication_gate_context={"publication_gate_receipts": gate_receipts},
     )
     artifact.mark_approved(by_referent="Oudepode")
     inbox_path = artifact.inbox_path(state_root=state_root)
     inbox_path.parent.mkdir(parents=True, exist_ok=True)
     inbox_path.write_text(artifact.model_dump_json(indent=2))
+
+
+def _write_public_gate_receipts(state_root, surfaces: list[str]) -> dict[str, str]:  # type: ignore[no-untyped-def]
+    gates = (
+        PUBLICATION_FANOUT_REQUIRED_GATES
+        if set(surfaces).intersection(FANOUT_SURFACE_IDS)
+        else PUBLICATION_BASELINE_REQUIRED_GATES
+    )
+    receipt_root = state_root / "public-gate-receipts"
+    receipt_root.mkdir(parents=True, exist_ok=True)
+    for gate in gates:
+        (receipt_root / f"{gate}.yaml").write_text(
+            f"gate_id: {gate}\nstatus: passed\n",
+            encoding="utf-8",
+        )
+    return {gate: f"public-gate:{gate}.yaml" for gate in gates}
 
 
 def _read_log(state_root, slug: str, surface: str) -> dict:
