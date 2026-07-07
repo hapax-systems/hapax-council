@@ -266,14 +266,15 @@ PYEOF
 }
 
 remote_preflight_payload_b64() {
-  local token_only="${1:-0}"
-  python3 - "$WORKDIR" "$COUNCIL_DIR" "$HOME/projects/hapax-mcp" "$token_only" <<'PYEOF'
+  local token_only="${1:-0}" token_handoff_file="${2:-}"
+  python3 - "$WORKDIR" "$COUNCIL_DIR" "$HOME/projects/hapax-mcp" "$token_only" \
+    "$token_handoff_file" <<'PYEOF'
 import base64
 import json
 import os
 import sys
 
-workdir, council_dir, mcp_dir, token_only = sys.argv[1:5]
+workdir, council_dir, mcp_dir, token_only, token_handoff_file = sys.argv[1:6]
 token_file = (
     os.environ.get("HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE")
     or "~/.cache/hapax/codex-oauth/access_token"
@@ -283,6 +284,7 @@ payload = {
     "executables": [] if token_only == "1" else [f"{council_dir}/hooks/scripts/codex-hook-adapter.sh"],
     "binaries": ["codex"] if token_only == "1" else ["python3", "codex"],
     "token_file": token_file,
+    "token_handoff_file": "" if token_only == "1" else token_handoff_file,
 }
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
 PYEOF
@@ -316,14 +318,16 @@ remote_exec_payload_b64() {
   local proof_file="$1"
   shift
   python3 - "$WORKDIR" "$proof_file" "${DISPATCH_HOST_REQUESTED:-}" "$LOGOS_BASE_URL" \
-    "$COCKPIT_BASE_URL" "$SESSION" "$CODEX_TASK" "$@" <<'PYEOF'
+    "$COCKPIT_BASE_URL" "$SESSION" "$CODEX_TASK" "${REMOTE_TOKEN_HANDOFF:-}" "$@" <<'PYEOF'
 import base64
 import json
 import os
 import sys
 
-workdir, proof_file, requested_host, logos_url, cockpit_url, session, task_id = sys.argv[1:8]
-argv = sys.argv[8:]
+workdir, proof_file, requested_host, logos_url, cockpit_url, session, task_id, token_handoff = (
+    sys.argv[1:9]
+)
+argv = sys.argv[9:]
 env = {
     "LOGOS_BASE_URL": logos_url,
     "COCKPIT_BASE_URL": cockpit_url,
@@ -359,6 +363,7 @@ payload = {
     "requested_host": requested_host,
     "session": session,
     "task_id": task_id,
+    "token_handoff_file": token_handoff,
     "env": env,
     "argv": argv,
 }
@@ -413,6 +418,15 @@ if not token_error:
 if missing_dirs or missing_exec or missing_bins or token_error or actuation_error:
     print("remote preflight failed: missing_dirs="+json.dumps(missing_dirs)+" missing_executables="+json.dumps(missing_exec)+" missing_binaries="+json.dumps(missing_bins)+" token_error="+json.dumps(token_error)+" actuation_error="+json.dumps(actuation_error)+"; next action: ssh to the dispatch host and run the codex OAuth refresher or reauth, then verify required paths before retrying", file=sys.stderr)
     sys.exit(1)
+handoff=p.get("token_handoff_file") or ""
+if handoff:
+    handoff=os.path.expanduser(handoff)
+    directory=os.path.dirname(handoff)
+    if directory:
+        os.makedirs(directory,exist_ok=True)
+    fd=os.open(handoff,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
+    with os.fdopen(fd,"w",encoding="utf-8") as fh:
+        fh.write(token)
 sys.exit(0)'
 REMOTE_WORKTREE_PY='import base64,json,os,shutil,subprocess,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); workdir=p["workdir"]; council=p["council_dir"];
 def fail(message):
@@ -454,12 +468,19 @@ def _jwt_exp(token):
         return float(json.loads(base64.urlsafe_b64decode(payload.encode("ascii"))).get("exp",0))
     except Exception:
         return 0.0
-token_path=os.environ.get("HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE") or os.path.join(os.path.expanduser("~"),".cache","hapax","codex-oauth","access_token")
+token_handoff=p.get("token_handoff_file") or ""
+token_path=os.path.expanduser(token_handoff) if token_handoff else (os.environ.get("HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE") or os.path.join(os.path.expanduser("~"),".cache","hapax","codex-oauth","access_token"))
 try:
     token=open(token_path,encoding="utf-8").read().strip()
 except OSError:
-    print("hapax-codex-headless: missing published Codex OAuth access token at "+token_path+"; next action: run the codex OAuth refresher or reauth on appendix before dispatching Codex lanes", file=sys.stderr)
+    kind="preflight-proven Codex OAuth token handoff" if token_handoff else "published Codex OAuth access token"
+    print("hapax-codex-headless: missing "+kind+" at "+token_path+"; next action: run the codex OAuth refresher or reauth on appendix before dispatching Codex lanes", file=sys.stderr)
     sys.exit(78)
+if token_handoff:
+    try:
+        os.unlink(token_path)
+    except OSError:
+        pass
 if not token or _jwt_exp(token) - time.time() <= 300:
     print("hapax-codex-headless: published Codex OAuth access token is absent or expiring; next action: run the codex OAuth refresher or reauth on appendix before dispatching Codex lanes", file=sys.stderr)
     sys.exit(78)
@@ -669,6 +690,8 @@ DISPATCH_PROOF_DIR="${HAPAX_DISPATCH_PROOF_DIR:-$HOME/.cache/hapax/orchestration
 DISPATCH_PROOF_BASENAME="$(date -u +%Y%m%dT%H%M%SZ)-$SESSION-${CODEX_TASK:-no-task}-headless"
 DISPATCH_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-remote.json"
 DISPATCH_LOCAL_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-local.json"
+REMOTE_TOKEN_HANDOFF="/tmp/hapax-codex-token-$SESSION_UUID-$$"
+REMOTE_TOKEN_HANDOFF_CREATED=0
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 CODEX_PID=""
@@ -682,6 +705,11 @@ cleanup() {
       rm -f "$PID_FILE"
       [[ -x "$RELAY_RETIRE" ]] && "$RELAY_RETIRE" "$SESSION" --reason "clean exit (codex headless)" 2>/dev/null || true
     fi
+  fi
+  if [[ "${REMOTE_TOKEN_HANDOFF_CREATED:-0}" == "1" && -n "${DISPATCH_HOST_REQUESTED:-}" && -n "${REMOTE_TOKEN_HANDOFF:-}" ]]; then
+    ssh -o BatchMode=yes -o ConnectTimeout=2 -i "$HOME/.ssh/id_ed25519" \
+      -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST_REQUESTED" \
+      "rm -f '$REMOTE_TOKEN_HANDOFF'" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -770,7 +798,7 @@ fi
 if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
   WORKTREE_PAYLOAD="$(remote_worktree_payload_b64)"
   WORKTREE_COMMAND="$(remote_python_command "$WORKTREE_PAYLOAD" "$REMOTE_WORKTREE_PY")"
-  PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
+  PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 0 "$REMOTE_TOKEN_HANDOFF")"
   PREFLIGHT_COMMAND="$(remote_python_command "$PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
   WORKTREE_ERR=""
   PREFLIGHT_ERR=""
@@ -806,6 +834,7 @@ if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
     fi
   else
     DISPATCH_HOST="$DISPATCH_HOST_REQUESTED"
+    REMOTE_TOKEN_HANDOFF_CREATED=1
     echo "hapax-codex-headless: dispatch -> $DISPATCH_HOST (codex exec on appendix)" >&2
   fi
 fi
@@ -824,7 +853,11 @@ fi
 if [[ -n "$DISPATCH_HOST" ]]; then
   LOGOS_BASE_URL="${HAPAX_DISPATCH_LOGOS_URL:-http://192.168.68.85:8051/api}"
 else
-  load_local_codex_access_token
+  if [[ -z "${CODEX_ACCESS_TOKEN:-}" ]]; then
+    load_local_codex_access_token
+    CODEX_BIN="${CODEX_BIN:-$(resolve_local_codex_bin)}"
+    prove_local_codex_bearer_actuation "$CODEX_BIN"
+  fi
   LOGOS_BASE_URL="${LOGOS_BASE_URL:-http://localhost:8051/api}"
 fi
 COCKPIT_BASE_URL="${COCKPIT_BASE_URL:-$LOGOS_BASE_URL}"

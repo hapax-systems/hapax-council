@@ -86,6 +86,7 @@ def _write_classifying_ssh(
     remove_council_on_worktree: Path | None = None,
     remote_path_on_worktree: Path | None = None,
     remote_path_on_preflight: Path | None = None,
+    after_preflight_success: str = "",
 ) -> None:
     bash_bin = shutil.which("bash") or "/bin/bash"
     codex_stub = path.parent / "codex"
@@ -120,6 +121,9 @@ def _write_classifying_ssh(
     _write_executable(
         path,
         f"""remote_cmd="${{@: -1}}"
+if [[ "$remote_cmd" == rm\\ -f*hapax-codex-token-* ]]; then
+  exec "{bash_bin}" -c "$remote_cmd"
+fi
 kind="$(python3 - "$remote_cmd" <<'PY'
 import base64
 import shlex
@@ -143,7 +147,14 @@ if [ "$kind" = "worktree" ]; then
 {remove_workdir}{remove_council}{run_worktree_with_path}fi
 if [ "$kind" = "preflight" ]; then
   :
-{run_preflight_with_path}fi
+{run_preflight_with_path}  "{bash_bin}" -c "$remote_cmd"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    :
+{after_preflight_success}
+  fi
+  exit "$rc"
+fi
 exec "{bash_bin}" -c "$remote_cmd"
 """,
     )
@@ -519,6 +530,69 @@ exit 0
     assert "rejected by codex debug models" in result.stderr
     assert not claim_log.exists()
     assert not codex_args.exists()
+
+
+def test_codex_headless_uses_preclaim_proven_local_bearer_after_claim_rotation(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    token_file = _write_codex_access_token(
+        home / ".cache" / "hapax" / "codex-oauth",
+        exp=int(time.time()) + 3600,
+    )
+    proven_token = token_file.read_text(encoding="utf-8").strip()
+    rotated_token = (
+        _write_codex_access_token(
+            tmp_path / "rotated-token",
+            exp=int(time.time()) + 7200,
+        )
+        .read_text(encoding="utf-8")
+        .strip()
+    )
+
+    bin_dir = tmp_path / "bin"
+    used_token = tmp_path / "used-token.txt"
+    claim_log = tmp_path / "claim.log"
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "${{CODEX_ACCESS_TOKEN:-}}" > "{used_token}"
+exit 0
+""",
+    )
+    _write_executable(
+        workdir / "scripts" / "cc-claim",
+        f"""printf '%s\\n' "{rotated_token}" > "{token_file}"
+printf '%s\\n' "$*" >> "{claim_log}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE"] = str(token_file)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert claim_log.exists()
+    assert token_file.read_text(encoding="utf-8").strip() == rotated_token
+    assert used_token.read_text(encoding="utf-8").strip() == proven_token
 
 
 def test_codex_headless_creates_missing_remote_default_worktree(tmp_path: Path) -> None:
@@ -1086,6 +1160,92 @@ exit 0
         text=True,
     ).stdout.strip()
     assert branch == "codex/cx-amber"
+
+
+def test_codex_headless_remote_exec_uses_preclaim_proven_token_handoff(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    primary = home / "projects" / "hapax-council"
+    _init_primary_council_repo(primary)
+    _write_executable(primary / "scripts" / "cc-claim", "exit 0\n")
+    subprocess.run(["git", "-C", str(primary), "add", "scripts/cc-claim"], check=True)
+    subprocess.run(
+        ["git", "-C", str(primary), "commit", "-m", "add claim helper"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(["git", "-C", str(primary), "branch", "codex/cx-amber"], check=True)
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
+
+    token_file = _write_codex_access_token(
+        home / ".cache" / "hapax" / "codex-oauth",
+        exp=int(time.time()) + 3600,
+    )
+    proven_token = token_file.read_text(encoding="utf-8").strip()
+    rotated_token = (
+        _write_codex_access_token(
+            tmp_path / "rotated-remote-token",
+            exp=int(time.time()) + 7200,
+        )
+        .read_text(encoding="utf-8")
+        .strip()
+    )
+
+    bin_dir = tmp_path / "bin"
+    used_token = tmp_path / "remote-used-token.txt"
+    preflight_count = tmp_path / "preflight-count.txt"
+    ssh_log = tmp_path / "ssh.log"
+    _write_classifying_ssh(
+        bin_dir / "ssh",
+        ssh_log,
+        remove_workdir_on_worktree=workdir,
+        after_preflight_success=f"""  count="$(cat "{preflight_count}" 2>/dev/null || printf '0')"
+  count="$((count + 1))"
+  printf '%s\\n' "$count" > "{preflight_count}"
+  if [ "$count" -ge 2 ]; then
+    printf '%s\\n' "{rotated_token}" > "{token_file}"
+  fi
+""",
+    )
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "${{CODEX_ACCESS_TOKEN:-}}" > "{used_token}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(primary)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE"] = str(token_file)
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == [
+        "preflight",
+        "worktree",
+        "preflight",
+        "exec",
+    ]
+    assert preflight_count.read_text(encoding="utf-8").strip() == "2"
+    assert token_file.read_text(encoding="utf-8").strip() == rotated_token
+    assert used_token.read_text(encoding="utf-8").strip() == proven_token
 
 
 def test_codex_headless_remote_bootstrap_reports_council_not_git_worktree(

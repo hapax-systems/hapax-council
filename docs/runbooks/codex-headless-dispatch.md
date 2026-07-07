@@ -34,11 +34,21 @@ Remote appendix dispatch uses this order:
 
 1. validate the session name, relay state, local worktree, hook adapter, task/claim,
    and live PID guard;
-2. bootstrap the default remote session worktree if it is missing and
+2. run a remote token-only preflight before any remote worktree mutation; the
+   published Codex OAuth token must be fresh and accepted by `codex debug models`;
+3. bootstrap the default remote session worktree if it is missing and
    `HAPAX_CODEX_CREATE_WORKTREE=1` (the unset/default value is `1`);
-3. run remote preflight for required directories, hook adapter, `python3`, and
-   `codex`;
-4. execute `codex exec` on the remote host.
+4. run full remote preflight for required directories, hook adapter, `python3`,
+   `codex`, OAuth freshness, and `codex debug models` bearer actuation;
+5. snapshot the exact preflight-proven token into a short-lived `0600` remote
+   handoff file before the local `cc-claim` boundary;
+6. execute `codex exec` on the remote host with that handoff token, deleting the
+   handoff as it is consumed. Later rotation of the published token file must not
+   change the bearer used for this exec.
+
+Local headless dispatch similarly proves the published OAuth token with
+`codex debug models` before `cc-claim` and reuses that proven bearer for the
+subsequent `codex exec`; it must not reread a mutable token file after claim.
 
 On the remote host, the launcher materializes both the legacy and session-keyed
 claim caches plus their epoch sidecars before `codex exec` starts:
