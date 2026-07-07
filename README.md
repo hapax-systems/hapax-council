@@ -55,6 +55,20 @@ not a supported framework, and not the commercial product front door.
 | `START_HERE.md` | Reader guide for navigating the research artifact. |
 | `SUPPORT.md` / `CONTRIBUTING.md` | Redirect and refusal boundaries. |
 
+## Verification Contract
+
+CI typecheck uses the fast path:
+
+```bash
+uv run --no-project --with pyrefly==0.64.1 pyrefly check
+```
+
+The weekly typecheck safety net runs Pyright:
+
+```bash
+uv run pyright
+```
+
 ## License
 
 PolyForm Strict 1.0.0. See [LICENSE](LICENSE), [NOTICE.md](NOTICE.md), and
