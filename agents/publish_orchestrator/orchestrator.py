@@ -391,6 +391,14 @@ class Orchestrator:
         if not artifact.surfaces_targeted:
             log.warning("artifact %s has no surfaces_targeted; skipping", artifact.slug)
             return
+        deduped_surfaces = _deduped_publication_surfaces(artifact.surfaces_targeted)
+        if deduped_surfaces != artifact.surfaces_targeted:
+            log.error(
+                "artifact %s has duplicate surfaces_targeted at dispatch boundary; "
+                "canonicalizing before public egress",
+                artifact.slug,
+            )
+            artifact = artifact.model_copy(update={"surfaces_targeted": deduped_surfaces})
 
         receipt_gate_result = self._public_gate_receipts_gate_result(artifact)
         receipt_child = receipt_gate_result.child_results[0]
@@ -1378,6 +1386,17 @@ def _optional_str(value: object) -> str | None:
 
 def _safe_publication_segment(value: object) -> bool:
     return isinstance(value, str) and bool(PUBLICATION_SAFE_SEGMENT_RE.fullmatch(value))
+
+
+def _deduped_publication_surfaces(surfaces: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for surface in surfaces:
+        if surface in seen:
+            continue
+        seen.add(surface)
+        deduped.append(surface)
+    return deduped
 
 
 def _quarantine_slug_for_path(path: Path) -> str:

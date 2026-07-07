@@ -1338,6 +1338,30 @@ checklist:
         assert "expected PR base" in str(excinfo.value)
         assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
 
+    def test_local_git_diff_fallback_rejects_missing_head_sha(self, tmp_path: Path) -> None:
+        gh = FakeGh()
+
+        with pytest.raises(RuntimeError) as excinfo:
+            dispatch.fetch_pr_diff_from_local(
+                dispatch.PRInfo(
+                    number=42,
+                    title="PR 42",
+                    body="body",
+                    base_ref="main",
+                    base_sha="a" * 40,
+                    head_ref="feat/42",
+                    head_sha="",
+                    changed_file_count=1,
+                    is_draft=False,
+                    files=("shared/foo.py",),
+                ),
+                repo_root=tmp_path,
+                runner=gh,
+            )
+
+        assert "head SHA is unavailable" in str(excinfo.value)
+        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
+
     def test_local_git_diff_fallback_rejects_head_missing_current_base(
         self, tmp_path: Path
     ) -> None:

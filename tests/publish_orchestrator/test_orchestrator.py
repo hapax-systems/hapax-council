@@ -627,6 +627,39 @@ class TestSingleSurface:
         assert child["name"] == "artifact_envelope"
         assert any("duplicate surface ids: fake" in finding for finding in child["findings"])
 
+    def test_dispatch_boundary_dedupes_duplicate_surfaces(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        artifact = PreprintArtifact(
+            slug="direct-duplicate-surface",
+            title="Direct Duplicate Surface",
+            abstract="Brief.",
+            body_md="Body.",
+            surfaces_targeted=["fake", "fake"],
+        )
+        artifact.mark_approved(by_referent="Oudepode")
+        receipt_artifact = artifact.model_copy(update={"surfaces_targeted": ["fake"]})
+        artifact.publication_gate_context = {
+            "publication_gate_receipts": _write_public_gate_receipts(tmp_path, receipt_artifact)
+        }
+        orch = _make_orchestrator(
+            tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+        )
+
+        with orchestrator_module.ThreadPoolExecutor(max_workers=2) as pool:
+            orch._dispatch(artifact, pool=pool)
+
+        assert fake_module.publish_artifact.call_count == 1
+        log_path = tmp_path / "publish" / "log" / "direct-duplicate-surface.fake.json"
+        assert json.loads(log_path.read_text())["result"] == "ok"
+        published = json.loads(
+            (tmp_path / "publish" / "published" / "direct-duplicate-surface.json").read_text()
+        )
+        assert published["surfaces_targeted"] == ["fake"]
+
     def test_malformed_inbox_json_quarantines_and_continues(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()
         fake_module.publish_artifact = mock.Mock(return_value="ok")

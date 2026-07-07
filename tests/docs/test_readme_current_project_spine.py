@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -128,3 +129,8 @@ class TestLicenseReconciliationStatusDoc:
 
     def test_doc_declares_polyform_strict(self) -> None:
         assert "PolyForm Strict 1.0.0" in self.DOC.read_text(encoding="utf-8")
+
+    def test_zenodo_license_note_matches_doc(self) -> None:
+        zenodo = json.loads((REPO_ROOT / ".zenodo.json").read_text(encoding="utf-8"))
+        assert zenodo["license"] == "other-closed"
+        assert "PolyForm Strict 1.0.0" in zenodo["notes"]

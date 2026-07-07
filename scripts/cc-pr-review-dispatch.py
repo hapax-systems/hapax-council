@@ -886,6 +886,12 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
             "prove the current PR base. Next action: restore GitHub PR metadata access or "
             "fetch PR metadata with baseRefOid/base.sha before review dispatch."
         )
+    if not pr_info.head_sha:
+        raise RuntimeError(
+            f"PR #{pr_info.number} head SHA is unavailable; local git diff fallback cannot "
+            "prove the current PR head. Next action: restore GitHub PR metadata access or "
+            "fetch PR metadata with headRefOid/head.sha before review dispatch."
+        )
     _ensure_local_ref_at_sha(
         remote_base,
         expected_sha=pr_info.base_sha,
@@ -894,15 +900,14 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
         runner=runner,
     )
 
-    head = pr_info.head_sha or "HEAD"
-    if pr_info.head_sha:
-        _ensure_local_ref(
-            pr_info.head_sha,
-            fetch_ref=f"pull/{pr_info.number}/head",
-            repo_root=repo_root,
-            runner=runner,
-            allow_fetch_failure=True,
-        )
+    head = pr_info.head_sha
+    _ensure_local_ref(
+        pr_info.head_sha,
+        fetch_ref=f"pull/{pr_info.number}/head",
+        repo_root=repo_root,
+        runner=runner,
+        allow_fetch_failure=True,
+    )
 
     merge_base = _run_gh(
         ["git", "merge-base", pr_info.base_sha, head],
