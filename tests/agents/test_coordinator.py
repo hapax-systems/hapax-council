@@ -1371,6 +1371,7 @@ retired_reason: clean exit
                 "hapax-claude-alpha\n"
                 "hapax-claude-dev\n"
                 "hapax-claude-dev2\n"
+                "hapax-claude-DEV12\n"
                 "hapax-codex-cx-red\n"
                 "work\n"
             ),
@@ -1409,8 +1410,10 @@ retired_reason: clean exit
         assert lanes["cx-red"].dispatch_ready is True
         assert "dev" not in lanes
         assert "dev2" not in lanes
+        assert "DEV12" not in lanes
         assert _lane_from_tmux_session("hapax-claude-dev") is None
         assert _lane_from_tmux_session("hapax-claude-dev2") is None
+        assert _lane_from_tmux_session("hapax-claude-DEV12") is None
 
     def test_pid_backed_headless_lane_is_discovered_with_existing_tmux_sessions(
         self, tmp_path: Path
