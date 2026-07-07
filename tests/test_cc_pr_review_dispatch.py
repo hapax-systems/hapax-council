@@ -1707,6 +1707,24 @@ class TestReceiptAndWake:
                 dispatch.public_gate_receipts.public_gate_authority_signature(payload, secret)
             )
 
+    def test_unsigned_public_gate_warning_names_secret_repair_action(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.delenv(
+            dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, raising=False
+        )
+        caplog.set_level(logging.WARNING, logger=dispatch.LOG.name)
+
+        result, _, _, _ = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+
+        assert result["status"] == "dispatched"
+        assert "next action: restore HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY from pass" in caplog.text
+
     def test_review_evidence_authorizes_declared_public_gate_receipt(
         self,
         tmp_path: Path,
@@ -2986,6 +3004,7 @@ class TestFamilyOutageDegradation:
                     "endpoint=https://api.z.ai/api/paas/v4 model=glm-5.2 "
                     "primary_error_class=quota_exhausted bearer sk-live-secret-token "
                     "Authorization=ghp_abcdefghijklmnopqrstuvwxyz012345 "
+                    "Authorization: Bearer abc123-secret "
                     "password=p@ss credential=abcdef0123456789abcdef0123456789abcdef0123"
                 ),
             )
@@ -3003,6 +3022,7 @@ class TestFamilyOutageDegradation:
         assert "https://api.z.ai/api/paas/v4" in reviews[0]["runner_stderr_excerpt"]
         assert "sk-live-secret-token" not in reviews[0]["runner_stderr_excerpt"]
         assert "ghp_abcdefghijklmnopqrstuvwxyz012345" not in reviews[0]["runner_stderr_excerpt"]
+        assert "abc123-secret" not in reviews[0]["runner_stderr_excerpt"]
         assert "p@ss" not in reviews[0]["runner_stderr_excerpt"]
         assert (
             "abcdef0123456789abcdef0123456789abcdef0123" not in reviews[0]["runner_stderr_excerpt"]
@@ -3015,6 +3035,39 @@ class TestFamilyOutageDegradation:
                 "excerpt": reviews[0]["runner_stderr_excerpt"],
             }
         ]
+
+    def test_successful_non_payg_reviewer_stderr_is_omitted(self) -> None:
+        constitution = dispatch.review_team.Constitution(
+            team_class="t2_standard",
+            quorum_required=1,
+            seats=(dispatch.review_team.Seat(id="codex-1", family="codex"),),
+            notes=(),
+        )
+        registry = {
+            "families": [
+                {
+                    "family": "codex",
+                    "reviewer_command": ["codex", "exec"],
+                    "timeout_seconds": 30,
+                }
+            ]
+        }
+
+        def runner(
+            _seat: Any, _family_cfg: dict[str, Any], _prompt: str
+        ) -> dispatch.ReviewerRunnerResult:
+            return dispatch.ReviewerRunnerResult(
+                stdout=GOOD_REPLY,
+                stderr="debug Authorization: Bearer abc123-secret",
+            )
+
+        reviews = dispatch.dispatch_reviews(constitution, ["prompt"], registry, runner)
+
+        assert reviews[0]["verdict"] == "accept"
+        assert reviews[0]["runner_stderr_excerpt"] == (
+            "reviewer emitted stderr on successful run; output omitted"
+        )
+        assert "abc123-secret" not in str(reviews[0])
 
     def test_provider_outage_on_stderr_becomes_provider_outage(self) -> None:
         constitution = dispatch.review_team.Constitution(

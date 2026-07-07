@@ -79,7 +79,7 @@ MAX_TASK_NOTE_CHARS = 60_000
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
 MAX_REVIEW_RUNNER_STDERR_CHARS = 1_000
 REVIEWER_DIAGNOSTIC_SECRETISH_RE = re.compile(
-    r"(bearer\s+|authorization[=:]\s*|"
+    r"((?:authorization[=:]\s*(?:bearer\s+)?|bearer\s+)|"
     r"(?:api[_-]?key|token|secret|password|credential)[=:]\s*)[^\s]+|"
     r"(?:sk-[a-z0-9_-]+|gh[pousr]_[a-z0-9_]+|[a-z0-9_-]{40,})",
     re.IGNORECASE,
@@ -281,7 +281,11 @@ def _apply_public_gate_authority_context(
 def _sign_public_gate_authority_evidence(data: dict[str, Any]) -> None:
     secret = os.environ.get(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, "").strip()
     if not secret:
-        LOG.warning("public-gate authority evidence left unsigned; signing secret is unset")
+        LOG.warning(
+            "public-gate authority evidence left unsigned; signing secret is unset; "
+            "next action: restore %s from pass before relying on public-gate receipts",
+            public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+        )
         return
     data["authority_issuer"] = _review_team_authority_issuer(
         [reviewer for reviewer in data.get("reviewers") or [] if isinstance(reviewer, dict)]
@@ -1197,6 +1201,15 @@ def sanitize_reviewer_diagnostic(text: str, *, limit: int = MAX_REVIEW_RUNNER_ST
     return truncate_context(redacted, limit=limit).strip()
 
 
+def reviewer_success_stderr_excerpt(text: str) -> str:
+    if not text.strip():
+        return ""
+    excerpt = sanitize_reviewer_diagnostic(text)
+    if "PAYG fallback used" in excerpt:
+        return excerpt
+    return "reviewer emitted stderr on successful run; output omitted"
+
+
 def reviewer_diagnostic_fields(excerpt: str) -> dict[str, Any]:
     if not excerpt:
         return {}
@@ -1254,11 +1267,12 @@ def default_reviewer_runner(
             proc.stderr.strip(), returncode=proc.returncode, stdout=proc.stdout
         )
     if proc.stderr.strip():
+        stderr_excerpt = reviewer_success_stderr_excerpt(proc.stderr)
         LOG.warning(
             "reviewer %s (%s) emitted stderr on successful run: %s",
             seat.id,
             seat.family,
-            sanitize_reviewer_diagnostic(proc.stderr)[:300],
+            stderr_excerpt[:300],
         )
     return ReviewerRunnerResult(stdout=proc.stdout, stderr=proc.stderr)
 
@@ -1292,7 +1306,7 @@ def dispatch_reviews(
             runner_result = reviewer_runner(seat, family_cfg, prompts[index])
             if isinstance(runner_result, ReviewerRunnerResult):
                 reply = runner_result.stdout
-                runner_stderr_excerpt = sanitize_reviewer_diagnostic(runner_result.stderr)
+                runner_stderr_excerpt = reviewer_success_stderr_excerpt(runner_result.stderr)
             else:
                 reply = str(runner_result)
         except ReviewerProcessError as exc:
