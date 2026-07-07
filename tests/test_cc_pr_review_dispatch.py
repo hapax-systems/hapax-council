@@ -1028,18 +1028,53 @@ checklist:
             len(call) > 6 and call[6] == "repos/owner/repo/pulls/42/files" for call in gh.calls
         )
 
+    def test_pr_metadata_falls_back_to_pr_view_when_rest_pull_unavailable(
+        self, tmp_path: Path
+    ) -> None:
+        class RestPullUnavailableGh(FakeGh):
+            def _rest_pull(self, number: int) -> dict[str, Any] | None:
+                return None
+
+        result, gh, _, _ = _review(tmp_path, gh=RestPullUnavailableGh())
+
+        assert result["status"] == "dispatched"
+        assert any(call[:3] == ["gh", "pr", "view"] for call in gh.calls)
+
+    def test_pr_diff_falls_back_to_pr_diff_when_rest_diff_unavailable(self, tmp_path: Path) -> None:
+        class RestDiffUnavailableGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                if (
+                    cmd[:5] == ["gh", "api", "--method", "GET", "-H"]
+                    and len(cmd) > 6
+                    and cmd[5] == "Accept: application/vnd.github.v3.diff"
+                    and cmd[6] == f"repos/owner/repo/pulls/{self.pr_number}"
+                ):
+                    self.calls.append(list(cmd))
+                    return subprocess.CompletedProcess(cmd, 1, "", "diff rate limited")
+                return super().__call__(cmd, **kwargs)
+
+        result, gh, reviewers, _ = _review(tmp_path, gh=RestDiffUnavailableGh())
+
+        assert result["status"] == "dispatched"
+        assert any(call[:3] == ["gh", "pr", "diff"] for call in gh.calls)
+        assert any("diff --git" in prompt for _, _, prompt in reviewers.invocations)
+
     def test_rest_pull_failure_names_recheck_action(self, tmp_path: Path) -> None:
         class MissingPullGh(FakeGh):
             def _rest_pull(self, number: int) -> dict[str, Any] | None:
                 return None
 
+        gh = MissingPullGh()
+        gh.fail_view_prs.add(42)
         with pytest.raises(RuntimeError) as excinfo:
-            _review(tmp_path, gh=MissingPullGh())
+            _review(tmp_path, gh=gh)
 
         message = str(excinfo.value)
         assert "REST pull fetch failed for PR #42" in message
+        assert "fallback `gh pr view` also failed" in message
         assert "gh auth status" in message
         assert "gh api repos/owner/repo/pulls/42" in message
+        assert "gh pr view 42 --repo owner/repo" in message
         assert "preserve stderr" in message
 
     def test_diff_is_truncated(self, tmp_path: Path) -> None:

@@ -430,15 +430,81 @@ def _run_gh(cmd: list[str], *, repo_root: Path, runner: Any, timeout: int = 120)
     return proc.stdout
 
 
+def _files_from_pr_view(payload: dict[str, Any]) -> tuple[str, ...]:
+    files = payload.get("files")
+    if not isinstance(files, list):
+        return ()
+    paths: list[str] = []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        if path:
+            paths.append(str(path))
+    return tuple(paths)
+
+
+def _fetch_pr_via_view(
+    pr_number: int,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> PRInfo:
+    raw = _run_gh(
+        [
+            "gh",
+            "pr",
+            "view",
+            str(pr_number),
+            "--repo",
+            repo,
+            "--json",
+            "number,title,body,headRefName,headRefOid,changedFiles,isDraft,files",
+        ],
+        repo_root=repo_root,
+        runner=runner,
+    )
+    try:
+        item = json.loads(raw or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"gh pr view returned non-json for PR #{pr_number}") from exc
+    try:
+        changed_file_count = (
+            int(item["changedFiles"]) if item.get("changedFiles") is not None else None
+        )
+    except (TypeError, ValueError):
+        changed_file_count = None
+    return PRInfo(
+        number=int(item.get("number") or pr_number),
+        title=str(item.get("title") or ""),
+        body=str(item.get("body") or ""),
+        head_ref=str(item.get("headRefName") or ""),
+        head_sha=str(item.get("headRefOid") or ""),
+        changed_file_count=changed_file_count,
+        is_draft=bool(item.get("isDraft")),
+        files=_files_from_pr_view(item),
+    )
+
+
 def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRInfo:
     item = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if item is None:
-        raise RuntimeError(
-            f"REST pull fetch failed for PR #{pr_number}; next action: run "
-            f"`gh auth status`, then retry `gh api repos/{repo}/pulls/{pr_number}` "
-            "from the repository root and preserve stderr if auth, network, or GitHub API "
-            "access still fails."
-        )
+        try:
+            return _fetch_pr_via_view(
+                pr_number,
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"REST pull fetch failed for PR #{pr_number}; fallback `gh pr view` also "
+                f"failed ({exc}); next action: run `gh auth status`, then retry "
+                f"`gh api repos/{repo}/pulls/{pr_number}` and "
+                f"`gh pr view {pr_number} --repo {repo}` from the repository root and "
+                "preserve stderr if auth, network, or GitHub API access still fails."
+            ) from exc
     head = item.get("head") if isinstance(item.get("head"), dict) else {}
     file_items = list_pull_files_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     files = tuple(
@@ -465,19 +531,26 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
 
 
 def fetch_pr_diff(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> str:
-    return _run_gh(
-        [
-            "gh",
-            "api",
-            "--method",
-            "GET",
-            "-H",
-            "Accept: application/vnd.github.v3.diff",
-            f"repos/{repo}/pulls/{pr_number}",
-        ],
-        repo_root=repo_root,
-        runner=runner,
-    )
+    try:
+        return _run_gh(
+            [
+                "gh",
+                "api",
+                "--method",
+                "GET",
+                "-H",
+                "Accept: application/vnd.github.v3.diff",
+                f"repos/{repo}/pulls/{pr_number}",
+            ],
+            repo_root=repo_root,
+            runner=runner,
+        )
+    except RuntimeError:
+        return _run_gh(
+            ["gh", "pr", "diff", str(pr_number), "--repo", repo],
+            repo_root=repo_root,
+            runner=runner,
+        )
 
 
 def _diff_span_path(span: str) -> str:
