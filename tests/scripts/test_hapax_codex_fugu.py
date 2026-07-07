@@ -59,6 +59,7 @@ def _base_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
         "HAPAX_CODEX_FUGU_WIRE_API",
         "HAPAX_CODEX_FUGU_REASONING_EFFORT",
         "HAPAX_CODEX_FUGU_SECRET_ENTRY",
+        "NPM_CONFIG_PREFIX",
         "SAKANA_API_KEY",
     ):
         env.pop(key, None)
@@ -622,6 +623,56 @@ exit 0
 
     assert result.returncode == 2
     assert "refuses HAPAX_CODEX_BIN_PATH executable override" in result.stderr
+    assert "next action" in result.stderr
+    assert not raw_called.exists()
+    assert not pass_called.exists()
+
+
+def test_fugu_launch_refuses_npm_prefix_codex_fallback_before_loading_secret(
+    tmp_path: Path,
+) -> None:
+    env, _catalog, bin_dir = _base_env(tmp_path)
+    raw_called = tmp_path / "npm-prefix-codex-called"
+    pass_called = tmp_path / "pass-called"
+    npm_prefix_codex = tmp_path / "npm-prefix" / "bin" / "codex"
+    npm_prefix_codex.parent.mkdir(parents=True)
+    _write_executable(
+        npm_prefix_codex,
+        f"""printf called > {raw_called}
+exit 0
+""",
+    )
+    _write_executable(
+        bin_dir / "pass",
+        f"""printf called > {pass_called}
+printf '%s\\n' super-secret-value
+exit 0
+""",
+    )
+    env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
+    env["NPM_CONFIG_PREFIX"] = str(npm_prefix_codex.parent.parent)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-fugu-test",
+            "--cd",
+            str(workdir),
+            "--fugu-profile",
+            "fugu",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 4
+    assert "Fugu mode requires a PATH-resolved codex executable" in result.stderr
+    assert "fallback executable resolution is refused" in result.stderr
     assert "next action" in result.stderr
     assert not raw_called.exists()
     assert not pass_called.exists()

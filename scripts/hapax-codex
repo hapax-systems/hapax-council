@@ -1639,6 +1639,10 @@ CODEX_BIN=""
 if [ -z "$DISPATCH_HOST" ]; then
   CODEX_BIN="$(command -v codex || true)"
   if [ -z "$CODEX_BIN" ]; then
+    if [ -n "$FUGU_PROFILE" ]; then
+      echo "hapax-codex: Fugu mode requires a PATH-resolved codex executable; fallback executable resolution is refused; next action: expose the supported Codex CLI as 'codex' in PATH before retrying the governed Fugu wrapper" >&2
+      exit 4
+    fi
     # PATH lookup missed codex. A common cause is a thin systemd-unit PATH (e.g.
     # hapax-lane-supervisor) that omits ~/.npm-global/bin, where `npm i -g
     # @openai/codex` installs the launcher — the rc=4 "codex not found" respawn-loop
