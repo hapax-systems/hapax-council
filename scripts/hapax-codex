@@ -473,8 +473,11 @@ PYEOF
 
 fugu_pass_secret_available() {
   local entry="$1"
+  local output value
   command -v pass >/dev/null 2>&1 || return 1
-  pass show "$entry" >/dev/null 2>&1
+  output="$(pass show "$entry" 2>/dev/null)" || return 1
+  value="$(printf '%s\n' "$output" | sed -n '1p')"
+  [ -n "$value" ]
 }
 
 fugu_load_required_pass_secret() {
@@ -530,6 +533,19 @@ fugu_refuse_codex_override_args() {
         ;;
     esac
   done
+}
+
+fugu_refuse_remote_dispatch() {
+  local requested="${HAPAX_DISPATCH_HOST:-}"
+  if [ -n "$requested" ] && ! dispatch_host_is_local "$requested"; then
+    echo "hapax-codex: Fugu launch refuses remote dispatch; load pass-backed Sakana credentials only on the local execution host; next action: unset HAPAX_DISPATCH_HOST or run the governed wrapper on the local host" >&2
+    return 1
+  fi
+  if [ -n "${DISPATCH_HOST:-}" ]; then
+    echo "hapax-codex: Fugu launch refuses remote dispatch; load pass-backed Sakana credentials only on the local execution host; next action: unset HAPAX_DISPATCH_HOST or run the governed wrapper on the local host" >&2
+    return 1
+  fi
+  return 0
 }
 
 fugu_normalized_base_url() {
@@ -1459,19 +1475,39 @@ if [ "$FUGU_CHECK" -eq 1 ] || [ "$FUGU_PRINT_ENV" -eq 1 ]; then
   fi
 fi
 
+if [ -n "$FUGU_PROFILE" ]; then
+  unset SAKANA_API_KEY
+fi
+
 if [ -n "$FUGU_PROFILE" ] && [ "$FUGU_PRINT_ENV" -eq 1 ]; then
   fugu_errors=""
-  fugu_model="$(fugu_model_for_profile "$FUGU_PROFILE" || true)"
-  if ! fugu_collect_config_errors fugu_errors "$FUGU_PROFILE" "$fugu_model" "$FUGU_MODEL_CATALOG" \
+  if FUGU_MODEL="$(fugu_model_for_profile "$FUGU_PROFILE")"; then
+    :
+  else
+    FUGU_MODEL=""
+  fi
+  if ! fugu_collect_config_errors fugu_errors "$FUGU_PROFILE" "$FUGU_MODEL" "$FUGU_MODEL_CATALOG" \
     "$FUGU_BASE_URL" "$FUGU_WIRE_API" "$FUGU_REASONING_EFFORT" "$FUGU_SECRET_ENTRY"; then
     fugu_print_config_errors "Fugu print-env refused unsupported configuration" "$fugu_errors"
     exit 2
+  fi
+  if ! fugu_refuse_codex_override_args "${CODEX_EXTRA[@]}"; then
+    exit 2
+  fi
+  if ! fugu_refuse_remote_dispatch; then
+    exit 14
   fi
   fugu_print_env
   exit 0
 fi
 
 if [ -n "$FUGU_PROFILE" ] && [ "$FUGU_CHECK" -eq 1 ]; then
+  if ! fugu_refuse_codex_override_args "${CODEX_EXTRA[@]}"; then
+    exit 2
+  fi
+  if ! fugu_refuse_remote_dispatch; then
+    exit 14
+  fi
   fugu_check
   exit $?
 fi
@@ -1511,6 +1547,9 @@ REMOTE_TOKEN_HANDOFF_CREATED=0
 if [ -n "$DISPATCH_HOST_REQUESTED" ]; then
   if dispatch_host_is_local "$DISPATCH_HOST_REQUESTED"; then
     DISPATCH_HOST_REQUESTED=""
+  elif [ -n "$FUGU_PROFILE" ]; then
+    echo "hapax-codex: Fugu launch refuses remote dispatch; load pass-backed Sakana credentials only on the local execution host; next action: unset HAPAX_DISPATCH_HOST or run the governed wrapper on the local host" >&2
+    exit 14
   else
     PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 "")"
     PREFLIGHT_COMMAND="$(remote_python_command "$PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
@@ -1773,7 +1812,11 @@ maybe_load_local_codex_access_token
 
 FUGU_MODEL=""
 if [ -n "$FUGU_PROFILE" ]; then
-  FUGU_MODEL="$(fugu_model_for_profile "$FUGU_PROFILE" || true)"
+  if FUGU_MODEL="$(fugu_model_for_profile "$FUGU_PROFILE")"; then
+    :
+  else
+    FUGU_MODEL=""
+  fi
   fugu_errors=""
   if ! fugu_collect_config_errors fugu_errors "$FUGU_PROFILE" "$FUGU_MODEL" "$FUGU_MODEL_CATALOG" \
     "$FUGU_BASE_URL" "$FUGU_WIRE_API" "$FUGU_REASONING_EFFORT" "$FUGU_SECRET_ENTRY"; then
@@ -1783,8 +1826,7 @@ if [ -n "$FUGU_PROFILE" ]; then
   if ! fugu_refuse_codex_override_args "${CODEX_EXTRA[@]}"; then
     exit 2
   fi
-  if [ -n "$DISPATCH_HOST" ]; then
-    echo "hapax-codex: Fugu launch refuses remote dispatch; load pass-backed Sakana credentials only on the local execution host; next action: unset HAPAX_DISPATCH_HOST or run the governed wrapper on the local host" >&2
+  if ! fugu_refuse_remote_dispatch; then
     exit 14
   fi
 fi

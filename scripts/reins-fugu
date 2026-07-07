@@ -7,6 +7,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROFILE="${REINS_FUGU_PROFILE:-fugu}"
 DEFAULT_SESSION="${REINS_FUGU_SESSION:-cx-fugu}"
 
+for arg in "$@"; do
+  case "$arg" in
+    --fugu|--fugu=*|--fugu-profile|--fugu-profile=*)
+      echo "reins-fugu: refuses caller Fugu profile override '$arg'; next action: use reins-fugu or reins-fugu-ultra for the pinned governed profile" >&2
+      exit 2
+      ;;
+  esac
+done
+
 needs_default_session=1
 prev=""
 for arg in "$@"; do

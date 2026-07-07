@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shlex
+import shutil
 import subprocess
 import tomllib
 from pathlib import Path
@@ -140,6 +142,33 @@ def test_reins_fugu_ultra_print_env_selects_ultra_model(tmp_path: Path) -> None:
     assert "HAPAX_AGENT_ROLE=cx-fugu-ultra" in default_role.stdout
 
 
+@pytest.mark.parametrize(
+    ("script", "override_args"),
+    [
+        (REINS_FUGU, ["--fugu-profile", "fugu-ultra"]),
+        (REINS_FUGU, ["--fugu-profile=fugu-ultra"]),
+        (REINS_FUGU_ULTRA, ["--fugu-profile", "fugu"]),
+        (REINS_FUGU_ULTRA, ["--fugu=fugu"]),
+    ],
+)
+def test_reins_fugu_shims_refuse_profile_overrides(
+    tmp_path: Path, script: Path, override_args: list[str]
+) -> None:
+    env, _catalog, _bin_dir = _base_env(tmp_path)
+
+    result = subprocess.run(
+        [str(script), *override_args, "--print-env"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert "refuses caller Fugu profile override" in result.stderr
+    assert "HAPAX_CODEX_FUGU_PROFILE" not in result.stdout
+
+
 def test_fugu_check_uses_pass_without_exposing_secret(tmp_path: Path) -> None:
     env, _catalog, bin_dir = _base_env(tmp_path)
     _install_fake_codex_and_pass(bin_dir, tmp_path)
@@ -161,6 +190,106 @@ def test_fugu_check_uses_pass_without_exposing_secret(tmp_path: Path) -> None:
     assert "secret_value=<redacted>" in result.stdout
     assert "super-secret-value" not in result.stdout
     assert "super-secret-value" not in result.stderr
+
+
+def test_fugu_check_scrubs_inherited_secret_before_helpers(tmp_path: Path) -> None:
+    env, _catalog, bin_dir = _base_env(tmp_path)
+    _install_fake_codex(bin_dir, tmp_path)
+    pass_env = tmp_path / "pass-env.txt"
+    python_env = tmp_path / "python-env.txt"
+    real_python = shutil.which("python3")
+    assert real_python is not None
+    _write_executable(
+        bin_dir / "python3",
+        f"""printf 'SAKANA_API_KEY=%s\\n' "${{SAKANA_API_KEY:-}}" > {python_env}
+exec {shlex.quote(real_python)} "$@"
+""",
+    )
+    _write_executable(
+        bin_dir / "pass",
+        f"""printf 'SAKANA_API_KEY=%s\\n' "${{SAKANA_API_KEY:-}}" > {pass_env}
+if [ "${{1:-}}" = "show" ] && [ "${{2:-}}" = "sakana/api-key" ]; then
+  printf '%s\\n' super-secret-value
+  exit 0
+fi
+exit 1
+""",
+    )
+    env["SAKANA_API_KEY"] = "parent-secret-that-must-be-scrubbed"
+
+    result = subprocess.run(
+        [str(REINS_FUGU), "--check", "--role", "cx-fugu-check"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert pass_env.read_text(encoding="utf-8") == "SAKANA_API_KEY=\n"
+    assert python_env.read_text(encoding="utf-8") == "SAKANA_API_KEY=\n"
+    assert "parent-secret-that-must-be-scrubbed" not in result.stdout
+    assert "parent-secret-that-must-be-scrubbed" not in result.stderr
+
+
+def test_fugu_check_refuses_passthrough_args_before_readiness_ok(tmp_path: Path) -> None:
+    env, _catalog, bin_dir = _base_env(tmp_path)
+    _install_fake_codex_and_pass(bin_dir, tmp_path)
+
+    result = subprocess.run(
+        [str(REINS_FUGU), "--check", "--role", "cx-fugu-check", "--", "--model", "gpt-5.5"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert "Fugu mode refuses" in result.stderr
+    assert "Fugu check ok" not in result.stdout
+
+
+def test_fugu_print_env_refuses_remote_dispatch_request(tmp_path: Path) -> None:
+    env, _catalog, _bin_dir = _base_env(tmp_path)
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+
+    result = subprocess.run(
+        [str(REINS_FUGU), "--print-env"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 14
+    assert "Fugu launch refuses remote dispatch" in result.stderr
+    assert "HAPAX_CODEX_FUGU_PROFILE" not in result.stdout
+
+
+def test_fugu_check_rejects_empty_pass_entry(tmp_path: Path) -> None:
+    env, _catalog, bin_dir = _base_env(tmp_path)
+    _install_fake_codex(bin_dir, tmp_path)
+    _write_executable(
+        bin_dir / "pass",
+        """if [ "${1:-}" = "show" ] && [ "${2:-}" = "sakana/api-key" ]; then
+  printf '\\n'
+  exit 0
+fi
+exit 1
+""",
+    )
+
+    result = subprocess.run(
+        [str(REINS_FUGU), "--check", "--role", "cx-fugu-check"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 1
+    assert "pass entry 'sakana/api-key' is unavailable" in result.stderr
+    assert "Fugu check ok" not in result.stdout
 
 
 def test_fugu_refuses_unknown_endpoint_and_secret_route(tmp_path: Path) -> None:
@@ -245,7 +374,7 @@ def test_fugu_launch_injects_governed_codex_config_without_global_rewrite(
 def test_fugu_launch_toml_quotes_catalog_path(tmp_path: Path) -> None:
     env, catalog, bin_dir = _base_env(tmp_path)
     catalog.unlink()
-    quoted_catalog = catalog.parent / 'fugu"catalog\nwith-newline.json'
+    quoted_catalog = catalog.parent / 'fugu"catalog\\segment\nwith-newline.json'
     quoted_catalog.write_text(
         '{"models":[{"slug":"fugu"},{"slug":"fugu-ultra"}]}\n',
         encoding="utf-8",
@@ -281,6 +410,7 @@ def test_fugu_launch_toml_quotes_catalog_path(tmp_path: Path) -> None:
     assert parsed_config["model_catalog_json"] == str(quoted_catalog)
     joined_config = "\n".join(config_values)
     assert '\\"catalog' in joined_config
+    assert "\\\\segment" in joined_config
     assert "\\nwith-newline.json" in joined_config
 
 
@@ -476,6 +606,7 @@ def test_fugu_launch_refuses_remote_dispatch(tmp_path: Path) -> None:
 
 def test_fugu_terminal_tmux_defers_secret_to_inner_runner(tmp_path: Path) -> None:
     env, _catalog, bin_dir = _base_env(tmp_path)
+    args_file, env_file = _install_fake_codex(bin_dir, tmp_path)
     tmux_args = tmp_path / "tmux-args.txt"
     tmux_env = tmp_path / "tmux-env.txt"
     pass_called = tmp_path / "pass-called"
@@ -522,10 +653,24 @@ exit 0
     assert result.stdout.strip() == "hapax-codex-cx-fugu-test"
     assert tmux_env.read_text(encoding="utf-8") == "SAKANA_API_KEY=\n"
     assert not pass_called.exists()
+    assert not args_file.exists()
     runner = Path(tmux_args.read_text(encoding="utf-8").splitlines()[-1])
     runner_text = runner.read_text(encoding="utf-8")
     assert "--fugu-profile fugu" in runner_text
+    assert "--terminal none" in runner_text
     assert "SAKANA_API_KEY" not in runner_text
+
+    inner = subprocess.run(
+        [str(runner)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert inner.returncode == 0, inner.stderr
+    assert pass_called.exists()
+    assert "SAKANA_API_KEY=present" in env_file.read_text(encoding="utf-8")
 
 
 def test_fugu_launch_refuses_missing_pass_secret(tmp_path: Path) -> None:
