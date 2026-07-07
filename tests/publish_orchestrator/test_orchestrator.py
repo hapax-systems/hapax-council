@@ -429,6 +429,45 @@ class TestSingleSurface:
             "outside configured publication allowlist" in finding for finding in child["findings"]
         )
 
+    def test_direct_inbox_draft_approval_quarantines_before_dispatch(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        artifact = PreprintArtifact(
+            slug="draft-inbox",
+            title="Draft Inbox",
+            abstract="Brief.",
+            body_md="Body.",
+            surfaces_targeted=["fake"],
+        )
+        artifact.publication_gate_context = {
+            "publication_gate_receipts": _write_public_gate_receipts(tmp_path, artifact)
+        }
+        inbox_path = tmp_path / "publish" / "inbox" / "draft-inbox.json"
+        inbox_path.parent.mkdir(parents=True, exist_ok=True)
+        inbox_path.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
+        review_pass = _CountingReviewPass()
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=review_pass,
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        assert review_pass.calls == 0
+        fake_module.publish_artifact.assert_not_called()
+        assert not inbox_path.exists()
+        failed = list((tmp_path / "publish" / "failed").glob("invalid-artifact-*.json"))
+        assert len(failed) == 1
+        payload = json.loads(failed[0].read_text())
+        child = payload["publication_gate_result"]["child_results"][0]
+        assert child["name"] == "artifact_envelope"
+        assert any("approval must be approved" in finding for finding in child["findings"])
+
     def test_malformed_source_path_quarantines_before_resolution_error(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()
         fake_module.publish_artifact = mock.Mock(return_value="ok")

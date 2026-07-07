@@ -664,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    _assert_safe_artifact_slug(artifact.slug)
     inbox_path = artifact.inbox_path(state_root=args.state_root)
     inbox_path.parent.mkdir(parents=True, exist_ok=True)
     inbox_path.write_text(payload)

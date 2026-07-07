@@ -269,6 +269,8 @@ def _receipt_candidate_mapping_allows(
     expected_gate: str,
     bindings: Mapping[str, object] | None,
 ) -> bool:
+    # These predicates inspect direct keys on this one candidate mapping only;
+    # child mappings cannot supply gate, outcome, or artifact-binding evidence.
     return (
         _mapping_contains_expected_gate(data, expected_gate)
         and _mapping_outcome_allows(data)

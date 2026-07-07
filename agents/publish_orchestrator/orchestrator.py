@@ -766,6 +766,11 @@ class Orchestrator:
 
     def _inbox_artifact_envelope_findings(self, artifact: PreprintArtifact) -> tuple[str, ...]:
         findings: list[str] = []
+        if artifact.approval != ApprovalState.APPROVED:
+            findings.append(
+                "inbox artifact approval must be approved; next action: move only explicitly "
+                "approved PreprintArtifact payloads into publish/inbox"
+            )
         if not _safe_publication_segment(artifact.slug):
             findings.append(
                 "artifact slug must be a single safe path segment; next action: "
