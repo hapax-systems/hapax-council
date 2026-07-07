@@ -172,6 +172,10 @@ def validate_config(config: Mapping[str, Any]) -> list[str]:
 
     if not isinstance(raw_policy, Mapping):
         errors.append("publication_frontmatter_policy must be a mapping")
+        errors.append(
+            "publication_frontmatter_policy next action: add a guarded publication policy "
+            "mapping before public channel use"
+        )
         policy = {}
     else:
         policy = raw_policy
@@ -180,6 +184,10 @@ def validate_config(config: Mapping[str, Any]) -> list[str]:
     for field in REQUIRED_PUBLICATION_FRONTMATTER_POLICY_FIELDS:
         if field not in policy:
             errors.append(f"publication_frontmatter_policy.{field} is required")
+            errors.append(
+                f"publication_frontmatter_policy.{field} next action: add this field "
+                "to the guarded publication policy"
+            )
     status = policy.get("status")
     if status is not None and status not in VALID_PUBLICATION_POLICY_STATUSES:
         errors.append(
@@ -223,13 +231,25 @@ def validate_config(config: Mapping[str, Any]) -> list[str]:
     target_surfaces = policy.get("target_surfaces")
     if not isinstance(target_surfaces, list) or not target_surfaces:
         errors.append("publication_frontmatter_policy.target_surfaces must be a non-empty list")
+        errors.append(
+            "publication_frontmatter_policy.target_surfaces next action: add the "
+            "required surface ids for this policy status"
+        )
         target_surface_set: set[str] = set()
     else:
         target_surface_set = {surface for surface in target_surfaces if isinstance(surface, str)}
         if any(not isinstance(surface, str) for surface in target_surfaces):
             errors.append("publication_frontmatter_policy.target_surfaces must contain strings")
+            errors.append(
+                "publication_frontmatter_policy.target_surfaces next action: replace "
+                "non-string entries with explicit surface id strings"
+            )
         if len(target_surface_set) != len(target_surfaces):
             errors.append("publication_frontmatter_policy.target_surfaces must be unique")
+            errors.append(
+                "publication_frontmatter_policy.target_surfaces next action: remove "
+                "duplicate surface ids"
+            )
         missing = sorted(required_target_surfaces - target_surface_set)
         if missing:
             errors.append(
@@ -251,8 +271,16 @@ def validate_config(config: Mapping[str, Any]) -> list[str]:
         required_gate_set = {gate for gate in required_gates if isinstance(gate, str)}
         if any(not isinstance(gate, str) for gate in required_gates):
             errors.append("publication_frontmatter_policy.required_gates must contain strings")
+            errors.append(
+                "publication_frontmatter_policy.required_gates next action: replace "
+                "non-string entries with explicit gate id strings"
+            )
         if len(required_gate_set) != len(required_gates):
             errors.append("publication_frontmatter_policy.required_gates must be unique")
+            errors.append(
+                "publication_frontmatter_policy.required_gates next action: remove "
+                "duplicate gate ids"
+            )
         missing = sorted(required_gates_for_status - required_gate_set)
         if missing:
             errors.append(

@@ -13,6 +13,7 @@ import json
 import logging
 import subprocess
 import sys
+from hashlib import sha256
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -1538,6 +1539,83 @@ public_gate_authority:
                 "artifact_slug": "demo",
                 "artifact_fingerprint": "abc123",
                 "target_surfaces": ("fake",),
+            },
+            authority_roots=(note.parent,),
+            authority_secret=secret,
+        )
+
+    def test_review_evidence_authorizes_declared_fanout_public_gate_receipt(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        secret = "test-public-gate-authority-secret"
+        monkeypatch.setenv(dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, secret)
+        content_hash = sha256(b"entry body").hexdigest()
+        receipt_root = tmp_path / "public-gate-receipts"
+        receipt_root.mkdir()
+        receipt_path = receipt_root / "fanout-receipt.yaml"
+        receipt_path.write_text(
+            f"""gate_id: fanout_loop_prevention_present
+status: passed
+authority_case: CASE-TEST
+acceptor: review-team:codex,glm
+review_profile: frontier_review_required
+evidence_ref: review-dossier:task-a
+source_address: hapax
+entry_id: entry-1
+content_sha256: {content_hash}
+target_addresses:
+  - aux
+  - blog
+""",
+            encoding="utf-8",
+        )
+
+        result, _, _, note = _review(
+            tmp_path,
+            task_kwargs={
+                "quality_floor": "frontier_review_required",
+                "extra_frontmatter": f"""
+public_gate_authority:
+  required_gates:
+    - fanout_loop_prevention_present
+  authorized_public_gate_receipts:
+    - public-gate:fanout-receipt.yaml
+  bindings:
+    source_address: hapax
+    entry_id: entry-1
+    content_sha256: {content_hash}
+    target_addresses:
+      - aux
+      - blog
+""",
+            },
+        )
+
+        assert result["status"] == "dispatched"
+        dossier = yaml.safe_load((note.parent / "task-a.review-dossier.yaml").read_text())
+        receipt = yaml.safe_load((note.parent / "task-a.acceptance.yaml").read_text())
+        for payload in (dossier, receipt):
+            assert payload["required_gates"] == ["fanout_loop_prevention_present"]
+            assert payload["authorized_public_gate_receipts"] == ["public-gate:fanout-receipt.yaml"]
+            assert payload["source_address"] == "hapax"
+            assert payload["entry_id"] == "entry-1"
+            assert payload["content_sha256"] == content_hash
+            assert payload["target_addresses"] == ["aux", "blog"]
+            assert payload["authority_signature"] == (
+                dispatch.public_gate_receipts.public_gate_authority_signature(payload, secret)
+            )
+
+        assert dispatch.public_gate_receipts.public_gate_receipt_value_present(
+            "public-gate:fanout-receipt.yaml",
+            expected_gate="fanout_loop_prevention_present",
+            roots=(receipt_root,),
+            bindings={
+                "source_address": "hapax",
+                "entry_id": "entry-1",
+                "content_sha256": content_hash,
+                "target_addresses": ("aux", "blog"),
             },
             authority_roots=(note.parent,),
             authority_secret=secret,

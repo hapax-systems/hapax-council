@@ -175,41 +175,6 @@
       "ledger_owner": "cx-convergence-coord",
       "dashboard_visibility": "required",
       "lifecycle_state": "active"
-    },
-    {
-      "budget_schema": 1,
-      "budget_id": "tb-20260707-zai-glmcp-payg-review-continuation",
-      "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
-      "approved_by": "later_authority_packet",
-      "created_at": "2026-07-07T18:45:00Z",
-      "expires_at": "2026-07-08T18:45:00Z",
-      "capacity_pool": "api_paid_spend",
-      "providers_allowed": [
-        "z_ai"
-      ],
-      "profiles_allowed": [
-        "glmcp-review-direct"
-      ],
-      "task_classes_allowed": [
-        "independent-review"
-      ],
-      "quality_floors_allowed": [
-        "frontier_review_required"
-      ],
-      "total_cap_usd": "1.00",
-      "per_task_cap_usd": "1.00",
-      "daily_cap_usd": "1.00",
-      "auto_top_up_allowed": false,
-      "subscription_path_checked_at": "2026-07-07T18:45:00Z",
-      "reason_subscription_path_not_used": "Continuation slice for GLMCP review fallback after the initial task cap was exhausted while current-head review remained release-blocking.",
-      "steady_state_replacement": {
-        "target_route_id": null,
-        "blocker_to_remove": null,
-        "exit_criterion": null
-      },
-      "ledger_owner": "metadata-owner",
-      "dashboard_visibility": "required",
-      "lifecycle_state": "active"
     }
   ],
   "spend_receipts": [

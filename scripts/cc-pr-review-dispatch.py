@@ -126,6 +126,12 @@ PUBLIC_GATE_AUTHORITY_TARGET_SURFACE_KEYS = (
     "surfaces",
     "surfaces_targeted",
 )
+PUBLIC_GATE_AUTHORITY_BINDING_CONTEXT_KEYS = (
+    "bindings",
+    "public_gate_bindings",
+    "publication_gate_bindings",
+)
+PUBLIC_GATE_AUTHORITY_BINDING_KEY_RE = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
 
 
 def _review_team_authority_issuer(reviewers: list[dict[str, Any]]) -> str:
@@ -180,6 +186,58 @@ def _first_string_list(source: dict[str, Any], keys: tuple[str, ...]) -> list[st
     return []
 
 
+def _first_binding_list(source: dict[str, Any], keys: tuple[str, ...]) -> list[str] | None:
+    items = _first_string_list(source, keys)
+    return items or None
+
+
+def _binding_value(value: Any) -> str | list[str] | None:
+    if isinstance(value, str):
+        item = value.strip()
+        return item or None
+    if isinstance(value, (list, tuple, set)):
+        items = list(dict.fromkeys(_string_items(value)))
+        return items or None
+    return None
+
+
+def _copy_safe_binding(
+    bindings: dict[str, Any],
+    key: str,
+    value: str | list[str] | None,
+) -> None:
+    normalized = key.strip().casefold()
+    if value is not None and PUBLIC_GATE_AUTHORITY_BINDING_KEY_RE.fullmatch(normalized):
+        bindings[normalized] = value
+
+
+def _public_gate_authority_bindings(source: dict[str, Any]) -> dict[str, Any]:
+    bindings: dict[str, Any] = {}
+    _copy_safe_binding(
+        bindings,
+        "artifact_slug",
+        _first_string(source, PUBLIC_GATE_AUTHORITY_ARTIFACT_SLUG_KEYS),
+    )
+    _copy_safe_binding(
+        bindings,
+        "artifact_fingerprint",
+        _first_string(source, PUBLIC_GATE_AUTHORITY_ARTIFACT_FINGERPRINT_KEYS),
+    )
+    _copy_safe_binding(
+        bindings,
+        "target_surfaces",
+        _first_binding_list(source, PUBLIC_GATE_AUTHORITY_TARGET_SURFACE_KEYS),
+    )
+    for context_key in PUBLIC_GATE_AUTHORITY_BINDING_CONTEXT_KEYS:
+        raw_bindings = source.get(context_key)
+        if not isinstance(raw_bindings, dict):
+            continue
+        for raw_key, raw_value in raw_bindings.items():
+            if isinstance(raw_key, str):
+                _copy_safe_binding(bindings, raw_key, _binding_value(raw_value))
+    return bindings
+
+
 def _publication_gate_receipt_keys(source: dict[str, Any]) -> list[str]:
     for key in ("publication_gate_receipts", "public_gate_receipts"):
         value = source.get(key)
@@ -196,21 +254,14 @@ def _public_gate_authority_context(frontmatter: dict[str, Any]) -> dict[str, Any
     if not required_gates:
         required_gates = _publication_gate_receipt_keys(source)
     receipt_refs = _first_string_list(source, PUBLIC_GATE_AUTHORITY_RECEIPT_KEYS)
-    artifact_slug = _first_string(source, PUBLIC_GATE_AUTHORITY_ARTIFACT_SLUG_KEYS)
-    artifact_fingerprint = _first_string(
-        source,
-        PUBLIC_GATE_AUTHORITY_ARTIFACT_FINGERPRINT_KEYS,
-    )
-    target_surfaces = _first_string_list(source, PUBLIC_GATE_AUTHORITY_TARGET_SURFACE_KEYS)
+    bindings = _public_gate_authority_bindings(source)
 
     context = {
         "required_gates": required_gates,
         "authorized_public_gate_receipts": receipt_refs,
-        "artifact_slug": artifact_slug,
-        "artifact_fingerprint": artifact_fingerprint,
-        "target_surfaces": target_surfaces,
     }
     if all(context.values()):
+        context.update(bindings)
         return context
     if any(context.values()):
         missing = ", ".join(key for key, value in context.items() if not value)

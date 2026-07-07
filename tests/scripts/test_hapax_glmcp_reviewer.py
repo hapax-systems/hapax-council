@@ -19,7 +19,6 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-glmcp-reviewer"
 GLMCP_PAYG_BUDGET_ID = "tb-20260706-zai-glmcp-payg-review"
-GLMCP_PAYG_CONTINUATION_BUDGET_ID = "tb-20260707-zai-glmcp-payg-review-continuation"
 
 ENV_KEYS = (
     "HAPAX_GLMCP_REVIEW_SECRET_ENTRY",
@@ -83,14 +82,6 @@ class RawResponse:
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
-
-
-def _remove_glmcp_continuation_budgets(payload: dict) -> None:
-    payload["transition_budgets"] = [
-        budget
-        for budget in payload["transition_budgets"]
-        if budget.get("budget_id") != GLMCP_PAYG_CONTINUATION_BUDGET_ID
-    ]
 
 
 def _payg_reservation(module: ModuleType, path: str = "glmcp-payg-spend-test.yaml") -> object:
@@ -527,7 +518,6 @@ def test_call_glm_failed_live_ledger_reservation_leaves_no_spend_receipt(
     payload = json.loads(
         (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
     )
-    _remove_glmcp_continuation_budgets(payload)
     payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
     for budget in payload["transition_budgets"]:
         if budget["budget_id"] == GLMCP_PAYG_BUDGET_ID:
@@ -626,7 +616,6 @@ def test_call_glm_real_reservation_blocks_second_payg_when_daily_cap_used(
     payload = json.loads(
         (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
     )
-    _remove_glmcp_continuation_budgets(payload)
     payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
     for budget in payload["transition_budgets"]:
         if budget["budget_id"] == GLMCP_PAYG_BUDGET_ID:
@@ -715,7 +704,6 @@ def test_call_glm_real_gate_blocks_second_payg_when_per_task_cap_used(
     payload = json.loads(
         (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
     )
-    _remove_glmcp_continuation_budgets(payload)
     payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
     for budget in payload["transition_budgets"]:
         if budget["budget_id"] == GLMCP_PAYG_BUDGET_ID:
@@ -803,7 +791,6 @@ def test_require_payg_spend_gate_reloads_live_ledger_and_rejects_existing_task_s
     payload = json.loads(
         (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
     )
-    _remove_glmcp_continuation_budgets(payload)
     payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
     for budget in payload["transition_budgets"]:
         if budget["budget_id"] == GLMCP_PAYG_BUDGET_ID:

@@ -80,7 +80,15 @@ def test_validation_requires_publication_frontmatter_policy() -> None:
     config.pop("publication_frontmatter_policy")
     errors = module.validate_config(config)
     assert "publication_frontmatter_policy must be a mapping" in errors
+    assert (
+        "publication_frontmatter_policy next action: add a guarded publication policy "
+        "mapping before public channel use"
+    ) in errors
     assert "publication_frontmatter_policy.review_required is required" in errors
+    assert (
+        "publication_frontmatter_policy.review_required next action: add this field "
+        "to the guarded publication policy"
+    ) in errors
 
 
 def test_validation_rejects_direct_public_egress_policy() -> None:
@@ -148,6 +156,10 @@ def test_validation_rejects_missing_required_gates() -> None:
     config["publication_frontmatter_policy"].pop("required_gates")
     errors = module.validate_config(config)
     assert "publication_frontmatter_policy.required_gates is required" in errors
+    assert (
+        "publication_frontmatter_policy.required_gates next action: add this field "
+        "to the guarded publication policy"
+    ) in errors
     assert "publication_frontmatter_policy.required_gates must be a non-empty list" in errors
 
 
@@ -159,6 +171,34 @@ def test_validation_rejects_incomplete_target_surfaces() -> None:
     assert "publication_frontmatter_policy.target_surfaces missing: " in "\n".join(errors)
     assert "mastodon-post" in "\n".join(errors)
     assert "zenodo-doi" in "\n".join(errors)
+
+
+def test_validation_publication_policy_shape_errors_include_next_actions() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["target_surfaces"] = ["omg-weblog", 7]
+    config["publication_frontmatter_policy"]["required_gates"] = [
+        "source_artifact_public_safe",
+        "source_artifact_public_safe",
+        7,
+    ]
+
+    errors = module.validate_config(config)
+
+    assert "publication_frontmatter_policy.target_surfaces must contain strings" in errors
+    assert (
+        "publication_frontmatter_policy.target_surfaces next action: replace non-string "
+        "entries with explicit surface id strings"
+    ) in errors
+    assert "publication_frontmatter_policy.required_gates must contain strings" in errors
+    assert (
+        "publication_frontmatter_policy.required_gates next action: replace non-string "
+        "entries with explicit gate id strings"
+    ) in errors
+    assert "publication_frontmatter_policy.required_gates must be unique" in errors
+    assert (
+        "publication_frontmatter_policy.required_gates next action: remove duplicate gate ids"
+    ) in errors
 
 
 def test_primary_config_pins_publication_frontmatter_policy_gates_and_targets() -> None:
