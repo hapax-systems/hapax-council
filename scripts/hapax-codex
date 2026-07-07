@@ -945,10 +945,8 @@ DISPATCH_PROOF_DIR="${HAPAX_DISPATCH_PROOF_DIR:-$HOME/.cache/hapax/orchestration
 DISPATCH_PROOF_BASENAME="$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION")-$(slugify "${TASK_ID:-no-task}")"
 DISPATCH_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-remote.json"
 DISPATCH_LOCAL_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-local.json"
-REMOTE_TOKEN_HANDOFF="/tmp/hapax-codex-token-$SESSION_UUID-$$"
+REMOTE_TOKEN_HANDOFF=""
 REMOTE_TOKEN_HANDOFF_CREATED=0
-export HAPAX_REMOTE_TOKEN_HANDOFF="$REMOTE_TOKEN_HANDOFF"
-trap cleanup_remote_token_handoff EXIT
 
 if [ -n "$DISPATCH_HOST_REQUESTED" ]; then
   if dispatch_host_is_local "$DISPATCH_HOST_REQUESTED"; then
@@ -1080,6 +1078,16 @@ if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   else
     preflight_claimable_task "$TASK_ID" "$SESSION"
   fi
+fi
+
+if [ -n "$DISPATCH_HOST" ]; then
+  # Do not even name a remote bearer handoff until every local guard that can
+  # refuse the launch has passed. The early host preflight proves readiness with
+  # an empty handoff path; the bearer file is created just-in-time before remote
+  # exec and then consumed or cleaned.
+  REMOTE_TOKEN_HANDOFF="/tmp/hapax-codex-token-$SESSION_UUID-$$"
+  export HAPAX_REMOTE_TOKEN_HANDOFF="$REMOTE_TOKEN_HANDOFF"
+  trap cleanup_remote_token_handoff EXIT
 fi
 
 SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/codex-spawns"

@@ -204,7 +204,7 @@ PYEOF
 resolve_local_codex_bin() {
   if [[ -n "${HAPAX_CODEX_BIN:-}" ]]; then
     [[ -x "$HAPAX_CODEX_BIN" ]] || {
-      echo "hapax-codex-headless: configured HAPAX_CODEX_BIN is not executable: $HAPAX_CODEX_BIN" >&2
+      echo "hapax-codex-headless: configured HAPAX_CODEX_BIN is not executable: $HAPAX_CODEX_BIN; next action: set HAPAX_CODEX_BIN to an executable codex binary or repair PATH before retrying" >&2
       exit 4
     }
     printf '%s\n' "$HAPAX_CODEX_BIN"
@@ -212,7 +212,10 @@ resolve_local_codex_bin() {
   fi
   local codex_bin=""
   codex_bin="$(command -v codex || true)"
-  [[ -n "$codex_bin" ]] || { echo "hapax-codex-headless: codex not found in PATH" >&2; exit 4; }
+  [[ -n "$codex_bin" ]] || {
+    echo "hapax-codex-headless: codex not found in PATH; next action: install the Codex CLI, repair PATH, or set HAPAX_CODEX_BIN to the executable before retrying" >&2
+    exit 4
+  }
   printf '%s\n' "$codex_bin"
 }
 
@@ -220,7 +223,7 @@ prove_local_codex_bearer_actuation() {
   local codex_bin="$1" tmp_codex_home="" models_file="" rc=0 timeout_s=""
   timeout_s="${HAPAX_CODEX_BEARER_ACTUATION_TIMEOUT_SECONDS:-15}"
   tmp_codex_home="$(mktemp -d "${TMPDIR:-/tmp}/hapax-codex-actuation.XXXXXX")" || {
-    echo "hapax-codex-headless: failed to create temporary Codex actuation home" >&2
+    echo "hapax-codex-headless: failed to create temporary Codex actuation home; next action: verify TMPDIR or /tmp permissions before retrying" >&2
     exit 78
   }
   models_file="$tmp_codex_home/models.json"
