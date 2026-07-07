@@ -59,6 +59,7 @@ printf 'CODEX_ACCESS_TOKEN_PRESENT=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" >> {env
     env.pop("CODEX_ROLE", None)
     env.pop("CODEX_SESSION_NAME", None)
     env.pop("CODEX_SESSION", None)
+    env.pop("CODEX_ACCESS_TOKEN", None)
     env.pop("HAPAX_AGENT_NAME", None)
     env.pop("HAPAX_AGENT_ROLE", None)
     env.pop("HAPAX_PARENT_AGENT_INTERFACE", None)
@@ -553,6 +554,36 @@ def test_launcher_skips_expired_published_codex_access_token(tmp_path: Path) -> 
     )
 
     assert result.returncode == 0, result.stderr
+    assert "CODEX_ACCESS_TOKEN_PRESENT=\n" in env_file.read_text(encoding="utf-8")
+
+
+def test_launcher_ignores_inherited_codex_access_token_without_published_token(
+    tmp_path: Path,
+) -> None:
+    env, _args_file, env_file = _env_with_fake_codex(tmp_path)
+    env["CODEX_ACCESS_TOKEN"] = "ambient-token"
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-red",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "ignoring inherited CODEX_ACCESS_TOKEN" in result.stderr
     assert "CODEX_ACCESS_TOKEN_PRESENT=\n" in env_file.read_text(encoding="utf-8")
 
 

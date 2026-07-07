@@ -1674,6 +1674,11 @@ class TestExitPredicate:
         monkeypatch.setattr(
             autoqueue.review_team, "review_route_blocked_families", lambda registry: {}
         )
+        monkeypatch.setattr(
+            autoqueue.review_team,
+            "task_scoped_paid_review_route_blocked_families",
+            lambda registry, route_blocked_families, task_ids, now=None: {},
+        )
         vault = _make_vault(tmp_path)
         _write_task(vault)
         pr_payload = {

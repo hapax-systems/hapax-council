@@ -420,7 +420,8 @@ remote_python_command() {
 
 maybe_load_local_codex_access_token() {
   if [ -n "${CODEX_ACCESS_TOKEN:-}" ]; then
-    return 0
+    echo "hapax-codex: ignoring inherited CODEX_ACCESS_TOKEN; using governed published Codex OAuth token boundary" >&2
+    unset CODEX_ACCESS_TOKEN
   fi
   local token_file="${HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE:-$HOME/.cache/hapax/codex-oauth/access_token}"
   local token="" token_rc=0
