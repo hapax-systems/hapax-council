@@ -82,6 +82,25 @@ def _write_codex_access_token(root: Path, *, exp: int | None = None) -> Path:
     return target
 
 
+def _write_claim_epoch(
+    cache: Path,
+    role: str,
+    task_id: str,
+    *,
+    epoch: str = "1234567890",
+    sid: str | None = None,
+) -> None:
+    suffix = f"-{sid}" if sid else ""
+    (cache / f"cc-active-task-{role}{suffix}").write_text(
+        f"{task_id}\n",
+        encoding="utf-8",
+    )
+    (cache / f"cc-claim-epoch-{role}{suffix}").write_text(
+        f"{epoch} {task_id}\n",
+        encoding="utf-8",
+    )
+
+
 def _seal_token_for_test(token: str, key_hex: str) -> str:
     key = bytes.fromhex(key_hex)
     plain = token.encode()
@@ -251,6 +270,7 @@ def test_codex_headless_runs_on_appendix_via_remote_payload(tmp_path: Path) -> N
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
+    _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     workdir = tmp_path / "worktree"
     workdir.mkdir()
@@ -320,6 +340,7 @@ exit 0
     assert proof["task_id"] == "task-x"
     assert proof["session_id"]
     assert proof["claim_materialized"] is True
+    assert proof["claim_epoch_verified"] is True
     sid = proof["session_id"]
     assert (cache / f"session-role-{sid}").read_text(encoding="utf-8") == "cx-amber\n"
     assert (cache / f"cc-active-task-cx-amber-{sid}").read_text(encoding="utf-8") == "task-x\n"
@@ -332,10 +353,109 @@ exit 0
         .strip()
         .partition(" ")
     )
-    assert legacy_epoch.isdigit()
-    assert session_epoch.isdigit()
+    assert legacy_epoch == "1234567890"
+    assert session_epoch == "1234567890"
     assert legacy_task == "task-x"
     assert session_task == "task-x"
+
+
+def test_codex_headless_remote_no_claim_without_epoch_fails_closed(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    ssh_log = tmp_path / "ssh.log"
+    _write_executable(
+        bin_dir / "ssh",
+        f"""printf 'ssh-called\\n' >> {ssh_log}
+remote_cmd="${{@: -1}}"
+exec bash -c "$remote_cmd"
+""",
+    )
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "without a matching local cc-claim epoch" in result.stderr
+    assert not ssh_log.exists()
+    assert not args_file.exists()
+    assert not list((cache / "orchestration" / "dispatch-host-proofs").glob("*remote.json"))
+
+
+def test_codex_headless_remote_no_claim_with_orphan_epoch_fails_closed(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-claim-epoch-cx-amber").write_text("1234567890 task-x\n", encoding="utf-8")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    ssh_log = tmp_path / "ssh.log"
+    _write_executable(
+        bin_dir / "ssh",
+        f"""printf 'ssh-called\\n' >> {ssh_log}
+exit 99
+""",
+    )
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "without a matching local cc-claim epoch" in result.stderr
+    assert not ssh_log.exists()
+    assert not args_file.exists()
+    assert not list((cache / "orchestration" / "dispatch-host-proofs").glob("*remote.json"))
 
 
 def test_codex_headless_treats_appendix_alias_as_local_on_appendix(tmp_path: Path) -> None:
@@ -588,6 +708,9 @@ exit 0
     _write_executable(
         workdir / "scripts" / "cc-claim",
         f"""printf '%s\\n' "$*" >> "{claim_log}"
+mkdir -p "$HOME/.cache/hapax"
+printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
+printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
 exit 0
 """,
     )
@@ -681,6 +804,7 @@ def test_codex_headless_creates_missing_remote_default_worktree(tmp_path: Path) 
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
+    _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
@@ -842,6 +966,9 @@ def test_codex_headless_remote_token_preflight_refuses_after_claim(tmp_path: Pat
     _write_executable(
         workdir / "scripts" / "cc-claim",
         f"""printf '%s\\n' "$*" >> "{claim_log}"
+mkdir -p "$HOME/.cache/hapax"
+printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
+printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
 exit 0
 """,
     )
@@ -889,6 +1016,9 @@ def test_codex_headless_remote_token_preflight_rejects_unaccepted_bearer_after_c
     _write_executable(
         workdir / "scripts" / "cc-claim",
         f"""printf '%s\\n' "$*" >> "{claim_log}"
+mkdir -p "$HOME/.cache/hapax"
+printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
+printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
 exit 0
 """,
     )
@@ -922,6 +1052,7 @@ def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     workdir = tmp_path / "explicit-worktree"
     workdir.mkdir()
@@ -965,6 +1096,7 @@ def test_codex_headless_remote_bootstrap_refuses_disabled_worktree_creation(
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
@@ -1007,6 +1139,7 @@ def test_codex_headless_remote_bootstrap_reports_missing_remote_council(
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
@@ -1047,6 +1180,7 @@ def test_codex_headless_live_pid_blocks_remote_bootstrap_before_ssh(tmp_path: Pa
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     workdir = tmp_path / "worktree"
     workdir.mkdir()
@@ -1104,6 +1238,7 @@ def test_codex_headless_remote_preflight_reports_missing_codex_binary(
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
@@ -1149,6 +1284,7 @@ def test_codex_headless_remote_bootstrap_reports_missing_git(
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
@@ -1191,6 +1327,7 @@ def test_codex_headless_remote_bootstrap_uses_existing_branch_when_present(
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
@@ -1256,7 +1393,14 @@ def test_codex_headless_remote_exec_uses_preclaim_proven_token_handoff(
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
-    _write_executable(primary / "scripts" / "cc-claim", "exit 0\n")
+    _write_executable(
+        primary / "scripts" / "cc-claim",
+        """mkdir -p "$HOME/.cache/hapax"
+printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
+printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
+exit 0
+""",
+    )
     subprocess.run(["git", "-C", str(primary), "add", "scripts/cc-claim"], check=True)
     subprocess.run(
         ["git", "-C", str(primary), "commit", "-m", "add claim helper"],
@@ -1267,7 +1411,14 @@ def test_codex_headless_remote_exec_uses_preclaim_proven_token_handoff(
     subprocess.run(["git", "-C", str(primary), "branch", "codex/cx-amber"], check=True)
     workdir = home / "projects" / "hapax-council--cx-amber"
     workdir.mkdir(parents=True)
-    _write_executable(workdir / "scripts" / "cc-claim", "exit 0\n")
+    _write_executable(
+        workdir / "scripts" / "cc-claim",
+        """mkdir -p "$HOME/.cache/hapax"
+printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
+printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
+exit 0
+""",
+    )
 
     token_file = _write_codex_access_token(
         home / ".cache" / "hapax" / "codex-oauth",
@@ -1345,7 +1496,14 @@ def test_codex_headless_remote_preflight_refuses_preexisting_token_handoff(
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
-    _write_executable(primary / "scripts" / "cc-claim", "exit 0\n")
+    _write_executable(
+        primary / "scripts" / "cc-claim",
+        """mkdir -p "$HOME/.cache/hapax"
+printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
+printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
+exit 0
+""",
+    )
     subprocess.run(["git", "-C", str(primary), "add", "scripts/cc-claim"], check=True)
     subprocess.run(
         ["git", "-C", str(primary), "commit", "-m", "add claim helper"],
@@ -1356,7 +1514,14 @@ def test_codex_headless_remote_preflight_refuses_preexisting_token_handoff(
     subprocess.run(["git", "-C", str(primary), "branch", "codex/cx-amber"], check=True)
     workdir = home / "projects" / "hapax-council--cx-amber"
     workdir.mkdir(parents=True)
-    _write_executable(workdir / "scripts" / "cc-claim", "exit 0\n")
+    _write_executable(
+        workdir / "scripts" / "cc-claim",
+        """mkdir -p "$HOME/.cache/hapax"
+printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
+printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
+exit 0
+""",
+    )
 
     token_file = _write_codex_access_token(
         home / ".cache" / "hapax" / "codex-oauth",
@@ -1793,6 +1958,7 @@ def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
             "HAPAX_SESSION_ID": "remote-cache-session",
             "HAPAX_AGENT_ROLE": "cx-amber",
             "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
+            "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH": "1234567890 task-x",
         },
         "proof_file": str(proof),
         "token_handoff_file": str(token_path),
@@ -1815,12 +1981,53 @@ def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
     assert not proof.exists()
 
 
+def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: Path) -> None:
+    remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    token_path = _write_codex_access_token(tmp_path / "handoff", exp=int(time.time()) + 3600)
+    seal_key = "f" * 64
+    token_path.write_text(
+        _seal_token_for_test(token_path.read_text(encoding="utf-8").strip(), seal_key),
+        encoding="utf-8",
+    )
+    proof = tmp_path / "proof.json"
+    payload = {
+        "workdir": str(workdir),
+        "env": {
+            "HOME": str(tmp_path / "home"),
+            "HAPAX_SESSION_ID": "remote-cache-session",
+            "HAPAX_AGENT_ROLE": "cx-amber",
+            "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
+        },
+        "proof_file": str(proof),
+        "token_handoff_file": str(token_path),
+        "token_handoff_seal_key": seal_key,
+        "argv": ["codex"],
+    }
+    env = os.environ.copy()
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+
+    result = subprocess.run(
+        [sys.executable, "-c", remote_exec_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "without matching local cc-claim epoch" in result.stderr
+    assert not proof.exists()
+
+
 def test_codex_headless_remote_bootstrap_reports_council_not_git_worktree(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _write_executable(primary / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
@@ -1862,6 +2069,7 @@ def test_codex_headless_remote_bootstrap_falls_back_to_head_for_missing_base_ref
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
@@ -1930,6 +2138,7 @@ def test_codex_headless_remote_bootstrap_reports_git_worktree_add_failure(
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)

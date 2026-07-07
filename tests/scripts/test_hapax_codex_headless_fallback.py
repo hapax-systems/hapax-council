@@ -49,11 +49,22 @@ def _write_codex_access_token(home: Path) -> None:
     target.chmod(0o600)
 
 
+def _write_claim_epoch(cache: Path, role: str, task_id: str) -> None:
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / f"cc-active-task-{role}").write_text(f"{task_id}\n", encoding="utf-8")
+    (cache / f"cc-claim-epoch-{role}").write_text(
+        f"1234567890 {task_id}\n",
+        encoding="utf-8",
+    )
+
+
 def test_codex_headless_takes_explicit_local_fallback_after_appendix_preflight_failure(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
-    (home / ".cache" / "hapax").mkdir(parents=True)
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
     _write_codex_access_token(home)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     workdir = tmp_path / "worktree"
@@ -154,6 +165,9 @@ exec bash -c "$remote_cmd"
     _write_executable(
         workdir / "scripts" / "cc-claim",
         f"""printf '%s\\n' "$*" >> "{claim_log}"
+mkdir -p "$HOME/.cache/hapax"
+printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
+printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
 exit 0
 """,
     )
@@ -179,5 +193,5 @@ exit 0
     assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
     assert "remote worktree bootstrap failed" in result.stderr
     assert "explicit local fallback" in result.stderr
-    assert "missing published Codex OAuth access token" in result.stderr
+    assert "Codex OAuth access token" in result.stderr
     assert claim_log.read_text(encoding="utf-8") == "task-x\n"

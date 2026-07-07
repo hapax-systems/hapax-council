@@ -196,6 +196,26 @@ normalize_session_uuid() {
   printf '%s\n' "$minted"
 }
 
+claim_epoch_for_task() {
+  local role="$1" sid="$2" task="$3" suffix="" epoch_path="" claim_path="" line="" epoch="" epoch_task="" active_task=""
+  for suffix in "$role-$sid" "$role"; do
+    epoch_path="$HOME/.cache/hapax/cc-claim-epoch-$suffix"
+    claim_path="$HOME/.cache/hapax/cc-active-task-$suffix"
+    [[ -s "$epoch_path" && -s "$claim_path" ]] || continue
+    active_task="$(head -n1 "$claim_path" | tr -d '[:space:]')"
+    [[ "$active_task" == "$task" ]] || continue
+    IFS= read -r line <"$epoch_path" || true
+    epoch="${line%% *}"
+    epoch_task="${line#* }"
+    [[ "$line" != "$epoch" ]] || continue
+    if [[ "$epoch" =~ ^[0-9]+$ && "$epoch_task" == "$task" ]]; then
+      printf '%s\n' "$line"
+      return 0
+    fi
+  done
+  return 1
+}
+
 remote_python_command() {
   local payload="$1" code="$2"
   local code_b64="" bash_script="" quoted_script="" quoted_payload="" quoted_code=""
@@ -427,6 +447,7 @@ for name in (
     "HAPAX_PARENT_AGENT_INTERFACE",
     "HAPAX_PARENT_AGENT_NAME",
     "HAPAX_METHODOLOGY_DISPATCH_TASK",
+    "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH",
     "HAPAX_IDLE_UPDATE_SECONDS",
     "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE",
     "PASSWORD_STORE_DIR",
@@ -722,7 +743,7 @@ os.environ["CODEX_ACCESS_TOKEN"]=token
 # Exec-host identity materialization mirrors hapax-claude-headless: the
 # session-keyed claim must exist where codex exec runs, or the worker can fall
 # back to stale legacy lane state and reject the governed dispatch.
-sid=os.environ.get("HAPAX_SESSION_ID",""); role=os.environ.get("HAPAX_AGENT_ROLE",""); task=os.environ.get("HAPAX_METHODOLOGY_DISPATCH_TASK",""); keyable=False; materialized=False
+sid=os.environ.get("HAPAX_SESSION_ID",""); role=os.environ.get("HAPAX_AGENT_ROLE",""); task=os.environ.get("HAPAX_METHODOLOGY_DISPATCH_TASK",""); claim_epoch=os.environ.get("HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH",""); keyable=False; materialized=False; claim_epoch_verified=False
 try:
     sys.path.insert(0, p["workdir"])
     from shared.session_identity import is_claim_keyable_session_id
@@ -735,19 +756,22 @@ try:
         os.makedirs(cache,exist_ok=True)
         open(os.path.join(cache,"session-role-"+sid),"w",encoding="utf-8").write(role+"\n")
         if task:
-            import time as _time
-            epoch_line=str(int(_time.time()))+" "+task+"\n"
+            epoch,sep,epoch_task=claim_epoch.partition(" ")
+            if not sep or not epoch.isdigit() or epoch_task != task:
+                print("hapax-codex-headless: refusing remote claim materialization without matching local cc-claim epoch; next action: run governed cc-claim locally for the dispatch task or omit --no-claim before remote dispatch", file=sys.stderr)
+                sys.exit(78)
+            epoch_line=claim_epoch+"\n"
             open(os.path.join(cache,"cc-claim-epoch-"+role),"w",encoding="utf-8").write(epoch_line)
             open(os.path.join(cache,"cc-claim-epoch-"+role+"-"+sid),"w",encoding="utf-8").write(epoch_line)
             open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
             open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
-            materialized=True
+            materialized=True; claim_epoch_verified=True
 except Exception as exc:
     print("hapax-codex-headless: failed to materialize remote claim cache ("+exc.__class__.__name__+"); next action: repair ~/.cache/hapax permissions on the dispatch host before retrying", file=sys.stderr)
     sys.exit(78)
 if proof:
     os.makedirs(os.path.dirname(proof), exist_ok=True)
-    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"codex-headless","session":p.get("session"),"task_id":p.get("task_id"),"requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[])),"session_id":sid or None,"role":role or None,"claim_materialized":materialized}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
+    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"codex-headless","session":p.get("session"),"task_id":p.get("task_id"),"requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[])),"session_id":sid or None,"role":role or None,"claim_materialized":materialized,"claim_epoch_verified":claim_epoch_verified}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
 argv=p["argv"]; os.execvp(argv[0], argv)'
 
 usage() {
@@ -906,6 +930,10 @@ if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CODEX_TASK" ]]; then
   exit 13
 fi
 export HAPAX_METHODOLOGY_DISPATCH_TASK="$CODEX_TASK"
+CLAIM_EPOCH_LINE="$(claim_epoch_for_task "$SESSION" "$SESSION_UUID" "$CODEX_TASK" || true)"
+if [[ -n "$CLAIM_EPOCH_LINE" ]]; then
+  export HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH="$CLAIM_EPOCH_LINE"
+fi
 
 # Keep the lane from becoming a credential sink (same scrub as hapax-codex).
 unset GITHUB_PERSONAL_ACCESS_TOKEN
@@ -1021,6 +1049,15 @@ if [[ -n "$DISPATCH_HOST_REQUESTED" && -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1
 fi
 
 if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
+  CLAIM_EPOCH_LINE="$(claim_epoch_for_task "$SESSION" "$SESSION_UUID" "$CODEX_TASK" || true)"
+  if [[ -z "$CLAIM_EPOCH_LINE" ]]; then
+    echo "hapax-codex-headless: refusing remote dispatch without a matching local cc-claim epoch for '$SESSION' task '$CODEX_TASK'; next action: run governed cc-claim locally for the dispatch task or omit --no-claim before remote dispatch" >&2
+    exit 78
+  fi
+  export HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH="$CLAIM_EPOCH_LINE"
+fi
+
+if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
   TOKEN_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 1)"
   TOKEN_PREFLIGHT_COMMAND="$(remote_python_command "$TOKEN_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
   TOKEN_PREFLIGHT_ERR=""
@@ -1097,6 +1134,12 @@ if [[ -z "$DISPATCH_HOST_REQUESTED" && -z "$DISPATCH_HOST" ]]; then
 fi
 
 if [[ -n "$DISPATCH_HOST" ]]; then
+  CLAIM_EPOCH_LINE="$(claim_epoch_for_task "$SESSION" "$SESSION_UUID" "$CODEX_TASK" || true)"
+  if [[ -z "$CLAIM_EPOCH_LINE" ]]; then
+    echo "hapax-codex-headless: refusing remote dispatch without a matching local cc-claim epoch for '$SESSION' task '$CODEX_TASK'; next action: run governed cc-claim locally for the dispatch task or omit --no-claim before remote dispatch" >&2
+    exit 78
+  fi
+  export HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH="$CLAIM_EPOCH_LINE"
   POST_CLAIM_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 0 "$REMOTE_TOKEN_HANDOFF")"
   POST_CLAIM_PREFLIGHT_COMMAND="$(remote_python_command "$POST_CLAIM_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
   POST_CLAIM_PREFLIGHT_ERR=""

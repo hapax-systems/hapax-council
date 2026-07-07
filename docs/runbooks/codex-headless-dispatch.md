@@ -40,10 +40,12 @@ Remote appendix dispatch uses this order:
    `HAPAX_CODEX_CREATE_WORKTREE=1` (the unset/default value is `1`);
 4. run full remote preflight for required directories, hook adapter, `python3`,
    `codex`, OAuth freshness, and `codex debug models` bearer actuation;
-5. after the local `cc-claim` boundary accepts the dispatch, snapshot the exact
-   preflight-proven token into a short-lived sealed remote handoff file. The
-   handoff create is exclusive, `0600`, and non-following where the dispatch host
-   exposes `O_NOFOLLOW`; a preexisting file or symlink is a hard preflight
+5. after the local `cc-claim` boundary accepts the dispatch, carry the matching
+   local `cc-claim-epoch-<cx-session>` line plus matching `cc-active-task` as the
+   remote claim proof and snapshot the exact preflight-proven token into a
+   short-lived sealed remote handoff file. The handoff create is exclusive,
+   `0600`, and non-following where the dispatch host exposes `O_NOFOLLOW`; a
+   preexisting file or symlink is a hard preflight
    failure. The file content is a one-time authenticated sealed blob, not a bearer
    token; remote exec needs the per-launch seal key from its payload to recover
    the token after deleting the file. The remote preflight also schedules an
@@ -65,7 +67,10 @@ Local headless dispatch similarly proves the published OAuth token with
 subsequent `codex exec`; it must not reread a mutable token file after claim.
 
 On the remote host, the launcher materializes both the legacy and session-keyed
-claim caches plus their epoch sidecars before `codex exec` starts:
+claim caches plus their epoch sidecars before `codex exec` starts, using the
+matched local claim epoch. Remote exec refuses task-bound dispatch if the local
+payload lacks a matching `HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH`; it must never
+invent a fresh epoch from `HAPAX_METHODOLOGY_DISPATCH_TASK` alone:
 `cc-active-task-<cx-session>`, `cc-claim-epoch-<cx-session>`,
 `cc-active-task-<cx-session>-<session_id>`, and
 `cc-claim-epoch-<cx-session>-<session_id>`. Recheck a live remote claim with:
