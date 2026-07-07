@@ -313,11 +313,15 @@ def _required_publication_gate_receipts(surfaces: list[str]) -> set[str]:
         policy_targets = {surface for surface in target_surfaces if isinstance(surface, str)}
         if not selected.intersection(policy_targets):
             continue
+        fanout_policy = bool(
+            selected.intersection(FANOUT_SURFACE_IDS)
+            and policy_targets.intersection(FANOUT_SURFACE_IDS)
+        )
         if policy.get("status") == "guarded_public_fanout" and not selected.intersection(
             FANOUT_SURFACE_IDS
         ):
             continue
-        required.update(_policy_required_gate_ids(policy))
+        required.update(_policy_required_gate_ids(policy, fanout_policy=fanout_policy))
     if not required:
         raise PublicationGateError(
             "no publication gate policy covers target surfaces; next action: add the "
@@ -326,12 +330,23 @@ def _required_publication_gate_receipts(surfaces: list[str]) -> set[str]:
     return required
 
 
-def _policy_required_gate_ids(policy: Mapping[str, object]) -> set[str]:
+def _policy_required_gate_ids(
+    policy: Mapping[str, object],
+    *,
+    fanout_policy: bool = False,
+) -> set[str]:
+    status = policy.get("status")
     baseline = (
         PUBLICATION_FANOUT_REQUIRED_GATES
-        if policy.get("status") == "guarded_public_fanout"
+        if status == "guarded_public_fanout" or fanout_policy
         else PUBLICATION_BASELINE_REQUIRED_GATES
     )
+    if fanout_policy and status != "guarded_public_fanout":
+        raise PublicationGateError(
+            "publication policy targeting fanout surfaces must use status "
+            "guarded_public_fanout; next action: repair publication_frontmatter_policy.status "
+            "before publishing"
+        )
     gates = policy.get("required_gates")
     if not isinstance(gates, list) or not gates:
         raise PublicationGateError(

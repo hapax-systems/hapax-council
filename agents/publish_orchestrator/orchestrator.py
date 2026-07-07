@@ -427,7 +427,15 @@ class Orchestrator:
             if log_path.exists():
                 try:
                     record = json.loads(log_path.read_text())
-                except (OSError, json.JSONDecodeError):
+                except (OSError, json.JSONDecodeError) as exc:
+                    log.warning(
+                        "publication prior surface log unreadable; redispatching "
+                        "artifact=%s surface=%s path=%s error=%s",
+                        artifact.slug,
+                        surface,
+                        log_path,
+                        type(exc).__name__,
+                    )
                     continue
                 if record.get("artifact_fingerprint") == artifact_fingerprint:
                     result = record.get("result", "")
@@ -592,7 +600,8 @@ class Orchestrator:
     ) -> tuple[tuple[str, ...], str | None]:
         fallback = _default_publication_gate_receipts(surfaces)
         if self._publication_allowed_surfaces_override is not None:
-            return fallback, None
+            _policies, policy_error = _configured_publication_policies()
+            return fallback, policy_error
         return _configured_publication_gate_receipts(surfaces, fallback=fallback)
 
     def _public_gate_receipts_gate_result(
@@ -1132,7 +1141,15 @@ def _configured_publication_gate_receipts(
             FANOUT_SURFACE_IDS
         ):
             continue
-        gate_ids, gate_error = _policy_required_gate_ids(policy, path=path)
+        fanout_policy = bool(
+            selected.intersection(FANOUT_SURFACE_IDS)
+            and policy_targets.intersection(FANOUT_SURFACE_IDS)
+        )
+        gate_ids, gate_error = _policy_required_gate_ids(
+            policy,
+            path=path,
+            fanout_policy=fanout_policy,
+        )
         required.extend(gate for gate in gate_ids if gate not in required)
         if gate_error is not None:
             errors.append(gate_error)
@@ -1181,10 +1198,12 @@ def _policy_required_gate_ids(
     policy: Mapping[str, object],
     *,
     path: Path,
+    fanout_policy: bool = False,
 ) -> tuple[list[str], str | None]:
+    status = policy.get("status")
     baseline = (
         PUBLICATION_FANOUT_REQUIRED_GATES
-        if policy.get("status") == "guarded_public_fanout"
+        if status == "guarded_public_fanout" or fanout_policy
         else PUBLICATION_BASELINE_REQUIRED_GATES
     )
     gates = policy.get("required_gates")
@@ -1204,6 +1223,12 @@ def _policy_required_gate_ids(
 
     required = list(dict.fromkeys([*baseline, *configured]))
     errors: list[str] = []
+    if fanout_policy and status != "guarded_public_fanout":
+        errors.append(
+            "publication policy targeting fanout surfaces must use status "
+            f"guarded_public_fanout: {path}; next action: repair "
+            "publication_frontmatter_policy.status before processing inbox artifacts"
+        )
     if malformed:
         errors.append(
             f"publication policy required_gates contains blank or non-string gate ids: {path}; "

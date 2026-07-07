@@ -18,6 +18,12 @@ from agents.publication_bus.omg_rss_fanout import (
 )
 
 _RECEIPT_ROOT: Path | None = None
+PUBLIC_GATE_AUTHORITY_BLOCK = (
+    "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
+    "acceptor: claim-verification-council\n"
+    "review_profile: claim_verification_council_public_egress\n"
+    "evidence_ref: review-dossier:public-gate-test\n"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -50,6 +56,7 @@ def _gate_receipts(
         (_RECEIPT_ROOT / f"{gate}.yaml").write_text(
             f"gate_id: {gate}\n"
             "status: passed\n"
+            f"{PUBLIC_GATE_AUTHORITY_BLOCK}"
             f"source_address: {source_address}\n"
             f"entry_id: {entry_id}\n"
             f"content_sha256: {sha256(content.encode('utf-8')).hexdigest()}\n"
@@ -65,7 +72,7 @@ def _unbound_gate_receipts() -> dict[str, str]:
         raise AssertionError("receipt root fixture did not run")
     for gate in FANOUT_REQUIRED_GATES:
         (_RECEIPT_ROOT / f"{gate}.yaml").write_text(
-            f"gate_id: {gate}\nstatus: passed\n",
+            f"gate_id: {gate}\nstatus: passed\n{PUBLIC_GATE_AUTHORITY_BLOCK}",
             encoding="utf-8",
         )
     return {gate: f"public-gate:{gate}.yaml" for gate in FANOUT_REQUIRED_GATES}

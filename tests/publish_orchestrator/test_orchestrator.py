@@ -25,6 +25,13 @@ from shared.publication_hardening.gate import (
 )
 from shared.publication_hardening.review import ReviewReport
 
+PUBLIC_GATE_AUTHORITY_BLOCK = (
+    "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
+    "acceptor: claim-verification-council\n"
+    "review_profile: claim_verification_council_public_egress\n"
+    "evidence_ref: review-dossier:public-gate-test\n"
+)
+
 
 def _drop_artifact(
     state_root: Path,
@@ -74,6 +81,7 @@ def _write_public_gate_receipts(
         (receipt_root / f"{gate}.yaml").write_text(
             f"gate_id: {gate}\n"
             "status: passed\n"
+            f"{PUBLIC_GATE_AUTHORITY_BLOCK}"
             f"artifact_slug: {artifact.slug}\n"
             f"artifact_fingerprint: {_artifact_fingerprint(artifact)}\n"
             "target_surfaces:\n"
@@ -673,6 +681,7 @@ class TestSingleSurface:
         receipt.write_text(
             "gate_id: rights_privacy_redaction_pass\n"
             "status: passed\n"
+            f"{PUBLIC_GATE_AUTHORITY_BLOCK}"
             "artifact_slug: replayed-public-receipt\n"
             "artifact_fingerprint: stale-fingerprint\n"
             "target_surfaces:\n"
@@ -700,6 +709,51 @@ class TestSingleSurface:
         assert gate_log["result"] == "operator_hold"
         assert gate_log["publication_gate_decision"] == "hold"
         assert any("rights_privacy_redaction_pass" in issue for issue in gate_log["flagged_issues"])
+
+    def test_malformed_fanout_policy_status_holds_before_surface_dispatch(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+        policy_path = _write_publication_policy(
+            tmp_path,
+            target_surfaces=("omg-lol-weblog-bearer-fanout",),
+            required_gates=PUBLICATION_FANOUT_REQUIRED_GATES,
+            status="guarded_public_surface",
+        )
+        monkeypatch.setattr(
+            orchestrator_module,
+            "PUBLICATION_POLICY_PATHS",
+            (policy_path,),
+        )
+
+        _drop_artifact(
+            tmp_path,
+            slug="bad-fanout-policy-status",
+            surfaces=["omg-lol-weblog-bearer-fanout"],
+        )
+        review_pass = _CountingReviewPass()
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"omg-lol-weblog-bearer-fanout": "fake_publisher:publish_artifact"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=review_pass,
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        assert review_pass.calls == 0
+        fake_module.publish_artifact.assert_not_called()
+        gate_log = json.loads(
+            (
+                tmp_path / "publish/log/bad-fanout-policy-status.publication-hardening-gate.json"
+            ).read_text()
+        )
+        assert gate_log["result"] == "operator_hold"
+        assert any("guarded_public_fanout" in issue for issue in gate_log["flagged_issues"])
 
     def test_publication_gate_override_dispatches_with_surface_receipt(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()
@@ -790,6 +844,46 @@ class TestSingleSurface:
         assert any(child["name"] == "public_gate_receipts" for child in gate_log["child_results"])
         assert (tmp_path / "publish/draft/override-missing-public-receipts.json").exists()
 
+    def test_surface_override_still_validates_publication_policy_shape(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+        policy_path = tmp_path / "publication-policy.yaml"
+        policy_path.write_text("publication_frontmatter_policy: [not-a-policy]\n", encoding="utf-8")
+        monkeypatch.setattr(
+            orchestrator_module,
+            "PUBLICATION_POLICY_PATHS",
+            (policy_path,),
+        )
+
+        _drop_artifact(tmp_path, slug="override-bad-policy", surfaces=["fake"])
+        review_pass = _CountingReviewPass()
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=review_pass,
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        assert review_pass.calls == 0
+        fake_module.publish_artifact.assert_not_called()
+        gate_log = json.loads(
+            (
+                tmp_path / "publish/log/override-bad-policy.publication-hardening-gate.json"
+            ).read_text()
+        )
+        assert gate_log["result"] == "operator_hold"
+        assert any(
+            "publication_frontmatter_policy" in issue for issue in gate_log["flagged_issues"]
+        )
+
     def test_publisher_raises_logs_error(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()
         fake_module.publish_artifact = mock.Mock(side_effect=RuntimeError("send failure"))
@@ -852,6 +946,32 @@ class TestSingleSurface:
         assert any(event_id.endswith(":fake:deferred") for event_id in event_ids)
         assert any(event_id.endswith(":fake:ok") for event_id in event_ids)
         assert len(event_ids) == len(set(event_ids))
+
+    def test_corrupt_prior_surface_log_warns_before_redispatch(
+        self,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        _drop_artifact(tmp_path, slug="corrupt-log", surfaces=["fake"])
+        log_path = tmp_path / "publish/log/corrupt-log.fake.json"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("{not-json", encoding="utf-8")
+        orch = _make_orchestrator(
+            tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+        )
+
+        with caplog.at_level("WARNING", logger=orchestrator_module.__name__):
+            assert orch.run_once() == 1
+
+        fake_module.publish_artifact.assert_called_once()
+        assert "publication prior surface log unreadable" in caplog.text
+        assert str(log_path) in caplog.text
 
     def test_changed_artifact_republishes_same_slug(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()

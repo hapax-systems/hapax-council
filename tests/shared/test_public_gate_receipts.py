@@ -7,6 +7,12 @@ from pathlib import Path
 from shared.public_gate_receipts import public_gate_receipt_value_present
 
 GATE = "rights_privacy_redaction_pass"
+AUTHORITY_BLOCK = (
+    "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
+    "acceptor: claim-verification-council\n"
+    "review_profile: claim_verification_council_public_egress\n"
+    "evidence_ref: review-dossier:public-gate-test\n"
+)
 
 
 def _write(root: Path, name: str, text: str) -> None:
@@ -15,10 +21,58 @@ def _write(root: Path, name: str, text: str) -> None:
     target.write_text(text, encoding="utf-8")
 
 
+def _receipt_text(*, gate: str = GATE, status: str = "passed", extra: str = "") -> str:
+    return f"gate_id: {gate}\nstatus: {status}\n{AUTHORITY_BLOCK}{extra}"
+
+
 def test_accepts_passed_yaml_receipt_with_extension_inferred(tmp_path: Path) -> None:
-    _write(tmp_path, "receipt-1.yaml", f"gate_id: {GATE}\nstatus: passed\n")
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
 
     assert public_gate_receipt_value_present(
+        "public-gate:receipt-1",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_self_minted_receipt_without_delegated_authority(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", f"gate_id: {GATE}\nstatus: passed\n")
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_operator_accepted_receipt_without_independent_acceptor(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "receipt-1.yaml",
+        _receipt_text().replace(
+            "acceptor: claim-verification-council",
+            "acceptor: operator",
+        ),
+    )
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_circular_public_gate_evidence_ref(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "receipt-1.yaml",
+        _receipt_text().replace(
+            "evidence_ref: review-dossier:public-gate-test",
+            "evidence_ref: public-gate:self",
+        ),
+    )
+
+    assert not public_gate_receipt_value_present(
         "public-gate:receipt-1",
         expected_gate=GATE,
         roots=(tmp_path,),
@@ -29,12 +83,11 @@ def test_accepts_receipt_with_matching_artifact_binding(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "receipt-1.yaml",
-        f"gate_id: {GATE}\n"
-        "status: passed\n"
-        "artifact_slug: demo\n"
-        "artifact_fingerprint: abc123\n"
-        "target_surfaces:\n"
-        "  - fake\n",
+        _receipt_text(
+            extra=(
+                "artifact_slug: demo\nartifact_fingerprint: abc123\ntarget_surfaces:\n  - fake\n"
+            )
+        ),
     )
 
     assert public_gate_receipt_value_present(
@@ -53,12 +106,14 @@ def test_rejects_replayed_receipt_with_wrong_artifact_binding(tmp_path: Path) ->
     _write(
         tmp_path,
         "receipt-1.yaml",
-        f"gate_id: {GATE}\n"
-        "status: passed\n"
-        "artifact_slug: demo\n"
-        "artifact_fingerprint: old-fingerprint\n"
-        "target_surfaces:\n"
-        "  - fake\n",
+        _receipt_text(
+            extra=(
+                "artifact_slug: demo\n"
+                "artifact_fingerprint: old-fingerprint\n"
+                "target_surfaces:\n"
+                "  - fake\n"
+            )
+        ),
     )
 
     assert not public_gate_receipt_value_present(
@@ -128,13 +183,15 @@ def test_rejects_root_gate_with_nested_unrelated_binding_record(tmp_path: Path) 
     _write(
         tmp_path,
         "receipt-1.yaml",
-        f"gate_id: {GATE}\n"
-        "status: passed\n"
-        "current_binding_record:\n"
-        "  artifact_slug: demo\n"
-        "  artifact_fingerprint: abc123\n"
-        "  target_surfaces:\n"
-        "    - fake\n",
+        _receipt_text(
+            extra=(
+                "current_binding_record:\n"
+                "  artifact_slug: demo\n"
+                "  artifact_fingerprint: abc123\n"
+                "  target_surfaces:\n"
+                "    - fake\n"
+            )
+        ),
     )
 
     assert not public_gate_receipt_value_present(
@@ -183,7 +240,7 @@ def test_rejects_positive_outcome_not_bound_to_gate_object(tmp_path: Path) -> No
     _write(
         tmp_path,
         "receipt-1.yaml",
-        f"gate_id: {GATE}\nmetadata:\n  status: passed\n",
+        f"gate_id: {GATE}\n{AUTHORITY_BLOCK}metadata:\n  status: passed\n",
     )
 
     assert not public_gate_receipt_value_present(
@@ -197,7 +254,7 @@ def test_accepts_iterable_ref_and_markdown_frontmatter(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "receipt-1.md",
-        f"---\nrequired_gates:\n  - {GATE}\nverdict: accepted\n---\n\nBody\n",
+        f"---\nrequired_gates:\n  - {GATE}\nverdict: accepted\n{AUTHORITY_BLOCK}---\n\nBody\n",
     )
 
     assert public_gate_receipt_value_present(
@@ -211,7 +268,7 @@ def test_accepts_direct_gate_mapping_with_positive_status(tmp_path: Path) -> Non
     _write(
         tmp_path,
         "nested.yaml",
-        f"gates:\n  {GATE}: passed\noutcome: approved\n",
+        f"gates:\n  {GATE}: passed\noutcome: approved\n{AUTHORITY_BLOCK}",
     )
 
     assert public_gate_receipt_value_present(
@@ -256,7 +313,7 @@ def test_rejects_nested_gate_key_with_failed_value(tmp_path: Path) -> None:
 
 
 def test_rejects_mapping_and_bytes_values(tmp_path: Path) -> None:
-    _write(tmp_path, "receipt-1.yaml", f"gate_id: {GATE}\nstatus: passed\n")
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
 
     assert not public_gate_receipt_value_present(
         {"ref": "public-gate:receipt-1.yaml"},
@@ -271,8 +328,8 @@ def test_rejects_mapping_and_bytes_values(tmp_path: Path) -> None:
 
 
 def test_rejects_unsupported_receipt_extension(tmp_path: Path) -> None:
-    _write(tmp_path, "receipt-1.txt", f"gate_id: {GATE}\nstatus: passed\n")
-    _write(tmp_path, "receipt-1.txt.yaml", f"gate_id: {GATE}\nstatus: passed\n")
+    _write(tmp_path, "receipt-1.txt", _receipt_text())
+    _write(tmp_path, "receipt-1.txt.yaml", _receipt_text())
 
     assert not public_gate_receipt_value_present(
         "public-gate:receipt-1.txt",
@@ -283,7 +340,7 @@ def test_rejects_unsupported_receipt_extension(tmp_path: Path) -> None:
 
 def test_rejects_root_escape_and_malformed_yaml(tmp_path: Path) -> None:
     outside = tmp_path.parent / "outside-public-gate.yaml"
-    outside.write_text(f"gate_id: {GATE}\nstatus: passed\n", encoding="utf-8")
+    outside.write_text(_receipt_text(), encoding="utf-8")
     _write(tmp_path, "bad.yaml", f"gate_id: {GATE}\nstatus: [\n")
 
     assert not public_gate_receipt_value_present(

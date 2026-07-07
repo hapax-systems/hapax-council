@@ -52,6 +52,69 @@ PUBLIC_GATE_OUTCOME_KEYS = frozenset(
         "verdict",
     }
 )
+PUBLIC_GATE_AUTHORITY_CASE_KEYS = frozenset({"authority_case"})
+PUBLIC_GATE_ACCEPTOR_KEYS = frozenset(
+    {
+        "acceptor",
+        "accepted_by",
+        "approved_by",
+        "authority_acceptor",
+        "review_acceptor",
+        "reviewed_by",
+    }
+)
+PUBLIC_GATE_REVIEW_PROFILE_KEYS = frozenset(
+    {
+        "claim_review_profile",
+        "quality_floor",
+        "review_floor",
+        "review_profile",
+        "review_required",
+    }
+)
+PUBLIC_GATE_EVIDENCE_REF_KEYS = frozenset(
+    {
+        "claim_review_evidence_ref",
+        "claim_review_evidence_refs",
+        "dossier_ref",
+        "dossier_refs",
+        "evidence_ref",
+        "evidence_refs",
+        "review_receipt",
+        "review_receipts",
+    }
+)
+PUBLIC_GATE_AUTHORITY_CASE_RE = re.compile(r"\A(?:CASE|REQ)-[A-Za-z0-9][A-Za-z0-9_.:-]{2,}\Z")
+PUBLIC_GATE_SELF_AUTHORITY_VALUES = frozenset(
+    {
+        "codex",
+        "claude",
+        "local",
+        "manual",
+        "operator",
+        "oudepode",
+        "self",
+        "self-minted",
+        "test",
+        "unknown",
+    }
+)
+PUBLIC_GATE_EVIDENCE_REF_PREFIXES = (
+    "acceptance-receipt:",
+    "claim-review:",
+    "cvc:",
+    "docs/",
+    "dossier:",
+    "evidence:",
+    "github:",
+    "github-pr:",
+    "https://github.com/hapax-systems/",
+    "relay-receipt:",
+    "review:",
+    "review-dossier:",
+    "review-team:",
+    "task:",
+)
 PUBLIC_GATE_PASS_VALUES = frozenset(
     {
         "accept",
@@ -277,6 +340,7 @@ def _receipt_candidate_mapping_allows(
     return (
         _mapping_contains_expected_gate(data, expected_gate)
         and _mapping_outcome_allows(data)
+        and _receipt_mapping_has_required_authority(data)
         and _receipt_mapping_has_required_bindings(data, bindings)
     )
 
@@ -332,6 +396,56 @@ def _receipt_mapping_has_required_bindings(
     if not bindings:
         return True
     return all(_receipt_mapping_has_binding(data, key, value) for key, value in bindings.items())
+
+
+def _receipt_mapping_has_required_authority(data: Mapping[Any, Any]) -> bool:
+    return (
+        _mapping_has_authority_case(data)
+        and _mapping_has_non_self_text(data, PUBLIC_GATE_ACCEPTOR_KEYS)
+        and _mapping_has_nonblank_text(data, PUBLIC_GATE_REVIEW_PROFILE_KEYS)
+        and _mapping_has_evidence_ref(data)
+    )
+
+
+def _mapping_has_authority_case(data: Mapping[Any, Any]) -> bool:
+    return any(
+        PUBLIC_GATE_AUTHORITY_CASE_RE.fullmatch(value) is not None
+        for value in _iter_direct_text_values(data, PUBLIC_GATE_AUTHORITY_CASE_KEYS)
+    )
+
+
+def _mapping_has_non_self_text(data: Mapping[Any, Any], keys: frozenset[str]) -> bool:
+    return any(
+        value.strip().casefold() not in PUBLIC_GATE_SELF_AUTHORITY_VALUES
+        for value in _iter_direct_text_values(data, keys)
+    )
+
+
+def _mapping_has_nonblank_text(data: Mapping[Any, Any], keys: frozenset[str]) -> bool:
+    return any(True for _ in _iter_direct_text_values(data, keys))
+
+
+def _mapping_has_evidence_ref(data: Mapping[Any, Any]) -> bool:
+    for value in _iter_direct_text_values(data, PUBLIC_GATE_EVIDENCE_REF_KEYS):
+        normalized = value.strip()
+        lowered = normalized.casefold()
+        if any(lowered.startswith(prefix) for prefix in PUBLIC_GATE_RECEIPT_PREFIXES):
+            continue
+        if lowered in PUBLIC_GATE_SELF_AUTHORITY_VALUES:
+            continue
+        if lowered.startswith(PUBLIC_GATE_EVIDENCE_REF_PREFIXES):
+            return True
+    return False
+
+
+def _iter_direct_text_values(data: Mapping[Any, Any], keys: frozenset[str]) -> Iterable[str]:
+    for value in _iter_direct_binding_values(data, keys):
+        if isinstance(value, str) and value.strip():
+            yield value.strip()
+        elif _is_non_string_iterable(value):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    yield item.strip()
 
 
 def _receipt_mapping_has_binding(data: Any, key: str, expected: object) -> bool:

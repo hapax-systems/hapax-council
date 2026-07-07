@@ -41,6 +41,13 @@ from shared.publication_hardening.gate import (
 )
 from shared.publication_hardening.review import ReviewReport
 
+PUBLIC_GATE_AUTHORITY_BLOCK = (
+    "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
+    "acceptor: claim-verification-council\n"
+    "review_profile: claim_verification_council_public_egress\n"
+    "evidence_ref: review-dossier:public-gate-test\n"
+)
+
 
 def _drop_approved_artifact(
     state_root,
@@ -82,6 +89,7 @@ def _write_public_gate_receipts(state_root, artifact: PreprintArtifact) -> dict[
         (receipt_root / f"{gate}.yaml").write_text(
             f"gate_id: {gate}\n"
             "status: passed\n"
+            f"{PUBLIC_GATE_AUTHORITY_BLOCK}"
             f"artifact_slug: {artifact.slug}\n"
             f"artifact_fingerprint: {_artifact_fingerprint(artifact)}\n"
             "target_surfaces:\n"

@@ -22,6 +22,12 @@ PUBLICATION_GATE_RECEIPTS = {
     "claim_review_current": "public-gate:test-claim-review",
     "no_direct_public_egress": "public-gate:test-no-direct-egress",
 }
+PUBLIC_GATE_AUTHORITY_BLOCK = (
+    "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
+    "acceptor: claim-verification-council\n"
+    "review_profile: claim_verification_council_public_egress\n"
+    "evidence_ref: review-dossier:public-gate-test\n"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -100,6 +106,7 @@ def _write_bound_receipts_for_expected_artifact(
         (root / f"{suffix}.yaml").write_text(
             f"gate_id: {gate}\n"
             "status: passed\n"
+            f"{PUBLIC_GATE_AUTHORITY_BLOCK}"
             f"artifact_slug: {bindings['artifact_slug']}\n"
             f"artifact_fingerprint: {bindings['artifact_fingerprint']}\n"
             "target_surfaces:\n"
@@ -260,7 +267,7 @@ class TestBuildArtifact:
         for gate, receipt_ref in PUBLICATION_GATE_RECEIPTS.items():
             suffix = receipt_ref.removeprefix("public-gate:")
             (root / f"{suffix}.yaml").write_text(
-                f"gate_id: {gate}\nstatus: passed\n",
+                f"gate_id: {gate}\nstatus: passed\n{PUBLIC_GATE_AUTHORITY_BLOCK}",
                 encoding="utf-8",
             )
 
@@ -365,6 +372,25 @@ class TestBuildArtifact:
         with pytest.raises(
             publish_vault_artifact.PublicationGateError,
             match="fanout_loop_prevention_present",
+        ):
+            publish_vault_artifact._required_publication_gate_receipts(
+                ["omg-lol-weblog-bearer-fanout"]
+            )
+
+    def test_fanout_policy_status_must_be_explicit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        policy = _write_policy(
+            tmp_path,
+            status="guarded_public_channel",
+            target_surfaces=("omg-lol-weblog-bearer-fanout",),
+            required_gates=publish_vault_artifact.PUBLICATION_FANOUT_REQUIRED_GATES,
+        )
+        monkeypatch.setattr(publish_vault_artifact, "PUBLICATION_POLICY_PATHS", (policy,))
+
+        with pytest.raises(
+            publish_vault_artifact.PublicationGateError,
+            match="guarded_public_fanout",
         ):
             publish_vault_artifact._required_publication_gate_receipts(
                 ["omg-lol-weblog-bearer-fanout"]
