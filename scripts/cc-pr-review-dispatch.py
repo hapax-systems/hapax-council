@@ -84,6 +84,48 @@ REVIEWER_DIAGNOSTIC_SECRETISH_RE = re.compile(
     r"(?:sk-[a-z0-9_-]+|gh[pousr]_[a-z0-9_]+|[a-z0-9_-]{40,})",
     re.IGNORECASE,
 )
+PUBLIC_GATE_AUTHORITY_CONTEXT_KEYS = (
+    "public_gate_authority",
+    "publication_gate_authority",
+)
+PUBLIC_GATE_AUTHORITY_GATE_KEYS = (
+    "required_gates",
+    "required_gate_ids",
+    "public_gates",
+    "public_gate_ids",
+    "publication_gates",
+    "publication_gate_ids",
+    "gate_ids",
+    "gates",
+    "gate_id",
+    "gate",
+)
+PUBLIC_GATE_AUTHORITY_RECEIPT_KEYS = (
+    "authorized_public_gate_receipts",
+    "authorized_public_gate_receipt",
+    "public_gate_receipts",
+    "public_gate_receipt",
+    "publication_gate_receipts",
+    "publication_gate_receipt",
+    "authorized_receipts",
+    "authorized_receipt",
+    "receipt_refs",
+    "receipt_ref",
+)
+PUBLIC_GATE_AUTHORITY_ARTIFACT_SLUG_KEYS = (
+    "artifact_slug",
+    "publication_artifact_slug",
+    "slug",
+)
+PUBLIC_GATE_AUTHORITY_ARTIFACT_FINGERPRINT_KEYS = (
+    "artifact_fingerprint",
+    "publication_artifact_fingerprint",
+)
+PUBLIC_GATE_AUTHORITY_TARGET_SURFACE_KEYS = (
+    "target_surfaces",
+    "surfaces",
+    "surfaces_targeted",
+)
 
 
 def _review_team_authority_issuer(reviewers: list[dict[str, Any]]) -> str:
@@ -97,9 +139,101 @@ def _review_team_authority_issuer(reviewers: list[dict[str, Any]]) -> str:
     return "review-team:" + ",".join(families) if families else "review-team:unknown"
 
 
+def _public_gate_context_source(frontmatter: dict[str, Any]) -> dict[str, Any]:
+    for key in PUBLIC_GATE_AUTHORITY_CONTEXT_KEYS:
+        value = frontmatter.get(key)
+        if isinstance(value, dict):
+            return value
+    return frontmatter
+
+
+def _first_string(source: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _string_items(value: Any) -> list[str]:
+    if isinstance(value, str):
+        item = value.strip()
+        return [item] if item else []
+    if isinstance(value, dict):
+        items: list[str] = []
+        for nested in value.values():
+            items.extend(_string_items(nested))
+        return items
+    if isinstance(value, (list, tuple, set)):
+        items = []
+        for nested in value:
+            items.extend(_string_items(nested))
+        return items
+    return []
+
+
+def _first_string_list(source: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    for key in keys:
+        items = _string_items(source.get(key))
+        if items:
+            return list(dict.fromkeys(items))
+    return []
+
+
+def _publication_gate_receipt_keys(source: dict[str, Any]) -> list[str]:
+    for key in ("publication_gate_receipts", "public_gate_receipts"):
+        value = source.get(key)
+        if isinstance(value, dict):
+            return [
+                str(gate).strip() for gate in value if isinstance(gate, str) and str(gate).strip()
+            ]
+    return []
+
+
+def _public_gate_authority_context(frontmatter: dict[str, Any]) -> dict[str, Any]:
+    source = _public_gate_context_source(frontmatter)
+    required_gates = _first_string_list(source, PUBLIC_GATE_AUTHORITY_GATE_KEYS)
+    if not required_gates:
+        required_gates = _publication_gate_receipt_keys(source)
+    receipt_refs = _first_string_list(source, PUBLIC_GATE_AUTHORITY_RECEIPT_KEYS)
+    artifact_slug = _first_string(source, PUBLIC_GATE_AUTHORITY_ARTIFACT_SLUG_KEYS)
+    artifact_fingerprint = _first_string(
+        source,
+        PUBLIC_GATE_AUTHORITY_ARTIFACT_FINGERPRINT_KEYS,
+    )
+    target_surfaces = _first_string_list(source, PUBLIC_GATE_AUTHORITY_TARGET_SURFACE_KEYS)
+
+    context = {
+        "required_gates": required_gates,
+        "authorized_public_gate_receipts": receipt_refs,
+        "artifact_slug": artifact_slug,
+        "artifact_fingerprint": artifact_fingerprint,
+        "target_surfaces": target_surfaces,
+    }
+    if all(context.values()):
+        return context
+    if any(context.values()):
+        missing = ", ".join(key for key, value in context.items() if not value)
+        LOG.warning("public-gate authority context incomplete; omitting fields: %s", missing)
+    return {}
+
+
+def _apply_public_gate_authority_context(
+    data: dict[str, Any],
+    frontmatter: dict[str, Any],
+) -> None:
+    context = _public_gate_authority_context(frontmatter)
+    if context:
+        data.update(context)
+
+
 def _sign_public_gate_authority_evidence(data: dict[str, Any]) -> None:
     secret = os.environ.get(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, "").strip()
     if not secret:
+        LOG.warning(
+            "public-gate authority evidence left unsigned; %s is unset",
+            public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+        )
         return
     data["authority_issuer"] = _review_team_authority_issuer(
         [reviewer for reviewer in data.get("reviewers") or [] if isinstance(reviewer, dict)]
@@ -1700,6 +1834,7 @@ def write_acceptance_receipt_if_due(
             for r in dossier.get("reviewers") or []
         ],
     }
+    _apply_public_gate_authority_context(receipt, frontmatter)
     _sign_public_gate_authority_evidence(receipt)
     receipt_path.write_text(yaml.safe_dump(receipt, sort_keys=False), encoding="utf-8")
     LOG.info("acceptance receipt written: %s", receipt_path)
@@ -2177,6 +2312,7 @@ def review_pr(
                 now_iso=now_iso,
                 outage_witness=outage_witness,
             )
+        _apply_public_gate_authority_context(dossier, target_frontmatter)
         _sign_public_gate_authority_evidence(dossier)
         target_dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
         LOG.info(

@@ -62,6 +62,7 @@ def _write_task(
     quality_floor: str = "frontier_required",
     assigned_to: str = "zeta",
     exit_predicate: str = "dispatcher creates a review-team dossier",
+    extra_frontmatter: str = "",
 ) -> Path:
     path = vault / "active" / f"{task_id}.md"
     path.write_text(
@@ -79,6 +80,7 @@ authority_case: CASE-TEST
 parent_spec: docs/spec.md
 route_metadata_schema: 1
 exit_predicate: "{exit_predicate}"
+{extra_frontmatter.rstrip()}
 ---
 
 # {task_id}
@@ -1471,6 +1473,75 @@ class TestReceiptAndWake:
             assert payload["authority_signature"] == (
                 dispatch.public_gate_receipts.public_gate_authority_signature(payload, secret)
             )
+
+    def test_review_evidence_authorizes_declared_public_gate_receipt(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        secret = "test-public-gate-authority-secret"
+        monkeypatch.setenv(dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, secret)
+        receipt_root = tmp_path / "public-gate-receipts"
+        receipt_root.mkdir()
+        receipt_path = receipt_root / "receipt-1.yaml"
+        receipt_path.write_text(
+            """gate_id: claim_review_current
+status: passed
+authority_case: CASE-TEST
+acceptor: review-team:codex,glm
+review_profile: frontier_review_required
+evidence_ref: review-dossier:task-a
+artifact_slug: demo
+artifact_fingerprint: abc123
+target_surfaces:
+  - fake
+""",
+            encoding="utf-8",
+        )
+
+        result, _, _, note = _review(
+            tmp_path,
+            task_kwargs={
+                "quality_floor": "frontier_review_required",
+                "extra_frontmatter": """
+public_gate_authority:
+  required_gates:
+    - claim_review_current
+  authorized_public_gate_receipts:
+    - public-gate:receipt-1.yaml
+  artifact_slug: demo
+  artifact_fingerprint: abc123
+  target_surfaces:
+    - fake
+""",
+            },
+        )
+
+        assert result["status"] == "dispatched"
+        dossier = yaml.safe_load((note.parent / "task-a.review-dossier.yaml").read_text())
+        receipt = yaml.safe_load((note.parent / "task-a.acceptance.yaml").read_text())
+        for payload in (dossier, receipt):
+            assert payload["required_gates"] == ["claim_review_current"]
+            assert payload["authorized_public_gate_receipts"] == ["public-gate:receipt-1.yaml"]
+            assert payload["artifact_slug"] == "demo"
+            assert payload["artifact_fingerprint"] == "abc123"
+            assert payload["target_surfaces"] == ["fake"]
+            assert payload["authority_signature"] == (
+                dispatch.public_gate_receipts.public_gate_authority_signature(payload, secret)
+            )
+
+        assert dispatch.public_gate_receipts.public_gate_receipt_value_present(
+            "public-gate:receipt-1.yaml",
+            expected_gate="claim_review_current",
+            roots=(receipt_root,),
+            bindings={
+                "artifact_slug": "demo",
+                "artifact_fingerprint": "abc123",
+                "target_surfaces": ("fake",),
+            },
+            authority_roots=(note.parent,),
+            authority_secret=secret,
+        )
 
     def test_comment_failure_does_not_skip_acceptance_receipt(self, tmp_path: Path) -> None:
         gh = FakeGh()
