@@ -16,13 +16,15 @@ from agents.publication_bus.omg_rss_fanout import (
     fanout,
     load_fanout_config,
 )
+from shared import public_gate_receipts
 
 _RECEIPT_ROOT: Path | None = None
+TASK_ID = "cc-task-public-gate-test"
 PUBLIC_GATE_AUTHORITY_BLOCK = (
     "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
     "acceptor: claim-verification-council\n"
     "review_profile: claim_verification_council_public_egress\n"
-    "evidence_ref: review-dossier:public-gate-test\n"
+    f"evidence_ref: review-dossier:{TASK_ID}\n"
 )
 
 
@@ -30,7 +32,10 @@ PUBLIC_GATE_AUTHORITY_BLOCK = (
 def durable_public_gate_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     global _RECEIPT_ROOT
     root = tmp_path / "public-gate-receipts"
+    authority_root = tmp_path / "public-gate-authority"
     root.mkdir()
+    authority_root.mkdir()
+    monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_AUTHORITY_ROOTS", (authority_root,))
     _write_public_gate_review_evidence(root, gates=FANOUT_REQUIRED_GATES)
     _RECEIPT_ROOT = root
     monkeypatch.setattr(omg_rss_fanout, "PUBLIC_GATE_RECEIPT_ROOTS", (root,))
@@ -46,6 +51,7 @@ def _write_public_gate_review_evidence(
     content_sha256: str | None = None,
     targets: tuple[str, ...] | None = None,
 ) -> None:
+    del root
     gate_yaml = "\n".join(f"  - {gate}" for gate in gates)
     receipt_yaml = "\n".join(f"  - {receipt_ref}" for receipt_ref in (receipt_refs or ()))
     binding_yaml = ""
@@ -58,9 +64,11 @@ def _write_public_gate_review_evidence(
     if targets is not None:
         target_yaml = "\n".join(f"  - {target}" for target in sorted(targets))
         binding_yaml += f"target_addresses:\n{target_yaml}\n"
-    (root / "public-gate-test.yaml").write_text(
+    (
+        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+    ).write_text(
         "dossier_schema: 1\n"
-        "task_id: cc-task-public-gate-test\n"
+        f"task_id: {TASK_ID}\n"
         "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
         "review_team_verdict: quorum-accept\n"
         "quorum_required: 1\n"

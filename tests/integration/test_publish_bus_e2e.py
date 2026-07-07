@@ -33,6 +33,7 @@ from agents.publish_orchestrator.orchestrator import (
     Orchestrator,
     _artifact_fingerprint,
 )
+from shared import public_gate_receipts
 from shared.preprint_artifact import PreprintArtifact
 from shared.publication_hardening.gate import (
     PublicationGateChildResult,
@@ -41,11 +42,12 @@ from shared.publication_hardening.gate import (
 )
 from shared.publication_hardening.review import ReviewReport
 
+TASK_ID = "cc-task-public-gate-test"
 PUBLIC_GATE_AUTHORITY_BLOCK = (
     "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
     "acceptor: claim-verification-council\n"
     "review_profile: claim_verification_council_public_egress\n"
-    "evidence_ref: review-dossier:public-gate-test\n"
+    f"evidence_ref: review-dossier:{TASK_ID}\n"
 )
 
 
@@ -83,7 +85,10 @@ def _write_public_gate_receipts(state_root, artifact: PreprintArtifact) -> dict[
         else PUBLICATION_BASELINE_REQUIRED_GATES
     )
     receipt_root = state_root / "public-gate-receipts"
+    authority_root = state_root / "public-gate-authority"
     receipt_root.mkdir(parents=True, exist_ok=True)
+    authority_root.mkdir(parents=True, exist_ok=True)
+    public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS = (authority_root,)
     surfaces_yaml = "\n".join(f"  - {surface}" for surface in sorted(surfaces))
     for gate in gates:
         (receipt_root / f"{gate}.yaml").write_text(
@@ -116,12 +121,15 @@ def _write_public_gate_review_evidence(  # type: ignore[no-untyped-def]
     artifact_fingerprint: str,
     target_surfaces: tuple[str, ...],
 ) -> None:
+    del receipt_root
     gate_yaml = "\n".join(f"  - {gate}" for gate in gates)
     receipt_yaml = "\n".join(f"  - {receipt_ref}" for receipt_ref in receipt_refs)
     surface_yaml = "\n".join(f"  - {surface}" for surface in target_surfaces)
-    (receipt_root / "public-gate-test.yaml").write_text(
+    (
+        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+    ).write_text(
         "dossier_schema: 1\n"
-        "task_id: cc-task-public-gate-test\n"
+        f"task_id: {TASK_ID}\n"
         "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
         "review_team_verdict: quorum-accept\n"
         "quorum_required: 1\n"

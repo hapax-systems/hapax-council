@@ -1,4 +1,11 @@
-"""Durable public-gate receipt reference validation."""
+"""Durable public-gate receipt reference validation.
+
+Public-gate receipts are data-plane receipts. Their review authority evidence
+must resolve through the trusted cc-task review/acceptance plane, not through a
+peer file in the receipt root. There is intentionally no module-level bypass for
+public egress; emergency correction or takedown must use the owning surface's
+incident path and leave a new authority receipt.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +23,12 @@ PUBLIC_GATE_RECEIPT_PREFIXES: tuple[str, ...] = (
 )
 PUBLIC_GATE_RECEIPT_SUFFIX_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+/-]{0,239}\Z", re.IGNORECASE)
 PUBLIC_GATE_RECEIPT_EXTENSIONS = frozenset({".json", ".md", ".yaml", ".yml"})
+PUBLIC_GATE_AUTHORITY_ROOTS: tuple[Path, ...] = (
+    Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active",
+    Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "closed",
+)
+PUBLIC_GATE_REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
+PUBLIC_GATE_ACCEPTANCE_RECEIPT_SUFFIX = ".acceptance.yaml"
 PUBLIC_GATE_ID_KEYS = frozenset(
     {
         "gate",
@@ -177,6 +190,7 @@ def public_gate_receipt_value_present(
     expected_gate: str,
     roots: Iterable[Path],
     bindings: Mapping[str, object] | None = None,
+    authority_roots: Iterable[Path] | None = None,
 ) -> bool:
     """Return true when ``value`` contains a durable receipt for ``expected_gate``."""
     if isinstance(value, str):
@@ -185,6 +199,7 @@ def public_gate_receipt_value_present(
             expected_gate=expected_gate,
             roots=roots,
             bindings=bindings,
+            authority_roots=authority_roots,
         )
     if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, str, Mapping)):
         return any(
@@ -193,6 +208,7 @@ def public_gate_receipt_value_present(
                 expected_gate=expected_gate,
                 roots=roots,
                 bindings=bindings,
+                authority_roots=authority_roots,
             )
             for item in value
         )
@@ -205,6 +221,7 @@ def public_gate_receipt_ref_exists(
     expected_gate: str,
     roots: Iterable[Path],
     bindings: Mapping[str, object] | None = None,
+    authority_roots: Iterable[Path] | None = None,
 ) -> bool:
     """Validate that ``ref`` names an existing receipt mapped to ``expected_gate``."""
     suffix = _public_gate_receipt_suffix(ref)
@@ -212,6 +229,9 @@ def public_gate_receipt_ref_exists(
         return False
 
     candidates = _receipt_candidate_paths(suffix)
+    resolved_authority_roots = (
+        PUBLIC_GATE_AUTHORITY_ROOTS if authority_roots is None else tuple(authority_roots)
+    )
     for root in roots:
         root = root.expanduser()
         for candidate in candidates:
@@ -220,6 +240,7 @@ def public_gate_receipt_ref_exists(
                 path,
                 expected_gate,
                 root,
+                resolved_authority_roots,
                 bindings,
             ):
                 return True
@@ -280,6 +301,7 @@ def _receipt_file_maps_to_gate(
     path: Path,
     expected_gate: str,
     root: Path,
+    authority_roots: tuple[Path, ...],
     bindings: Mapping[str, object] | None = None,
 ) -> bool:
     data = _load_receipt_data(path)
@@ -290,6 +312,7 @@ def _receipt_file_maps_to_gate(
             data,
             expected_gate,
             root,
+            authority_roots,
             bindings,
             receipt_path=path,
         )
@@ -336,6 +359,7 @@ def _gate_receipt_object_allows(
     data: Any,
     expected_gate: str,
     root: Path,
+    authority_roots: tuple[Path, ...],
     bindings: Mapping[str, object] | None = None,
     receipt_path: Path | None = None,
 ) -> bool:
@@ -343,6 +367,7 @@ def _gate_receipt_object_allows(
         _receipt_mapping_has_required_authority(
             candidate,
             root,
+            authority_roots,
             expected_gate=expected_gate,
             bindings=bindings,
             receipt_path=receipt_path,
@@ -433,6 +458,7 @@ def _receipt_mapping_has_required_bindings(
 def _receipt_mapping_has_required_authority(
     data: Mapping[Any, Any],
     root: Path,
+    authority_roots: tuple[Path, ...],
     *,
     expected_gate: str,
     bindings: Mapping[str, object] | None,
@@ -445,6 +471,7 @@ def _receipt_mapping_has_required_authority(
         and _mapping_has_evidence_ref(
             data,
             root,
+            authority_roots,
             expected_gate=expected_gate,
             bindings=bindings,
             receipt_path=receipt_path,
@@ -473,6 +500,7 @@ def _mapping_has_nonblank_text(data: Mapping[Any, Any], keys: frozenset[str]) ->
 def _mapping_has_evidence_ref(
     data: Mapping[Any, Any],
     root: Path,
+    authority_roots: tuple[Path, ...],
     *,
     expected_gate: str,
     bindings: Mapping[str, object] | None,
@@ -488,6 +516,7 @@ def _mapping_has_evidence_ref(
         if _evidence_ref_resolves(
             normalized,
             root,
+            authority_roots,
             expected_gate=expected_gate,
             bindings=bindings,
             receipt_path=receipt_path,
@@ -499,6 +528,7 @@ def _mapping_has_evidence_ref(
 def _evidence_ref_resolves(
     ref: str,
     root: Path,
+    authority_roots: tuple[Path, ...],
     *,
     expected_gate: str,
     bindings: Mapping[str, object] | None,
@@ -518,21 +548,43 @@ def _evidence_ref_resolves(
             or ".." in suffix_path.parts
         ):
             return False
-        evidence_root = root.expanduser()
-        return any(
-            _path_is_inside_root(path, evidence_root)
-            and not _same_resolved_path(path, receipt_path)
-            and _evidence_file_is_independent(
-                path,
-                expected_gate=expected_gate,
-                bindings=bindings,
-                receipt_refs=_public_gate_receipt_refs_for_path(receipt_path, evidence_root),
-            )
-            for path in (
-                evidence_root / candidate for candidate in _receipt_candidate_paths(suffix)
-            )
-        )
+        receipt_refs = _public_gate_receipt_refs_for_path(receipt_path, root.expanduser())
+        for evidence_root in authority_roots:
+            evidence_root = evidence_root.expanduser()
+            if any(
+                _path_is_inside_root(path, evidence_root)
+                and not _path_is_inside_root(path, root.expanduser())
+                and not _same_resolved_path(path, receipt_path)
+                and _evidence_file_is_independent(
+                    path,
+                    expected_gate=expected_gate,
+                    bindings=bindings,
+                    receipt_refs=receipt_refs,
+                )
+                for path in (
+                    evidence_root / candidate
+                    for candidate in _evidence_candidate_paths(suffix, prefix)
+                )
+            ):
+                return True
+        return False
     return False
+
+
+def _evidence_candidate_paths(suffix: str, prefix: str) -> tuple[Path, ...]:
+    base = Path(suffix)
+    if base.suffix:
+        if base.name.endswith(
+            (PUBLIC_GATE_REVIEW_DOSSIER_SUFFIX, PUBLIC_GATE_ACCEPTANCE_RECEIPT_SUFFIX)
+        ):
+            return (base,)
+        return ()
+    if prefix == "acceptance-receipt:":
+        return (Path(f"{suffix}{PUBLIC_GATE_ACCEPTANCE_RECEIPT_SUFFIX}"),)
+    return (
+        Path(f"{suffix}{PUBLIC_GATE_REVIEW_DOSSIER_SUFFIX}"),
+        Path(f"{suffix}{PUBLIC_GATE_ACCEPTANCE_RECEIPT_SUFFIX}"),
+    )
 
 
 def _same_resolved_path(left: Path, right: Path | None) -> bool:
@@ -554,11 +606,13 @@ def _evidence_file_is_independent(
     data = _load_receipt_data(path)
     return _review_dossier_evidence_allows(
         data,
+        path=path,
         expected_gate=expected_gate,
         bindings=bindings,
         receipt_refs=receipt_refs,
     ) or _acceptance_receipt_evidence_allows(
         data,
+        path=path,
         expected_gate=expected_gate,
         bindings=bindings,
         receipt_refs=receipt_refs,
@@ -568,15 +622,19 @@ def _evidence_file_is_independent(
 def _review_dossier_evidence_allows(
     data: Any,
     *,
+    path: Path,
     expected_gate: str,
     bindings: Mapping[str, object] | None,
     receipt_refs: frozenset[str],
 ) -> bool:
     if not isinstance(data, Mapping):
         return False
+    if not path.name.endswith(PUBLIC_GATE_REVIEW_DOSSIER_SUFFIX):
+        return False
     if data.get("dossier_schema") != 1:
         return False
-    if not _direct_text_value(data, "task_id"):
+    task_id = _direct_text_value(data, "task_id")
+    if not task_id or task_id != path.name[: -len(PUBLIC_GATE_REVIEW_DOSSIER_SUFFIX)]:
         return False
     if PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(_direct_text_value(data, "head_sha")) is None:
         return False
@@ -605,11 +663,14 @@ def _review_dossier_evidence_allows(
 def _acceptance_receipt_evidence_allows(
     data: Any,
     *,
+    path: Path,
     expected_gate: str,
     bindings: Mapping[str, object] | None,
     receipt_refs: frozenset[str],
 ) -> bool:
     if not isinstance(data, Mapping):
+        return False
+    if not path.name.endswith(PUBLIC_GATE_ACCEPTANCE_RECEIPT_SUFFIX):
         return False
     if _outcome_value_allows(data.get("verdict")) is not True:
         return False

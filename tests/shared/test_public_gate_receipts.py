@@ -4,19 +4,30 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from shared import public_gate_receipts
 from shared.public_gate_receipts import public_gate_receipt_value_present
 
 GATE = "rights_privacy_redaction_pass"
+TASK_ID = "cc-task-public-gate-test"
 AUTHORITY_BLOCK = (
     "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
     "acceptor: claim-verification-council\n"
     "review_profile: claim_verification_council_public_egress\n"
-    "evidence_ref: review-dossier:public-gate-test\n"
+    f"evidence_ref: review-dossier:{TASK_ID}\n"
 )
 
 
+@pytest.fixture(autouse=True)
+def trusted_authority_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    authority_root = tmp_path.parent / f"{tmp_path.name}-authority"
+    authority_root.mkdir()
+    monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_AUTHORITY_ROOTS", (authority_root,))
+
+
 def _write(root: Path, name: str, text: str) -> None:
-    if "evidence_ref: review-dossier:public-gate-test" in text:
+    if f"evidence_ref: review-dossier:{TASK_ID}" in text:
         _write_review_evidence(root, receipt_name=name)
     target = root / name
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -30,9 +41,13 @@ def _write_review_evidence(
     gate: str = GATE,
     artifact_fingerprint: str = "abc123",
 ) -> None:
-    (root / "public-gate-test.yaml").write_text(
+    del root
+    public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0].mkdir(parents=True, exist_ok=True)
+    (
+        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+    ).write_text(
         "dossier_schema: 1\n"
-        "task_id: cc-task-public-gate-test\n"
+        f"task_id: {TASK_ID}\n"
         "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
         "review_team_verdict: quorum-accept\n"
         "quorum_required: 1\n"
@@ -108,13 +123,42 @@ def test_rejects_circular_public_gate_evidence_ref(tmp_path: Path) -> None:
         tmp_path,
         "receipt-1.yaml",
         _receipt_text().replace(
-            "evidence_ref: review-dossier:public-gate-test",
+            f"evidence_ref: review-dossier:{TASK_ID}",
             "evidence_ref: public-gate:self",
         ),
     )
 
     assert not public_gate_receipt_value_present(
         "public-gate:receipt-1",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_forged_review_dossier_in_receipt_root(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    (tmp_path / f"{TASK_ID}.review-dossier.yaml").write_text(
+        "dossier_schema: 1\n"
+        f"task_id: {TASK_ID}\n"
+        "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "review_team_verdict: quorum-accept\n"
+        "quorum_required: 1\n"
+        "accept_count: 1\n"
+        f"gate_id: {GATE}\n"
+        "authorized_public_gate_receipts:\n"
+        "  - public-gate:receipt-1.yaml\n"
+        "reviewers:\n"
+        "  - id: cvc-1\n"
+        "    family: cvc\n"
+        "    verdict: accept\n",
+        encoding="utf-8",
+    )
+    (
+        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+    ).unlink()
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
         expected_gate=GATE,
         roots=(tmp_path,),
     )
@@ -176,9 +220,11 @@ def test_rejects_authority_evidence_for_different_artifact_binding(tmp_path: Pat
 
 def test_rejects_review_dossier_without_current_head_binding(tmp_path: Path) -> None:
     _write(tmp_path, "receipt-1.yaml", _receipt_text())
-    (tmp_path / "public-gate-test.yaml").write_text(
+    (
+        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+    ).write_text(
         "dossier_schema: 1\n"
-        "task_id: cc-task-public-gate-test\n"
+        f"task_id: {TASK_ID}\n"
         "review_team_verdict: quorum-accept\n"
         "quorum_required: 1\n"
         "accept_count: 1\n"

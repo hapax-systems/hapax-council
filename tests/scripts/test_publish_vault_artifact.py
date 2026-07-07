@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from scripts import publish_vault_artifact
+from shared import public_gate_receipts
 from shared.preprint_artifact import PreprintArtifact
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -22,18 +23,22 @@ PUBLICATION_GATE_RECEIPTS = {
     "claim_review_current": "public-gate:test-claim-review",
     "no_direct_public_egress": "public-gate:test-no-direct-egress",
 }
+TASK_ID = "cc-task-public-gate-test"
 PUBLIC_GATE_AUTHORITY_BLOCK = (
     "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
     "acceptor: claim-verification-council\n"
     "review_profile: claim_verification_council_public_egress\n"
-    "evidence_ref: review-dossier:public-gate-test\n"
+    f"evidence_ref: review-dossier:{TASK_ID}\n"
 )
 
 
 @pytest.fixture(autouse=True)
 def durable_public_gate_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "public-gate-receipts"
+    authority_root = tmp_path / "public-gate-authority"
     root.mkdir()
+    authority_root.mkdir()
+    monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_AUTHORITY_ROOTS", (authority_root,))
     _write_public_gate_review_evidence(
         root,
         gates=tuple(PUBLICATION_GATE_RECEIPTS),
@@ -50,6 +55,7 @@ def _write_public_gate_review_evidence(
     artifact_fingerprint: str | None = None,
     target_surfaces: tuple[str, ...] | None = None,
 ) -> None:
+    del root
     gate_yaml = "\n".join(f"  - {gate}" for gate in gates)
     receipt_yaml = "\n".join(f"  - {receipt_ref}" for receipt_ref in (receipt_refs or ()))
     binding_yaml = ""
@@ -60,9 +66,11 @@ def _write_public_gate_review_evidence(
     if target_surfaces is not None:
         surface_yaml = "\n".join(f"  - {surface}" for surface in target_surfaces)
         binding_yaml += f"target_surfaces:\n{surface_yaml}\n"
-    (root / "public-gate-test.yaml").write_text(
+    (
+        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+    ).write_text(
         "dossier_schema: 1\n"
-        "task_id: cc-task-public-gate-test\n"
+        f"task_id: {TASK_ID}\n"
         "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
         "review_team_verdict: quorum-accept\n"
         "quorum_required: 1\n"
