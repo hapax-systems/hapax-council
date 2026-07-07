@@ -99,6 +99,17 @@ def test_validation_rejects_publication_without_bus_policy() -> None:
     assert "publication_frontmatter_policy.publication_allowed_without_bus must be false" in errors
 
 
+def test_validation_rejects_unknown_publication_policy_status() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["status"] = "guarded_publi_channel"
+    errors = module.validate_config(config)
+    assert (
+        "publication_frontmatter_policy.status must be guarded_public_channel "
+        "or guarded_public_fanout"
+    ) in errors
+
+
 def test_validation_rejects_non_council_review_policy() -> None:
     module = _load_module()
     config = module.load_config(CONFIG_PATH)

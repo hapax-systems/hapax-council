@@ -11,11 +11,12 @@ picks it up on the next 30s tick and fans out to every surface listed in
 
 ## Frontmatter contract
 
-The vault file's YAML frontmatter SHOULD include:
+The vault file's YAML frontmatter MUST include:
 
   title: str           # used as PreprintArtifact.title
   slug:  str           # used as filename + omg.lol entry slug
   type:  str           # informational only
+  Publication-Allowed: true  # explicit Claim Verification Council clearance
 
 Optional:
 
@@ -27,10 +28,10 @@ Optional:
 
 ## Approval semantics
 
-This script marks the artifact ``APPROVED`` directly only when frontmatter does
-not forbid publication. The vault is the operator's editing surface; once an
-allowed vault file lands at this script, the operator has implicitly approved
-publication. No separate inbox-review step.
+This script marks the artifact ``APPROVED`` directly only when frontmatter
+explicitly allows publication. The vault is the operator's editing surface;
+once an allowed vault file lands at this script, the operator has implicitly
+approved publication. No separate inbox-review step.
 
 ## Usage
 
@@ -59,6 +60,12 @@ from shared.preprint_artifact import ApprovalState, PreprintArtifact
 log = logging.getLogger(__name__)
 
 DEFAULT_SURFACES = ["zenodo-doi", "omg-weblog"]
+PUBLICATION_ALLOWED_TRUE_VALUES = frozenset({"true", "yes", "1", "allowed", "approved"})
+PUBLICATION_ALLOWED_FALSE_VALUES = frozenset({"false", "no", "0", "blocked", "withheld"})
+
+
+class PublicationGateError(ValueError):
+    """Raised when a draft lacks explicit public-publication clearance."""
 
 
 def _default_state_root() -> Path:
@@ -179,13 +186,15 @@ def _publication_allowed(frontmatter: dict) -> bool:
         "publication_allowed",
         "publication-allowed",
     )
-    if value is None:
-        return True
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
-        return value.strip().lower() not in {"false", "no", "0", "blocked", "withheld"}
-    return bool(value)
+        normalized = value.strip().lower()
+        if normalized in PUBLICATION_ALLOWED_TRUE_VALUES:
+            return True
+        if normalized in PUBLICATION_ALLOWED_FALSE_VALUES:
+            return False
+    return False
 
 
 def _build_artifact(
@@ -196,6 +205,9 @@ def _build_artifact(
     approver: str,
     source_path: Path | None = None,
 ) -> PreprintArtifact:
+    if not _publication_allowed(frontmatter):
+        raise PublicationGateError("Publication-Allowed must be explicitly true")
+
     title = _optional_string(_frontmatter_value(frontmatter, "title"))
     title = title or _extract_first_heading(body_md) or "Untitled"
     slug = _optional_string(_frontmatter_value(frontmatter, "slug")) or _slugify(title)

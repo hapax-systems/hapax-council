@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from scripts import publish_vault_artifact
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -23,7 +25,12 @@ class TestBuildArtifact:
 
         artifact = publish_vault_artifact._build_artifact(
             body_md="Body",
-            frontmatter={"title": "Draft", "slug": "draft", "author_model": "codex"},
+            frontmatter={
+                "title": "Draft",
+                "slug": "draft",
+                "author_model": "codex",
+                "Publication-Allowed": True,
+            },
             surfaces=["omg-weblog"],
             approver="Oudepode",
             source_path=source,
@@ -37,7 +44,11 @@ class TestBuildArtifact:
     def test_resolves_existing_title_slug_frontmatter_casing(self) -> None:
         artifact = publish_vault_artifact._build_artifact(
             body_md="# Body Heading\n\nBody",
-            frontmatter={"Title": "Canonical Draft", "Slug": "canonical-draft"},
+            frontmatter={
+                "Title": "Canonical Draft",
+                "Slug": "canonical-draft",
+                "Publication-Allowed": "approved",
+            },
             surfaces=["omg-weblog"],
             approver="Oudepode",
         )
@@ -52,6 +63,7 @@ class TestBuildArtifact:
             frontmatter={
                 "title": "Draft",
                 "slug": "draft",
+                "Publication-Allowed": True,
                 "publication_gate_context": {
                     "numeric_expectations": {"42 hooks": 42},
                     "currentness_evidence_refs": ["receipt:hn-readiness"],
@@ -73,6 +85,15 @@ class TestBuildArtifact:
             "by_referent": "Oudepode",
             "reason": "Reviewed receipts",
         }
+
+    def test_requires_explicit_publication_allowed(self) -> None:
+        with pytest.raises(publish_vault_artifact.PublicationGateError):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter={"title": "Draft", "slug": "draft"},
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+            )
 
 
 def test_allowed_draft_dry_run_uses_existing_frontmatter_casing(tmp_path, capsys) -> None:
@@ -106,6 +127,59 @@ def test_allowed_draft_dry_run_uses_existing_frontmatter_casing(tmp_path, capsys
     assert payload["slug"] == "allowed-draft"
     assert payload["surfaces_targeted"] == ["omg-weblog"]
     assert payload["approval"] == "approved"
+    assert not (tmp_path / "publish" / "inbox").exists()
+
+
+def test_missing_publication_allowed_refuses_publication(tmp_path, capsys) -> None:
+    draft = tmp_path / "draft.md"
+    draft.write_text(
+        ("---\nTitle: Missing Gate\nSlug: missing-gate\n---\n\n# Missing Gate\n\nBody\n"),
+        encoding="utf-8",
+    )
+
+    rc = publish_vault_artifact.main(
+        [
+            str(draft),
+            "--surfaces",
+            "omg-weblog",
+            "--state-root",
+            str(tmp_path),
+            "--dry-run",
+        ]
+    )
+
+    assert rc == 1
+    assert capsys.readouterr().out == ""
+    assert not (tmp_path / "publish" / "inbox").exists()
+
+
+def test_malformed_publication_allowed_refuses_publication(tmp_path, capsys) -> None:
+    draft = tmp_path / "draft.md"
+    draft.write_text(
+        (
+            "---\n"
+            "Title: Malformed Gate\n"
+            "Slug: malformed-gate\n"
+            "Publication-Allowed: not-yet\n"
+            "---\n\n"
+            "# Malformed Gate\n\nBody\n"
+        ),
+        encoding="utf-8",
+    )
+
+    rc = publish_vault_artifact.main(
+        [
+            str(draft),
+            "--surfaces",
+            "omg-weblog",
+            "--state-root",
+            str(tmp_path),
+            "--dry-run",
+        ]
+    )
+
+    assert rc == 1
+    assert capsys.readouterr().out == ""
     assert not (tmp_path / "publish" / "inbox").exists()
 
 

@@ -37,6 +37,7 @@ REQUIRED_PUBLICATION_FRONTMATTER_POLICY_FIELDS = (
     "required_gates",
     "claim_ceiling",
 )
+VALID_PUBLICATION_POLICY_STATUSES = {"guarded_public_channel", "guarded_public_fanout"}
 REQUIRED_PUBLICATION_FRONTMATTER_GATES = {
     "source_artifact_public_safe",
     "source_refs_present",
@@ -180,6 +181,12 @@ def validate_config(config: Mapping[str, Any]) -> list[str]:
     for field in REQUIRED_PUBLICATION_FRONTMATTER_POLICY_FIELDS:
         if field not in policy:
             errors.append(f"publication_frontmatter_policy.{field} is required")
+    status = policy.get("status")
+    if status is not None and status not in VALID_PUBLICATION_POLICY_STATUSES:
+        errors.append(
+            "publication_frontmatter_policy.status must be guarded_public_channel "
+            "or guarded_public_fanout"
+        )
     if policy.get("publication_allowed_without_bus") is not False:
         errors.append(
             "publication_frontmatter_policy.publication_allowed_without_bus must be false"
