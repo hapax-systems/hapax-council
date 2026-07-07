@@ -316,6 +316,135 @@ class TestDryRun:
         assert not list(note.parent.glob("*.review-dossier.yaml"))
         assert gh.comments == []
 
+    def test_task_scoped_glm_payg_budget_refusal_blocks_glm_family(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class Resolved:
+            source = "live"
+            live_error = None
+            ledger = object()
+
+        class Decision:
+            eligible = False
+            budget_id = None
+            state = "refused_exhausted_budget"
+            blocking_reasons = ("matching TransitionBudget cap exhausted",)
+
+        monkeypatch.setattr(dispatch, "load_quota_spend_ledger_resolved", lambda: Resolved())
+        monkeypatch.setattr(
+            dispatch,
+            "subscription_quota_state_for_route",
+            lambda _ledger, _route_id, *, now: (
+                dispatch.SubscriptionQuotaState.FRESH,
+                (
+                    "relay-receipt:glmcp-quota-admission.yaml:"
+                    "witness:glmcp-payg-spend-test.yaml:"
+                    "supported_tool:hapax-glmcp-reviewer:"
+                    "endpoint:https://api.z.ai/api/paas/v4:"
+                    "model:glm-5.2:observed_at:2026-06-11T21:00:00Z:"
+                    "fresh_until:2026-06-11T21:30:00Z",
+                ),
+            ),
+        )
+        monkeypatch.setattr(
+            dispatch,
+            "evaluate_paid_route_eligibility",
+            lambda _ledger, _request, *, now: Decision(),
+        )
+
+        blocked = dispatch._task_scoped_paid_review_route_blocked_families(
+            dispatch.review_team.load_lens_registry(),
+            {},
+            ["task-a"],
+            now_iso="2026-06-11T21:00:00+00:00",
+        )
+
+        assert blocked["glm"] == (
+            "glmcp.review.direct:task_scoped_paid_spend_gate:refused_exhausted_budget",
+            "glmcp.review.direct:task_scoped_paid_spend_blocker:"
+            "matching_transitionbudget_cap_exhausted",
+        )
+
+    def test_task_scoped_glm_gate_ignores_fresh_non_payg_admission(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class Resolved:
+            source = "live"
+            live_error = None
+            ledger = object()
+
+        monkeypatch.setattr(dispatch, "load_quota_spend_ledger_resolved", lambda: Resolved())
+        monkeypatch.setattr(
+            dispatch,
+            "subscription_quota_state_for_route",
+            lambda _ledger, _route_id, *, now: (
+                dispatch.SubscriptionQuotaState.FRESH,
+                (
+                    "relay-receipt:glmcp-quota-admission.yaml:"
+                    "witness:glmcp-coding-plan-test:"
+                    "supported_tool:hapax-glmcp-reviewer:"
+                    "endpoint:https://api.z.ai/api/coding/paas/v4:"
+                    "model:glm-5.2:observed_at:2026-06-11T21:00:00Z:"
+                    "fresh_until:2026-06-11T21:30:00Z",
+                ),
+            ),
+        )
+        monkeypatch.setattr(
+            dispatch,
+            "evaluate_paid_route_eligibility",
+            lambda *_args, **_kwargs: pytest.fail("non-PAYG admission must not hit spend gate"),
+        )
+
+        blocked = dispatch._task_scoped_paid_review_route_blocked_families(
+            dispatch.review_team.load_lens_registry(),
+            {},
+            ["task-a"],
+            now_iso="2026-06-11T21:00:00+00:00",
+        )
+
+        assert blocked == {}
+
+    def test_constitution_blocker_is_structured_when_only_one_family_remains(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        dispatch.FAMILY_OUTAGE_STATE.parent.mkdir(parents=True, exist_ok=True)
+        dispatch.FAMILY_OUTAGE_STATE.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-06-11T20:55:00+00:00",
+                        "outage_started_at": "2026-06-11T20:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        reviewers = RecordingReviewers()
+
+        result, _gh, _reviewers, _note = _review(
+            tmp_path,
+            apply=False,
+            force=True,
+            reviewers=reviewers,
+            route_blocked_families={
+                "gemini": ("agy.review.direct:route_specific_quota_receipt_absent",),
+                "glm": (
+                    "glmcp.review.direct:task_scoped_paid_spend_gate:refused_exhausted_budget",
+                ),
+            },
+        )
+
+        assert result["status"] == "constitution_blocked"
+        assert "only available: codex" in result["plan"]["constitution_error"]
+        assert result["plan"]["outage_families"] == ["claude"]
+        assert result["plan"]["route_blocked_families"]["glm"] == [
+            "glmcp.review.direct:task_scoped_paid_spend_gate:refused_exhausted_budget"
+        ]
+        assert reviewers.invocations == []
+
     def test_dry_run_skip_fresh_does_not_clear_route_outage_latches(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
