@@ -5,7 +5,7 @@ cat >&2 <<'EOF'
 hapax-gemini-watchdog is retired.
 
 The old Gemini CLI tmux lane is no longer a supported runtime. Use packet
-wrappers now, or create measured agy supply-leaf intake before any governed
-interactive worker path.
+wrappers now, or agy.review.direct through scripts/hapax-agy-reviewer for
+admitted read-only review-plane work.
 EOF
 exit 64

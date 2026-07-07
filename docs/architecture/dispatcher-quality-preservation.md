@@ -9,10 +9,30 @@
 The methodology-aware headless dispatcher routes tasks to admitted platform
 lanes (Claude, Codex, and Vibe) while preserving quality guarantees. Gemini API
 routes are provider-gateway surfaces, not standing Gemini CLI worker lanes;
-retired Antigravity/agy worker surfaces must become measured `agy` supply-leaf
-intake with route/resource/governance receipts before any future demand
-fulfillment. It reads fresh quota state, enforces quality floors, prevents
-silent downgrades, and emits observable route decisions.
+retired Antigravity/agy worker surfaces remain non-dispatchable. The live
+`agy.review.direct` route is read-only review-plane supply and stays blocked
+until route-specific admission receipts exist. The dispatcher reads fresh quota
+state, enforces quality floors, prevents silent downgrades, and emits observable
+route decisions.
+
+Recheck the agy receipt clearing path with:
+
+```bash
+uv run pytest \
+  tests/shared/test_platform_capability_registry.py::test_agy_local_receipt_clears_review_seat_but_not_route_quota \
+  tests/shared/test_platform_capability_registry.py::test_agy_observed_route_quota_receipt_does_not_admit_review_route \
+  tests/shared/test_platform_capability_registry.py::test_forged_agy_observed_quota_receipt_cannot_clear_route_specific_blocker \
+  tests/shared/test_platform_capability_registry.py::test_agy_quota_receipt_removable_reasons_preserve_route_specific_blocker \
+  tests/shared/test_platform_capability_registry.py::test_agy_has_no_sanctioned_route_specific_quota_admission_path \
+  tests/shared/test_quota_spend_ledger.py::test_agy_receipt_bounded_route_rejects_generic_fresh_quota_snapshot \
+  tests/shared/test_platform_capability_receipts.py::test_agy_receipt_records_live_review_route_without_unblocking_quota \
+  tests/test_review_team.py::TestConstitution::test_retired_authoring_lanes_fail_closed \
+  tests/test_review_team.py::TestConstitution::test_t1_route_blocked_family_degrades_with_receipt_reason \
+  tests/test_review_team.py::TestVerdictBlockers::test_route_blocked_degraded_dossier_passes_while_route_still_blocked \
+  tests/scripts/test_hapax_agy_reviewer.py::test_agy_reviewer_ignores_ambient_review_model \
+  tests/scripts/test_hapax_agy_reviewer.py::test_agy_reviewer_rejects_non_pinned_review_model \
+  tests/test_cc_pr_review_dispatch.py::TestApply::test_blocked_agy_route_is_not_invoked_as_reviewer
+```
 
 ## 2. Enforcement Points
 

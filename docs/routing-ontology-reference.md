@@ -40,12 +40,53 @@ Defined in `RouteConstraints.preferred_platforms` / `allowed_platforms` / `prohi
 | `claude` | Claude Code (Opus/Sonnet) | Frontier | 1M | Multi-file refactors, governance, architecture |
 | `codex` | Codex headless | Frontier | 192K | Bounded implementation, parallel lanes |
 | `vibe` | Mistral Medium 3.5 | JR+ | 256K | Mechanical: tests, deps, CI fixes |
+| `agy` | Agy CLI review seat | Read-only support | Provider-dependent | Blind PR review through `scripts/hapax-agy-reviewer`; not a worker lane |
 
 `antigrav` / Antigravity is retired and excised as a live platform, lane, and
 route family. The Agy adapter family is distinct and live after the 2026-07-05
 steward correction, but it does not satisfy dispatch demand until a measured
-`agy` route is registered with route, resource, and governance receipts. Legacy
-`gemini-cli` aliases remain retired.
+worker route is registered with route, resource, and governance receipts.
+`agy.review.direct` is the registered replacement review route, with
+Gemini/Claude/GPT-OSS as engines behind the `agy` harness rather than capability
+family names. It is read-only and remains blocked for admission until a
+fresh agy platform-capability receipt clears the review-seat admission blocker.
+No sanctioned agy route-specific quota-admission witness exists yet, so
+`agy.review.direct` remains blocked on `route_specific_quota_receipt_absent`;
+generic fresh quota snapshots and observed platform-receipt quota surfaces for
+`agy.review.direct` fail closed as untrusted. A future agy quota admission path
+must add a route-specific validator, writer, and recheck command comparable to
+the GLMCP quota-admission path before it can clear this blocker. Legacy
+`gemini-cli` aliases remain retired. The receipt writer still records the agy
+CLI's bundled `~/.gemini/antigravity-cli/.../cli.md` config reference; that
+directory name is the installed CLI bundle path, not a live Antigravity route.
+The "Provider-dependent" context entry is a non-assertion about the universal
+harness shape; current engine entitlements and context windows must be measured
+through future agy route-capability receipts before they can support dispatch or
+review admission. The local entitlement inventory recheck is `agy models`; this
+task records that command only as a human recheck path, not as admission evidence
+until a future receipt writer records model/context limits and route-specific
+quota admission.
+
+Recheck the agy review-route/non-worker claims with:
+
+```bash
+uv run pytest \
+  tests/docs/test_platform_capability_registry_contract.py::test_seed_registry_records_agy_review_route_as_blocked_review_supply \
+  tests/shared/test_platform_capability_registry.py::test_gemini_routes_are_not_seeded_as_dispatchable_platform_paths \
+  tests/shared/test_capability_dispatch.py::test_resolve_agy_review_route_is_valid_but_non_spawnable \
+  tests/shared/test_platform_capability_registry.py::test_agy_observed_route_quota_receipt_does_not_admit_review_route \
+  tests/shared/test_platform_capability_registry.py::test_forged_agy_observed_quota_receipt_cannot_clear_route_specific_blocker \
+  tests/shared/test_platform_capability_registry.py::test_agy_has_no_sanctioned_route_specific_quota_admission_path \
+  tests/shared/test_quota_spend_ledger.py::test_agy_receipt_bounded_route_rejects_generic_fresh_quota_snapshot \
+  tests/shared/test_platform_capability_receipts.py::test_agy_receipt_records_live_review_route_without_unblocking_quota \
+  tests/test_review_team.py::TestConstitution::test_retired_authoring_lanes_fail_closed \
+  tests/scripts/test_hapax_agy_reviewer.py::test_agy_reviewer_ignores_ambient_review_model \
+  tests/scripts/test_hapax_agy_reviewer.py::test_agy_reviewer_rejects_non_pinned_review_model \
+  tests/scripts/test_cc_dispatch.py::test_agy_review_route_is_valid_but_non_spawnable \
+  tests/scripts/test_hapax_methodology_dispatch.py::test_agy_platform_is_review_route_not_dispatchable_worker \
+  tests/scripts/test_hapax_cross_runtime_dispatch.py::test_agy_platform_is_review_route_not_cross_runtime_worker \
+  tests/test_review_team.py::test_gemini_review_family_uses_agy_wrapper_not_legacy_cli
+```
 
 ## Reaching the Opus Route (signed route-authority receipts)
 

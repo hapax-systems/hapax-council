@@ -175,7 +175,7 @@ def validate_explicit_rte(rte: str, *, originator: str, allow_protocol_exception
     if is_antigrav_lane(rte) or is_gemini_lane(rte):
         raise ValueError(
             f"{rte} is retired/excised and cannot be RTE; use admitted Claude/Codex lanes "
-            "or mint measured agy supply-leaf intake with route/resource/governance receipts"
+            "or agy.review.direct through scripts/hapax-agy-reviewer for admitted read-only review-plane work"
         )
     if is_vibe_lane(rte) and not allow_protocol_exception:
         raise ValueError(f"{rte} is a Vibe burst lane and cannot be RTE")

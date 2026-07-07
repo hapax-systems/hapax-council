@@ -15,5 +15,4 @@ def test_launcher_no_longer_wires_agy_latch_or_hook_override() -> None:
     assert "HAPAX_ANTIGRAV_OVERRIDE_HOOK_WIRING" not in src
     assert "--prompt-interactive" not in src
     assert "cc-claim" not in src
-    assert "compatibility stub intentionally" in src
-    assert "refuses before hooks" in src
+    assert "reason_code=antigrav_worker_stub_refusal" in src

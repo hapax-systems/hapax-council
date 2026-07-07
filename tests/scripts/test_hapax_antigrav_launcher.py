@@ -41,6 +41,6 @@ def test_antigrav_launcher_refuses_without_side_effects(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "retired" in result.stderr
-    assert "refuses before hooks, claims, worktrees, tmux, or agy can run" in result.stderr
+    assert "reason_code=antigrav_worker_stub_refusal" in result.stderr
     assert not (home / ".gemini" / "antigravity-cli" / "hooks.json").exists()
     assert not (workdir / ".agents").exists()

@@ -87,13 +87,26 @@ def _write_review_dossier(
     if reviewers is None:
         reviewers = [
             {
-                "id": f"{family}-1",
-                "family": family,
+                "id": "codex-1",
+                "family": "codex",
                 "verdict": "accept",
                 "findings": [],
                 "checklist": COMPLETE_ALWAYS_ON_CHECKLIST,
-            }
-            for family in ("codex", "gemini", "claude")
+            },
+            {
+                "id": "claude-1",
+                "family": "claude",
+                "verdict": "accept",
+                "findings": [],
+                "checklist": COMPLETE_ALWAYS_ON_CHECKLIST,
+            },
+            {
+                "id": "claude-2",
+                "family": "claude",
+                "verdict": "invalid-output",
+                "findings": [],
+                "checklist": {},
+            },
         ]
     accepts = sum(1 for r in reviewers if r["verdict"] in ("accept", "accept-with-findings"))
     dossier = {
@@ -216,8 +229,8 @@ class TestReviewTeamGate:
                     "checklist": COMPLETE_ALWAYS_ON_CHECKLIST,
                 },
                 {
-                    "id": "gemini-1",
-                    "family": "gemini",
+                    "id": "codex-2",
+                    "family": "codex",
                     "verdict": "invalid-output",
                     "findings": [],
                     "checklist": {},

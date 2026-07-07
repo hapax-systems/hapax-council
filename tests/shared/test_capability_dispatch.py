@@ -39,6 +39,7 @@ VALID = frozenset(
         "api.headless.api_frontier",
         "api.headless.openrouter",
         "vibe.headless.full",
+        "agy.review.direct",
         "glmcp.review.direct",
         "local_tool.local.worker",
     }
@@ -76,22 +77,36 @@ def test_resolve_sakana_points_at_fugu() -> None:
     assert not res.ok and "fugu" in res.reason.lower()
 
 
-def test_resolve_deprecated_antigrav_alias_fails_closed() -> None:
+def test_resolve_agy_review_route_is_valid_but_non_spawnable() -> None:
     res = resolve_capability("agy", valid_route_ids=VALID)
     assert not res.ok
+    assert "not a spawnable lane" in res.reason
+    assert res.route_id == "agy.review.direct"
+    assert res.platform == "agy"
+
+    review_alias = resolve_capability("agy-review", valid_route_ids=VALID)
+    assert not review_alias.ok
+    assert "not a spawnable lane" in review_alias.reason
+    assert review_alias.route_id == "agy.review.direct"
+
+
+def test_resolve_deprecated_antigrav_alias_fails_closed() -> None:
+    res = resolve_capability("antigrav", valid_route_ids=VALID)
+    assert not res.ok
     assert "deprecated" in res.reason.lower()
+    assert "agy-review" in res.reason
     assert res.route_id is None
 
     full_word = resolve_capability("antigravity", valid_route_ids=VALID)
     assert not full_word.ok
     assert "deprecated" in full_word.reason.lower()
-    assert "measured agy supply leaves" in full_word.reason
+    assert "agy-review" in full_word.reason
     assert full_word.route_id is None
 
     gemini_cli = resolve_capability("gemini-cli", valid_route_ids=VALID)
     assert not gemini_cli.ok
     assert "retired" in gemini_cli.reason.lower()
-    assert "measured agy supply leaves" in gemini_cli.reason
+    assert "agy-review" in gemini_cli.reason
     assert gemini_cli.route_id is None
 
 
@@ -206,7 +221,9 @@ def test_load_valid_route_ids_reflects_real_registry() -> None:
         assert (platform, mode) in LAUNCHABLE_PATHS
     assert "api" not in launchable and "api-frontier" not in launchable
     assert "openrouter" not in launchable and "openrouter-frontier" not in launchable
-    assert "local-worker" not in launchable and "glmcp-review" not in launchable
+    assert "local-worker" not in launchable
+    assert "agy" not in launchable and "agy-review" not in launchable
+    assert "glmcp-review" not in launchable
     assert not any(rid.startswith("api.") for rid in launchable.values())
 
 
