@@ -331,12 +331,16 @@ class TestDryRun:
             state = "refused_exhausted_budget"
             blocking_reasons = ("matching TransitionBudget cap exhausted",)
 
-        monkeypatch.setattr(dispatch, "load_quota_spend_ledger_resolved", lambda: Resolved())
         monkeypatch.setattr(
-            dispatch,
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch.review_team,
             "subscription_quota_state_for_route",
             lambda _ledger, _route_id, *, now: (
-                dispatch.SubscriptionQuotaState.FRESH,
+                dispatch.review_team.SubscriptionQuotaState.FRESH,
                 (
                     "relay-receipt:glmcp-quota-admission.yaml:"
                     "witness:glmcp-payg-spend-test.yaml:"
@@ -348,7 +352,7 @@ class TestDryRun:
             ),
         )
         monkeypatch.setattr(
-            dispatch,
+            dispatch.review_team,
             "evaluate_paid_route_eligibility",
             lambda _ledger, _request, *, now: Decision(),
         )
@@ -375,12 +379,16 @@ class TestDryRun:
             live_error = None
             ledger = object()
 
-        monkeypatch.setattr(dispatch, "load_quota_spend_ledger_resolved", lambda: Resolved())
         monkeypatch.setattr(
-            dispatch,
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch.review_team,
             "subscription_quota_state_for_route",
             lambda _ledger, _route_id, *, now: (
-                dispatch.SubscriptionQuotaState.FRESH,
+                dispatch.review_team.SubscriptionQuotaState.FRESH,
                 (
                     "relay-receipt:glmcp-quota-admission.yaml:"
                     "witness:glmcp-coding-plan-test:"
@@ -392,7 +400,7 @@ class TestDryRun:
             ),
         )
         monkeypatch.setattr(
-            dispatch,
+            dispatch.review_team,
             "evaluate_paid_route_eligibility",
             lambda *_args, **_kwargs: pytest.fail("non-PAYG admission must not hit spend gate"),
         )

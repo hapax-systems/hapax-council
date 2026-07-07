@@ -981,6 +981,90 @@ class TestVerdictBlockers:
         )
         assert prefixed_blockers == ()
 
+    def test_task_scoped_paid_route_degradation_default_witness_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:glm",
+            "route_blocked_family_reason:glm:glmcp.review.direct:"
+            "task_scoped_paid_spend_gate:refused_exhausted_budget",
+            "route_blocked_family_reason:glm:glmcp.review.direct:"
+            "task_scoped_paid_spend_blocker:matching_transitionbudget_cap_exhausted",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        monkeypatch.setattr(
+            rt,
+            "task_scoped_paid_review_route_blocked_families",
+            lambda registry, route_blocked, task_ids, *, now=None: {
+                "glm": (
+                    "glmcp.review.direct:task_scoped_paid_spend_gate:refused_exhausted_budget",
+                    "glmcp.review.direct:task_scoped_paid_spend_blocker:"
+                    "matching_transitionbudget_cap_exhausted",
+                )
+            },
+        )
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+        )
+
+        assert blockers == ()
+
+    def test_task_scoped_paid_route_degradation_default_witness_mismatch_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:glm",
+            "route_blocked_family_reason:glm:glmcp.review.direct:"
+            "task_scoped_paid_spend_gate:refused_exhausted_budget",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        monkeypatch.setattr(
+            rt,
+            "task_scoped_paid_review_route_blocked_families",
+            lambda registry, route_blocked, task_ids, *, now=None: {
+                "glm": ("glmcp.review.direct:task_scoped_paid_spend_gate:other_state",)
+            },
+        )
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+        )
+
+        assert "review_dossier_route_block_degradation_reason_mismatch:glm" in blockers
+
     def test_recovered_route_block_invalidates_pending_degraded_admission(
         self, tmp_path: Path
     ) -> None:

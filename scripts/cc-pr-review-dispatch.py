@@ -61,22 +61,6 @@ from github_pr_status import (  # noqa: E402
     list_pull_files_rest,
 )
 
-from shared.quota_spend_ledger import (  # noqa: E402
-    GLMCP_ADMISSION_PAYG_ENDPOINT,
-    GLMCP_PAYG_BUDGET_PROFILE,
-    GLMCP_PAYG_BUDGET_PROVIDER,
-    GLMCP_PAYG_BUDGET_QUALITY_FLOOR,
-    GLMCP_PAYG_BUDGET_ROUTE_ID,
-    GLMCP_PAYG_BUDGET_TASK_CLASS,
-    GLMCP_PAYG_ESTIMATED_COST_USD,
-    CapacityPool,
-    PaidRouteRequest,
-    QuotaSpendLedgerError,
-    SubscriptionQuotaState,
-    evaluate_paid_route_eligibility,
-    load_quota_spend_ledger_resolved,
-    subscription_quota_state_for_route,
-)
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
     requires_acceptance_receipt,
@@ -158,29 +142,6 @@ SEND_SESSION_ALIASES = {
 }
 
 
-def _reason_code(value: str) -> str:
-    normalized = re.sub(r"[^a-z0-9_.:-]+", "_", value.strip().lower()).strip("_")
-    return normalized or "unknown"
-
-
-def _now_from_iso(value: str) -> datetime:
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return datetime.now(UTC)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed
-
-
-def _add_route_blocker(
-    blocked: dict[str, tuple[str, ...]],
-    family: str,
-    reasons: tuple[str, ...],
-) -> None:
-    blocked[family] = tuple(dict.fromkeys((*blocked.get(family, ()), *reasons)))
-
-
 def _task_scoped_paid_review_route_blocked_families(
     registry: dict[str, Any],
     route_blocked_families: dict[str, tuple[str, ...]],
@@ -196,80 +157,12 @@ def _task_scoped_paid_review_route_blocked_families(
     once its per-task budget is exhausted. Catch that before seating reviewers.
     """
 
-    blocked = dict(route_blocked_families)
-    glmcp_families = [
-        family
-        for family, route_id in review_team.review_family_route_ids(registry).items()
-        if route_id == GLMCP_PAYG_BUDGET_ROUTE_ID
-    ]
-    if not glmcp_families:
-        return blocked
-
-    try:
-        resolved = load_quota_spend_ledger_resolved()
-    except (OSError, QuotaSpendLedgerError, ValueError) as exc:
-        reason = (
-            f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:"
-            f"task_scoped_paid_spend_ledger_unavailable:{type(exc).__name__}"
-        )
-        for family in glmcp_families:
-            _add_route_blocker(blocked, family, (reason,))
-        return blocked
-
-    if resolved.source != "live":
-        reason = f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_live_ledger_absent"
-        if resolved.live_error:
-            reason = f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_live_ledger_invalid"
-        for family in glmcp_families:
-            _add_route_blocker(blocked, family, (reason,))
-        return blocked
-
-    state, evidence_refs = subscription_quota_state_for_route(
-        resolved.ledger,
-        GLMCP_PAYG_BUDGET_ROUTE_ID,
-        now=_now_from_iso(now_iso),
+    return review_team.task_scoped_paid_review_route_blocked_families(
+        registry,
+        route_blocked_families,
+        task_ids,
+        now=now_iso,
     )
-    route_uses_payg = any(
-        "spend-gate-payg-receipt:" in ref or f":endpoint:{GLMCP_ADMISSION_PAYG_ENDPOINT}:" in ref
-        for ref in evidence_refs
-    )
-    if state is not SubscriptionQuotaState.FRESH or not route_uses_payg:
-        return blocked
-
-    if len(task_ids) != 1:
-        reason = f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_task_id_ambiguous"
-        for family in glmcp_families:
-            _add_route_blocker(blocked, family, (reason,))
-        return blocked
-
-    request = PaidRouteRequest.model_validate(
-        {
-            "route_id": GLMCP_PAYG_BUDGET_ROUTE_ID,
-            "task_id": task_ids[0],
-            "provider": GLMCP_PAYG_BUDGET_PROVIDER,
-            "profile": GLMCP_PAYG_BUDGET_PROFILE,
-            "task_class": GLMCP_PAYG_BUDGET_TASK_CLASS,
-            "quality_floor": GLMCP_PAYG_BUDGET_QUALITY_FLOOR,
-            "estimated_cost_usd": GLMCP_PAYG_ESTIMATED_COST_USD,
-            "capacity_pool": CapacityPool.API_PAID_SPEND,
-        }
-    )
-    decision = evaluate_paid_route_eligibility(
-        resolved.ledger,
-        request,
-        now=_now_from_iso(now_iso),
-    )
-    if decision.eligible and decision.budget_id:
-        return blocked
-
-    reasons = [f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_gate:{decision.state}"]
-    reasons.extend(
-        f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_blocker:{_reason_code(reason)}"
-        for reason in decision.blocking_reasons
-    )
-    for family in glmcp_families:
-        _add_route_blocker(blocked, family, tuple(reasons))
-    return blocked
 
 
 YAML_FENCE_FULL_RE = re.compile(r"\A```ya?ml\s*\n(.*?)```\s*\Z", re.DOTALL)
