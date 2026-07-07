@@ -173,6 +173,26 @@ exec bash -c "$remote_cmd"
     fake_ssh.chmod(0o755)
 
 
+def _write_fake_rm_refuses_runner_unlink(bin_dir: Path) -> None:
+    real_rm = Path("/usr/bin/rm")
+    if not real_rm.exists():
+        real_rm = Path("/bin/rm")
+    fake_rm = bin_dir / "rm"
+    fake_rm.write_text(
+        f"""#!/usr/bin/env bash
+target="${{@: -1}}"
+case "$target" in
+  */codex-spawns/run-*.sh)
+    exit 1
+    ;;
+esac
+exec {real_rm} "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_rm.chmod(0o755)
+
+
 def _write_fake_ssh_fails_after_handoff_preflight(bin_dir: Path, count_file: Path) -> None:
     fake_ssh = bin_dir / "ssh"
     fake_ssh.write_text(
@@ -1463,6 +1483,84 @@ esac
     proof_root = Path(env["HOME"]) / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs"
     assert list(proof_root.glob("*cx-amber-demo-task-local.json"))
     assert list(proof_root.glob("*cx-amber-demo-task-remote.json"))
+
+
+def test_terminal_tmux_remote_runner_refuses_handoff_when_self_delete_fails(
+    tmp_path: Path,
+) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
+    _write_active_task(env, "demo-task")
+    (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
+    _write_fake_ssh_eval(tmp_path / "bin")
+    _write_fake_rm_refuses_runner_unlink(tmp_path / "bin")
+    session_id = f"runner-delete-fail-{os.getpid()}-{tmp_path.name}"
+    remote_cmds = tmp_path / "remote-cmds.txt"
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_SESSION_ID"] = session_id
+    env["HAPAX_FAKE_SSH_REMOTE_CMDS"] = str(remote_cmds)
+    _clear_handoff_glob(session_id)
+
+    tmux_args = tmp_path / "tmux-args.txt"
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        f"""#!/usr/bin/env bash
+case "$1" in
+  has-session)
+    exit 1
+    ;;
+  list-panes)
+    printf '%s\\n' 4321
+    ;;
+  new-session)
+    printf '%s\\n' "$@" > {tmux_args}
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_tmux.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-amber",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--task",
+            "demo-task",
+            "--terminal",
+            "tmux",
+            "--force",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    runner = Path(tmux_args.read_text(encoding="utf-8").splitlines()[-1])
+    try:
+        runner_result = subprocess.run(
+            [str(runner)],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=5,
+        )
+
+        assert runner_result.returncode == 70
+        assert "failed to delete remote Codex runner" in runner_result.stderr
+        assert runner.exists()
+        assert len(remote_cmds.read_text(encoding="utf-8").splitlines()) == 1
+        assert not list(Path("/tmp").glob(f"hapax-codex-token-{session_id}-*"))
+        assert not args_file.exists()
+    finally:
+        runner.unlink(missing_ok=True)
 
 
 def test_terminal_tmux_allows_assigned_ready_state_task(tmp_path: Path) -> None:
