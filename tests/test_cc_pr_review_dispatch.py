@@ -22,8 +22,12 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPTS = REPO_ROOT / "scripts"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
+
+from shared.quota_spend_ledger import SubscriptionQuotaState  # noqa: E402
 
 
 def _load(name: str, filename: str) -> ModuleType:
@@ -340,7 +344,7 @@ class TestDryRun:
             dispatch.review_team,
             "subscription_quota_state_for_route",
             lambda _ledger, _route_id, *, now: (
-                dispatch.review_team.SubscriptionQuotaState.FRESH,
+                SubscriptionQuotaState.EXHAUSTED,
                 (
                     "relay-receipt:glmcp-quota-admission.yaml:"
                     "witness:glmcp-payg-spend-test.yaml:"
@@ -388,7 +392,7 @@ class TestDryRun:
             dispatch.review_team,
             "subscription_quota_state_for_route",
             lambda _ledger, _route_id, *, now: (
-                dispatch.review_team.SubscriptionQuotaState.FRESH,
+                SubscriptionQuotaState.FRESH,
                 (
                     "relay-receipt:glmcp-quota-admission.yaml:"
                     "witness:glmcp-coding-plan-test:"

@@ -72,7 +72,6 @@ from shared.quota_spend_ledger import (  # noqa: E402
     CapacityPool,
     PaidRouteRequest,
     QuotaSpendLedgerError,
-    SubscriptionQuotaState,
     evaluate_paid_route_eligibility,
     load_quota_spend_ledger_resolved,
     subscription_quota_state_for_route,
@@ -879,7 +878,7 @@ def task_scoped_paid_review_route_blocked_families(
         now_dt = _coerce_datetime(now, reference=datetime.now(UTC))
     except ValueError:
         now_dt = datetime.now(UTC)
-    state, evidence_refs = subscription_quota_state_for_route(
+    _state, evidence_refs = subscription_quota_state_for_route(
         resolved.ledger,
         GLMCP_PAYG_BUDGET_ROUTE_ID,
         now=now_dt,
@@ -888,7 +887,7 @@ def task_scoped_paid_review_route_blocked_families(
         "spend-gate-payg-receipt:" in ref or f":endpoint:{GLMCP_ADMISSION_PAYG_ENDPOINT}:" in ref
         for ref in evidence_refs
     )
-    if state is not SubscriptionQuotaState.FRESH or not route_uses_payg:
+    if not route_uses_payg:
         return blocked
 
     unique_task_ids = tuple(dict.fromkeys(str(task_id).strip() for task_id in task_ids if task_id))

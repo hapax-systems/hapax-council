@@ -266,7 +266,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"hapax-agy-quota-admission: {exc}; {VALIDATION_RECOVERY_HINT}", file=sys.stderr)
         return 2
     except OSError as exc:
-        print(f"hapax-agy-quota-admission: failed to write receipt: {exc}", file=sys.stderr)
+        print(
+            "hapax-agy-quota-admission: failed to write receipt: "
+            f"{exc}; check receipt-dir existence/permissions or rerun with a writable "
+            "--receipt-dir under the governed relay receipts path",
+            file=sys.stderr,
+        )
         return 1
 
     summary = {

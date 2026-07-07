@@ -145,6 +145,39 @@ def test_agy_quota_admission_rejects_invalid_reviewer_stdout(
     assert not list(tmp_path.glob("*.yaml"))
 
 
+def test_agy_quota_admission_write_failure_reports_receipt_dir_next_action(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_module()
+
+    def fake_run(cmd, **kwargs):
+        return _completed("```yaml\nverdict: accept\nfindings: []\nchecklist: {}\n```\n")
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module, "_write_flat_yaml_atomic", fail_write)
+
+    rc = module.main(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--evidence-ref",
+            "agy-gemini31pro-smoke-20260707t1300z",
+        ]
+    )
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "failed to write receipt: permission denied" in err
+    assert "check receipt-dir existence/permissions" in err
+    assert "--receipt-dir" in err
+    assert not list(tmp_path.glob("*.yaml"))
+
+
 def test_agy_quota_admission_rejects_reviewer_command_override(tmp_path: Path) -> None:
     result = subprocess.run(
         [
