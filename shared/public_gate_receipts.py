@@ -182,7 +182,7 @@ def _receipt_candidate_paths(suffix: str) -> tuple[Path, ...]:
 
 def _path_is_inside_root(path: Path, root: Path) -> bool:
     try:
-        resolved_root = root.resolve(strict=False)
+        resolved_root = root.resolve(strict=True)
         resolved_path = path.resolve(strict=True)
     except OSError:
         return False
@@ -314,6 +314,8 @@ def _receipt_has_required_bindings(
 
 
 def _receipt_has_binding(data: Any, key: str, expected: object) -> bool:
+    if not isinstance(data, Mapping):
+        return False
     return any(
         _binding_value_matches(value, expected)
         for value in _iter_binding_values(data, _binding_key_aliases(key))
@@ -321,14 +323,9 @@ def _receipt_has_binding(data: Any, key: str, expected: object) -> bool:
 
 
 def _iter_binding_values(data: Any, keys: frozenset[str]) -> Iterable[Any]:
-    if isinstance(data, Mapping):
-        for raw_key, value in data.items():
-            if str(raw_key).strip().casefold() in keys:
-                yield value
-            yield from _iter_binding_values(value, keys)
-    elif isinstance(data, (list, tuple, set)):
-        for item in data:
-            yield from _iter_binding_values(item, keys)
+    for raw_key, value in data.items():
+        if str(raw_key).strip().casefold() in keys:
+            yield value
 
 
 def _binding_key_aliases(key: str) -> frozenset[str]:

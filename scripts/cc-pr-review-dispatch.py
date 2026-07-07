@@ -145,6 +145,7 @@ _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
         "public_gate_receipt_value_present",
         "public_gate_receipt_ref_exists",
         "_receipt_file_maps_to_gate",
+        "_gate_receipt_object_allows",
         "_receipt_has_required_bindings",
     ),
 }
@@ -1447,7 +1448,7 @@ def build_changed_file_excerpts(
     *,
     repo_root: Path,
     head_sha: str,
-    limit: int = 10,
+    limit: int = 18,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Bounded current-source excerpts for review-critical changed files.
 

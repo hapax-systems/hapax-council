@@ -99,6 +99,31 @@ def test_rejects_spliced_gate_and_binding_records(tmp_path: Path) -> None:
     )
 
 
+def test_rejects_root_gate_with_nested_unrelated_binding_record(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "receipt-1.yaml",
+        f"gate_id: {GATE}\n"
+        "status: passed\n"
+        "current_binding_record:\n"
+        "  artifact_slug: demo\n"
+        "  artifact_fingerprint: abc123\n"
+        "  target_surfaces:\n"
+        "    - fake\n",
+    )
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+        bindings={
+            "artifact_slug": "demo",
+            "artifact_fingerprint": "abc123",
+            "target_surfaces": ("fake",),
+        },
+    )
+
+
 def test_rejects_failed_receipt_outcome(tmp_path: Path) -> None:
     _write(tmp_path, "receipt-1.yaml", f"gate_id: {GATE}\nstatus: failed\n")
 
