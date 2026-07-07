@@ -118,8 +118,10 @@ class TestLicenseReconciliationStatusDoc:
         for surface in ("LICENSE", "NOTICE.md", "CITATION.cff", "codemeta.json"):
             assert surface in body
 
-    def test_doc_marks_resolved(self) -> None:
-        assert "RESOLVED" in self.DOC.read_text(encoding="utf-8")
+    def test_doc_separates_local_and_live_license_state(self) -> None:
+        body = self.DOC.read_text(encoding="utf-8")
+        assert "LOCAL SURFACES RECONCILED" in body
+        assert "live GitHub/license-detection closure is" in body
 
     def test_doc_declares_polyform_strict(self) -> None:
         assert "PolyForm Strict 1.0.0" in self.DOC.read_text(encoding="utf-8")

@@ -1,8 +1,9 @@
 # License reconciliation status
 
-**Status:** RESOLVED — all four canonical surfaces declare PolyForm Strict 1.0.0.
+**Status:** LOCAL SURFACES RECONCILED — live GitHub/license-detection closure is
+tracked separately in the public-surface live-state report.
 
-## Current state
+## Current Local State
 
 | Surface | Declared license |
 |---|---|
@@ -23,10 +24,11 @@ Path 1 adopted per operator directive ("research best license for me and go with
 5. **No obligation to supporters:** Zero CLAs, no copyleft enforcement, no reciprocal sharing.
 6. **Constitutional alignment:** `single_user` axiom (weight 100) and NOTICE.md's refusal stance are philosophically coherent with PolyForm Strict.
 
-## Remaining items
+## Remaining Items
 
 - ✅ All four metadata surfaces converged
-- ⏳ Verify GitHub `licensee` gem detects PolyForm Strict in repository settings
+- ⏳ Reconcile live GitHub/licensee detection where the live-state report still
+  records blocking license-detection drift
 - ✅ Profile README at correct public GitHub location (`hapax-systems/.github/profile/README.md`)
 - ✅ README/profile drift checks in `tests/docs/test_readme_current_project_spine.py` and `tests/docs/test_github_profile_readme_spine.py`
 
@@ -34,5 +36,6 @@ Path 1 adopted per operator directive ("research best license for me and go with
 
 ```bash
 gh api repos/hapax-systems/.github/contents/profile/README.md --jq '{path,sha,html_url}'
+gh api repos/hapax-systems/hapax-council --jq '{repo:.full_name,license:.license}'
 uv run pytest tests/docs/test_readme_current_project_spine.py tests/docs/test_github_profile_readme_spine.py tests/shared/test_github_public_surface.py -q
 ```

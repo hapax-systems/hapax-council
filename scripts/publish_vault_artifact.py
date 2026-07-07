@@ -31,7 +31,10 @@ Optional:
 This script marks the artifact ``APPROVED`` directly only when frontmatter
 explicitly allows publication. The vault is the operator's editing surface;
 once an allowed vault file lands at this script, the operator has implicitly
-approved publication. No separate inbox-review step.
+approved publication. No separate inbox-review step. There is no emergency
+bypass for public egress: invalid YAML, missing clearance, malformed
+clearance, unreadable policy, or out-of-allowlist target surfaces must stop
+before an inbox artifact is written.
 
 ## Usage
 
@@ -74,6 +77,10 @@ PUBLICATION_ALLOWED_FALSE_VALUES = frozenset({"false", "no", "0", "blocked", "wi
 
 class PublicationGateError(ValueError):
     """Raised when a draft lacks explicit public-publication clearance."""
+
+
+class PublicationFrontmatterError(PublicationGateError):
+    """Raised when publication frontmatter is structurally unsafe."""
 
 
 class SurfaceAllowlistError(PublicationGateError):
@@ -155,7 +162,7 @@ def _parse_publication_markdown(path: Path) -> tuple[dict, str]:
         return result.frontmatter or {}, result.body
 
     if result.error_kind == "yaml_error":
-        log.error("YAML frontmatter in %s is invalid; refusing public publication", path)
+        raise PublicationFrontmatterError(f"YAML frontmatter is invalid: {path}")
     return {}, result.body
 
 
@@ -185,13 +192,20 @@ def _configured_publication_surfaces(paths: Iterable[Path] = PUBLICATION_POLICY_
         except (OSError, yaml.YAMLError) as exc:
             raise SurfaceAllowlistError(f"surface policy unreadable: {path}") from exc
         if not isinstance(loaded, Mapping):
-            continue
+            raise SurfaceAllowlistError(f"surface policy must be a mapping: {path}")
         policy = loaded.get("publication_frontmatter_policy")
         if not isinstance(policy, Mapping):
-            continue
+            raise SurfaceAllowlistError(
+                f"surface policy missing publication_frontmatter_policy: {path}"
+            )
         target_surfaces = policy.get("target_surfaces")
-        if not isinstance(target_surfaces, list):
-            continue
+        if not isinstance(target_surfaces, list) or not target_surfaces:
+            raise SurfaceAllowlistError(
+                f"surface policy target_surfaces must be a non-empty list: {path}"
+            )
+        non_string = [surface for surface in target_surfaces if not isinstance(surface, str)]
+        if non_string:
+            raise SurfaceAllowlistError(f"surface policy target_surfaces must be strings: {path}")
         surfaces.update(surface for surface in target_surfaces if isinstance(surface, str))
     if not surfaces:
         raise SurfaceAllowlistError("no target surface allowlist configured")
@@ -364,12 +378,22 @@ def main(argv: list[str] | None = None) -> int:
         log.error("vault file not found: %s", args.path)
         return 2
 
-    frontmatter, body = _parse_publication_markdown(args.path)
+    try:
+        frontmatter, body = _parse_publication_markdown(args.path)
+    except PublicationGateError as exc:
+        log.error(
+            "publication not allowed for %s: %s; next action: fix YAML frontmatter "
+            "and clear Publication-Allowed through Claim Verification Council review",
+            args.path,
+            exc,
+        )
+        return 1
     if not body.strip():
         log.error("empty body in %s", args.path)
         return 2
     surfaces = _parse_surfaces(args.surfaces)
     try:
+        _assert_target_surfaces_allowed(surfaces)
         artifact = _build_artifact(
             body_md=body,
             frontmatter=frontmatter,

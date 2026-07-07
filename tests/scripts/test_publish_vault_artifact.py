@@ -108,6 +108,16 @@ class TestBuildArtifact:
                 approver="Oudepode",
             )
 
+    def test_rejects_malformed_surface_policy(self, tmp_path) -> None:
+        policy = tmp_path / "policy.yaml"
+        policy.write_text(
+            "schema_version: 1\npublication_frontmatter_policy:\n  status: guarded_public_channel\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(publish_vault_artifact.SurfaceAllowlistError):
+            publish_vault_artifact._configured_publication_surfaces((policy,))
+
 
 def test_allowed_draft_dry_run_uses_existing_frontmatter_casing(tmp_path, capsys) -> None:
     draft = tmp_path / "draft.md"
