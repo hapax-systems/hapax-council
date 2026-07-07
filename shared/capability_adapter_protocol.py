@@ -413,8 +413,8 @@ class CodexAdapter(WorkerAdapter, SendCapableAdapter):
         )
 
 
-class VibeAdapter(WorkerAdapter):
-    """Vibe worker lanes: pure reuse + the shared CLI failure table."""
+class VibeAdapter(WorkerAdapter, SendCapableAdapter):
+    """Vibe worker lanes: pure reuse + shared CLI failure table + wrapper-backed send."""
 
     PLATFORM: ClassVar[Platform] = Platform.VIBE
 

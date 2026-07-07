@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Single-operator externalized executive function. No auth/roles/multi-user. Shared conventions (uv, ruff, testing, git) in workspace `CLAUDE.md`. Sister: [vscode](vscode/CLAUDE.md), [hapax-mcp](https://github.com/ryanklee/hapax-mcp). Governance: `hapax-constitution` → `hapax-sdlc` package; local axioms in `axioms/registry.yaml`. Rotation policy: `docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md`.
+Single-operator externalized executive function. No auth/roles/multi-user. Shared conventions (uv, ruff, testing, git) in workspace `CLAUDE.md`. Sister: [vscode](vscode/CLAUDE.md), [hapax-mcp](https://github.com/hapax-systems/hapax-mcp). Governance: `hapax-constitution` → `hapax-sdlc` package; local axioms in `axioms/registry.yaml`. Rotation policy: `docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md`.
 
 ## Architecture
 

@@ -59,7 +59,7 @@ If you have fifteen minutes:
 3. Inspect [`agents/publication_bus/`](agents/publication_bus/) for public
    egress and refusal/publishing infrastructure.
 4. Inspect [`axioms/`](axioms/) and
-   [`hapax-constitution`](https://github.com/ryanklee/hapax-constitution) for
+   [`hapax-constitution`](https://github.com/hapax-systems/hapax-constitution) for
    governance commitments.
 
 If you have an hour:
@@ -139,7 +139,7 @@ failures and corrections can be observed.
 ## Public Anchors
 
 - Repository: <https://github.com/hapax-systems/hapax-council>
-- Governance specification: <https://github.com/ryanklee/hapax-constitution>
+- Governance specification: <https://github.com/hapax-systems/hapax-constitution>
 - Public weblog: <https://hapax.weblog.lol/>
 - Hapax Manifesto v0: held pending a fresh public publish; do not cite the old short path.
 - Refusal Brief: <https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure>

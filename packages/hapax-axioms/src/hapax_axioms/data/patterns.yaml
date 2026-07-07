@@ -4,7 +4,7 @@
 # generated-feedback-language scaffolding (management_governance) at the
 # diff/commit-message layer. Sub-millisecond regex matching, no LLM calls.
 #
-# Canonical source: https://github.com/ryanklee/hapax-council
+# Canonical source: https://github.com/hapax-systems/hapax-council
 #   hooks/scripts/axiom-patterns.sh
 #   axioms/enforcement-patterns.yaml
 #
@@ -14,7 +14,7 @@
 # repo's own axiom scan. Compiled behaviour is identical to a plain
 # literal — Python's re module flattens [x] to x.
 schema_version: "1-0-0"
-source_repo: "https://github.com/ryanklee/hapax-council"
+source_repo: "https://github.com/hapax-systems/hapax-council"
 snapshot_date: "2026-04-25"
 patterns:
   # Auth/authz scaffolding
