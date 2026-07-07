@@ -147,6 +147,47 @@ token_handoff_component() {
   printf '%s\n' "$component"
 }
 
+session_id_is_safe() {
+  local sid="${1:-}" tail=""
+  [[ "${#sid}" -ge 8 && "${#sid}" -le 128 ]] || return 1
+  case "$sid" in
+    [A-Za-z0-9]*) ;;
+    *) return 1 ;;
+  esac
+  case "$sid" in
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  case "$sid" in
+    *[!0-9]*) ;;
+    *) return 1 ;;
+  esac
+  tail="${sid##*-}"
+  if [[ "$tail" =~ ^[0-9]{1,7}$ ]]; then
+    return 1
+  fi
+  return 0
+}
+
+mint_session_uuid() {
+  cat /proc/sys/kernel/random/uuid 2>/dev/null \
+    || uuidgen 2>/dev/null \
+    || python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null \
+    || printf '%s-%s-p%sx\n' "$(token_handoff_component "$SESSION")" "$(date -u +%Y%m%dT%H%M%SZ)" "$$"
+}
+
+normalize_session_uuid() {
+  local raw="${1:-}" minted=""
+  if [[ -n "$raw" ]] && session_id_is_safe "$raw"; then
+    printf '%s\n' "$raw"
+    return 0
+  fi
+  minted="$(mint_session_uuid)"
+  if [[ -n "$raw" ]]; then
+    echo "hapax-codex-headless: ignoring unsafe HAPAX_SESSION_ID; minted safe session id for coordination paths" >&2
+  fi
+  printf '%s\n' "$minted"
+}
+
 remote_python_command() {
   local payload="$1" code="$2"
   local code_b64="" bash_script="" quoted_script="" quoted_payload="" quoted_code=""
@@ -681,7 +722,7 @@ fi
 # claim lease (reform Phase 1, FM-2) and the hooks recover this lane's role.
 PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
 PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
-SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
+SESSION_UUID="$(normalize_session_uuid "${HAPAX_SESSION_ID:-}")"
 export HAPAX_PARENT_AGENT_INTERFACE="$PARENT_INTERFACE"
 export HAPAX_PARENT_AGENT_NAME="$PARENT_NAME"
 export HAPAX_AGENT_INTERFACE="codex"
@@ -853,7 +894,7 @@ fi
 if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
   WORKTREE_PAYLOAD="$(remote_worktree_payload_b64)"
   WORKTREE_COMMAND="$(remote_python_command "$WORKTREE_PAYLOAD" "$REMOTE_WORKTREE_PY")"
-  PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 0 "$REMOTE_TOKEN_HANDOFF")"
+  PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 0 "")"
   PREFLIGHT_COMMAND="$(remote_python_command "$PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
   WORKTREE_ERR=""
   PREFLIGHT_ERR=""
@@ -889,8 +930,6 @@ if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
     fi
   else
     DISPATCH_HOST="$DISPATCH_HOST_REQUESTED"
-    REMOTE_TOKEN_HANDOFF_CREATED=1
-    echo "hapax-codex-headless: dispatch -> $DISPATCH_HOST (codex exec on appendix)" >&2
   fi
 fi
 
@@ -903,6 +942,24 @@ fi
 if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
   [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
   (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
+fi
+
+if [[ -n "$DISPATCH_HOST" ]]; then
+  POST_CLAIM_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 0 "$REMOTE_TOKEN_HANDOFF")"
+  POST_CLAIM_PREFLIGHT_COMMAND="$(remote_python_command "$POST_CLAIM_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
+  POST_CLAIM_PREFLIGHT_ERR=""
+  if ! POST_CLAIM_PREFLIGHT_ERR="$(
+    ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+      -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST" \
+      "$POST_CLAIM_PREFLIGHT_COMMAND" 2>&1 >/dev/null
+  )"; then
+    echo "hapax-codex-headless: remote token handoff preflight failed after claim ($DISPATCH_HOST)" >&2
+    [[ -n "$POST_CLAIM_PREFLIGHT_ERR" ]] && printf '  detail: %s\n' "$POST_CLAIM_PREFLIGHT_ERR" >&2
+    echo "  next action: ssh $DISPATCH_HOST and remove stale hapax-codex-token files owned by this user, then rerun remote preflight before dispatching Codex lanes" >&2
+    exit 75
+  fi
+  REMOTE_TOKEN_HANDOFF_CREATED=1
+  echo "hapax-codex-headless: dispatch -> $DISPATCH_HOST (codex exec on appendix)" >&2
 fi
 
 if [[ -n "$DISPATCH_HOST" ]]; then

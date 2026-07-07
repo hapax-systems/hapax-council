@@ -74,6 +74,47 @@ token_handoff_component() {
   printf '%s\n' "$component"
 }
 
+session_id_is_safe() {
+  local sid="${1:-}" tail=""
+  [ "${#sid}" -ge 8 ] && [ "${#sid}" -le 128 ] || return 1
+  case "$sid" in
+    [A-Za-z0-9]*) ;;
+    *) return 1 ;;
+  esac
+  case "$sid" in
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  case "$sid" in
+    *[!0-9]*) ;;
+    *) return 1 ;;
+  esac
+  tail="${sid##*-}"
+  if [[ "$tail" =~ ^[0-9]{1,7}$ ]]; then
+    return 1
+  fi
+  return 0
+}
+
+mint_session_uuid() {
+  cat /proc/sys/kernel/random/uuid 2>/dev/null \
+    || uuidgen 2>/dev/null \
+    || python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null \
+    || printf '%s-%s-p%sx\n' "$(token_handoff_component "$SESSION")" "$(date -u +%Y%m%dT%H%M%SZ)" "$$"
+}
+
+normalize_session_uuid() {
+  local raw="${1:-}" minted=""
+  if [ -n "$raw" ] && session_id_is_safe "$raw"; then
+    printf '%s\n' "$raw"
+    return 0
+  fi
+  minted="$(mint_session_uuid)"
+  if [ -n "$raw" ]; then
+    echo "hapax-codex: ignoring unsafe HAPAX_SESSION_ID; minted safe session id for coordination paths" >&2
+  fi
+  printf '%s\n' "$minted"
+}
+
 relay_retired() {
   # Delegate to the single-source predicate (shared/relay_lifecycle.lane_is_retired)
   # so the launcher agrees with the dispatch gate + the coordinator: one
@@ -387,11 +428,22 @@ from shared.codex_oauth_refresher import (
 
 path = Path(sys.argv[1]).expanduser()
 token = load_published_access_token(token_file=path)
-if token is None or needs_refresh(token):
+if token is None:
+    raise SystemExit(0)
+if needs_refresh(token):
+    print(
+        "hapax-codex: published Codex OAuth access token is absent or expiring; "
+        "continuing without CODEX_ACCESS_TOKEN for interactive launch",
+        file=sys.stderr,
+    )
     raise SystemExit(0)
 print(token.raw)
 PYEOF
-  )" || token_rc=$?
+	  )" || token_rc=$?
+  if [ "$token_rc" -ne 0 ]; then
+    echo "hapax-codex: could not inspect published Codex OAuth access token (rc=$token_rc); continuing without CODEX_ACCESS_TOKEN for interactive launch" >&2
+    return 0
+  fi
   if [ "$token_rc" -eq 0 ] && [ -n "$token" ]; then
     export CODEX_ACCESS_TOKEN="$token"
   fi
@@ -950,7 +1002,7 @@ PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:
 
 # Per-session id (coordination reform Phase 1): stable uuid so the gate keys a
 # claim lease to THIS session — two same-role sessions never collide (FM-2).
-SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
+SESSION_UUID="$(normalize_session_uuid "${HAPAX_SESSION_ID:-}")"
 TMUX_NAME="hapax-codex-$SESSION"
 DISPATCH_HOST_REQUESTED="${HAPAX_DISPATCH_HOST:-}"
 DISPATCH_HOST=""

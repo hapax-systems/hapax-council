@@ -672,6 +672,7 @@ exit 0
         "preflight",
         "worktree",
         "preflight",
+        "preflight",
         "exec",
         "cleanup",
     ]
@@ -1177,6 +1178,7 @@ exit 0
         "preflight",
         "worktree",
         "preflight",
+        "preflight",
         "exec",
         "cleanup",
     ]
@@ -1236,7 +1238,7 @@ def test_codex_headless_remote_exec_uses_preclaim_proven_token_handoff(
         after_preflight_success=f"""  count="$(cat "{preflight_count}" 2>/dev/null || printf '0')"
   count="$((count + 1))"
   printf '%s\\n' "$count" > "{preflight_count}"
-  if [ "$count" -ge 2 ]; then
+  if [ "$count" -ge 3 ]; then
     printf '%s\\n' "{rotated_token}" > "{token_file}"
   fi
 """,
@@ -1269,10 +1271,11 @@ exit 0
         "preflight",
         "worktree",
         "preflight",
+        "preflight",
         "exec",
         "cleanup",
     ]
-    assert preflight_count.read_text(encoding="utf-8").strip() == "2"
+    assert preflight_count.read_text(encoding="utf-8").strip() == "3"
     assert token_file.read_text(encoding="utf-8").strip() == rotated_token
     assert used_token.read_text(encoding="utf-8").strip() == proven_token
 
@@ -1353,6 +1356,7 @@ PY
             "preflight",
             "worktree",
             "preflight",
+            "preflight",
         ]
 
 
@@ -1374,7 +1378,7 @@ def test_codex_headless_remote_cleanup_refuses_traversal_handoff_path() -> None:
     assert "refusing invalid Codex OAuth token handoff cleanup path" in result.stderr
 
 
-def test_codex_headless_parent_cleanup_failure_is_operator_visible(
+def test_codex_headless_claim_failure_does_not_create_remote_handoff(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -1405,7 +1409,6 @@ def test_codex_headless_parent_cleanup_failure_is_operator_visible(
         bin_dir / "ssh",
         ssh_log,
         remove_workdir_on_worktree=workdir,
-        cleanup_exit=23,
     )
     _write_executable(bin_dir / "codex", "exit 0\n")
 
@@ -1426,12 +1429,11 @@ def test_codex_headless_parent_cleanup_failure_is_operator_visible(
     )
 
     assert result.returncode == 42
-    assert "failed to delete preflight-proven Codex OAuth token handoff" in result.stderr
+    assert "failed to delete preflight-proven Codex OAuth token handoff" not in result.stderr
     assert ssh_log.read_text(encoding="utf-8").splitlines() == [
         "preflight",
         "worktree",
         "preflight",
-        "cleanup",
     ]
 
 
@@ -1495,7 +1497,6 @@ def test_codex_headless_remote_handoff_sanitizes_session_id_before_cleanup(
             "preflight",
             "worktree",
             "preflight",
-            "cleanup",
         ]
         assert not list(Path("/tmp").glob(f"{leak_prefix}-*"))
     finally:
@@ -1632,6 +1633,7 @@ exit 0
     assert ssh_log.read_text(encoding="utf-8").splitlines() == [
         "preflight",
         "worktree",
+        "preflight",
         "preflight",
         "exec",
         "cleanup",

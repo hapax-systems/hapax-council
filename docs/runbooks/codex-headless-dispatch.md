@@ -40,10 +40,10 @@ Remote appendix dispatch uses this order:
    `HAPAX_CODEX_CREATE_WORKTREE=1` (the unset/default value is `1`);
 4. run full remote preflight for required directories, hook adapter, `python3`,
    `codex`, OAuth freshness, and `codex debug models` bearer actuation;
-5. snapshot the exact preflight-proven token into a short-lived remote handoff
-   file before the local `cc-claim` boundary. The handoff create is exclusive,
-   `0600`, and non-following where the dispatch host exposes `O_NOFOLLOW`; a
-   preexisting file or symlink is a hard preflight failure;
+5. after the local `cc-claim` boundary accepts the dispatch, snapshot the exact
+   preflight-proven token into a short-lived remote handoff file. The handoff
+   create is exclusive, `0600`, and non-following where the dispatch host exposes
+   `O_NOFOLLOW`; a preexisting file or symlink is a hard preflight failure;
 6. execute `codex exec` on the remote host with that handoff token, deleting the
    handoff as it is consumed. Later rotation of the published token file must not
    change the bearer used for this exec. A failed deletion during handoff
