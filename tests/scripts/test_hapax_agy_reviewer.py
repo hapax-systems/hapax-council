@@ -71,6 +71,55 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert secret_file.read_text(encoding="utf-8").strip() == "unset"
 
 
+def test_agy_reviewer_ignores_ambient_review_model(tmp_path: Path) -> None:
+    fake_agy = tmp_path / "agy"
+    calls = tmp_path / "calls.txt"
+    fake_agy.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {calls}
+printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
+""",
+        encoding="utf-8",
+    )
+    fake_agy.chmod(0o755)
+    env = {**os.environ, "HAPAX_AGY_REVIEW_MODEL": "claude-sonnet-4-6"}
+
+    result = subprocess.run(
+        [str(WRAPPER), "--agy-bin", str(fake_agy)],
+        input="review\n",
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = calls.read_text(encoding="utf-8")
+    assert "gemini-3.1-pro-preview" in args
+    assert "claude-sonnet-4-6" not in args
+
+
+def test_agy_reviewer_rejects_non_pinned_review_model(tmp_path: Path) -> None:
+    fake_agy = tmp_path / "agy"
+    fake_agy.write_text(
+        "#!/usr/bin/env bash\nprintf 'should not run\\n' >&2\nexit 99\n",
+        encoding="utf-8",
+    )
+    fake_agy.chmod(0o755)
+
+    result = subprocess.run(
+        [str(WRAPPER), "--agy-bin", str(fake_agy), "--model", "claude-sonnet-4-6"],
+        input="review\n",
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 64
+    assert "review model is pinned to gemini-3.1-pro-preview" in result.stderr
+    assert "should not run" not in result.stderr
+
+
 def test_agy_reviewer_spools_large_dossier_out_of_argv(tmp_path: Path) -> None:
     fake_agy = tmp_path / "agy"
     arg_lengths = tmp_path / "arg-lengths.txt"

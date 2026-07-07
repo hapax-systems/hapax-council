@@ -127,7 +127,9 @@ route_backed_review_families:
     # but the route_id is not live-capacity evidence by itself. The review-team
     # gate seats gemini only when the platform-capability registry admits
     # agy.review.direct with fresh route/resource/quota receipts; otherwise the
-    # family is degraded as blocked supply.
+    # family is degraded as blocked supply. scripts/hapax-agy-reviewer pins the
+    # review model to gemini-3.1-pro-preview so ambient agy model settings cannot
+    # silently change the family counted by the dossier.
     route_id: agy.review.direct
     reviewer_command: ["scripts/hapax-agy-reviewer"]
     timeout_seconds: 1200

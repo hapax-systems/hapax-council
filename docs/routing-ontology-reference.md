@@ -62,7 +62,10 @@ directory name is the installed CLI bundle path, not a live Antigravity route.
 The "Provider-dependent" context entry is a non-assertion about the universal
 harness shape; current engine entitlements and context windows must be measured
 through future agy route-capability receipts before they can support dispatch or
-review admission.
+review admission. The local entitlement inventory recheck is `agy models`; this
+task records that command only as a human recheck path, not as admission evidence
+until a future receipt writer records model/context limits and route-specific
+quota admission.
 
 Recheck the agy review-route/non-worker claims with:
 
@@ -77,6 +80,8 @@ uv run pytest \
   tests/shared/test_quota_spend_ledger.py::test_agy_receipt_bounded_route_rejects_generic_fresh_quota_snapshot \
   tests/shared/test_platform_capability_receipts.py::test_agy_receipt_records_live_review_route_without_unblocking_quota \
   tests/test_review_team.py::TestConstitution::test_retired_authoring_lanes_fail_closed \
+  tests/scripts/test_hapax_agy_reviewer.py::test_agy_reviewer_ignores_ambient_review_model \
+  tests/scripts/test_hapax_agy_reviewer.py::test_agy_reviewer_rejects_non_pinned_review_model \
   tests/scripts/test_cc_dispatch.py::test_agy_review_route_is_valid_but_non_spawnable \
   tests/scripts/test_hapax_methodology_dispatch.py::test_agy_platform_is_review_route_not_dispatchable_worker \
   tests/scripts/test_hapax_cross_runtime_dispatch.py::test_agy_platform_is_review_route_not_cross_runtime_worker \

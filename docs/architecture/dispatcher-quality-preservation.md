@@ -29,6 +29,8 @@ uv run pytest \
   tests/test_review_team.py::TestConstitution::test_retired_authoring_lanes_fail_closed \
   tests/test_review_team.py::TestConstitution::test_t1_route_blocked_family_degrades_with_receipt_reason \
   tests/test_review_team.py::TestVerdictBlockers::test_route_blocked_degraded_dossier_passes_while_route_still_blocked \
+  tests/scripts/test_hapax_agy_reviewer.py::test_agy_reviewer_ignores_ambient_review_model \
+  tests/scripts/test_hapax_agy_reviewer.py::test_agy_reviewer_rejects_non_pinned_review_model \
   tests/test_cc_pr_review_dispatch.py::TestApply::test_blocked_agy_route_is_not_invoked_as_reviewer
 ```
 

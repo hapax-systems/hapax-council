@@ -13,6 +13,7 @@ from pathlib import Path
 DEFAULT_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_PRINT_TIMEOUT = "20m0s"
 DEFAULT_AGY_BIN = "/usr/bin/agy"
+PINNED_REVIEW_MODEL = DEFAULT_MODEL
 
 REVIEW_PROMPT = """You are a blind PR reviewer invoked non-interactively through agy --print.
 Review ONLY the dossier supplied in the review-dossier.md file in your current sandbox
@@ -74,7 +75,7 @@ def _default_agy_bin() -> str:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agy-bin", default=_default_agy_bin())
-    parser.add_argument("--model", default=os.environ.get("HAPAX_AGY_REVIEW_MODEL", DEFAULT_MODEL))
+    parser.add_argument("--model", default=PINNED_REVIEW_MODEL)
     parser.add_argument(
         "--print-timeout",
         default=os.environ.get("HAPAX_AGY_REVIEW_PRINT_TIMEOUT", DEFAULT_PRINT_TIMEOUT),
@@ -114,6 +115,13 @@ def main(argv: list[str] | None = None) -> int:
     agy_bin = Path(args.agy_bin)
     if agy_bin.name != "agy" or not agy_bin.is_absolute():
         print("hapax-agy-reviewer: --agy-bin must be an absolute path named agy", file=sys.stderr)
+        return 64
+    if args.model != PINNED_REVIEW_MODEL:
+        print(
+            "hapax-agy-reviewer: review model is pinned to "
+            f"{PINNED_REVIEW_MODEL} for registry family traceability",
+            file=sys.stderr,
+        )
         return 64
 
     dossier = sys.stdin.read()

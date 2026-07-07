@@ -1500,8 +1500,7 @@ def _apply_receipt_to_route_payload(
     if quota_unobservable_nonblocking:
         removable_top_blockers.update(_quota_unobservable_removable_reasons(route_payload))
     elif receipt.quota.status is EvidenceStatus.OBSERVED:
-        removable_top_blockers.update(_quota_unobservable_removable_reasons(route_payload))
-        removable_top_blockers.update(_quota_receipt_removable_reasons(route_payload))
+        removable_top_blockers.update(_observed_quota_receipt_removable_reasons(route_payload))
     quota_admission_fresh, quota_admission_refs = _route_specific_quota_admission_fresh(
         route_payload,
         now=now,
@@ -1643,10 +1642,18 @@ def _quota_unobservable_removable_reasons(route_payload: dict[str, Any]) -> set[
 def _quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
     if route_payload.get("route_id") == "agy.review.direct":
         # Platform receipts can prove local agy CLI/wrapper availability only.
-        # They must not clear route_specific_quota_receipt_absent; that requires
-        # a future route-specific agy quota-admission validator.
-        return {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+        # No quota blocker is removable until a future route-specific agy
+        # quota-admission validator records a sanctioned witness.
+        return set()
     return {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+
+
+def _observed_quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
+    if route_payload.get("route_id") == "agy.review.direct":
+        return set()
+    return _quota_unobservable_removable_reasons(route_payload) | _quota_receipt_removable_reasons(
+        route_payload
+    )
 
 
 def _apply_surface(

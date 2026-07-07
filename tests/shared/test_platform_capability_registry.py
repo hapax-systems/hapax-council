@@ -951,10 +951,13 @@ def test_agy_observed_route_quota_receipt_does_not_admit_review_route() -> None:
 def test_forged_agy_observed_quota_receipt_cannot_clear_route_specific_blocker() -> None:
     payload = _payload()
     route = _route_payload(payload, "agy.review.direct")
-    route["blocked_reasons"] = ["route_specific_quota_receipt_absent"]
-    route["freshness"]["evidence"]["quota"]["blocked_reasons"] = [
-        "route_specific_quota_receipt_absent"
+    quota_blockers = [
+        "account_live_quota_receipt_absent",
+        "quota_telemetry_unknown",
+        "route_specific_quota_receipt_absent",
     ]
+    route["blocked_reasons"] = [*quota_blockers]
+    route["freshness"]["evidence"]["quota"]["blocked_reasons"] = [*quota_blockers]
 
     _apply_receipt_to_route_payload(
         route,
@@ -966,10 +969,8 @@ def test_forged_agy_observed_quota_receipt_cannot_clear_route_specific_blocker()
     )
 
     assert route["route_state"] == "blocked"
-    assert route["blocked_reasons"] == ["route_specific_quota_receipt_absent"]
-    assert route["freshness"]["evidence"]["quota"]["blocked_reasons"] == [
-        "route_specific_quota_receipt_absent"
-    ]
+    assert route["blocked_reasons"] == quota_blockers
+    assert route["freshness"]["evidence"]["quota"]["blocked_reasons"] == quota_blockers
 
 
 def test_agy_quota_receipt_removable_reasons_preserve_route_specific_blocker() -> None:
@@ -978,7 +979,9 @@ def test_agy_quota_receipt_removable_reasons_preserve_route_specific_blocker() -
 
     removable = _quota_receipt_removable_reasons(route)
 
-    assert removable == {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+    assert removable == set()
+    assert "account_live_quota_receipt_absent" not in removable
+    assert "quota_telemetry_unknown" not in removable
     assert "route_specific_quota_receipt_absent" not in removable
     assert "agy_review_seat_receipt_admission_required" not in removable
 
