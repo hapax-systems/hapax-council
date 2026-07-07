@@ -173,6 +173,101 @@ def test_idle_watchdog_appendix_only_skips_unclaimed_local_nudge(tmp_path: Path)
     assert not Path(env["TMUX_SENT"]).exists()
 
 
+def test_idle_watchdog_suppresses_multiple_idle_alert_when_pressure_closed(
+    tmp_path: Path,
+) -> None:
+    script_dir = tmp_path / "scripts"
+    bin_dir = tmp_path / "bin"
+    home = tmp_path / "home"
+    state_dir = tmp_path / "idle-state"
+    script_dir.mkdir()
+    bin_dir.mkdir()
+    home.mkdir()
+    state_dir.mkdir()
+    (home / "projects" / "hapax-council" / "shared").mkdir(parents=True)
+
+    watchdog = script_dir / "hapax-lane-idle-watchdog"
+    watchdog.write_text(IDLE_WATCHDOG.read_text(encoding="utf-8"), encoding="utf-8")
+    watchdog.chmod(0o755)
+    alert_calls = tmp_path / "alert-calls.txt"
+    curl_calls = tmp_path / "curl-calls.txt"
+    tmux_sent = tmp_path / "tmux-sent.txt"
+
+    _write_executable(
+        script_dir / "hapax-alert",
+        f"""
+        #!/usr/bin/env bash
+        printf '%s\n' "$*" >> "{alert_calls}"
+        """,
+    )
+    _write_executable(
+        bin_dir / "curl",
+        f"""
+        #!/usr/bin/env bash
+        printf '%s\n' "$*" >> "{curl_calls}"
+        """,
+    )
+    _write_executable(
+        bin_dir / "python3",
+        """
+        #!/usr/bin/env bash
+        if [ "$1" = "-m" ] && [ "$2" = "shared.sdlc_pressure_gate" ]; then
+            printf '%s\n' closed
+            exit 0
+        fi
+        exit 1
+        """,
+    )
+    _write_executable(
+        bin_dir / "tmux",
+        f"""
+        #!/usr/bin/env bash
+        cmd="$1"
+        shift || true
+        case "$cmd" in
+          list-sessions)
+            printf '%s\n' hapax-codex-cx-red hapax-codex-cx-blue hapax-codex-cx-green
+            ;;
+          capture-pane)
+            printf '%s\n' "ready" "gpt-5.5 ~/projects/hapax-council"
+            ;;
+          send-keys)
+            printf '%s\n' "$*" >> "{tmux_sent}"
+            ;;
+          has-session)
+            exit 1
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+        """,
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "HAPAX_IDLE_THRESHOLD_S": "0",
+            "HAPAX_IDLE_COOLDOWN_S": "0",
+            "HAPAX_IDLE_STATE_DIR": str(state_dir),
+            "HAPAX_IDLE_SKIP_LANES": "",
+            "HAPAX_LOCAL_DEV_MAINTENANCE_MODE": "appendix-only",
+            "HAPAX_NTFY_URL": "http://127.0.0.1:9",
+            "HAPAX_HEADLESS_PIPE_DIR": str(tmp_path / "headless-run"),
+        }
+    )
+
+    result = subprocess.run([str(watchdog)], env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert "sdlc-pressure closed: deferring idle nudges for 3 lane(s)" in result.stdout
+    assert "suppressing multiple-lanes-idle summary alert for 3 idle lane(s)" in result.stdout
+    assert not alert_calls.exists()
+    assert not curl_calls.exists()
+
+
 def test_idle_watchdog_appendix_only_preserves_active_task_resume_prompt(
     tmp_path: Path,
 ) -> None:

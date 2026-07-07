@@ -1,3 +1,6 @@
+# Hapax-Auto-Enable: true
+# Idle/claim drift recovery must not ship installed-but-sleeping: the
+# post-merge deploy path enables+starts timers carrying this marker.
 [Unit]
 Description=Hapax Lane Idle Watchdog Timer (every 2 min)
 
