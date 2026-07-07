@@ -798,17 +798,91 @@ def fetch_pr_release_evidence(
     repo_root = repo_root or default_repo_root()
     payload = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if not isinstance(payload, dict):
-        return False, "invalid_pr_release_evidence_payload", set()
+        fallback = _fetch_pr_release_evidence_graphql(
+            pr_number,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+        )
+        return fallback if fallback[0] else (False, "invalid_pr_release_evidence_payload", set())
     head = payload.get("head") if isinstance(payload.get("head"), dict) else {}
     sha = _scalar(head.get("sha"))
     if not sha:
-        return False, "missing_head_sha", set()
+        fallback = _fetch_pr_release_evidence_graphql(
+            pr_number,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+        )
+        return fallback if fallback[0] else (False, "missing_head_sha", set())
     rollup = fetch_status_check_rollup_rest(
         sha,
         repo=repo,
         repo_root=repo_root,
         runner=runner,
         use_cache=False,
+    )
+    if not isinstance(rollup, list):
+        return False, "invalid_status_check_rollup", set()
+    return True, sha, set(summarize_checks(rollup).verified_passed)
+
+
+def _fetch_pr_release_evidence_graphql(
+    pr_number: int,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> tuple[bool, str, set[str]]:
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    owner, name = repo.split("/", 1)
+    query = (
+        "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){"
+        "pullRequest(number:$number){headRefOid commits(last:1){nodes{commit{oid "
+        "statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status "
+        "conclusion completedAt startedAt} ... on StatusContext{context state createdAt}}}}}}}}}}"
+    )
+    proc = run_graphql_rate_aware(
+        [
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"repo={name}",
+            "-F",
+            f"number={pr_number}",
+        ],
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if proc.returncode != 0:
+        return False, "invalid_pr_release_evidence_payload", set()
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return False, "invalid_pr_release_evidence_payload", set()
+    pull = (
+        payload.get("data", {}).get("repository", {}).get("pullRequest")
+        if isinstance(payload, dict)
+        else None
+    )
+    if not isinstance(pull, dict):
+        return False, "invalid_pr_release_evidence_payload", set()
+    sha = _scalar(pull.get("headRefOid"))
+    if not sha:
+        return False, "missing_head_sha", set()
+    commit_nodes = (
+        pull.get("commits", {}).get("nodes", []) if isinstance(pull.get("commits"), dict) else []
+    )
+    commit = None
+    if commit_nodes and isinstance(commit_nodes[-1], dict):
+        commit = commit_nodes[-1].get("commit")
+    rollup = (
+        commit.get("statusCheckRollup", {}).get("contexts", {}).get("nodes")
+        if isinstance(commit, dict)
+        else None
     )
     if not isinstance(rollup, list):
         return False, "invalid_status_check_rollup", set()

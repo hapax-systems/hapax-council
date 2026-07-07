@@ -612,6 +612,65 @@ def test_fetch_pr_release_evidence_rejects_non_json_success(tmp_path: Path) -> N
     assert checks == set()
 
 
+def test_fetch_pr_release_evidence_falls_back_to_graphql_when_rest_pull_indeterminate(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "secondary rate limit")
+        if cmd[:3] == ["gh", "api", "rate_limit"]:
+            payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            payload = {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "headRefOid": "sha-42",
+                            "commits": {
+                                "nodes": [
+                                    {
+                                        "commit": {
+                                            "oid": "sha-42",
+                                            "statusCheckRollup": {
+                                                "contexts": {
+                                                    "nodes": [
+                                                        {
+                                                            "__typename": "CheckRun",
+                                                            "name": "authority-case-check",
+                                                            "status": "COMPLETED",
+                                                            "conclusion": "SUCCESS",
+                                                        }
+                                                    ]
+                                                }
+                                            },
+                                        }
+                                    }
+                                ]
+                            },
+                        }
+                    }
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+    ok, sha, checks = autoqueue.fetch_pr_release_evidence(
+        42,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is True
+    assert sha == "sha-42"
+    assert checks == {"authority-case-check"}
+    assert any(call[:3] == ["gh", "api", "graphql"] for call in calls)
+
+
 def test_fetch_pr_release_evidence_rejects_missing_head_oid(tmp_path: Path) -> None:
     def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(
