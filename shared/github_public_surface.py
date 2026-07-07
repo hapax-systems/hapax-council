@@ -800,10 +800,12 @@ def report_to_markdown(report: GitHubPublicSurfaceReport) -> str:
             "",
             "## Profile README Decision",
             "",
-            "Current GitHub docs use a public `.github` repository with "
-            "`profile/README.md` for organization profile READMEs. Hapax public "
-            "frontmatter is organization-owned, so the selected profile surface is "
-            "`hapax-systems/.github/profile/README.md`.",
+            (
+                "Current GitHub docs use a public `.github` repository with "
+                + "`profile/README.md` for organization profile READMEs. Hapax public "
+                + "frontmatter is organization-owned, so the selected profile surface is "
+                + "`hapax-systems/.github/profile/README.md`."
+            ),
             "",
             "## Anti-Overclaim",
             "",
