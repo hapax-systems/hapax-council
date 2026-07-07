@@ -392,6 +392,50 @@ def test_executable_codex_oauth_strategy_defers_when_account_live_quota_unverifi
     assert "refresh_receipt_written" not in receipt.refresh_reason_codes
 
 
+def test_executable_codex_oauth_strategy_fails_when_auth_receipt_blocked() -> None:
+    route, freshness = _degraded_codex_route_and_freshness()
+    runner = _FakeRefreshRunner(
+        guarantor.RefreshCommandResult(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "receipts": [
+                        {
+                            "platform": "codex",
+                            "receipt_id": "codex-auth-blocked",
+                            "path": "/tmp/codex.json",
+                            "cli_available": True,
+                            "wrapper_exists": True,
+                            "capability_status": "blocked",
+                            "capability_reason_codes": ["codex_oauth_access_token_absent"],
+                            "resource_status": "blocked",
+                            "resource_reason_codes": ["codex_oauth_access_token_absent"],
+                            "quota_status": "unobservable",
+                            "quota_reason_codes": ["account_live_quota_receipt_absent"],
+                        }
+                    ]
+                }
+            ),
+        )
+    )
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(
+            (guarantor.CodexOAuthRefreshStrategy(runner=runner),)
+        ),
+        now=NOW,
+    )
+
+    assert receipt.refresh_status is guarantor.RefreshStatus.FAILED
+    assert "refresh_receipt_observed_codex_unavailable" in receipt.refresh_reason_codes
+    assert (
+        "refresh_receipt_capability_reason:codex_oauth_access_token_absent"
+        in receipt.refresh_reason_codes
+    )
+
+
 def test_executable_codex_oauth_strategy_reports_command_failure() -> None:
     route, freshness = _degraded_codex_route_and_freshness()
     runner = _FakeRefreshRunner(guarantor.RefreshCommandResult(returncode=2, stderr="boom"))

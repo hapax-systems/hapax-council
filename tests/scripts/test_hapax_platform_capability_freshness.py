@@ -72,7 +72,10 @@ def _write_codex_receipt(receipt_dir: Path, *, observed_at: datetime) -> Path:
             source="test",
             observed_at=observed_at,
             stale_after="24h",
-            evidence_refs=["test:codex:resource"],
+            evidence_refs=[
+                "test:codex:resource",
+                "local:current-codex-session:filesystem-shell-browser-usable:test",
+            ],
         ),
         quota=SurfaceEvidence(
             status=EvidenceStatus.UNOBSERVABLE,

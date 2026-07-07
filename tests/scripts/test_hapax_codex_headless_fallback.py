@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -17,11 +19,25 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
+def _write_codex_access_token(home: Path) -> None:
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
+    payload = (
+        base64.urlsafe_b64encode(json.dumps({"exp": int(time.time()) + 3600}).encode())
+        .decode()
+        .rstrip("=")
+    )
+    target = home / ".cache" / "hapax" / "codex-oauth" / "access_token"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(f"{header}.{payload}.sig", encoding="utf-8")
+    target.chmod(0o600)
+
+
 def test_codex_headless_takes_explicit_local_fallback_after_appendix_preflight_failure(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
     (home / ".cache" / "hapax").mkdir(parents=True)
+    _write_codex_access_token(home)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     workdir = tmp_path / "worktree"
     workdir.mkdir()
@@ -38,6 +54,7 @@ def test_codex_headless_takes_explicit_local_fallback_after_appendix_preflight_f
         f"""printf '%s\\n' "$*" > {args_file}
 printf 'LOGOS_BASE_URL=%s\\n' "${{LOGOS_BASE_URL:-}}" > {env_file}
 printf 'HAPAX_DISPATCH_HOST=%s\\n' "${{HAPAX_DISPATCH_HOST:-}}" >> {env_file}
+printf 'CODEX_ACCESS_TOKEN_PRESENT=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" >> {env_file}
 exit 0
 """,
     )
@@ -68,6 +85,7 @@ exit 0
     launched_env = env_file.read_text(encoding="utf-8")
     assert "LOGOS_BASE_URL=http://localhost:8051/api" in launched_env
     assert "HAPAX_DISPATCH_HOST=appendix" in launched_env
+    assert "CODEX_ACCESS_TOKEN_PRESENT=yes" in launched_env
     proofs = list((tmp_path / "proofs").glob("*cx-amber-task-x-headless-local.json"))
     assert len(proofs) == 1
     proof = json.loads(proofs[0].read_text(encoding="utf-8"))

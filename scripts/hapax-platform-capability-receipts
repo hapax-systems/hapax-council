@@ -20,6 +20,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.codex_oauth_refresher import (  # noqa: E402
+    DEFAULT_PUBLISH_DIR,
+    load_published_access_token,
+    needs_refresh,
+    token_fingerprint,
+)
 from shared.platform_capability_receipts import (  # noqa: E402
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -78,6 +84,7 @@ CONFIG_REFS_BY_PLATFORM = {
 }
 SECRETISH_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|credential)([=:])(\S+)")
 RETIRED_ANTIGRAV_PLATFORMS = frozenset({"agy", "antigrav", "antigravity", "gemini-cli"})
+CODEX_OAUTH_ACCESS_TOKEN_FILE_ENV = "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE"
 
 
 def parse_utc(value: str) -> datetime:
@@ -205,6 +212,55 @@ def observe_wrapper(route: PlatformCapabilityRoute) -> WrapperEvidence:
     )
 
 
+def codex_oauth_publish_dir() -> Path:
+    configured = os.environ.get(CODEX_OAUTH_ACCESS_TOKEN_FILE_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser().parent
+    return DEFAULT_PUBLISH_DIR
+
+
+def observe_codex_oauth_session(
+    *,
+    observed_at: datetime,
+    stale_after: str,
+) -> SurfaceEvidence:
+    token = load_published_access_token(codex_oauth_publish_dir())
+    token_file = os.environ.get(
+        CODEX_OAUTH_ACCESS_TOKEN_FILE_ENV,
+        str(DEFAULT_PUBLISH_DIR / "access_token"),
+    )
+    token_ref = display_path(Path(token_file))
+    if token is None:
+        return surface_evidence(
+            status=EvidenceStatus.BLOCKED,
+            source="local_codex_oauth_published_token_probe",
+            observed_at=observed_at,
+            stale_after=stale_after,
+            evidence_refs=[],
+            reason_codes=["codex_oauth_access_token_absent"],
+        )
+    if needs_refresh(token, now=observed_at.timestamp()):
+        return surface_evidence(
+            status=EvidenceStatus.BLOCKED,
+            source="local_codex_oauth_published_token_probe",
+            observed_at=observed_at,
+            stale_after=stale_after,
+            evidence_refs=[f"local:{token_ref}:fingerprint:{token_fingerprint(token.raw)}"],
+            reason_codes=["codex_oauth_access_token_expiring_or_unparseable"],
+        )
+    return surface_evidence(
+        status=EvidenceStatus.OBSERVED,
+        source="local_codex_oauth_published_token_probe",
+        observed_at=observed_at,
+        stale_after=stale_after,
+        evidence_refs=[
+            f"local:current-codex-session:filesystem-shell-browser-usable:{iso_z(observed_at)}",
+            f"local:{token_ref}:fingerprint:{token_fingerprint(token.raw)}",
+        ],
+        reason_codes=[],
+    )
+
+
 def config_refs(platform: str) -> list[ConfigEvidence]:
     refs: list[ConfigEvidence] = []
     for path_ref in CONFIG_REFS_BY_PLATFORM[platform]:
@@ -271,6 +327,7 @@ def build_receipt(
     receipt_id = f"{platform}-{observed_at.strftime('%Y%m%dT%H%M%SZ')}"
     capability_reasons: list[str] = []
     capability_refs: list[str] = []
+    resource_reasons: list[str] = []
     if cli.available:
         capability_refs.append(f"local:{platform}:cli-version:{cli.version or 'available'}")
     else:
@@ -279,11 +336,23 @@ def build_receipt(
         capability_refs.append(f"local:{wrapper.path}:sha256:{wrapper.sha256}")
     else:
         capability_reasons.append("sanctioned_wrapper_missing_or_unreadable")
+        resource_reasons.append("wrapper_missing")
+    if platform == "codex":
+        codex_session = observe_codex_oauth_session(
+            observed_at=observed_at,
+            stale_after=stale_after,
+        )
+        capability_refs.extend(codex_session.evidence_refs)
+        if codex_session.status is not EvidenceStatus.OBSERVED:
+            capability_reasons.extend(codex_session.reason_codes)
+            resource_reasons.extend(codex_session.reason_codes)
     capability_status = (
         EvidenceStatus.OBSERVED if not capability_reasons else EvidenceStatus.BLOCKED
     )
-    resource_status = EvidenceStatus.OBSERVED if wrapper.exists else EvidenceStatus.MISSING
+    resource_status = EvidenceStatus.OBSERVED if not resource_reasons else EvidenceStatus.BLOCKED
     resource_refs = [f"local:{wrapper.path}:exists:{str(wrapper.exists).lower()}"]
+    if platform == "codex":
+        resource_refs.extend(codex_session.evidence_refs)
     quota_reason = "account_live_quota_receipt_absent"
     quota = surface_evidence(
         status=EvidenceStatus.UNOBSERVABLE,
@@ -321,7 +390,7 @@ def build_receipt(
             observed_at=observed_at,
             stale_after=stale_after,
             evidence_refs=resource_refs,
-            reason_codes=[] if resource_status is EvidenceStatus.OBSERVED else ["wrapper_missing"],
+            reason_codes=resource_reasons,
         ),
         quota=quota,
         provider_docs=ProviderDocsEvidence(
@@ -452,6 +521,10 @@ def main(argv: list[str] | None = None) -> int:
                 "path": str(path) if path else None,
                 "cli_available": receipt.cli.available,
                 "wrapper_exists": receipt.wrapper.exists,
+                "capability_status": receipt.capability.status.value,
+                "capability_reason_codes": receipt.capability.reason_codes,
+                "resource_status": receipt.resource.status.value,
+                "resource_reason_codes": receipt.resource.reason_codes,
                 "quota_status": receipt.quota.status.value,
                 "quota_reason_codes": receipt.quota.reason_codes,
             }

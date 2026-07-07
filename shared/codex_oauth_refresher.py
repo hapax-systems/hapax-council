@@ -31,16 +31,19 @@ from pathlib import Path
 
 DEFAULT_AUTH_JSON = Path.home() / ".codex" / "auth.json"
 DEFAULT_PUBLISH_DIR = Path.home() / ".cache" / "hapax" / "codex-oauth"
+DEFAULT_PUBLISHED_ACCESS_TOKEN = DEFAULT_PUBLISH_DIR / "access_token"
 DEFAULT_REFRESH_MARGIN_S = 300.0  # refresh this many seconds before expiry (5 min)
 
 __all__ = [
     "DEFAULT_AUTH_JSON",
     "DEFAULT_PUBLISH_DIR",
+    "DEFAULT_PUBLISHED_ACCESS_TOKEN",
     "DEFAULT_REFRESH_MARGIN_S",
     "AccessToken",
     "RefreshFn",
     "decode_access_token_exp",
     "load_access_token",
+    "load_published_access_token",
     "needs_refresh",
     "publish_access_token",
     "refresh_and_publish",
@@ -91,6 +94,25 @@ def load_access_token(auth_json: Path = DEFAULT_AUTH_JSON) -> AccessToken | None
         return None
     token = (data.get("tokens") or {}).get("access_token")
     if not isinstance(token, str) or not token:
+        return None
+    return AccessToken(raw=token, exp=decode_access_token_exp(token))
+
+
+def load_published_access_token(
+    publish_dir: Path = DEFAULT_PUBLISH_DIR,
+) -> AccessToken | None:
+    """Read the single-writer published access token, if present.
+
+    This is the consumer-side path for Codex launchers. It deliberately ignores
+    ``auth.json`` and therefore never reads or exercises the refresh token.
+    """
+
+    path = publish_dir / "access_token"
+    try:
+        token = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not token:
         return None
     return AccessToken(raw=token, exp=decode_access_token_exp(token))
 

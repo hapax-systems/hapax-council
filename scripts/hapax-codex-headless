@@ -150,6 +150,60 @@ remote_python_command() {
   printf "bash -c '%s' bash '%s' '%s'" "$quoted_script" "$quoted_payload" "$quoted_code"
 }
 
+load_local_codex_access_token() {
+  if [[ -n "${CODEX_ACCESS_TOKEN:-}" ]]; then
+    return 0
+  fi
+  local token_file="${HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE:-$HOME/.cache/hapax/codex-oauth/access_token}"
+  local token=""
+  local token_rc=0
+  token="$(
+    PYTHONPATH="$COUNCIL_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$token_file" <<'PYEOF'
+import sys
+from pathlib import Path
+
+from shared.codex_oauth_refresher import (
+    AccessToken,
+    decode_access_token_exp,
+    needs_refresh,
+)
+
+path = Path(sys.argv[1]).expanduser()
+try:
+    raw = path.read_text(encoding="utf-8").strip()
+except OSError:
+    print(
+        "hapax-codex-headless: missing published Codex OAuth access token at "
+        f"{path}; next action: run the codex OAuth refresher or reauth on appendix "
+        "before dispatching Codex lanes",
+        file=sys.stderr,
+    )
+    raise SystemExit(78)
+if not raw:
+    print(
+        "hapax-codex-headless: empty published Codex OAuth access token; next action: "
+        "run the codex OAuth refresher or reauth on appendix before dispatching Codex lanes",
+        file=sys.stderr,
+    )
+    raise SystemExit(78)
+token = AccessToken(raw=raw, exp=decode_access_token_exp(raw))
+if needs_refresh(token):
+    print(
+        "hapax-codex-headless: published Codex OAuth access token is missing a fresh "
+        "expiry; next action: run the codex OAuth refresher or reauth on appendix "
+        "before dispatching Codex lanes",
+        file=sys.stderr,
+    )
+    raise SystemExit(78)
+print(raw)
+PYEOF
+  )" || token_rc=$?
+  if [[ "$token_rc" -ne 0 ]]; then
+    return "$token_rc"
+  fi
+  export CODEX_ACCESS_TOKEN="$token"
+}
+
 remote_preflight_payload_b64() {
   python3 - "$WORKDIR" "$COUNCIL_DIR" "$HOME/projects/hapax-mcp" <<'PYEOF'
 import base64
@@ -225,6 +279,7 @@ for name in (
     "HAPAX_PARENT_AGENT_NAME",
     "HAPAX_METHODOLOGY_DISPATCH_TASK",
     "HAPAX_IDLE_UPDATE_SECONDS",
+    "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE",
     "PASSWORD_STORE_DIR",
 ):
     value = os.environ.get(name)
@@ -280,11 +335,28 @@ result=subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 if result.returncode != 0 or not os.path.isdir(workdir):
     fail("git worktree add failed for "+workdir+" using branch "+branch+" (rc="+str(result.returncode)+")")
 sys.exit(0)'
-REMOTE_EXEC_PY='import base64,json,os,socket,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); proof=p.get("proof_file",""); cgroup="";
+REMOTE_EXEC_PY='import base64,json,os,socket,sys,time; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); proof=p.get("proof_file",""); cgroup="";
 try:
     cgroup=open("/proc/self/cgroup",encoding="utf-8").read()
 except OSError:
     pass
+def _jwt_exp(token):
+    try:
+        payload=token.split(".")[1]; payload += "=" * (-len(payload) % 4)
+        return float(json.loads(base64.urlsafe_b64decode(payload.encode("ascii"))).get("exp",0))
+    except Exception:
+        return 0.0
+if not os.environ.get("CODEX_ACCESS_TOKEN"):
+    token_path=os.environ.get("HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE") or os.path.join(os.path.expanduser("~"),".cache","hapax","codex-oauth","access_token")
+    try:
+        token=open(token_path,encoding="utf-8").read().strip()
+    except OSError:
+        print("hapax-codex-headless: missing published Codex OAuth access token at "+token_path+"; next action: run the codex OAuth refresher or reauth on appendix before dispatching Codex lanes", file=sys.stderr)
+        sys.exit(78)
+    if not token or _jwt_exp(token) - time.time() <= 300:
+        print("hapax-codex-headless: published Codex OAuth access token is absent or expiring; next action: run the codex OAuth refresher or reauth on appendix before dispatching Codex lanes", file=sys.stderr)
+        sys.exit(78)
+    os.environ["CODEX_ACCESS_TOKEN"]=token
 # Exec-host identity materialization mirrors hapax-claude-headless: the
 # session-keyed claim must exist where codex exec runs, or the worker can fall
 # back to stale legacy lane state and reject the governed dispatch.
@@ -414,6 +486,10 @@ WORKDIR="$(cd "$WORKDIR" && pwd)"
 
 HOOK="$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"
 [[ -x "$HOOK" ]] || { echo "hapax-codex-headless: hook adapter not executable: $HOOK" >&2; exit 6; }
+
+if [[ -z "${HAPAX_DISPATCH_HOST:-}" ]] || dispatch_host_is_local "${HAPAX_DISPATCH_HOST:-}"; then
+  load_local_codex_access_token
+fi
 
 # Identity env — same contract as hapax-codex so the gate keys a session-scoped
 # claim lease (reform Phase 1, FM-2) and the hooks recover this lane's role.
@@ -607,6 +683,7 @@ fi
 if [[ -n "$DISPATCH_HOST" ]]; then
   LOGOS_BASE_URL="${HAPAX_DISPATCH_LOGOS_URL:-http://192.168.68.85:8051/api}"
 else
+  load_local_codex_access_token
   LOGOS_BASE_URL="${LOGOS_BASE_URL:-http://localhost:8051/api}"
 fi
 COCKPIT_BASE_URL="${COCKPIT_BASE_URL:-$LOGOS_BASE_URL}"

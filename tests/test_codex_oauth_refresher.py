@@ -17,6 +17,7 @@ from shared.codex_oauth_refresher import (
     AccessToken,
     decode_access_token_exp,
     load_access_token,
+    load_published_access_token,
     needs_refresh,
     publish_access_token,
     refresh_and_publish,
@@ -81,6 +82,24 @@ def test_load_access_token_no_access_token(tmp_path: Path) -> None:
     auth = tmp_path / "auth.json"
     _write_auth(auth, access_token=None)  # refresh_token only
     assert load_access_token(auth) is None
+
+
+def test_load_published_access_token_reads_consumer_token_only(tmp_path: Path) -> None:
+    publish_dir = tmp_path / "codex-oauth"
+    publish_access_token(_jwt(exp=1234.0), publish_dir)
+
+    token = load_published_access_token(publish_dir)
+
+    assert token is not None
+    assert token.exp == 1234.0
+
+
+def test_load_published_access_token_missing_or_empty(tmp_path: Path) -> None:
+    assert load_published_access_token(tmp_path / "missing") is None
+    publish_dir = tmp_path / "codex-oauth"
+    publish_dir.mkdir()
+    (publish_dir / "access_token").write_text("\n", encoding="utf-8")
+    assert load_published_access_token(publish_dir) is None
 
 
 # ------------------------------------------------------------------- needs_refresh

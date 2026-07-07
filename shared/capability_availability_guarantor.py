@@ -272,6 +272,20 @@ class CodexOAuthRefreshStrategy:
                 remediation_commands=(refresh_command, freshness_command),
             )
 
+        surface_unavailable_reasons = _receipt_surface_unavailable_reasons(receipt_item)
+        if surface_unavailable_reasons:
+            return RefreshOutcome(
+                status=RefreshStatus.FAILED,
+                strategy_id=self.strategy_id,
+                reason_codes=(
+                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "refresh_receipt_observed_codex_unavailable",
+                    *surface_unavailable_reasons,
+                ),
+                evidence_refs=tuple(dict.fromkeys(evidence_refs)),
+                remediation_commands=(refresh_command, freshness_command),
+            )
+
         account_live_reasons = _receipt_account_live_unverified_reasons(receipt_item)
         if account_live_reasons:
             return RefreshOutcome(
@@ -628,6 +642,22 @@ def _receipt_account_live_unverified_reasons(receipt_item: dict[str, object]) ->
         reasons.append("refresh_receipt_quota_reason_codes_missing")
         return tuple(reasons)
     reasons.extend(f"refresh_receipt_quota_reason:{reason}" for reason in quota_reason_codes)
+    return tuple(dict.fromkeys(reasons))
+
+
+def _receipt_surface_unavailable_reasons(receipt_item: dict[str, object]) -> tuple[str, ...]:
+    reasons: list[str] = []
+    for surface in ("capability", "resource"):
+        status = receipt_item.get(f"{surface}_status")
+        if status is None:
+            continue
+        if status != "observed":
+            reasons.append(f"refresh_receipt_{surface}_status:{status}")
+        reason_codes = receipt_item.get(f"{surface}_reason_codes")
+        if isinstance(reason_codes, list):
+            reasons.extend(f"refresh_receipt_{surface}_reason:{reason}" for reason in reason_codes)
+        elif status != "observed":
+            reasons.append(f"refresh_receipt_{surface}_reason_codes_missing")
     return tuple(dict.fromkeys(reasons))
 
 
