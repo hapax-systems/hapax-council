@@ -1280,16 +1280,28 @@ def _prior_symbol_hints(finding: dict[str, Any]) -> tuple[str, ...]:
 
 def _function_excerpt_range(source_lines: list[str], symbol: str) -> tuple[int, int] | None:
     needle = f"def {symbol}("
-    start = next(
-        (index + 1 for index, line in enumerate(source_lines) if line.startswith(needle)),
-        None,
-    )
+    start = None
+    start_indent = 0
+    for index, line in enumerate(source_lines):
+        stripped = line.lstrip()
+        if not stripped.startswith(needle):
+            continue
+        start = index + 1
+        start_indent = len(line) - len(stripped)
+        break
     if start is None:
         return None
     end = min(len(source_lines), start + 90)
     for number in range(start + 1, min(len(source_lines), start + 90) + 1):
         line = source_lines[number - 1]
-        if number > start and (line.startswith("def ") or line.startswith("class ")):
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        if (
+            number > start
+            and stripped
+            and indent <= start_indent
+            and (stripped.startswith("def ") or stripped.startswith("class "))
+        ):
             end = number - 1
             break
     return start, end

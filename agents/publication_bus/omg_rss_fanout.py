@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -152,21 +153,31 @@ def _configured_required_gates(policy: object) -> tuple[list[str], str | None]:
     return required, None
 
 
-def _receipt_value_present(gate: str, value: object) -> bool:
+def _receipt_value_present(
+    gate: str,
+    value: object,
+    *,
+    bindings: Mapping[str, object] | None = None,
+) -> bool:
     return public_gate_receipt_value_present(
         value,
         expected_gate=gate,
         roots=PUBLIC_GATE_RECEIPT_ROOTS,
+        bindings=bindings,
     )
 
 
 def _missing_gate_receipts(
     required_gates: Sequence[str],
     gate_receipts: Mapping[str, object] | None,
+    *,
+    bindings: Mapping[str, object] | None = None,
 ) -> list[str]:
     receipts = gate_receipts or {}
     return sorted(
-        gate for gate in required_gates if not _receipt_value_present(gate, receipts.get(gate))
+        gate
+        for gate in required_gates
+        if not _receipt_value_present(gate, receipts.get(gate), bindings=bindings)
     )
 
 
@@ -186,6 +197,21 @@ def _effective_required_gates(config: OmgFanoutConfig) -> tuple[list[str], str |
             "next action: remove malformed gate ids before public fanout"
         )
     return required, None
+
+
+def _fanout_receipt_bindings(
+    *,
+    source_address: str,
+    entry_id: str,
+    content: str,
+    targets: Sequence[str],
+) -> dict[str, object]:
+    return {
+        "source_address": source_address,
+        "entry_id": entry_id,
+        "content_sha256": sha256(content.encode("utf-8")).hexdigest(),
+        "target_addresses": tuple(sorted(targets)),
+    }
 
 
 def fanout(
@@ -228,7 +254,17 @@ def fanout(
             ).inc()
         return {target: "gate-policy-blocked" for target in targets}
 
-    missing_receipts = _missing_gate_receipts(required_gates, gate_receipts)
+    receipt_bindings = _fanout_receipt_bindings(
+        source_address=source_address,
+        entry_id=entry_id,
+        content=content,
+        targets=targets,
+    )
+    missing_receipts = _missing_gate_receipts(
+        required_gates,
+        gate_receipts,
+        bindings=receipt_bindings,
+    )
     if missing_receipts:
         missing_text = ", ".join(missing_receipts)
         log.error(

@@ -1007,6 +1007,21 @@ checklist:
         evidence = result["dossier"]["prior_evidence"]["changed_source_excerpts"]
         assert any(record.get("symbol") == "_require_payg_spend_gate" for record in evidence)
 
+    def test_function_excerpt_range_finds_class_methods(self) -> None:
+        source_lines = [
+            "class Orchestrator:",
+            "    def _with_public_gate_receipts_child(self):",
+            "        return 'hold'",
+            "",
+            "    def _dispatch(self):",
+            "        return 'dispatch'",
+        ]
+
+        assert dispatch._function_excerpt_range(
+            source_lines,
+            "_with_public_gate_receipts_child",
+        ) == (2, 4)
+
     def test_dossier_records_successful_reviewer_stderr_diagnostics(self, tmp_path: Path) -> None:
         class StderrReviewers(RecordingReviewers):
             def __call__(

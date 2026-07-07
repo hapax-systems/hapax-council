@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -16,16 +17,15 @@ from agents.publication_bus.omg_rss_fanout import (
     load_fanout_config,
 )
 
+_RECEIPT_ROOT: Path | None = None
+
 
 @pytest.fixture(autouse=True)
 def durable_public_gate_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    global _RECEIPT_ROOT
     root = tmp_path / "public-gate-receipts"
     root.mkdir()
-    for gate in FANOUT_REQUIRED_GATES:
-        (root / f"{gate}.yaml").write_text(
-            f"gate_id: {gate}\nstatus: passed\n",
-            encoding="utf-8",
-        )
+    _RECEIPT_ROOT = root
     monkeypatch.setattr(omg_rss_fanout, "PUBLIC_GATE_RECEIPT_ROOTS", (root,))
 
 
@@ -36,7 +36,38 @@ def _make_client(enabled: bool = True) -> MagicMock:
     return client
 
 
-def _gate_receipts() -> dict[str, str]:
+def _gate_receipts(
+    *,
+    source_address: str = "hapax",
+    entry_id: str = "entry-1",
+    content: str = "hello",
+    targets: tuple[str, ...] = ("oudepode",),
+) -> dict[str, str]:
+    if _RECEIPT_ROOT is None:
+        raise AssertionError("receipt root fixture did not run")
+    target_yaml = "\n".join(f"  - {target}" for target in sorted(targets))
+    for gate in FANOUT_REQUIRED_GATES:
+        (_RECEIPT_ROOT / f"{gate}.yaml").write_text(
+            f"gate_id: {gate}\n"
+            "status: passed\n"
+            f"source_address: {source_address}\n"
+            f"entry_id: {entry_id}\n"
+            f"content_sha256: {sha256(content.encode('utf-8')).hexdigest()}\n"
+            "target_addresses:\n"
+            f"{target_yaml}\n",
+            encoding="utf-8",
+        )
+    return {gate: f"public-gate:{gate}.yaml" for gate in FANOUT_REQUIRED_GATES}
+
+
+def _unbound_gate_receipts() -> dict[str, str]:
+    if _RECEIPT_ROOT is None:
+        raise AssertionError("receipt root fixture did not run")
+    for gate in FANOUT_REQUIRED_GATES:
+        (_RECEIPT_ROOT / f"{gate}.yaml").write_text(
+            f"gate_id: {gate}\nstatus: passed\n",
+            encoding="utf-8",
+        )
     return {gate: f"public-gate:{gate}.yaml" for gate in FANOUT_REQUIRED_GATES}
 
 
@@ -113,7 +144,7 @@ class TestFanout:
             content="hello",
             config=config,
             client=client,
-            gate_receipts=_gate_receipts(),
+            gate_receipts=_gate_receipts(targets=("oudepode", "third")),
         )
         # Two non-source targets
         assert client.set_entry.call_count == 2
@@ -131,7 +162,7 @@ class TestFanout:
             content="hello",
             config=config,
             client=client,
-            gate_receipts=_gate_receipts(),
+            gate_receipts=_gate_receipts(targets=("oudepode",)),
         )
         client.set_entry.assert_not_called()
         assert result == {}
@@ -161,7 +192,7 @@ class TestFanout:
             content="hello",
             config=config,
             client=client,
-            gate_receipts=_gate_receipts(),
+            gate_receipts=_gate_receipts(targets=("oudepode",)),
         )
         client.set_entry.assert_not_called()
         assert result == {"oudepode": "client-disabled"}
@@ -189,7 +220,7 @@ class TestFanout:
             content="body",
             config=config,
             client=client,
-            gate_receipts=_gate_receipts(),
+            gate_receipts=_gate_receipts(content="body", targets=("oudepode",)),
         )
         sent = client.set_entry.call_args.kwargs["content"]
         assert FANOUT_LOOP_HEADER_PREFIX in sent
@@ -233,6 +264,20 @@ class TestFanout:
             config=config,
             client=client,
             gate_receipts={},
+        )
+        assert result == {"oudepode": "gate-blocked"}
+        client.set_entry.assert_not_called()
+
+    def test_unbound_gate_receipts_block_before_public_egress(self) -> None:
+        client = _make_client()
+        config = OmgFanoutConfig(addresses=["hapax", "oudepode"])
+        result = fanout(
+            source_address="hapax",
+            entry_id="entry-1",
+            content="hello",
+            config=config,
+            client=client,
+            gate_receipts=_unbound_gate_receipts(),
         )
         assert result == {"oudepode": "gate-blocked"}
         client.set_entry.assert_not_called()

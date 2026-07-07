@@ -202,8 +202,7 @@ def _receipt_file_maps_to_gate(
     return (
         not _receipt_has_failed_outcome(data)
         and not _receipt_has_gate_contradiction(data, expected_gate)
-        and _gate_receipt_object_allows(data, expected_gate)
-        and _receipt_has_required_bindings(data, bindings)
+        and _gate_receipt_object_allows(data, expected_gate, bindings)
     )
 
 
@@ -243,13 +242,23 @@ def _markdown_frontmatter(text: str) -> Any:
     return None
 
 
-def _gate_receipt_object_allows(data: Any, expected_gate: str) -> bool:
+def _gate_receipt_object_allows(
+    data: Any,
+    expected_gate: str,
+    bindings: Mapping[str, object] | None = None,
+) -> bool:
     if isinstance(data, Mapping):
-        if _mapping_contains_expected_gate(data, expected_gate) and _mapping_outcome_allows(data):
+        if (
+            _mapping_contains_expected_gate(data, expected_gate)
+            and _mapping_outcome_allows(data)
+            and _receipt_has_required_bindings(data, bindings)
+        ):
             return True
-        return any(_gate_receipt_object_allows(value, expected_gate) for value in data.values())
+        return any(
+            _gate_receipt_object_allows(value, expected_gate, bindings) for value in data.values()
+        )
     if isinstance(data, (list, tuple, set)):
-        return any(_gate_receipt_object_allows(item, expected_gate) for item in data)
+        return any(_gate_receipt_object_allows(item, expected_gate, bindings) for item in data)
     return False
 
 
