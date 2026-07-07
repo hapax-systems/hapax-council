@@ -1273,6 +1273,8 @@ if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   fi
   if [ "$TERMINAL" = "none" ]; then
     "$CLAIM_SCRIPT" "$TASK_ID"
+  elif [ -n "$DISPATCH_HOST" ]; then
+    "$CLAIM_SCRIPT" "$TASK_ID" >/dev/null
   else
     preflight_claimable_task "$TASK_ID" "$SESSION"
   fi

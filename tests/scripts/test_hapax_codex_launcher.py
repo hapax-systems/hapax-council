@@ -119,6 +119,8 @@ def _write_active_task(
                 f"status: {status}",
                 f"assigned_to: {assigned_to}",
                 "claimed_at: null",
+                "authority_case: operator_dispatch",
+                "parent_spec: test-parent-spec",
                 "updated_at: 2026-04-28T00:00:00Z",
                 "---",
                 "",
@@ -1348,7 +1350,7 @@ printf '%s\\n' "$@" > {tmux_args}
 def test_terminal_tmux_can_be_podium_thin_client_for_appendix_codex(tmp_path: Path) -> None:
     env, args_file, env_file = _env_with_fake_codex(tmp_path)
     _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
-    _write_active_task(env, "demo-task")
+    task_note = _write_active_task(env, "demo-task")
     (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
     _write_fake_ssh_eval(tmp_path / "bin")
     env["HAPAX_DISPATCH_HOST"] = "appendix"
@@ -1395,6 +1397,9 @@ esac
     )
 
     assert result.returncode == 0, result.stderr
+    task_text = task_note.read_text(encoding="utf-8")
+    assert "status: claimed" in task_text
+    assert "assigned_to: cx-amber" in task_text
     assert result.stdout.strip() == "hapax-codex-cx-amber"
     tmux_lines = tmux_args.read_text(encoding="utf-8").splitlines()
     assert tmux_lines[:4] == ["new-session", "-d", "-s", "hapax-codex-cx-amber"]
