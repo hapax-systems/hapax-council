@@ -363,6 +363,45 @@ exit 0
     assert codex_args.exists()
 
 
+def test_codex_headless_refuses_local_launch_without_published_token(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE"] = str(home / "missing-access-token")
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "missing published Codex OAuth access token" in result.stderr
+    assert "next action:" in result.stderr
+    assert not codex_called.exists()
+
+
 def test_codex_headless_creates_missing_remote_default_worktree(tmp_path: Path) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
@@ -410,7 +449,12 @@ exit 0
     )
 
     assert result.returncode == 0, result.stderr
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree", "preflight", "exec"]
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == [
+        "preflight",
+        "worktree",
+        "preflight",
+        "exec",
+    ]
     assert pwd_file.read_text(encoding="utf-8").strip() == str(workdir)
     branch = subprocess.run(
         ["git", "-C", str(workdir), "rev-parse", "--abbrev-ref", "HEAD"],
@@ -506,6 +550,50 @@ exit 99
     assert not ssh_log.exists()
 
 
+def test_codex_headless_remote_token_preflight_refuses_before_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    ssh_log = tmp_path / "ssh.log"
+    claim_log = tmp_path / "claim.log"
+    _write_classifying_ssh(bin_dir / "ssh", ssh_log)
+    _write_executable(
+        workdir / "scripts" / "cc-claim",
+        f"""printf '%s\\n' "$*" >> "{claim_log}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+    env["HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE"] = str(home / "missing-access-token")
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 75
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight"]
+    assert "remote token preflight failed" in result.stderr
+    assert "missing_codex_oauth_access_token" in result.stderr
+    assert "HAPAX_DISPATCH_HOST_FALLBACK=local" in result.stderr
+    assert not claim_log.exists()
+
+
 def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
     tmp_path: Path,
 ) -> None:
@@ -541,7 +629,7 @@ def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
     )
 
     assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree"]
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
     assert "remote worktree bootstrap failed" in result.stderr
     assert "explicit" in result.stderr
     assert "next action:" in result.stderr
@@ -586,7 +674,7 @@ def test_codex_headless_remote_bootstrap_refuses_disabled_worktree_creation(
     )
 
     assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree"]
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
     assert "remote worktree bootstrap failed" in result.stderr
     assert "disabled" in result.stderr
 
@@ -628,7 +716,7 @@ def test_codex_headless_remote_bootstrap_reports_missing_remote_council(
     )
 
     assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree"]
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
     assert "remote worktree bootstrap failed" in result.stderr
     assert "council checkout" in result.stderr
 
@@ -725,7 +813,11 @@ def test_codex_headless_remote_preflight_reports_missing_codex_binary(
     )
 
     assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree", "preflight"]
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == [
+        "preflight",
+        "worktree",
+        "preflight",
+    ]
     assert "remote preflight failed" in result.stderr
     assert "missing_binaries" in result.stderr
     assert "codex" in result.stderr
@@ -771,7 +863,7 @@ def test_codex_headless_remote_bootstrap_reports_missing_git(
     )
 
     assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree"]
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
     assert "remote worktree bootstrap failed" in result.stderr
     assert "git binary missing" in result.stderr
 
@@ -820,7 +912,12 @@ exit 0
     )
 
     assert result.returncode == 0, result.stderr
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree", "preflight", "exec"]
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == [
+        "preflight",
+        "worktree",
+        "preflight",
+        "exec",
+    ]
     assert pwd_file.read_text(encoding="utf-8").strip() == str(workdir)
     branch = subprocess.run(
         ["git", "-C", str(workdir), "rev-parse", "--abbrev-ref", "HEAD"],
@@ -867,7 +964,7 @@ def test_codex_headless_remote_bootstrap_reports_council_not_git_worktree(
     )
 
     assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree"]
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
     assert "remote worktree bootstrap failed" in result.stderr
     assert "not a git worktree" in result.stderr
 
@@ -922,7 +1019,12 @@ exit 0
     )
 
     assert result.returncode == 0, result.stderr
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree", "preflight", "exec"]
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == [
+        "preflight",
+        "worktree",
+        "preflight",
+        "exec",
+    ]
     assert pwd_file.read_text(encoding="utf-8").strip() == str(workdir)
     worktree_head = subprocess.run(
         ["git", "-C", str(workdir), "rev-parse", "HEAD"],
@@ -970,7 +1072,7 @@ def test_codex_headless_remote_bootstrap_reports_git_worktree_add_failure(
     )
 
     assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["worktree"]
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
     assert "remote worktree bootstrap failed" in result.stderr
     assert "git worktree add failed" in result.stderr
 

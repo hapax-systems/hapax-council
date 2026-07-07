@@ -100,6 +100,8 @@ def load_access_token(auth_json: Path = DEFAULT_AUTH_JSON) -> AccessToken | None
 
 def load_published_access_token(
     publish_dir: Path = DEFAULT_PUBLISH_DIR,
+    *,
+    token_file: Path | None = None,
 ) -> AccessToken | None:
     """Read the single-writer published access token, if present.
 
@@ -107,7 +109,7 @@ def load_published_access_token(
     ``auth.json`` and therefore never reads or exercises the refresh token.
     """
 
-    path = publish_dir / "access_token"
+    path = token_file.expanduser() if token_file is not None else publish_dir / "access_token"
     try:
         token = path.read_text(encoding="utf-8").strip()
     except OSError:

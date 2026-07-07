@@ -343,6 +343,37 @@ def test_codex_receipt_blocks_without_published_oauth_token(tmp_path: Path) -> N
     assert any("codex_oauth_access_token_absent" in reason for reason in decision.reason_codes)
 
 
+def test_codex_receipt_uses_exact_configured_oauth_token_file(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    home_dir = tmp_path / "home"
+    token_dir = tmp_path / "token-dir"
+    bin_dir.mkdir()
+    token_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+    (token_dir / "access_token").write_text(
+        _jwt(exp=datetime.now(UTC) + timedelta(hours=2)),
+        encoding="utf-8",
+    )
+    configured_token = token_dir / "custom-token"
+
+    result = _run_receipts(
+        tmp_path,
+        env={
+            "PATH": str(bin_dir),
+            "HOME": str(home_dir),
+            "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE": str(configured_token),
+        },
+        now=_current_iso_z(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
+    assert receipt["capability"]["status"] == "blocked"
+    assert "codex_oauth_access_token_absent" in receipt["capability"]["reason_codes"]
+    assert receipt["resource"]["status"] == "blocked"
+    assert "codex_oauth_access_token_absent" in receipt["resource"]["reason_codes"]
+
+
 def test_antigrav_agy_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()

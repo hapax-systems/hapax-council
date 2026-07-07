@@ -205,16 +205,23 @@ PYEOF
 }
 
 remote_preflight_payload_b64() {
-  python3 - "$WORKDIR" "$COUNCIL_DIR" "$HOME/projects/hapax-mcp" <<'PYEOF'
+  local token_only="${1:-0}"
+  python3 - "$WORKDIR" "$COUNCIL_DIR" "$HOME/projects/hapax-mcp" "$token_only" <<'PYEOF'
 import base64
 import json
+import os
 import sys
 
-workdir, council_dir, mcp_dir = sys.argv[1:4]
+workdir, council_dir, mcp_dir, token_only = sys.argv[1:5]
+token_file = (
+    os.environ.get("HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE")
+    or "~/.cache/hapax/codex-oauth/access_token"
+)
 payload = {
-    "required_dirs": [workdir, council_dir, mcp_dir],
-    "executables": [f"{council_dir}/hooks/scripts/codex-hook-adapter.sh"],
-    "binaries": ["python3", "codex"],
+    "required_dirs": [] if token_only == "1" else [workdir, council_dir, mcp_dir],
+    "executables": [] if token_only == "1" else [f"{council_dir}/hooks/scripts/codex-hook-adapter.sh"],
+    "binaries": [] if token_only == "1" else ["python3", "codex"],
+    "token_file": token_file,
 }
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
 PYEOF
@@ -298,12 +305,27 @@ print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).deco
 PYEOF
 }
 
-REMOTE_PREFLIGHT_PY='import base64,json,os,shutil,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"]));
+REMOTE_PREFLIGHT_PY='import base64,json,os,shutil,sys,time; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"]));
 missing_dirs=[path for path in p.get("required_dirs",()) if not os.path.isdir(path)]
 missing_exec=[path for path in p.get("executables",()) if not (os.path.isfile(path) and os.access(path, os.X_OK))]
 missing_bins=[binary for binary in p.get("binaries",()) if not shutil.which(binary)]
-if missing_dirs or missing_exec or missing_bins:
-    print("remote preflight failed: missing_dirs="+json.dumps(missing_dirs)+" missing_executables="+json.dumps(missing_exec)+" missing_binaries="+json.dumps(missing_bins)+"; next action: ssh to the dispatch host and install or repair the missing paths before retrying", file=sys.stderr)
+def _jwt_exp(token):
+    try:
+        payload=token.split(".")[1]; payload += "=" * (-len(payload) % 4)
+        return float(json.loads(base64.urlsafe_b64decode(payload.encode("ascii"))).get("exp",0))
+    except Exception:
+        return 0.0
+token_file=os.path.expanduser(p.get("token_file") or "~/.cache/hapax/codex-oauth/access_token")
+token_error=""
+try:
+    token=open(token_file,encoding="utf-8").read().strip()
+except OSError:
+    token_error="missing_codex_oauth_access_token:"+token_file
+else:
+    if not token or _jwt_exp(token) - time.time() <= 300:
+        token_error="codex_oauth_access_token_absent_or_expiring:"+token_file
+if missing_dirs or missing_exec or missing_bins or token_error:
+    print("remote preflight failed: missing_dirs="+json.dumps(missing_dirs)+" missing_executables="+json.dumps(missing_exec)+" missing_binaries="+json.dumps(missing_bins)+" token_error="+json.dumps(token_error)+"; next action: ssh to the dispatch host and run the codex OAuth refresher or reauth, then verify required paths before retrying", file=sys.stderr)
     sys.exit(1)
 sys.exit(0)'
 REMOTE_WORKTREE_PY='import base64,json,os,shutil,subprocess,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); workdir=p["workdir"]; council=p["council_dir"];
@@ -487,7 +509,15 @@ WORKDIR="$(cd "$WORKDIR" && pwd)"
 HOOK="$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"
 [[ -x "$HOOK" ]] || { echo "hapax-codex-headless: hook adapter not executable: $HOOK" >&2; exit 6; }
 
-if [[ -z "${HAPAX_DISPATCH_HOST:-}" ]] || dispatch_host_is_local "${HAPAX_DISPATCH_HOST:-}"; then
+DISPATCH_HOST_REQUESTED="${HAPAX_DISPATCH_HOST:-}"
+DISPATCH_HOST_ORIGINAL="$DISPATCH_HOST_REQUESTED"
+DISPATCH_HOST=""
+DISPATCH_FALLBACK_REASON=""
+if [[ -n "$DISPATCH_HOST_REQUESTED" ]] && dispatch_host_is_local "$DISPATCH_HOST_REQUESTED"; then
+  DISPATCH_HOST_REQUESTED=""
+fi
+
+if [[ -z "$DISPATCH_HOST_REQUESTED" ]]; then
   load_local_codex_access_token
 fi
 
@@ -534,10 +564,6 @@ if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CODEX_TASK" ]]; then
   echo "hapax-codex-headless: refusing launch; '$SESSION' already claims '$CLAIMED_TASK', not dispatch task '$CODEX_TASK'" >&2
   exit 13
 fi
-if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
-  [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
-  (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
-fi
 export HAPAX_METHODOLOGY_DISPATCH_TASK="$CODEX_TASK"
 
 # Keep the lane from becoming a credential sink (same scrub as hapax-codex).
@@ -582,7 +608,7 @@ write_local_dispatch_proof() {
   else
     cgroup="$(cat /proc/self/cgroup 2>/dev/null || true)"
   fi
-  python3 - "$DISPATCH_LOCAL_PROOF_FILE" "$SESSION" "$CODEX_TASK" "${DISPATCH_HOST_REQUESTED:-}" \
+  python3 - "$DISPATCH_LOCAL_PROOF_FILE" "$SESSION" "$CODEX_TASK" "${DISPATCH_HOST_ORIGINAL:-$DISPATCH_HOST_REQUESTED}" \
     "$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf local)" "$pid" "$fallback" \
     "$reason" "$WORKDIR" "$LOGOS_BASE_URL" "$cgroup" <<'PYEOF'
 import json
@@ -632,51 +658,74 @@ if [[ -f "$PID_FILE" ]]; then
   fi
 fi
 
-DISPATCH_HOST_REQUESTED="${HAPAX_DISPATCH_HOST:-}"
-DISPATCH_HOST=""
-DISPATCH_FALLBACK_REASON=""
 if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
-  if dispatch_host_is_local "$DISPATCH_HOST_REQUESTED"; then
-    DISPATCH_HOST_REQUESTED=""
-  else
-    WORKTREE_PAYLOAD="$(remote_worktree_payload_b64)"
-    WORKTREE_COMMAND="$(remote_python_command "$WORKTREE_PAYLOAD" "$REMOTE_WORKTREE_PY")"
-    PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
-    PREFLIGHT_COMMAND="$(remote_python_command "$PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
-    WORKTREE_ERR=""
-    PREFLIGHT_ERR=""
-    if ! WORKTREE_ERR="$(
-      ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
-        -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST_REQUESTED" \
-        "$WORKTREE_COMMAND" 2>&1 >/dev/null
-    )"; then
-      DISPATCH_FALLBACK_REASON="dispatch_host_unready:$DISPATCH_HOST_REQUESTED"
-      echo "hapax-codex-headless: remote worktree bootstrap failed ($DISPATCH_HOST_REQUESTED)" >&2
-      [[ -n "$WORKTREE_ERR" ]] && printf '  detail: %s\n' "$WORKTREE_ERR" >&2
-      if [[ "${HAPAX_DISPATCH_HOST_FALLBACK:-}" == "local" ]]; then
-        echo "hapax-codex-headless: dispatch_host_unready ($DISPATCH_HOST_REQUESTED) -- explicit local fallback" >&2
-      else
-        echo "  next action: ssh $DISPATCH_HOST_REQUESTED and verify $WORKDIR, $COUNCIL_DIR, git, and HAPAX_CODEX_CREATE_WORKTREE before retrying; refusing local fallback without HAPAX_DISPATCH_HOST_FALLBACK=local" >&2
-        exit 75
-      fi
-    elif ! PREFLIGHT_ERR="$(
-      ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
-        -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST_REQUESTED" \
-        "$PREFLIGHT_COMMAND" 2>&1 >/dev/null
-    )"; then
-      DISPATCH_FALLBACK_REASON="dispatch_host_unready:$DISPATCH_HOST_REQUESTED"
-      echo "hapax-codex-headless: remote preflight failed ($DISPATCH_HOST_REQUESTED)" >&2
-      [[ -n "$PREFLIGHT_ERR" ]] && printf '  detail: %s\n' "$PREFLIGHT_ERR" >&2
-      if [[ "${HAPAX_DISPATCH_HOST_FALLBACK:-}" == "local" ]]; then
-        echo "hapax-codex-headless: dispatch_host_unready ($DISPATCH_HOST_REQUESTED) -- explicit local fallback" >&2
-      else
-        echo "  next action: ssh $DISPATCH_HOST_REQUESTED and verify $WORKDIR, $COUNCIL_DIR, $HOME/projects/hapax-mcp, python3, codex, and the hook adapter before retrying; refusing local fallback without HAPAX_DISPATCH_HOST_FALLBACK=local" >&2
-        exit 75
-      fi
+  TOKEN_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 1)"
+  TOKEN_PREFLIGHT_COMMAND="$(remote_python_command "$TOKEN_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
+  TOKEN_PREFLIGHT_ERR=""
+  if ! TOKEN_PREFLIGHT_ERR="$(
+    ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+      -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST_REQUESTED" \
+      "$TOKEN_PREFLIGHT_COMMAND" 2>&1 >/dev/null
+  )"; then
+    DISPATCH_FALLBACK_REASON="dispatch_host_unready:$DISPATCH_HOST_REQUESTED"
+    echo "hapax-codex-headless: remote token preflight failed ($DISPATCH_HOST_REQUESTED)" >&2
+    [[ -n "$TOKEN_PREFLIGHT_ERR" ]] && printf '  detail: %s\n' "$TOKEN_PREFLIGHT_ERR" >&2
+    if [[ "${HAPAX_DISPATCH_HOST_FALLBACK:-}" == "local" ]]; then
+      echo "hapax-codex-headless: dispatch_host_unready ($DISPATCH_HOST_REQUESTED) -- explicit local fallback" >&2
+      DISPATCH_HOST_REQUESTED=""
+      load_local_codex_access_token
     else
-      DISPATCH_HOST="$DISPATCH_HOST_REQUESTED"
-      echo "hapax-codex-headless: dispatch -> $DISPATCH_HOST (codex exec on appendix)" >&2
+      echo "  next action: ssh $DISPATCH_HOST_REQUESTED and run the codex OAuth refresher or reauth, then retry; refusing local fallback without HAPAX_DISPATCH_HOST_FALLBACK=local" >&2
+      exit 75
     fi
+  fi
+fi
+
+if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
+  [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
+  (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
+fi
+
+if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
+  WORKTREE_PAYLOAD="$(remote_worktree_payload_b64)"
+  WORKTREE_COMMAND="$(remote_python_command "$WORKTREE_PAYLOAD" "$REMOTE_WORKTREE_PY")"
+  PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
+  PREFLIGHT_COMMAND="$(remote_python_command "$PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
+  WORKTREE_ERR=""
+  PREFLIGHT_ERR=""
+  if ! WORKTREE_ERR="$(
+    ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+      -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST_REQUESTED" \
+      "$WORKTREE_COMMAND" 2>&1 >/dev/null
+  )"; then
+    DISPATCH_FALLBACK_REASON="dispatch_host_unready:$DISPATCH_HOST_REQUESTED"
+    echo "hapax-codex-headless: remote worktree bootstrap failed ($DISPATCH_HOST_REQUESTED)" >&2
+    [[ -n "$WORKTREE_ERR" ]] && printf '  detail: %s\n' "$WORKTREE_ERR" >&2
+    if [[ "${HAPAX_DISPATCH_HOST_FALLBACK:-}" == "local" ]]; then
+      echo "hapax-codex-headless: dispatch_host_unready ($DISPATCH_HOST_REQUESTED) -- explicit local fallback" >&2
+      DISPATCH_HOST_REQUESTED=""
+    else
+      echo "  next action: ssh $DISPATCH_HOST_REQUESTED and verify $WORKDIR, $COUNCIL_DIR, git, and HAPAX_CODEX_CREATE_WORKTREE before retrying; refusing local fallback without HAPAX_DISPATCH_HOST_FALLBACK=local" >&2
+      exit 75
+    fi
+  elif ! PREFLIGHT_ERR="$(
+    ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+      -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST_REQUESTED" \
+      "$PREFLIGHT_COMMAND" 2>&1 >/dev/null
+  )"; then
+    DISPATCH_FALLBACK_REASON="dispatch_host_unready:$DISPATCH_HOST_REQUESTED"
+    echo "hapax-codex-headless: remote preflight failed ($DISPATCH_HOST_REQUESTED)" >&2
+    [[ -n "$PREFLIGHT_ERR" ]] && printf '  detail: %s\n' "$PREFLIGHT_ERR" >&2
+    if [[ "${HAPAX_DISPATCH_HOST_FALLBACK:-}" == "local" ]]; then
+      echo "hapax-codex-headless: dispatch_host_unready ($DISPATCH_HOST_REQUESTED) -- explicit local fallback" >&2
+      DISPATCH_HOST_REQUESTED=""
+    else
+      echo "  next action: ssh $DISPATCH_HOST_REQUESTED and verify $WORKDIR, $COUNCIL_DIR, $HOME/projects/hapax-mcp, python3, codex, the hook adapter, and the published Codex OAuth token before retrying; refusing local fallback without HAPAX_DISPATCH_HOST_FALLBACK=local" >&2
+      exit 75
+    fi
+  else
+    DISPATCH_HOST="$DISPATCH_HOST_REQUESTED"
+    echo "hapax-codex-headless: dispatch -> $DISPATCH_HOST (codex exec on appendix)" >&2
   fi
 fi
 

@@ -21,7 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.codex_oauth_refresher import (  # noqa: E402
-    DEFAULT_PUBLISH_DIR,
+    DEFAULT_PUBLISHED_ACCESS_TOKEN,
     load_published_access_token,
     needs_refresh,
     token_fingerprint,
@@ -212,11 +212,11 @@ def observe_wrapper(route: PlatformCapabilityRoute) -> WrapperEvidence:
     )
 
 
-def codex_oauth_publish_dir() -> Path:
+def codex_oauth_access_token_file() -> Path:
     configured = os.environ.get(CODEX_OAUTH_ACCESS_TOKEN_FILE_ENV, "").strip()
     if configured:
-        return Path(configured).expanduser().parent
-    return DEFAULT_PUBLISH_DIR
+        return Path(configured).expanduser()
+    return DEFAULT_PUBLISHED_ACCESS_TOKEN
 
 
 def observe_codex_oauth_session(
@@ -224,12 +224,9 @@ def observe_codex_oauth_session(
     observed_at: datetime,
     stale_after: str,
 ) -> SurfaceEvidence:
-    token = load_published_access_token(codex_oauth_publish_dir())
-    token_file = os.environ.get(
-        CODEX_OAUTH_ACCESS_TOKEN_FILE_ENV,
-        str(DEFAULT_PUBLISH_DIR / "access_token"),
-    )
-    token_ref = display_path(Path(token_file))
+    token_file = codex_oauth_access_token_file()
+    token = load_published_access_token(token_file=token_file)
+    token_ref = display_path(token_file)
     if token is None:
         return surface_evidence(
             status=EvidenceStatus.BLOCKED,
