@@ -690,6 +690,7 @@ class PRInfo:
     title: str
     body: str
     base_ref: str
+    base_sha: str
     head_ref: str
     head_sha: str
     changed_file_count: int | None
@@ -738,7 +739,8 @@ def _fetch_pr_via_view(
             "--repo",
             repo,
             "--json",
-            "number,title,body,baseRefName,headRefName,headRefOid,changedFiles,isDraft,files",
+            "number,title,body,baseRefName,baseRefOid,headRefName,headRefOid,"
+            "changedFiles,isDraft,files",
         ],
         repo_root=repo_root,
         runner=runner,
@@ -758,6 +760,7 @@ def _fetch_pr_via_view(
         title=str(item.get("title") or ""),
         body=str(item.get("body") or ""),
         base_ref=str(item.get("baseRefName") or "main"),
+        base_sha=str(item.get("baseRefOid") or ""),
         head_ref=str(item.get("headRefName") or ""),
         head_sha=str(item.get("headRefOid") or ""),
         changed_file_count=changed_file_count,
@@ -807,6 +810,7 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
         title=str(item.get("title") or ""),
         body=str(item.get("body") or ""),
         base_ref=str(base.get("ref") or "main"),
+        base_sha=str(base.get("sha") or ""),
         head_ref=str(head.get("ref") or ""),
         head_sha=str(head.get("sha") or ""),
         changed_file_count=changed_file_count,
@@ -856,7 +860,19 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
     """Build a pinned local PR diff when GitHub diff endpoints are unavailable."""
     base_ref = pr_info.base_ref or "main"
     remote_base = f"origin/{base_ref}"
-    _ensure_local_ref(remote_base, fetch_ref=base_ref, repo_root=repo_root, runner=runner)
+    if not pr_info.base_sha:
+        raise RuntimeError(
+            f"PR #{pr_info.number} base SHA is unavailable; local git diff fallback cannot "
+            "prove the current PR base. Next action: restore GitHub PR metadata access or "
+            "fetch PR metadata with baseRefOid/base.sha before review dispatch."
+        )
+    _ensure_local_ref_at_sha(
+        remote_base,
+        expected_sha=pr_info.base_sha,
+        fetch_ref=base_ref,
+        repo_root=repo_root,
+        runner=runner,
+    )
 
     head = pr_info.head_sha or "HEAD"
     if pr_info.head_sha:
@@ -869,7 +885,7 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
         )
 
     merge_base = _run_gh(
-        ["git", "merge-base", remote_base, head],
+        ["git", "merge-base", pr_info.base_sha, head],
         repo_root=repo_root,
         runner=runner,
     ).strip()
@@ -885,6 +901,43 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
             f"{remote_base} and {head[:12]}; next action: fetch PR head/base and retry"
         )
     return diff
+
+
+def _resolve_local_ref(ref: str, *, repo_root: Path, runner: Any) -> str | None:
+    try:
+        return _run_gh(
+            ["git", "rev-parse", "--verify", ref], repo_root=repo_root, runner=runner
+        ).strip()
+    except RuntimeError:
+        return None
+
+
+def _ensure_local_ref_at_sha(
+    ref: str,
+    *,
+    expected_sha: str,
+    fetch_ref: str,
+    repo_root: Path,
+    runner: Any,
+) -> None:
+    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
+    if actual_sha == expected_sha:
+        return
+
+    _run_gh(
+        ["git", "fetch", "--quiet", "origin", f"{fetch_ref}:refs/remotes/origin/{fetch_ref}"],
+        repo_root=repo_root,
+        runner=runner,
+        timeout=180,
+    )
+    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
+    if actual_sha != expected_sha:
+        actual_label = (actual_sha or "missing")[:12]
+        raise RuntimeError(
+            f"local ref {ref} resolved to {actual_label}, expected PR base "
+            f"{expected_sha[:12]}; next action: fetch the PR base ref from origin and "
+            "retry review dispatch after the local base matches the PR metadata."
+        )
 
 
 def _ensure_local_ref(
@@ -1129,12 +1182,12 @@ class ReviewerRunnerResult:
     stderr: str = ""
 
 
-def sanitize_reviewer_diagnostic(text: str) -> str:
+def sanitize_reviewer_diagnostic(text: str, *, limit: int = MAX_REVIEW_RUNNER_STDERR_CHARS) -> str:
     redacted = REVIEWER_DIAGNOSTIC_SECRETISH_RE.sub(
         lambda match: (match.group(1) or "") + "<redacted>",
         text.strip(),
     )
-    return truncate_context(redacted, limit=MAX_REVIEW_RUNNER_STDERR_CHARS).strip()
+    return truncate_context(redacted, limit=limit).strip()
 
 
 def reviewer_diagnostic_fields(excerpt: str) -> dict[str, Any]:
@@ -1317,9 +1370,9 @@ def dispatch_reviews(
             else:
                 LOG.warning("reviewer %s output unparseable -> verdict invalid-output", seat.id)
                 verdict = "invalid-output"
-            reply_excerpt = truncate_context(
-                (reply or process_output or ""), limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
-            ).strip()
+            reply_excerpt = sanitize_reviewer_diagnostic(
+                reply or process_output or "", limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
+            )
             return {
                 "id": seat.id,
                 "family": seat.family,
@@ -1332,9 +1385,9 @@ def dispatch_reviews(
         review = {"id": seat.id, "family": seat.family, **parsed}
         review.update(reviewer_diagnostic_fields(runner_stderr_excerpt))
         if parsed.get("parse_path") != "fence":
-            review["raw_reply_excerpt"] = truncate_context(
+            review["raw_reply_excerpt"] = sanitize_reviewer_diagnostic(
                 reply or "", limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
-            ).strip()
+            )
         return review
 
     with ThreadPoolExecutor(max_workers=max(1, len(constitution.seats))) as pool:
