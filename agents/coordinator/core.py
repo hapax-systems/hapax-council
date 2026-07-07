@@ -284,6 +284,7 @@ class CoordinatorState:
     task_status_counts: dict[str, int] = field(default_factory=dict)
     task_flow_counts: dict[str, int] = field(default_factory=dict)
     lanes: dict[str, dict] = field(default_factory=dict)
+    starvation_pressure_mask: dict[str, object] | None = None
 
 
 class Coordinator:
@@ -504,7 +505,26 @@ class Coordinator:
         # Pressure CLOSED intentionally yields a zero dispatch budget: work remains
         # queued, but the controller is not failing to use available capacity.
         starvation_capacity = bool(idle_lanes) and pressure_cap > 0
-        starvation_offered = (len(offered) - cooled_offered) if starvation_capacity else 0
+        uncooled_offered = max(0, len(offered) - cooled_offered)
+        starvation_offered = uncooled_offered if starvation_capacity else 0
+        if idle_lanes and uncooled_offered > 0 and pressure_cap == 0:
+            state.starvation_pressure_mask = {
+                "active": True,
+                "reason": "sdlc_pressure_closed",
+                "admission_state": admission.state,
+                "admission_reasons": list(getattr(admission, "reasons", []) or []),
+                "offered_tasks": len(offered),
+                "uncooled_offered": uncooled_offered,
+                "idle_lanes": len(idle_lanes),
+                "pressure_cap": pressure_cap,
+                "dispatches_this_tick": dispatches,
+            }
+            log.warning(
+                "starvation masked by closed pressure: offered=%d uncooled=%d idle_lanes=%d",
+                len(offered),
+                uncooled_offered,
+                len(idle_lanes),
+            )
         self._refusal_ledger.tick_starvation(starvation_offered, dispatches, now=now_mono)
 
         # Surface refusal stats in SHM.
@@ -937,6 +957,8 @@ class Coordinator:
             "task_flow_counts": state.task_flow_counts,
             "lanes": state.lanes,
         }
+        if state.starvation_pressure_mask:
+            payload["starvation_pressure_mask"] = state.starvation_pressure_mask
         if refusal_stats:
             payload["refusal_ledger"] = refusal_stats
         tmp = SHM_FILE.with_suffix(".tmp")

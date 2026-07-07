@@ -16,6 +16,7 @@ Addresses review-dossier criticals:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 from contextlib import ExitStack
@@ -566,13 +567,17 @@ class TestTickIntegration:
         assert coord._refusal_ledger.stats(now=now)["starvation_escalated"] is False
         assert coord._refusal_ledger._starvation.starved_since == 0.0
 
-    def test_closed_pressure_fleet_does_not_page_as_starvation(self, tmp_path: Path) -> None:
+    def test_closed_pressure_fleet_does_not_page_as_starvation(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """Pressure CLOSED intentionally has idle lanes and offered work but zero
-        dispatch budget. That is pacing, not dispatch starvation."""
+        dispatch budget. That is pacing, not dispatch starvation, but the
+        suppression remains visible in SHM."""
         coord = self._make_coordinator()
         coord._refusal_ledger.starvation_horizon_s = 0.0
         fail = _failing_dispatch_result(DETERMINISTIC_REASON)
         now = 115_000.0
+        caplog.set_level(logging.WARNING, logger="agents.coordinator.core")
 
         for _i in range(4):
             now += 30.0
@@ -588,6 +593,19 @@ class TestTickIntegration:
 
         assert coord._refusal_ledger.stats(now=now)["starvation_escalated"] is False
         assert coord._refusal_ledger._starvation.starved_since == 0.0
+        state = json.loads((tmp_path / "shm" / "state.json").read_text(encoding="utf-8"))
+        assert state["starvation_pressure_mask"] == {
+            "active": True,
+            "reason": "sdlc_pressure_closed",
+            "admission_state": "closed",
+            "admission_reasons": [],
+            "offered_tasks": 1,
+            "uncooled_offered": 1,
+            "idle_lanes": 1,
+            "pressure_cap": 0,
+            "dispatches_this_tick": 0,
+        }
+        assert "starvation masked by closed pressure" in caplog.text
 
     def test_oserror_dispatch_tracked_as_transient(self, tmp_path: Path) -> None:
         """An OSError from subprocess.run is recorded as a transient refusal."""
