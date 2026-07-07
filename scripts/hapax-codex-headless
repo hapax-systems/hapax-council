@@ -151,9 +151,6 @@ remote_python_command() {
 }
 
 load_local_codex_access_token() {
-  if [[ -n "${CODEX_ACCESS_TOKEN:-}" ]]; then
-    return 0
-  fi
   local token_file="${HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE:-$HOME/.cache/hapax/codex-oauth/access_token}"
   local token=""
   local token_rc=0
@@ -368,17 +365,16 @@ def _jwt_exp(token):
         return float(json.loads(base64.urlsafe_b64decode(payload.encode("ascii"))).get("exp",0))
     except Exception:
         return 0.0
-if not os.environ.get("CODEX_ACCESS_TOKEN"):
-    token_path=os.environ.get("HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE") or os.path.join(os.path.expanduser("~"),".cache","hapax","codex-oauth","access_token")
-    try:
-        token=open(token_path,encoding="utf-8").read().strip()
-    except OSError:
-        print("hapax-codex-headless: missing published Codex OAuth access token at "+token_path+"; next action: run the codex OAuth refresher or reauth on appendix before dispatching Codex lanes", file=sys.stderr)
-        sys.exit(78)
-    if not token or _jwt_exp(token) - time.time() <= 300:
-        print("hapax-codex-headless: published Codex OAuth access token is absent or expiring; next action: run the codex OAuth refresher or reauth on appendix before dispatching Codex lanes", file=sys.stderr)
-        sys.exit(78)
-    os.environ["CODEX_ACCESS_TOKEN"]=token
+token_path=os.environ.get("HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE") or os.path.join(os.path.expanduser("~"),".cache","hapax","codex-oauth","access_token")
+try:
+    token=open(token_path,encoding="utf-8").read().strip()
+except OSError:
+    print("hapax-codex-headless: missing published Codex OAuth access token at "+token_path+"; next action: run the codex OAuth refresher or reauth on appendix before dispatching Codex lanes", file=sys.stderr)
+    sys.exit(78)
+if not token or _jwt_exp(token) - time.time() <= 300:
+    print("hapax-codex-headless: published Codex OAuth access token is absent or expiring; next action: run the codex OAuth refresher or reauth on appendix before dispatching Codex lanes", file=sys.stderr)
+    sys.exit(78)
+os.environ["CODEX_ACCESS_TOKEN"]=token
 # Exec-host identity materialization mirrors hapax-claude-headless: the
 # session-keyed claim must exist where codex exec runs, or the worker can fall
 # back to stale legacy lane state and reject the governed dispatch.
