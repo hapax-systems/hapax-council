@@ -170,6 +170,24 @@ def _missing_gate_receipts(
     )
 
 
+def _effective_required_gates(config: OmgFanoutConfig) -> tuple[list[str], str | None]:
+    malformed = False
+    configured: list[str] = []
+    for gate in config.required_gates:
+        if not isinstance(gate, str) or not gate.strip():
+            malformed = True
+            continue
+        configured.append(gate.strip())
+
+    required = list(dict.fromkeys([*FANOUT_REQUIRED_GATES, *configured]))
+    if malformed:
+        return required, (
+            "fanout config required_gates contains blank or non-string gate ids; "
+            "next action: remove malformed gate ids before public fanout"
+        )
+    return required, None
+
+
 def fanout(
     *,
     source_address: str,
@@ -200,15 +218,17 @@ def fanout(
     if not targets:
         return {}
 
-    if config.gate_policy_error:
-        log.error("fanout blocked before public egress; %s", config.gate_policy_error)
+    required_gates, boundary_gate_policy_error = _effective_required_gates(config)
+    gate_policy_error = config.gate_policy_error or boundary_gate_policy_error
+    if gate_policy_error:
+        log.error("fanout blocked before public egress; %s", gate_policy_error)
         for target in targets:
             omg_fanouts_total.labels(
                 source=source_address, target=target, result="gate-policy-blocked"
             ).inc()
         return {target: "gate-policy-blocked" for target in targets}
 
-    missing_receipts = _missing_gate_receipts(config.required_gates, gate_receipts)
+    missing_receipts = _missing_gate_receipts(required_gates, gate_receipts)
     if missing_receipts:
         missing_text = ", ".join(missing_receipts)
         log.error(

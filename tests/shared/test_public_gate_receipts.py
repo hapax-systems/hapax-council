@@ -25,6 +25,54 @@ def test_accepts_passed_yaml_receipt_with_extension_inferred(tmp_path: Path) -> 
     )
 
 
+def test_accepts_receipt_with_matching_artifact_binding(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "receipt-1.yaml",
+        f"gate_id: {GATE}\n"
+        "status: passed\n"
+        "artifact_slug: demo\n"
+        "artifact_fingerprint: abc123\n"
+        "target_surfaces:\n"
+        "  - fake\n",
+    )
+
+    assert public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+        bindings={
+            "artifact_slug": "demo",
+            "artifact_fingerprint": "abc123",
+            "target_surfaces": ("fake",),
+        },
+    )
+
+
+def test_rejects_replayed_receipt_with_wrong_artifact_binding(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "receipt-1.yaml",
+        f"gate_id: {GATE}\n"
+        "status: passed\n"
+        "artifact_slug: demo\n"
+        "artifact_fingerprint: old-fingerprint\n"
+        "target_surfaces:\n"
+        "  - fake\n",
+    )
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+        bindings={
+            "artifact_slug": "demo",
+            "artifact_fingerprint": "new-fingerprint",
+            "target_surfaces": ("fake",),
+        },
+    )
+
+
 def test_rejects_failed_receipt_outcome(tmp_path: Path) -> None:
     _write(tmp_path, "receipt-1.yaml", f"gate_id: {GATE}\nstatus: failed\n")
 

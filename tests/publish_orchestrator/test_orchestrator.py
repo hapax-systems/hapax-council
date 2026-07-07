@@ -14,6 +14,7 @@ from agents.publish_orchestrator.orchestrator import (
     PUBLICATION_BASELINE_REQUIRED_GATES,
     PUBLICATION_FANOUT_REQUIRED_GATES,
     Orchestrator,
+    _artifact_fingerprint,
 )
 from shared.preprint_artifact import PreprintArtifact
 from shared.publication_hardening.gate import (
@@ -35,11 +36,6 @@ def _drop_artifact(
     include_gate_receipts: bool = True,
 ) -> Path:
     """Write an approved PreprintArtifact JSON to inbox/."""
-    gate_context = None
-    if include_gate_receipts:
-        gate_context = {
-            "publication_gate_receipts": _write_public_gate_receipts(state_root, surfaces)
-        }
     artifact = PreprintArtifact(
         slug=slug,
         title=f"Test artifact {slug}",
@@ -48,16 +44,23 @@ def _drop_artifact(
         surfaces_targeted=surfaces,
         source_path=str(source_path) if source_path is not None else None,
         author_model=author_model,
-        publication_gate_context=gate_context,
     )
     artifact.mark_approved(by_referent="Oudepode")
+    if include_gate_receipts:
+        artifact.publication_gate_context = {
+            "publication_gate_receipts": _write_public_gate_receipts(state_root, artifact)
+        }
     inbox_path = artifact.inbox_path(state_root=state_root)
     inbox_path.parent.mkdir(parents=True, exist_ok=True)
     inbox_path.write_text(artifact.model_dump_json(indent=2))
     return inbox_path
 
 
-def _write_public_gate_receipts(state_root: Path, surfaces: list[str]) -> dict[str, str]:
+def _write_public_gate_receipts(
+    state_root: Path,
+    artifact: PreprintArtifact,
+) -> dict[str, str]:
+    surfaces = artifact.surfaces_targeted
     gates = (
         PUBLICATION_FANOUT_REQUIRED_GATES
         if set(surfaces).intersection(FANOUT_SURFACE_IDS)
@@ -65,9 +68,15 @@ def _write_public_gate_receipts(state_root: Path, surfaces: list[str]) -> dict[s
     )
     receipt_root = state_root / "public-gate-receipts"
     receipt_root.mkdir(parents=True, exist_ok=True)
+    surfaces_yaml = "\n".join(f"  - {surface}" for surface in sorted(surfaces))
     for gate in gates:
         (receipt_root / f"{gate}.yaml").write_text(
-            f"gate_id: {gate}\nstatus: passed\n",
+            f"gate_id: {gate}\n"
+            "status: passed\n"
+            f"artifact_slug: {artifact.slug}\n"
+            f"artifact_fingerprint: {_artifact_fingerprint(artifact)}\n"
+            "target_surfaces:\n"
+            f"{surfaces_yaml}\n",
             encoding="utf-8",
         )
     return {gate: f"public-gate:{gate}.yaml" for gate in gates}
@@ -331,6 +340,42 @@ class TestSingleSurface:
         assert gate_log["result"] == "operator_hold"
         assert gate_log["publication_gate_decision"] == "hold"
         assert any("public_gate_receipts:" in issue for issue in gate_log["flagged_issues"])
+
+    def test_replayed_public_gate_receipt_holds_before_surface_dispatch(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        _drop_artifact(tmp_path, slug="replayed-public-receipt", surfaces=["fake"])
+        receipt = tmp_path / "public-gate-receipts" / "rights_privacy_redaction_pass.yaml"
+        receipt.write_text(
+            "gate_id: rights_privacy_redaction_pass\n"
+            "status: passed\n"
+            "artifact_slug: replayed-public-receipt\n"
+            "artifact_fingerprint: stale-fingerprint\n"
+            "target_surfaces:\n"
+            "  - fake\n",
+            encoding="utf-8",
+        )
+        orch = _make_orchestrator(
+            tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+        )
+
+        assert orch.run_once() == 1
+        fake_module.publish_artifact.assert_not_called()
+        gate_log = json.loads(
+            (
+                tmp_path / "publish/log/replayed-public-receipt.publication-hardening-gate.json"
+            ).read_text()
+        )
+        assert gate_log["result"] == "operator_hold"
+        assert gate_log["publication_gate_decision"] == "hold"
+        assert any("rights_privacy_redaction_pass" in issue for issue in gate_log["flagged_issues"])
 
     def test_publication_gate_override_dispatches_with_surface_receipt(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()

@@ -98,6 +98,17 @@ _HIGH_SIGNAL_DIFF_PREFIXES = (
     "schemas/",
 )
 _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
+    "agents/publication_bus/omg_rss_fanout.py": (
+        "_effective_required_gates",
+        "_missing_gate_receipts",
+        "fanout",
+    ),
+    "agents/publish_orchestrator/orchestrator.py": (
+        "_dispatch",
+        "_with_public_gate_receipts_child",
+        "_public_gate_receipts_child",
+        "_publication_gate_receipt_bindings",
+    ),
     "scripts/hapax-glmcp-reviewer": (
         "load_config",
         "_valid_coding_plan_primary_base_url",
@@ -129,6 +140,12 @@ _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
     "shared/platform_capability_registry.py": (
         "_apply_receipt_to_route_payload",
         "_route_specific_quota_admission_fresh",
+    ),
+    "shared/public_gate_receipts.py": (
+        "public_gate_receipt_value_present",
+        "public_gate_receipt_ref_exists",
+        "_receipt_file_maps_to_gate",
+        "_receipt_has_required_bindings",
     ),
 }
 SEND_SCRIPTS = {

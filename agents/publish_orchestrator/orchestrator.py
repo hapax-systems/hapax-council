@@ -496,6 +496,7 @@ class Orchestrator:
     ) -> PublicationGateChildResult:
         required = _required_publication_gate_receipts(artifact.surfaces_targeted)
         receipts, error = _artifact_publication_gate_receipts(artifact)
+        bindings = _publication_gate_receipt_bindings(artifact)
         findings = (error,) if error is not None else ()
         missing = tuple(
             gate
@@ -504,6 +505,7 @@ class Orchestrator:
                 receipts.get(gate),
                 expected_gate=gate,
                 roots=self._public_gate_receipt_roots,
+                bindings=bindings,
             )
         )
         if missing:
@@ -511,8 +513,8 @@ class Orchestrator:
                 *findings,
                 "publication_gate_receipts missing or invalid required receipt refs: "
                 + ", ".join(missing)
-                + "; next action: hold the artifact until durable public-gate "
-                "receipt refs are recorded",
+                + "; next action: hold the artifact until durable public-gate receipt refs "
+                "bound to artifact_slug, artifact_fingerprint, and target_surfaces are recorded",
             )
 
         if findings:
@@ -843,6 +845,14 @@ def _artifact_publication_gate_receipts(
             "keyed by gate id",
         )
     return {str(key): value for key, value in raw_receipts.items()}, None
+
+
+def _publication_gate_receipt_bindings(artifact: PreprintArtifact) -> dict[str, object]:
+    return {
+        "artifact_slug": artifact.slug,
+        "artifact_fingerprint": _artifact_fingerprint(artifact),
+        "target_surfaces": tuple(sorted(artifact.surfaces_targeted)),
+    }
 
 
 def _artifact_fingerprint(artifact: PreprintArtifact) -> str:

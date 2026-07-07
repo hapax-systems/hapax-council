@@ -97,13 +97,24 @@ def public_gate_receipt_value_present(
     *,
     expected_gate: str,
     roots: Iterable[Path],
+    bindings: Mapping[str, object] | None = None,
 ) -> bool:
     """Return true when ``value`` contains a durable receipt for ``expected_gate``."""
     if isinstance(value, str):
-        return public_gate_receipt_ref_exists(value, expected_gate=expected_gate, roots=roots)
+        return public_gate_receipt_ref_exists(
+            value,
+            expected_gate=expected_gate,
+            roots=roots,
+            bindings=bindings,
+        )
     if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, str, Mapping)):
         return any(
-            public_gate_receipt_value_present(item, expected_gate=expected_gate, roots=roots)
+            public_gate_receipt_value_present(
+                item,
+                expected_gate=expected_gate,
+                roots=roots,
+                bindings=bindings,
+            )
             for item in value
         )
     return False
@@ -114,6 +125,7 @@ def public_gate_receipt_ref_exists(
     *,
     expected_gate: str,
     roots: Iterable[Path],
+    bindings: Mapping[str, object] | None = None,
 ) -> bool:
     """Validate that ``ref`` names an existing receipt mapped to ``expected_gate``."""
     suffix = _public_gate_receipt_suffix(ref)
@@ -125,7 +137,11 @@ def public_gate_receipt_ref_exists(
         root = root.expanduser()
         for candidate in candidates:
             path = root / candidate
-            if _path_is_inside_root(path, root) and _receipt_file_maps_to_gate(path, expected_gate):
+            if _path_is_inside_root(path, root) and _receipt_file_maps_to_gate(
+                path,
+                expected_gate,
+                bindings,
+            ):
                 return True
     return False
 
@@ -177,12 +193,17 @@ def _path_is_inside_root(path: Path, root: Path) -> bool:
     return resolved_path.is_file()
 
 
-def _receipt_file_maps_to_gate(path: Path, expected_gate: str) -> bool:
+def _receipt_file_maps_to_gate(
+    path: Path,
+    expected_gate: str,
+    bindings: Mapping[str, object] | None = None,
+) -> bool:
     data = _load_receipt_data(path)
     return (
         not _receipt_has_failed_outcome(data)
         and not _receipt_has_gate_contradiction(data, expected_gate)
         and _gate_receipt_object_allows(data, expected_gate)
+        and _receipt_has_required_bindings(data, bindings)
     )
 
 
@@ -272,6 +293,66 @@ def _gate_value_matches(value: Any, expected_gate: str) -> bool:
 
 def _receipt_has_failed_outcome(data: Any) -> bool:
     return any(outcome is False for outcome in _iter_receipt_outcomes(data))
+
+
+def _receipt_has_required_bindings(
+    data: Any,
+    bindings: Mapping[str, object] | None,
+) -> bool:
+    if not bindings:
+        return True
+    return all(_receipt_has_binding(data, key, value) for key, value in bindings.items())
+
+
+def _receipt_has_binding(data: Any, key: str, expected: object) -> bool:
+    return any(
+        _binding_value_matches(value, expected)
+        for value in _iter_binding_values(data, _binding_key_aliases(key))
+    )
+
+
+def _iter_binding_values(data: Any, keys: frozenset[str]) -> Iterable[Any]:
+    if isinstance(data, Mapping):
+        for raw_key, value in data.items():
+            if str(raw_key).strip().casefold() in keys:
+                yield value
+            yield from _iter_binding_values(value, keys)
+    elif isinstance(data, (list, tuple, set)):
+        for item in data:
+            yield from _iter_binding_values(item, keys)
+
+
+def _binding_key_aliases(key: str) -> frozenset[str]:
+    normalized = key.strip().casefold()
+    aliases = {
+        "artifact_slug": {"artifact_slug", "publication_artifact_slug", "slug"},
+        "artifact_fingerprint": {
+            "artifact_fingerprint",
+            "publication_artifact_fingerprint",
+        },
+        "target_surfaces": {
+            "target_surfaces",
+            "surfaces",
+            "surfaces_targeted",
+        },
+    }
+    return frozenset(aliases.get(normalized, {normalized}))
+
+
+def _binding_value_matches(value: Any, expected: object) -> bool:
+    if _is_non_string_iterable(expected):
+        expected_items = {str(item).strip() for item in expected if str(item).strip()}
+        if not expected_items:
+            return False
+        if _is_non_string_iterable(value):
+            actual_items = {str(item).strip() for item in value if str(item).strip()}
+            return actual_items == expected_items
+        return False
+    return isinstance(value, str) and value.strip() == str(expected).strip()
+
+
+def _is_non_string_iterable(value: object) -> bool:
+    return isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, str, Mapping))
 
 
 def _receipt_has_gate_contradiction(data: Any, expected_gate: str) -> bool:

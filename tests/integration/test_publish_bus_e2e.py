@@ -31,6 +31,7 @@ from agents.publish_orchestrator.orchestrator import (
     PUBLICATION_FANOUT_REQUIRED_GATES,
     SURFACE_REGISTRY,
     Orchestrator,
+    _artifact_fingerprint,
 )
 from shared.preprint_artifact import PreprintArtifact
 from shared.publication_hardening.gate import (
@@ -47,7 +48,6 @@ def _drop_approved_artifact(
     slug: str,
     surfaces: list[str],
 ) -> None:
-    gate_receipts = _write_public_gate_receipts(state_root, surfaces)
     artifact = PreprintArtifact(
         slug=slug,
         title=f"E2E test artifact {slug}",
@@ -58,15 +58,18 @@ def _drop_approved_artifact(
             "unsettled contribution as feature)."
         ),
         surfaces_targeted=surfaces,
-        publication_gate_context={"publication_gate_receipts": gate_receipts},
     )
     artifact.mark_approved(by_referent="Oudepode")
+    artifact.publication_gate_context = {
+        "publication_gate_receipts": _write_public_gate_receipts(state_root, artifact)
+    }
     inbox_path = artifact.inbox_path(state_root=state_root)
     inbox_path.parent.mkdir(parents=True, exist_ok=True)
     inbox_path.write_text(artifact.model_dump_json(indent=2))
 
 
-def _write_public_gate_receipts(state_root, surfaces: list[str]) -> dict[str, str]:  # type: ignore[no-untyped-def]
+def _write_public_gate_receipts(state_root, artifact: PreprintArtifact) -> dict[str, str]:  # type: ignore[no-untyped-def]
+    surfaces = artifact.surfaces_targeted
     gates = (
         PUBLICATION_FANOUT_REQUIRED_GATES
         if set(surfaces).intersection(FANOUT_SURFACE_IDS)
@@ -74,9 +77,15 @@ def _write_public_gate_receipts(state_root, surfaces: list[str]) -> dict[str, st
     )
     receipt_root = state_root / "public-gate-receipts"
     receipt_root.mkdir(parents=True, exist_ok=True)
+    surfaces_yaml = "\n".join(f"  - {surface}" for surface in sorted(surfaces))
     for gate in gates:
         (receipt_root / f"{gate}.yaml").write_text(
-            f"gate_id: {gate}\nstatus: passed\n",
+            f"gate_id: {gate}\n"
+            "status: passed\n"
+            f"artifact_slug: {artifact.slug}\n"
+            f"artifact_fingerprint: {_artifact_fingerprint(artifact)}\n"
+            "target_surfaces:\n"
+            f"{surfaces_yaml}\n",
             encoding="utf-8",
         )
     return {gate: f"public-gate:{gate}.yaml" for gate in gates}
