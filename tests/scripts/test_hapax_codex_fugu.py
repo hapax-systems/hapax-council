@@ -142,6 +142,36 @@ def test_reins_fugu_ultra_print_env_selects_ultra_model(tmp_path: Path) -> None:
     assert "HAPAX_AGENT_ROLE=cx-fugu-ultra" in default_role.stdout
 
 
+def test_reins_fugu_entrypoints_ignore_profile_env_override(tmp_path: Path) -> None:
+    env, _catalog, _bin_dir = _base_env(tmp_path)
+    env["REINS_FUGU_PROFILE"] = "fugu-ultra"
+
+    fugu = subprocess.run(
+        [str(REINS_FUGU), "--print-env"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert fugu.returncode == 0, fugu.stderr
+    assert "HAPAX_CODEX_FUGU_PROFILE=fugu" in fugu.stdout
+    assert "HAPAX_AGENT_ROLE=cx-fugu" in fugu.stdout
+
+    env["REINS_FUGU_PROFILE"] = "fugu"
+    ultra = subprocess.run(
+        [str(REINS_FUGU_ULTRA), "--print-env"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert ultra.returncode == 0, ultra.stderr
+    assert "HAPAX_CODEX_FUGU_PROFILE=fugu-ultra" in ultra.stdout
+    assert "HAPAX_AGENT_ROLE=cx-fugu-ultra" in ultra.stdout
+
+
 @pytest.mark.parametrize(
     ("script", "override_args"),
     [
@@ -288,7 +318,62 @@ exit 1
     )
 
     assert result.returncode == 1
-    assert "pass entry 'sakana/api-key' is unavailable" in result.stderr
+    assert "pass entry 'sakana/api-key' returned an empty first line" in result.stderr
+    assert "Fugu check ok" not in result.stdout
+
+
+def test_fugu_check_rejects_unsupported_secret_without_pass_lookup(tmp_path: Path) -> None:
+    env, _catalog, bin_dir = _base_env(tmp_path)
+    _install_fake_codex(bin_dir, tmp_path)
+    pass_called = tmp_path / "pass-called"
+    _write_executable(
+        bin_dir / "pass",
+        f"""printf '%s\\n' "$*" > {pass_called}
+printf '%s\\n' should-not-be-read
+exit 0
+""",
+    )
+    env["HAPAX_CODEX_FUGU_SECRET_ENTRY"] = "github/pat"
+
+    result = subprocess.run(
+        [str(REINS_FUGU), "--check", "--role", "cx-fugu-check"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 1
+    assert "unsupported secret entry 'github/pat'" in result.stderr
+    assert not pass_called.exists()
+    assert "should-not-be-read" not in result.stdout
+    assert "should-not-be-read" not in result.stderr
+
+
+def test_fugu_check_surfaces_pass_stderr(tmp_path: Path) -> None:
+    env, _catalog, bin_dir = _base_env(tmp_path)
+    _install_fake_codex(bin_dir, tmp_path)
+    _write_executable(
+        bin_dir / "pass",
+        """if [ "${1:-}" = "show" ] && [ "${2:-}" = "sakana/api-key" ]; then
+  printf '%s\\n' 'gpg timeout while decrypting' >&2
+  exit 2
+fi
+exit 1
+""",
+    )
+
+    result = subprocess.run(
+        [str(REINS_FUGU), "--check", "--role", "cx-fugu-check"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 1
+    assert "pass show exit 2" in result.stderr
+    assert "gpg timeout while decrypting" in result.stderr
     assert "Fugu check ok" not in result.stdout
 
 

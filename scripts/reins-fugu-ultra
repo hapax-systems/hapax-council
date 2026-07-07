@@ -4,6 +4,37 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export REINS_FUGU_PROFILE="fugu-ultra"
-export REINS_FUGU_SESSION="${REINS_FUGU_SESSION:-cx-fugu-ultra}"
-exec "$SCRIPT_DIR/reins-fugu" "$@"
+PROFILE="fugu-ultra"
+DEFAULT_SESSION="${REINS_FUGU_SESSION:-cx-fugu-ultra}"
+
+for arg in "$@"; do
+  case "$arg" in
+    --fugu|--fugu=*|--fugu-profile|--fugu-profile=*)
+      echo "reins-fugu-ultra: refuses caller Fugu profile override '$arg'; next action: use reins-fugu or reins-fugu-ultra for the pinned governed profile" >&2
+      exit 2
+      ;;
+  esac
+done
+
+needs_default_session=1
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--session" ] || [ "$prev" = "--thread" ] || [ "$prev" = "--name" ] || [ "$prev" = "--role" ]; then
+    needs_default_session=0
+    break
+  fi
+  case "$arg" in
+    --session=*|--thread=*|--name=*|--role=*|cx-*)
+      needs_default_session=0
+      break
+      ;;
+  esac
+  prev="$arg"
+done
+
+args=(--fugu-profile "$PROFILE")
+if [ "$needs_default_session" -eq 1 ]; then
+  args=(--session "$DEFAULT_SESSION" "${args[@]}")
+fi
+
+exec "$SCRIPT_DIR/hapax-codex" "${args[@]}" "$@"

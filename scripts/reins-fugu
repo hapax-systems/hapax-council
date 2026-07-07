@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROFILE="${REINS_FUGU_PROFILE:-fugu}"
+PROFILE="fugu"
 DEFAULT_SESSION="${REINS_FUGU_SESSION:-cx-fugu}"
 
 for arg in "$@"; do

@@ -26,7 +26,19 @@ scripts/reins-fugu-ultra --check
 scripts/reins-fugu --print-env
 ```
 
-The check output redacts the secret value, reports `raw_codex_fugu_bypass=false`, and exits nonzero with next-action text when the catalog, pass entry, endpoint, wire API, or hook setup is unsupported.
+The check output redacts the secret value, reports `raw_codex_fugu_bypass=false`, and exits nonzero with next-action text when the catalog, pass entry, endpoint, wire API, or hook setup is unsupported. Exit code `2` means an unsupported Fugu configuration or caller override, `7` means launch-time secret load failure, and `14` means remote dispatch was refused.
+
+Negative boundary rechecks:
+
+```bash
+scripts/reins-fugu --check -- --model gpt-5.5
+scripts/reins-fugu --fugu-profile fugu-ultra --print-env
+REINS_FUGU_PROFILE=fugu-ultra scripts/reins-fugu --print-env
+HAPAX_DISPATCH_HOST=appendix scripts/reins-fugu --print-env
+HAPAX_CODEX_FUGU_SECRET_ENTRY=github/pat scripts/reins-fugu --check
+```
+
+Each command must fail without printing secret values. The unsupported secret-entry recheck must fail before reading the caller-selected pass entry.
 
 ## Boundary Rules
 

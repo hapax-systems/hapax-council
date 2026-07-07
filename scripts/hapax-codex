@@ -473,11 +473,36 @@ PYEOF
 
 fugu_pass_secret_available() {
   local entry="$1"
-  local output value
-  command -v pass >/dev/null 2>&1 || return 1
-  output="$(pass show "$entry" 2>/dev/null)" || return 1
-  value="$(printf '%s\n' "$output" | sed -n '1p')"
-  [ -n "$value" ]
+  fugu_pass_secret_check_error "$entry" >/dev/null
+}
+
+fugu_pass_secret_check_error() {
+  local entry="$1"
+  local output value status stderr_file stderr_text
+  if ! command -v pass >/dev/null 2>&1; then
+    echo "pass binary not found; next action: install or expose pass before retrying Fugu"
+    return 1
+  fi
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/hapax-fugu-pass-check.XXXXXX")"
+  output="$(pass show "$entry" 2>"$stderr_file")"
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    rm -f "$stderr_file"
+    value="$(printf '%s\n' "$output" | sed -n '1p')"
+    if [ -n "$value" ]; then
+      return 0
+    fi
+    echo "pass entry '$entry' returned an empty first line; next action: run 'pass insert sakana/api-key' with a non-empty secret or restore the operator password store before retrying"
+    return 1
+  fi
+  stderr_text="$(sed -n '1,3p' "$stderr_file" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  rm -f "$stderr_file"
+  if [ -n "$stderr_text" ]; then
+    echo "pass entry '$entry' is unavailable (pass show exit $status: $stderr_text); next action: run 'pass insert sakana/api-key' or restore the operator password store before retrying"
+  else
+    echo "pass entry '$entry' is unavailable (pass show exit $status); next action: run 'pass insert sakana/api-key' or restore the operator password store before retrying"
+  fi
+  return 1
 }
 
 fugu_load_required_pass_secret() {
@@ -614,8 +639,12 @@ EOF
 }
 
 fugu_check() {
-  local errors="" config_errors="" model
-  model="$(fugu_model_for_profile "$FUGU_PROFILE" || true)"
+  local errors="" config_errors="" model pass_error
+  if model="$(fugu_model_for_profile "$FUGU_PROFILE")"; then
+    :
+  else
+    model=""
+  fi
   fugu_collect_config_errors config_errors "$FUGU_PROFILE" "$model" "$FUGU_MODEL_CATALOG" \
     "$FUGU_BASE_URL" "$FUGU_WIRE_API" "$FUGU_REASONING_EFFORT" "$FUGU_SECRET_ENTRY" || true
   errors="$config_errors"
@@ -623,8 +652,10 @@ fugu_check() {
   if ! command -v codex >/dev/null 2>&1; then
     errors="${errors}codex binary not found in PATH; next action: install or expose the supported Codex CLI before retrying"$'\n'
   fi
-  if ! fugu_pass_secret_available "$FUGU_SECRET_ENTRY"; then
-    errors="${errors}pass entry '$FUGU_SECRET_ENTRY' is unavailable; next action: run 'pass insert sakana/api-key' or restore the operator password store before retrying"$'\n'
+  if [ "$FUGU_SECRET_ENTRY" = "sakana/api-key" ]; then
+    if ! pass_error="$(fugu_pass_secret_check_error "$FUGU_SECRET_ENTRY")"; then
+      errors="${errors}${pass_error}"$'\n'
+    fi
   fi
   if [ ! -x "$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh" ]; then
     errors="${errors}Codex hook adapter is not executable; next action: fix hook permissions in $COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"$'\n'
