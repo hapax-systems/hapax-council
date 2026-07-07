@@ -173,3 +173,16 @@ def test_fanout_config_pins_publication_frontmatter_policy_gates() -> None:
     claim_ceiling = policy["claim_ceiling"].lower()
     assert "already-approved public artifacts" in claim_ceiling
     assert "comparative claims" in claim_ceiling
+
+
+def test_fanout_validation_rejects_missing_loop_prevention_gate() -> None:
+    module = _load_module()
+    config = module.load_config(FANOUT_CONFIG_PATH)
+    gates = config["publication_frontmatter_policy"]["required_gates"]
+    gates.remove("fanout_loop_prevention_present")
+
+    errors = module.validate_config(config)
+
+    assert (
+        "publication_frontmatter_policy.required_gates missing: fanout_loop_prevention_present"
+    ) in errors
