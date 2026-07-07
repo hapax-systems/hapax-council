@@ -135,12 +135,17 @@ if "create_worktree" in code and "worktree" in code:
     print("worktree")
 elif "required_dirs" in code and "executables" in code:
     print("preflight")
+elif "token_handoff_cleanup" in code:
+    print("cleanup")
 elif "os.execvp" in code:
     print("exec")
 else:
     print("unknown")
 PY
 )"
+if [ "$kind" = "cleanup" ]; then
+  exec "{bash_bin}" -c "$remote_cmd"
+fi
 printf '%s\\n' "$kind" >> "{log_path}"
 if [ "$kind" = "worktree" ]; then
   :
