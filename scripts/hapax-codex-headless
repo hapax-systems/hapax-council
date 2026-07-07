@@ -681,11 +681,6 @@ if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
   fi
 fi
 
-if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
-  [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
-  (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
-fi
-
 if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
   WORKTREE_PAYLOAD="$(remote_worktree_payload_b64)"
   WORKTREE_COMMAND="$(remote_python_command "$WORKTREE_PAYLOAD" "$REMOTE_WORKTREE_PY")"
@@ -727,6 +722,15 @@ if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
     DISPATCH_HOST="$DISPATCH_HOST_REQUESTED"
     echo "hapax-codex-headless: dispatch -> $DISPATCH_HOST (codex exec on appendix)" >&2
   fi
+fi
+
+if [[ -z "$DISPATCH_HOST_REQUESTED" && -z "$DISPATCH_HOST" ]]; then
+  load_local_codex_access_token
+fi
+
+if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
+  [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
+  (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
 fi
 
 if [[ -n "$DISPATCH_HOST" ]]; then

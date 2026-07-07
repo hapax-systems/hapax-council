@@ -58,10 +58,10 @@ printf 'CODEX_ACCESS_TOKEN_PRESENT=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" >> {env
     return env, args_file, env_file
 
 
-def _write_codex_access_token(home: Path) -> Path:
+def _write_codex_access_token(home: Path, *, exp: int | None = None) -> Path:
     header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
     payload = (
-        base64.urlsafe_b64encode(json.dumps({"exp": int(time.time()) + 3600}).encode())
+        base64.urlsafe_b64encode(json.dumps({"exp": exp or int(time.time()) + 3600}).encode())
         .decode()
         .rstrip("=")
     )
@@ -234,6 +234,33 @@ def test_launcher_exports_published_codex_access_token_when_available(tmp_path: 
 
     assert result.returncode == 0, result.stderr
     assert "CODEX_ACCESS_TOKEN_PRESENT=yes" in env_file.read_text(encoding="utf-8")
+
+
+def test_launcher_skips_expired_published_codex_access_token(tmp_path: Path) -> None:
+    env, _args_file, env_file = _env_with_fake_codex(tmp_path)
+    _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) - 60)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-red",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "CODEX_ACCESS_TOKEN_PRESENT=\n" in env_file.read_text(encoding="utf-8")
 
 
 def test_launcher_blocks_wound_down_relay_without_force(tmp_path: Path) -> None:

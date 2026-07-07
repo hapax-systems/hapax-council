@@ -92,3 +92,75 @@ exit 0
     assert proof["fallback"] is True
     assert proof["fallback_reason"] == "dispatch_host_unready:appendix"
     assert proof["requested_host"] == "appendix"
+
+
+def test_codex_headless_validates_local_fallback_token_before_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / ".cache" / "hapax").mkdir(parents=True)
+    _write_codex_access_token(home)
+    token_path = home / ".cache" / "hapax" / "codex-oauth" / "access_token"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    ssh_log = tmp_path / "ssh.log"
+    claim_log = tmp_path / "claim.log"
+    _write_executable(
+        bin_dir / "ssh",
+        f"""remote_cmd="${{@: -1}}"
+kind="$(python3 - "$remote_cmd" <<'PY'
+import base64
+import shlex
+import sys
+
+parts = shlex.split(sys.argv[1])
+code = base64.b64decode(parts[-1]).decode()
+if "create_worktree" in code and "worktree" in code:
+    print("worktree")
+elif "required_dirs" in code and "executables" in code:
+    print("preflight")
+elif "os.execvp" in code:
+    print("exec")
+else:
+    print("unknown")
+PY
+)"
+printf '%s\\n' "$kind" >> "{ssh_log}"
+if [ "$kind" = "worktree" ]; then
+  rm -f "{token_path}"
+  exit 255
+fi
+exec bash -c "$remote_cmd"
+""",
+    )
+    _write_executable(
+        workdir / "scripts" / "cc-claim",
+        f"""printf '%s\\n' "$*" >> "{claim_log}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST_FALLBACK"] = "local"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
+    assert "remote worktree bootstrap failed" in result.stderr
+    assert "explicit local fallback" in result.stderr
+    assert "missing published Codex OAuth access token" in result.stderr
+    assert not claim_log.exists()

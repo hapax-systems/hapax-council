@@ -372,27 +372,21 @@ import sys
 from pathlib import Path
 
 from shared.codex_oauth_refresher import (
-    AccessToken,
-    decode_access_token_exp,
+    load_published_access_token,
     needs_refresh,
 )
 
 path = Path(sys.argv[1]).expanduser()
-try:
-    raw = path.read_text(encoding="utf-8").strip()
-except OSError:
+token = load_published_access_token(token_file=path)
+if token is None or needs_refresh(token):
     raise SystemExit(0)
-if not raw:
-    raise SystemExit(0)
-token = AccessToken(raw=raw, exp=decode_access_token_exp(raw))
-if needs_refresh(token):
-    raise SystemExit(0)
-print(raw)
+print(token.raw)
 PYEOF
   )" || token_rc=$?
   if [ "$token_rc" -eq 0 ] && [ -n "$token" ]; then
     export CODEX_ACCESS_TOKEN="$token"
   fi
+  return 0
 }
 
 remote_preflight_payload_b64() {
