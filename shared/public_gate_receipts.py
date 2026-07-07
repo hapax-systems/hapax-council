@@ -103,17 +103,18 @@ PUBLIC_GATE_EVIDENCE_REF_PREFIXES = (
     "acceptance-receipt:",
     "claim-review:",
     "cvc:",
-    "docs/",
     "dossier:",
-    "evidence:",
-    "github:",
-    "github-pr:",
-    "https://github.com/hapax-systems/",
     "relay-receipt:",
     "review:",
     "review-dossier:",
     "review-team:",
-    "task:",
+)
+PUBLIC_GATE_INDEPENDENT_ACCEPTOR_PREFIXES = ("review-team:",)
+PUBLIC_GATE_INDEPENDENT_ACCEPTOR_VALUES = frozenset(
+    {
+        "claim-verification-council",
+        "claim verification council",
+    }
 )
 PUBLIC_GATE_PASS_VALUES = frozenset(
     {
@@ -203,6 +204,7 @@ def public_gate_receipt_ref_exists(
             if _path_is_inside_root(path, root) and _receipt_file_maps_to_gate(
                 path,
                 expected_gate,
+                root,
                 bindings,
             ):
                 return True
@@ -262,13 +264,14 @@ def _path_is_inside_root(path: Path, root: Path) -> bool:
 def _receipt_file_maps_to_gate(
     path: Path,
     expected_gate: str,
+    root: Path,
     bindings: Mapping[str, object] | None = None,
 ) -> bool:
     data = _load_receipt_data(path)
     return (
         not _receipt_has_failed_outcome(data)
         and not _receipt_has_gate_contradiction(data, expected_gate)
-        and _gate_receipt_object_allows(data, expected_gate, bindings)
+        and _gate_receipt_object_allows(data, expected_gate, root, bindings)
     )
 
 
@@ -311,10 +314,11 @@ def _markdown_frontmatter(text: str) -> Any:
 def _gate_receipt_object_allows(
     data: Any,
     expected_gate: str,
+    root: Path,
     bindings: Mapping[str, object] | None = None,
 ) -> bool:
     return any(
-        _receipt_mapping_has_required_authority(candidate)
+        _receipt_mapping_has_required_authority(candidate, root)
         and _receipt_candidate_mapping_allows(candidate, expected_gate, bindings)
         for candidate in _iter_receipt_candidate_mappings(data)
     )
@@ -398,12 +402,12 @@ def _receipt_mapping_has_required_bindings(
     return all(_receipt_mapping_has_binding(data, key, value) for key, value in bindings.items())
 
 
-def _receipt_mapping_has_required_authority(data: Mapping[Any, Any]) -> bool:
+def _receipt_mapping_has_required_authority(data: Mapping[Any, Any], root: Path) -> bool:
     return (
         _mapping_has_authority_case(data)
         and _mapping_has_non_self_text(data, PUBLIC_GATE_ACCEPTOR_KEYS)
         and _mapping_has_nonblank_text(data, PUBLIC_GATE_REVIEW_PROFILE_KEYS)
-        and _mapping_has_evidence_ref(data)
+        and _mapping_has_evidence_ref(data, root)
     )
 
 
@@ -425,7 +429,7 @@ def _mapping_has_nonblank_text(data: Mapping[Any, Any], keys: frozenset[str]) ->
     return any(True for _ in _iter_direct_text_values(data, keys))
 
 
-def _mapping_has_evidence_ref(data: Mapping[Any, Any]) -> bool:
+def _mapping_has_evidence_ref(data: Mapping[Any, Any], root: Path) -> bool:
     for value in _iter_direct_text_values(data, PUBLIC_GATE_EVIDENCE_REF_KEYS):
         normalized = value.strip()
         lowered = normalized.casefold()
@@ -433,9 +437,105 @@ def _mapping_has_evidence_ref(data: Mapping[Any, Any]) -> bool:
             continue
         if lowered in PUBLIC_GATE_SELF_AUTHORITY_VALUES:
             continue
-        if lowered.startswith(PUBLIC_GATE_EVIDENCE_REF_PREFIXES):
+        if _evidence_ref_resolves(normalized, root):
             return True
     return False
+
+
+def _evidence_ref_resolves(ref: str, root: Path) -> bool:
+    lowered = ref.casefold()
+    for prefix in PUBLIC_GATE_EVIDENCE_REF_PREFIXES:
+        if not lowered.startswith(prefix):
+            continue
+        suffix = ref[len(prefix) :].strip()
+        if not suffix:
+            return False
+        suffix_path = Path(suffix)
+        if (
+            not PUBLIC_GATE_RECEIPT_SUFFIX_RE.fullmatch(suffix)
+            or suffix_path.is_absolute()
+            or ".." in suffix_path.parts
+        ):
+            return False
+        evidence_root = root.expanduser()
+        return any(
+            _path_is_inside_root(path, evidence_root) and _evidence_file_is_independent(path)
+            for path in (
+                evidence_root / candidate for candidate in _receipt_candidate_paths(suffix)
+            )
+        )
+    return False
+
+
+def _evidence_file_is_independent(path: Path) -> bool:
+    data = _load_receipt_data(path)
+    return _review_dossier_evidence_allows(data) or _acceptance_receipt_evidence_allows(data)
+
+
+def _review_dossier_evidence_allows(data: Any) -> bool:
+    if not isinstance(data, Mapping):
+        return False
+    verdict = _direct_text_value(data, "review_team_verdict").casefold()
+    if verdict != "quorum-accept":
+        return False
+    quorum_required = _direct_int_value(data, "quorum_required")
+    accept_count = _direct_int_value(data, "accept_count")
+    if quorum_required is None or accept_count is None or accept_count < quorum_required:
+        return False
+    reviewers = data.get("reviewers")
+    if not isinstance(reviewers, list):
+        return False
+    accepted_families = {
+        str(reviewer.get("family") or "").strip().casefold()
+        for reviewer in reviewers
+        if isinstance(reviewer, Mapping)
+        and str(reviewer.get("verdict") or "").strip().casefold()
+        in {"accept", "accept-with-findings"}
+    }
+    return len(accepted_families - PUBLIC_GATE_SELF_AUTHORITY_VALUES) >= 1
+
+
+def _acceptance_receipt_evidence_allows(data: Any) -> bool:
+    if not isinstance(data, Mapping):
+        return False
+    if _outcome_value_allows(data.get("verdict")) is not True:
+        return False
+    if _direct_text_value(data, "timestamp") == "" or _direct_text_value(data, "artifact") == "":
+        return False
+    review_team_verdict = _direct_text_value(data, "review_team_verdict")
+    if review_team_verdict and review_team_verdict.casefold() != "quorum-accept":
+        return False
+    return _mapping_has_independent_acceptor(data)
+
+
+def _mapping_has_independent_acceptor(data: Mapping[Any, Any]) -> bool:
+    for value in _iter_direct_text_values(data, PUBLIC_GATE_ACCEPTOR_KEYS):
+        normalized = value.strip().casefold()
+        if normalized in PUBLIC_GATE_INDEPENDENT_ACCEPTOR_VALUES:
+            return True
+        if any(
+            normalized.startswith(prefix) for prefix in PUBLIC_GATE_INDEPENDENT_ACCEPTOR_PREFIXES
+        ):
+            return True
+    return False
+
+
+def _direct_text_value(data: Mapping[Any, Any], key: str) -> str:
+    for raw_key, value in data.items():
+        if str(raw_key).strip().casefold() == key and isinstance(value, str):
+            return value.strip()
+    return ""
+
+
+def _direct_int_value(data: Mapping[Any, Any], key: str) -> int | None:
+    for raw_key, value in data.items():
+        if str(raw_key).strip().casefold() != key:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 def _iter_direct_text_values(data: Mapping[Any, Any], keys: frozenset[str]) -> Iterable[str]:

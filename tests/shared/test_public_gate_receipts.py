@@ -16,9 +16,25 @@ AUTHORITY_BLOCK = (
 
 
 def _write(root: Path, name: str, text: str) -> None:
+    if "evidence_ref: review-dossier:public-gate-test" in text:
+        _write_review_evidence(root)
     target = root / name
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
+
+
+def _write_review_evidence(root: Path) -> None:
+    (root / "public-gate-test.yaml").write_text(
+        "dossier_schema: 1\n"
+        "review_team_verdict: quorum-accept\n"
+        "quorum_required: 1\n"
+        "accept_count: 1\n"
+        "reviewers:\n"
+        "  - id: cvc-1\n"
+        "    family: cvc\n"
+        "    verdict: accept\n",
+        encoding="utf-8",
+    )
 
 
 def _receipt_text(*, gate: str = GATE, status: str = "passed", extra: str = "") -> str:
@@ -37,6 +53,16 @@ def test_accepts_passed_yaml_receipt_with_extension_inferred(tmp_path: Path) -> 
 
 def test_rejects_self_minted_receipt_without_delegated_authority(tmp_path: Path) -> None:
     _write(tmp_path, "receipt-1.yaml", f"gate_id: {GATE}\nstatus: passed\n")
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_unresolved_authority_evidence_ref(tmp_path: Path) -> None:
+    (tmp_path / "receipt-1.yaml").write_text(_receipt_text(), encoding="utf-8")
 
     assert not public_gate_receipt_value_present(
         "public-gate:receipt-1",

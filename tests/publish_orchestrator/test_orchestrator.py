@@ -76,6 +76,7 @@ def _write_public_gate_receipts(
     )
     receipt_root = state_root / "public-gate-receipts"
     receipt_root.mkdir(parents=True, exist_ok=True)
+    _write_public_gate_review_evidence(receipt_root)
     surfaces_yaml = "\n".join(f"  - {surface}" for surface in sorted(surfaces))
     for gate in gates:
         (receipt_root / f"{gate}.yaml").write_text(
@@ -89,6 +90,20 @@ def _write_public_gate_receipts(
             encoding="utf-8",
         )
     return {gate: f"public-gate:{gate}.yaml" for gate in gates}
+
+
+def _write_public_gate_review_evidence(receipt_root: Path) -> None:
+    (receipt_root / "public-gate-test.yaml").write_text(
+        "dossier_schema: 1\n"
+        "review_team_verdict: quorum-accept\n"
+        "quorum_required: 1\n"
+        "accept_count: 1\n"
+        "reviewers:\n"
+        "  - id: cvc-1\n"
+        "    family: cvc\n"
+        "    verdict: accept\n",
+        encoding="utf-8",
+    )
 
 
 def _write_publication_policy(

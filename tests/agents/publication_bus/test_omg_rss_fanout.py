@@ -31,8 +31,23 @@ def durable_public_gate_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     global _RECEIPT_ROOT
     root = tmp_path / "public-gate-receipts"
     root.mkdir()
+    _write_public_gate_review_evidence(root)
     _RECEIPT_ROOT = root
     monkeypatch.setattr(omg_rss_fanout, "PUBLIC_GATE_RECEIPT_ROOTS", (root,))
+
+
+def _write_public_gate_review_evidence(root: Path) -> None:
+    (root / "public-gate-test.yaml").write_text(
+        "dossier_schema: 1\n"
+        "review_team_verdict: quorum-accept\n"
+        "quorum_required: 1\n"
+        "accept_count: 1\n"
+        "reviewers:\n"
+        "  - id: cvc-1\n"
+        "    family: cvc\n"
+        "    verdict: accept\n",
+        encoding="utf-8",
+    )
 
 
 def _make_client(enabled: bool = True) -> MagicMock:
