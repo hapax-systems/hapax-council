@@ -115,7 +115,16 @@ predicate and P0 intake ledger after the launcher tests. Platform receipts and
 lane health are supporting evidence; they do not replace the predicate that
 emitted the alert (`offered_tasks > 0`, `dispatches_this_tick == 0`,
 `refusal_ledger.starvation_active == true`, and
-`refusal_ledger.starvation_escalated == true`):
+`refusal_ledger.starvation_escalated == true`).
+
+Pre-merge source review can prove the source predicate, launcher contract, and
+regression coverage, but it cannot honestly claim that the live incident is
+closed while `hapax-coordinator.service` is still running the `origin/main`
+source-activation release. If the live predicate is still active only because
+the PR head is not deployed, record the state as
+`post_merge_runtime_activation_required`, keep the incident open, and do not
+mark the P0 exit predicate cleared until the merged or otherwise governed
+runtime activation has been restarted and rechecked.
 
 Run this on the coordinator host. If the coordinator state path is non-default,
 set `HAPAX_COORDINATOR_STATE_PATH` before running the command.
