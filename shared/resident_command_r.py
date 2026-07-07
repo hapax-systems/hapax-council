@@ -9,6 +9,7 @@ import sys
 import time
 import urllib.request
 from collections.abc import Sequence
+from contextlib import nullcontext
 
 RESIDENT_COMMAND_R_MODEL = "command-r-08-2024-exl3-5.0bpw"
 DEFAULT_TABBY_CHAT_URL = "http://localhost:5000/v1/chat/completions"
@@ -71,6 +72,21 @@ def clean_local_model_text(text: str) -> str:
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
+def _resident_call_span():
+    try:
+        from agents.telemetry.llm_call_span import llm_call_span
+    except Exception:  # noqa: BLE001 - telemetry must not make residency fail closed
+        return nullcontext()
+    return llm_call_span(model=RESIDENT_COMMAND_R_MODEL, route="resident-command-r")
+
+
+def _usage_int(usage: dict, key: str) -> int:
+    try:
+        return max(0, int(usage.get(key) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def call_resident_command_r(
     prompt: str,
     *,
@@ -96,8 +112,15 @@ def call_resident_command_r(
         }
     ).encode()
     req = urllib.request.Request(chat_url, body, {"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        data = json.loads(resp.read())
+    with _resident_call_span() as span:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            data = json.loads(resp.read())
+        usage = data.get("usage")
+        if span is not None and isinstance(usage, dict):
+            span.set_tokens(
+                prompt_tokens=_usage_int(usage, "prompt_tokens"),
+                completion_tokens=_usage_int(usage, "completion_tokens"),
+            )
     content = data["choices"][0]["message"]["content"] or ""
     content = clean_local_model_text(content)
     if not content:

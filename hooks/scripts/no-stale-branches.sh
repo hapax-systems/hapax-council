@@ -194,32 +194,41 @@ fi
 
 # Session worktree limit. Reflects the full multi-interface team that
 # coexists today: Claude Code peers (greek-named) + Codex native lanes
-# (cx-*) + Mistral Vibe (vbe-*) + Antigravity/agy (antigrav).
-# Floor sums to ~16 steady-state slots:
+# (cx-*) + Mistral Vibe (vbe-*). Retired Antigrav/agy surfaces do not count.
+# Floor sums to ~14 steady-state slots:
 #   1  canonical (alpha, must remain on main; vite reads it)
 #   4  Claude peers (beta, gamma, zeta, epsilon)
 #   7  Codex lanes (cx-amber/blue/cyan/gold/green/red/violet)
 #   N  Codex sub-lane variants (e.g. cx-gold-cbip — same lane, two branches)
 #   2  Mistral Vibe (vbe-1, vbe-2)
-#   1  Antigrav (IDE-bound, JR+ tier)
 # Plus operational slack for transient debug/audit worktrees + alpha-side
-# fix-PR staging. Cap of 20 leaves ~4 spontaneous slots above the floor.
+# fix-PR staging. Cap of 20 leaves ~6 spontaneous slots above the floor.
 # Re-evaluate when team capacity changes again.
 #
-# Infrastructure worktrees under ~/.cache/ (e.g. rebuild-scratch at
-# $HOME/.cache/hapax/rebuild/worktree, managed by rebuild-logos.sh via
-# flock from FU-6 / PR #703), .claude/worktrees/, and .codex/worktrees/
-# scratch worktrees are NOT counted — they are not operator-visible session
-# worktrees and exist independently of session work.
+# Infrastructure worktrees are NOT counted — they are not operator-visible session
+# worktrees and exist independently of session work. This covers both the legacy
+# ~/.cache/hapax/ layout AND the relocated dev substrate on the data mount:
+#   /.cache/             — legacy rebuild-scratch + agent scratch ($HOME/.cache/hapax/…)
+#   /cache/hapax/        — relocated rebuild-scratch + agent scratch (/data2/data/cache/hapax/…)
+#   /.claude|.codex/worktrees/ — Claude/Codex scratch worktrees
+#   /source-activation/  — deploy tree + pinned release snapshots
+#   /llm-data/runtime/   — runtime source trees (e.g. health-monitor-source on /store)
+# Until 2026-06-27 only the dotted ~/.cache form matched, so the 7 production/infra
+# worktrees on /data2 + /store counted as sessions and forced a false over-cap.
+INFRA_WORKTREE_RE='/(\.cache|cache/hapax|\.claude/worktrees|\.codex/worktrees|source-activation|llm-data/runtime)/'
 if echo "$CMD" | grep -qE '^\s*git\s+worktree\s+add\s'; then
     session_wt_cap=20
-    session_wt_count=$(git worktree list 2>/dev/null | grep -Evc '/(\.cache|\.claude/worktrees|\.codex/worktrees)/' || true)
+    # Anchor on the PATH (first field) only — a branch name that happens to
+    # contain an infra-like substring (e.g. a `source-activation` feature branch)
+    # must not drop the count and silently weaken the enforced cap. The audit
+    # tool already classifies on the path field; match it here.
+    session_wt_count=$(git worktree list 2>/dev/null | awk '{print $1}' | grep -Evc "$INFRA_WORKTREE_RE" || true)
     if [ "$session_wt_count" -ge "$session_wt_cap" ]; then
         _nsb_escape_or_block
         echo "BLOCKED: Max ${session_wt_cap} visible session worktrees. Clean up before adding another." >&2
-        echo "  Current visible session worktrees (infrastructure under ~/.cache/, .claude/worktrees/, and .codex/worktrees/ excluded):" >&2
-        git worktree list 2>/dev/null | grep -Ev '/(\.cache|\.claude/worktrees|\.codex/worktrees)/' | sed 's/^/    /' >&2
-        git worktree list 2>/dev/null | grep -E '/(\.cache|\.claude/worktrees|\.codex/worktrees)/' | sed 's/^/    [infra, not counted] /' >&2 || true
+        echo "  Current visible session worktrees (infrastructure under ~/.cache/, cache/hapax/, .claude|.codex/worktrees/, source-activation/, llm-data/runtime/ excluded):" >&2
+        git worktree list 2>/dev/null | grep -Ev "$INFRA_WORKTREE_RE" | sed 's/^/    /' >&2
+        git worktree list 2>/dev/null | grep -E "$INFRA_WORKTREE_RE" | sed 's/^/    [infra, not counted] /' >&2 || true
         exit 2
     fi
 fi

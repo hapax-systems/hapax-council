@@ -10,11 +10,29 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-worktree-gc.sh"
 SERVICE = REPO_ROOT / "systemd" / "units" / "hapax-worktree-gc.service"
 TIMER = REPO_ROOT / "systemd" / "units" / "hapax-worktree-gc.timer"
 PRESET = REPO_ROOT / "systemd" / "user-preset.d" / "hapax.preset"
+
+
+@pytest.fixture(autouse=True)
+def _force_legacy_inference_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force gc.sh's LEGACY pure-inference sweep (the explicit opt-out) for every case here.
+
+    In production the registry-governed pre-pass is AUTHORITATIVE over the age+clean+merged
+    inference -- it registers every worktree, protects active/registered ones, and reaps
+    abandoned ones by explicit lifecycle status, so with it enabled (the default) it would
+    shadow the inference these cases assert on (a fresh test worktree classifies ``active`` and
+    is protected from the legacy reap). That registry+legacy interaction has its own coverage in
+    tests/shared/test_worktree_registry.py (the real-gc.sh integration tests). Setting this in
+    os.environ means every ``env = os.environ.copy()`` below inherits it, regardless of how each
+    case invokes gc.sh.
+    """
+    monkeypatch.setenv("HAPAX_WORKTREE_GC_REGISTRY", "0")
 
 
 def _git(repo: Path, *args: str) -> str:

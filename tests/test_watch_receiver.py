@@ -179,14 +179,26 @@ class TestSensorIngestion:
         assert (state_dir / "hrv.json").exists()
         assert (state_dir / "skin_temp.json").exists()
 
-    def test_logos_api_mounts_watch_receiver_routes(self):
+    def test_logos_api_mounts_watch_receiver_routes(self, state_dir):
         """Logos API exposes the companion POST path on port 8051."""
+        from fastapi.testclient import TestClient
+
+        from agents import watch_receiver
         from logos.api.app import app as logos_app
 
-        paths = {getattr(route, "path", "") for route in logos_app.routes}
+        assert state_dir == watch_receiver.WATCH_STATE_DIR
+        logos_client = TestClient(logos_app)
 
-        assert "/watch/sensors" in paths
-        assert "/watch/status" in paths
+        status_resp = logos_client.get("/watch/status")
+        assert status_resp.status_code == 200
+
+        sensor_resp = logos_client.post(
+            "/watch/sensors",
+            json={"ts": int(time.time() * 1000), "device_id": "pw4", "readings": []},
+        )
+        assert sensor_resp.status_code == 200
+        assert sensor_resp.json()["status"] == "ok"
+        assert (state_dir / "connection.json").exists()
 
 
 class TestStatusEndpoint:

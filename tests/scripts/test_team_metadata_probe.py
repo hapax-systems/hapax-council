@@ -21,6 +21,8 @@ def _load_probe():
     return mod
 
 
-def test_antigrav_default_model_is_agy_gemini_family() -> None:
+def test_antigrav_is_not_registered_as_live_probe_capacity() -> None:
     mod = _load_probe()
-    assert mod.MODEL_DEFAULTS["antigrav"] == ("google-antigravity-cli-agy", 200_000)
+    assert "antigravity" not in mod.KNOWN_LANES
+    assert "antigrav" not in mod.MODEL_DEFAULTS
+    assert "antigrav" not in mod.TOOL_DEFAULTS

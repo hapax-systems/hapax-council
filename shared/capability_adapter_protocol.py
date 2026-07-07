@@ -1,8 +1,8 @@
 """CapabilityAdapter protocol + type hierarchy (thin, final-delegating).
 
 The adapter layer is a *thin* facade over the existing pure dispatch functions. It
-exists to give every platform (claude/codex worker lanes, the api budget authority, the
-glmcp review seat, antigrav) ONE uniform surface —
+exists to give admitted platforms (claude/codex worker lanes, the api budget authority, the
+glmcp review seat) ONE uniform surface —
 ``describe / admit / observe / collect_receipts`` (FINAL, non-overridable delegations) plus
 ``preflight / launch / send / classify_failure`` (the per-platform overridable surface) —
 WITHOUT widening any authority or duplicating policy.
@@ -25,7 +25,8 @@ Capability differences are expressed at the TYPE level, not via runtime flags: o
 :class:`WorkerAdapter` has ``launch``; only :class:`SendCapableAdapter` (a mixin) has
 ``send``. :class:`BudgetAuthorityAdapter` (api) and :class:`ReviewSeatAdapter` (glmcp) have
 neither, so ``hasattr(adapter, "launch")`` is the honest test (genuine ``AttributeError``,
-not a ``False`` flag).
+not a ``False`` flag). Retired Antigrav GUI launcher exit codes have only a historical
+receipt classifier; live ``agy`` is represented by :class:`AgyAdapter`.
 
 NB: the module name is ``capability_adapter_protocol`` because ``capability_adapters`` is
 already taken by the unrelated ``PerceptionBackendAdapter``.
@@ -70,9 +71,10 @@ __all__ = [
     "SendCapableAdapter",
     "BudgetAuthorityAdapter",
     "ReviewSeatAdapter",
+    "AgyAdapter",
     "ClaudeAdapter",
     "CodexAdapter",
-    "AntigravAdapter",
+    "VibeAdapter",
 ]
 
 
@@ -285,12 +287,11 @@ class WorkerAdapter(CapabilityAdapter):
 class SendCapableAdapter:
     """Mixin granting the relay ``send`` capability. Combine as
     ``class FooAdapter(WorkerAdapter, SendCapableAdapter)``. Platforms without send (api, the glmcp
-    review seat, antigrav) do not mix this in, so ``send`` is absent from their MRO.
+    review seat) do not mix this in, so ``send`` is absent from their MRO.
 
     Not a :class:`CapabilityAdapter` subclass on its own (so defining it does not trip the FINAL
     guard). The protocol layer marks the capability + gates authority; the actual relay is wired
-    per-platform in the glue slices (antigrav-glue / vibe-glue; the live relay is
-    ``scripts/hapax-claude-send``).
+    per-platform in glue slices (for example ``scripts/hapax-claude-send`` for Claude lanes).
     """
 
     def send(self, decision: RouteDecision, message: str) -> str:
@@ -329,6 +330,30 @@ class ReviewSeatAdapter(CapabilityAdapter):
         code = failure_code_for_zai(error_class) if error_class else FailureCode.UNKNOWN
         return FailureReceipt(
             code=code,
+            raw_signal=text,
+            platform=self.PLATFORM.value,
+            route_id=route_id,
+            error_class=error_class,
+        )
+
+
+class AgyAdapter(WorkerAdapter):
+    """Agy worker lanes: pure reuse + the shared CLI failure table."""
+
+    PLATFORM: ClassVar[Platform] = Platform.AGY
+
+    def classify_failure(
+        self,
+        text: str,
+        *,
+        process_failed: bool = False,
+        model_stdout: str = "",
+        route_id: str | None = None,
+        error_class: str | None = None,
+        exit_code: int | None = None,
+    ) -> FailureReceipt:
+        return FailureReceipt(
+            code=_classify_cli_failure(text, model_stdout),
             raw_signal=text,
             platform=self.PLATFORM.value,
             route_id=route_id,
@@ -386,28 +411,46 @@ class CodexAdapter(WorkerAdapter, SendCapableAdapter):
         )
 
 
-# Antigrav LAUNCHER exit codes (scripts/hapax-antigrav) -> FailureCode. Only the two codes with a
-# genuine availability/claim meaning are mapped; usage/env/setup errors (2/3/5/6/9) stay UNKNOWN
-# (no auto-degrade). Verbatim from the launcher: exit 4 = agy binary not found (route gone),
-# exit 8 = cc-claim failed (claim conflict — the reserved CLAIM_CONFLICT code's first producer).
+class VibeAdapter(WorkerAdapter, SendCapableAdapter):
+    """Vibe worker lanes: pure reuse + shared CLI failure table + wrapper-backed send."""
+
+    PLATFORM: ClassVar[Platform] = Platform.VIBE
+
+    def classify_failure(
+        self,
+        text: str,
+        *,
+        process_failed: bool = False,
+        model_stdout: str = "",
+        route_id: str | None = None,
+        error_class: str | None = None,
+        exit_code: int | None = None,
+    ) -> FailureReceipt:
+        return FailureReceipt(
+            code=_classify_cli_failure(text, model_stdout),
+            raw_signal=text,
+            platform=self.PLATFORM.value,
+            route_id=route_id,
+            error_class=error_class,
+        )
+
+
+# Historical Antigrav GUI launcher exit codes (scripts/hapax-antigrav) -> FailureCode. Only the
+# two codes with a genuine availability/claim meaning are mapped; usage/env/setup errors
+# (2/3/5/6/9) stay UNKNOWN (no auto-degrade). Verbatim from the retired launcher: exit 4 = agy
+# binary not found (route gone), exit 8 = cc-claim failed (claim conflict).
 _ANTIGRAV_EXIT_CODE_TO_FAILURE: dict[int, FailureCode] = {
     4: FailureCode.ROUTE_UNAVAILABLE,
     8: FailureCode.CLAIM_CONFLICT,
 }
 
 
-class AntigravAdapter(WorkerAdapter):
-    """Antigrav worker lane: a WorkerAdapter that does NOT mix in :class:`SendCapableAdapter`, so it
-    has no ``send`` (criterion: "antigrav adapter has no send"). Interactive-only (the ``agy`` CLI).
+class RetiredAntigravFailureClassifier:
+    """Historical receipt classifier for retired Antigrav GUI launcher signals.
 
-    ``classify_failure`` maps the launcher's exit codes to a FailureCode (UNKNOWN default, lossless).
-    Neither mapped code (ROUTE_UNAVAILABLE/CLAIM_CONFLICT) is in the worker-availability degrade
-    allowlist, so an antigrav failure yields a receipt but never degrades family availability.
-
-    AUTHORITY EXCLUSION (#3802): the antigrav PreToolUse gate (wired into agy's hooks.json) covers
-    ONLY agy's native mutation tools. Direct IDE Edit/Write is outside agy's hook mechanism and thus
-    outside this adapter's gated authority — closing it would require Claude Code settings.json
-    wiring, not agy hooks.json. A scoped, documented exclusion, not a silent gap.
+    This class is intentionally NOT a :class:`CapabilityAdapter`, NOT a :class:`WorkerAdapter`,
+    and not exported through ``__all__``. It cannot describe, admit, launch, send, observe, or
+    collect receipts; it only preserves a lossless mapping for old terminal evidence and tests.
     """
 
     PLATFORM: ClassVar[Platform] = Platform.ANTIGRAV

@@ -23,7 +23,7 @@ usage: hapax-claude-send --session ROLE [--transport auto|foot|tmux]
                           [--ack-timeout SECONDS] [--json] [--stdin]
                           [--] MESSAGE...
 
-ROLE is the greek lane name: alpha, beta, delta, epsilon. Override the
+ROLE is the greek lane name: alpha, beta, gamma, delta, epsilon, zeta, eta, theta. Override the
 allowlist via HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST="alpha beta gamma ...".
 
 Sends MESSAGE to a visible Hapax Claude Code session. The default
@@ -69,7 +69,12 @@ RTE_BYPASS=0
 MESSAGE_PARTS=()
 TMP_FILES=()
 
-ROLE_ALLOWLIST="${HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST:-alpha beta gamma delta epsilon zeta eta theta antigrav}"
+ROLE_ALLOWLIST="${HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST:-alpha beta gamma delta epsilon zeta eta theta}"
+
+is_retired_send_target_role() {
+  local role="${1,,}"
+  [[ "$role" == "agy" || "$role" == agy-* || "$role" == "antigrav" || "$role" == antigrav-* || "$role" == "antigravity" || "$role" == antigravity-* || "$role" == "gemini-cli" || "$role" == gemini-cli-* ]]
+}
 
 # Default busy regex covers Claude Code's animated activity verbs and
 # the "Messages to be submitted after next tool call" queue indicator.
@@ -180,12 +185,25 @@ if [ -z "$SESSION" ]; then
   exit 2
 fi
 
-# Validate ROLE: the space-separated allowlist (fixed greek slots + antigrav,
-# env-tunable) PLUS the cc-<name> pattern — relay-coordinated Claude lanes are
-# first-class governed lanes (hooks/scripts/agent-role.sh assert-identity).
+if is_retired_send_target_role "$SESSION"; then
+  echo "hapax-claude-send: invalid role '$SESSION' (retired/excised send targets cannot be allowlisted; mint measured agy supply-leaf intake with route/resource/governance receipts)" >&2
+  exit 2
+fi
+
+# Validate ROLE: the space-separated allowlist (fixed greek slots,
+# env-tunable) PLUS the cc-<name> pattern (relay-coordinated Claude lanes) PLUS
+# the hapax-dev interactive pool (dev, dev2..devN) — all first-class governed
+# lanes (hooks/scripts/agent-role.sh assert-identity). The dev-pool pattern keeps
+# this in sync BY SHAPE with hapax-dev's CLAUDE_POOL (HAPAX_DEV_CLAUDE_POOL =
+# "dev dev2 dev3 dev4 dev5"), so it does not re-drift as the pool grows; the
+# greek slots are the headless reform fleet, the dev pool is the interactive
+# operator-session namespace. (A unified role SSOT is the pending overhaul.)
+# `dev` or `dev` + 1-2 DIGITS ONLY — NOT `dev[0-9]*` (whose trailing `*` would
+# accept junk like `dev2foo`); the pattern must match the pool, not a superset.
 ROLE_OK=0
 case "$SESSION" in
   cc-[a-z]*) ROLE_OK=1 ;;
+  dev|dev[0-9]|dev[0-9][0-9]) ROLE_OK=1 ;;
 esac
 if [ "$ROLE_OK" -ne 1 ]; then
   for r in $ROLE_ALLOWLIST; do
@@ -196,7 +214,7 @@ if [ "$ROLE_OK" -ne 1 ]; then
   done
 fi
 if [ "$ROLE_OK" -ne 1 ]; then
-  echo "hapax-claude-send: invalid role '$SESSION' (allowed: $ROLE_ALLOWLIST, or cc-<name>)" >&2
+  echo "hapax-claude-send: invalid role '$SESSION' (allowed: $ROLE_ALLOWLIST, cc-<name>, or dev/dev<N>)" >&2
   echo "  override via HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST=\"alpha beta gamma ...\"" >&2
   exit 2
 fi

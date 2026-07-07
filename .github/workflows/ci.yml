@@ -61,6 +61,7 @@ jobs:
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
       changed_count: ${{ steps.diff.outputs.changed_count }}
+      python_prod_dependency_witness: ${{ steps.diff.outputs.python_prod_dependency_witness }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
@@ -105,6 +106,7 @@ jobs:
           changed_count="$(wc -l < "$changed_files" | tr -d ' ')"
 
           docs_only=true
+          python_prod_dependency_witness=false
           if [ "$changed_count" -eq 0 ]; then
             docs_only=false
           fi
@@ -150,12 +152,20 @@ jobs:
             [ -z "$path" ] && continue
             if ! docs_only_path "$path"; then
               docs_only=false
+            fi
+            case "$path" in
+              .github/workflows/ci.yml|pyproject.toml|uv.lock|tests/test_ci_required_coverage_claims.py|tests/test_python_prod_dependency_constraints.py)
+                python_prod_dependency_witness=true
+                ;;
+            esac
+            if [ "$docs_only" = false ] && [ "$python_prod_dependency_witness" = true ]; then
               break
             fi
           done < "$changed_files"
 
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
           echo "changed_count=$changed_count" >> "$GITHUB_OUTPUT"
+          echo "python_prod_dependency_witness=$python_prod_dependency_witness" >> "$GITHUB_OUTPUT"
           if [ "$docs_only" = true ]; then
             echo "Docs-only change set detected; required jobs will report sentinel success."
           else
@@ -383,6 +393,31 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         run: uv run python scripts/gate-manifest-check.py --skip-claude-settings
 
+  capability-surface-delta:
+    needs: [docs_only_filter, post_merge_duplicate_filter]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post-merge duplicate required-check sentinel
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
+        run: echo "Merge queue already validated this SHA; capability-surface-delta reports success."
+      - name: Docs-only required-check sentinel
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only == 'true'
+        run: echo "Docs-only change set; capability-surface-delta reports success without running the inventory gate."
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+        with:
+          enable-cache: true
+          restore-cache: true
+          save-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Run capability surface delta gate
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+        run: uv run --no-project --with pydantic==2.13.4 --with pyyaml==6.0.3 python scripts/hapax-capability-surface-delta-gate
+
 
   typecheck:
     needs: [docs_only_filter, post_merge_duplicate_filter]
@@ -410,7 +445,7 @@ jobs:
       # the previous analysis-cache restore did not materially shorten this
       # check.
       - if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
-        run: uv run --no-project --with pyrefly==0.62.0 pyrefly check
+        run: uv run --no-project --with pyrefly==0.64.1 pyrefly check
 
   test-full-shard:
     needs: [docs_only_filter, post_merge_duplicate_filter]
@@ -440,6 +475,8 @@ jobs:
             libcairo2-dev libgirepository-2.0-dev gobject-introspection \
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
             gir1.2-pango-1.0 \
+            ffmpeg \
+            portaudio19-dev \
             socat
       - name: Install Px437 IBM VGA 8x16 font (HARDM aesthetic dependency, audit 4.7 PR #1109)
         run: |
@@ -457,6 +494,19 @@ jobs:
             || (echo "font install failed (fc-list)" >&2; exit 1)
       - name: Sync uv ci extras for full pytest
         run: uv sync --extra ci --frozen
+      - name: Run python-prod optional dependency witness
+        if: matrix.shard == 1 && needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'
+        # Null-route networked clients so import smokes cannot reach live services from CI.
+        env:
+          LITELLM_BASE_URL: "http://0.0.0.0:1"
+          QDRANT_URL: "http://0.0.0.0:1"
+          OLLAMA_HOST: "http://0.0.0.0:1"
+          OTEL_SDK_DISABLED: "true"
+          LANGFUSE_HOST: "http://0.0.0.0:1"
+        run: |
+          uv run --frozen \
+            --extra ci --extra audio --extra tui --extra studio --extra rerank \
+            pytest tests/test_python_prod_dependency_constraints.py -q -rs
       - name: Install Playwright Chromium
         run: uv run --no-sync playwright install chromium
       - name: Verify Pango can resolve Px437 IBM VGA 8x16
@@ -754,6 +804,29 @@ jobs:
             tests/scripts/test_screwm_aggregate_port_owner_gate.py \
             tests/systemd/test_source_activation_rooted_python_units.py \
             -q --tb=line
+      - name: Install python-prod optional witness system deps
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'pr-admission' && needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libcairo2-dev libgirepository-2.0-dev gobject-introspection \
+            gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
+            gir1.2-pango-1.0 \
+            ffmpeg \
+            portaudio19-dev
+      - name: Run python-prod optional dependency witness
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'pr-admission' && needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'
+        # Null-route networked clients so import smokes cannot reach live services from CI.
+        env:
+          LITELLM_BASE_URL: "http://0.0.0.0:1"
+          QDRANT_URL: "http://0.0.0.0:1"
+          OLLAMA_HOST: "http://0.0.0.0:1"
+          OTEL_SDK_DISABLED: "true"
+          LANGFUSE_HOST: "http://0.0.0.0:1"
+        run: |
+          uv run --frozen \
+            --extra ci --extra audio --extra tui --extra studio --extra rerank \
+            pytest tests/test_python_prod_dependency_constraints.py -q -rs
       - name: Install system deps (cairo, gobject, gst, pango, hook transports)
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         run: |
@@ -762,6 +835,8 @@ jobs:
             libcairo2-dev libgirepository-2.0-dev gobject-introspection \
             gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
             gir1.2-pango-1.0 \
+            ffmpeg \
+            portaudio19-dev \
             socat
       - name: Install Px437 IBM VGA 8x16 font (HARDM aesthetic dependency, audit 4.7 PR #1109)
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
@@ -781,6 +856,19 @@ jobs:
       - name: Sync uv ci extras for full pytest
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         run: uv sync --extra ci --frozen
+      - name: Run python-prod optional dependency witness
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full' && needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'
+        # Null-route networked clients so import smokes cannot reach live services from CI.
+        env:
+          LITELLM_BASE_URL: "http://0.0.0.0:1"
+          QDRANT_URL: "http://0.0.0.0:1"
+          OLLAMA_HOST: "http://0.0.0.0:1"
+          OTEL_SDK_DISABLED: "true"
+          LANGFUSE_HOST: "http://0.0.0.0:1"
+        run: |
+          uv run --frozen \
+            --extra ci --extra audio --extra tui --extra studio --extra rerank \
+            pytest tests/test_python_prod_dependency_constraints.py -q -rs
       - name: Install Playwright Chromium
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         run: uv run --no-sync playwright install chromium
@@ -1279,13 +1367,12 @@ jobs:
 
   all-green:
     # Single aggregate required context (task reform-native-merge-queue). Collapses
-    # the five literal required checks (lint/test/typecheck/web-build/vscode-build)
-    # into one job so the merge queue can't be permanently stalled by a
-    # required-context-name mismatch. `if: always()` + treating `skipped` as OK
+    # the literal required checks into one job so the merge queue can't be
+    # permanently stalled by a required-context-name mismatch. `if: always()` + treating `skipped` as OK
     # preserves the fast/slow split: `test-full-shard` is merge_group-only, so it
     # is `skipped` on pull_request events and all-green still passes there.
     name: all-green
-    needs: [lint, typecheck, test, test-full-shard, web-build, vscode-build]
+    needs: [lint, capability-surface-delta, typecheck, test, test-full-shard, web-build, vscode-build]
     if: always()
     runs-on: ubuntu-latest
     steps:

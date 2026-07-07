@@ -368,11 +368,24 @@ def _route_metadata_blockers(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(f"route_metadata:{reason}" for reason in reasons or ("invalid",))
 
 
+def _route_metadata_validation_blockers(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:
+    """Governance-only route-metadata blockers: validation_errors only (e.g. a
+    frontier_review_required task marked authoritative), NOT a merely absent
+    envelope. Dependency-closure callers (cc-claim, cc-cascade-unblock) use this
+    to block on a broken/governance-invalid dependency task while allowing an
+    external-repo dependency that simply carries no dispatch envelope."""
+    from shared.route_metadata_schema import assess_route_metadata
+
+    assessment = assess_route_metadata(frontmatter)
+    return tuple(f"route_metadata:{reason}" for reason in assessment.validation_errors)
+
+
 def task_closure_validity(
     text: str,
     *,
     pr_state_lookup: PrStateLookup | None = None,
     require_route_metadata: bool = False,
+    require_route_metadata_validity: bool = False,
 ) -> TaskClosureValidity:
     """Validate that a cc-task closure may satisfy downstream work.
 
@@ -408,6 +421,8 @@ def task_closure_validity(
 
     if require_route_metadata:
         blockers.extend(_route_metadata_blockers(frontmatter))
+    if require_route_metadata_validity:
+        blockers.extend(_route_metadata_validation_blockers(frontmatter))
 
     return TaskClosureValidity(
         valid=not blockers,
@@ -424,8 +439,8 @@ def task_closure_validity(
 # FM-20: "auto-queue is the merge path (runs as system, unclaimed)"), so it can
 # authorize release on behalf of a dead lane — but ONLY for tasks whose release
 # was already authorized-in-principle by their ISAP (`implementation_authorized`)
-# and whose risk profile carries no governance/public/audio-egress veto.
-# Sensitive tasks stay manual.
+# and whose risk profile carries verified mitigation evidence for each applicable
+# sensitivity class.
 
 #: Risk flags whose presence (explicit or keyword-derived) requires mitigation
 #: evidence before auto-arming (see RELEASE_MITIGATION_CHECKS). Historically a
@@ -449,7 +464,38 @@ SENSITIVE_RISK_FLAGS = (
 #: gate yet → it fails CLOSED (held) until its gate is defined; it is NEVER
 #: released by a manual override. Extend this map (never add a manual-arm path) to
 #: bring a new sensitivity class under automated, evidence-gated release.
+#: Emergency recovery for miswired evidence producers is the autoqueue killswitch
+#: (`HAPAX_CC_PR_AUTOQUEUE_OFF=1` or `HAPAX_CC_HYGIENE_OFF=1`) while the check
+#: wiring is repaired; the killswitch pauses admission and is not a manual release
+#: arm. Recheck the pause before retrying autoqueue with that environment check
+#: and the executable reader in `scripts/cc-pr-autoqueue.py` (`KILLSWITCH_ENVS`;
+#: `run_reconciler` returns a killed report before any admission mutation).
+#: One-off shell check:
+#: `env | grep -E '^(HAPAX_CC_PR_AUTOQUEUE_OFF|HAPAX_CC_HYGIENE_OFF)=1$'`.
+REVIEW_TEAM_QUORUM_EVIDENCE = "review-team-quorum"
+
 RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
+    # A governance-sensitive change auto-arms only after the local review dossier
+    # gate has already accepted the PR and the GitHub-side authority check passes.
+    # The review-team quorum marker is virtual evidence produced only by
+    # ``cc-pr-autoqueue`` after it validates the source-pinned dossier for the
+    # current PR head and scope; it is not satisfied by a bare GitHub check named
+    # ``review``. ``cc-pr-autoqueue`` writes its own fresh admission proof only
+    # after the task note is armed and the release-head boundary is revalidated,
+    # so that proof is not release-arm evidence.
+    "governance_sensitive": (
+        "authority-case-check",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
+    ),
+    # A public-claim-sensitive source change auto-arms only when the current
+    # PR head has passed authority-case validation and the source-pinned review
+    # dossier has quorum-accepted the public-claim posture. This does not grant
+    # public egress or provider spend: those still fail closed through mutation
+    # surface, public_current, and provider-spend gates.
+    "public_claim_sensitive": (
+        "authority-case-check",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
+    ),
     # A privacy/secret-sensitive change auto-arms when the dedicated secret
     # scanner passes on its diff (no committed credential). The redaction
     # CORRECTNESS of such a change is separately gated by the general test/review
@@ -680,6 +726,9 @@ def _release_auto_arm_blockers(
     # until the mitigation is produced; no gate defined for the class → fail
     # CLOSED. With no verified checks supplied (pure-frontmatter assessment) the
     # historical hard veto is preserved for backward compatibility.
+    # Blocker reason-code contract: `risk_flag:` is the no-evidence legacy veto,
+    # `needs_mitigation:` is emitted once per missing check (not grouped), and
+    # `unmitigable_risk_flag:` means no automated mitigation gate is defined.
     for name in _effective_sensitive_flags(frontmatter):
         if verified_checks is None:
             blockers.append(f"risk_flag:{name}")
@@ -688,9 +737,9 @@ def _release_auto_arm_blockers(
         if not required:
             blockers.append(f"unmitigable_risk_flag:{name}")
             continue
-        missing = [check for check in required if check not in verified_checks]
-        if missing:
-            blockers.append(f"needs_mitigation:{name}:{'|'.join(missing)}")
+        for check in required:
+            if check not in verified_checks:
+                blockers.append(f"needs_mitigation:{name}:{check}")
     # High-stakes mutation surfaces.
     surface = str(frontmatter.get("mutation_surface") or "").strip().lower()
     if surface in AUTO_ARM_INELIGIBLE_MUTATION_SURFACES:
@@ -767,13 +816,16 @@ def apply_release_auto_arm(
     *,
     now_iso: str,
     role: str = "autoqueue-system",
+    head_sha: str | None = None,
+    head_ref: str | None = None,
 ) -> str:
     """Return ``note_text`` with the system release-arming applied to frontmatter.
 
     Sets ``release_authorized: true``, advances ``stage`` to ``S7_RELEASE`` when
-    it is below S7 or absent, refreshes ``updated_at``, and appends a single
-    audit line to the body. Pure text transform — file IO and the authority-case
-    ledger append are the caller's responsibility.
+    it is below S7 or absent, records the authorized PR head when supplied,
+    refreshes ``updated_at``, and appends a single audit line to the body. Pure
+    text transform — file IO and the authority-case ledger append are the
+    caller's responsibility.
     """
 
     if not note_text.startswith("---"):
@@ -789,6 +841,18 @@ def apply_release_auto_arm(
         )
     else:
         front = front.rstrip("\n") + "\nrelease_authorized: true\n"
+
+    for key, value in (
+        ("release_authorized_head_sha", head_sha),
+        ("release_authorized_head_ref", head_ref),
+    ):
+        if not value:
+            continue
+        line = yaml.safe_dump({key: value}, sort_keys=False).strip()
+        if re.search(rf"(?m)^{re.escape(key)}:", front):
+            front = re.sub(rf"(?m)^{re.escape(key)}:\s*.*$", line, front, count=1)
+        else:
+            front = front.rstrip("\n") + f"\n{line}\n"
 
     stage_match = re.search(r"(?m)^stage:\s*(.*)$", front)
     if stage_match:

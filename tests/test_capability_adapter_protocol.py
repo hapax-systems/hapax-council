@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest import mock
@@ -9,14 +10,16 @@ from unittest import mock
 import pytest
 
 from shared.capability_adapter_protocol import (
-    AntigravAdapter,
+    AgyAdapter,
     AuthorityViolation,
     BudgetAuthorityAdapter,
     CapabilityAdapter,
     ClaudeAdapter,
     CodexAdapter,
+    RetiredAntigravFailureClassifier,
     ReviewSeatAdapter,
     SendCapableAdapter,
+    VibeAdapter,
     WorkerAdapter,
 )
 from shared.dispatcher_policy import DispatchAction, RouteDecision
@@ -111,10 +114,14 @@ def test_describe_returns_route_on_platform_match() -> None:
 
 
 def test_worker_has_launch_and_sendcapable_has_send() -> None:
+    assert hasattr(AgyAdapter, "launch")
+    assert not hasattr(AgyAdapter, "send")
     assert hasattr(ClaudeAdapter, "launch")
     assert hasattr(ClaudeAdapter, "send")
     assert hasattr(CodexAdapter, "launch")
     assert hasattr(CodexAdapter, "send")
+    assert hasattr(VibeAdapter, "launch")
+    assert hasattr(VibeAdapter, "send")
 
 
 def test_budget_authority_has_no_launch_or_send() -> None:
@@ -129,17 +136,25 @@ def test_review_seat_has_no_launch_or_send() -> None:
     assert not hasattr(ReviewSeatAdapter, "send")
 
 
-def test_antigrav_has_launch_but_no_send() -> None:
-    assert hasattr(AntigravAdapter, "launch")  # it IS a worker
-    assert not hasattr(AntigravAdapter, "send")  # but does not mix SendCapableAdapter
+def test_retired_antigrav_has_no_adapter_launch_or_send_surface() -> None:
+    adapter_protocol = sys.modules[_MOD]
+    assert "AntigravAdapter" not in adapter_protocol.__all__
+    assert not hasattr(adapter_protocol, "AntigravAdapter")
+    assert not hasattr(RetiredAntigravFailureClassifier, "launch")
+    assert not hasattr(RetiredAntigravFailureClassifier, "send")
+    assert not issubclass(RetiredAntigravFailureClassifier, CapabilityAdapter)
+    assert not issubclass(RetiredAntigravFailureClassifier, WorkerAdapter)
+    assert not issubclass(RetiredAntigravFailureClassifier, SendCapableAdapter)
 
 
 def test_platform_classvars_are_pinned() -> None:
+    assert AgyAdapter.PLATFORM is Platform.AGY
     assert ClaudeAdapter.PLATFORM is Platform.CLAUDE
     assert CodexAdapter.PLATFORM is Platform.CODEX
+    assert VibeAdapter.PLATFORM is Platform.VIBE
     assert BudgetAuthorityAdapter.PLATFORM is Platform.API
     assert ReviewSeatAdapter.PLATFORM is Platform.GLMCP
-    assert AntigravAdapter.PLATFORM is Platform.ANTIGRAV
+    assert RetiredAntigravFailureClassifier.PLATFORM is Platform.ANTIGRAV
 
 
 # --- criterion 5: launch() FIRST asserts authority, else AuthorityViolation --------------------
@@ -179,6 +194,22 @@ def test_launch_happy_path_delegates_to_coord_dispatch() -> None:
     spawn.assert_called_once_with(request, launch_callable)
 
 
+@pytest.mark.parametrize("adapter_cls", [AgyAdapter, VibeAdapter])
+def test_new_worker_adapters_inherit_launch_gate(adapter_cls: type[WorkerAdapter]) -> None:
+    decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True)
+    request = object()
+    launch_callable = lambda: 0  # noqa: E731
+    sentinel_result = object()
+    with mock.patch(f"{_MOD}.run_atomic_dispatch_launch", return_value=sentinel_result) as spawn:
+        result = adapter_cls().launch(decision, request, launch_callable)  # type: ignore[arg-type]
+    assert result is sentinel_result
+    spawn.assert_called_once_with(request, launch_callable)
+
+
+def test_vibe_adapter_marks_registered_send_surface() -> None:
+    assert issubclass(VibeAdapter, SendCapableAdapter)
+
+
 def test_send_asserts_authority_then_is_not_yet_wired() -> None:
     # send gates authority just like launch; the relay itself is a glue-slice concern.
     refuse = _decision(action=DispatchAction.REFUSE, launch_allowed=False)
@@ -187,6 +218,8 @@ def test_send_asserts_authority_then_is_not_yet_wired() -> None:
     allow = _decision(action=DispatchAction.LAUNCH, launch_allowed=True)
     with pytest.raises(NotImplementedError):
         ClaudeAdapter().send(allow, "hello")
+    with pytest.raises(NotImplementedError):
+        VibeAdapter().send(allow, "hello")
 
 
 # --- collect_receipts delegation ---------------------------------------------------------------
@@ -273,8 +306,29 @@ def test_codex_classify_failure_shares_the_cli_table() -> None:
     assert adapter.classify_failure("x").platform == Platform.CODEX.value
 
 
-def test_antigrav_classify_failure_maps_launcher_exit_codes() -> None:
-    a = AntigravAdapter()
+def test_agy_classify_failure_shares_the_cli_table() -> None:
+    adapter = AgyAdapter()
+    assert (
+        adapter.classify_failure("HTTP 429 Too Many Requests").code is FailureCode.QUOTA_EXHAUSTION
+    )
+    assert adapter.classify_failure("service unavailable").code is FailureCode.TRANSIENT
+    assert adapter.classify_failure("nothing notable").code is FailureCode.UNKNOWN
+    assert adapter.classify_failure("x").platform == Platform.AGY.value
+
+
+def test_vibe_classify_failure_shares_the_cli_table() -> None:
+    adapter = VibeAdapter()
+    assert (
+        adapter.classify_failure("HTTP 429 Too Many Requests").code is FailureCode.QUOTA_EXHAUSTION
+    )
+    assert adapter.classify_failure("invalid api key").code is FailureCode.AUTH_FAILURE
+    assert adapter.classify_failure("service unavailable").code is FailureCode.TRANSIENT
+    assert adapter.classify_failure("nothing notable").code is FailureCode.UNKNOWN
+    assert adapter.classify_failure("x").platform == Platform.VIBE.value
+
+
+def test_retired_antigrav_failure_classifier_maps_historical_launcher_exit_codes() -> None:
+    a = RetiredAntigravFailureClassifier()
     # the two codes with a genuine availability/claim meaning map; everything else stays UNKNOWN
     assert a.classify_failure("agy not found", exit_code=4).code is FailureCode.ROUTE_UNAVAILABLE
     assert a.classify_failure("cc-claim failed", exit_code=8).code is FailureCode.CLAIM_CONFLICT
@@ -300,3 +354,6 @@ def test_sendcapable_is_not_a_capability_adapter_subclass() -> None:
     assert issubclass(ClaudeAdapter, CapabilityAdapter)
     assert issubclass(ClaudeAdapter, WorkerAdapter)
     assert issubclass(ClaudeAdapter, SendCapableAdapter)
+    assert issubclass(VibeAdapter, CapabilityAdapter)
+    assert issubclass(VibeAdapter, WorkerAdapter)
+    assert issubclass(VibeAdapter, SendCapableAdapter)

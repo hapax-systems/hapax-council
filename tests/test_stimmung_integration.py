@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import time
 from pathlib import Path
@@ -55,6 +56,17 @@ class TestMapStimmung:
 
 
 class TestAggregatorStimmung:
+    def test_local_capacity_file_uses_producer_env_override(self, tmp_path, monkeypatch):
+        from agents.visual_layer_aggregator import constants
+
+        monkeypatch.setenv("HAPAX_LOCAL_CAPACITY_FILE", str(tmp_path / "capacity.json"))
+        try:
+            reloaded = importlib.reload(constants)
+            assert tmp_path / "capacity.json" == reloaded.LOCAL_CAPACITY_FILE
+        finally:
+            monkeypatch.delenv("HAPAX_LOCAL_CAPACITY_FILE", raising=False)
+            importlib.reload(constants)
+
     def test_aggregator_has_stimmung_collector(self):
         agg = VisualLayerAggregator()
         assert isinstance(agg._stimmung_collector, StimmungCollector)
@@ -91,6 +103,18 @@ class TestAggregatorStimmung:
         infra_path = tmp_path / "infra-snapshot.json"
         infra_path.write_text(json.dumps({"gpu": {"used_mb": 5000, "total_mb": 24000}}))
 
+        local_capacity_path = tmp_path / "hapax-local-capacity.json"
+        local_capacity_path.write_text(
+            json.dumps(
+                {
+                    "timestamp": time.time(),
+                    "inflight": 8,
+                    "ceiling": 10,
+                    "ttft_ratio": 1.1,
+                }
+            )
+        )
+
         monkeypatch.setattr(
             "agents.visual_layer_aggregator.constants.HEALTH_HISTORY_PATH", health_path
         )
@@ -101,6 +125,10 @@ class TestAggregatorStimmung:
             "agents.visual_layer_aggregator.constants.LANGFUSE_STATE_PATH",
             tmp_path / "nonexistent.json",
         )
+        monkeypatch.setattr(
+            "agents.visual_layer_aggregator.constants.LOCAL_CAPACITY_FILE",
+            local_capacity_path,
+        )
 
         agg = VisualLayerAggregator()
         agg._ts_perception = time.monotonic() - 5.0  # 5s ago
@@ -109,6 +137,56 @@ class TestAggregatorStimmung:
         assert agg._stimmung is not None
         assert agg._stimmung.health.value == 0.2  # 8/10 healthy → 0.2 bad
         assert agg._stimmung.resource_pressure.value < 0.3
+        assert agg._stimmung.local_capacity_pressure.value == 0.8
+
+    @pytest.mark.asyncio
+    async def test_update_stimmung_defaults_missing_local_ttft_ratio(
+        self, tmp_path: Path, monkeypatch
+    ):
+        health_path = tmp_path / "health-history.jsonl"
+        health_path.write_text(json.dumps({"healthy": 10, "total": 10}))
+
+        infra_path = tmp_path / "infra-snapshot.json"
+        infra_path.write_text(json.dumps({"gpu": {"used_mb": 1000, "total_mb": 24000}}))
+
+        local_capacity_path = tmp_path / "hapax-local-capacity.json"
+        local_capacity_path.write_text(
+            json.dumps(
+                {
+                    "timestamp": time.time(),
+                    "inflight": 0,
+                    "ceiling": 10,
+                }
+            )
+        )
+
+        monkeypatch.setattr(
+            "agents.visual_layer_aggregator.constants.HEALTH_HISTORY_PATH", health_path
+        )
+        monkeypatch.setattr(
+            "agents.visual_layer_aggregator.constants.INFRA_SNAPSHOT_PATH", infra_path
+        )
+        monkeypatch.setattr(
+            "agents.visual_layer_aggregator.constants.LANGFUSE_STATE_PATH",
+            tmp_path / "nonexistent.json",
+        )
+        monkeypatch.setattr(
+            "agents.visual_layer_aggregator.constants.LOCAL_CAPACITY_FILE",
+            local_capacity_path,
+        )
+
+        agg = VisualLayerAggregator()
+        observed: dict[str, float] = {}
+        original_update = agg._stimmung_collector.update_local_capacity
+
+        def capture_update(inflight: float, ceiling: float, ttft_ratio: float) -> None:
+            observed["ttft_ratio"] = ttft_ratio
+            original_update(inflight, ceiling, ttft_ratio)
+
+        monkeypatch.setattr(agg._stimmung_collector, "update_local_capacity", capture_update)
+        agg._update_stimmung()
+
+        assert observed["ttft_ratio"] == 1.0
 
     @pytest.mark.asyncio
     async def test_update_stimmung_tolerates_missing_files(self, monkeypatch):

@@ -85,6 +85,21 @@ from shared.capability_outcome import (
 from shared.capability_outcome import (
     PublicClaimEvidence as CapabilityPublicClaimEvidence,
 )
+from shared.capability_surface_delta import (
+    CapabilitySurfaceDelta as _CapabilitySurfaceDelta,
+)
+from shared.capability_surface_delta import (
+    CapabilitySurfaceDeltaFixtureSet as _CapabilitySurfaceDeltaFixtureSet,
+)
+from shared.capability_surface_delta import (
+    detect_surface_deltas as _detect_surface_deltas,
+)
+from shared.capability_surface_delta import (
+    load_capability_surface_delta_fixtures as _load_capability_surface_delta_fixtures,
+)
+from shared.capability_surface_delta import (
+    write_capability_surface_delta_tasks as _write_capability_surface_delta_tasks,
+)
 from shared.conative_impingement import (
     ActionTendencyImpingement as _LivestreamRoleActionTendencyImpingement,
 )
@@ -416,6 +431,21 @@ _parse_prometheus_scalars
 _snapshot_from_prometheus
 _classify_final_frame
 _classify_final_frame_series
+
+# EDT scorer (cc-task-edt-scorer-20260626): the equal-depth-of-treatment engine ships AHEAD of its
+# in-repo consumers. score_edt is the public entry point and normalize_routing_class the public
+# routing-class normalizer; both are exercised by tests/shared/test_edt_measure.py today and will be
+# called by the observational aggregation watcher (sdlc_router.ingest_gate_events) + the gate-event
+# consumer in follow-up slices. Until then vulture sees no in-`shared` caller.
+from shared.edt_measure import (
+    normalize_routing_class as _edt_normalize_routing_class,
+)
+from shared.edt_measure import (
+    score_edt as _edt_score_edt,
+)
+
+_edt_score_edt
+_edt_normalize_routing_class
 _negative_space_contract_for_mode
 
 # Pydantic v2 validators for the programme live-prior contract. They are
@@ -620,6 +650,18 @@ validate_provider_registry
 validate_eval_suite
 build_eval_artifact
 build_privacy_egress_preflight
+
+# Capability-surface delta intake is called by the extensionless
+# `scripts/hapax-capability-surface-delta-intake` CLI and by governed fixture
+# tests. The diff-only vulture pass does not count those call paths reliably.
+_CapabilitySurfaceDelta.allows_demand_fulfillment
+_CAPABILITY_SURFACE_DELTA_ENTRYPOINTS = (
+    _CapabilitySurfaceDelta._delta_contract_is_actionable,
+    _CapabilitySurfaceDeltaFixtureSet._fixtures_cover_required_cases,
+    _detect_surface_deltas,
+    _load_capability_surface_delta_fixtures,
+    _write_capability_surface_delta_tasks,
+)
 
 # Trend/current-event gate helpers are the deterministic public API for the
 # content-candidate-discovery daemon and public adapters. This contract lands
@@ -3713,7 +3755,12 @@ from agents.request_decomposer.models import RequestDecomposition, TaskSpec
 TaskSpec._normalize_authority_level
 TaskSpec._normalize_mutation_surface
 TaskSpec._normalize_quality_floor
+TaskSpec._normalize_routing_class
+TaskSpec._normalize_composition_tolerance
+TaskSpec._normalize_requirement_vector
+TaskSpec._normalize_requirement_vector_validity_mask
 TaskSpec._normalize_route_metadata
+TaskSpec._taxonomy_payload_is_complete
 TaskSpec._blocked_needs_reason
 TaskSpec._needs_acceptance_criteria
 RequestDecomposition._validate_dag
@@ -3888,7 +3935,12 @@ from agents.request_decomposer.models import TaskSpec
 TaskSpec._normalize_mutation_surface
 TaskSpec._normalize_authority_level
 TaskSpec._normalize_quality_floor
+TaskSpec._normalize_routing_class
+TaskSpec._normalize_composition_tolerance
+TaskSpec._normalize_requirement_vector
+TaskSpec._normalize_requirement_vector_validity_mask
 TaskSpec._normalize_route_metadata
+TaskSpec._taxonomy_payload_is_complete
 TaskSpec._needs_authority_case
 TaskSpec._needs_parent_lineage
 
@@ -4179,12 +4231,96 @@ append_gate_event
 read_gate_events
 is_persistent
 
+# Called from scripts/hapax-methodology-dispatch (a non-.py script vulture cannot scan).
+from shared.gate_event_producer import build_gate_event  # noqa: E402
+
+build_gate_event
+
+# Additive measurement-loop keystone (CCEF/H STEP 7): the witnessed-outcome producer's public
+# API — callers (witnessed cc-task-gate / CI / review verdict sites) wire in a follow-on, like
+# build_gate_event above. Referenced here so the vulture gate does not flag the as-yet caller-less
+# public functions.
+from shared.gate_outcome_producer import (  # noqa: E402
+    build_outcome_gate_event,
+    emit_outcome_gate_event,
+)
+
+build_outcome_gate_event
+emit_outcome_gate_event
+
+# Additive CCEF/H STEP 2: the dispatch-frontier public API — callers land in the shadow-wire
+# (STEP 9); referenced here so the vulture gate does not flag the as-yet caller-less functions.
+from shared.dispatch_frontier import dominates, non_dominated_set  # noqa: E402
+
+dominates
+non_dominated_set
+
 # Capability-routing D8 governance floor (Phase 0.3) — Pydantic invokes this
 # model_validator dynamically during TaskSpec validation; vulture cannot follow
 # that dynamic path. REQ-20260616-capability-aware-routing / S5-CAPABILITY-ROUTING-TIER1.
 from agents.request_decomposer.models import TaskSpec as _TaskSpecD8  # noqa: E402
 
 _TaskSpecD8._enforce_d8_governance_floor
+
+# Capability-routing stack consolidation — these are deliberate support APIs
+# and Pydantic validators for the default-off/shadow router stack. Some entries
+# are invoked dynamically by Pydantic; router learning-gate helpers are held as a
+# tested public boundary until the learning-ledger activation slice chooses its
+# production caller. REQ-20260616-capability-aware-routing / S5-CAPABILITY-ROUTING-TIER1.
+from shared.dag_composability import (  # noqa: E402
+    DagComposability as _DagComposability,
+)
+from shared.dag_composability import (
+    classify_dag_composability,
+)
+from shared.route_metadata_schema import (  # noqa: E402
+    BenchmarkGap as _BenchmarkGap,
+)
+from shared.route_metadata_schema import (
+    FixedRouteOverhead as _FixedRouteOverhead,
+)
+from shared.route_metadata_schema import (
+    PublicReleaseProjection as _PublicReleaseProjection,
+)
+from shared.route_metadata_schema import (
+    RouteAdmission as _RouteAdmission,
+)
+from shared.route_metadata_schema import (
+    RouteEligibility as _RouteEligibility,
+)
+from shared.sdlc_router import (  # noqa: E402
+    SdlcRouteCandidate as _SdlcRouteCandidate,
+)
+from shared.sdlc_router import (
+    SdlcRouteDecision as _SdlcRouteDecision,
+)
+from shared.sdlc_router import (
+    SdlcRouter as _SdlcRouter,
+)
+from shared.sdlc_router import (
+    SdlcRoutingRequest as _SdlcRoutingRequest,
+)
+from shared.sdlc_router import (
+    gate_event_learning_allowed,
+)
+
+_DagComposability.is_parallel_independent
+_DagComposability.is_sequential
+classify_dag_composability
+_FixedRouteOverhead._evidence_refs_are_string_lists
+_BenchmarkGap._evidence_refs_are_string_lists
+_BenchmarkGap._public_candidate_requires_all_five_criteria
+_PublicReleaseProjection._evidence_refs_are_string_lists
+_PublicReleaseProjection._approved_projection_requires_authority
+_RouteEligibility._reason_codes_are_string_lists
+_RouteAdmission._reason_codes_are_string_lists
+_SdlcRoutingRequest._requirement_vector_uses_strict_int_scores
+_SdlcRoutingRequest._requirement_vector_scores_are_bounded
+_SdlcRouteCandidate._capability_maps_use_strict_bounded_scores
+_SdlcRouteCandidate.from_supply_vector
+_SdlcRouteDecision.route_allowed
+_SdlcRouter.ingest_gate_events
+gate_event_learning_allowed
 
 # InterviewConductor is the new turn-state-motor MVP (cc-task
 # voice-interview-conductor-turn-motor-20260615, REQ-20260616 Track A). Its live caller
@@ -4353,13 +4489,10 @@ _glmcp_failure_code_for_zai
 
 # CapabilityAdapter protocol surface (capability-adapter-protocol-module). The whole adapter
 # layer is the thin uniform facade the dispatch/worker path WILL consume; this slice lands the
-# protocol + type hierarchy ahead of its consumers (worker-path / antigrav-glue / vibe-glue /
-# glmcp-reviewseat-coordination wire the live call sites). Until then only the test suite
-# exercises the methods, which the production vulture pass does not count. Reference the
+# protocol + type hierarchy ahead of some consumers (worker-path / vibe-glue /
+# glmcp-reviewseat-coordination wire or will wire the live call sites). Until then only the test
+# suite exercises some methods, which the production vulture pass does not count. Reference the
 # consumer-pending surface so the unused-callable gate sees the use.
-from shared.capability_adapter_protocol import (  # noqa: E402
-    AntigravAdapter as _AntigravAdapter,
-)
 from shared.capability_adapter_protocol import (  # noqa: E402
     BudgetAuthorityAdapter as _BudgetAuthorityAdapter,
 )
@@ -4371,6 +4504,9 @@ from shared.capability_adapter_protocol import (  # noqa: E402
 )
 from shared.capability_adapter_protocol import (  # noqa: E402
     CodexAdapter as _CodexAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
+    RetiredAntigravFailureClassifier as _RetiredAntigravFailureClassifier,
 )
 from shared.capability_adapter_protocol import (  # noqa: E402
     ReviewSeatAdapter as _ReviewSeatAdapter,
@@ -4390,11 +4526,13 @@ _CapabilityAdapter.preflight
 _CapabilityAdapter.classify_failure
 _WorkerAdapter.launch
 _SendCapableAdapter.send
-_BudgetAuthorityAdapter
-_ReviewSeatAdapter
-_AntigravAdapter
-_ClaudeAdapter
-_CodexAdapter
+_ = (
+    _BudgetAuthorityAdapter,
+    _ReviewSeatAdapter,
+    _RetiredAntigravFailureClassifier,
+    _ClaudeAdapter,
+    _CodexAdapter,
+)
 
 # worker_failure_witness (capability-adapter-worker-path): the receipt-append + guarded
 # family-availability witness are invoked by the extensionless launcher
@@ -4458,3 +4596,94 @@ from shared.avsdlc_witness import (  # noqa: E402
 )
 
 _avi_intent_fields_from_record_and_frame
+
+# local-capacity TTFT producer: this setter is the public span API for streaming
+# callers that can observe the first token. Current local Tabby/DMN calls are
+# non-streaming, so they must NOT fabricate TTFT from total response latency.
+# Tests cover the handoff; live callers should invoke this only from a real
+# first-token event.
+from agents.telemetry.llm_call_span import LlmCallSpan as _LocalCapacityLlmCallSpan  # noqa: E402
+
+_local_capacity_set_ttft_seconds = _LocalCapacityLlmCallSpan.set_ttft_seconds
+
+# cc-dispatch capability surface — shared.capability_dispatch's resolver / ledger
+# reader / utilization rollup are called by scripts/cc-dispatch (an extensionless
+# script vulture cannot scan) + the test suite, not a static .py caller.
+# RESUME capability-dispatch-spine-RESUME-2026-06-27 §P1 / CASE-CAPACITY-ROUTING-001.
+from shared.capability_dispatch import (
+    launchable_aliases,  # noqa: E402
+    ledger_health,  # noqa: E402
+    load_valid_route_ids,  # noqa: E402
+    read_dispatch_ledger,  # noqa: E402
+    registry_error,  # noqa: E402
+    resolve_capability,  # noqa: E402
+    utilization,  # noqa: E402
+)
+
+_ = (
+    launchable_aliases,
+    ledger_health,
+    load_valid_route_ids,
+    read_dispatch_ledger,
+    registry_error,
+    resolve_capability,
+    utilization,
+)
+
+# worktree registry surface — shared.worktree_registry's lifecycle API is called by
+# scripts/hapax-worktree-register (an extensionless script vulture cannot scan) + the
+# test suite + the pending P2 reaper / P3 heartbeat / P4 creation-contract integration,
+# not a static .py caller. cc-task-worktree-registry-lifecycle-20260628.
+from shared.worktree_registry import (
+    deregister,  # noqa: E402
+    is_clean,  # noqa: E402
+    is_inference_protected,  # noqa: E402
+    is_infra_path,  # noqa: E402
+    is_merged,  # noqa: E402
+    is_reapable,  # noqa: E402
+    list_records,  # noqa: E402
+    live_process_count,  # noqa: E402
+    mtime_age_seconds,  # noqa: E402
+    probe_worktree,  # noqa: E402
+    set_status,  # noqa: E402
+)
+
+_ = (
+    deregister,
+    is_clean,
+    is_infra_path,
+    is_inference_protected,
+    is_merged,
+    is_reapable,
+    list_records,
+    live_process_count,
+    mtime_age_seconds,
+    probe_worktree,
+    set_status,
+)
+
+# Stage0 durable sink phase 1 lands the append-only JSONL sink before the
+# chronicle/payment/public-speech consumers that will instantiate it in phases
+# 2-4. Tests exercise the sink now; downstream static call paths land in the
+# blocked follow-up phases, so keep the library entrypoint explicit.
+from shared.durable_jsonl_sink import DurableJsonlSink as _Stage0DurableJsonlSink  # noqa: E402
+
+_ = (
+    _Stage0DurableJsonlSink,
+    _Stage0DurableJsonlSink.path_for_stream,
+)
+
+# Entitlement→capability classifier: the pure core the entitlement reconciler consumes in
+# the follow-up. Tests exercise it now; the static call path lands with the reconciler.
+from shared.entitlement_capability import (
+    classify_entitlement as _classify_entitlement,  # noqa: E402
+)
+from shared.entitlement_capability import is_routable_supply as _is_routable_supply  # noqa: E402
+
+_ = (_classify_entitlement, _is_routable_supply)
+
+# GitHub PR status helper consumed by scripts/hapax-merge-queue-lineage, an
+# extensionless Python CLI that vulture's source scan does not follow.
+from github_pr_status import get_pr_status_rest as _get_pr_status_rest  # noqa: E402
+
+_ = (_get_pr_status_rest,)

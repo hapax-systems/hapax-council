@@ -35,6 +35,11 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from github_pr_status import list_open_pr_statuses_rest
 
 from shared.merge_queue_lineage import (
     DEFAULT_LEDGER_PATH,
@@ -48,6 +53,7 @@ from shared.merge_queue_lineage import (
 CONTROL_PATH = Path(os.path.expanduser("~/.cache/hapax/pr-admission-governor.yaml"))
 MERGE_QUEUE_SUMMARY_PATH = DEFAULT_SUMMARY_PATH
 MERGE_QUEUE_LEDGER_PATH = DEFAULT_LEDGER_PATH
+DEFAULT_REPO = os.environ.get("HAPAX_CC_PR_REPO", "hapax-systems/hapax-council")
 DEFAULT_EXIT_BELOW_COUNT = 6
 DEFAULT_STABLE_TICKS = 2
 ALLOWED_MODES = {"normal", "drain", "frozen"}
@@ -102,26 +108,17 @@ def save_state(state: dict[str, Any]) -> None:
 
 
 def query_open_prs() -> list[dict[str, Any]]:
-    """Returns list of open PRs with number/headRefName/mergeStateStatus/statusCheckRollup."""
+    """Return open PR status snapshots via REST/core, not GraphQL."""
     if not shutil.which("gh"):
         return []
     try:
-        out = subprocess.check_output(
-            [
-                "gh",
-                "pr",
-                "list",
-                "--state",
-                "open",
-                "--limit",
-                "100",
-                "--json",
-                "number,headRefName,mergeStateStatus,statusCheckRollup,title",
-            ],
-            text=True,
-            timeout=15,
+        return list_open_pr_statuses_rest(
+            repo=DEFAULT_REPO,
+            repo_root=REPO_ROOT,
+            runner=subprocess.run,
+            limit=100,
+            hydrate_pull=True,
         )
-        return json.loads(out)
     except (subprocess.SubprocessError, json.JSONDecodeError):
         return []
 
@@ -140,11 +137,17 @@ def current_throttle_decision(open_count: int | None = None):
 def classify_pr(pr: dict[str, Any]) -> str:
     """Classify PR into one of: failed, pending, behind, blocked, green."""
     rollup = pr.get("statusCheckRollup") or []
-    has_fail = any(c.get("conclusion") == "FAILURE" for c in rollup)
+    observed = [
+        str(c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+        for c in rollup
+        if isinstance(c, dict)
+    ]
+    has_fail = any(state in {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT"} for state in observed)
     has_pending = any(
-        c.get("status") in ("IN_PROGRESS", "QUEUED") or c.get("conclusion") is None for c in rollup
+        state in {"", "PENDING", "IN_PROGRESS", "QUEUED", "REQUESTED", "WAITING"}
+        for state in observed
     )
-    ms = pr.get("mergeStateStatus", "")
+    ms = str(pr.get("mergeStateStatus", "")).upper()
     if has_fail:
         return "failed"
     if has_pending:
@@ -350,7 +353,7 @@ AUTO_FREEZE_THRESHOLD = ADVISORY_OPEN_PR_COUNT  # deprecated alias
 def cmd_auto(args: argparse.Namespace) -> int:
     """Auto-cycle: freeze/thaw from merge-group failure rate.
 
-    Designed for systemd-timer or GitHub-Action invocation every 5 min.
+    Designed for systemd-timer or GitHub-Action invocation on the timer-defined cadence.
     No-op (exit 0) for unrelated cases. Only acts when thresholds cross.
     """
     state = load_state()

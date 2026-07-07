@@ -42,7 +42,11 @@ metric is filed back to ytb-QM-LATENCY.
 Tick walks the chronicle file. ~50k events typical (12 h retention,
 ~70/min average). At 30 s tick rate that's <1% CPU on a single core.
 Reuses ``shared.chronicle.query`` so we get the reverse-walk early-exit
-optimisation already shipped in drop #23.
+optimisation already shipped in drop #23. Default-path reads may also
+validate and join the Stage0 durable chronicle stream when the durable
+root exists; the exporter treats durable-root or hash-chain failures as
+chronicle unreadability. Recheck the bounded path with
+``uv run pytest tests/test_chronicle.py tests/quality_observability/test_chronicle_exporter.py -q``.
 
 ## Failure mode
 
@@ -150,8 +154,10 @@ class ChronicleQualityExporter:
     """30 s-tick exporter computing content-quality aggregates.
 
     Stateless across ticks — every tick reads the chronicle window
-    fresh. No in-memory event buffer; the chronicle file IS the
-    durable record.
+    fresh through the chronicle query API. No in-memory event buffer;
+    default-path tmpfs rows remain the hot read surface, while Stage0
+    receipt/data rows can be replayed from the durable chronicle sink
+    after trim or reboot.
 
     Tests construct an exporter with ``registry=CollectorRegistry()``
     to avoid clobbering the global Prometheus registry across test

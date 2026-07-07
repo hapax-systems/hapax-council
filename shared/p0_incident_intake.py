@@ -38,6 +38,16 @@ LATEST_ALERT_BLOCK_RE = re.compile(r"(?s)## Latest Alert\n\n.*?\n## Evidence\n")
 
 log = logging.getLogger(__name__)
 
+# Reasons the self-amplification break emits: a dispatch-refusal / stalled alert whose
+# subject is an auto-minted p0-incident-* task is NOT re-minted (re-minting recurses into
+# an unbounded storm). The desktop-drain keys on these to still dismiss a page whose
+# incident is already tracked in state, while declining to mint a fresh governed task.
+STALLED_NO_REMINT_REASON = "stalled_incident_task_no_remint"
+DISPATCH_REFUSAL_NO_REMINT_REASON = "dispatch_refusal_incident_task_no_remint"
+NO_REMINT_REASONS: frozenset[str] = frozenset(
+    {STALLED_NO_REMINT_REASON, DISPATCH_REFUSAL_NO_REMINT_REASON}
+)
+
 
 TECHNICAL_TITLE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("Service Failed:", "systemd_service_failed"),
@@ -152,15 +162,25 @@ def classify_notification(
         unit = title_s.split(":", 1)[1].strip() if ":" in title_s else ""
         if _is_synthetic_self_test_unit(unit):
             return IncidentClassification("nontechnical", "", False, "synthetic_self_test_unit")
-    if kind == "sdlc_task_stalled":
-        # Self-amplification break: a stalled/blocked AUTO-MINTED incident task
-        # (p0-incident-*) must NOT mint another P0 — it would re-enter forever as a
-        # fresh sdlc_task_stalled incident. These tasks are not lane-workable.
-        _stalled_id = re.search(r"\b(?:Task\s+)?([a-z0-9][a-z0-9_.-]{8,})\b", message_s)
-        if _stalled_id and _stalled_id.group(1).startswith("p0-incident-"):
-            return IncidentClassification(
-                "nontechnical", "", False, "stalled_incident_task_no_remint"
+    if kind in {"sdlc_task_stalled", "sdlc_dispatch_refusal"}:
+        # Self-amplification break: the alert's subject is an AUTO-MINTED incident
+        # task (p0-incident-*). Minting another P0 would spawn a fresh p0-incident-*
+        # that stalls / is dispatch-refused in turn -- an unbounded storm. Observed:
+        # intake state accreted dozens of sdlc_dispatch_refusal:p0-incident-*
+        # fingerprints because an auto-minted incident routes preferred-codex, that
+        # route is held, so it is refused 3x -> the circuit breaker mints yet another
+        # incident, recursively. The no-spin ntfy already paged the operator; we only
+        # decline to mint a governed cc-task that can never reach its exit predicate.
+        # (sdlc_dispatch_starvation is not self-referential -- its message names no
+        # task -- so it is intentionally excluded.)
+        _subject = re.search(r"\b(?:Task\s+)?([a-z0-9][a-z0-9_.-]{8,})\b", message_s)
+        if _subject and _subject.group(1).startswith("p0-incident-"):
+            reason = (
+                STALLED_NO_REMINT_REASON
+                if kind == "sdlc_task_stalled"
+                else DISPATCH_REFUSAL_NO_REMINT_REASON
             )
+            return IncidentClassification("nontechnical", "", False, reason)
     if technical is True and not kind:
         kind = "technical_alert"
 
@@ -171,6 +191,23 @@ def classify_notification(
         return IncidentClassification(kind, "", False, "below_p0_priority")
 
     return IncidentClassification(kind, _fingerprint_for(kind, title_s, message_s), True, "matched")
+
+
+def fingerprint_for_notification(title: str, message: str) -> str:
+    """Derive the incident fingerprint a notification maps to, independent of mint policy.
+
+    ``classify_notification`` reports ``technical=False`` with an empty fingerprint for
+    the self-amplification break (a dispatch-refusal / stalled alert whose subject is an
+    auto-minted ``p0-incident-*`` task) so no fresh P0 is minted. The desktop-drain still
+    needs to *identify* such a notification against the incident state so it can dismiss a
+    page for an incident already tracked there. This returns the fingerprint for
+    identification only; it never decides minting. Empty string when the title matches no
+    technical pattern.
+    """
+    kind = _technical_kind(title.strip())
+    if not kind:
+        return ""
+    return _fingerprint_for(kind, title.strip(), message.strip())
 
 
 def record_notification(
@@ -196,7 +233,34 @@ def record_notification(
         technical=technical,
     )
     if not classification.technical:
-        return IntakeResult(technical=False, reason=classification.reason)
+        result = IntakeResult(technical=False, reason=classification.reason)
+        if classification.reason not in NO_REMINT_REASONS:
+            return result
+        fingerprint = fingerprint_for_notification(title, message)
+        if not fingerprint:
+            return result
+        with _state_file_lock(state_path):
+            state = _load_state(state_path)
+        incidents = state.get("incidents")
+        if not isinstance(incidents, dict):
+            return result
+        existing = incidents.get(fingerprint)
+        if not isinstance(existing, dict):
+            return result
+        task_id = str(existing.get("task_id") or existing.get("base_task_id") or "").strip()
+        if not task_id:
+            return result
+        task_path_raw = str(existing.get("task_path") or "").strip()
+        task_path = Path(task_path_raw) if task_path_raw else None
+        return IntakeResult(
+            technical=False,
+            task_id=task_id,
+            task_path=task_path,
+            fingerprint=fingerprint,
+            replace_id=replace_id_for_fingerprint(fingerprint),
+            click_url=obsidian_task_uri(task_path) if task_path is not None else None,
+            reason=classification.reason,
+        )
 
     with _state_file_lock(state_path):
         return _record_notification_locked(

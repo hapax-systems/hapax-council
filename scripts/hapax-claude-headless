@@ -98,7 +98,7 @@ mkdir -p "$HOME/.cache/hapax" 2>/dev/null || true
 printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID" 2>/dev/null || true
 
 WORKDIR="${HAPAX_CLAUDE_HEADLESS_WORKDIR:-}"
-if [[ -n "$WORKDIR" && "$WORKDIR" == "~/"* ]]; then
+if [[ -n "$WORKDIR" && "$WORKDIR" == \~/* ]]; then
   WORKDIR="$HOME/${WORKDIR#"~/"}"
 fi
 if [[ -z "$WORKDIR" ]]; then
@@ -165,7 +165,35 @@ cleanup() {
 }
 trap cleanup EXIT
 
-CLAUDE_BIN="$(command -v claude || true)"
+resolve_claude_bin() {
+  local candidate=""
+  for candidate in \
+    "${HAPAX_CLAUDE_BIN:-}" \
+    "${HAPAX_CLAUDE_BIN_PATH:-}"
+  do
+    [[ -n "$candidate" ]] || continue
+    if [[ ! -x "$candidate" ]]; then
+      echo "hapax-claude-headless: configured Claude binary is not executable: $candidate" >&2
+      return 1
+    fi
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  for candidate in \
+    "$(command -v claude 2>/dev/null || true)" \
+    "$HOME/.npm-global/bin/claude" \
+    "${NPM_CONFIG_PREFIX:+$NPM_CONFIG_PREFIX/bin/claude}" \
+    "$HOME/.local/share/npm/bin/claude" \
+    "/usr/local/bin/claude"
+  do
+    [[ -n "$candidate" && -x "$candidate" ]] || continue
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  return 1
+}
+
+CLAUDE_BIN="$(resolve_claude_bin || true)"
 [[ -n "$CLAUDE_BIN" ]] || { echo "hapax-claude-headless: claude not found" >&2; exit 4; }
 
 EFFORT="${HAPAX_CLAUDE_EFFORT:-xhigh}"
@@ -254,7 +282,7 @@ find_active_note() {
   if [[ -f "$CC_TASK_ACTIVE/$task.md" ]]; then
     note="$CC_TASK_ACTIVE/$task.md"
   else
-    note="$(ls "$CC_TASK_ACTIVE/$task-"*.md 2>/dev/null | head -n1 || true)"
+    note="$(find "$CC_TASK_ACTIVE" -maxdepth 1 -name "$task-*.md" -print -quit 2>/dev/null || true)"
   fi
   printf '%s' "$note"
 }
@@ -271,29 +299,83 @@ task_is_terminal() {
   local task="$1"
   [[ -n "$task" ]] || return 1   # no task binding -> legacy always-on behavior
 
-  local claimed="" claim_source="primary"
+  local claimed="" claim_source="primary" claim_file_used=""
+  local primary_claimed="" primary_claim_file_used=""
+  local exact_session_claimed="" exact_session_claim_file_used=""
+  local session_claimed="" session_claim_file_used=""
   if [[ -s "$CLAIM_FILE" ]]; then
-    claimed="$(head -n1 "$CLAIM_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
+    primary_claimed="$(head -n1 "$CLAIM_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
+    primary_claim_file_used="$CLAIM_FILE"
+  fi
+  if [[ -n "${SESSION_CLAIM_FILE:-}" && -s "$SESSION_CLAIM_FILE" ]]; then
+    exact_session_claimed="$(head -n1 "$SESSION_CLAIM_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
+    exact_session_claim_file_used="$SESSION_CLAIM_FILE"
   fi
 
-  # If primary cache is missing or empty, try session-keyed claim files.
-  # cc-claim writes cc-active-task-<role>-<session_id>, so we glob for all
-  # session-keyed files matching this role and pick the most recently modified.
-  if [[ -z "$claimed" ]]; then
-    local session_claim="" newest_mtime=0
-    for candidate in "$HOME/.cache/hapax/cc-active-task-${ROLE}-"*; do
-      [[ -s "$candidate" ]] || continue
-      local mtime
-      mtime="$(stat -c %Y "$candidate" 2>/dev/null || echo 0)"
-      if (( mtime > newest_mtime )); then
-        newest_mtime="$mtime"
-        session_claim="$candidate"
+  # Prefer this launcher's exact session cache, then the newest task-bound
+  # session-keyed cache, over the shared legacy cache. The legacy
+  # cc-active-task-<role> file is shared by role and can be repointed by a
+  # later session; older same-task session leases can also coexist, so "first
+  # glob match" is not a valid liveness witness for a fresh launch.
+  local session_claim="" newest_mtime=0
+  local match_session_claim="" match_session_mtime=0
+  local valid_match_session_claim="" valid_match_epoch=-1
+  for candidate in "$HOME/.cache/hapax/cc-active-task-${ROLE}-"*; do
+    [[ -s "$candidate" ]] || continue
+    local candidate_claimed="" mtime
+    candidate_claimed="$(head -n1 "$candidate" 2>/dev/null | tr -d '[:space:]' || true)"
+    mtime="$(stat -c %Y "$candidate" 2>/dev/null || echo 0)"
+    if [[ "$candidate_claimed" == "$task" ]]; then
+      local candidate_base="" candidate_epoch_file="" candidate_epoch_line=""
+      local candidate_epoch="" candidate_epoch_task=""
+      candidate_base="$(basename "$candidate")"
+      candidate_epoch_file="$(dirname "$candidate")/cc-claim-epoch-${candidate_base#cc-active-task-}"
+      candidate_epoch_line="$(head -n1 "$candidate_epoch_file" 2>/dev/null || true)"
+      candidate_epoch="${candidate_epoch_line%% *}"
+      candidate_epoch_task="${candidate_epoch_line#* }"
+      candidate_epoch_task="$(printf '%s' "$candidate_epoch_task" | tr -d '[:space:]')"
+      if [[ "$candidate_epoch" =~ ^[0-9]+$ && "$candidate_epoch_task" == "$task" ]] \
+        && (( candidate_epoch > valid_match_epoch )); then
+        valid_match_epoch="$candidate_epoch"
+        valid_match_session_claim="$candidate"
       fi
-    done
-    if [[ -n "$session_claim" && -s "$session_claim" ]]; then
-      claimed="$(head -n1 "$session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
-      claim_source="session-keyed:$(basename "$session_claim")"
+      if (( mtime > match_session_mtime )); then
+        match_session_mtime="$mtime"
+        match_session_claim="$candidate"
+      fi
+      continue
     fi
+    if (( mtime > newest_mtime )); then
+      newest_mtime="$mtime"
+      session_claim="$candidate"
+    fi
+  done
+  if [[ -n "$exact_session_claimed" ]]; then
+    claimed="$exact_session_claimed"
+    claim_source="session-keyed:$(basename "$exact_session_claim_file_used")"
+    claim_file_used="$exact_session_claim_file_used"
+  elif [[ -n "$valid_match_session_claim" && -s "$valid_match_session_claim" ]]; then
+    session_claimed="$(head -n1 "$valid_match_session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
+    session_claim_file_used="$valid_match_session_claim"
+    claimed="$session_claimed"
+    claim_source="session-keyed:$(basename "$session_claim_file_used")"
+    claim_file_used="$session_claim_file_used"
+  elif [[ -n "$primary_claimed" ]]; then
+    claimed="$primary_claimed"
+    claim_source="primary"
+    claim_file_used="$primary_claim_file_used"
+  elif [[ -n "$match_session_claim" && -s "$match_session_claim" ]]; then
+    session_claimed="$(head -n1 "$match_session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
+    session_claim_file_used="$match_session_claim"
+    claimed="$session_claimed"
+    claim_source="session-keyed:$(basename "$session_claim_file_used")"
+    claim_file_used="$session_claim_file_used"
+  elif [[ -n "$session_claim" && -s "$session_claim" ]]; then
+    session_claimed="$(head -n1 "$session_claim" 2>/dev/null | tr -d '[:space:]' || true)"
+    session_claim_file_used="$session_claim"
+    claimed="$session_claimed"
+    claim_source="session-keyed:$(basename "$session_claim_file_used")"
+    claim_file_used="$session_claim_file_used"
   fi
 
   if [[ -z "$claimed" ]]; then
@@ -325,30 +407,119 @@ task_is_terminal() {
     *) ;;
   esac
   local note_assigned=""
-  note_assigned="$(grep -oP '^assigned_to:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
+  if grep -qP '^assigned_to:' "$note" 2>/dev/null; then
+    note_assigned="$(
+      grep -oP '^assigned_to:\s*\K.*$' "$note" 2>/dev/null |
+        head -n1 |
+        sed -E "s/^[[:space:]]+|[[:space:]]+$//g; s/^[\"']//; s/[\"']$//" ||
+        true
+    )"
+    case "${note_assigned,,}" in
+      "" | null | none | "~" | "[]") note_assigned="unassigned" ;;
+    esac
+  fi
   if [[ -n "$note_assigned" && "$note_assigned" != "$ROLE" ]]; then
-    return 0
+    # assigned_to mismatch. Discriminate by the SHAPE of the mismatch, not by
+    # cache mtime — the gate touches the claim cache before any check (lease
+    # keep-alive), so a reassigned old lane attempting gated writes would
+    # keep its own cache "fresh" forever and an mtime bound cannot reap it.
+    #
+    # - assigned_to names ANOTHER ROLE: a genuine (re)claim by a live
+    #   claimant — DEFINITIVE terminal, regardless of our cache. Two lanes
+    #   must never own one task.
+    # - assigned_to is 'unassigned' while OUR claim cache names exactly this
+    #   task: that is the cc-hygiene H1 ghost-revert shape (a revert always
+    #   leaves offered/unassigned/claimed_at:null; 2026-07-01 eta/ndcvb-phase1:
+    #   reverted 13s after claim, healthy worker SIGTERMed). INDETERMINATE —
+    #   fall through to the PR-state check — but only while the cache is
+    #   fresh (HAPAX_CLAIM_STAMP_GRACE_S, default 600s): a lane sitting on a
+    #   long-unassigned task should have re-claimed; reap it.
+    if [[ "$note_assigned" != "unassigned" ]]; then
+      return 0
+    fi
+    # Freshness must be HEARTBEAT-IMMUNE: the gate touches the claim file
+    # before its checks (lease keep-alive), so mtime is refreshed even by a
+    # lane whose writes the gate then blocks — mtime can NEVER witness claim
+    # age here, so there is deliberately no mtime fallback. The claim epoch
+    # comes from the `cc-claim-epoch-*` sidecar (distinct prefix: outside
+    # every cc-active-task-* glob, never gate-touched), and only counts when
+    # its recorded task id matches this claim — a stale sidecar left by an
+    # earlier claim cannot age a fresh materialized cache. Both cc-claim and
+    # the remote-exec claim materializer write the sidecar; a matching cache
+    # with NO valid sidecar is a non-conforming writer and reaps.
+    local _stamp_grace="${HAPAX_CLAIM_STAMP_GRACE_S:-600}" _cache_age=-1
+    local _epoch_line="" _claim_epoch="" _epoch_task="" _epoch_file="" _claim_base=""
+    if [[ "$claimed" == "$task" && -n "$claim_file_used" ]]; then
+      # Basename-anchored derivation: substring substitution on the FULL path
+      # would rewrite the first `cc-active-task` occurrence anywhere (e.g. in
+      # a parent directory name) and read a nonexistent sidecar, falsely
+      # reaping a fresh lane.
+      _claim_base="$(basename "$claim_file_used")"
+      _epoch_file="$(dirname "$claim_file_used")/cc-claim-epoch-${_claim_base#cc-active-task-}"
+      _epoch_line="$(head -n1 "$_epoch_file" 2>/dev/null || true)"
+      _claim_epoch="${_epoch_line%% *}"
+      _epoch_task="${_epoch_line#* }"
+      _epoch_task="$(printf '%s' "$_epoch_task" | tr -d '[:space:]')"
+      if [[ "$_claim_epoch" =~ ^[0-9]+$ && "$_epoch_task" == "$task" ]]; then
+        _cache_age=$(( $(date +%s) - _claim_epoch ))
+      fi
+    fi
+    if [[ "$claimed" == "$task" ]] && (( _cache_age >= 0 && _cache_age <= _stamp_grace )); then
+      printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but fresh %s claim cache (claim age=%ss) names this task — treating as indeterminate (H1 ghost-revert shape)\n' \
+        "$$" "$claim_source" "$_cache_age" >&2
+    else
+      if [[ "$claimed" == "$task" && "${HAPAX_CLAIM_EPOCH_CHECK_BYPASS:-0}" == "1" ]]; then
+        printf 'hapax-claude-headless[%s]: task_is_terminal: HAPAX_CLAIM_EPOCH_CHECK_BYPASS=1 for role=%s task=%s with %s claim cache — treating claim-epoch age as indeterminate and continuing to note/PR terminal checks; next action: repair the writer or recreate cc-claim-epoch sidecar, then unset the bypass\n' "$$" "$ROLE" "$task" "$claim_source" >&2
+      elif [[ "$claimed" == "$task" ]]; then
+        if [[ -z "$claim_file_used" ]]; then
+          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but matching claim cache path unavailable for role=%s task=%s — treating as terminal (cannot verify claim epoch); next action: rerun cc-claim or the launcher materializer to recreate the claim cache and epoch sidecar\n' "$$" "$ROLE" "$task" >&2
+        elif [[ ! "$_claim_epoch" =~ ^[0-9]+$ ]]; then
+          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim cache has no valid task-bound epoch sidecar for task=%s — treating as terminal (non-conforming writer); next action: repair the writer or recreate cc-claim-epoch sidecar, then retry the lane\n' "$$" "$claim_source" "$task" >&2
+        elif [[ "$_epoch_task" != "$task" ]]; then
+          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim epoch sidecar names task=%s, not task=%s — treating as terminal (stale sidecar); next action: remove the stale cc-claim-epoch sidecar and re-run cc-claim\n' "$$" "$claim_source" "${_epoch_task:-<empty>}" "$task" >&2
+        else
+          printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim cache age=%ss exceeds grace=%ss for task=%s — treating as terminal (stale unassigned claim); next action: re-run cc-claim to refresh ownership or clear the stale claim\n' "$$" "$claim_source" "$_cache_age" "$_stamp_grace" "$task" >&2
+        fi
+        return 0
+      else
+        printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned and no matching claim cache for role=%s task=%s — treating as terminal (claim cleared or task reoffered); next action: rerun cc-claim before relaunching this lane\n' "$$" "$ROLE" "$task" >&2
+        return 0
+      fi
+    fi
   fi
   # PR merged but the note not yet closed (the dead-lane window): stop now; the
   # merge-watcher closes the note shortly. Fail-open on any gh hiccup.
   local pr=""
   pr="$(grep -oP '^pr:\s*\K[0-9]+' "$note" 2>/dev/null | head -n1 || true)"
   if [[ -n "$pr" ]]; then
-    local state=""
-    state="$(gh pr view "$pr" --json state --jq .state 2>/dev/null || true)"
+    local state="" repo="${HAPAX_GH_REPO:-${GH_REPO:-hapax-systems/hapax-council}}"
+    state="$(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/${repo}/pulls/${pr}" \
+      --jq 'if .state == "closed" and (.merged == true or .merged_at != null) then "MERGED" elif .state == "closed" then "CLOSED" elif .state == "open" then "OPEN" else "" end' 2>/dev/null || true)"
     [[ "$state" == "MERGED" ]] && return 0
   fi
   return 1
 }
 
 dispatch_host_is_local() {
-  local host="${1:-}" short="" fqdn=""
+  local host="${1:-}" short="" fqdn="" local_ip="" resolved_ip=""
   [[ -z "$host" || "$host" == "local" || "$host" == "localhost" ]] && return 0
   [[ "$host" == "127.0.0.1" || "$host" == "::1" ]] && return 0
   short="$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)"
   fqdn="$(hostname -f 2>/dev/null || true)"
+  [[ "$host" == "appendix" ]] && host="hapax-appendix"
+  [[ "$host" == "podium" ]] && host="hapax-podium"
   [[ -n "$short" && "$host" == "$short" ]] && return 0
   [[ -n "$fqdn" && "$host" == "$fqdn" ]] && return 0
+  for local_ip in $(hostname -I 2>/dev/null || true); do
+    [[ "$host" == "$local_ip" ]] && return 0
+  done
+  if command -v getent >/dev/null 2>&1; then
+    for resolved_ip in $(getent ahosts "$host" 2>/dev/null | awk '{print $1}'); do
+      for local_ip in $(hostname -I 2>/dev/null || true); do
+        [[ "$resolved_ip" == "$local_ip" ]] && return 0
+      done
+    done
+  fi
   return 1
 }
 
@@ -356,6 +527,7 @@ remote_python_command() {
   local payload="$1" code="$2"
   local code_b64="" bash_script="" quoted_script="" quoted_payload="" quoted_code=""
   code_b64="$(printf '%s' "$code" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
+  # shellcheck disable=SC2016
   bash_script='export HAPAX_REMOTE_PAYLOAD="$1"; export HAPAX_REMOTE_CODE="$2"; exec python3 -c "import base64,os; exec(base64.b64decode(os.environ[\"HAPAX_REMOTE_CODE\"]))"'
   quoted_script="${bash_script//\'/\'\\\'\'}"
   quoted_payload="${payload//\'/\'\\\'\'}"
@@ -439,6 +611,14 @@ try:
         os.makedirs(cache,exist_ok=True)
         open(os.path.join(cache,"session-role-"+sid),"w",encoding="utf-8").write(role+"\n")
         if task:
+            import time as _time
+            epoch_line=str(int(_time.time()))+" "+task+"\n"
+            # Task-bound epoch sidecars are written BEFORE the caches they
+            # vouch for: task_is_terminal trusts a sidecar only when it names
+            # this task and has NO mtime fallback, so a matching cache must
+            # never be visible without its sidecar.
+            open(os.path.join(cache,"cc-claim-epoch-"+role),"w",encoding="utf-8").write(epoch_line)
+            open(os.path.join(cache,"cc-claim-epoch-"+role+"-"+sid),"w",encoding="utf-8").write(epoch_line)
             open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
             open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
             materialized=True

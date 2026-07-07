@@ -13,7 +13,11 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from agents.request_decomposer.models import RequestDecomposition, TaskSpec
+from agents.request_decomposer.models import (
+    REQUIREMENT_VECTOR_DIMENSIONS,
+    RequestDecomposition,
+    TaskSpec,
+)
 from agents.request_decomposer.writer import write_decomposition
 from shared.frontmatter import parse_frontmatter
 from shared.route_metadata_schema import RouteMetadataStatus, assess_route_metadata
@@ -34,6 +38,53 @@ def _load_request_decompose_module() -> ModuleType:
     return module
 
 
+def _requirement_vector(**overrides: int) -> dict[str, int]:
+    values = {dimension: 1 for dimension in REQUIREMENT_VECTOR_DIMENSIONS}
+    values.update(overrides)
+    return values
+
+
+def _validity_mask(**overrides: bool) -> dict[str, bool]:
+    values = {dimension: True for dimension in REQUIREMENT_VECTOR_DIMENSIONS}
+    values.update(overrides)
+    return values
+
+
+def _route_envelope(**classification_overrides: object) -> dict[str, object]:
+    classification: dict[str, object] = {
+        "label": "source_python",
+        "classifier": "test.deterministic",
+        "source_kind": "deterministic",
+        "confidence": 0.91,
+        "evidence_refs": ["test:classification-evidence"],
+        "freshness": "fresh",
+        "authority_ceiling": "authoritative",
+        "validity_mask": {
+            "label": True,
+            "source": True,
+            "confidence": True,
+            "freshness": True,
+            "authority_ceiling": True,
+        },
+        "deterministic_facts_used": ["target_paths:agents/foo/helper.py"],
+        "consumer_floor": "frontier_required",
+    }
+    classification.update(classification_overrides)
+    return {
+        "classification_envelope": classification,
+        "eligibility": {
+            "authority_allowed": True,
+            "privacy_allowed": True,
+            "freshness_ok": True,
+            "quality_floor_satisfied": True,
+            "required_tools_available": True,
+            "budget_allowed": True,
+            "reason_codes": ["eligibility_witnessed"],
+        },
+        "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
+    }
+
+
 class TestTaskSpec:
     def test_valid_task(self):
         t = TaskSpec(
@@ -45,6 +96,174 @@ class TestTaskSpec:
         )
         assert t.task_id == "test-task"
         assert t.status == "offered"
+
+    def test_taxonomy_fields_are_additive_defaults(self):
+        t = TaskSpec(
+            task_id="taxonomy-defaults",
+            title="No taxonomy yet",
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["It works"],
+        )
+
+        assert t.routing_class == "unknown"
+        assert t.requirement_vector == {}
+        assert t.composition_tolerance == "unknown"
+        assert t.requirement_vector_validity_mask == {}
+
+    def test_complete_taxonomy_payload_is_validated(self):
+        t = TaskSpec(
+            task_id="taxonomy-full",
+            title="Classified task",
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["It works"],
+            routing_class="source-python",
+            requirement_vector=_requirement_vector(
+                information_scope=3,
+                context_length=2,
+                governance_sensitivity=0,
+            ),
+            composition_tolerance="parallel",
+            requirement_vector_validity_mask=_validity_mask(context_length=False),
+        )
+
+        assert t.routing_class == "source_python"
+        assert t.requirement_vector["information_scope"] == 3
+        assert t.composition_tolerance == "parallel_ok"
+        assert t.requirement_vector_validity_mask["context_length"] is False
+
+    def test_taxonomy_vector_accepts_ordered_eight_value_sequence(self):
+        t = TaskSpec(
+            task_id="taxonomy-sequence",
+            title="Classified task",
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["It works"],
+            routing_class="verification",
+            requirement_vector=[0, 1, 2, 3, 4, 5, 4, 3],
+            composition_tolerance="atomic",
+            requirement_vector_validity_mask=[True] * 8,
+        )
+
+        assert t.requirement_vector == dict(
+            zip(REQUIREMENT_VECTOR_DIMENSIONS, [0, 1, 2, 3, 4, 5, 4, 3], strict=True)
+        )
+
+    def test_partial_taxonomy_vector_rejected(self):
+        with pytest.raises(ValueError, match="exactly 8 dimensions"):
+            TaskSpec(
+                task_id="taxonomy-partial",
+                title="Partial taxonomy",
+                parent_request="REQ-test.md",
+                authority_case="CASE-TEST",
+                acceptance_criteria=["It works"],
+                routing_class="source_python",
+                requirement_vector={"quality_floor": 1},
+                requirement_vector_validity_mask={"quality_floor": True},
+            )
+
+    def test_taxonomy_without_validity_mask_rejected(self):
+        with pytest.raises(
+            ValueError,
+            match=(
+                "routing taxonomy requires requirement_vector_validity_mask; next action: add "
+                "true/false validity"
+            ),
+        ):
+            TaskSpec(
+                task_id="taxonomy-no-mask",
+                title="No mask",
+                parent_request="REQ-test.md",
+                authority_case="CASE-TEST",
+                acceptance_criteria=["It works"],
+                routing_class="source_python",
+                requirement_vector=_requirement_vector(),
+            )
+
+    def test_taxonomy_without_requirement_vector_rejected_with_next_action(self):
+        with pytest.raises(
+            ValueError,
+            match=("routing taxonomy requires requirement_vector; next action: add one 0-5 score"),
+        ):
+            TaskSpec(
+                task_id="taxonomy-no-vector",
+                title="No vector",
+                parent_request="REQ-test.md",
+                authority_case="CASE-TEST",
+                acceptance_criteria=["It works"],
+                routing_class="source_python",
+                requirement_vector_validity_mask=_validity_mask(),
+            )
+
+    def test_invalid_taxonomy_score_rejected(self):
+        with pytest.raises(ValueError, match="next action: set each requirement vector score"):
+            TaskSpec(
+                task_id="taxonomy-bad-score",
+                title="Bad score",
+                parent_request="REQ-test.md",
+                authority_case="CASE-TEST",
+                acceptance_criteria=["It works"],
+                routing_class="source_python",
+                requirement_vector=_requirement_vector(context_length=6),
+                requirement_vector_validity_mask=_validity_mask(),
+            )
+
+    def test_invalid_taxonomy_mask_error_includes_next_action(self):
+        validity_mask: dict[str, object] = _validity_mask()
+        validity_mask["context_length"] = "maybe"
+
+        with pytest.raises(
+            ValueError,
+            match="next action: set each requirement_vector_validity_mask value",
+        ):
+            TaskSpec(
+                task_id="taxonomy-bad-mask",
+                title="Bad mask",
+                parent_request="REQ-test.md",
+                authority_case="CASE-TEST",
+                acceptance_criteria=["It works"],
+                routing_class="source_python",
+                requirement_vector=_requirement_vector(),
+                requirement_vector_validity_mask=validity_mask,
+            )
+
+    def test_unknown_taxonomy_dimension_error_includes_next_action(self):
+        with pytest.raises(ValueError, match="next action: provide one value"):
+            TaskSpec(
+                task_id="taxonomy-unknown-dimension",
+                title="Unknown taxonomy dimension",
+                parent_request="REQ-test.md",
+                authority_case="CASE-TEST",
+                acceptance_criteria=["It works"],
+                routing_class="source_python",
+                requirement_vector={**_requirement_vector(), "unknown_dimension": 1},
+                requirement_vector_validity_mask=_validity_mask(),
+            )
+
+    def test_route_envelope_is_carried_when_high_confidence_is_justified(self):
+        t = TaskSpec(
+            task_id="route-envelope",
+            title="Route envelope",
+            parent_request="REQ-test.md",
+            authority_case="CASE-TEST",
+            acceptance_criteria=["It works"],
+            route_envelope=_route_envelope(),
+        )
+
+        assert t.route_envelope is not None
+        assert t.route_envelope.classification_envelope.label == "source_python"
+
+    def test_high_confidence_route_envelope_without_evidence_is_rejected(self):
+        with pytest.raises(ValueError, match="high-confidence classification"):
+            TaskSpec(
+                task_id="route-envelope-bad",
+                title="Route envelope bad",
+                parent_request="REQ-test.md",
+                authority_case="CASE-TEST",
+                acceptance_criteria=["It works"],
+                route_envelope=_route_envelope(evidence_refs=[], deterministic_facts_used=[]),
+            )
 
     def test_d8_rust_source_forces_frontier(self):
         t = TaskSpec(
@@ -431,6 +650,58 @@ class TestWriter:
             assert "target_paths:" in content
             assert "agents/foo/bar.rs" in content
 
+    def test_real_write_renders_taxonomy_fields(self):
+        with tempfile.TemporaryDirectory() as td:
+            decomp = RequestDecomposition(
+                request_id="test-taxonomy-write",
+                request_path="/tmp/test.md",
+                tasks=[
+                    TaskSpec(
+                        task_id="taxonomy-write",
+                        title="taxonomy fields",
+                        parent_request="REQ-test.md",
+                        authority_case="CASE-TEST",
+                        acceptance_criteria=["x"],
+                        routing_class="source_python",
+                        requirement_vector=_requirement_vector(),
+                        composition_tolerance="atomic",
+                        requirement_vector_validity_mask=_validity_mask(),
+                    )
+                ],
+            )
+
+            [path] = write_decomposition(decomp, Path(td))
+            frontmatter, _body = parse_frontmatter(path.read_text(encoding="utf-8"))
+
+        assert frontmatter["routing_class"] == "source_python"
+        assert frontmatter["requirement_vector"]["context_length"] == 1
+        assert frontmatter["composition_tolerance"] == "atomic"
+        assert frontmatter["requirement_vector_validity_mask"]["context_length"] is True
+
+    def test_real_write_renders_route_envelope_and_task_demand_when_present(self):
+        with tempfile.TemporaryDirectory() as td:
+            decomp = RequestDecomposition(
+                request_id="test-envelope-write",
+                request_path="/tmp/test.md",
+                tasks=[
+                    TaskSpec(
+                        task_id="envelope-write",
+                        title="envelope fields",
+                        parent_request="REQ-test.md",
+                        authority_case="CASE-TEST",
+                        acceptance_criteria=["x"],
+                        route_envelope=_route_envelope(),
+                        task_demand={"fixed_route_overhead_sensitivity": 5},
+                    )
+                ],
+            )
+
+            [path] = write_decomposition(decomp, Path(td))
+            frontmatter, _body = parse_frontmatter(path.read_text(encoding="utf-8"))
+
+        assert frontmatter["route_envelope"]["classification_envelope"]["label"] == "source_python"
+        assert frontmatter["task_demand"]["fixed_route_overhead_sensitivity"] == 5
+
     def test_real_write_frontmatter_is_yaml_safe(self):
         with tempfile.TemporaryDirectory() as td:
             decomp = RequestDecomposition(
@@ -486,6 +757,7 @@ class TestWriter:
                     mutation_surface="source",
                     acceptance_criteria=["Route validates"],
                     intent="Write dispatchable metadata.",
+                    route_envelope=_route_envelope(),
                 ),
             ],
         )
@@ -515,6 +787,7 @@ class TestWriter:
                     mutation_surface="vault_docs",
                     acceptance_criteria=["Route validates"],
                     intent="Write support metadata.",
+                    route_envelope=_route_envelope(),
                 ),
             ],
         )
@@ -609,6 +882,14 @@ status: accepted_for_planning
 
 
 class TestRequestDecomposeScan:
+    def _admitted_cctv_frontmatter(self, receipt: str = "receipt://REQ-test") -> dict[str, object]:
+        return {
+            "cctv_intake_receipt": receipt,
+            "cctv_intake_verdict": "ready_to_plan",
+            "cctv_route_resource_admission": "admitted",
+            "cctv_capability_receipts": ["cctv-capability-admission:test-member"],
+        }
+
     def _request_data(self, tmp_path: Path, frontmatter: dict[str, object]) -> dict[str, object]:
         request_path = tmp_path / "REQ-test.md"
         return {
@@ -733,8 +1014,7 @@ parent_request: {request}
             tmp_path,
             {
                 "status": "accepted_for_planning",
-                "cctv_intake_receipt": "receipt://REQ-test",
-                "cctv_intake_verdict": "ready_to_plan",
+                **self._admitted_cctv_frontmatter(),
                 "planning_case": "CASE-TEST-001",
             },
         )
@@ -772,7 +1052,7 @@ parent_request: {request}
             script._decomposition_admission_blockers(request_data)
         )
 
-    def test_decomposition_admission_blocks_missing_authority_case(self, tmp_path):
+    def test_decomposition_admission_blocks_missing_route_resource_state(self, tmp_path):
         script = _load_request_decompose_module()
         request_data = self._request_data(
             tmp_path,
@@ -780,6 +1060,62 @@ parent_request: {request}
                 "status": "accepted_for_planning",
                 "cctv_intake_receipt": "receipt://REQ-test",
                 "cctv_intake_verdict": "ready_to_plan",
+                "planning_case": "CASE-TEST-001",
+            },
+        )
+
+        assert "missing_cctv_route_resource_admission" in (
+            script._decomposition_admission_blockers(request_data)
+        )
+
+    @pytest.mark.parametrize("route_state", ["refused", "partial_admitted"])
+    def test_decomposition_admission_blocks_non_admitted_route_resource_state(
+        self, tmp_path, route_state: str
+    ):
+        script = _load_request_decompose_module()
+        request_data = self._request_data(
+            tmp_path,
+            {
+                "status": "accepted_for_planning",
+                **self._admitted_cctv_frontmatter(),
+                "cctv_route_resource_admission": route_state,
+                "planning_case": "CASE-TEST-001",
+            },
+        )
+
+        assert f"cctv_route_resource_not_admitted:{route_state}" in (
+            script._decomposition_admission_blockers(request_data)
+        )
+
+    @pytest.mark.parametrize(
+        "empty_receipts",
+        [[], "[]", '"[]"', "[null]", "[unassigned]", "['null']", '["unassigned"]'],
+    )
+    def test_decomposition_admission_blocks_admitted_route_without_receipts(
+        self, tmp_path, empty_receipts: object
+    ):
+        script = _load_request_decompose_module()
+        request_data = self._request_data(
+            tmp_path,
+            {
+                "status": "accepted_for_planning",
+                **self._admitted_cctv_frontmatter(),
+                "cctv_capability_receipts": empty_receipts,
+                "planning_case": "CASE-TEST-001",
+            },
+        )
+
+        assert "missing_cctv_capability_receipts" in (
+            script._decomposition_admission_blockers(request_data)
+        )
+
+    def test_decomposition_admission_blocks_missing_authority_case(self, tmp_path):
+        script = _load_request_decompose_module()
+        request_data = self._request_data(
+            tmp_path,
+            {
+                "status": "accepted_for_planning",
+                **self._admitted_cctv_frontmatter(),
             },
         )
 
@@ -1016,6 +1352,189 @@ planning_case: CASE-TEST-001
         assert task.quality_floor == "frontier_required"
         assert task.task_id == "req-test-implement"
 
+    def test_prompt_requests_taxonomy_fields(self):
+        script = _load_request_decompose_module()
+
+        assert "routing_class" in script.DECOMPOSITION_PROMPT
+        assert "requirement_vector" in script.DECOMPOSITION_PROMPT
+        assert "requirement_vector_validity_mask" in script.DECOMPOSITION_PROMPT
+
+    def test_decomposition_carries_llm_route_envelope_and_task_demand(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+
+        def completion(**_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(
+                                {
+                                    "tasks": [
+                                        {
+                                            "task_id": "req-test-route-aware",
+                                            "title": "Build route-aware task",
+                                            "kind": "build",
+                                            "routing_class": "source_python",
+                                            "requirement_vector": _requirement_vector(),
+                                            "requirement_vector_validity_mask": _validity_mask(),
+                                            "route_envelope": _route_envelope(),
+                                            "task_demand": {"fixed_route_overhead_sensitivity": 5},
+                                            "acceptance_criteria": [
+                                                "Route envelope and demand survive normalization."
+                                            ],
+                                        }
+                                    ]
+                                }
+                            )
+                        )
+                    )
+                ]
+            )
+
+        monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(completion=completion))
+
+        request_data = self._request_data(
+            tmp_path,
+            {"status": "accepted_for_planning", "planning_case": "CASE-REAL-001"},
+        )
+        decomp = script._decompose_with_llm(request_data)
+
+        assert decomp is not None
+        task = decomp.tasks[0]
+        assert task.route_envelope is not None
+        assert task.route_envelope.classification_envelope.label == "source_python"
+        assert task.task_demand["fixed_route_overhead_sensitivity"] == 5
+
+    def test_decomposition_parses_taxonomy_held_set(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+
+        tasks = [
+            {
+                "task_id": "req-test-python",
+                "title": "Patch Python helper",
+                "kind": "build",
+                "mutation_surface": "source",
+                "quality_floor": "deterministic_ok",
+                "target_paths": ["agents/foo/helper.py"],
+                "routing_class": "source_python",
+                "requirement_vector": _requirement_vector(
+                    quality_floor=1,
+                    information_scope=2,
+                    context_length=2,
+                    mutation_risk=2,
+                    verification_demand=1,
+                    ambiguity_novelty=1,
+                    composition_coupling=1,
+                    governance_sensitivity=0,
+                ),
+                "composition_tolerance": "parallel_ok",
+                "requirement_vector_validity_mask": _validity_mask(),
+                "acceptance_criteria": ["Helper behavior is tested"],
+            },
+            {
+                "task_id": "req-test-shader",
+                "title": "Patch governed shader",
+                "kind": "build",
+                "mutation_surface": "source",
+                "quality_floor": "deterministic_ok",
+                "target_paths": ["agents/shaders/nodes/example.wgsl"],
+                "routing_class": "source_governance",
+                "requirement_vector": _requirement_vector(
+                    quality_floor=5,
+                    information_scope=3,
+                    context_length=3,
+                    mutation_risk=4,
+                    verification_demand=4,
+                    ambiguity_novelty=3,
+                    composition_coupling=2,
+                    governance_sensitivity=5,
+                ),
+                "composition_tolerance": "atomic",
+                "requirement_vector_validity_mask": _validity_mask(),
+                "acceptance_criteria": ["Shader behavior remains covered"],
+            },
+            {
+                "task_id": "req-test-docs",
+                "title": "Draft support note",
+                "kind": "research_packet",
+                "mutation_surface": "vault_docs",
+                "quality_floor": "frontier_review_required",
+                "authority_level": "support_non_authoritative",
+                "routing_class": "research_support",
+                "requirement_vector": _requirement_vector(
+                    quality_floor=3,
+                    information_scope=4,
+                    context_length=4,
+                    mutation_risk=1,
+                    verification_demand=3,
+                    ambiguity_novelty=4,
+                    composition_coupling=2,
+                    governance_sensitivity=2,
+                ),
+                "composition_tolerance": "sequential_required",
+                "requirement_vector_validity_mask": _validity_mask(context_length=False),
+                "acceptance_criteria": ["Support note cites source paths"],
+            },
+        ]
+
+        def completion(**_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(message=SimpleNamespace(content=json.dumps({"tasks": tasks})))
+                ]
+            )
+
+        monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(completion=completion))
+
+        request_data = self._request_data(
+            tmp_path,
+            {"status": "accepted_for_planning", "planning_case": "CASE-REAL-001"},
+        )
+        decomp = script._decompose_with_llm(request_data)
+
+        assert decomp is not None
+        python_task, shader_task, docs_task = decomp.tasks
+        assert python_task.routing_class == "source_python"
+        assert python_task.requirement_vector["information_scope"] == 2
+        assert python_task.composition_tolerance == "parallel_ok"
+        assert shader_task.routing_class == "source_governance"
+        assert shader_task.quality_floor == "frontier_required"
+        assert docs_task.routing_class == "research_support"
+        assert docs_task.requirement_vector_validity_mask["context_length"] is False
+
+    def test_decomposition_fails_closed_on_partial_taxonomy(self, tmp_path, monkeypatch):
+        script = _load_request_decompose_module()
+
+        def completion(**_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(
+                                {
+                                    "tasks": [
+                                        {
+                                            "task_id": "req-test-partial-taxonomy",
+                                            "title": "Partial taxonomy",
+                                            "routing_class": "source_python",
+                                            "acceptance_criteria": ["done"],
+                                        }
+                                    ]
+                                }
+                            )
+                        )
+                    )
+                ]
+            )
+
+        monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(completion=completion))
+
+        request_data = self._request_data(
+            tmp_path,
+            {"status": "accepted_for_planning", "planning_case": "CASE-REAL-001"},
+        )
+        assert script._decompose_with_llm(request_data) is None
+
     def test_decomposition_parses_fenced_json_with_preamble(self, tmp_path, monkeypatch):
         script = _load_request_decompose_module()
 
@@ -1231,6 +1750,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-002-admitted
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-002-admitted
 ---
 
 # Request
@@ -1245,6 +1767,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-003-admitted
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-003-admitted
 ---
 
 # Request
@@ -1302,6 +1827,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-001-admitted
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-001-admitted
 ---
 
 # Request
@@ -1328,6 +1856,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-003-admitted
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-003-admitted
 ---
 
 # Request
@@ -1553,6 +2084,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-llm
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-llm
 ---
 
 # Request
@@ -1592,6 +2126,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-conflict
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-conflict
 ---
 
 # Request
@@ -1691,6 +2228,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-single-llm
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-single-llm
 ---
 
 # Request
@@ -1723,6 +2263,9 @@ status: accepted_for_planning
 planning_case: CASE-TEST-001
 cctv_intake_receipt: receipt://REQ-single-conflict
 cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+  - cctv-capability-admission:REQ-single-conflict
 ---
 
 # Request

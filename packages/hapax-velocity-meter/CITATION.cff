@@ -10,7 +10,7 @@ authors:
 - given-names: Claude
   family-names: Code
   email: noreply@anthropic.com
-repository-code: https://github.com/ryanklee/hapax-council
+repository-code: https://github.com/hapax-systems/hapax-council
 url: https://hapax.weblog.lol/velocity-report-2026-04-25
 license: LicenseRef-PolyForm-Strict-1.0.0
 keywords:

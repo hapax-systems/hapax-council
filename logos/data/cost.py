@@ -5,10 +5,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from logos._langfuse_client import LANGFUSE_PK, langfuse_get
 
 log = logging.getLogger("logos.data.cost")
+LOCAL_CAPACITY_FILE = Path("/dev/shm/hapax-local-capacity.json")
 
 
 @dataclass
@@ -34,6 +36,19 @@ class CostTrend:
 
 
 @dataclass
+class LocalVolumeTrend:
+    """Local inference capacity, separated from dollar-denominated LLM spend."""
+
+    pressure: float = 0.0
+    inflight: float = 0.0
+    ceiling: float = 0.0
+    ttft_ratio: float = 1.0
+    age_s: float = 0.0
+    alert_active: bool = False
+    available: bool = False
+
+
+@dataclass
 class CostSnapshot:
     today_cost: float = 0.0
     period_cost: float = 0.0
@@ -41,6 +56,76 @@ class CostSnapshot:
     top_models: list[ModelCost] = field(default_factory=list)
     available: bool = False
     trend: CostTrend | None = None
+    local_capacity: LocalVolumeTrend | None = None
+
+
+def _first_float(data: dict, *keys: str, default: float = 0.0) -> float:
+    for key in keys:
+        if key in data:
+            try:
+                return float(data.get(key))
+            except (TypeError, ValueError):
+                continue
+    return default
+
+
+def collect_local_volume_trend(
+    *,
+    path: Path = LOCAL_CAPACITY_FILE,
+    max_age_s: float = 120.0,
+) -> LocalVolumeTrend:
+    """Read local inference pressure for the cost dashboard.
+
+    The local route is non-dollar capacity, so it is intentionally not folded
+    into ``llm_cost_pressure``. Missing, malformed, or stale data returns an
+    unavailable trend instead of raising.
+    """
+    try:
+        import json
+        import time
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return LocalVolumeTrend()
+        timestamp = _first_float(data, "timestamp", "ts", default=0.0)
+        age_s = time.time() - timestamp if timestamp > 0 else time.time() - path.stat().st_mtime
+        if age_s > max_age_s:
+            return LocalVolumeTrend(age_s=round(age_s, 1))
+
+        inflight = _first_float(
+            data,
+            "inflight",
+            "in_flight",
+            "active_requests",
+            "active",
+        )
+        ceiling = _first_float(
+            data,
+            "ceiling",
+            "capacity_ceiling",
+            "max_concurrency",
+            "concurrency_ceiling",
+        )
+        ttft_ratio = _first_float(data, "ttft_ratio", default=0.0)
+        if ttft_ratio <= 0:
+            ttft_ewma = _first_float(data, "ttft_ewma_s", "ttft_ewma_ms")
+            ttft_baseline = _first_float(data, "ttft_baseline_s", "ttft_baseline_ms")
+            ttft_ratio = ttft_ewma / ttft_baseline if ttft_ewma > 0 and ttft_baseline > 0 else 1.0
+
+        inflight_pressure = max(0.0, min(1.0, inflight / ceiling)) if ceiling > 0 else 0.0
+        latency_pressure = max(0.0, min(1.0, (ttft_ratio - 1.0) / 2.0))
+        pressure = max(inflight_pressure, latency_pressure)
+        return LocalVolumeTrend(
+            pressure=round(pressure, 3),
+            inflight=round(inflight, 3),
+            ceiling=round(ceiling, 3),
+            ttft_ratio=round(ttft_ratio, 3),
+            age_s=round(age_s, 1),
+            alert_active=pressure > 0.7,
+            available=True,
+        )
+    except Exception:
+        return LocalVolumeTrend()
 
 
 def collect_cost(lookback_days: int = 7) -> CostSnapshot:
@@ -49,8 +134,9 @@ def collect_cost(lookback_days: int = 7) -> CostSnapshot:
     Returns CostSnapshot with available=False if Langfuse is unreachable
     or credentials are missing.
     """
+    local_capacity = collect_local_volume_trend()
     if not LANGFUSE_PK:
-        return CostSnapshot()
+        return CostSnapshot(local_capacity=local_capacity)
 
     now = datetime.now(UTC)
     today_str = now.strftime("%Y-%m-%d")
@@ -71,7 +157,7 @@ def collect_cost(lookback_days: int = 7) -> CostSnapshot:
 
         if not resp:
             if not got_first_page:
-                return CostSnapshot()
+                return CostSnapshot(local_capacity=local_capacity)
             break  # partial data from earlier pages
 
         got_first_page = True
@@ -108,6 +194,7 @@ def collect_cost(lookback_days: int = 7) -> CostSnapshot:
         daily_average=daily_average,
         top_models=top_models,
         available=True,
+        local_capacity=local_capacity,
     )
 
 

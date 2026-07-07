@@ -2,7 +2,7 @@
 
 Regression tests for the 2026-03-31 audit findings:
 - C1: API route must parse nested DimensionReading dicts
-- C2: Sync agent must persist all 10 dimensions
+- C2: Sync agent must persist all canonical dimensions
 - C3: imagination.py must use "stance" (sensor-layer key) not "overall_stance" (raw SHM key)
 - C4: reverie/actuation.py must use "overall_stance" and derive color_warmth
 - H2: Engine must ignore stale stimmung (>5min)
@@ -40,7 +40,7 @@ class TestShmWriteRoundtrip:
         assert raw["overall_stance"] == "cautious"
 
     def test_collector_snapshot_roundtrip(self):
-        """Collector → snapshot → JSON → parse must preserve all 10 dimensions."""
+        """Collector → snapshot → JSON → parse must preserve core dimensions."""
         collector = StimmungCollector()
         collector.update_health(healthy=8, total=10)
         collector.update_gpu(used_mb=22000, total_mb=24000)
@@ -49,10 +49,11 @@ class TestShmWriteRoundtrip:
         snapshot = collector.snapshot()
         raw = json.loads(snapshot.model_dump_json())
 
-        # All 10 dimensions must be present as nested dicts
+        # Core dimensions must be present as nested dicts.
         expected_dims = [
             "health",
             "resource_pressure",
+            "local_capacity_pressure",
             "error_rate",
             "processing_throughput",
             "perception_confidence",
@@ -146,25 +147,28 @@ class TestConsumerFieldNames:
             assert written.get("signal.stance", -1) != 0.0  # degraded = 0.5, not 0.0
             assert "signal.color_warmth" in written
 
-    def test_reverie_color_warmth_derived_from_infra(self):
+    def test_reverie_color_warmth_derived_from_infra(self, tmp_path: Path, monkeypatch):
         """color_warmth must be derived from worst infra dimension, not a phantom field."""
+        from agents.reverie import _uniforms
+        from agents.visual_chain import VisualChainCapability
+
+        uniforms_path = tmp_path / "uniforms.json"
+        monkeypatch.setattr(_uniforms, "UNIFORMS_FILE", uniforms_path)
         stimmung_raw = self._make_stimmung_raw()
+        stimmung_raw["local_capacity_pressure"]["value"] = 0.93
 
-        # Worst infra value is resource_pressure at 0.8
-        worst_infra = 0.0
-        for dim_key in (
-            "health",
-            "resource_pressure",
-            "error_rate",
-            "processing_throughput",
-            "perception_confidence",
-            "llm_cost_pressure",
-        ):
-            dim_data = stimmung_raw.get(dim_key, {})
-            if isinstance(dim_data, dict):
-                worst_infra = max(worst_infra, dim_data.get("value", 0.0))
+        _uniforms.write_uniforms(None, stimmung_raw, VisualChainCapability(), 0.0, (0.5, 0.5), 0.0)
 
-        assert worst_infra == pytest.approx(0.8)  # resource_pressure
+        assert uniforms_path.exists()
+        written = json.loads(uniforms_path.read_text())
+        assert written["signal.color_warmth"] == pytest.approx(0.93)
+
+        stimmung_raw = self._make_stimmung_raw()
+        stimmung_raw["local_capacity_pressure"]["value"] = 0.2
+        _uniforms.write_uniforms(None, stimmung_raw, VisualChainCapability(), 0.0, (0.5, 0.5), 0.0)
+
+        written = json.loads(uniforms_path.read_text())
+        assert written["signal.color_warmth"] == pytest.approx(0.8)
 
     def test_engine_ignores_stale_stimmung(self, tmp_path: Path):
         """Engine must return nominal for stimmung older than 5 minutes."""
@@ -197,10 +201,10 @@ class TestConsumerFieldNames:
 
 
 class TestSyncDimensions:
-    """Verify sync agent captures all 10 dimensions."""
+    """Verify sync agent captures all canonical dimensions."""
 
     def test_sync_dimension_names_complete(self):
-        """stimmung_sync.DIMENSION_NAMES must include all 10 dimensions."""
+        """stimmung_sync.DIMENSION_NAMES must include all canonical dimensions."""
         from agents.stimmung_sync import DIMENSION_NAMES
         from shared.stimmung import _DIMENSION_NAMES
 
@@ -232,7 +236,7 @@ class TestSyncDimensions:
 
         assert result is True
 
-        # Verify cached state has all 10 dimensions
+        # Verify cached state has all canonical dimensions.
         cache_state = json.loads((tmp_path / "cache" / "state.json").read_text())
         last_reading = cache_state["readings"][-1]
         for dim in DIMENSION_NAMES:

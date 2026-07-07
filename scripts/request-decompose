@@ -62,6 +62,19 @@ CCTV_INTAKE_ADMISSION_FIELDS = (
     "cctv_intake_recommendation",
     "intake_recommendation",
 )
+CCTV_ROUTE_RESOURCE_ADMISSION_FIELDS = (
+    "cctv_route_resource_admission",
+    "route_resource_admission",
+    "cctv_capability_admission",
+    "capability_admission",
+)
+CCTV_CAPABILITY_RECEIPT_FIELDS = (
+    "cctv_capability_receipts",
+    "capability_receipts",
+    "cctv_capability_receipt_refs",
+    "capability_receipt_refs",
+)
+NULLISH_SCALARS = {"", "null", "none", "None", "NULL", "~", "unassigned", "[]"}
 
 DECOMPOSITION_PROMPT = """\
 You are the Hapax request decomposition engine. Given a request note,
@@ -81,6 +94,16 @@ Each task object must have these fields:
 - effort_class: "standard" | "high" | "max"
 - mutation_surface: "none" | "vault_docs" | "source" | "runtime" | "public" | "provider_spend"
 - quality_floor: "deterministic_ok" | "frontier_review_required" | "frontier_required"
+- target_paths: list of repo-relative paths the task is expected to touch; [] if none/unknown
+- routing_class: one of "coordination", "research_support", "docs_planning",
+  "source_python", "source_other", "source_governance", "runtime_ops",
+  "public_surface", "provider_spend", "operator_action", "verification", "unknown"
+- requirement_vector: object with exactly these 8 integer 0..5 dimensions:
+  quality_floor, information_scope, context_length, mutation_risk, verification_demand,
+  ambiguity_novelty, composition_coupling, governance_sensitivity
+- composition_tolerance: "atomic" | "parallel_ok" | "sequential_required" |
+  "decompose_required" | "unknown"
+- requirement_vector_validity_mask: object with the same 8 keys and boolean values
 
 Rules:
 1. EVERY task the request needs must appear. No stubs.
@@ -88,6 +111,12 @@ Rules:
 3. Acceptance criteria must be observable/testable.
 4. If the request has explicit phases, use them. If not, infer from scope.
 5. Generate 1-8 tasks. If >8 needed, the request should be split.
+6. Use routing_class="source_governance" for source tasks touching Rust, WGSL,
+   CODEOWNERS, or governance-protected paths; otherwise use the narrowest class.
+7. The requirement_vector is demand/risk, where 0 is trivial/none and 5 is
+   frontier/high-risk/unknown. Set a validity-mask dimension false when the
+   request lacks enough evidence; use conservative high scores for unknown hard
+   dimensions.
 """
 
 
@@ -108,7 +137,9 @@ def _scalar(value: Any) -> str:
     if isinstance(value, list):
         return ""
     text = str(value).strip()
-    return "" if text in {"null", "None", "~"} else text
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        text = text[1:-1].strip()
+    return "" if text in NULLISH_SCALARS or text.lower() in NULLISH_SCALARS else text
 
 
 def _string_list(value: Any) -> list[str]:
@@ -120,7 +151,9 @@ def _string_list(value: Any) -> list[str]:
     if not text:
         return []
     if text.startswith("[") and text.endswith("]"):
-        return [part.strip().strip("'\"") for part in text[1:-1].split(",") if part.strip()]
+        return [
+            item for part in text[1:-1].split(",") if (item := _scalar(part.strip().strip("'\"")))
+        ]
     return [text]
 
 
@@ -590,6 +623,15 @@ def _coerce_llm_task(
         "mutation_surface": _normalize_mutation_surface(raw_task.get("mutation_surface")),
         "quality_floor": _normalize_quality_floor(raw_task.get("quality_floor"), request_data),
         "target_paths": _string_items(raw_task.get("target_paths")),
+        "routing_class": raw_task.get("routing_class", "unknown"),
+        "requirement_vector": raw_task.get("requirement_vector", {}),
+        "composition_tolerance": raw_task.get("composition_tolerance", "unknown"),
+        "requirement_vector_validity_mask": raw_task.get(
+            "requirement_vector_validity_mask",
+            raw_task.get("validity_mask", {}),
+        ),
+        "route_envelope": raw_task.get("route_envelope"),
+        "task_demand": raw_task.get("task_demand", {}),
     }
 
 
@@ -599,6 +641,15 @@ def _first_scalar(frontmatter: dict[str, Any], field_names: tuple[str, ...]) -> 
         if value:
             return value
     return ""
+
+
+def _first_values(frontmatter: dict[str, Any], field_names: tuple[str, ...]) -> list[str]:
+    values: list[str] = []
+    for field_name in field_names:
+        for value in _string_list(frontmatter.get(field_name)):
+            if value and value not in values:
+                values.append(value)
+    return values
 
 
 def _authority_case(frontmatter: dict[str, Any]) -> str:
@@ -627,6 +678,14 @@ def _decomposition_admission_blockers(request_data: dict[str, Any]) -> list[str]
         blockers.append("missing_cctv_intake_verdict")
     elif admission_value not in CCTV_READY_ADMISSION_VALUES:
         blockers.append(f"cctv_intake_not_ready:{admission_value}")
+
+    route_admission = _first_scalar(fm, CCTV_ROUTE_RESOURCE_ADMISSION_FIELDS)
+    if not route_admission:
+        blockers.append("missing_cctv_route_resource_admission")
+    elif route_admission != "admitted":
+        blockers.append(f"cctv_route_resource_not_admitted:{route_admission}")
+    elif not _first_values(fm, CCTV_CAPABILITY_RECEIPT_FIELDS):
+        blockers.append("missing_cctv_capability_receipts")
 
     authority = _authority_case(fm)
     if not authority:
@@ -776,6 +835,12 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
                     mutation_surface=normalized["mutation_surface"],
                     quality_floor=normalized["quality_floor"],
                     target_paths=normalized["target_paths"],
+                    routing_class=normalized["routing_class"],
+                    requirement_vector=normalized["requirement_vector"],
+                    composition_tolerance=normalized["composition_tolerance"],
+                    requirement_vector_validity_mask=normalized["requirement_vector_validity_mask"],
+                    route_envelope=normalized["route_envelope"],
+                    task_demand=normalized["task_demand"],
                 )
             )
 

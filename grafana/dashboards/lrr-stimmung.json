@@ -12,7 +12,7 @@
       }
     ]
   },
-  "description": "Stimmung dashboard — the 11-dimensional operator+system affect state over time, with the overall_stance reducer. Source: hapax_stimmung_value{dimension} + hapax_stimmung_stance + hapax_stimmung_freshness_s, exposed via /api/predictions/metrics (logos/api/routes/predictions.py, scraped by Prometheus at 30s).\n\nStance mapping (numeric → label):\n  0.0 = nominal (operational baseline)\n  0.1 = seeking (exploration deficit > 0.35, recruitment threshold halved)\n  0.25 = cautious (preventive posture)\n  0.5 = degraded (stress elevated, load rising)\n  1.0 = critical (immediate attention)\n\nDimensions (per shared/stimmung and logos/api/routes/stimmung.py):\n  health, resource_pressure, error_rate, processing_throughput,\n  perception_confidence, llm_cost_pressure, grounding_quality,\n  exploration_deficit, operator_stress, operator_energy,\n  physiological_coherence.\n\nPhase 6 §4.A redaction: when stream-mode is publicly visible, /api/stimmung bands three operator-mental-state dims (energy / coherence / stress) into categorical labels and omits the other 8. This dashboard is private by construction (runs against the raw prometheus gauges, not the redacted HTTP surface). Do NOT expose this dashboard on the stream.\n\nDeployment: symlink or copy this file to ~/llm-stack/grafana/provisioning/dashboards/json/lrr-stimmung.json, then restart grafana or reload provisioning.",
+  "description": "Stimmung dashboard — the 18-dimensional operator+system affect state over time, with the overall_stance reducer. Source: hapax_stimmung_value{dimension} + hapax_stimmung_stance + hapax_stimmung_freshness_s, exposed via /api/predictions/metrics (logos/api/routes/predictions.py, scraped by Prometheus at 30s). The metrics endpoint exports every nested DimensionReading from the raw /dev/shm/hapax-stimmung/state.json snapshot.\n\nStance mapping (numeric → label):\n  0.0 = nominal (operational baseline)\n  0.1 = seeking (exploration deficit > 0.35, recruitment threshold halved)\n  0.25 = cautious (preventive posture)\n  0.5 = degraded (stress elevated, load rising)\n  1.0 = critical (immediate attention)\n\nDimensions (per shared/stimmung.py):\n  health, resource_pressure, local_capacity_pressure, error_rate,\n  processing_throughput, perception_confidence, llm_cost_pressure,\n  grounding_quality, exploration_deficit, audience_engagement,\n  visual_self_perception, operator_stress, operator_energy,\n  physiological_coherence, audio_signal_presence, audio_spectral_centroid,\n  audio_spectral_balance, audio_content_mix.\n\nPhase 6 §4.A redaction: when stream-mode is publicly visible, /api/stimmung bands three operator-mental-state dims (energy / coherence / stress) into categorical labels and omits the other API-projected system/internal dimensions. This dashboard is private by construction (runs against the raw prometheus gauges, not the redacted HTTP surface). Do NOT expose this dashboard on the stream.\n\nDeployment: symlink or copy this file to ~/llm-stack/grafana/provisioning/dashboards/json/lrr-stimmung.json, then restart grafana or reload provisioning.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -80,7 +80,7 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "description": "System-health dimensions — health, error_rate, resource_pressure, processing_throughput, perception_confidence, llm_cost_pressure. Spikes + drops on any of these often precede stance transitions.",
+      "description": "System-health dimensions — health, error_rate, resource_pressure, local_capacity_pressure, processing_throughput, perception_confidence, llm_cost_pressure. Spikes + drops on any of these often precede stance transitions.",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "palette-classic"},
@@ -98,7 +98,8 @@
         {"expr": "hapax_stimmung_value{dimension=\"resource_pressure\"}", "legendFormat": "resource_pressure", "refId": "C"},
         {"expr": "hapax_stimmung_value{dimension=\"processing_throughput\"}", "legendFormat": "throughput", "refId": "D"},
         {"expr": "hapax_stimmung_value{dimension=\"perception_confidence\"}", "legendFormat": "perception_conf", "refId": "E"},
-        {"expr": "hapax_stimmung_value{dimension=\"llm_cost_pressure\"}", "legendFormat": "llm_cost", "refId": "F"}
+        {"expr": "hapax_stimmung_value{dimension=\"llm_cost_pressure\"}", "legendFormat": "llm_cost", "refId": "F"},
+        {"expr": "hapax_stimmung_value{dimension=\"local_capacity_pressure\"}", "legendFormat": "local_capacity", "refId": "G"}
       ],
       "title": "System state (health + cost + perception)",
       "type": "timeseries"
@@ -148,6 +149,62 @@
         {"expr": "hapax_stimmung_freshness_s", "legendFormat": "{{dimension}}", "refId": "A"}
       ],
       "title": "Dimension freshness (s since update)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Local capacity (non-$) early warning. Alert rule: hapax_stimmung_value{dimension=\"local_capacity_pressure\"} > 0.7 and hapax_stimmung_freshness_s{dimension=\"local_capacity_pressure\"} < 120 for 5m indicates the local-fast sink is hot and adaptive routing should avoid additional local downgrades. Recheck: curl -s http://localhost:8051/api/predictions/metrics | rg 'local_capacity_pressure|hapax_stimmung_freshness_s'.",
+      "alert": {
+        "alertRuleTags": {"surface": "capacity-routing"},
+        "conditions": [
+          {
+            "evaluator": {"params": [0.7], "type": "gt"},
+            "operator": {"type": "and"},
+            "query": {"params": ["A", "5m", "now"]},
+            "reducer": {"params": [], "type": "last"},
+            "type": "query"
+          },
+          {
+            "evaluator": {"params": [120], "type": "lt"},
+            "operator": {"type": "and"},
+            "query": {"params": ["B", "5m", "now"]},
+            "reducer": {"params": [], "type": "last"},
+            "type": "query"
+          }
+        ],
+        "executionErrorState": "alerting",
+        "for": "5m",
+        "frequency": "1m",
+        "handler": 1,
+        "message": "local_capacity_pressure has stayed above 0.7 for 5m; check /dev/shm/hapax-local-capacity.json and avoid adding local-fast demand until routing drains.",
+        "name": "local_capacity_pressure > 0.7 for 5m",
+        "noDataState": "ok",
+        "notifications": []
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {"drawStyle": "line", "fillOpacity": 20, "lineInterpolation": "stepBefore"},
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 0.55},
+              {"color": "red", "value": 0.7}
+            ]
+          },
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 22},
+      "id": 6,
+      "targets": [
+        {"expr": "hapax_stimmung_value{dimension=\"local_capacity_pressure\"}", "legendFormat": "local_capacity_pressure", "refId": "A"},
+        {"expr": "hapax_stimmung_freshness_s{dimension=\"local_capacity_pressure\"}", "legendFormat": "local_capacity_freshness_s", "refId": "B"}
+      ],
+      "title": "Local capacity (non-$) — alert >0.7 for 5m",
       "type": "timeseries"
     }
   ],

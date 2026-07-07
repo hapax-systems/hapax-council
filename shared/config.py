@@ -6,7 +6,9 @@ Qdrant client, embedding via Ollama, and canonical path constants.
 
 import functools
 import logging
+import math
 import os
+import threading
 import warnings
 from pathlib import Path
 
@@ -195,16 +197,65 @@ def get_model(alias_or_id: str = "balanced") -> OpenAIChatModel:
     )
 
 
+_LOCAL_CAPACITY_HIGH_THRESHOLD = 0.70
+_LOCAL_CAPACITY_RECOVERY_THRESHOLD = 0.55
+_LOCAL_CAPACITY_STALE_THRESHOLD_S = 120.0
+_LOCAL_CAPACITY_BACKPRESSURE_ACTIVE = False
+_LOCAL_CAPACITY_BACKPRESSURE_LOCK = threading.Lock()
+
+
+def _coerce_float(value: object, default: float = 0.0) -> float:
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        return default
+    return coerced if math.isfinite(coerced) else default
+
+
+def _local_capacity_backpressure_active(raw: dict) -> bool:
+    """Return whether local-fast should be protected from new downgrades.
+
+    Missing, malformed, or stale local-capacity telemetry fails open to the
+    previous behavior. Fresh readings use threshold hysteresis so a route does
+    not flap around the 0.7 pressure boundary.
+    """
+    global _LOCAL_CAPACITY_BACKPRESSURE_ACTIVE
+
+    reading = raw.get("local_capacity_pressure")
+    if not isinstance(reading, dict):
+        with _LOCAL_CAPACITY_BACKPRESSURE_LOCK:
+            _LOCAL_CAPACITY_BACKPRESSURE_ACTIVE = False
+            return False
+
+    freshness_s = _coerce_float(reading.get("freshness_s"), _LOCAL_CAPACITY_STALE_THRESHOLD_S + 1)
+    if freshness_s > _LOCAL_CAPACITY_STALE_THRESHOLD_S:
+        with _LOCAL_CAPACITY_BACKPRESSURE_LOCK:
+            _LOCAL_CAPACITY_BACKPRESSURE_ACTIVE = False
+            return False
+
+    pressure = _coerce_float(reading.get("value"), 0.0)
+    with _LOCAL_CAPACITY_BACKPRESSURE_LOCK:
+        if _LOCAL_CAPACITY_BACKPRESSURE_ACTIVE:
+            if pressure < _LOCAL_CAPACITY_RECOVERY_THRESHOLD:
+                _LOCAL_CAPACITY_BACKPRESSURE_ACTIVE = False
+        elif pressure > _LOCAL_CAPACITY_HIGH_THRESHOLD:
+            _LOCAL_CAPACITY_BACKPRESSURE_ACTIVE = True
+        return _LOCAL_CAPACITY_BACKPRESSURE_ACTIVE
+
+
 def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
     """Stimmung-aware model selection — downgrades when system is stressed.
 
     Reads live stimmung from /dev/shm. When cost pressure or resource pressure
     is high, routes to cheaper/local models instead of the requested tier.
+    Fresh local_capacity_pressure protects the local-fast sink when local
+    inference itself is saturated.
 
     Downgrade rules:
     - llm_cost_pressure > 0.6: balanced→fast, fast stays fast
-    - resource_pressure > 0.7: balanced→fast, fast→local-fast
-    - critical stance: everything→local-fast
+    - resource_pressure > 0.7: balanced→fast, fast/reasoning→local-fast
+    - local_capacity_pressure > 0.7: local-fast downgrades invert to cloud fast
+    - critical stance: everything→local-fast unless local capacity is saturated
     """
     import json
     from pathlib import Path
@@ -214,16 +265,21 @@ def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
         stance = raw.get("overall_stance", "nominal")
         cost = raw.get("llm_cost_pressure", {}).get("value", 0.0)
         resource = raw.get("resource_pressure", {}).get("value", 0.0)
+        local_backpressure = _local_capacity_backpressure_active(raw)
 
         if stance == "critical":
+            if local_backpressure:
+                _log.debug("Stimmung critical + local capacity pressure → routing to fast")
+                return get_model("fast")
             _log.debug("Stimmung critical → routing to local-fast")
             return get_model("local-fast")
 
         if resource > 0.7:
+            local_sink = "fast" if local_backpressure else "local-fast"
             downgraded = {
                 "balanced": "fast",
-                "fast": "local-fast",
-                "reasoning": "local-fast",
+                "fast": local_sink,
+                "reasoning": local_sink,
                 # Gemini 3 family degradation, per the route-evaluation doc.
                 "fast-3": "fast",
                 "long-context-3": "long-context",
@@ -236,8 +292,9 @@ def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
             }
             if alias in downgraded:
                 _log.debug(
-                    "Resource pressure %.2f → %s downgraded to %s",
+                    "Resource pressure %.2f local_backpressure=%s → %s downgraded to %s",
                     resource,
+                    local_backpressure,
                     alias,
                     downgraded[alias],
                 )

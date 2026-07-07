@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """cc-pr-merge-watcher — auto-close cc-tasks on linked-PR merge (PR3 / H9).
 
-Scans `gh pr list --state merged` since the last cursor timestamp, finds
+Searches merged pull requests via GitHub REST since the last cursor timestamp, finds
 vault cc-task notes linked to those PRs (`pr: N` frontmatter), and
 invokes `scripts/cc-close <task_id> --pr N` for each.
 
@@ -17,8 +17,8 @@ Usage::
     uv run python scripts/cc-pr-merge-watcher.py --dry-run
     HAPAX_CC_HYGIENE_OFF=1 uv run python scripts/cc-pr-merge-watcher.py
 
-The systemd timer ``hapax-cc-pr-merge-watcher.timer`` runs this every
-5 minutes.
+The systemd timer ``hapax-cc-pr-merge-watcher.timer`` runs this on the
+staggered cadence declared in ``systemd/units/hapax-cc-pr-merge-watcher.timer``.
 """
 
 from __future__ import annotations
@@ -30,10 +30,25 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from github_pr_status import (  # noqa: E402
+    GRAPHQL_BACKOFF_RC,
+    get_pull_rest,
+    list_open_pr_statuses_rest,
+    list_pulls_for_branch_rest,
+    list_pulls_rest,
+    rest_pull_state,
+    run_graphql_rate_aware,
+)
 
 LOG = logging.getLogger("cc-pr-merge-watcher")
 
@@ -68,11 +83,117 @@ def default_repo_root() -> Path:
 
 @dataclass
 class MergedPR:
-    """One merged PR, parsed from `gh pr list --state merged --json ...`."""
+    """One merged PR, parsed from GitHub REST pull data."""
 
     number: int
     merged_at: datetime
     head_branch: str
+
+
+def _run_gh_api_json(
+    path: str,
+    *,
+    repo_root: Path,
+    runner: Callable[..., subprocess.CompletedProcess],
+    fields: dict[str, str] | None = None,
+    timeout: int = 60,
+) -> Any | None:
+    cmd = [
+        "gh",
+        "api",
+        "--method",
+        "GET",
+        "-H",
+        "Accept: application/vnd.github+json",
+        path,
+    ]
+    for key, value in (fields or {}).items():
+        cmd.extend(["-f", f"{key}={value}"])
+    proc = runner(
+        cmd,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout or "null")
+    except json.JSONDecodeError:
+        return None
+
+
+def _merged_pr_from_rest_item(item: dict[str, Any], *, cursor: datetime) -> MergedPR | None:
+    try:
+        number = int(item["number"])
+        merged_at_raw = str(item.get("mergedAt") or item.get("merged_at") or "")
+        head_payload = item.get("head") if isinstance(item.get("head"), dict) else {}
+        head = str(item.get("headRefName") or head_payload.get("ref") or "")
+    except (KeyError, TypeError, ValueError) as e:
+        LOG.warning("skipping malformed PR record %r: %s", item, e)
+        return None
+    if not _ISO_RE.match(merged_at_raw):
+        LOG.warning("skipping PR #%d with bad mergedAt %r", number, merged_at_raw)
+        return None
+    try:
+        merged_at = datetime.fromisoformat(merged_at_raw.replace("Z", "+00:00"))
+    except ValueError as e:
+        LOG.warning("skipping PR #%d with unparseable mergedAt %r: %s", number, merged_at_raw, e)
+        return None
+    if merged_at <= cursor:
+        return None
+    return MergedPR(number=number, merged_at=merged_at, head_branch=head)
+
+
+def _search_merged_pull_details_rest(
+    cursor: datetime,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: Callable[..., subprocess.CompletedProcess],
+    limit: int,
+) -> list[dict[str, Any]] | None:
+    query = f"repo:{repo} is:pr is:merged merged:>={cursor.astimezone(UTC):%Y-%m-%d}"
+    out: list[dict[str, Any]] = []
+    page = 1
+    while len(out) < limit:
+        per_page = min(100, limit - len(out))
+        payload = _run_gh_api_json(
+            "search/issues",
+            repo_root=repo_root,
+            runner=runner,
+            fields={
+                "q": query,
+                "sort": "updated",
+                "order": "desc",
+                "per_page": str(per_page),
+                "page": str(page),
+            },
+        )
+        if not isinstance(payload, dict):
+            return None
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return None
+        if not items:
+            break
+        for search_item in items:
+            if not isinstance(search_item, dict):
+                continue
+            number = search_item.get("number")
+            if number is None:
+                continue
+            detail = get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner)
+            if isinstance(detail, dict):
+                out.append(detail)
+                if len(out) >= limit:
+                    break
+        if len(items) < per_page:
+            break
+        page += 1
+    return out
 
 
 @dataclass
@@ -111,10 +232,10 @@ def fetch_merged_prs(
     cursor: datetime,
     *,
     repo_root: Path | None = None,
-    limit: int = 50,
-    runner: callable[..., subprocess.CompletedProcess] | None = None,
+    limit: int = 300,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
 ) -> list[MergedPR]:
-    """Run ``gh pr list --state merged`` and parse the result.
+    """List recently merged PRs through REST/core and parse the result.
 
     Parameters
     ----------
@@ -130,57 +251,33 @@ def fetch_merged_prs(
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
     cursor_str = cursor.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    cmd = [
-        "gh",
-        "pr",
-        "list",
-        "--state",
-        "merged",
-        "--json",
-        "number,mergedAt,headRefName",
-        "--limit",
-        str(limit),
-        "--search",
-        f"merged:>={cursor_str}",
-    ]
-    LOG.debug("running: %s", " ".join(cmd))
-    proc = runner(
-        cmd,
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
+    LOG.debug("fetching merged PRs newer than %s via REST search", cursor_str)
+    items = _search_merged_pull_details_rest(
+        cursor,
+        repo=DEFAULT_REPO,
+        repo_root=repo_root,
+        runner=runner,
+        limit=limit,
     )
-    if proc.returncode != 0:
-        LOG.error("gh pr list failed (rc=%d): %s", proc.returncode, proc.stderr.strip())
-        return []
-    try:
-        items = json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError as e:
-        LOG.error("gh pr list emitted non-JSON: %s", e)
-        return []
+    if items is None:
+        LOG.warning("REST merged-PR search failed; falling back to closed pulls scan")
+        items = list_pulls_rest(
+            repo=DEFAULT_REPO,
+            repo_root=repo_root,
+            runner=runner,
+            state="closed",
+            sort="updated",
+            direction="desc",
+            limit=limit,
+        )
 
     out: list[MergedPR] = []
     for item in items:
-        try:
-            number = int(item["number"])
-            merged_at_raw = str(item["mergedAt"])
-            head = str(item.get("headRefName") or "")
-        except (KeyError, TypeError, ValueError) as e:
-            LOG.warning("skipping malformed PR record %r: %s", item, e)
+        if not isinstance(item, dict):
             continue
-        if not _ISO_RE.match(merged_at_raw):
-            LOG.warning("skipping PR #%d with bad mergedAt %r", number, merged_at_raw)
-            continue
-        try:
-            merged_at = datetime.fromisoformat(merged_at_raw.replace("Z", "+00:00"))
-        except ValueError as e:
-            LOG.warning(
-                "skipping PR #%d with unparseable mergedAt %r: %s", number, merged_at_raw, e
-            )
-            continue
-        out.append(MergedPR(number=number, merged_at=merged_at, head_branch=head))
+        merged = _merged_pr_from_rest_item(item, cursor=cursor)
+        if merged is not None:
+            out.append(merged)
     return out
 
 
@@ -222,7 +319,7 @@ def close_linked_task(
     task: LinkedTask,
     *,
     repo_root: Path | None = None,
-    runner: callable[..., subprocess.CompletedProcess] | None = None,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
     role: str = "watcher",
 ) -> bool:
     """Invoke ``scripts/cc-close`` on the matched task. Returns True on success."""
@@ -276,7 +373,7 @@ def close_linked_task(
 def trigger_reform_dispatch(
     *,
     repo_root: Path | None = None,
-    runner: callable[..., subprocess.CompletedProcess] | None = None,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
 ) -> bool:
     """Nudge the RTE manifest-drain dispatcher (event complement to the 270s poll).
 
@@ -309,7 +406,7 @@ def run_watcher(
     vault_root: Path = DEFAULT_VAULT_ROOT,
     repo_root: Path | None = None,
     dry_run: bool = False,
-    runner: callable[..., subprocess.CompletedProcess] | None = None,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
 ) -> dict[str, int]:
     """Run one watcher cycle.
 
@@ -396,62 +493,40 @@ def _query_pr_state(
     pr_num: str,
     *,
     repo_root: Path,
-    runner: callable[..., subprocess.CompletedProcess],
+    runner: Callable[..., subprocess.CompletedProcess],
 ) -> str | None:
     """Return the PR's current state (MERGED|CLOSED|OPEN) or None on lookup failure."""
     try:
-        proc = runner(
-            ["gh", "pr", "view", pr_num, "--json", "state", "--jq", ".state"],
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=15,
-        )
+        payload = get_pull_rest(pr_num, repo=DEFAULT_REPO, repo_root=repo_root, runner=runner)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout.strip()
+    return rest_pull_state(payload)
 
 
 def _list_prs_for_branch(
     branch: str,
     *,
     repo_root: Path,
-    runner: callable[..., subprocess.CompletedProcess],
+    runner: Callable[..., subprocess.CompletedProcess],
 ) -> list[dict[str, Any]]:
-    """Re-derive PRs for a branch via ``gh pr list --head`` (newest first)."""
+    """Re-derive PRs for a branch via REST ``pulls?head=`` (newest first)."""
     try:
-        proc = runner(
-            [
-                "gh",
-                "pr",
-                "list",
-                "--head",
-                branch,
-                "--state",
-                "all",
-                "--json",
-                "number,state",
-                "--limit",
-                "1",
-            ],
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=15,
+        rows = list_pulls_for_branch_rest(
+            branch,
+            repo=DEFAULT_REPO,
+            repo_root=repo_root,
+            runner=runner,
+            state="all",
+            limit=1,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
-    if proc.returncode != 0:
-        return []
-    try:
-        rows = json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError:
-        return []
-    return rows if isinstance(rows, list) else []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        out.append({"number": row.get("number"), "state": rest_pull_state(row)})
+    return out
 
 
 def _block_stale_note(note: Path, text: str, *, reason: str, dry_run: bool) -> bool:
@@ -488,7 +563,7 @@ def _close_merged_note(
     *,
     repo_root: Path,
     dry_run: bool,
-    runner: callable[..., subprocess.CompletedProcess],
+    runner: Callable[..., subprocess.CompletedProcess],
 ) -> bool:
     """cc-close a task whose PR is merged (the cursor loop missed it). True on close."""
     task_id = _task_id_from_note(note, text)
@@ -513,7 +588,7 @@ def _apply_pr_state(
     *,
     repo_root: Path,
     dry_run: bool,
-    runner: callable[..., subprocess.CompletedProcess],
+    runner: Callable[..., subprocess.CompletedProcess],
     counts: dict[str, int],
 ) -> None:
     """Reconcile one note against its PR's current state."""
@@ -536,13 +611,13 @@ def _repair_pr_null_note(
     *,
     repo_root: Path,
     dry_run: bool,
-    runner: callable[..., subprocess.CompletedProcess],
+    runner: Callable[..., subprocess.CompletedProcess],
     counts: dict[str, int],
 ) -> None:
     """pr:null + pr_open/merge_queue: re-derive the PR from the task branch.
 
     A ``pr: null`` note matches no PR lookup, so it would otherwise stay
-    pr_open forever. Re-derive via ``gh pr list --head <branch>``; on success
+    pr_open forever. Re-derive via REST ``pulls?head=<owner>:<branch>``; on success
     write the number back and reconcile its state, otherwise block with a
     reason so the stuck task surfaces instead of silently lingering.
     """
@@ -594,7 +669,7 @@ def reconcile_stale_pr_states(
     vault_root: Path = DEFAULT_VAULT_ROOT,
     repo_root: Path | None = None,
     dry_run: bool = False,
-    runner: callable[..., subprocess.CompletedProcess] | None = None,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
 ) -> dict[str, int]:
     """Reconcile active pr_open/merge_queue tasks against live PR state.
 
@@ -607,7 +682,7 @@ def reconcile_stale_pr_states(
     - PR CLOSED -> transition to blocked with a reason.
     - PR OPEN   -> leave it (still in flight).
     - pr: null  -> repair: re-derive the PR from the task branch via
-      ``gh pr list --head``; write it back and act on its state, or block.
+      REST ``pulls?head=<owner>:<branch>``; write it back and act on its state, or block.
     """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
@@ -666,7 +741,7 @@ def _stuck_gh_json(
     args: list[str],
     *,
     repo_root: Path,
-    runner: callable[..., subprocess.CompletedProcess],
+    runner: Callable[..., subprocess.CompletedProcess],
 ) -> Any:
     try:
         proc = runner(
@@ -682,25 +757,42 @@ def _stuck_gh_json(
         return None
 
 
+def _json_loads_or_none(raw: str) -> Any:
+    try:
+        return json.loads(raw or "null")
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 def fetch_merge_queue_numbers(
     *,
     repo: str = DEFAULT_REPO,
     repo_root: Path,
-    runner: callable[..., subprocess.CompletedProcess] = subprocess.run,
-) -> set[int]:
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> set[int] | None:
     """PR numbers currently in the native merge queue (graphql)."""
     owner, _, name = repo.partition("/")
     query = (
         "query($o:String!,$n:String!){repository(owner:$o,name:$n)"
         "{mergeQueue{entries(first:50){nodes{pullRequest{number}}}}}}"
     )
-    data = _stuck_gh_json(
-        ["gh", "api", "graphql", "-f", f"query={query}", "-F", f"o={owner}", "-F", f"n={name}"],
+    proc = run_graphql_rate_aware(
+        ["-f", f"query={query}", "-F", f"o={owner}", "-F", f"n={name}"],
         repo_root=repo_root,
         runner=runner,
     )
+    if proc.returncode != 0:
+        level = logging.WARNING if proc.returncode == GRAPHQL_BACKOFF_RC else logging.ERROR
+        LOG.log(
+            level,
+            "merge-queue snapshot indeterminate (rc=%d): %s",
+            proc.returncode,
+            proc.stderr.strip(),
+        )
+        return None
+    data = _json_loads_or_none(proc.stdout)
     if not isinstance(data, dict):
-        return set()
+        return None
     queue = (((data.get("data") or {}).get("repository") or {}).get("mergeQueue")) or {}
     nodes = (queue.get("entries") or {}).get("nodes") or []
     numbers: set[int] = set()
@@ -724,7 +816,7 @@ def detect_stuck_prs(
     *,
     repo: str = DEFAULT_REPO,
     repo_root: Path,
-    runner: callable[..., subprocess.CompletedProcess] = subprocess.run,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     required_checks: tuple[str, ...] = REQUIRED_QUEUE_CHECKS,
 ) -> list[StuckPR]:
     """Armed (auto-merge enabled) + all required checks green, yet NOT in the
@@ -732,26 +824,13 @@ def detect_stuck_prs(
     failure mode this task addresses (G5). A single snapshot suffices because
     GitHub enqueues an armed+green PR within seconds, so absence from the queue
     is a real ejection rather than a transient."""
-    prs = _stuck_gh_json(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "open",
-            "--limit",
-            "100",
-            "--json",
-            "number,headRefName,autoMergeRequest,statusCheckRollup,isDraft",
-        ],
-        repo_root=repo_root,
-        runner=runner,
-    )
+    prs = list_open_pr_statuses_rest(repo=repo, repo_root=repo_root, runner=runner, limit=100)
     if not isinstance(prs, list):
         return []
     queued = fetch_merge_queue_numbers(repo=repo, repo_root=repo_root, runner=runner)
+    if queued is None:
+        LOG.warning("stuck-PR detection skipped: merge-queue snapshot indeterminate")
+        return []
     stuck: list[StuckPR] = []
     for pr in prs:
         if not isinstance(pr, dict) or pr.get("isDraft"):
@@ -771,7 +850,7 @@ def alert_stuck_prs(
     *,
     repo: str = DEFAULT_REPO,
     repo_root: Path,
-    runner: callable[..., subprocess.CompletedProcess] = subprocess.run,
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     dry_run: bool = False,
 ) -> int:
     """Detect ejected-while-green PRs and ntfy the operator; returns the count.

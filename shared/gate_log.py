@@ -13,6 +13,7 @@ Capability-routing Tier-1 (ISAP ``S5-CAPABILITY-ROUTING-TIER1``).
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -20,6 +21,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+from shared.durable_jsonl_sink import DurableJsonlSink
+from shared.route_metadata_schema import LearningEligibility
+from shared.transcript_scrubber import scrub_structured_value
 
 # Persistent (NOT tmpfs): gate history must survive a reboot to be a measurement
 # substrate. ``~/.cache/hapax`` is on the NVMe; ``/tmp`` / ``/dev/shm`` are tmpfs
@@ -33,6 +38,11 @@ DEFAULT_GATE_LOG = Path(
 
 GateResult = Literal["accept", "reject", "abstain", "escalate", "error"]
 GateType = Literal["deterministic", "gold_verifier", "llm_acceptor", "frontier_review", "none"]
+# Provenance of the event. ONLY "witnessed" (a real cc-task-gate/CI/typecheck/review verdict)
+# may move a learning posterior; "admission" (the dispatch gate), "fixture" (synthetic/test),
+# and "unknown" (legacy/default) must NOT — fixtures poison the Beta. Default is the SAFE,
+# non-witnessed value (dangerous-default-False), so a posterior moves only on an explicit claim.
+Provenance = Literal["witnessed", "admission", "fixture", "unknown"]
 
 
 class GateEvent(BaseModel):
@@ -49,6 +59,25 @@ class GateEvent(BaseModel):
     p_correct: float | None = None  # judge confidence when gate_type implies one
     latency_ms: float | None = None
     cost_usd: float | None = None
+    # The spine's intake fit-score (demand-shape magnitude, 0..5; None = not scored).
+    # Additive + default None: reins' :route lens treats candidate RANKING as a spine
+    # decision (DARK); this is the spine echoing that measured demand magnitude so the
+    # lens has a non-fabricated input to surface. Never moves a Thompson posterior
+    # (provenance governs that) — it is observational only.
+    fit_score: float | None = None
+    learning_eligibility: LearningEligibility | None = None
+    provenance: Provenance = "unknown"  # only "witnessed" may move a posterior (see Provenance)
+
+
+def _append_durable_gate_event(event: GateEvent) -> None:
+    payload = scrub_structured_value(json.loads(event.model_dump_json()))
+    DurableJsonlSink().append(
+        stream_id="gate-log",
+        data_class="gate_event",
+        source_receipt_ref=f"gate-log:event:{event.task_hash or event.ts}",
+        payload=payload,
+        timestamp=event.ts,
+    )
 
 
 def append_gate_event(event: GateEvent, *, path: Path | str | None = None) -> Path:
@@ -59,6 +88,9 @@ def append_gate_event(event: GateEvent, *, path: Path | str | None = None) -> Pa
     OSError to the caller — a lost measurement must surface, never silently pass.
     """
     target = Path(path) if path is not None else DEFAULT_GATE_LOG
+    if target == DEFAULT_GATE_LOG:
+        _append_durable_gate_event(event)
+
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("a", encoding="utf-8") as fh:
         fh.write(event.model_dump_json() + "\n")

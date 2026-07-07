@@ -72,29 +72,7 @@ def get_model(alias_or_id: str = "fast") -> OpenAIChatModel:
 
 
 def get_model_adaptive(alias: str = "fast") -> OpenAIChatModel:
-    """Stimmung-aware model selection — downgrades when system is stressed."""
-    import json
-    from pathlib import Path as _Path
+    """Stimmung-aware model selection — delegates to shared.config."""
+    from shared.config import get_model_adaptive as _shared_get_model_adaptive
 
-    try:
-        raw = json.loads(_Path("/dev/shm/hapax-stimmung/state.json").read_text(encoding="utf-8"))
-        stance = raw.get("overall_stance", "nominal")
-        cost = raw.get("llm_cost_pressure", {}).get("value", 0.0)
-        resource = raw.get("resource_pressure", {}).get("value", 0.0)
-
-        if stance == "critical":
-            return get_model("local-fast")
-
-        if resource > 0.7:
-            downgraded = {"balanced": "fast", "fast": "local-fast", "reasoning": "local-fast"}
-            if alias in downgraded:
-                return get_model(downgraded[alias])
-
-        if cost > 0.6:
-            downgraded = {"balanced": "fast"}
-            if alias in downgraded:
-                return get_model(downgraded[alias])
-    except Exception:
-        pass  # stimmung unavailable — use requested alias as-is
-
-    return get_model(alias)
+    return _shared_get_model_adaptive(alias)

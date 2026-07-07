@@ -140,7 +140,7 @@ def _dependency_validity(dep_ids: set[str]) -> tuple[set[str], dict[str, tuple[s
         validity = task_closure_validity(
             text,
             pr_state_lookup=cached_pr_state,
-            require_route_metadata=True,
+            require_route_metadata_validity=True,
         )
         ids = _task_aliases(path, text)
         if validity.valid:

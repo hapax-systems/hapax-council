@@ -6,6 +6,7 @@ import time
 import time as time_mod
 
 from shared.stimmung import (
+    _INFRA_DIMENSION_NAMES,
     _STALE_THRESHOLD_S,
     DimensionReading,
     Stance,
@@ -112,6 +113,33 @@ class TestStimmungCollector:
         s = c.snapshot()
         assert s.resource_pressure.value > 0.85
         assert s.overall_stance == Stance.CRITICAL
+
+    def test_local_capacity_pressure_dimension(self):
+        c = StimmungCollector()
+        c.update_local_capacity(inflight=7, ceiling=10, ttft_ratio=1.2)
+        s = c.snapshot()
+        assert "local_capacity_pressure" in _INFRA_DIMENSION_NAMES
+        assert s.local_capacity_pressure.value == 0.7
+        assert s.local_capacity_pressure.freshness_s <= _STALE_THRESHOLD_S
+
+    def test_local_capacity_pressure_uses_latency_pressure(self):
+        c = StimmungCollector()
+        c.update_local_capacity(inflight=1, ceiling=10, ttft_ratio=2.8)
+        s = c.snapshot()
+        assert s.local_capacity_pressure.value == 0.9
+
+    def test_local_capacity_pressure_uses_latency_when_ceiling_unknown(self):
+        c = StimmungCollector()
+        c.update_local_capacity(inflight=0, ceiling=0, ttft_ratio=2.8)
+        s = c.snapshot()
+        assert s.local_capacity_pressure.value == 0.9
+        assert s.local_capacity_pressure.freshness_s <= _STALE_THRESHOLD_S
+
+    def test_local_capacity_pressure_ignores_inflight_when_ceiling_unknown(self):
+        c = StimmungCollector()
+        c.update_local_capacity(inflight=99, ceiling=0, ttft_ratio=2.0)
+        s = c.snapshot()
+        assert s.local_capacity_pressure.value == 0.5
 
     def test_engine_errors(self):
         c = StimmungCollector()

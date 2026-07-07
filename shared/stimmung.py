@@ -7,7 +7,7 @@ operator biometrics (HR, HRV, EDA, sleep, activity), cognitive state
 (broadcast spectral analysis) into a single Stimmung snapshot that
 colors system behavior.
 
-17 dimensions (6 infrastructure + 3 cognitive + 1 perceptual + 3 biometric
+18 dimensions (7 infrastructure + 3 cognitive + 1 perceptual + 3 biometric
 + 4 audio), each a DimensionReading with value/trend/freshness. Overall stance
 derived from worst non-stale dimension. Biometric dimensions use 0.5× weight,
 cognitive and audio dimensions use 0.3× weight, and perceptual dimensions use
@@ -89,11 +89,12 @@ class DimensionReading(BaseModel, frozen=True):
 
 
 class SystemStimmung(BaseModel):
-    """Unified self-state vector — 17 dimensions + derived stance."""
+    """Unified self-state vector — 18 dimensions + derived stance."""
 
     # Infrastructure dimensions (weight 1.0)
     health: DimensionReading = Field(default_factory=DimensionReading)
     resource_pressure: DimensionReading = Field(default_factory=DimensionReading)
+    local_capacity_pressure: DimensionReading = Field(default_factory=DimensionReading)
     error_rate: DimensionReading = Field(default_factory=DimensionReading)
     processing_throughput: DimensionReading = Field(default_factory=DimensionReading)
     perception_confidence: DimensionReading = Field(default_factory=DimensionReading)
@@ -168,6 +169,7 @@ class SystemStimmung(BaseModel):
 _INFRA_DIMENSION_NAMES = [
     "health",
     "resource_pressure",
+    "local_capacity_pressure",
     "error_rate",
     "processing_throughput",
     "perception_confidence",
@@ -476,6 +478,24 @@ class StimmungCollector:
         # Remap: 0-80% → 0.0, 80-95% → 0.0-1.0, 95%+ → 1.0
         value = max(0.0, min(1.0, (raw_ratio - 0.80) / 0.15))
         self._record("resource_pressure", value)
+
+    def update_local_capacity(
+        self,
+        inflight: float,
+        ceiling: float,
+        ttft_ratio: float,
+    ) -> None:
+        """Update local inference capacity pressure.
+
+        ``inflight / ceiling`` captures queue occupancy. ``ttft_ratio`` is
+        an EWMA time-to-first-token ratio against the local baseline, where
+        1.0 is nominal and 3.0+ is saturated. The dimension takes the max
+        of the two so either a full queue or degraded local latency can
+        trigger backpressure.
+        """
+        inflight_pressure = _clamp01(inflight / ceiling) if ceiling > 0 else 0.0
+        latency_pressure = _clamp01((ttft_ratio - 1.0) / 2.0)
+        self._record("local_capacity_pressure", max(inflight_pressure, latency_pressure))
 
     def update_engine(
         self,

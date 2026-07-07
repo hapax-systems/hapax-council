@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-quota-telemetry-writer"
 FIXTURES = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
 NOW = "2026-06-10T00:00:00Z"
+PAYG_NOW = "2026-07-06T14:05:00Z"
 
 
 def _fake_nvidia_smi(tmp_path: Path, body: str) -> Path:
@@ -29,6 +30,7 @@ def _run_writer(
     tmp_path: Path,
     *extra_args: str,
     nvidia_body: str = "echo '1000, 32000'",
+    now: str = NOW,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     out = tmp_path / "out" / "quota-spend-ledger-live.json"
     relay = tmp_path / "relay-receipts"
@@ -40,7 +42,7 @@ def _run_writer(
             str(SCRIPT),
             "--skip-receipts",
             "--now",
-            NOW,
+            now,
             "--out",
             str(out),
             "--relay-receipt-dir",
@@ -58,13 +60,20 @@ def _run_writer(
     return result, out
 
 
-def _wall_receipt(relay: Path, role: str, resets_at: str) -> None:
+def _wall_receipt(
+    relay: Path,
+    role: str,
+    resets_at: str,
+    *,
+    failure_class: str = "quota_exhausted",
+) -> None:
     (relay / f"{role}-quota-wall.yaml").write_text(
         f"""role: {role}
 status: quota_blocked
 detected_at: 2026-06-09T23:00:00Z
 signal_kind: rate_limit_event
-rate_limit_type: seven_day
+failure_class: {failure_class}
+rate_limit_type: {failure_class}
 resets_at: {resets_at}
 is_overage: False
 action: exit_clean_await_restart
@@ -78,29 +87,105 @@ def _glmcp_admission(
     *,
     observed_at: str,
     stale_after_seconds: int = 900,
+    evidence_ref: str = "supported-tool-usage-witness",
     supported_tool: str = "hapax-glmcp-reviewer",
     endpoint: str = "https://api.z.ai/api/coding/paas/v4",
-    model: str = "glm-5",
+    model: str = "glm-5.2",
     name: str = "glmcp-quota-admission.yaml",
     timestamp_field: str = "observed_at",
+    capacity_pool: str | None = None,
+    billing_mode: str | None = None,
+    payg_fallback: str | None = None,
+    primary_error_class: str | None = None,
+    quota_wall_evidence_ref: str | None = None,
 ) -> None:
+    if capacity_pool is None:
+        capacity_pool = (
+            "api_paid_spend" if endpoint == "https://api.z.ai/api/paas/v4" else "subscription_quota"
+        )
+    if billing_mode is None:
+        billing_mode = (
+            "api_credit_payg"
+            if endpoint == "https://api.z.ai/api/paas/v4"
+            else "coding_plan_subscription"
+        )
+    if payg_fallback is None:
+        payg_fallback = "true" if endpoint == "https://api.z.ai/api/paas/v4" else "false"
+    extra_payg_fields = ""
+    if endpoint == "https://api.z.ai/api/paas/v4":
+        if primary_error_class is None:
+            primary_error_class = "quota_exhausted"
+        if quota_wall_evidence_ref is None:
+            quota_wall_evidence_ref = "cx-glmcp-quota-wall.yaml"
+        extra_payg_fields = (
+            f"primary_error_class: {primary_error_class}\n"
+            f"quota_wall_evidence_ref: {quota_wall_evidence_ref}\n"
+        )
     (relay / name).write_text(
         f"""schema: hapax.glmcp_quota_admission.v1
 status: quota_available
 provider: z_ai-glm-coding-plan
-capacity_pool: subscription_quota
+capacity_pool: {capacity_pool}
 route_id: glmcp.review.direct
 supported_tool: {supported_tool}
 endpoint: {endpoint}
 model: {model}
 {timestamp_field}: {observed_at}
 stale_after_seconds: {stale_after_seconds}
-evidence_ref: supported-tool-usage-witness
+evidence_ref: {evidence_ref}
 secret_source: pass:glmcp/api-key
 secret_value_persisted: false
 prompt_or_output_persisted: false
-billing_mode: coding_plan_subscription
-payg_fallback: false
+billing_mode: {billing_mode}
+payg_fallback: {payg_fallback}
+{extra_payg_fields}""",
+        encoding="utf-8",
+    )
+
+
+def _glmcp_payg_spend(
+    relay: Path,
+    *,
+    name: str = "glmcp-payg-spend.yaml",
+    spend_id: str = "spend-20260706T140430Z-glmcp-payg-review-test",
+    task_id: str = "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+    created_at: str = "2026-07-06T14:04:30Z",
+    reconcile_by: str = "2026-07-07T14:04:30Z",
+    estimated_cost_usd: str = "0.05",
+    extra_fields: str = "",
+) -> None:
+    (relay / name).write_text(
+        f"""schema: hapax.glmcp_payg_spend.v1
+status: spend_estimated
+spend_id: {spend_id}
+task_id: {task_id}
+authority_case: CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706
+route_id: glmcp.review.direct
+capacity_pool: api_paid_spend
+budget_id: tb-20260706-zai-glmcp-payg-review
+provider: z_ai
+model_or_engine: glm-5.2
+model_id: z_ai-glm-5.2
+effort: none
+quantization: not_applicable
+auth_surface: api_key
+quality_floor: frontier_review_required
+quality_preservation_reason: receipt-bounded GLMCP review fallback after Coding Plan quota wall
+spend_reason: quota_exhaustion
+estimated_cost_usd: {estimated_cost_usd}
+created_at: {created_at}
+reconcile_by: {reconcile_by}
+reconciliation_state: pending
+support_artifact_authority: none
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/paas/v4
+billing_mode: api_credit_payg
+payg_fallback: true
+primary_error_class: quota_exhausted
+secret_source: pass:glmcp/api-key
+secret_value_persisted: false
+prompt_or_output_persisted: false
+{extra_fields}
 """,
         encoding="utf-8",
     )
@@ -236,6 +321,282 @@ def test_glmcp_quota_wall_beats_fresh_admission_receipt(tmp_path: Path) -> None:
     summary = json.loads(result.stdout)
     assert summary["quota_walls"] == {"glmcp": 1}
     assert summary["glmcp_admissions"] == 1
+    assert summary["glmcp_payg_spend_receipts"] == 0
+
+
+def test_glmcp_payg_spend_receipt_counts_against_budget_gate(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    spend_receipt_name = "glmcp-payg-spend-20260706t140430z-test.yaml"
+    _wall_receipt(relay, "cx-glmcp", "2026-07-06T16:00:00Z")
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        evidence_ref=spend_receipt_name,
+    )
+    _glmcp_payg_spend(relay, name=spend_receipt_name)
+    base = tmp_path / "quota-spend-ledger-fixtures.json"
+    base_payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    for budget in base_payload["transition_budgets"]:
+        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+            budget["daily_cap_usd"] = "0.05"
+    base.write_text(json.dumps(base_payload), encoding="utf-8")
+
+    result, out = _run_writer(tmp_path, "--base", str(base), now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert any(
+        receipt["spend_id"] == "spend-20260706T140430Z-glmcp-payg-review-test"
+        for receipt in payload["spend_receipts"]
+    )
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "exhausted"
+    assert (
+        "spend-gate:glmcp.review.direct:refused_exhausted_budget" in glmcp_snapshot["evidence_refs"]
+    )
+    assert "matching TransitionBudget cap exhausted" in glmcp_snapshot["operator_visible_reason"]
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_payg_spend_receipts"] == 1
+
+
+def test_glmcp_payg_spend_receipt_legacy_null_optionals_are_counted(
+    tmp_path: Path,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    spend_receipt_name = "glmcp-payg-spend-20260706t140430z-test.yaml"
+    _wall_receipt(relay, "cx-glmcp", "2026-07-06T16:00:00Z")
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        evidence_ref=spend_receipt_name,
+    )
+    _glmcp_payg_spend(
+        relay,
+        name=spend_receipt_name,
+        extra_fields=("actual_cost_usd: None\nreconciled_at: None\nreconciliation_reason: None"),
+    )
+    base = tmp_path / "quota-spend-ledger-fixtures.json"
+    base_payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    for budget in base_payload["transition_budgets"]:
+        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+            budget["created_at"] = "2026-07-06T13:00:00Z"
+            budget["expires_at"] = "2026-07-07T13:00:00Z"
+            budget["subscription_path_checked_at"] = "2026-07-06T13:00:00Z"
+    base.write_text(json.dumps(base_payload), encoding="utf-8")
+
+    result, out = _run_writer(tmp_path, "--base", str(base), now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "fresh"
+    assert (
+        "spend-gate:glmcp.review.direct:eligible_active_budget" in glmcp_snapshot["evidence_refs"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_payg_spend_receipts"] == 1
+    assert summary["glmcp_ignored_payg_spend_receipts"] == 0
+
+
+def test_glmcp_payg_admission_rechecks_witness_task_cap(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    spend_receipt_name = "glmcp-payg-spend-20260706t140430z-test.yaml"
+    _wall_receipt(relay, "cx-glmcp", "2026-07-06T16:00:00Z")
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        evidence_ref=spend_receipt_name,
+    )
+    _glmcp_payg_spend(relay, name=spend_receipt_name)
+    base = tmp_path / "quota-spend-ledger-fixtures.json"
+    base_payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    for budget in base_payload["transition_budgets"]:
+        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+            budget["per_task_cap_usd"] = "0.05"
+    base.write_text(json.dumps(base_payload), encoding="utf-8")
+
+    result, out = _run_writer(tmp_path, "--base", str(base), now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "exhausted"
+    assert (
+        "spend-gate:glmcp.review.direct:refused_exhausted_budget" in glmcp_snapshot["evidence_refs"]
+    )
+    assert "matching TransitionBudget cap exhausted" in glmcp_snapshot["operator_visible_reason"]
+
+
+def test_glmcp_payg_admission_supersedes_coding_plan_quota_wall(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    spend_receipt_name = "glmcp-payg-spend-20260706t140430z-test.yaml"
+    _wall_receipt(relay, "cx-glmcp", "2026-07-06T16:00:00Z")
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        evidence_ref=spend_receipt_name,
+    )
+    _glmcp_payg_spend(relay, name=spend_receipt_name)
+
+    result, out = _run_writer(tmp_path, now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "fresh"
+    assert any("cx-glmcp-quota-wall.yaml" in ref for ref in glmcp_snapshot["evidence_refs"])
+    assert any(
+        "glmcp-quota-admission-payg.yaml" in ref
+        and "endpoint:https://api.z.ai/api/paas/v4" in ref
+        and "primary_error_class:quota_exhausted" in ref
+        and "quota_wall_evidence_ref:cx-glmcp-quota-wall.yaml" in ref
+        for ref in glmcp_snapshot["evidence_refs"]
+    )
+    assert "PAYG" in glmcp_snapshot["operator_visible_reason"]
+    assert any(
+        ref == "spend-gate:glmcp.review.direct:eligible_active_budget"
+        for ref in glmcp_snapshot["evidence_refs"]
+    )
+    assert "spend-gate-budget:tb-20260706-zai-glmcp-payg-review" in glmcp_snapshot["evidence_refs"]
+    summary = json.loads(result.stdout)
+    assert summary["quota_walls"] == {"glmcp": 1}
+    assert summary["glmcp_admissions"] == 1
+    assert summary["glmcp_payg_spend_receipts"] == 1
+
+
+def test_glmcp_payg_admission_does_not_supersede_without_validated_spend_receipt(
+    tmp_path: Path,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _wall_receipt(relay, "cx-glmcp", "2026-07-06T16:00:00Z")
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        evidence_ref="glmcp-payg-spend-missing.yaml",
+    )
+
+    result, out = _run_writer(tmp_path, now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "exhausted"
+    assert (
+        "spend-gate-blocker:validated-payg-spend-receipt-absent" in glmcp_snapshot["evidence_refs"]
+    )
+    assert "validated PAYG spend receipt reservation" in glmcp_snapshot["operator_visible_reason"]
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 1
+    assert summary["glmcp_payg_spend_receipts"] == 0
+
+
+def test_glmcp_payg_admission_does_not_supersede_wrong_wall_class(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _wall_receipt(
+        relay,
+        "cx-glmcp",
+        "2026-07-06T16:00:00Z",
+        failure_class="provider_high_traffic",
+    )
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        primary_error_class="quota_exhausted",
+    )
+
+    result, out = _run_writer(tmp_path, now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "exhausted"
+    assert any(
+        "failure_class:provider_high_traffic" in ref for ref in glmcp_snapshot["evidence_refs"]
+    )
+    assert "matching active quota-wall witness" in glmcp_snapshot["operator_visible_reason"]
+
+
+def test_glmcp_payg_admission_does_not_supersede_without_active_paid_budget(
+    tmp_path: Path,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    spend_receipt_name = "glmcp-payg-spend-20260609t235500z-test.yaml"
+    _wall_receipt(relay, "cx-glmcp", "2026-06-10T06:00:00Z")
+    _glmcp_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        evidence_ref=spend_receipt_name,
+    )
+    _glmcp_payg_spend(
+        relay,
+        name=spend_receipt_name,
+        spend_id="spend-20260609T235500Z-glmcp-payg-review-test",
+        created_at="2026-06-09T23:55:00Z",
+        reconcile_by="2026-06-10T23:55:00Z",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["subscription_quota_state"] == "exhausted"
+    assert any("cx-glmcp-quota-wall.yaml" in ref for ref in glmcp_snapshot["evidence_refs"])
+    assert any("glmcp-quota-admission-payg.yaml" in ref for ref in glmcp_snapshot["evidence_refs"])
+    assert (
+        "spend-gate:glmcp.review.direct:refused_expired_budget" in glmcp_snapshot["evidence_refs"]
+    )
+    assert "spend-gate-budget:tb-20260706-zai-glmcp-payg-review" in glmcp_snapshot["evidence_refs"]
+    assert "paid-spend gate" in glmcp_snapshot["operator_visible_reason"]
 
 
 def test_glmcp_role_aliases_map_to_glmcp_not_codex(tmp_path: Path) -> None:
@@ -280,10 +641,49 @@ def test_fresh_glmcp_admission_receipt_marks_glmcp_fresh(tmp_path: Path) -> None
         "witness:supported-tool-usage-witness" in ref
         and "supported_tool:hapax-glmcp-reviewer" in ref
         and "endpoint:https://api.z.ai/api/coding/paas/v4" in ref
-        and "model:glm-5" in ref
+        and "model:glm-5.2" in ref
         for ref in glmcp_snapshot["evidence_refs"]
     )
     assert "finite" in glmcp_snapshot["operator_visible_reason"]
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 1
+
+
+def test_fresh_glmcp_payg_admission_without_active_wall_stays_unknown(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+    )
+
+    result, out = _run_writer(tmp_path, now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    glmcp_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "glmcp.review.direct"
+    )
+    assert glmcp_snapshot["provider"] == "z_ai-glm-coding-plan"
+    assert glmcp_snapshot["capacity_pool"] == "subscription_quota"
+    assert glmcp_snapshot["subscription_quota_state"] == "unknown"
+    assert any(
+        "glmcp-quota-admission-payg.yaml" in ref
+        and "endpoint:https://api.z.ai/api/paas/v4" in ref
+        and "model:glm-5.2" in ref
+        and "primary_error_class:quota_exhausted" in ref
+        and "quota_wall_evidence_ref:cx-glmcp-quota-wall.yaml" in ref
+        for ref in glmcp_snapshot["evidence_refs"]
+    )
+    assert not any(ref.startswith("spend-gate:") for ref in glmcp_snapshot["evidence_refs"])
+    assert (
+        "without an active Coding Plan quota-wall witness"
+        in glmcp_snapshot["operator_visible_reason"]
+    )
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 1
 
@@ -403,7 +803,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: claude_code
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -423,7 +823,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/anthropic
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -443,7 +843,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4/
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -529,7 +929,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -679,11 +1079,21 @@ def test_glmcp_admission_receipt_requires_subscription_capacity_pool(tmp_path: P
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
     (relay / "glmcp-quota-admission-missing-capacity.yaml").write_text(
-        """status: quota_available
+        """schema: hapax.glmcp_quota_admission.v1
+status: quota_available
 provider: z_ai-glm-coding-plan
 route_id: glmcp.review.direct
+supported_tool: hapax-glmcp-reviewer
+endpoint: https://api.z.ai/api/coding/paas/v4
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
+evidence_ref: supported-tool-usage-witness
+secret_source: pass:glmcp/api-key
+secret_value_persisted: false
+prompt_or_output_persisted: false
+billing_mode: coding_plan_subscription
+payg_fallback: false
 """,
         encoding="utf-8",
     )
@@ -697,7 +1107,7 @@ stale_after_seconds: 900
         for snapshot in payload["quota_snapshots"]
     }
     assert states["glmcp.review.direct"] == "unknown"
-    assert "capacity_pool missing or unsupported" in result.stderr
+    assert "capacity_pool missing or unsupported for endpoint" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 0
 
@@ -706,7 +1116,7 @@ stale_after_seconds: 900
     ("field_name", "expected_reason"),
     [
         ("provider", "provider missing or unsupported"),
-        ("capacity_pool", "capacity_pool missing or unsupported"),
+        ("capacity_pool", "capacity_pool missing or unsupported for endpoint"),
         ("route_id", "route_id missing or unsupported"),
         ("supported_tool", "supported_tool missing or unsupported"),
         ("endpoint", "endpoint missing or unsupported"),
@@ -717,8 +1127,8 @@ stale_after_seconds: 900
         ("secret_source", "secret_source missing or unsupported"),
         ("secret_value_persisted", "secret_value_persisted must be false"),
         ("prompt_or_output_persisted", "prompt_or_output_persisted must be false"),
-        ("billing_mode", "billing_mode missing or unsupported"),
-        ("payg_fallback", "payg_fallback must be false"),
+        ("billing_mode", "billing_mode missing or unsupported for endpoint"),
+        ("payg_fallback", "payg_fallback missing or unsupported for endpoint"),
     ],
 )
 def test_glmcp_admission_rejection_warnings_do_not_echo_untrusted_values(
@@ -737,7 +1147,7 @@ def test_glmcp_admission_rejection_warnings_do_not_echo_untrusted_values(
         "route_id": "glmcp.review.direct",
         "supported_tool": "hapax-glmcp-reviewer",
         "endpoint": "https://api.z.ai/api/coding/paas/v4",
-        "model": "glm-5",
+        "model": "glm-5.2",
         "observed_at": "2026-06-09T23:55:00Z",
         "stale_after_seconds": "900",
         "evidence_ref": "supported-tool-usage-witness",
@@ -776,7 +1186,7 @@ def test_glmcp_admission_rejection_warnings_do_not_echo_untrusted_values(
     [
         ("secret_value_persisted", "secret_value_persisted must be false"),
         ("prompt_or_output_persisted", "prompt_or_output_persisted must be false"),
-        ("payg_fallback", "payg_fallback must be false"),
+        ("payg_fallback", "payg_fallback missing or unsupported for endpoint"),
     ],
 )
 def test_glmcp_admission_rejects_noncanonical_false_booleans(
@@ -794,7 +1204,7 @@ def test_glmcp_admission_rejects_noncanonical_false_booleans(
         "route_id": "glmcp.review.direct",
         "supported_tool": "hapax-glmcp-reviewer",
         "endpoint": "https://api.z.ai/api/coding/paas/v4",
-        "model": "glm-5",
+        "model": "glm-5.2",
         "observed_at": "2026-06-09T23:55:00Z",
         "stale_after_seconds": "900",
         "evidence_ref": "supported-tool-usage-witness",
@@ -846,7 +1256,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/v1
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -874,7 +1284,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 """,
@@ -892,7 +1302,7 @@ stale_after_seconds: 900
     assert states["glmcp.review.direct"] == "unknown"
     assert "supported_tool missing or unsupported" in result.stderr
     assert "unsupported-endpoint" in result.stderr
-    assert "expected official Z.ai Coding Plan endpoint" in result.stderr
+    assert "expected official Z.ai Coding Plan or PAYG endpoint" in result.stderr
     assert "model missing or unsupported" in result.stderr
     assert "evidence_ref missing" in result.stderr
     summary = json.loads(result.stdout)
@@ -977,7 +1387,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 {legacy_timestamp_line}
 stale_after_seconds: 900
@@ -1015,7 +1425,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: definitely-not-a-date
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -1029,7 +1439,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at:
 stale_after_seconds: 900
 evidence_ref: supported-tool-usage-witness
@@ -1048,7 +1458,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: soon
 evidence_ref: supported-tool-usage-witness
@@ -1062,7 +1472,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 0
 evidence_ref: supported-tool-usage-witness
@@ -1099,7 +1509,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 evidence_ref: supported-tool-usage-witness
 """,
@@ -1133,7 +1543,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: {numeric_secret}
 evidence_ref: supported-tool-usage-witness
@@ -1172,7 +1582,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: {secretish_ref}
@@ -1186,7 +1596,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: {colon_ref}
@@ -1200,7 +1610,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: {email_ref}
@@ -1214,7 +1624,7 @@ capacity_pool: subscription_quota
 route_id: glmcp.review.direct
 supported_tool: hapax-glmcp-reviewer
 endpoint: https://api.z.ai/api/coding/paas/v4
-model: glm-5
+model: glm-5.2
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: {overlong_secretish_ref}
@@ -1325,7 +1735,7 @@ def test_output_is_private_and_atomic(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     mode = stat.S_IMODE(out.stat().st_mode)
     assert mode == 0o600
-    leftovers = [p for p in out.parent.iterdir() if p.name != out.name]
+    leftovers = [p for p in out.parent.iterdir() if p.name not in {out.name, f"{out.name}.lock"}]
     assert leftovers == []
 
 

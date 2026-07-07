@@ -33,6 +33,7 @@ _SAMPLE_STATE = {
     "timestamp": 1743300000,
     "health": {"value": 0.072, "trend": "declining", "freshness_s": 5.0},
     "resource_pressure": {"value": 0.45, "trend": "stable", "freshness_s": 3.0},
+    "local_capacity_pressure": {"value": 0.76, "trend": "rising", "freshness_s": 2.0},
     "error_rate": {"value": 0.12, "trend": "stable", "freshness_s": 8.0},
     "processing_throughput": {"value": 0.88, "trend": "rising", "freshness_s": 2.0},
     "perception_confidence": {"value": 0.71, "trend": "stable", "freshness_s": 4.0},
@@ -75,10 +76,11 @@ async def test_get_stimmung_with_shm(tmp_path: Path) -> None:
     assert dims["resource_pressure"]["value"] == pytest.approx(0.45)
     assert dims["resource_pressure"]["trend"] == "stable"
 
-    # Verify all 10 dimension keys present
+    # Verify core dimension keys present
     expected_keys = [
         "health",
         "resource_pressure",
+        "local_capacity_pressure",
         "error_rate",
         "processing_throughput",
         "perception_confidence",

@@ -38,21 +38,18 @@ KNOWN_LANES: dict[str, dict] = {
     "cx-cyan": {"platform": "codex", "worktree_suffix": "hapax-council--cx-cyan"},
     "cx-gold": {"platform": "codex", "worktree_suffix": "hapax-council--cx-gold"},
     "cx-green": {"platform": "codex", "worktree_suffix": "hapax-council--cx-green"},
-    "antigravity": {"platform": "antigrav", "worktree_suffix": None},
 }
 
 MODEL_DEFAULTS: dict[str, tuple[str, int]] = {
     "claude-code": ("claude-opus-4-6", 1_000_000),
     "codex": ("o3", 200_000),
     "vibe": ("claude-sonnet-4-6", 200_000),
-    "antigrav": ("google-antigravity-cli-agy", 200_000),
 }
 
 TOOL_DEFAULTS: dict[str, list[str]] = {
     "claude-code": ["Edit", "Write", "Bash", "Read", "Grep", "Glob", "Agent", "MCP"],
     "codex": ["Edit", "Write", "Bash", "Read", "Grep", "Glob"],
     "vibe": ["Edit", "Write", "Bash", "Read"],
-    "antigrav": ["Edit", "Write", "Bash", "Read"],
 }
 
 

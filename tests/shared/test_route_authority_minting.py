@@ -22,7 +22,10 @@ from pydantic import ValidationError
 
 from shared.dispatcher_policy import (
     RouteAuthorityReceipt,
+    _apply_route_authority_receipt_to_route_payload,
     _receipt_dir_from_env,
+    _route_authority_removable_reasons,
+    apply_route_authority_receipts,
     build_route_authority_receipt,
     route_authority_receipt_payload_hash,
     route_authority_receipt_reference,
@@ -32,6 +35,17 @@ from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
 )
+from shared.platform_capability_registry import (
+    PLATFORM_CAPABILITY_REGISTRY,
+    PlatformCapabilityRegistry,
+)
+
+
+def _load_registry() -> PlatformCapabilityRegistry:
+    """The real registry, receipt-free (raw), so tests assert the apply path itself."""
+    return PlatformCapabilityRegistry.model_validate(
+        json.loads(PLATFORM_CAPABILITY_REGISTRY.read_text(encoding="utf-8"))
+    )
 
 
 def test_receipt_dir_defaults_to_platform_capability_dir_when_env_unset() -> None:
@@ -122,6 +136,21 @@ def test_build_runtime_actuation_receipt_round_trips_with_task_scope() -> None:
     assert receipt.signed_payload_sha256 == route_authority_receipt_payload_hash(receipt)
 
 
+def test_build_connector_mutation_receipt_round_trips_with_task_scope() -> None:
+    receipt = build_route_authority_receipt(
+        receipt_type="connector_mutation",
+        route_id="codex.headless.full",
+        evidence_refs=["operator-signed:gmail-send"],
+        task_ids=["cc-task-mcp-mutator-route-resource-receipts-20260630"],
+        mutation_surfaces=["connector", "external", "public"],
+    )
+
+    assert receipt.receipt_type == "connector_mutation"
+    assert receipt.task_ids == ("cc-task-mcp-mutator-route-resource-receipts-20260630",)
+    assert receipt.mutation_surfaces == ("connector", "external", "public")
+    assert receipt.signed_payload_sha256 == route_authority_receipt_payload_hash(receipt)
+
+
 def test_build_quality_equivalence_requires_quality_floors() -> None:
     with pytest.raises((ValidationError, ValueError)):
         build_route_authority_receipt(
@@ -129,6 +158,135 @@ def test_build_quality_equivalence_requires_quality_floors() -> None:
             route_id="claude.headless.sonnet",
             evidence_refs=["operator-signed:equivalence"],
         )
+
+
+def test_build_local_inference_entitlement_receipt_round_trips_and_validates() -> None:
+    receipt = build_route_authority_receipt(
+        receipt_type="local_inference_entitlement",
+        route_id="local_tool.local.worker",
+        evidence_refs=["operator-signed:local-inference-entitlement"],
+    )
+
+    assert receipt.receipt_type == "local_inference_entitlement"
+    assert receipt.route_id == "local_tool.local.worker"
+    assert receipt.signed_payload_sha256 == route_authority_receipt_payload_hash(receipt)
+    reloaded = RouteAuthorityReceipt.model_validate(json.loads(receipt.model_dump_json()))
+    assert reloaded == receipt
+
+
+def test_build_local_inference_entitlement_requires_local_tool_route() -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        build_route_authority_receipt(
+            receipt_type="local_inference_entitlement",
+            route_id="claude.headless.opus",
+            evidence_refs=["operator-signed:local-inference-entitlement"],
+        )
+
+
+def test_local_inference_entitlement_removable_reasons_set() -> None:
+    """The removable set for this receipt type (the reasons it is authorized to clear)."""
+    receipt = build_route_authority_receipt(
+        receipt_type="local_inference_entitlement",
+        route_id="local_tool.local.worker",
+        evidence_refs=["operator-signed:local-inference-entitlement"],
+    )
+    assert _route_authority_removable_reasons(receipt) == {
+        "local_inference_worker_receipt_admission_required",
+        "fresh_capability_evidence_absent",
+        "quota_telemetry_unknown",
+    }
+
+
+def test_local_inference_entitlement_flips_route_active_through_real_apply_path(
+    tmp_path: Path,
+) -> None:
+    """The keystone, asserted end-to-end through apply_route_authority_receipts against the
+    REAL registry (not an implementation echo): a valid, fresh, operator-signed
+    local_inference_entitlement receipt clears the local worker's admission + capability +
+    quota blockers — including quota_telemetry_unknown on the quota surface — so route_state
+    flips active. This is the exact path the R1-keystone-bug review found broken at head."""
+    registry = _load_registry()
+
+    # RED baseline: without a receipt the worker route is genuinely blocked, and the quota
+    # blocker (the one the bug re-injected) is present. Proves the green case is non-vacuous.
+    before = registry.route_map()["local_tool.local.worker"]
+    assert before.route_state.value == "blocked"
+    assert "quota_telemetry_unknown" in before.blocked_reasons
+
+    receipt = build_route_authority_receipt(
+        receipt_type="local_inference_entitlement",
+        route_id="local_tool.local.worker",
+        evidence_refs=["operator-signed:local-inference-entitlement"],
+    )
+    write_route_authority_receipt(receipt, receipt_dir=tmp_path)
+
+    applied = apply_route_authority_receipts(registry, receipt_dir=tmp_path)
+
+    after = applied.route_map()["local_tool.local.worker"]
+    assert after.route_state.value == "active"
+    assert not after.blocked_reasons
+
+
+def test_entitlement_receipt_leaves_other_blocked_routes_untouched(tmp_path: Path) -> None:
+    """A local_inference_entitlement receipt clears ONLY its target route: every other
+    blocked route stays blocked (the receipt is not a global un-block)."""
+    registry = _load_registry()
+    before_blocked = {
+        rid
+        for rid, route in registry.route_map().items()
+        if route.route_state.value == "blocked" and rid != "local_tool.local.worker"
+    }
+    assert before_blocked, "fixture must have other blocked routes for this to be meaningful"
+
+    receipt = build_route_authority_receipt(
+        receipt_type="local_inference_entitlement",
+        route_id="local_tool.local.worker",
+        evidence_refs=["operator-signed:local-inference-entitlement"],
+    )
+    write_route_authority_receipt(receipt, receipt_dir=tmp_path)
+    applied = apply_route_authority_receipts(registry, receipt_dir=tmp_path)
+
+    after_blocked = {
+        rid for rid, route in applied.route_map().items() if route.route_state.value == "blocked"
+    }
+    assert before_blocked <= after_blocked
+
+
+def test_entitlement_receipt_leaves_a_non_removable_reason_blocked() -> None:
+    """Fail-closed: a reason NOT in the receipt's removable set survives on the route, and
+    the route stays blocked. Proves the strip is scoped to the removable reasons, so an
+    uncleared reason keeps the route blocked (asserted on behavior, not the helper's literal)."""
+    receipt = build_route_authority_receipt(
+        receipt_type="local_inference_entitlement",
+        route_id="local_tool.local.worker",
+        evidence_refs=["operator-signed:local-inference-entitlement"],
+    )
+    # A minimal route payload carrying one removable reason (quota surface) AND one reason
+    # the receipt is NOT authorized to clear (an unrelated hold on the resource surface).
+    route_payload: dict = {
+        "blocked_reasons": ["quota_telemetry_unknown", "some_unrelated_hold"],
+        "route_state": "blocked",
+        "quality_envelope": {"explicit_equivalence_records": [], "eligible_quality_floors": []},
+        "freshness": {
+            "capability_checked_at": None,
+            "capability_stale_after": "24h",
+            "quota_checked_at": None,
+            "quota_stale_after": "24h",
+            "resource_checked_at": None,
+            "resource_stale_after": "24h",
+            "provider_docs_checked_at": "2026-07-01T00:00:00Z",
+            "provider_docs_stale_after": "24h",
+            "evidence": {
+                "capability": {"evidence_refs": [], "blocked_reasons": []},
+                "quota": {"evidence_refs": [], "blocked_reasons": ["quota_telemetry_unknown"]},
+                "resource": {"evidence_refs": [], "blocked_reasons": ["some_unrelated_hold"]},
+                "provider_docs": {"evidence_refs": ["docs:x"], "blocked_reasons": []},
+            },
+        },
+    }
+    _apply_route_authority_receipt_to_route_payload(route_payload, receipt)
+    assert route_payload["route_state"] == "blocked"
+    assert route_payload["blocked_reasons"] == ["some_unrelated_hold"]
 
 
 def test_build_opus_entitlement_requires_opus_route() -> None:
@@ -154,6 +312,23 @@ def test_build_runtime_actuation_requires_task_and_surface() -> None:
             route_id="codex.headless.full",
             evidence_refs=["operator-signed:minio-cleanup"],
             task_ids=["appendix-podium-minio-old-root-cleanup-20260605"],
+        )
+
+
+def test_build_connector_mutation_requires_task_and_surface() -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        build_route_authority_receipt(
+            receipt_type="connector_mutation",
+            route_id="codex.headless.full",
+            evidence_refs=["operator-signed:gmail-send"],
+            mutation_surfaces=["connector", "external"],
+        )
+    with pytest.raises((ValidationError, ValueError)):
+        build_route_authority_receipt(
+            receipt_type="connector_mutation",
+            route_id="codex.headless.full",
+            evidence_refs=["operator-signed:gmail-send"],
+            task_ids=["cc-task-mcp-mutator-route-resource-receipts-20260630"],
         )
 
 

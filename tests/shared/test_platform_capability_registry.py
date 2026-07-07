@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import json
 import sys
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -31,11 +33,24 @@ from shared.platform_capability_registry import (
     check_registry_freshness,
     load_platform_capability_registry,
 )
+from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DISPATCHER = REPO_ROOT / "scripts" / "hapax-methodology-dispatch"
 FRESH_NOW = datetime(2026, 5, 9, 21, 0, tzinfo=UTC)
 ROUTE_EVIDENCE_NOW = datetime(2026, 5, 17, 8, 14, tzinfo=UTC)
+GLMCP_PAYG_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:glmcp-quota-admission-payg.yaml:"
+    "witness:glmcp-payg-spend-20260517t075900z-test.yaml:"
+    "supported_tool:hapax-glmcp-reviewer:"
+    "endpoint:https://api.z.ai/api/paas/v4:"
+    "model:glm-5.2:"
+    "primary_error_class:quota_exhausted:"
+    "quota_wall_evidence_ref:cx-glmcp-quota-wall.yaml:"
+    "observed_at:2026-05-17T07:59:00Z:"
+    "fresh_until:2026-05-17T08:05:00Z"
+)
+GLMCP_PAYG_BUDGET_ID = "tb-20260517-zai-glmcp-payg-review"
 
 
 def _dispatcher_module() -> ModuleType:
@@ -93,11 +108,11 @@ def test_seed_registry_loads_sanctioned_platform_routes() -> None:
 
     assert set(registry.route_map()) == REQUIRED_ROUTE_IDS
     assert {route.platform.value for route in registry.routes} >= {
-        "antigrav",
         "claude",
         "codex",
         "vibe",
     }
+    assert "antigrav" not in {route.platform.value for route in registry.routes}
     assert all(not route_id.startswith("gemini.") for route_id in registry.route_map())
 
 
@@ -266,6 +281,54 @@ def test_cloud_burst_api_route_is_blocked_dry_run_paid_surface() -> None:
     assert "cloud_burst_release_gate_absent" in route.blocked_reasons
 
 
+def test_openrouter_frontier_route_is_blocked_until_measurement_budget_and_key() -> None:
+    registry = load_platform_capability_registry()
+    route = registry.require("api.headless.openrouter")
+
+    assert route.route_state is RouteState.BLOCKED
+    assert route.model_or_engine == "openrouter/openai/gpt-5.5"
+    assert route.execution_descriptor.model_id.value == "gpt-5.5"
+    assert route.paid_provider == "openrouter"
+    assert route.paid_profile == "frontier-gpt-5.5"
+    assert route.authority_ceiling is AuthorityCeiling.FRONTIER_REVIEW_REQUIRED
+    assert route.capacity_pool.value == "api_paid_spend"
+    assert route.mutability.source is True
+    assert route.mutability.provider_spend is False
+    assert route.privacy_posture.value == "provider_training_unknown"
+    assert route.capability_tier.value == "frontier_full"
+    assert route.worker_tier.value == "fallback_worker"
+    assert route.capability_scores.source_editing.observed_at is None
+    assert route.capability_scores.source_editing.confidence == 2
+    assert route.capability_scores.local_calibration.score == 1
+    expected_scores = {
+        "grounding": 4,
+        "governance_reasoning": 4,
+        "source_editing": 4,
+        "architecture": 4,
+        "ambiguity_resolution": 4,
+        "long_context": 5,
+        "current_docs_grounding": 4,
+        "multimodal_verification": 2,
+        "runtime_debugging": 3,
+        "test_authoring": 4,
+        "coordination_reliability": 2,
+        "privacy_safety": 2,
+        "public_claim_safety": 3,
+        "local_calibration": 1,
+    }
+    score_payload = route.capability_scores.model_dump(mode="json")
+    assert {name: score_payload[name]["score"] for name in expected_scores} == expected_scores
+    assert all(score_payload[name]["confidence"] == 2 for name in expected_scores)
+    assert route.tool_access.filesystem.value == "read_write"
+    assert route.tool_access.shell.value == "full"
+    assert "capabilityio_measurement_absent" in route.blocked_reasons
+    assert "capability_scores_asserted_not_measured" in route.blocked_reasons
+    assert "openrouter_key_credit_witness_absent" in route.blocked_reasons
+    assert "capabilityio_adapter_wiring_absent" in route.blocked_reasons
+    assert "openrouter_paid_budget_receipt_absent" in route.blocked_reasons
+    assert "openrouter_served_model_witness_absent" in route.blocked_reasons
+
+
 def test_provider_gateway_route_is_explicit_fail_closed_paid_runtime_surface() -> None:
     registry = load_platform_capability_registry()
     route = registry.require("api.headless.provider_gateway")
@@ -311,6 +374,25 @@ def test_risky_auto_approval_routes_cannot_be_unrestricted_authoritative() -> No
     payload["authority_ceiling"] = "authoritative"
     with pytest.raises(ValidationError, match="auto-approval posture cannot"):
         PlatformCapabilityRoute.model_validate(payload)
+
+
+def test_vibe_route_uses_explicit_bounded_exclusions_without_quality_equivalence() -> None:
+    registry = load_platform_capability_registry()
+    vibe = registry.require("vibe.headless.full")
+
+    assert vibe.worker_tier.value == "bounded_worker"
+    assert [floor.value for floor in vibe.quality_envelope.eligible_quality_floors] == [
+        "deterministic_ok"
+    ]
+    assert vibe.quality_envelope.explicit_equivalence_records == []
+    assert "frontier_review_required_without_equivalence_record" in (
+        vibe.quality_envelope.excluded_task_classes
+    )
+    assert "quality_equivalence_record_absent" not in vibe.blocked_reasons
+    assert "quality_equivalence_record_absent" not in (
+        vibe.freshness.evidence.capability.blocked_reasons
+    )
+    assert "fresh_capability_evidence_absent" in vibe.blocked_reasons
 
 
 def test_unknown_privacy_posture_is_visible_and_non_permissive() -> None:
@@ -434,13 +516,58 @@ def _make_receipt(*, observed_at: datetime, stale_after: str = "24h") -> Platfor
     )
 
 
+def _make_vibe_receipt(
+    *, observed_at: datetime, stale_after: str = "24h"
+) -> PlatformCapabilityReceipt:
+    return PlatformCapabilityReceipt(
+        receipt_id="test-vibe-receipt",
+        platform="vibe",
+        routes=["vibe.headless.full"],
+        observed_at=observed_at,
+        stale_after=stale_after,
+        cli=CliEvidence(binary="vibe", available=True, version="0.0-test"),
+        wrapper=WrapperEvidence(path="scripts/hapax-vibe", exists=True, executable=True),
+        capability=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:vibe:cap"],
+        ),
+        resource=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:vibe:res"],
+        ),
+        quota=SurfaceEvidence(
+            status=EvidenceStatus.UNOBSERVABLE,
+            source="test",
+            observed_at=observed_at,
+            stale_after="15m",
+            evidence_refs=["test:vibe:quota"],
+            reason_codes=["account_live_quota_receipt_absent"],
+        ),
+        provider_docs=ProviderDocsEvidence(
+            refs=["test:vibe:docs"],
+            fetched_at=observed_at,
+            stale_after="30d",
+        ),
+    )
+
+
 def _make_api_receipt(
     *, observed_at: datetime, stale_after: str = "24h"
 ) -> PlatformCapabilityReceipt:
     return PlatformCapabilityReceipt(
         receipt_id="test-api-receipt",
         platform="api",
-        routes=["api.headless.api_frontier", "api.headless.provider_gateway"],
+        routes=[
+            "api.headless.api_frontier",
+            "api.headless.openrouter",
+            "api.headless.provider_gateway",
+        ],
         observed_at=observed_at,
         stale_after=stale_after,
         cli=CliEvidence(binary="python3", available=True, version="Python 3.12.3"),
@@ -480,6 +607,145 @@ def _make_api_receipt(
     )
 
 
+def _make_glmcp_receipt(
+    *, observed_at: datetime, stale_after: str = "24h"
+) -> PlatformCapabilityReceipt:
+    return PlatformCapabilityReceipt(
+        receipt_id="test-glmcp-receipt",
+        platform="glmcp",
+        routes=["glmcp.review.direct"],
+        observed_at=observed_at,
+        stale_after=stale_after,
+        cli=CliEvidence(
+            binary="scripts/hapax-glmcp-reviewer",
+            available=True,
+            version=(
+                "hapax-glmcp-reviewer: ok model=glm-5.2 "
+                "payg_fallback=enabled payg_base_url=https://api.z.ai/api/paas/v4"
+            ),
+        ),
+        wrapper=WrapperEvidence(
+            path="scripts/hapax-glmcp-reviewer",
+            exists=True,
+            executable=True,
+            sha256="abc123",
+        ),
+        capability=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:glmcp:capability:glm-5.2"],
+        ),
+        resource=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:glmcp:resource:pass-backed-key"],
+        ),
+        quota=SurfaceEvidence(
+            status=EvidenceStatus.UNOBSERVABLE,
+            source="test",
+            observed_at=observed_at,
+            stale_after="15m",
+            evidence_refs=["test:glmcp:quota:local-probe-unobservable"],
+            reason_codes=["account_live_quota_receipt_absent", "quota_telemetry_unknown"],
+        ),
+        provider_docs=ProviderDocsEvidence(
+            refs=["test:glmcp:provider-docs"],
+            fetched_at=observed_at,
+            stale_after="30d",
+        ),
+    )
+
+
+def _write_glmcp_live_quota_ledger(path: Path) -> None:
+    payload = deepcopy(json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8")))
+    payload["ledger_id"] = "quota-spend-ledger-test-glmcp-payg-live"
+    payload["captured_at"] = "2026-05-17T07:59:30Z"
+    payload["generated_from"] = list(
+        dict.fromkeys([*payload["generated_from"], "scripts/hapax-quota-telemetry-writer"])
+    )
+    payload["transition_budgets"].append(
+        {
+            "budget_schema": 1,
+            "budget_id": GLMCP_PAYG_BUDGET_ID,
+            "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-TEST",
+            "approved_by": "operator",
+            "created_at": "2026-05-17T07:00:00Z",
+            "expires_at": "2026-05-17T09:00:00Z",
+            "capacity_pool": "api_paid_spend",
+            "providers_allowed": ["z_ai"],
+            "profiles_allowed": ["glmcp-review-direct"],
+            "task_classes_allowed": ["independent-review"],
+            "quality_floors_allowed": ["frontier_review_required"],
+            "total_cap_usd": "100.00",
+            "per_task_cap_usd": "2.00",
+            "daily_cap_usd": "20.00",
+            "auto_top_up_allowed": False,
+            "subscription_path_checked_at": "2026-05-17T07:00:00Z",
+            "reason_subscription_path_not_used": (
+                "fixture Coding Plan quota exhausted; PAYG spend gate under test"
+            ),
+            "steady_state_replacement": {
+                "target_route_id": None,
+                "blocker_to_remove": None,
+                "exit_criterion": None,
+            },
+            "ledger_owner": "test",
+            "dashboard_visibility": "required",
+            "lifecycle_state": "active",
+        }
+    )
+    payload["spend_receipts"].append(
+        {
+            "spend_receipt_schema": 1,
+            "spend_id": "spend-20260517T075900Z-glmcp-payg-review-test",
+            "task_id": "glmcp-review-direct",
+            "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-TEST",
+            "route_id": "glmcp.review.direct",
+            "capacity_pool": "api_paid_spend",
+            "budget_id": GLMCP_PAYG_BUDGET_ID,
+            "provider": "z_ai",
+            "model_or_engine": "glm-5.2",
+            "model_id": "z_ai-glm-5.2",
+            "effort": "none",
+            "quantization": "not_applicable",
+            "auth_surface": "api_key",
+            "quality_floor": "frontier_review_required",
+            "quality_preservation_reason": (
+                "receipt-bounded GLMCP review fallback after Coding Plan quota wall"
+            ),
+            "spend_reason": "quota_exhaustion",
+            "estimated_cost_usd": "0.05",
+            "created_at": "2026-05-17T07:59:00Z",
+            "reconcile_by": "2026-05-18T07:59:00Z",
+            "reconciliation_state": "pending",
+            "support_artifact_authority": "none",
+        }
+    )
+    payload["quota_snapshots"] = [
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-glmcp-review-direct-payg-live",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "glmcp.review.direct",
+            "provider": "z_ai-glm-coding-plan",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [
+                GLMCP_PAYG_ADMISSION_EVIDENCE_REF,
+                "spend-gate:glmcp.review.direct:eligible_active_budget",
+                f"spend-gate-budget:{GLMCP_PAYG_BUDGET_ID}",
+            ],
+            "operator_visible_reason": "fixture GLMCP PAYG admission receipt",
+        }
+    ]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def test_subscription_quota_nonblocking_uses_receipt_stale_after() -> None:
     """Regression: unobservable subscription quota must not go stale at 15m."""
     payload = _payload()
@@ -503,6 +769,40 @@ def test_subscription_quota_nonblocking_uses_receipt_stale_after() -> None:
     assert not quota_errors, f"quota should not be stale after 1h: {quota_errors}"
 
 
+def test_vibe_receipt_backfills_capability_checked_at_from_observed_at() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "vibe.headless.full")
+    assert route["freshness"]["capability_checked_at"] is None
+    assert "fresh_capability_evidence_absent" in route["blocked_reasons"]
+
+    receipt_time = datetime(2026, 6, 19, 15, 30, tzinfo=UTC)
+    _apply_receipt_to_route_payload(route, _make_vibe_receipt(observed_at=receipt_time))
+
+    assert route["freshness"]["capability_checked_at"] == "2026-06-19T15:30:00Z"
+    assert route["freshness"]["resource_checked_at"] == "2026-06-19T15:30:00Z"
+    assert route["freshness"]["quota_checked_at"] == "2026-06-19T15:30:00Z"
+    assert route["freshness"]["quota_stale_after"] == "24h"
+    assert route["route_state"] == "active"
+    assert route["blocked_reasons"] == []
+    assert (
+        "fresh_capability_evidence_absent"
+        not in (route["freshness"]["evidence"]["capability"]["blocked_reasons"])
+    )
+    assert any(
+        ref.startswith("platform-capability-receipt:vibe:")
+        for ref in route["freshness"]["evidence"]["capability"]["evidence_refs"]
+    )
+
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    result = check_registry_freshness(
+        registry,
+        route_ids=["vibe.headless.full"],
+        now=datetime(2026, 6, 19, 15, 31, tzinfo=UTC),
+    )
+
+    assert result.ok is True
+
+
 def test_provider_gateway_receipt_clears_gateway_evidence_blockers() -> None:
     payload = _payload()
     route = _route_payload(payload, "api.headless.provider_gateway")
@@ -518,6 +818,11 @@ def test_provider_gateway_receipt_clears_gateway_evidence_blockers() -> None:
         not in route["freshness"]["evidence"]["resource"]["blocked_reasons"]
     )
     assert route["freshness"]["quota_stale_after"] == "24h"
+    assert route["capability_scores"]["source_editing"]["observed_at"] == "2026-06-04T16:00:00Z"
+    assert any(
+        ref.startswith("platform-capability-receipt:api:")
+        for ref in route["capability_scores"]["source_editing"]["evidence_refs"]
+    )
 
     registry = PlatformCapabilityRegistry.model_validate(payload)
     result = check_registry_freshness(
@@ -542,6 +847,150 @@ def test_api_receipt_does_not_open_cloud_burst_release_gate() -> None:
     assert (
         "cloud_runner_resource_receipt_absent"
         in route["freshness"]["evidence"]["resource"]["blocked_reasons"]
+    )
+
+
+def test_api_receipt_does_not_admit_openrouter_without_measurement_budget_or_key() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "api.headless.openrouter")
+
+    receipt_time = datetime(2026, 7, 5, 16, 0, tzinfo=UTC)
+    receipt = _make_api_receipt(observed_at=receipt_time)
+    _apply_receipt_to_route_payload(route, receipt)
+
+    assert route["route_state"] == "blocked"
+    assert "capabilityio_measurement_absent" in route["blocked_reasons"]
+    assert "openrouter_key_secret_receipt_absent" in route["blocked_reasons"]
+    assert "openrouter_paid_budget_receipt_absent" in route["blocked_reasons"]
+    assert "openrouter_served_model_witness_absent" in route["blocked_reasons"]
+    assert (
+        "capabilityio_measurement_absent"
+        in route["freshness"]["evidence"]["capability"]["blocked_reasons"]
+    )
+    assert (
+        "openrouter_key_secret_receipt_absent"
+        in route["freshness"]["evidence"]["resource"]["blocked_reasons"]
+    )
+    assert route["capability_scores"]["source_editing"]["observed_at"] is None
+    assert route["capability_scores"]["local_calibration"]["observed_at"] is None
+    assert not any(
+        ref.startswith("platform-capability-receipt:api:")
+        for ref in route["capability_scores"]["source_editing"]["evidence_refs"]
+    )
+
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    result = check_registry_freshness(
+        registry,
+        route_ids=["api.headless.openrouter"],
+        now=datetime(2026, 7, 5, 16, 1, tzinfo=UTC),
+    )
+
+    assert result.ok is False
+    assert any("blocked:" in error for error in result.routes[0].errors)
+
+
+def test_glmcp_receipt_does_not_clear_admission_without_live_quota_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    receipt_time = datetime(2026, 5, 17, 8, 0, tzinfo=UTC)
+    (receipt_dir / "glmcp.json").write_text(
+        _make_glmcp_receipt(observed_at=receipt_time).model_dump_json(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(tmp_path / "missing-live.json"))
+
+    registry = load_platform_capability_registry(
+        receipt_dir=receipt_dir,
+        now=datetime(2026, 5, 17, 8, 1, tzinfo=UTC),
+    )
+    route = registry.require("glmcp.review.direct")
+
+    assert route.route_state is RouteState.BLOCKED
+    assert "glmcp_review_seat_receipt_admission_required" in route.blocked_reasons
+    assert "fresh_capability_evidence_absent" not in route.blocked_reasons
+    assert "quota_telemetry_unknown" not in route.blocked_reasons
+
+
+def test_glmcp_receipt_with_fresh_live_payg_admission_clears_review_latch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_glmcp_live_quota_ledger(live_ledger)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+
+    receipt_time = datetime(2026, 5, 17, 8, 0, tzinfo=UTC)
+    (receipt_dir / "glmcp.json").write_text(
+        _make_glmcp_receipt(observed_at=receipt_time).model_dump_json(),
+        encoding="utf-8",
+    )
+    registry = load_platform_capability_registry(
+        receipt_dir=receipt_dir,
+        now=datetime(2026, 5, 17, 8, 1, tzinfo=UTC),
+    )
+    route = registry.require("glmcp.review.direct")
+    result = check_registry_freshness(
+        registry,
+        route_ids=["glmcp.review.direct"],
+        now=datetime(2026, 5, 17, 8, 1, tzinfo=UTC),
+    )
+
+    assert route.route_state is RouteState.ACTIVE
+    assert route.blocked_reasons == []
+    assert GLMCP_PAYG_ADMISSION_EVIDENCE_REF in route.freshness.evidence.quota.evidence_refs
+    assert result.ok is True
+
+
+def test_glmcp_receipt_surfaces_invalid_live_quota_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    live_ledger.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+
+    receipt_time = datetime(2026, 5, 17, 8, 0, tzinfo=UTC)
+    (receipt_dir / "glmcp.json").write_text(
+        _make_glmcp_receipt(observed_at=receipt_time).model_dump_json(),
+        encoding="utf-8",
+    )
+    registry = load_platform_capability_registry(
+        receipt_dir=receipt_dir,
+        now=datetime(2026, 5, 17, 8, 1, tzinfo=UTC),
+    )
+    route = registry.require("glmcp.review.direct")
+
+    assert route.route_state is RouteState.BLOCKED
+    assert "glmcp_review_seat_receipt_admission_required" in route.blocked_reasons
+    assert (
+        "quota-spend-ledger:glmcp.review.direct:live-ledger-invalid"
+        in route.freshness.evidence.quota.evidence_refs
+    )
+
+
+def test_api_receipt_score_suppression_honors_top_level_unmeasured_blocker() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "api.headless.openrouter")
+    route["freshness"]["evidence"]["capability"]["blocked_reasons"] = []
+    route["blocked_reasons"] = [
+        reason for reason in route["blocked_reasons"] if reason != "capabilityio_measurement_absent"
+    ]
+
+    receipt_time = datetime(2026, 7, 5, 16, 0, tzinfo=UTC)
+    _apply_receipt_to_route_payload(route, _make_api_receipt(observed_at=receipt_time))
+
+    assert "capability_scores_asserted_not_measured" in route["blocked_reasons"]
+    assert route["capability_scores"]["source_editing"]["observed_at"] is None
+    assert not any(
+        ref.startswith("platform-capability-receipt:api:")
+        for ref in route["capability_scores"]["source_editing"]["evidence_refs"]
     )
 
 

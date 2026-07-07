@@ -32,31 +32,41 @@ from executor_contract import (  # noqa: E402
 )
 
 from shared.capability_adapter_protocol import (
-    AntigravAdapter,
+    AgyAdapter,
+    AuthorityViolation,
     CapabilityAdapter,
     ClaudeAdapter,
     CodexAdapter,
+    VibeAdapter,
+    WorkerAdapter,
 )
 from shared.coord_dispatch import (
     CoordDispatchError,
     DispatchLaunchRequest,
     DispatchLaunchResult,
-    run_atomic_dispatch_launch,
 )
 from shared.coord_event_log import CoordEventLog, coord_base_dir
 from shared.dispatcher_policy import (
     DispatchAction,
+    DispatchPolicySources,
+    DispatchRequest,
     RouteDecision,
     build_dispatch_request,
-    evaluate_dispatch_policy,
     load_dispatch_policy_sources,
     route_decision_receipt_payload,
     write_route_decision_receipt,
 )
 from shared.failure_classification import FailureCode, FailureReceipt
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
+from shared.gate_event_producer import build_gate_event
+from shared.gate_log import append_gate_event
 from shared.quota_wall import QUOTA_WALL_EXIT_CODE
-from shared.route_metadata_schema import assess_route_metadata
+from shared.route_metadata_schema import assess_route_metadata, route_envelope_gate_enforced
+from shared.sdlc_dispatch_guards import (
+    DISPATCH_CLAIM_GUARD_MARKERS,
+    DISPATCH_CLOSE_GUARD_MARKERS,
+    dispatch_worktree,
+)
 from shared.sdlc_lifecycle import TASK_DISPATCHABLE_STATUSES
 from shared.sdlc_pressure_gate import (
     AdmissionDecision,
@@ -102,6 +112,7 @@ CAPACITY_INVARIANT = (
     "fit, quota state, resource contention, or explicit operator hold."
 )
 DEFAULT_P0_CODEX_DRAIN_LANES = ("cx-p0", "cx-crit")
+DEFAULT_INVARIANT_MANIFEST = REPO_ROOT_FOR_IMPORTS / "config" / "invariant-manifest.yaml"
 
 
 @dataclass(frozen=True)
@@ -179,15 +190,6 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "JR+ bounded worker path; task fit must exclude governance-critical or off-limits work.",
     ),
-    ("antigrav", "interactive", "full"): PlatformPath(
-        "antigrav",
-        "interactive",
-        "full",
-        "~/.local/bin/hapax-antigrav --session <lane> --task <task> --terminal tmux",
-        "Google Antigravity CLI lane",
-        True,
-        "agy CLI interactive path; requires governed dispatch bootstrap and task claim.",
-    ),
     ("api", "headless", "api_frontier"): PlatformPath(
         "api",
         "headless",
@@ -196,6 +198,15 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "Cloud-burst API route for spike dev dry-run packets",
         True,
         "Spike-only route; policy requires no-secret egress, public-repo/read-mostly scope, and a matching budget ref before launch eligibility.",
+    ),
+    ("api", "headless", "openrouter"): PlatformPath(
+        "api",
+        "headless",
+        "openrouter",
+        "receipt-only CapabilityIO/BudgetAuthorityAdapter route for LiteLLM alias gpt-5.5-or; no bespoke OpenRouter launcher",
+        "OpenRouter GPT-5.5 frontier substitute route",
+        True,
+        "Provider-spend route; policy requires CapabilityIO wiring, OpenRouter key/route evidence, and a matching paid-budget ledger before launch eligibility.",
     ),
     ("api", "headless", "provider_gateway"): PlatformPath(
         "api",
@@ -354,9 +365,169 @@ def allow_codex_p0_local_dispatch_fallback(
     return lane in p0_codex_drain_lanes() and task_is_p0_incident(task_id, validation)
 
 
+def allow_codex_governed_relay_reactivation(
+    *,
+    route: PlatformPath,
+    route_decision: RouteDecision,
+    durable_binding: DurableDispatchBinding,
+    validation: Validation,
+) -> bool:
+    """Permit retired-relay reactivation only for a fully bound mutable launch.
+
+    The fail-safe default is false: read-only exemptions, advisory MQ checks,
+    missing message IDs, non-launch route decisions, non-Codex routes, or
+    immutable routes must leave the launcher without ``--force`` so the relay
+    lifecycle guard remains the next authority boundary.
+    """
+    return (
+        route.platform == "codex"
+        and route.mode == "headless"
+        and route.mutable
+        and not validation.exempt_read_only
+        and route_decision.action is DispatchAction.LAUNCH
+        and durable_binding.ok
+        and not durable_binding.advisory_only
+        and durable_binding.message_id is not None
+    )
+
+
 def parse_frontmatter(text: str) -> dict[str, Any]:
     fields, _body = parse_document_frontmatter(text)
     return dict(fields)
+
+
+def _glob_to_regex(glob: str) -> re.Pattern[str]:
+    out: list[str] = []
+    i = 0
+    while i < len(glob):
+        if glob.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif glob[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif glob[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(glob[i]))
+            i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
+def _path_matches_glob(path: str, glob: str) -> bool:
+    return _glob_to_regex(glob).match(path) is not None
+
+
+def _scalar_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = strip_scalar(value)
+        return [] if is_nullish(text) else [text]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [strip_scalar(str(item)) for item in value if not is_nullish(str(item))]
+    return [strip_scalar(str(value))]
+
+
+def _repo_relative_ref(value: str) -> str:
+    text = strip_scalar(value).replace("\\", "/").strip()
+    if text.startswith("./"):
+        text = text[2:]
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        try:
+            return path.resolve().relative_to(REPO_ROOT_FOR_IMPORTS.resolve()).as_posix()
+        except ValueError:
+            return path.as_posix().lstrip("/")
+    return text.lstrip("/")
+
+
+def _reason_slug(value: str) -> str:
+    chars = [ch if ch.isalnum() or ch in {"_", ".", "-"} else "-" for ch in value.lower()]
+    slug = "".join(chars).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or "unknown"
+
+
+def invariant_manifest_path() -> Path:
+    configured = os.environ.get("HAPAX_INVARIANT_MANIFEST", "").strip()
+    return Path(configured).expanduser() if configured else DEFAULT_INVARIANT_MANIFEST
+
+
+def _operator_coupled_manifest_entries() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:  # pragma: no cover - project env dependency guard
+        raise RuntimeError("PyYAML unavailable for invariant-manifest operator gate") from exc
+    manifest_path = invariant_manifest_path()
+    try:
+        raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise RuntimeError("invariant manifest parse error") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError("invariant manifest is not a mapping")
+    classes = raw.get("classes")
+    if not isinstance(classes, dict):
+        raise RuntimeError("invariant manifest missing classes mapping")
+    operator_class = classes.get("operator_coupled")
+    if not isinstance(operator_class, dict):
+        raise RuntimeError("invariant manifest missing operator_coupled class")
+    policy = operator_class.get("policy")
+    if not isinstance(policy, dict) or policy.get("dispatch_mode") != "interactive_only":
+        raise RuntimeError("operator_coupled manifest policy is not interactive_only")
+    entries: list[tuple[str, tuple[str, ...]]] = []
+    invariants = raw.get("invariants")
+    if not isinstance(invariants, list):
+        raise RuntimeError("invariant manifest missing invariants list")
+    for entry in invariants:
+        if not isinstance(entry, dict) or entry.get("class") != "operator_coupled":
+            continue
+        inv_id = str(entry.get("id") or "operator_coupled")
+        globs = entry.get("globs")
+        if not isinstance(globs, list):
+            raise RuntimeError(f"operator_coupled invariant {inv_id} globs is not a list")
+        cleaned_items: list[str] = []
+        for glob in globs:
+            if not isinstance(glob, str):
+                raise RuntimeError(f"operator_coupled invariant {inv_id} has non-string glob")
+            text = glob.strip()
+            if text:
+                cleaned_items.append(text)
+        cleaned = tuple(cleaned_items)
+        if cleaned:
+            entries.append((inv_id, cleaned))
+    if not entries:
+        raise RuntimeError("invariant manifest has no operator_coupled globs")
+    return tuple(entries)
+
+
+def _operator_gate_mutation_scope_refs(fields: dict[str, Any]) -> list[str]:
+    metadata = assess_route_metadata(fields).metadata
+    if metadata is not None:
+        return metadata.mutation_scope_refs
+    return _scalar_list(fields.get("mutation_scope_refs"))
+
+
+def operator_coupled_path_matches(fields: dict[str, Any]) -> tuple[str, ...]:
+    refs = [_repo_relative_ref(ref) for ref in _operator_gate_mutation_scope_refs(fields)]
+    if not refs:
+        return ()
+    try:
+        entries = _operator_coupled_manifest_entries()
+    except (OSError, RuntimeError) as exc:
+        return (f"manifest_unavailable:{type(exc).__name__}:{_reason_slug(str(exc))}",)
+    matches: list[str] = []
+    for ref in refs:
+        for inv_id, globs in entries:
+            if any(_path_matches_glob(ref, glob) for glob in globs):
+                matches.append(f"{ref}#{inv_id}")
+                break
+    return tuple(dict.fromkeys(matches))
 
 
 def read_task(task_root: Path, task_id: str) -> TaskNote | None:
@@ -390,22 +561,7 @@ def resolve_declared_path(raw: str | list[str] | None, *, base: Path) -> Path | 
 
 
 def lane_worktree(lane: str, platform: str) -> Path:
-    override = os.environ.get("HAPAX_DISPATCH_WORKTREE")
-    if override:
-        return Path(override).expanduser()
-    root = Path(os.environ.get("HAPAX_DISPATCH_PROJECT_ROOT", str(Path.home() / "projects")))
-    if platform == "codex":
-        if lane.startswith("cx-"):
-            return root / f"hapax-council--{lane}"
-        return root / f"hapax-council--cx-{lane}"
-    if platform == "claude":
-        return root / "hapax-council" if lane == "alpha" else root / f"hapax-council--{lane}"
-    if platform == "vibe":
-        return root / f"hapax-council--{lane}"
-    if platform == "antigrav":
-        normalized = "antigrav" if lane == "antigravity" else lane
-        return root / f"hapax-council--{normalized}"
-    return root / "hapax-council"
+    return dispatch_worktree(lane, platform)
 
 
 def is_claude_operator_pool_lane(lane: str, platform: str | None) -> bool:
@@ -639,11 +795,7 @@ def check_worktree_claim_guard(worktree: Path) -> tuple[bool, str]:
     if not script.is_file():
         return False, f"missing cc-claim at {script}"
     text = script.read_text(encoding="utf-8", errors="replace")
-    required = [
-        "missing required AuthorityCase/ISAP fields",
-        "authority_case",
-        "parent_spec",
-    ]
+    required = DISPATCH_CLAIM_GUARD_MARKERS
     missing = [needle for needle in required if needle not in text]
     if missing:
         return False, f"stale cc-claim in {worktree}: missing {', '.join(missing)}"
@@ -655,11 +807,7 @@ def check_worktree_close_guard(worktree: Path) -> tuple[bool, str]:
     if not script.is_file():
         return False, f"missing cc-close at {script}"
     text = script.read_text(encoding="utf-8", errors="replace")
-    required = [
-        "frontmatter_task_id",
-        "closed_duplicate",
-        "closed task duplicate has task_id",
-    ]
+    required = DISPATCH_CLOSE_GUARD_MARKERS
     missing = [needle for needle in required if needle not in text]
     if missing:
         return False, f"stale cc-close in {worktree}: missing {', '.join(missing)}"
@@ -924,7 +1072,10 @@ def validate_task(
         return Validation(
             False,
             f"lane {lane!r} is an interactive Claude operator pool, not a governed "
-            "dispatch lane; use a supervised Claude lane or a Codex cx-* lane",
+            "dispatch lane; use a supervised Claude lane or a Codex cx-* lane; "
+            "recheck governed lane availability with: scripts/hapax-codex-health "
+            "--json <cx-lane> for Codex lanes or scripts/hapax-claude-health "
+            "--json <lane> for supervised Claude lanes; verify the target is not dev/devN",
             task,
         )
 
@@ -981,6 +1132,19 @@ def validate_task(
                 parent_spec_path,
                 exempt,
             )
+
+    if is_claude_operator_pool_lane(lane, platform):
+        return Validation(
+            False,
+            f"lane {lane!r} is an interactive Claude operator pool, not a governed "
+            "dispatch lane; use a supervised Claude lane or a Codex cx-* lane; "
+            "recheck governed lane availability with: scripts/hapax-codex-health "
+            "--json <cx-lane> for Codex lanes or scripts/hapax-claude-health "
+            "--json <lane> for supervised Claude lanes; verify the target is not dev/devN",
+            task,
+            parent_spec_path,
+            exempt,
+        )
 
     if strict_worktree:
         ok, reason = check_worktree_cc_task_tool_guards(lane_worktree(lane, platform))
@@ -1235,11 +1399,39 @@ def _await_sdlc_admission(args: argparse.Namespace) -> None:
 # (cc-task capability-adapter-worker-path-classify-failure). Best-effort + strictly FAIL-OPEN:
 # classification NEVER changes the dispatch returncode or outcome. The guard, single-key write, and
 # no-sibling-flip invariants live in shared.worker_failure_witness.
-_WORKER_FAILURE_ADAPTERS: dict[str, type[CapabilityAdapter]] = {
+_WORKER_FAILURE_ADAPTERS: dict[str, type[WorkerAdapter]] = {
+    "agy": AgyAdapter,
     "claude": ClaudeAdapter,
     "codex": CodexAdapter,
-    "antigrav": AntigravAdapter,
+    "vibe": VibeAdapter,
 }
+
+
+def _capability_adapter_for_admission(platform: str) -> CapabilityAdapter:
+    """Return the adapter used for the admission call.
+
+    Worker platforms use the existing worker-adapter map. Non-worker routes still go through the
+    final ``CapabilityAdapter.admit`` delegation so methodology dispatch no longer calls the policy
+    spine directly.
+    """
+
+    adapter_cls = _WORKER_FAILURE_ADAPTERS.get(platform)
+    if adapter_cls is not None:
+        return adapter_cls()
+    return CapabilityAdapter()
+
+
+def _worker_adapter_for_launch(platform: str) -> WorkerAdapter:
+    """Return the launch-capable adapter for ``platform`` or fail closed."""
+
+    adapter_cls = _WORKER_FAILURE_ADAPTERS.get(platform)
+    if adapter_cls is None:
+        raise AuthorityViolation(
+            f"launch not authorized for platform {platform}: no WorkerAdapter registered. "
+            "Next: route mutable dispatch through a governed WorkerAdapter before attempting "
+            "CapabilityAdapter.launch."
+        )
+    return adapter_cls()
 
 
 def _read_worker_failure_text(platform: str, mode: str, lane: str) -> str:
@@ -1267,8 +1459,8 @@ def _classify_and_witness_terminal_failure(
     text = _read_worker_failure_text(platform, mode, lane)
     adapter_cls = _WORKER_FAILURE_ADAPTERS.get(platform)
     if adapter_cls is not None:
-        # exit_code feeds the antigrav launcher exit-code table; text-classifier adapters
-        # (claude/codex) ignore it and classify from the output text.
+        # Text-classifier adapters classify from the output text; exit_code remains
+        # available for adapter-specific launch wrappers that need it.
         receipt = adapter_cls().classify_failure(
             text, process_failed=True, route_id=route_id, exit_code=rc
         )
@@ -1318,6 +1510,19 @@ def classify_and_witness_launch(
     return rc
 
 
+#: Registry-declared model pin per claude dispatch profile — the launch-side half of the
+#: CapabilityExecutionInvariant. Values are Claude Code ``--model`` aliases. Mirrors the
+#: registry ExecutionDescriptors (claude.headless.full/opus -> claude-opus-4-8 => "opus";
+#: claude.headless.sonnet -> claude-sonnet-* => "sonnet"; claude.headless.haiku => "haiku").
+#: A profile absent here fails closed rather than inheriting the CLI default model.
+CLAUDE_PROFILE_MODEL_PIN: dict[str, str] = {
+    "full": "opus",
+    "opus": "opus",
+    "sonnet": "sonnet",
+    "haiku": "haiku",
+}
+
+
 def launch_claude_headless(task_id: str, lane: str, prompt: str, route: PlatformPath) -> int:
     launcher = Path(
         os.environ.get(
@@ -1330,8 +1535,21 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
     # per-spawn HAPAX_SESSION_ID so two same-role re-dispatched lanes never share a
     # claim key (reform-identity-coherence cluster 11, AC1).
     env.pop("HAPAX_SESSION_ID", None)
-    if route.profile in {"opus", "sonnet"}:
-        env["HAPAX_CLAUDE_MODEL"] = route.profile
+    # CapabilityExecutionInvariant drift guard (R0-pin): pin --model for EVERY claude
+    # profile to its registry-declared model. Never let a profile inherit the Claude Code
+    # CLI default (~/.claude/settings.json model=fable), which can silently drop fable->opus
+    # under indeterminate conditions — an observed != sanctioned execution drift. `full`
+    # declares claude-opus-4-8, so it pins "opus"; unknown profiles FAIL CLOSED rather than
+    # inherit the default.
+    pinned_model = CLAUDE_PROFILE_MODEL_PIN.get(route.profile)
+    if pinned_model is None:
+        print(
+            f"claude profile '{route.profile}' has no declared model pin; refusing to launch "
+            "(CEI drift guard — a launch must never inherit the CLI default model)",
+            file=sys.stderr,
+        )
+        return 9
+    env["HAPAX_CLAUDE_MODEL"] = pinned_model
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(lane_worktree(lane, "claude"))
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("claude", "headless")
@@ -1367,6 +1585,8 @@ def normalize_profile(platform: str, profile: str) -> str:
     profile = profile.strip().lower().replace("_", "-")
     if platform == "api" and profile in {"api-frontier", "cloud", "cloud-burst", "frontier"}:
         return "api_frontier"
+    if platform == "api" and profile in {"or", "open-router", "openrouter"}:
+        return "openrouter"
     if platform == "api" and profile in {"provider-gateway", "gateway", "provider_spend"}:
         return "provider_gateway"
     if profile in {"default", "max", "pro", "full-capability"}:
@@ -1388,6 +1608,38 @@ def route_for(platform: str, mode: str, profile: str) -> PlatformPath | None:
     ):
         return RECEIPT_ONLY_ROUTE
     return PLATFORM_PATHS.get((platform, mode, normalized_profile))
+
+
+def _route_for_route_id(route_id: str) -> PlatformPath | None:
+    parts = route_id.split(".", 2)
+    if len(parts) != 3:
+        return None
+    return route_for(parts[0], parts[1], parts[2])
+
+
+def _decision_selected_route_id(route_decision: RouteDecision) -> str:
+    return (
+        route_decision.dimensional_receipt.selected_route_id
+        if route_decision.dimensional_receipt is not None
+        else None
+    ) or route_decision.route_id
+
+
+def _decision_selected_route(route_decision: RouteDecision) -> PlatformPath | None:
+    return _route_for_route_id(_decision_selected_route_id(route_decision))
+
+
+def _unsupported_selected_route_reason(route_decision: RouteDecision) -> str | None:
+    selected_route = _decision_selected_route(route_decision)
+    if selected_route is not None:
+        return None
+    unsupported_route_id = _decision_selected_route_id(route_decision)
+    return (
+        f"route policy selected unsupported route: {unsupported_route_id}; "
+        "next action: inspect dimensional_selected_route_id in the route decision receipt "
+        "and either add a matching governed PLATFORM_PATHS launcher entry or constrain "
+        "the candidate set to supported governed routes."
+    )
 
 
 def supported_route_lines() -> list[str]:
@@ -1416,9 +1668,68 @@ def platform_route_validation(
     return True, "eligible platform route"
 
 
+def _availability_recomposition_candidate_requests(
+    primary: DispatchRequest,
+    *,
+    task_fields: dict[str, Any],
+    policy_sources: DispatchPolicySources,
+    validation: Validation,
+    rollback_mode: bool,
+) -> tuple[DispatchRequest, ...] | None:
+    capability = primary.capability
+    if capability is None or not capability.availability_recomposition_required:
+        return None
+    registry = policy_sources.registry
+    if registry is None:
+        return ()
+
+    candidates: list[DispatchRequest] = []
+    for route_descriptor in sorted(registry.routes, key=lambda item: item.route_id):
+        if route_descriptor.route_id == primary.route_id:
+            continue
+        platform = route_descriptor.platform.value
+        mode = route_descriptor.mode.value
+        profile = route_descriptor.profile.value
+        route = route_for(platform, mode, profile)
+        if route is None or not supports_route(platform, mode):
+            continue
+        if not route.mutable and not validation.exempt_read_only:
+            continue
+        candidates.append(
+            build_dispatch_request(
+                task_id=primary.task_id,
+                lane=primary.lane,
+                platform=platform,
+                mode=mode,
+                profile=profile,
+                task_fields=task_fields,
+                registry=registry,
+                registry_error=policy_sources.registry_error,
+                quota_ledger=policy_sources.quota_ledger,
+                quota_error=policy_sources.quota_error,
+                route_authority_receipts=policy_sources.route_authority_receipts,
+                surface_delta_refs_by_route=policy_sources.surface_delta_refs_by_route,
+                surface_delta_blockers_by_route=policy_sources.surface_delta_blockers_by_route,
+                rollback_mode=rollback_mode,
+                legacy_route_supported=True,
+                legacy_route_mutable=route.mutable,
+            )
+        )
+    return tuple(candidates)
+
+
 def route_metadata_validation_reason(validation: Validation) -> str | None:
     assessment = assess_route_metadata(policy_task_fields(validation))
     if assessment.dispatchable:
+        return None
+    if (
+        not route_envelope_gate_enforced()
+        and not assessment.missing_fields
+        and not assessment.validation_errors
+    ):
+        # SHADOW (HAPAX_ROUTE_ENVELOPE_GATE != enforce): a well-formed but non-dispatchable
+        # derived envelope (hold-only) does not block dispatch; malformed/incomplete
+        # metadata still blocks. The non-route admission stays observable.
         return None
     details = [
         *assessment.hold_reasons,
@@ -1471,7 +1782,36 @@ def policy_task_fields(validation: Validation) -> dict[str, Any]:
     fields, _body = parse_document_frontmatter(validation.task.path)
     payload = dict(fields or validation.task.fields)
     payload["__task_note_path"] = str(validation.task.path)
+    path_matches = operator_coupled_path_matches(payload)
+    if path_matches:
+        payload["__operator_coupled_path_matches"] = list(path_matches)
     return payload
+
+
+def _emit_gate_event(
+    route_decision: RouteDecision,
+    policy_request: DispatchRequest,
+    task_fields: dict[str, Any],
+    *,
+    gate_result: str,
+) -> None:
+    """Fail-safe: emit one observational GateEvent for the dispatch admission decision.
+
+    KEYSTONE (cc-task-gate-event-producer-20260626). A gate-event write failure is logged
+    and swallowed — the measurement is best-effort and must NEVER break dispatch.
+    """
+    try:
+        route = route_decision.selected_descriptor_leaf or route_decision.route_id
+        append_gate_event(
+            build_gate_event(
+                task_fields,
+                route=route,
+                demand_vector=policy_request.demand_vector,
+                gate_result=gate_result,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - measurement must never break dispatch
+        print(f"gate-event emit failed (non-fatal): {exc}", file=sys.stderr)
 
 
 def launch_codex_headless(
@@ -1480,6 +1820,8 @@ def launch_codex_headless(
     prompt: str,
     validation: Validation,
     route: PlatformPath,
+    *,
+    reactivate_retired_relay: bool = False,
 ) -> int:
     # Genuine headless path (reform §6 P0): `codex exec` via hapax-codex-headless,
     # NOT a tmux pane. The tmux launcher (hapax-codex) remains the interactive
@@ -1498,7 +1840,8 @@ def launch_codex_headless(
     if validation.task is not None:
         status = strip_scalar(str(validation.task.fields.get("status", "")))
     args = [str(launcher), "--task", task_id]
-    if allow_codex_p0_local_dispatch_fallback(task_id, lane, validation):
+    local_fallback_allowed = allow_codex_p0_local_dispatch_fallback(task_id, lane, validation)
+    if reactivate_retired_relay or local_fallback_allowed:
         args.append("--force")
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
@@ -1516,7 +1859,7 @@ def launch_codex_headless(
     env = os.environ.copy()
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
-    if allow_codex_p0_local_dispatch_fallback(task_id, lane, validation):
+    if local_fallback_allowed:
         # Preserve a caller/operator-provided fallback value; the P0 drain rule
         # only supplies the default local fallback when the env is otherwise unset.
         env.setdefault("HAPAX_DISPATCH_HOST_FALLBACK", "local")
@@ -1554,79 +1897,6 @@ def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Valid
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
     return _sliced_call(args)
-
-
-def write_antigrav_inflection(task_id: str, lane: str, prompt: str) -> Path:
-    spawn_dir = Path(
-        os.environ.get(
-            "HAPAX_ANTIGRAV_SPAWN_DIR",
-            str(
-                Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
-                / "hapax"
-                / "antigrav-spawns"
-            ),
-        )
-    )
-    spawn_dir.mkdir(parents=True, exist_ok=True)
-    path = (
-        spawn_dir
-        / f"{now_utc().replace(':', '').replace('-', '')}-{slugify(lane)}-{slugify(task_id)}-dispatch.md"
-    )
-    path.write_text(
-        "\n".join(
-            [
-                "# Hapax Antigrav Methodology Dispatch",
-                "",
-                prompt,
-                "",
-                "Antigrav launch contract:",
-                "",
-                "- This bootstrap was produced by `hapax-methodology-dispatch` after task authority validation.",
-                "- Treat the task note and parent spec named above as the only work authority.",
-                "- Do not choose unrelated queue work from inside Antigravity.",
-                "- Keep relay/status surfaces current while blocked, waiting, or idle.",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
-def launch_antigrav_interactive(
-    task_id: str,
-    lane: str,
-    validation: Validation,
-    prompt: str,
-) -> int:
-    launcher = Path(
-        os.environ.get(
-            "HAPAX_METHODOLOGY_ANTIGRAV_LAUNCHER",
-            str(Path.home() / ".local" / "bin" / "hapax-antigrav"),
-        )
-    )
-    if not launcher.is_file():
-        print(f"Antigrav launcher not found: {launcher}", file=sys.stderr)
-        return 8
-
-    status = ""
-    if validation.task is not None:
-        status = strip_scalar(str(validation.task.fields.get("status", "")))
-    inflection_path = write_antigrav_inflection(task_id, lane, prompt)
-    args = [
-        str(launcher),
-        "--session",
-        lane,
-        "--task",
-        task_id,
-        "--terminal",
-        "tmux",
-        "--inflection",
-        str(inflection_path),
-    ]
-    if status in {"claimed", "in_progress"}:
-        args.append("--no-claim")
-    return subprocess.call(args)
 
 
 def advance_task_stage(task_id: str, stage: str) -> int:
@@ -1749,7 +2019,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--platform",
         default="claude",
-        choices=["api", "claude", "codex", "vibe", "antigrav"],
+        type=str.lower,
+        choices=[
+            "agy",
+            "antigrav",
+            "antigravity",
+            "api",
+            "claude",
+            "codex",
+            "gemini-cli",
+            "vibe",
+        ],
     )
     parser.add_argument(
         "--mode", default="headless", choices=["headless", "interactive", "receipt-only"]
@@ -1863,6 +2143,28 @@ def main(argv: list[str] | None = None) -> int:
             run_claim_sweep(task_root, notify=True)
         except Exception:
             pass
+
+    if args.platform in {"antigrav", "antigravity", "gemini-cli"}:
+        reason = (
+            f"platform '{args.platform}' is retired/excised; do not dispatch it as live supply. "
+            "Use admitted Claude, Codex, or Vibe routes. Agy adapter support is live, but a "
+            "spawnable agy route still requires governed route/resource receipts before dispatch."
+        )
+        task_for_receipt = read_task(task_root, args.task)
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=None,
+                validation=Validation(False, reason, task_for_receipt),
+                prompt=None,
+                launched=False,
+            )
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        return 10
 
     # SYSTEM drain is a distinct, capability-gated mutation path — it advances an
     # orphaned dead-lane task via cc-stage-advance and returns. It must intercept
@@ -1984,29 +2286,42 @@ def main(argv: list[str] | None = None) -> int:
         registry_path=optional_env_path("HAPAX_PLATFORM_CAPABILITY_REGISTRY"),
         quota_ledger_path=optional_env_path("HAPAX_QUOTA_SPEND_LEDGER"),
     )
+    task_fields = policy_task_fields(validation)
+    rollback_mode = args.policy_rollback or env_flag("HAPAX_DISPATCH_POLICY_ROLLBACK")
     policy_request = build_dispatch_request(
         task_id=args.task,
         lane=args.lane,
         platform=args.platform,
         mode=args.mode,
         profile=args.profile,
-        task_fields=policy_task_fields(validation),
+        task_fields=task_fields,
         registry=policy_sources.registry,
         registry_error=policy_sources.registry_error,
         quota_ledger=policy_sources.quota_ledger,
         quota_error=policy_sources.quota_error,
         route_authority_receipts=policy_sources.route_authority_receipts,
-        rollback_mode=args.policy_rollback or env_flag("HAPAX_DISPATCH_POLICY_ROLLBACK"),
+        surface_delta_refs_by_route=policy_sources.surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=policy_sources.surface_delta_blockers_by_route,
+        rollback_mode=rollback_mode,
         legacy_route_supported=route is not None,
         legacy_route_mutable=route.mutable if route else False,
     )
-    route_decision = evaluate_dispatch_policy(policy_request)
+    candidate_requests = _availability_recomposition_candidate_requests(
+        policy_request,
+        task_fields=task_fields,
+        policy_sources=policy_sources,
+        validation=validation,
+        rollback_mode=rollback_mode,
+    )
+    adapter = _capability_adapter_for_admission(args.platform)
+    route_decision = adapter.admit(policy_request, candidate_requests=candidate_requests)
     route_decision_receipt_path = write_route_decision_receipt(
         route_decision,
         ledger_dir=orchestration_ledger_dir(),
     )
 
     if route_decision.action is not DispatchAction.LAUNCH:
+        _emit_gate_event(route_decision, policy_request, task_fields, gate_result="reject")
         route_reason = f"route policy {route_decision.action.value}: {route_decision.message}"
         blocked = Validation(
             False,
@@ -2035,7 +2350,40 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(supported_route_lines()), file=sys.stderr)
         return 10
 
-    assert route is not None
+    selected_route = _decision_selected_route(route_decision)
+    if selected_route is None:
+        reason = _unsupported_selected_route_reason(route_decision)
+        assert reason is not None
+        blocked = Validation(
+            False,
+            reason,
+            validation.task,
+            validation.parent_spec_path,
+            validation.exempt_read_only,
+        )
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=args.platform,
+                mode=args.mode,
+                profile=args.profile,
+                route=route,
+                validation=blocked,
+                prompt=None,
+                launched=False,
+                route_decision=route_decision,
+                route_decision_receipt_path=route_decision_receipt_path,
+            )
+        print(f"BLOCKED: {reason}", file=sys.stderr)
+        print("Supported governed routes:", file=sys.stderr)
+        print("\n".join(supported_route_lines()), file=sys.stderr)
+        return 10
+    route = selected_route
+    args.platform = route.platform
+    args.mode = route.mode
+    args.profile = route.profile
+    _emit_gate_event(route_decision, policy_request, task_fields, gate_result="accept")
     mq_message_id = dispatch_message_id(args.mq_message_id)
     if args.launch and route.mutable and not validation.exempt_read_only and mq_message_id is None:
         durable_binding = DurableDispatchBinding(
@@ -2101,6 +2449,12 @@ def main(argv: list[str] | None = None) -> int:
         # Launchable (platform, mode) -> adapter call. Eligibility is decided by
         # the Executor capability registry (supports_route), NOT a hard if-ladder
         # (reform §6 P1) — adding a runtime/mode is a one-line table + registry edit.
+        reactivate_retired_codex_relay = allow_codex_governed_relay_reactivation(
+            route=route,
+            route_decision=route_decision,
+            durable_binding=durable_binding,
+            validation=validation,
+        )
         launchers: dict[tuple[str, str], Any] = {
             ("claude", "headless"): lambda: launch_claude_headless(
                 args.task, args.lane, prompt or "", route
@@ -2109,13 +2463,15 @@ def main(argv: list[str] | None = None) -> int:
                 args.task, args.lane, validation
             ),
             ("codex", "headless"): lambda: launch_codex_headless(
-                args.task, args.lane, prompt or "", validation, route
+                args.task,
+                args.lane,
+                prompt or "",
+                validation,
+                route,
+                reactivate_retired_relay=reactivate_retired_codex_relay,
             ),
             ("vibe", "headless"): lambda: launch_vibe_headless(
                 args.task, args.lane, prompt or "", validation
-            ),
-            ("antigrav", "interactive"): lambda: launch_antigrav_interactive(
-                args.task, args.lane, validation, prompt or ""
             ),
         }
 
@@ -2146,8 +2502,10 @@ def main(argv: list[str] | None = None) -> int:
             assert mq_message_id is not None
             fields = validation.task.fields
             try:
-                dispatch_launch = run_atomic_dispatch_launch(
-                    DispatchLaunchRequest(
+                launch_adapter = _worker_adapter_for_launch(args.platform)
+                dispatch_launch = launch_adapter.launch(
+                    decision=route_decision,
+                    request=DispatchLaunchRequest(
                         task_id=args.task,
                         lane=args.lane,
                         platform=args.platform,
@@ -2160,8 +2518,9 @@ def main(argv: list[str] | None = None) -> int:
                         mq_db_path=_relay_mq_db_path(),
                         event_log=coord_event_log_from_env(),
                         idempotency_key=args.idempotency_key,
+                        reactivate_retired=reactivate_retired_codex_relay,
                     ),
-                    functools.partial(
+                    launch_callable=functools.partial(
                         classify_and_witness_launch,
                         run_platform_launch,
                         task_id=args.task,
@@ -2172,6 +2531,32 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                 )
                 rc = dispatch_launch.launch_returncode
+            except AuthorityViolation as exc:
+                reason = f"capability adapter launch refused: {exc}"
+                blocked = Validation(
+                    False,
+                    reason,
+                    validation.task,
+                    validation.parent_spec_path,
+                    validation.exempt_read_only,
+                )
+                if not args.no_receipt:
+                    write_receipt(
+                        task_id=args.task,
+                        lane=args.lane,
+                        platform=args.platform,
+                        mode=args.mode,
+                        profile=args.profile,
+                        route=route,
+                        validation=blocked,
+                        prompt=prompt,
+                        launched=False,
+                        route_decision=route_decision,
+                        route_decision_receipt_path=route_decision_receipt_path,
+                        durable_binding=durable_binding,
+                    )
+                print(f"BLOCKED: {reason}", file=sys.stderr)
+                return 10
             except CoordDispatchError as exc:
                 reason = f"atomic dispatch launch failed: {exc.reason}"
                 blocked = Validation(

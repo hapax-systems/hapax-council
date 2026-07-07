@@ -1,0 +1,460 @@
+#!/usr/bin/env python3
+"""assign-rte - assign or inspect the active Release Train Engineer.
+
+The canonical relay contract lives in ``~/.cache/hapax/relay``:
+
+* ``rte-assignment.yaml`` records the current RTE, originator, and expiry.
+* ``.rte-current`` is a tiny compatibility pointer containing the RTE lane.
+* ``rte-tick-<utc>.yaml`` records fresh RTE state for ``hapax-rte-state``.
+
+This script intentionally keeps YAML output simple so the no-dependency
+``hapax-rte-state`` reader can consume it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+RELAY_DIR = (
+    Path(os.environ["HAPAX_RELAY_DIR"])
+    if os.environ.get("HAPAX_RELAY_DIR")
+    else Path.home() / ".cache" / "hapax" / "relay"
+)
+ASSIGNMENT_FILE = RELAY_DIR / "rte-assignment.yaml"
+CURRENT_FILE = RELAY_DIR / ".rte-current"
+DEFAULT_STALE_HOURS = float(os.environ.get("HAPAX_RTE_STALE_HOURS", "24"))
+DEFAULT_ASSIGNMENT_HOURS = float(os.environ.get("HAPAX_RTE_ASSIGNMENT_HOURS", "24"))
+
+AUTO_ELIGIBLE_GREEK_LANES = frozenset({"alpha", "beta", "gamma", "delta", "epsilon", "zeta"})
+AUTO_PREFERRED_LANES = (
+    "beta",
+    "alpha",
+    "gamma",
+    "delta",
+    "epsilon",
+    "zeta",
+    "cx-red",
+    "cx-blue",
+    "cx-green",
+    "cx-gold",
+    "cx-violet",
+    "cx-amber",
+    "cx-cyan",
+    "cx-cap-cctv",
+)
+
+TICK_STATUSES = ("green", "yellow", "red", "ops-distress")
+
+
+@dataclass(frozen=True)
+class LaneStatus:
+    lane: str
+    path: Path
+    updated_at: datetime
+
+    def age_s(self, now: datetime) -> float:
+        return max(0.0, (now - self.updated_at).total_seconds())
+
+
+def utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def iso_z(dt: datetime) -> str:
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def compact_utc(dt: datetime) -> str:
+    return dt.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def quote_yaml(value: str) -> str:
+    escaped = value.replace("'", "''")
+    return f"'{escaped}'"
+
+
+def parse_utc(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    raw = value.strip().strip("'\"")
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            return datetime.fromisoformat(raw[:-1] + "+00:00").astimezone(UTC)
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def yaml_scalar(text: str, key: str) -> str | None:
+    pattern = re.compile(rf"^\s*{re.escape(key)}:\s*(.*?)\s*$", re.MULTILINE)
+    match = pattern.search(text)
+    if not match:
+        return None
+    value = match.group(1).strip()
+    if not value or value == "|":
+        return None
+    return value.strip("'\"")
+
+
+def read_lane_status(path: Path, *, now: datetime, stale_hours: float) -> LaneStatus | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    updated = (
+        parse_utc(yaml_scalar(text, "updated"))
+        or parse_utc(yaml_scalar(text, "last_standup"))
+        or datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    )
+    if (now - updated).total_seconds() > stale_hours * 3600:
+        return None
+    return LaneStatus(lane=path.stem, path=path, updated_at=updated)
+
+
+def discover_active_lanes(*, now: datetime, stale_hours: float) -> dict[str, LaneStatus]:
+    if not RELAY_DIR.exists():
+        return {}
+    out: dict[str, LaneStatus] = {}
+    ignored_prefixes = ("rte-tick-", "rte-handoff-")
+    ignored_names = {"rte-assignment", "protocol", "onboarding-vbe"}
+    for path in sorted(RELAY_DIR.glob("*.yaml")):
+        lane = path.stem
+        if lane in ignored_names or any(lane.startswith(prefix) for prefix in ignored_prefixes):
+            continue
+        status = read_lane_status(path, now=now, stale_hours=stale_hours)
+        if status is not None:
+            out[status.lane] = status
+    return out
+
+
+def normalize_lane(lane: str) -> str:
+    return lane.strip().lower()
+
+
+def is_vibe_lane(lane: str) -> bool:
+    return lane.startswith("vbe-")
+
+
+def is_antigrav_lane(lane: str) -> bool:
+    normalized = lane.strip().lower()
+    return normalized in {"agy", "antigrav", "antigravity"} or normalized.startswith(
+        ("agy-", "antigrav-", "antigravity-")
+    )
+
+
+def is_gemini_lane(lane: str) -> bool:
+    return lane == "gemini" or lane.startswith("gemini-")
+
+
+def is_auto_eligible(lane: str, *, originator: str) -> bool:
+    if not lane or lane == originator:
+        return False
+    if is_vibe_lane(lane) or is_antigrav_lane(lane) or is_gemini_lane(lane):
+        return False
+    return lane.startswith("cx-") or lane in AUTO_ELIGIBLE_GREEK_LANES
+
+
+def validate_explicit_rte(rte: str, *, originator: str, allow_protocol_exception: bool) -> None:
+    if not rte:
+        raise ValueError("empty RTE lane")
+    if rte == originator:
+        raise ValueError(f"RTE cannot be the originator ({originator})")
+    if is_antigrav_lane(rte) or is_gemini_lane(rte):
+        raise ValueError(
+            f"{rte} is retired/excised and cannot be RTE; use admitted Claude/Codex lanes "
+            "or mint measured agy supply-leaf intake with route/resource/governance receipts"
+        )
+    if is_vibe_lane(rte) and not allow_protocol_exception:
+        raise ValueError(f"{rte} is a Vibe burst lane and cannot be RTE")
+
+
+def candidate_order(active: dict[str, LaneStatus], *, originator: str) -> list[str]:
+    preferred = [lane for lane in AUTO_PREFERRED_LANES if lane in active]
+    extras = sorted(lane for lane in active if lane not in AUTO_PREFERRED_LANES)
+    return [lane for lane in [*preferred, *extras] if is_auto_eligible(lane, originator=originator)]
+
+
+def choose_auto_rte(active: dict[str, LaneStatus], *, originator: str) -> str | None:
+    for lane in candidate_order(active, originator=originator):
+        return lane
+    return None
+
+
+def assignment_payload(
+    *,
+    rte: str,
+    originator: str,
+    algorithm: str,
+    assigned_at: datetime,
+    expires_at: datetime,
+    protocol_exception: bool,
+) -> dict[str, Any]:
+    return {
+        "rte": rte,
+        "originator": originator,
+        "assigned_at": iso_z(assigned_at),
+        "expires_at": iso_z(expires_at),
+        "algorithm": algorithm,
+        "protocol_exception": protocol_exception,
+    }
+
+
+def write_assignment(payload: dict[str, Any]) -> None:
+    RELAY_DIR.mkdir(parents=True, exist_ok=True)
+    text = "\n".join(
+        [
+            "# RTE (Release Train Engineer) Assignment",
+            "# Constraint: RTE != originator. See PROTOCOL.md Train Maintainer section.",
+            f"rte: {payload['rte']}",
+            f"originator: {payload['originator']}",
+            f"assigned_at: {quote_yaml(str(payload['assigned_at']))}",
+            f"expires_at: {quote_yaml(str(payload['expires_at']))}",
+            f"algorithm: {payload['algorithm']}",
+            f"protocol_exception: {str(payload['protocol_exception']).lower()}",
+            "notes: |",
+            "  Workflow: ~/.cache/hapax/relay/skills/train-maintenance.md",
+            "  State: hapax-rte-state --json",
+            "  Tick logs: ~/.cache/hapax/relay/rte-tick-*.yaml",
+            "",
+        ]
+    )
+    ASSIGNMENT_FILE.write_text(text, encoding="utf-8")
+    CURRENT_FILE.write_text(f"{payload['rte']}\n", encoding="utf-8")
+
+
+def write_notification(*, rte: str, originator: str, expires_at: datetime, now: datetime) -> Path:
+    inflection_dir = RELAY_DIR / "inflections"
+    inflection_dir.mkdir(parents=True, exist_ok=True)
+    path = inflection_dir / f"{compact_utc(now)}-rte-assignment-to-{rte}.md"
+    path.write_text(
+        "\n".join(
+            [
+                f"# {compact_utc(now)} - for: {rte}",
+                "",
+                f"from: assign-rte (originator: {originator})",
+                "",
+                "You have been assigned RTE (Release Train Engineer) for the active train.",
+                "",
+                "Workflow: `~/.cache/hapax/relay/skills/train-maintenance.md`",
+                "State check: `hapax-rte-state --json`",
+                "Tick evidence: `~/.cache/hapax/relay/rte-tick-<utc>.yaml`",
+                "",
+                f"Assignment expires: {iso_z(expires_at)}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_tick(*, rte: str, status: str, summary: str, now: datetime) -> Path:
+    if status not in TICK_STATUSES:
+        raise ValueError(f"invalid tick status: {status}")
+    RELAY_DIR.mkdir(parents=True, exist_ok=True)
+    path = RELAY_DIR / f"rte-tick-{compact_utc(now)}.yaml"
+    path.write_text(
+        "\n".join(
+            [
+                f"rte: {rte}",
+                f"ts: {quote_yaml(iso_z(now))}",
+                f"summary: {quote_yaml(summary)}",
+                "team_load:",
+                f"  status: {status}",
+                "  reasons: [assignment_refresh_bootstrap_tick]",
+                "  team_cpu_pct: 0.0",
+                "  team_swap_kb: 0",
+                "  system_swap_pct: 0.0",
+                "  load_per_core: 0.0",
+                "train_health:",
+                "  prs_open: 0",
+                "  prs_stalled: 0",
+                "  lanes_dry: 0",
+                "  lanes_stale: 0",
+                "  drift_critical: 0",
+                "actions_dispatched: []",
+                "actions_deferred:",
+                "  - full RTE maintenance tick due",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def read_assignment_text() -> str | None:
+    try:
+        return ASSIGNMENT_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def read_assignment_payload() -> dict[str, Any] | None:
+    text = read_assignment_text()
+    if text is None:
+        return None
+    return {
+        "rte": yaml_scalar(text, "rte"),
+        "originator": yaml_scalar(text, "originator"),
+        "assigned_at": yaml_scalar(text, "assigned_at"),
+        "expires_at": yaml_scalar(text, "expires_at"),
+        "algorithm": yaml_scalar(text, "algorithm"),
+        "protocol_exception": yaml_scalar(text, "protocol_exception"),
+    }
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--auto", action="store_true", help="auto-pick a non-originator RTE")
+    mode.add_argument("--rte", help="explicit RTE lane")
+    mode.add_argument("--show", action="store_true", help="show current assignment")
+    mode.add_argument("--clear", action="store_true", help="clear current assignment")
+    parser.add_argument("--originator", help="originator lane; defaults to HAPAX_AGENT_NAME")
+    parser.add_argument(
+        "--protocol-exception",
+        action="store_true",
+        help="allow explicit Vibe assignment when protocol/operator says so",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="emit JSON for --show or assignment result"
+    )
+    parser.add_argument("--write-tick", action="store_true", help="write a bootstrap rte-tick YAML")
+    parser.add_argument(
+        "--tick-status",
+        choices=TICK_STATUSES,
+        default="yellow",
+        help="status for --write-tick; defaults to yellow until full RTE consultation runs",
+    )
+    parser.add_argument(
+        "--summary",
+        default="RTE assignment refreshed; full maintenance tick due",
+        help="summary for --write-tick",
+    )
+    return parser.parse_args(argv)
+
+
+def assignment_show_payload(now: datetime) -> dict[str, Any] | None:
+    payload = read_assignment_payload()
+    if payload is None:
+        return None
+    expires_at = parse_utc(str(payload.get("expires_at") or ""))
+    status = "active"
+    if expires_at is not None and expires_at <= now:
+        status = "expired"
+    return {**payload, "status": status, "path": str(ASSIGNMENT_FILE)}
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv or sys.argv[1:])
+    now = utcnow()
+
+    if args.clear:
+        removed = False
+        for path in (ASSIGNMENT_FILE, CURRENT_FILE):
+            try:
+                path.unlink()
+                removed = True
+            except FileNotFoundError:
+                pass
+        print("cleared RTE assignment" if removed else "no RTE assignment to clear")
+        return 0
+
+    if args.show:
+        payload = assignment_show_payload(now)
+        if payload is None:
+            if args.json:
+                print(json.dumps({"status": "missing", "path": str(ASSIGNMENT_FILE)}, indent=2))
+            else:
+                print("no RTE assigned")
+            return 1
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            text = read_assignment_text()
+            print(text or "")
+        return 0 if payload["status"] == "active" else 6
+
+    originator = normalize_lane(args.originator or os.environ.get("HAPAX_AGENT_NAME", ""))
+    if not originator:
+        print(
+            "assign-rte: cannot determine originator; set HAPAX_AGENT_NAME or pass --originator",
+            file=sys.stderr,
+        )
+        return 3
+
+    active = discover_active_lanes(now=now, stale_hours=DEFAULT_STALE_HOURS)
+    algorithm = "explicit" if args.rte else "auto"
+    if args.rte:
+        rte = normalize_lane(args.rte)
+        try:
+            validate_explicit_rte(
+                rte, originator=originator, allow_protocol_exception=args.protocol_exception
+            )
+        except ValueError as exc:
+            print(f"assign-rte: refusing - {exc}", file=sys.stderr)
+            return 4
+    else:
+        rte = choose_auto_rte(active, originator=originator)
+        if rte is None:
+            print("assign-rte: no eligible RTE candidate found", file=sys.stderr)
+            print(f"  originator: {originator}", file=sys.stderr)
+            if active:
+                print(f"  active lanes: {', '.join(sorted(active))}", file=sys.stderr)
+            return 5
+
+    assigned_at = now
+    expires_at = now + timedelta(hours=DEFAULT_ASSIGNMENT_HOURS)
+    payload = assignment_payload(
+        rte=rte,
+        originator=originator,
+        algorithm=algorithm,
+        assigned_at=assigned_at,
+        expires_at=expires_at,
+        protocol_exception=args.protocol_exception,
+    )
+    write_assignment(payload)
+    notification = write_notification(
+        rte=rte, originator=originator, expires_at=expires_at, now=now
+    )
+    tick_path = (
+        write_tick(rte=rte, status=args.tick_status, summary=args.summary, now=now)
+        if args.write_tick
+        else None
+    )
+
+    result = {
+        **payload,
+        "status": "active",
+        "assignment": str(ASSIGNMENT_FILE),
+        "notification": str(notification),
+        "tick": str(tick_path) if tick_path else None,
+    }
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"RTE assigned: {rte} (originator: {originator})")
+        print(f"  assignment: {ASSIGNMENT_FILE}")
+        print(f"  workflow:   {RELAY_DIR / 'skills' / 'train-maintenance.md'}")
+        if tick_path is not None:
+            print(f"  tick:       {tick_path}")
+        print(f"  notified {rte} via inflection: {notification}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

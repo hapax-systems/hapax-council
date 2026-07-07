@@ -10,6 +10,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import yaml
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "request-intake-consumer"
 SERVICE = (
     Path(__file__).resolve().parents[1]
@@ -43,6 +45,39 @@ def _write_request(
         frontmatter += f"{key}: {value}\n"
     frontmatter += "---\n"
     path.write_text(frontmatter, encoding="utf-8")
+
+
+def _route_envelope() -> dict[str, object]:
+    return {
+        "classification_envelope": {
+            "label": "source_python",
+            "classifier": "test.deterministic",
+            "source_kind": "deterministic",
+            "confidence": 0.91,
+            "evidence_refs": ["test:classification-evidence"],
+            "freshness": "fresh",
+            "authority_ceiling": "authoritative",
+            "validity_mask": {
+                "label": True,
+                "source": True,
+                "confidence": True,
+                "freshness": True,
+                "authority_ceiling": True,
+            },
+            "deterministic_facts_used": ["test:task-frontmatter"],
+            "consumer_floor": "frontier_required",
+        },
+        "eligibility": {
+            "authority_allowed": True,
+            "privacy_allowed": True,
+            "freshness_ok": True,
+            "quality_floor_satisfied": True,
+            "required_tools_available": True,
+            "budget_allowed": True,
+            "reason_codes": ["eligibility_witnessed"],
+        },
+        "admission": {"admission_action": "route", "reason_codes": ["fresh"]},
+    }
 
 
 def _write_task(
@@ -80,11 +115,22 @@ def _write_task(
             "authority_level": "authoritative",
             "mutation_surface": "source",
             "mutation_scope_refs": ["test:isap"],
+            "route_envelope": _route_envelope(),
         }
         if isinstance(route_metadata, dict):
             metadata.update(route_metadata)
         for key, value in metadata.items():
-            if isinstance(value, list):
+            if isinstance(value, dict):
+                frontmatter.extend(
+                    yaml.safe_dump(
+                        {key: value},
+                        sort_keys=False,
+                        allow_unicode=False,
+                    )
+                    .strip()
+                    .splitlines()
+                )
+            elif isinstance(value, list):
                 frontmatter.append(f"{key}:")
                 for item in value:
                     frontmatter.append(f"  - {item}")
@@ -147,6 +193,8 @@ def _run(
 CCTV_ADMITTED_FRONTMATTER = {
     "cctv_intake_receipt": "receipt://REQ-test",
     "cctv_intake_verdict": "ready_to_plan",
+    "cctv_route_resource_admission": "admitted",
+    "cctv_capability_receipts": ["cctv-capability-admission:test-member"],
 }
 
 
@@ -725,6 +773,236 @@ def test_planning_feed_cctv_hold_is_separate_from_untracked(tmp_path: Path) -> N
     assert planning_item["coverage"] == "needs_cctv_hardening"
     assert planning_item["action_needed"] == "needs CCTV intake admission"
     assert planning_item["cctv_intake_blocker"] == "missing_cctv_intake_receipt"
+
+
+def test_planning_feed_cctv_route_admission_hold_is_distinct(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-CCTV-ROUTE.md",
+        "REQ-CCTV-ROUTE",
+        status="accepted_for_planning",
+        planning_case="CASE-TEST-001",
+        extra_frontmatter={
+            "cctv_intake_receipt": "receipt://REQ-CCTV-ROUTE",
+            "cctv_intake_verdict": "ready_to_plan",
+        },
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    request = data["requests"][0]
+    assert request["coverage"] == "needs_cctv_hardening"
+    assert request["cctv_intake_blocker"] == "missing_cctv_route_resource_admission"
+
+    planning_item = data["dispatch"]["planning_queue"][0]
+    assert planning_item["cctv_intake_blocker"] == "missing_cctv_route_resource_admission"
+
+
+def test_planning_feed_cctv_refused_route_admission_is_loud(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-CCTV-REFUSED.md",
+        "REQ-CCTV-REFUSED",
+        status="accepted_for_planning",
+        planning_case="CASE-TEST-001",
+        extra_frontmatter={
+            "cctv_intake_receipt": "receipt://REQ-CCTV-REFUSED",
+            "cctv_intake_verdict": "ready_to_plan",
+            "cctv_route_resource_admission": "refused",
+        },
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    request = data["requests"][0]
+    assert request["coverage"] == "needs_cctv_hardening"
+    assert request["cctv_intake_blocker"] == "cctv_route_resource_not_admitted:refused"
+
+
+def test_planning_feed_cctv_partial_route_admission_is_loud(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-CCTV-PARTIAL.md",
+        "REQ-CCTV-PARTIAL",
+        status="accepted_for_planning",
+        planning_case="CASE-TEST-001",
+        extra_frontmatter={
+            "cctv_intake_receipt": "receipt://REQ-CCTV-PARTIAL",
+            "cctv_intake_verdict": "ready_to_plan",
+            "cctv_route_resource_admission": "partial_admitted",
+        },
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    request = data["requests"][0]
+    assert request["coverage"] == "needs_cctv_hardening"
+    assert request["cctv_intake_blocker"] == "cctv_route_resource_not_admitted:partial_admitted"
+
+
+def test_planning_feed_cctv_admitted_route_without_receipts_is_loud(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+
+    _write_request(
+        active / "REQ-CCTV-NO-RECEIPTS.md",
+        "REQ-CCTV-NO-RECEIPTS",
+        status="accepted_for_planning",
+        planning_case="CASE-TEST-001",
+        extra_frontmatter={
+            "cctv_intake_receipt": "receipt://REQ-CCTV-NO-RECEIPTS",
+            "cctv_intake_verdict": "ready_to_plan",
+            "cctv_route_resource_admission": "admitted",
+        },
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    request = data["requests"][0]
+    assert request["coverage"] == "needs_cctv_hardening"
+    assert request["cctv_intake_blocker"] == "missing_cctv_capability_receipts"
+
+
+def test_planning_feed_cctv_quoted_empty_receipts_are_loud(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    (active / "REQ-CCTV-EMPTY-RECEIPTS.md").write_text(
+        """---
+type: hapax-request
+request_id: REQ-CCTV-EMPTY-RECEIPTS
+title: Test
+status: accepted_for_planning
+updated_at: 2026-05-08T15:00:00Z
+planning_case: CASE-TEST-001
+cctv_intake_receipt: receipt://REQ-CCTV-EMPTY-RECEIPTS
+cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts: "[]"
+---
+""",
+        encoding="utf-8",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    request = data["requests"][0]
+    assert request["coverage"] == "needs_cctv_hardening"
+    assert request["cctv_intake_blocker"] == "missing_cctv_capability_receipts"
+
+
+def test_planning_feed_cctv_quoted_nullish_receipt_list_is_loud(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    (active / "REQ-CCTV-NULLISH-RECEIPT-LIST.md").write_text(
+        """---
+type: hapax-request
+request_id: REQ-CCTV-NULLISH-RECEIPT-LIST
+title: Test
+status: accepted_for_planning
+updated_at: 2026-05-08T15:00:00Z
+planning_case: CASE-TEST-001
+cctv_intake_receipt: receipt://REQ-CCTV-NULLISH-RECEIPT-LIST
+cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts: "[null, unassigned]"
+---
+""",
+        encoding="utf-8",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    request = data["requests"][0]
+    assert request["coverage"] == "needs_cctv_hardening"
+    assert request["cctv_intake_blocker"] == "missing_cctv_capability_receipts"
+
+
+def test_planning_feed_cctv_nullish_block_list_receipts_are_loud(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    (active / "REQ-CCTV-NULLISH-BLOCK-LIST.md").write_text(
+        """---
+type: hapax-request
+request_id: REQ-CCTV-NULLISH-BLOCK-LIST
+title: Test
+status: accepted_for_planning
+updated_at: 2026-05-08T15:00:00Z
+planning_case: CASE-TEST-001
+cctv_intake_receipt: receipt://REQ-CCTV-NULLISH-BLOCK-LIST
+cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+- null
+- []
+- unassigned
+---
+""",
+        encoding="utf-8",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    request = data["requests"][0]
+    assert request["coverage"] == "needs_cctv_hardening"
+    assert request["cctv_intake_blocker"] == "missing_cctv_capability_receipts"
+
+
+def test_planning_feed_accepts_pyyaml_block_list_capability_receipts(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    (active / "REQ-CCTV-BLOCK-LIST.md").write_text(
+        """---
+type: hapax-request
+request_id: REQ-CCTV-BLOCK-LIST
+title: Test
+status: accepted_for_planning
+updated_at: 2026-05-08T15:00:00Z
+planning_case: CASE-TEST-001
+cctv_intake_receipt: receipt://REQ-CCTV-BLOCK-LIST
+cctv_intake_verdict: ready_to_plan
+cctv_route_resource_admission: admitted
+cctv_capability_receipts:
+- cctv-capability-admission:test-member
+---
+""",
+        encoding="utf-8",
+    )
+
+    feed = tmp_path / "planning-feed.json"
+    result = _run(tmp_path, "--write-planning-feed", planning_feed_path=feed)
+    assert result.returncode == 0
+
+    data = json.loads(feed.read_text())
+    request = data["requests"][0]
+    assert request["coverage"] == "case_linked"
+    assert request["cctv_intake_blocker"] is None
 
 
 def test_planning_feed_untracked_coverage(tmp_path: Path) -> None:

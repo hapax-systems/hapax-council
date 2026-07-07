@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 import textwrap
@@ -7,6 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_BRANCH_PROTECTION_JOBS = (
     "lint",
+    "capability-surface-delta",
     "typecheck",
     "test",
     "web-build",
@@ -39,6 +41,16 @@ def _workflow_shell_function(workflow_text: str, function_name: str) -> str:
         re.DOTALL | re.MULTILINE,
     )
     assert match is not None, f"missing shell function {function_name}"
+    return textwrap.dedent(match.group(0))
+
+
+def _workflow_docs_filter_decision_block(workflow_text: str) -> str:
+    match = re.search(
+        r'^ {10}docs_only=true\n.*?^ {10}echo "python_prod_dependency_witness=\$python_prod_dependency_witness" >> "\$GITHUB_OUTPUT"',
+        workflow_text,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert match is not None, "missing docs_only_filter decision block"
     return textwrap.dedent(match.group(0))
 
 
@@ -123,7 +135,7 @@ def test_auto_fix_keeps_real_failure_remediation_but_skips_auto_fix_recursion() 
 def test_readme_typecheck_commands_match_ci_and_safety_net() -> None:
     readme_text = _read("README.md")
 
-    assert "uv run --no-project --with pyrefly==0.62.0 pyrefly check" in readme_text
+    assert "uv run --no-project --with pyrefly==0.64.1 pyrefly check" in readme_text
     assert "CI typecheck" in readme_text
     assert "uv run pyright" in readme_text
     assert "weekly typecheck safety net" in readme_text
@@ -141,11 +153,130 @@ def test_ci_typecheck_uses_minimal_pyrefly_fast_path() -> None:
 
     _assert_uses_pinned_action(typecheck_block, "astral-sh/setup-uv")
     assert "enable-cache: true" in typecheck_block
-    assert "uv run --no-project --with pyrefly==0.62.0 pyrefly check" in typecheck_block
+    assert "uv run --no-project --with pyrefly==0.64.1 pyrefly check" in typecheck_block
     assert "apt-get" not in typecheck_block
     assert "uv sync --extra ci" not in typecheck_block
     assert "actions/cache@v4" not in typecheck_block
     assert "~/.cache/pyrefly" not in typecheck_block
+
+
+def test_ci_capability_surface_delta_gate_is_required() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    gate_block = _workflow_job_block(ci_text, "capability-surface-delta")
+    all_green_block = _workflow_job_block(ci_text, "all-green")
+
+    _assert_uses_pinned_action(gate_block, "actions/checkout")
+    _assert_uses_pinned_action(gate_block, "astral-sh/setup-uv")
+    assert "scripts/hapax-capability-surface-delta-gate" in gate_block
+    assert (
+        "uv run --no-project --with pydantic==2.13.4 "
+        "--with pyyaml==6.0.3 "
+        "python scripts/hapax-capability-surface-delta-gate"
+    ) in gate_block
+    assert "uv run --frozen python scripts/hapax-capability-surface-delta-gate" not in gate_block
+    assert "Post-merge duplicate required-check sentinel" in gate_block
+    assert "Docs-only required-check sentinel" in gate_block
+    assert "capability-surface-delta" in all_green_block
+
+
+def test_ci_runs_python_prod_optional_dependency_witness_for_dependency_changes() -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    docs_filter_block = _workflow_job_block(ci_text, "docs_only_filter")
+    test_full_shard_block = _workflow_job_block(ci_text, "test-full-shard")
+    test_block = _workflow_job_block(ci_text, "test")
+
+    assert "python_prod_dependency_witness:" in docs_filter_block
+    assert "python_prod_dependency_witness=false" in docs_filter_block
+    assert "python_prod_dependency_witness=true" in docs_filter_block
+    assert "tests/test_python_prod_dependency_constraints.py" in docs_filter_block
+
+    witness_command = (
+        "uv run --frozen \\\n"
+        "            --extra ci --extra audio --extra tui --extra studio --extra rerank \\\n"
+        "            pytest tests/test_python_prod_dependency_constraints.py -q -rs"
+    )
+    assert "Run python-prod optional dependency witness" in test_full_shard_block
+    assert "matrix.shard == 1" in test_full_shard_block
+    assert "needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'" in (
+        test_full_shard_block
+    )
+    assert witness_command in test_full_shard_block
+
+    assert "Install python-prod optional witness system deps" in test_block
+    assert "ffmpeg" in test_block
+    assert "portaudio19-dev" in test_block
+    assert "portaudio19-dev" in test_full_shard_block
+    assert test_block.count("Run python-prod optional dependency witness") == 2
+    assert witness_command in test_block
+
+
+def test_ci_docs_only_filter_executes_python_prod_witness_decision(tmp_path: Path) -> None:
+    ci_text = _read(".github/workflows/ci.yml")
+    script = "\n\n".join(
+        _workflow_shell_function(ci_text, function_name)
+        for function_name in (
+            "is_audio_authority_path",
+            "is_system_dynamics_map_authority_path",
+            "docs_only_path",
+        )
+    )
+    script += textwrap.dedent(
+        """
+
+        changed_files="$CHANGED_FILES"
+        changed_count="$CHANGED_COUNT"
+        """
+    )
+    script += "\n" + _workflow_docs_filter_decision_block(ci_text)
+
+    def run_filter(paths: list[str]) -> dict[str, str]:
+        changed_files = tmp_path / "changed-files.txt"
+        github_output = tmp_path / "github-output.txt"
+        changed_files.write_text(
+            "".join(f"{path}\n" for path in paths),
+            encoding="utf-8",
+        )
+        github_output.write_text("", encoding="utf-8")
+        env = {
+            **os.environ,
+            "CHANGED_FILES": str(changed_files),
+            "CHANGED_COUNT": str(len(paths)),
+            "GITHUB_OUTPUT": str(github_output),
+        }
+        result = subprocess.run(
+            ["bash", "-c", "set -euo pipefail\n" + script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        return dict(
+            line.split("=", 1) for line in github_output.read_text(encoding="utf-8").splitlines()
+        )
+
+    assert run_filter(["pyproject.toml"]) == {
+        "docs_only": "false",
+        "changed_count": "1",
+        "python_prod_dependency_witness": "true",
+    }
+    assert run_filter(["uv.lock"])["python_prod_dependency_witness"] == "true"
+    assert (
+        run_filter(["tests/test_python_prod_dependency_constraints.py"])[
+            "python_prod_dependency_witness"
+        ]
+        == "true"
+    )
+    assert run_filter(["docs/research/dependency-note.md"]) == {
+        "docs_only": "true",
+        "changed_count": "1",
+        "python_prod_dependency_witness": "false",
+    }
+    assert run_filter(["shared/runtime.py"]) == {
+        "docs_only": "false",
+        "changed_count": "1",
+        "python_prod_dependency_witness": "false",
+    }
 
 
 def test_cargo_hook_advisory_has_matching_path_gated_ci_job() -> None:

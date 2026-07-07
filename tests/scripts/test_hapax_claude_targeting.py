@@ -158,3 +158,158 @@ JSON
     assert result.returncode == 0, result.stderr
     assert "alpha: tmux=False foot=True" in result.stdout
     assert "stale_tmux_not_claude:fish" in result.stdout
+
+
+def _fast_fail_targeting(bin_dir: Path) -> None:
+    # tmux has no session, hyprctl no windows -> targeting fails fast (no hang) AFTER the role gate.
+    _write_exe(
+        bin_dir / "tmux",
+        '#!/usr/bin/env bash\ncase "$1" in has-session) exit 1 ;; *) exit 0 ;; esac\n',
+    )
+    _write_exe(bin_dir / "hyprctl", "#!/usr/bin/env bash\nprintf '[]\\n'\n")
+
+
+def test_send_accepts_dev_interactive_pool_roles(tmp_path: Path) -> None:
+    # The hapax-dev interactive pool (dev, dev2..devN) must pass the role gate — keeping
+    # hapax-claude-send in sync with hapax-dev's CLAUDE_POOL so review-team auto-wakes reach dev lanes.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fast_fail_targeting(bin_dir)
+    for role in ("dev", "dev2", "dev3", "dev5"):
+        result = subprocess.run(
+            [
+                "bash",
+                str(SEND),
+                "--session",
+                role,
+                "--transport",
+                "auto",
+                "--no-submit",
+                "--",
+                "msg",
+            ],
+            capture_output=True,
+            text=True,
+            env=_env(tmp_path, bin_dir),
+            timeout=5,
+        )
+        assert "invalid role" not in result.stderr, (role, result.returncode, result.stderr)
+        # assert the role gate PASSED (took a later path), not merely that stderr lacks the string:
+        # the invalid-role path exits 2, so a passing gate must NOT exit 2.
+        assert result.returncode != 2, (role, result.returncode, result.stderr)
+
+
+def test_send_rejects_unknown_role(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fast_fail_targeting(bin_dir)
+    result = subprocess.run(
+        [
+            "bash",
+            str(SEND),
+            "--session",
+            "boguslane",
+            "--transport",
+            "auto",
+            "--no-submit",
+            "--",
+            "msg",
+        ],
+        capture_output=True,
+        text=True,
+        env=_env(tmp_path, bin_dir),
+        timeout=5,
+    )
+    assert result.returncode == 2
+    assert "invalid role 'boguslane'" in result.stderr
+
+
+def test_send_rejects_retired_antigrav_role(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fast_fail_targeting(bin_dir)
+    result = subprocess.run(
+        [
+            "bash",
+            str(SEND),
+            "--session",
+            "antigrav",
+            "--transport",
+            "auto",
+            "--no-submit",
+            "--",
+            "msg",
+        ],
+        capture_output=True,
+        text=True,
+        env=_env(tmp_path, bin_dir),
+        timeout=5,
+    )
+    assert result.returncode == 2
+    assert "invalid role 'antigrav'" in result.stderr
+
+
+def test_send_rejects_retired_antigrav_role_even_when_allowlisted(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fast_fail_targeting(bin_dir)
+    for role in (
+        "agy",
+        "agy-2",
+        "antigrav",
+        "antigravity",
+        "antigravity-2",
+        "gemini-cli",
+        "gemini-cli-2",
+    ):
+        env = _env(tmp_path, bin_dir)
+        env["HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST"] = f"alpha {role}"
+        result = subprocess.run(
+            [
+                "bash",
+                str(SEND),
+                "--session",
+                role,
+                "--transport",
+                "auto",
+                "--no-submit",
+                "--",
+                "msg",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=5,
+        )
+        assert result.returncode == 2
+        assert f"invalid role '{role}'" in result.stderr
+        assert "retired/excised send targets cannot be allowlisted" in result.stderr
+        assert "mint measured agy supply-leaf intake" in result.stderr
+
+
+def test_send_rejects_dev_lookalikes_not_in_pool(tmp_path: Path) -> None:
+    # the dev pattern is digits-only (dev / dev<1-2 digits>) — NOT a `dev*` superset, so
+    # look-alikes with trailing junk are rejected (e.g. dev2foo, devel, dev-2).
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fast_fail_targeting(bin_dir)
+    for role in ("dev2foo", "devel", "dev-2", "dev99x"):
+        result = subprocess.run(
+            [
+                "bash",
+                str(SEND),
+                "--session",
+                role,
+                "--transport",
+                "auto",
+                "--no-submit",
+                "--",
+                "msg",
+            ],
+            capture_output=True,
+            text=True,
+            env=_env(tmp_path, bin_dir),
+            timeout=5,
+        )
+        assert result.returncode == 2, (role, result.returncode, result.stderr)
+        assert f"invalid role '{role}'" in result.stderr, (role, result.stderr)

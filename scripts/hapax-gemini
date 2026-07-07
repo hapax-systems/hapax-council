@@ -8,7 +8,7 @@ hapax-gemini is retired.
 Gemini-family CLI work must run through agy-backed Hapax surfaces:
   - scripts/hapax-gemini-sidecar for read-only packet work
   - scripts/hapax-gemini-jr-team for JR packets
-  - scripts/hapax-antigrav for governed interactive agy work
+  - measured agy supply-leaf intake before any governed interactive worker path
 
 Native Gemini API and LiteLLM usage is unaffected.
 EOF

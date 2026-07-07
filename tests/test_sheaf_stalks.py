@@ -1,5 +1,5 @@
 def test_linearize_stimmung():
-    from shared.sheaf_stalks import linearize_stimmung
+    from shared.sheaf_stalks import STIMMUNG_LINEARIZATION_DIMENSIONS, linearize_stimmung
 
     state = {
         "overall_stance": "nominal",
@@ -8,7 +8,7 @@ def test_linearize_stimmung():
     vec = linearize_stimmung(state)
     assert isinstance(vec, list)
     assert all(isinstance(v, float) for v in vec)
-    assert len(vec) == 31  # 10 dims × 3 fields + 1 stance
+    assert len(vec) == len(STIMMUNG_LINEARIZATION_DIMENSIONS) * 3 + 1
 
 
 def test_linearize_empty():

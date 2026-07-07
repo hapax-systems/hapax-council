@@ -40,7 +40,12 @@ Defined in `RouteConstraints.preferred_platforms` / `allowed_platforms` / `prohi
 | `claude` | Claude Code (Opus/Sonnet) | Frontier | 1M | Multi-file refactors, governance, architecture |
 | `codex` | Codex headless | Frontier | 192K | Bounded implementation, parallel lanes |
 | `vibe` | Mistral Medium 3.5 | JR+ | 256K | Mechanical: tests, deps, CI fixes |
-| `antigrav` | Antigravity/agy (Gemini-family) | JR+ | large | Directed, bounded, agy-backed CLI/IDE work |
+
+`antigrav` / Antigravity is retired and excised as a live platform, lane, and
+route family. The Agy adapter family is distinct and live after the 2026-07-05
+steward correction, but it does not satisfy dispatch demand until a measured
+`agy` route is registered with route, resource, and governance receipts. Legacy
+`gemini-cli` aliases remain retired.
 
 ## Reaching the Opus Route (signed route-authority receipts)
 
@@ -125,6 +130,46 @@ route_metadata:
   review_requirement:
     support_artifact_allowed: false
     independent_review_required: false
+  route_envelope:
+    classification_envelope:
+      label: source_python
+      classifier: deterministic-route-classifier
+      source_kind: deterministic
+      confidence: 0.9
+      evidence_refs: [route-classifier:source-python]
+      freshness: fresh
+      authority_ceiling: authoritative
+      validity_mask:
+        label: true
+        source: true
+        confidence: true
+        freshness: true
+        authority_ceiling: true
+      deterministic_facts_used: [mutation_surface:source]
+      consumer_floor: frontier_required
+    eligibility:
+      authority_allowed: true
+      privacy_allowed: true
+      freshness_ok: true
+      quality_floor_satisfied: true
+      required_tools_available: true
+      budget_allowed: true
+      reason_codes: [eligibility_witnessed]
+    admission:
+      admission_action: route
+      reason_codes: [route_envelope_route]
+```
+
+Missing or invalid `route_envelope` / `DemandVector` evidence is not
+dispatchable: primary dispatch holds before candidate-set scoring and before
+`policy_launch`. Recheck the envelope construction and dispatch gates with:
+
+```bash
+uv run pytest \
+  tests/shared/test_dispatcher_policy.py \
+  tests/shared/test_route_metadata_schema.py \
+  tests/shared/test_dispatcher_capability_fit_dimensions.py \
+  tests/test_request_intake_consumer.py
 ```
 
 ## Derivation
@@ -136,8 +181,11 @@ Tasks without explicit `route_metadata` get conservative derived metadata via
 ## Demand Vector
 
 For dispatcher-level routing, `build_demand_vector()` projects route metadata
-plus task-specific signals into a 17-dimension `DemandVector` used by the
-policy layer.
+plus task-specific signals into the `DemandVector` used by the policy layer. The
+vector is capacity-oriented: it carries quality, authority, mutation, risk,
+context, verification, tool, budget, benchmark, public-projection, and hardening
+allocation fields, plus fixed-route-overhead sensitivity, rather than exposing a
+fixed numbered dimension set.
 
 ## Task Dimension Fit Extension
 

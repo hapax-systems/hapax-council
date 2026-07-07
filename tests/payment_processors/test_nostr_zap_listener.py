@@ -94,7 +94,7 @@ class TestNostrZapListener:
         # but the structure is enforced by run_forever (covered by
         # integration tests in production).
 
-    def test_handle_relay_message_emits_event(self, tmp_path, monkeypatch):
+    def test_handle_relay_message_emits_event(self, tmp_path, monkeypatch, _durable_chronicle):
         import agents.payment_processors.event_log as ev_log
 
         log_path = tmp_path / "events.jsonl"
@@ -117,7 +117,7 @@ class TestNostrZapListener:
         assert events[0].rail == "nostr_zap"
         assert events[0].external_id == "abcdef"
 
-    def test_handle_relay_message_dedupes(self, tmp_path, monkeypatch):
+    def test_handle_relay_message_dedupes(self, tmp_path, monkeypatch, _durable_chronicle):
         import agents.payment_processors.event_log as ev_log
 
         log_path = tmp_path / "events.jsonl"

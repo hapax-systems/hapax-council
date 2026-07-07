@@ -2,73 +2,297 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from unittest.mock import patch
+
+import pytest
+
+from shared import config as shared_config
 
 
 class TestAdaptiveModelSelection:
     """WS2: stimmung-aware model routing."""
 
-    def test_nominal_returns_requested(self):
-        from shared.config import get_model, get_model_adaptive
+    @pytest.fixture(autouse=True)
+    def reset_local_capacity_backpressure(self):
+        shared_config._LOCAL_CAPACITY_BACKPRESSURE_ACTIVE = False
+        yield
+        shared_config._LOCAL_CAPACITY_BACKPRESSURE_ACTIVE = False
 
+    def test_nominal_returns_requested(self):
         stimmung = {"overall_stance": "nominal", "llm_cost_pressure": {"value": 0.1}}
         with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
-            model = get_model_adaptive("balanced")
+            model = shared_config.get_model_adaptive("balanced")
         # Should return balanced (claude-sonnet), not downgraded
-        assert model.model_name == get_model("balanced").model_name
+        assert model.model_name == shared_config.get_model("balanced").model_name
 
     def test_high_cost_downgrades_balanced(self):
-        from shared.config import get_model, get_model_adaptive
-
         stimmung = {
             "overall_stance": "cautious",
             "llm_cost_pressure": {"value": 0.8},
             "resource_pressure": {"value": 0.2},
         }
         with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
-            model = get_model_adaptive("balanced")
-        assert model.model_name == get_model("fast").model_name
+            model = shared_config.get_model_adaptive("balanced")
+        assert model.model_name == shared_config.get_model("fast").model_name
 
     def test_high_cost_keeps_fast(self):
-        from shared.config import get_model, get_model_adaptive
-
         stimmung = {
             "overall_stance": "cautious",
             "llm_cost_pressure": {"value": 0.8},
             "resource_pressure": {"value": 0.2},
         }
         with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
-            model = get_model_adaptive("fast")
+            model = shared_config.get_model_adaptive("fast")
         # fast doesn't downgrade on cost pressure
-        assert model.model_name == get_model("fast").model_name
+        assert model.model_name == shared_config.get_model("fast").model_name
 
     def test_high_resource_downgrades_to_local(self):
-        from shared.config import get_model, get_model_adaptive
-
         stimmung = {
             "overall_stance": "degraded",
             "llm_cost_pressure": {"value": 0.1},
             "resource_pressure": {"value": 0.85},
         }
         with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
-            model = get_model_adaptive("fast")
-        assert model.model_name == get_model("local-fast").model_name
+            model = shared_config.get_model_adaptive("fast")
+        assert model.model_name == shared_config.get_model("local-fast").model_name
 
-    def test_critical_always_local(self):
-        from shared.config import get_model, get_model_adaptive
+    def test_local_capacity_signal_is_required_to_invert_resource_downgrade(self, monkeypatch):
+        monkeypatch.setattr(shared_config, "_LOCAL_CAPACITY_BACKPRESSURE_ACTIVE", False)
+        base_stimmung = {
+            "overall_stance": "degraded",
+            "llm_cost_pressure": {"value": 0.1},
+            "resource_pressure": {"value": 0.85},
+        }
+        with patch("pathlib.Path.read_text", return_value=json.dumps(base_stimmung)):
+            assert (
+                shared_config.get_model_adaptive("fast").model_name
+                == shared_config.get_model("local-fast").model_name
+            )
 
+        hot_local_stimmung = {
+            **base_stimmung,
+            "local_capacity_pressure": {"value": 0.82, "freshness_s": 3.0},
+        }
+        with patch("pathlib.Path.read_text", return_value=json.dumps(hot_local_stimmung)):
+            assert (
+                shared_config.get_model_adaptive("fast").model_name
+                == shared_config.get_model("fast").model_name
+            )
+
+    def test_high_local_capacity_inverts_local_downgrade(self, monkeypatch):
+        monkeypatch.setattr(shared_config, "_LOCAL_CAPACITY_BACKPRESSURE_ACTIVE", False)
+        stimmung = {
+            "overall_stance": "degraded",
+            "llm_cost_pressure": {"value": 0.1},
+            "resource_pressure": {"value": 0.85},
+            "local_capacity_pressure": {"value": 0.82, "freshness_s": 3.0},
+        }
+        with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
+            model = shared_config.get_model_adaptive("fast")
+        assert model.model_name == shared_config.get_model("fast").model_name
+
+    def test_high_local_capacity_inverts_reasoning_local_downgrade(self, monkeypatch):
+        monkeypatch.setattr(shared_config, "_LOCAL_CAPACITY_BACKPRESSURE_ACTIVE", False)
+        stimmung = {
+            "overall_stance": "degraded",
+            "llm_cost_pressure": {"value": 0.1},
+            "resource_pressure": {"value": 0.85},
+            "local_capacity_pressure": {"value": 0.82, "freshness_s": 3.0},
+        }
+        with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
+            model = shared_config.get_model_adaptive("reasoning")
+        assert model.model_name == shared_config.get_model("fast").model_name
+
+    def test_local_capacity_backpressure_is_hysteresis_guarded(self, monkeypatch):
+        monkeypatch.setattr(shared_config, "_LOCAL_CAPACITY_BACKPRESSURE_ACTIVE", False)
+        stimmung_high = {
+            "overall_stance": "degraded",
+            "llm_cost_pressure": {"value": 0.1},
+            "resource_pressure": {"value": 0.85},
+            "local_capacity_pressure": {"value": 0.82, "freshness_s": 3.0},
+        }
+        stimmung_mid = {
+            **stimmung_high,
+            "local_capacity_pressure": {"value": 0.62, "freshness_s": 3.0},
+        }
+        stimmung_above_recovery = {
+            **stimmung_high,
+            "local_capacity_pressure": {"value": 0.58, "freshness_s": 3.0},
+        }
+        stimmung_low = {
+            **stimmung_high,
+            "local_capacity_pressure": {"value": 0.4, "freshness_s": 3.0},
+        }
+
+        with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung_high)):
+            assert (
+                shared_config.get_model_adaptive("fast").model_name
+                == shared_config.get_model("fast").model_name
+            )
+        with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung_mid)):
+            assert (
+                shared_config.get_model_adaptive("fast").model_name
+                == shared_config.get_model("fast").model_name
+            )
+        with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung_above_recovery)):
+            assert (
+                shared_config.get_model_adaptive("fast").model_name
+                == shared_config.get_model("fast").model_name
+            )
+        with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung_low)):
+            assert (
+                shared_config.get_model_adaptive("fast").model_name
+                == shared_config.get_model("local-fast").model_name
+            )
+
+    def test_stale_local_capacity_fails_open_to_current_behavior(self, monkeypatch):
+        monkeypatch.setattr(shared_config, "_LOCAL_CAPACITY_BACKPRESSURE_ACTIVE", False)
+        stimmung = {
+            "overall_stance": "degraded",
+            "llm_cost_pressure": {"value": 0.1},
+            "resource_pressure": {"value": 0.85},
+            "local_capacity_pressure": {"value": 0.95, "freshness_s": 300.0},
+        }
+        with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
+            model = shared_config.get_model_adaptive("fast")
+        assert model.model_name == shared_config.get_model("local-fast").model_name
+
+    def test_nonfinite_local_capacity_fails_open_to_current_behavior(self, monkeypatch):
+        monkeypatch.setattr(shared_config, "_LOCAL_CAPACITY_BACKPRESSURE_ACTIVE", True)
+        stimmung = {
+            "overall_stance": "degraded",
+            "llm_cost_pressure": {"value": 0.1},
+            "resource_pressure": {"value": 0.85},
+            "local_capacity_pressure": {"value": "NaN", "freshness_s": "Infinity"},
+        }
+        with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
+            model = shared_config.get_model_adaptive("fast")
+        assert model.model_name == shared_config.get_model("local-fast").model_name
+        assert shared_config._LOCAL_CAPACITY_BACKPRESSURE_ACTIVE is False
+
+    def test_critical_uses_cloud_fast_when_local_capacity_is_hot(self, monkeypatch):
+        monkeypatch.setattr(shared_config, "_LOCAL_CAPACITY_BACKPRESSURE_ACTIVE", False)
+        stimmung = {
+            "overall_stance": "critical",
+            "local_capacity_pressure": {"value": 0.9, "freshness_s": 2.0},
+        }
+        with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
+            model = shared_config.get_model_adaptive("balanced")
+        assert model.model_name == shared_config.get_model("fast").model_name
+
+    def test_critical_uses_local_without_local_capacity_pressure(self):
         stimmung = {"overall_stance": "critical"}
         with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
-            model = get_model_adaptive("balanced")
-        assert model.model_name == get_model("local-fast").model_name
+            model = shared_config.get_model_adaptive("balanced")
+        assert model.model_name == shared_config.get_model("local-fast").model_name
 
     def test_missing_stimmung_returns_requested(self):
-        from shared.config import get_model, get_model_adaptive
-
         with patch("pathlib.Path.read_text", side_effect=FileNotFoundError):
-            model = get_model_adaptive("balanced")
-        assert model.model_name == get_model("balanced").model_name
+            model = shared_config.get_model_adaptive("balanced")
+        assert model.model_name == shared_config.get_model("balanced").model_name
+
+
+class TestAgentsConfigAdaptiveModelSelection:
+    """The active agents._config helper must share local-capacity backpressure."""
+
+    @pytest.fixture(autouse=True)
+    def reset_local_capacity_backpressure(self):
+        shared_config._LOCAL_CAPACITY_BACKPRESSURE_ACTIVE = False
+        yield
+        shared_config._LOCAL_CAPACITY_BACKPRESSURE_ACTIVE = False
+
+    def test_high_local_capacity_inverts_active_fast_local_downgrade(self, monkeypatch):
+        import agents._config as agents_config
+
+        monkeypatch.setattr(shared_config, "_LOCAL_CAPACITY_BACKPRESSURE_ACTIVE", False)
+        stimmung = {
+            "overall_stance": "degraded",
+            "llm_cost_pressure": {"value": 0.1},
+            "resource_pressure": {"value": 0.85},
+            "local_capacity_pressure": {"value": 0.82, "freshness_s": 3.0},
+        }
+        with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
+            model = agents_config.get_model_adaptive("fast")
+        assert model.model_name == agents_config.get_model("fast").model_name
+
+    def test_active_critical_uses_cloud_fast_when_local_capacity_is_hot(self, monkeypatch):
+        import agents._config as agents_config
+
+        monkeypatch.setattr(shared_config, "_LOCAL_CAPACITY_BACKPRESSURE_ACTIVE", False)
+        stimmung = {
+            "overall_stance": "critical",
+            "local_capacity_pressure": {"value": 0.9, "freshness_s": 2.0},
+        }
+        with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
+            model = agents_config.get_model_adaptive("balanced")
+        assert model.model_name == agents_config.get_model("fast").model_name
+
+
+class TestActiveAdaptiveRouterCopies:
+    """Active adaptive-router entrypoints must share local-capacity backpressure."""
+
+    @pytest.fixture(autouse=True)
+    def reset_local_capacity_backpressure(self):
+        shared_config._LOCAL_CAPACITY_BACKPRESSURE_ACTIVE = False
+        yield
+        shared_config._LOCAL_CAPACITY_BACKPRESSURE_ACTIVE = False
+
+    @pytest.mark.parametrize(
+        "module_name",
+        [
+            "agents.briefing",
+            "agents.profiler",
+            "agents.activity_analyzer",
+            "agents.drift_detector.config",
+        ],
+    )
+    def test_resource_downgrade_respects_hot_local_capacity(self, module_name, monkeypatch):
+        monkeypatch.setattr(shared_config, "_LOCAL_CAPACITY_BACKPRESSURE_ACTIVE", False)
+        module = importlib.import_module(module_name)
+        base_stimmung = {
+            "overall_stance": "degraded",
+            "llm_cost_pressure": {"value": 0.1},
+            "resource_pressure": {"value": 0.85},
+        }
+        with patch("pathlib.Path.read_text", return_value=json.dumps(base_stimmung)):
+            assert (
+                module.get_model_adaptive("fast").model_name
+                == shared_config.get_model("local-fast").model_name
+            )
+
+        hot_local_stimmung = {
+            **base_stimmung,
+            "local_capacity_pressure": {"value": 0.82, "freshness_s": 3.0},
+        }
+        with patch("pathlib.Path.read_text", return_value=json.dumps(hot_local_stimmung)):
+            assert (
+                module.get_model_adaptive("fast").model_name
+                == shared_config.get_model("fast").model_name
+            )
+
+    @pytest.mark.parametrize(
+        "module_name",
+        [
+            "agents.briefing",
+            "agents.profiler",
+            "agents.activity_analyzer",
+            "agents.drift_detector.config",
+        ],
+    )
+    def test_critical_stance_respects_hot_local_capacity(self, module_name, monkeypatch):
+        monkeypatch.setattr(shared_config, "_LOCAL_CAPACITY_BACKPRESSURE_ACTIVE", False)
+        module = importlib.import_module(module_name)
+        stimmung = {
+            "overall_stance": "critical",
+            "local_capacity_pressure": {"value": 0.9, "freshness_s": 2.0},
+        }
+        with patch("pathlib.Path.read_text", return_value=json.dumps(stimmung)):
+            assert (
+                module.get_model_adaptive("balanced").model_name
+                == shared_config.get_model("fast").model_name
+            )
 
 
 class TestAdaptiveConfidenceThreshold:
