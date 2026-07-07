@@ -40,6 +40,56 @@ PUBLIC_GATE_LIST_KEYS = frozenset(
         "required_gate_ids",
     }
 )
+PUBLIC_GATE_OUTCOME_KEYS = frozenset(
+    {
+        "cleared",
+        "decision",
+        "outcome",
+        "pass",
+        "passed",
+        "result",
+        "status",
+        "verdict",
+    }
+)
+PUBLIC_GATE_PASS_VALUES = frozenset(
+    {
+        "accept",
+        "accepted",
+        "allow",
+        "allowed",
+        "approve",
+        "approved",
+        "clear",
+        "cleared",
+        "complete",
+        "completed",
+        "ok",
+        "pass",
+        "passed",
+        "success",
+        "succeeded",
+        "true",
+        "valid",
+        "yes",
+    }
+)
+PUBLIC_GATE_FAIL_VALUES = frozenset(
+    {
+        "block",
+        "blocked",
+        "deny",
+        "denied",
+        "error",
+        "fail",
+        "failed",
+        "false",
+        "invalid",
+        "no",
+        "reject",
+        "rejected",
+    }
+)
 
 
 def public_gate_receipt_value_present(
@@ -129,7 +179,7 @@ def _path_is_inside_root(path: Path, root: Path) -> bool:
 
 def _receipt_file_maps_to_gate(path: Path, expected_gate: str) -> bool:
     data = _load_receipt_data(path)
-    return _contains_expected_gate(data, expected_gate)
+    return _contains_expected_gate(data, expected_gate) and _receipt_outcome_allows(data)
 
 
 def _load_receipt_data(path: Path) -> Any:
@@ -204,3 +254,37 @@ def _truthy_receipt_value(value: Any) -> bool:
     if isinstance(value, (Mapping, list, tuple, set)):
         return bool(value)
     return True
+
+
+def _receipt_outcome_allows(data: Any) -> bool:
+    outcomes = list(_iter_receipt_outcomes(data))
+    if any(outcome is False for outcome in outcomes):
+        return False
+    return any(outcome is True for outcome in outcomes)
+
+
+def _iter_receipt_outcomes(data: Any) -> Iterable[bool | None]:
+    if isinstance(data, Mapping):
+        for raw_key, value in data.items():
+            key = str(raw_key).strip().casefold()
+            if key in PUBLIC_GATE_OUTCOME_KEYS:
+                yield _outcome_value_allows(value)
+            yield from _iter_receipt_outcomes(value)
+    elif isinstance(data, (list, tuple, set)):
+        for item in data:
+            yield from _iter_receipt_outcomes(item)
+
+
+def _outcome_value_allows(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float) and value in {0, 1}:
+        return bool(value)
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().casefold().replace("_", "-")
+    if normalized in PUBLIC_GATE_PASS_VALUES:
+        return True
+    if normalized in PUBLIC_GATE_FAIL_VALUES:
+        return False
+    return None

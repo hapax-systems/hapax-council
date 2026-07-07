@@ -1,0 +1,115 @@
+"""Tests for durable public-gate receipt validation."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from shared.public_gate_receipts import public_gate_receipt_value_present
+
+GATE = "rights_privacy_redaction_pass"
+
+
+def _write(root: Path, name: str, text: str) -> None:
+    target = root / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+
+
+def test_accepts_passed_yaml_receipt_with_extension_inferred(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", f"gate_id: {GATE}\nstatus: passed\n")
+
+    assert public_gate_receipt_value_present(
+        "public-gate:receipt-1",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_failed_receipt_outcome(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", f"gate_id: {GATE}\nstatus: failed\n")
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_false_passed_marker(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", f"gate_id: {GATE}\npassed: false\n")
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_gate_only_receipt_without_positive_outcome(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", f"gate_id: {GATE}\n")
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_accepts_iterable_ref_and_markdown_frontmatter(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "receipt-1.md",
+        f"---\nrequired_gates:\n  - {GATE}\nverdict: accepted\n---\n\nBody\n",
+    )
+
+    assert public_gate_receipt_value_present(
+        ["placeholder", "public-gate:receipt-1.md"],
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_accepts_nested_gate_mapping_with_positive_status(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "nested.yaml",
+        f"receipt:\n  gates:\n    {GATE}: reviewed\n  outcome: approved\n",
+    )
+
+    assert public_gate_receipt_value_present(
+        "public-gate:nested.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_mapping_and_bytes_values(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", f"gate_id: {GATE}\nstatus: passed\n")
+
+    assert not public_gate_receipt_value_present(
+        {"ref": "public-gate:receipt-1.yaml"},
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+    assert not public_gate_receipt_value_present(
+        b"public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_root_escape_and_malformed_yaml(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside-public-gate.yaml"
+    outside.write_text(f"gate_id: {GATE}\nstatus: passed\n", encoding="utf-8")
+    _write(tmp_path, "bad.yaml", f"gate_id: {GATE}\nstatus: [\n")
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:../outside-public-gate.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+    assert not public_gate_receipt_value_present(
+        "public-gate:bad.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
