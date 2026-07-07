@@ -127,7 +127,7 @@ def _smoke_stdout_valid(stdout: str) -> bool:
     return (
         re.search(r"(?m)^verdict:\s*accept\s*$", body) is not None
         and re.search(r"(?m)^findings:\s*\[\]\s*$", body) is not None
-        and re.search(r"(?m)^checklist:\s*$", body) is not None
+        and re.search(r"(?m)^checklist:\s*(?:\{\})?\s*$", body) is not None
     )
 
 
