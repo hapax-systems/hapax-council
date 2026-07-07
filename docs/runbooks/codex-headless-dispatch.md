@@ -46,8 +46,11 @@ Remote appendix dispatch uses this order:
    preexisting file or symlink is a hard preflight failure;
 6. execute `codex exec` on the remote host with that handoff token, deleting the
    handoff as it is consumed. Later rotation of the published token file must not
-   change the bearer used for this exec. A failed handoff deletion is a hard
-   launcher failure rather than a best-effort cleanup warning.
+   change the bearer used for this exec. A failed deletion during handoff
+   consumption is a hard launcher failure. If a parent-side cleanup attempt for an
+   abandoned preflight cannot reach the dispatch host, the launcher prints an
+   operator-visible next action while preserving the primary claim/launch failure
+   status.
 
 Local headless dispatch similarly proves the published OAuth token with
 `codex debug models` before `cc-claim` and reuses that proven bearer for the
@@ -102,12 +105,22 @@ emitted the alert (`offered_tasks > 0`, `dispatches_this_tick == 0`,
 `refusal_ledger.starvation_active == true`, and
 `refusal_ledger.starvation_escalated == true`):
 
+Run this on the coordinator host. If the coordinator state path is non-default,
+set `HAPAX_COORDINATOR_STATE_PATH` before running the command.
+
 ```bash
 python - <<'PY'
 import json
+import os
 from pathlib import Path
 
-coordinator = json.loads(Path("/dev/shm/hapax-coordinator/state.json").read_text())
+state_path = Path(os.environ.get("HAPAX_COORDINATOR_STATE_PATH", "/dev/shm/hapax-coordinator/state.json"))
+if not state_path.exists():
+    raise SystemExit(
+        f"coordinator state missing at {state_path}; run on the coordinator host "
+        "or set HAPAX_COORDINATOR_STATE_PATH"
+    )
+coordinator = json.loads(state_path.read_text())
 refusal = coordinator.get("refusal_ledger", {})
 print(
     {

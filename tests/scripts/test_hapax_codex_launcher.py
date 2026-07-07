@@ -183,6 +183,24 @@ def _clear_handoff_glob(session_id: str) -> None:
         path.unlink(missing_ok=True)
 
 
+def test_remote_token_cleanup_refuses_traversal_handoff_path() -> None:
+    cleanup_py = _extract_remote_python("REMOTE_TOKEN_CLEANUP_PY")
+    payload = {"path": "/tmp/hapax-codex-token-../../hapax-codex-cleanup-leak"}
+    env = os.environ.copy()
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+
+    result = subprocess.run(
+        [sys.executable, "-c", cleanup_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 78
+    assert "refusing invalid Codex OAuth token handoff cleanup path" in result.stderr
+
+
 def test_rejects_slot_name_as_visible_session(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
 
@@ -578,6 +596,49 @@ def test_appendix_codex_remote_handoff_cleaned_when_ssh_fails_before_exec(
     assert count_file.read_text(encoding="utf-8").strip() == "4"
     assert not list(Path("/tmp").glob(f"hapax-codex-token-{session_id}-*"))
     assert not args_file.exists()
+
+
+def test_appendix_codex_remote_handoff_sanitizes_session_id_before_path(
+    tmp_path: Path,
+) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
+    (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
+    count_file = tmp_path / "ssh-count.txt"
+    _write_fake_ssh_fails_after_handoff_preflight(tmp_path / "bin", count_file)
+    leak_prefix = f"hapax-codex-leak-{os.getpid()}-{tmp_path.name}"
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_SESSION_ID"] = f"../../{leak_prefix}"
+    for leaked in Path("/tmp").glob(f"{leak_prefix}-*"):
+        leaked.unlink(missing_ok=True)
+
+    try:
+        result = subprocess.run(
+            [
+                str(LAUNCHER),
+                "--session",
+                "cx-red",
+                "--slot",
+                "alpha",
+                "--cd",
+                str(REPO_ROOT),
+                "--",
+                "mcp",
+                "list",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=5,
+        )
+
+        assert result.returncode == 255
+        assert count_file.read_text(encoding="utf-8").strip() == "4"
+        assert not list(Path("/tmp").glob(f"{leak_prefix}-*"))
+        assert not args_file.exists()
+    finally:
+        for leaked in Path("/tmp").glob(f"{leak_prefix}-*"):
+            leaked.unlink(missing_ok=True)
 
 
 def test_appendix_codex_exec_uses_remote_payload_without_shell_interpolation(

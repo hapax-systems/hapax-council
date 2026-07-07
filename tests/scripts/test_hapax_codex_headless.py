@@ -1356,6 +1356,24 @@ PY
         ]
 
 
+def test_codex_headless_remote_cleanup_refuses_traversal_handoff_path() -> None:
+    cleanup_py = _extract_remote_python("REMOTE_TOKEN_CLEANUP_PY")
+    payload = {"path": "/tmp/hapax-codex-token-../../hapax-codex-headless-cleanup-leak"}
+    env = os.environ.copy()
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+
+    result = subprocess.run(
+        [sys.executable, "-c", cleanup_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 78
+    assert "refusing invalid Codex OAuth token handoff cleanup path" in result.stderr
+
+
 def test_codex_headless_parent_cleanup_failure_is_operator_visible(
     tmp_path: Path,
 ) -> None:
@@ -1415,6 +1433,74 @@ def test_codex_headless_parent_cleanup_failure_is_operator_visible(
         "preflight",
         "cleanup",
     ]
+
+
+def test_codex_headless_remote_handoff_sanitizes_session_id_before_cleanup(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    primary = home / "projects" / "hapax-council"
+    _init_primary_council_repo(primary)
+    _write_executable(primary / "scripts" / "cc-claim", "exit 42\n")
+    subprocess.run(["git", "-C", str(primary), "add", "scripts/cc-claim"], check=True)
+    subprocess.run(
+        ["git", "-C", str(primary), "commit", "-m", "add failing claim helper"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(["git", "-C", str(primary), "branch", "codex/cx-amber"], check=True)
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
+
+    token_file = _write_codex_access_token(
+        home / ".cache" / "hapax" / "codex-oauth",
+        exp=int(time.time()) + 3600,
+    )
+    bin_dir = tmp_path / "bin"
+    ssh_log = tmp_path / "ssh.log"
+    _write_classifying_ssh(
+        bin_dir / "ssh",
+        ssh_log,
+        remove_workdir_on_worktree=workdir,
+    )
+    _write_executable(bin_dir / "codex", "exit 0\n")
+
+    leak_prefix = f"hapax-codex-headless-leak-{os.getpid()}-{tmp_path.name}"
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(primary)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE"] = str(token_file)
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+    env["HAPAX_SESSION_ID"] = f"../../{leak_prefix}"
+    for leaked in Path("/tmp").glob(f"{leak_prefix}-*"):
+        leaked.unlink(missing_ok=True)
+
+    try:
+        result = subprocess.run(
+            [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+
+        assert result.returncode == 42
+        assert ssh_log.read_text(encoding="utf-8").splitlines() == [
+            "preflight",
+            "worktree",
+            "preflight",
+            "cleanup",
+        ]
+        assert not list(Path("/tmp").glob(f"{leak_prefix}-*"))
+    finally:
+        for leaked in Path("/tmp").glob(f"{leak_prefix}-*"):
+            leaked.unlink(missing_ok=True)
 
 
 def test_codex_headless_remote_exec_fails_if_token_handoff_cleanup_fails(

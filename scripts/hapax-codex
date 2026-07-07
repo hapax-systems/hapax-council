@@ -65,6 +65,15 @@ slugify() {
   printf '%s\n' "$1" | tr -cs 'A-Za-z0-9_.-' '-' | sed 's/^-//; s/-$//'
 }
 
+token_handoff_component() {
+  local component
+  component="$(printf '%s\n' "$1" | tr -cs 'A-Za-z0-9_-' '-' | sed 's/^-//; s/-$//' | cut -c1-96)"
+  if [ -z "$component" ]; then
+    component="session"
+  fi
+  printf '%s\n' "$component"
+}
+
 relay_retired() {
   # Delegate to the single-source predicate (shared/relay_lifecycle.lane_is_retired)
   # so the launcher agrees with the dispatch gate + the coordinator: one
@@ -536,7 +545,10 @@ if missing_dirs or missing_exec or missing_bins or token_error or actuation_erro
     sys.exit(1)
 handoff=p.get("token_handoff_file") or ""
 if handoff:
-    handoff=os.path.expanduser(handoff)
+    handoff=os.path.abspath(os.path.expanduser(handoff))
+    if os.path.dirname(handoff)!="/tmp" or not os.path.basename(handoff).startswith("hapax-codex-token-"):
+        print("hapax-codex: refused invalid Codex OAuth token handoff path "+handoff+"; next action: rerun remote preflight with a sanitized session id", file=sys.stderr)
+        sys.exit(78)
     directory=os.path.dirname(handoff)
     if directory:
         os.makedirs(directory,exist_ok=True)
@@ -591,8 +603,10 @@ if proof:
 argv=p["argv"]; os.execvp(argv[0], argv)'
 REMOTE_TOKEN_CLEANUP_PY='import base64,json,os,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); path=os.path.expanduser(p.get("path") or "");
 # token_handoff_cleanup: unlink only the governed short-lived handoff path.
+path=os.path.abspath(path) if path else ""
 if not path or os.path.dirname(path)!="/tmp" or not os.path.basename(path).startswith("hapax-codex-token-"):
-    sys.exit(0)
+    print("hapax-codex: refusing invalid Codex OAuth token handoff cleanup path "+(path or "<empty>"), file=sys.stderr)
+    sys.exit(78)
 try:
     os.unlink(path)
 except FileNotFoundError:
@@ -1085,7 +1099,7 @@ if [ -n "$DISPATCH_HOST" ]; then
   # refuse the launch has passed. The early host preflight proves readiness with
   # an empty handoff path; the bearer file is created just-in-time before remote
   # exec and then consumed or cleaned.
-  REMOTE_TOKEN_HANDOFF="/tmp/hapax-codex-token-$SESSION_UUID-$$"
+  REMOTE_TOKEN_HANDOFF="/tmp/hapax-codex-token-$(token_handoff_component "$SESSION_UUID")-$$"
   export HAPAX_REMOTE_TOKEN_HANDOFF="$REMOTE_TOKEN_HANDOFF"
   trap cleanup_remote_token_handoff EXIT
 fi
