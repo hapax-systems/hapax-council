@@ -19,12 +19,20 @@ done
 needs_default_session=1
 prev=""
 for arg in "$@"; do
-  if [ "$prev" = "--session" ] || [ "$prev" = "--thread" ] || [ "$prev" = "--name" ] || [ "$prev" = "--role" ]; then
+  if [ "$prev" = "--session" ] || [ "$prev" = "--thread" ] || [ "$prev" = "--name" ]; then
     needs_default_session=0
     break
   fi
+  if [ "$prev" = "--role" ]; then
+    case "$arg" in
+      cx-*)
+        needs_default_session=0
+        break
+        ;;
+    esac
+  fi
   case "$arg" in
-    --session=*|--thread=*|--name=*|--role=*|cx-*)
+    --session=*|--thread=*|--name=*|--role=cx-*|cx-*)
       needs_default_session=0
       break
       ;;

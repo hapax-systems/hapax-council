@@ -145,6 +145,34 @@ def test_reins_fugu_ultra_print_env_selects_ultra_model(tmp_path: Path) -> None:
     assert "HAPAX_AGENT_ROLE=cx-fugu-ultra" in default_role.stdout
 
 
+def test_reins_fugu_slot_role_keeps_pinned_session(tmp_path: Path) -> None:
+    env, _catalog, _bin_dir = _base_env(tmp_path)
+
+    fugu = subprocess.run(
+        [str(REINS_FUGU), "--print-env", "--role", "alpha"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert fugu.returncode == 0, fugu.stderr
+    assert "HAPAX_AGENT_ROLE=cx-fugu" in fugu.stdout
+    assert "HAPAX_AGENT_SLOT=alpha" in fugu.stdout
+
+    ultra = subprocess.run(
+        [str(REINS_FUGU_ULTRA), "--print-env", "--role=beta"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert ultra.returncode == 0, ultra.stderr
+    assert "HAPAX_AGENT_ROLE=cx-fugu-ultra" in ultra.stdout
+    assert "HAPAX_AGENT_SLOT=beta" in ultra.stdout
+
+
 def test_reins_fugu_entrypoints_ignore_profile_env_override(tmp_path: Path) -> None:
     env, _catalog, _bin_dir = _base_env(tmp_path)
     env["REINS_FUGU_PROFILE"] = "fugu-ultra"

@@ -557,7 +557,7 @@ fugu_refuse_codex_override_args() {
         echo "hapax-codex: Fugu mode refuses Codex profile/feature override '$arg'; next action: remove the override and use the pinned Fugu profile/config path" >&2
         return 1
         ;;
-      -m|--model|--model=*|--model-provider|--model-provider=*|--model_provider|--model_provider=*|--provider|--provider=*|--base-url|--base-url=*|--endpoint|--endpoint=*|--api-key|--api-key=*|--env-key|--env-key=*|--model-catalog-json|--model-catalog-json=*|--model_catalog_json|--model_catalog_json=*)
+      -m|--model|--model=*|--model-provider|--model-provider=*|--model_provider|--model_provider=*|--provider|--provider=*|--base-url|--base-url=*|--api-base|--api-base=*|--endpoint|--endpoint=*|--api-key|--api-key=*|--env-key|--env-key=*|--model-catalog-json|--model-catalog-json=*|--model_catalog_json|--model_catalog_json=*)
         echo "hapax-codex: Fugu mode refuses Codex model/provider override '$arg'; next action: remove the override and use the pinned Fugu profile/config path" >&2
         return 1
         ;;

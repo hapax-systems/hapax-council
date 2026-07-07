@@ -26,7 +26,7 @@ scripts/reins-fugu-ultra --check
 scripts/reins-fugu --print-env
 ```
 
-The check output redacts the secret value, reports `raw_codex_fugu_bypass=false`, and exits nonzero with next-action text when the worktree, catalog, pass entry, endpoint, wire API, or hook setup is unsupported. For `--check`, exit code `1` means readiness or Fugu configuration failed, `2` means wrapper syntax/profile or caller passthrough override was refused, `3` means the selected worktree is unavailable, and `14` means remote dispatch was refused. Exit code `7` is reserved for launch-time secret load failure after readiness checks.
+The check output redacts the secret value, reports `raw_codex_fugu_bypass=false`, and exits nonzero with next-action text when the worktree, catalog, pass entry, endpoint, wire API, or hook setup is unsupported. For `--check`, exit code `1` means readiness or Fugu configuration failed, `2` means wrapper syntax/profile or caller passthrough override was refused, `3` means the selected worktree is unavailable, and `14` means remote dispatch was refused. Exit code `7` means launch-time secret load failure after readiness checks.
 
 Negative boundary rechecks:
 
@@ -38,7 +38,7 @@ HAPAX_DISPATCH_HOST=appendix scripts/reins-fugu --print-env
 HAPAX_CODEX_FUGU_SECRET_ENTRY=github/pat scripts/reins-fugu --check
 ```
 
-Each command must fail without printing secret values. The unsupported secret-entry recheck must fail before reading the caller-selected pass entry.
+The explicit profile override, remote-dispatch, and unsupported secret-entry commands must fail without printing secret values. The `REINS_FUGU_PROFILE=...` environment override command should succeed while still printing the pinned shim profile (`fugu` for `scripts/reins-fugu`, `fugu-ultra` for `scripts/reins-fugu-ultra`). The unsupported secret-entry recheck must fail before reading the caller-selected pass entry.
 
 ## Boundary Rules
 
