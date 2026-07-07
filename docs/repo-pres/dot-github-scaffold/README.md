@@ -9,9 +9,9 @@ The canonical source for that profile is now the renderer in
 `hapax-constitution:sdlc.render.org_profile_readme`. The generated local target
 is `~/projects/hapax-systems--github/profile/README.md`.
 
-Do not refresh first-party Hapax Systems public frontmatter through a personal
-GitHub owner path. Historical personal-account reconciliation records in this
-folder are retained only as audit receipts.
+Route first-party Hapax Systems public frontmatter through the organization
+owner path. Historical personal-account reconciliation records in this folder
+are retained only as audit receipts.
 
 ## Current Layout
 

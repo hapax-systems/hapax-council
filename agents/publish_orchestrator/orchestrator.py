@@ -600,8 +600,7 @@ class Orchestrator:
     ) -> tuple[tuple[str, ...], str | None]:
         fallback = _default_publication_gate_receipts(surfaces)
         if self._publication_allowed_surfaces_override is not None:
-            _policies, policy_error = _configured_publication_policies()
-            return fallback, policy_error
+            return fallback, _configured_publication_policy_validation_error()
         return _configured_publication_gate_receipts(surfaces, fallback=fallback)
 
     def _public_gate_receipts_gate_result(
@@ -1192,6 +1191,28 @@ def _configured_publication_policies() -> tuple[
             )
         policies.append((policy_path, policy))
     return policies, None
+
+
+def _configured_publication_policy_validation_error() -> str | None:
+    policies, policy_error = _configured_publication_policies()
+    if policy_error is not None:
+        return policy_error
+    errors: list[str] = []
+    for path, policy in policies:
+        target_surfaces = policy.get("target_surfaces")
+        policy_targets = (
+            {surface for surface in target_surfaces if isinstance(surface, str)}
+            if isinstance(target_surfaces, list)
+            else set()
+        )
+        _gate_ids, gate_error = _policy_required_gate_ids(
+            policy,
+            path=path,
+            fanout_policy=bool(policy_targets.intersection(FANOUT_SURFACE_IDS)),
+        )
+        if gate_error is not None:
+            errors.append(gate_error)
+    return "; ".join(errors) if errors else None
 
 
 def _policy_required_gate_ids(

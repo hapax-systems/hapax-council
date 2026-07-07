@@ -314,7 +314,8 @@ def _gate_receipt_object_allows(
     bindings: Mapping[str, object] | None = None,
 ) -> bool:
     return any(
-        _receipt_candidate_mapping_allows(candidate, expected_gate, bindings)
+        _receipt_mapping_has_required_authority(candidate)
+        and _receipt_candidate_mapping_allows(candidate, expected_gate, bindings)
         for candidate in _iter_receipt_candidate_mappings(data)
     )
 
@@ -340,7 +341,6 @@ def _receipt_candidate_mapping_allows(
     return (
         _mapping_contains_expected_gate(data, expected_gate)
         and _mapping_outcome_allows(data)
-        and _receipt_mapping_has_required_authority(data)
         and _receipt_mapping_has_required_bindings(data, bindings)
     )
 

@@ -884,6 +884,47 @@ class TestSingleSurface:
             "publication_frontmatter_policy" in issue for issue in gate_log["flagged_issues"]
         )
 
+    def test_surface_override_still_validates_policy_required_gates(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+        policy_path = _write_publication_policy(
+            tmp_path,
+            target_surfaces=("fake",),
+            required_gates=("source_artifact_public_safe",),
+        )
+        monkeypatch.setattr(
+            orchestrator_module,
+            "PUBLICATION_POLICY_PATHS",
+            (policy_path,),
+        )
+
+        _drop_artifact(tmp_path, slug="override-incomplete-policy", surfaces=["fake"])
+        review_pass = _CountingReviewPass()
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=review_pass,
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        assert review_pass.calls == 0
+        fake_module.publish_artifact.assert_not_called()
+        gate_log = json.loads(
+            (
+                tmp_path / "publish/log/override-incomplete-policy.publication-hardening-gate.json"
+            ).read_text()
+        )
+        assert gate_log["result"] == "operator_hold"
+        assert any("missing baseline gate ids" in issue for issue in gate_log["flagged_issues"])
+
     def test_publisher_raises_logs_error(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()
         fake_module.publish_artifact = mock.Mock(side_effect=RuntimeError("send failure"))

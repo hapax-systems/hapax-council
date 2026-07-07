@@ -118,6 +118,7 @@ _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
         "_default_publication_gate_receipts",
         "_configured_publication_gate_receipts",
         "_configured_publication_policies",
+        "_configured_publication_policy_validation_error",
         "_policy_required_gate_ids",
         "_artifact_publication_gate_receipts",
         "_publication_gate_receipt_bindings",

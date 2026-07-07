@@ -10,7 +10,6 @@ publication_frontmatter_policy:
   review_required: Claim Verification Council
   target_surfaces:
     - omg-weblog
-    - omg-lol-weblog-bearer-fanout
     - omg-lol-statuslog
     - omg-lol-now
     - omg-lol-pastebin
@@ -30,10 +29,10 @@ publication_frontmatter_policy:
     - claim_review_current
     - no_direct_public_egress
   claim_ceiling: >-
-    omg.lol profile, weblog, /now, statuslog, pastebin, purl, RSS, and related
-    fanout may publish only public-safe artifacts whose source refs, rights
-    gate, privacy gate, redaction posture, and target surfaces have been
-    recorded by the publication bus.
+    omg.lol profile, weblog, /now, statuslog, pastebin, purl, and RSS surfaces
+    may publish only public-safe artifacts whose source refs, rights gate,
+    privacy gate, redaction posture, and target surfaces have been recorded by
+    the publication bus.
   prohibited_claims:
     - autonomous write authority
     - general lifecycle automation

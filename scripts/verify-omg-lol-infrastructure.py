@@ -48,7 +48,6 @@ REQUIRED_PUBLICATION_FRONTMATTER_GATES = {
 }
 REQUIRED_PUBLICATION_TARGET_SURFACES = {
     "omg-weblog",
-    "omg-lol-weblog-bearer-fanout",
     "omg-lol-statuslog",
     "omg-lol-now",
     "omg-lol-pastebin",
