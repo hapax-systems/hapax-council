@@ -412,6 +412,7 @@ class PRInfo:
     number: int
     title: str
     body: str
+    base_ref: str
     head_ref: str
     head_sha: str
     changed_file_count: int | None
@@ -460,7 +461,7 @@ def _fetch_pr_via_view(
             "--repo",
             repo,
             "--json",
-            "number,title,body,headRefName,headRefOid,changedFiles,isDraft,files",
+            "number,title,body,baseRefName,headRefName,headRefOid,changedFiles,isDraft,files",
         ],
         repo_root=repo_root,
         runner=runner,
@@ -479,6 +480,7 @@ def _fetch_pr_via_view(
         number=int(item.get("number") or pr_number),
         title=str(item.get("title") or ""),
         body=str(item.get("body") or ""),
+        base_ref=str(item.get("baseRefName") or "main"),
         head_ref=str(item.get("headRefName") or ""),
         head_sha=str(item.get("headRefOid") or ""),
         changed_file_count=changed_file_count,
@@ -510,6 +512,7 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
                 "preserve stderr if auth, network, or GitHub API access still fails."
             ) from exc
     head = item.get("head") if isinstance(item.get("head"), dict) else {}
+    base = item.get("base") if isinstance(item.get("base"), dict) else {}
     file_items = list_pull_files_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     files = tuple(
         str(entry["filename"])
@@ -526,6 +529,7 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
         number=int(item["number"]),
         title=str(item.get("title") or ""),
         body=str(item.get("body") or ""),
+        base_ref=str(base.get("ref") or "main"),
         head_ref=str(head.get("ref") or ""),
         head_sha=str(head.get("sha") or ""),
         changed_file_count=changed_file_count,
@@ -534,7 +538,8 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
     )
 
 
-def fetch_pr_diff(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> str:
+def fetch_pr_diff(pr_info: PRInfo, *, repo: str, repo_root: Path, runner: Any) -> str:
+    pr_number = pr_info.number
     try:
         return _run_gh(
             [
@@ -555,11 +560,82 @@ def fetch_pr_diff(pr_number: int, *, repo: str, repo_root: Path, runner: Any) ->
             pr_number,
             exc,
         )
-        return _run_gh(
-            ["gh", "pr", "diff", str(pr_number), "--repo", repo],
+        try:
+            return _run_gh(
+                ["gh", "pr", "diff", str(pr_number), "--repo", repo],
+                repo_root=repo_root,
+                runner=runner,
+            )
+        except RuntimeError as diff_exc:
+            LOG.warning(
+                "`gh pr diff` failed for PR #%d; falling back to local git diff: %s",
+                pr_number,
+                diff_exc,
+            )
+            return fetch_pr_diff_from_local(pr_info, repo_root=repo_root, runner=runner)
+
+
+def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -> str:
+    """Build a pinned local PR diff when GitHub diff endpoints are unavailable."""
+    base_ref = pr_info.base_ref or "main"
+    remote_base = f"origin/{base_ref}"
+    _ensure_local_ref(remote_base, fetch_ref=base_ref, repo_root=repo_root, runner=runner)
+
+    head = pr_info.head_sha or "HEAD"
+    if pr_info.head_sha:
+        _ensure_local_ref(
+            pr_info.head_sha,
+            fetch_ref=f"pull/{pr_info.number}/head",
             repo_root=repo_root,
             runner=runner,
+            allow_fetch_failure=True,
         )
+
+    merge_base = _run_gh(
+        ["git", "merge-base", remote_base, head],
+        repo_root=repo_root,
+        runner=runner,
+    ).strip()
+    diff = _run_gh(
+        ["git", "diff", "--no-ext-diff", "--find-renames", f"{merge_base}..{head}"],
+        repo_root=repo_root,
+        runner=runner,
+        timeout=180,
+    )
+    if not diff.strip():
+        raise RuntimeError(
+            f"local git diff for PR #{pr_info.number} was empty between "
+            f"{remote_base} and {head[:12]}; next action: fetch PR head/base and retry"
+        )
+    return diff
+
+
+def _ensure_local_ref(
+    ref: str,
+    *,
+    fetch_ref: str,
+    repo_root: Path,
+    runner: Any,
+    allow_fetch_failure: bool = False,
+) -> None:
+    try:
+        _run_gh(["git", "rev-parse", "--verify", ref], repo_root=repo_root, runner=runner)
+        return
+    except RuntimeError:
+        pass
+
+    try:
+        _run_gh(
+            ["git", "fetch", "--quiet", "origin", fetch_ref],
+            repo_root=repo_root,
+            runner=runner,
+            timeout=180,
+        )
+    except RuntimeError:
+        if not allow_fetch_failure:
+            raise
+
+    _run_gh(["git", "rev-parse", "--verify", ref], repo_root=repo_root, runner=runner)
 
 
 def _diff_span_path(span: str) -> str:
@@ -1902,7 +1978,7 @@ def review_pr(
         changed_source_excerpt_files, repo_root=repo_root, head_sha=pr_info.head_sha
     )
     reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
-    diff = truncate_diff(fetch_pr_diff(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner))
+    diff = truncate_diff(fetch_pr_diff(pr_info, repo=repo, repo_root=repo_root, runner=gh_runner))
     task_note_text = "\n\n".join(
         f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
         for path, _, _ in keyed_matches
