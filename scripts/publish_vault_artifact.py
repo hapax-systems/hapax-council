@@ -89,6 +89,18 @@ PUBLICATION_GATE_RECEIPT_KEYS = (
     "publication-gate-receipts",
 )
 FANOUT_SURFACE_IDS = frozenset({"omg-lol-weblog-bearer-fanout"})
+PUBLICATION_BASELINE_REQUIRED_GATES = (
+    "source_artifact_public_safe",
+    "source_refs_present",
+    "rights_privacy_redaction_pass",
+    "target_surface_allowlist_pass",
+    "claim_review_current",
+    "no_direct_public_egress",
+)
+PUBLICATION_FANOUT_REQUIRED_GATES = (
+    *PUBLICATION_BASELINE_REQUIRED_GATES,
+    "fanout_loop_prevention_present",
+)
 
 
 class PublicationGateError(ValueError):
@@ -200,8 +212,9 @@ def _publication_allowed(frontmatter: dict) -> bool:
     return False
 
 
-def _configured_publication_surfaces(paths: Iterable[Path] = PUBLICATION_POLICY_PATHS) -> set[str]:
+def _configured_publication_surfaces(paths: Iterable[Path] | None = None) -> set[str]:
     surfaces: set[str] = set()
+    paths = PUBLICATION_POLICY_PATHS if paths is None else paths
     for policy in _configured_publication_policies(paths):
         target_surfaces = policy.get("target_surfaces")
         if not isinstance(target_surfaces, list) or not target_surfaces:
@@ -225,9 +238,10 @@ def _configured_publication_surfaces(paths: Iterable[Path] = PUBLICATION_POLICY_
 
 
 def _configured_publication_policies(
-    paths: Iterable[Path] = PUBLICATION_POLICY_PATHS,
+    paths: Iterable[Path] | None = None,
 ) -> list[Mapping[str, object]]:
     policies: list[Mapping[str, object]] = []
+    paths = PUBLICATION_POLICY_PATHS if paths is None else paths
     for path in paths:
         try:
             loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -290,19 +304,49 @@ def _required_publication_gate_receipts(surfaces: list[str]) -> set[str]:
             FANOUT_SURFACE_IDS
         ):
             continue
-        gates = policy.get("required_gates")
-        if not isinstance(gates, list) or not gates:
-            raise PublicationGateError(
-                "publication policy has no required_gates; next action: repair "
-                "config/omg-lol*.yaml before publishing"
-            )
-        required.update(str(gate) for gate in gates if isinstance(gate, str) and gate.strip())
+        required.update(_policy_required_gate_ids(policy))
     if not required:
         raise PublicationGateError(
             "no publication gate policy covers target surfaces; next action: add the "
             "surface policy before publishing"
         )
     return required
+
+
+def _policy_required_gate_ids(policy: Mapping[str, object]) -> set[str]:
+    baseline = (
+        PUBLICATION_FANOUT_REQUIRED_GATES
+        if policy.get("status") == "guarded_public_fanout"
+        else PUBLICATION_BASELINE_REQUIRED_GATES
+    )
+    gates = policy.get("required_gates")
+    if not isinstance(gates, list) or not gates:
+        raise PublicationGateError(
+            "publication policy has no required_gates; next action: repair "
+            "config/omg-lol*.yaml before publishing"
+        )
+
+    normalized: set[str] = set()
+    malformed = False
+    for gate in gates:
+        if not isinstance(gate, str) or not gate.strip():
+            malformed = True
+            continue
+        normalized.add(gate.strip())
+    if malformed:
+        raise PublicationGateError(
+            "publication policy required_gates contains blank or non-string gate ids; "
+            "next action: repair config/omg-lol*.yaml before publishing"
+        )
+
+    missing = sorted(set(baseline) - normalized)
+    if missing:
+        raise PublicationGateError(
+            "publication policy required_gates missing baseline gate ids: "
+            + ", ".join(missing)
+            + "; next action: restore the baseline publication gate list before publishing"
+        )
+    return set(baseline) | normalized
 
 
 def _publication_gate_receipts(frontmatter: dict) -> dict[str, object]:

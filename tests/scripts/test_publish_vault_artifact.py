@@ -39,6 +39,29 @@ def _gate_receipts_yaml() -> str:
     return "\n".join(lines) + "\n"
 
 
+def _write_policy(
+    tmp_path: Path,
+    *,
+    required_gates: tuple[object, ...],
+    status: str = "guarded_public_channel",
+    target_surfaces: tuple[str, ...] = ("omg-weblog",),
+) -> Path:
+    path = tmp_path / "policy.yaml"
+    gate_lines = "\n".join(f"    - {gate}" for gate in required_gates)
+    target_lines = "\n".join(f"    - {surface}" for surface in target_surfaces)
+    path.write_text(
+        "schema_version: 1\n"
+        "publication_frontmatter_policy:\n"
+        f"  status: {status}\n"
+        "  target_surfaces:\n"
+        f"{target_lines}\n"
+        "  required_gates:\n"
+        f"{gate_lines}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 class TestBuildArtifact:
     def test_carries_source_path_and_author_model(self, tmp_path) -> None:
         source = tmp_path / "draft.md"
@@ -162,6 +185,65 @@ class TestBuildArtifact:
 
         with pytest.raises(publish_vault_artifact.SurfaceAllowlistError):
             publish_vault_artifact._configured_publication_surfaces((policy,))
+
+    def test_rejects_policy_missing_baseline_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        policy = _write_policy(
+            tmp_path,
+            required_gates=("source_artifact_public_safe", "source_refs_present"),
+        )
+        monkeypatch.setattr(publish_vault_artifact, "PUBLICATION_POLICY_PATHS", (policy,))
+
+        with pytest.raises(
+            publish_vault_artifact.PublicationGateError,
+            match="missing baseline gate ids",
+        ):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(),
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+            )
+
+    def test_rejects_malformed_required_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        policy = _write_policy(
+            tmp_path,
+            required_gates=(*publish_vault_artifact.PUBLICATION_BASELINE_REQUIRED_GATES, ""),
+        )
+        monkeypatch.setattr(publish_vault_artifact, "PUBLICATION_POLICY_PATHS", (policy,))
+
+        with pytest.raises(
+            publish_vault_artifact.PublicationGateError,
+            match="blank or non-string",
+        ):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(),
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+            )
+
+    def test_fanout_policy_requires_loop_prevention_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        policy = _write_policy(
+            tmp_path,
+            status="guarded_public_fanout",
+            target_surfaces=("omg-lol-weblog-bearer-fanout",),
+            required_gates=publish_vault_artifact.PUBLICATION_BASELINE_REQUIRED_GATES,
+        )
+        monkeypatch.setattr(publish_vault_artifact, "PUBLICATION_POLICY_PATHS", (policy,))
+
+        with pytest.raises(
+            publish_vault_artifact.PublicationGateError,
+            match="fanout_loop_prevention_present",
+        ):
+            publish_vault_artifact._required_publication_gate_receipts(
+                ["omg-lol-weblog-bearer-fanout"]
+            )
 
 
 def test_allowed_draft_dry_run_uses_existing_frontmatter_casing(tmp_path, capsys) -> None:
