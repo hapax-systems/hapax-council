@@ -99,6 +99,27 @@ class _ApprovingReviewPass:
         )
 
 
+class _CountingReviewPass(_ApprovingReviewPass):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def review_text(
+        self,
+        text: str,
+        *,
+        author_model: str | None = None,
+        lint_report: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> ReviewReport:
+        self.calls += 1
+        return super().review_text(
+            text,
+            author_model=author_model,
+            lint_report=lint_report,
+            metadata=metadata,
+        )
+
+
 class _HoldingReviewPass:
     def review_text(
         self,
@@ -295,6 +316,76 @@ class TestSingleSurface:
         assert gate_log["result"] == "rejected"
         assert gate_log["publication_gate_decision"] == "reject"
 
+    def test_unsafe_inbox_slug_quarantines_without_path_escape(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        artifact = PreprintArtifact(
+            slug="../escape",
+            title="Unsafe slug",
+            abstract="Brief.",
+            body_md="Body.",
+            surfaces_targeted=["fake"],
+        )
+        artifact.mark_approved(by_referent="Oudepode")
+        inbox_path = tmp_path / "publish" / "inbox" / "unsafe.json"
+        inbox_path.parent.mkdir(parents=True, exist_ok=True)
+        inbox_path.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
+        review_pass = _CountingReviewPass()
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=review_pass,
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        assert review_pass.calls == 0
+        fake_module.publish_artifact.assert_not_called()
+        assert not inbox_path.exists()
+        assert not (tmp_path / "publish" / "escape.json").exists()
+        assert not (tmp_path.parent / "escape.json").exists()
+        failed = list((tmp_path / "publish" / "failed").glob("invalid-artifact-*.json"))
+        assert len(failed) == 1
+        payload = json.loads(failed[0].read_text())
+        assert payload["approval"] == "failed"
+        assert payload["publication_gate_result"]["decision"] == "reject"
+        child = payload["publication_gate_result"]["child_results"][0]
+        assert child["name"] == "artifact_envelope"
+        assert any("slug" in finding for finding in child["findings"])
+
+    def test_unsafe_source_path_quarantines_before_frontmatter_write(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        source = tmp_path.parent / "outside-publication-source.md"
+        source.write_text("---\ntitle: Outside\n---\n\nBody\n", encoding="utf-8")
+        _drop_artifact(tmp_path, slug="unsafe-source", surfaces=["fake"], source_path=source)
+        review_pass = _CountingReviewPass()
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=review_pass,
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        assert review_pass.calls == 0
+        fake_module.publish_artifact.assert_not_called()
+        assert source.read_text(encoding="utf-8") == "---\ntitle: Outside\n---\n\nBody\n"
+        assert not (tmp_path / "publish" / "inbox" / "unsafe-source.json").exists()
+        assert not (tmp_path / "publish" / "draft" / "unsafe-source.json").exists()
+        failed = list((tmp_path / "publish" / "failed").glob("invalid-artifact-*.json"))
+        assert len(failed) == 1
+        payload = json.loads(failed[0].read_text())
+        child = payload["publication_gate_result"]["child_results"][0]
+        assert child["name"] == "artifact_envelope"
+        assert any("source_path" in finding for finding in child["findings"])
+
     def test_missing_public_gate_receipts_hold_before_surface_dispatch(
         self,
         tmp_path,
@@ -310,12 +401,17 @@ class TestSingleSurface:
             surfaces=["fake"],
             include_gate_receipts=False,
         )
-        orch = _make_orchestrator(
-            tmp_path,
+        review_pass = _CountingReviewPass()
+        orch = Orchestrator(
+            state_root=tmp_path,
             surface_registry={"fake": "fake_publisher:publish_artifact"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=review_pass,
+            registry=CollectorRegistry(),
         )
 
         assert orch.run_once() == 1
+        assert review_pass.calls == 0
         fake_module.publish_artifact.assert_not_called()
 
         assert not (tmp_path / "publish/inbox/missing-public-receipts.json").exists()
@@ -361,12 +457,17 @@ class TestSingleSurface:
             "  - fake\n",
             encoding="utf-8",
         )
-        orch = _make_orchestrator(
-            tmp_path,
+        review_pass = _CountingReviewPass()
+        orch = Orchestrator(
+            state_root=tmp_path,
             surface_registry={"fake": "fake_publisher:publish_artifact"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=review_pass,
+            registry=CollectorRegistry(),
         )
 
         assert orch.run_once() == 1
+        assert review_pass.calls == 0
         fake_module.publish_artifact.assert_not_called()
         gate_log = json.loads(
             (

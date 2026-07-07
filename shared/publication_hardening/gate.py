@@ -70,6 +70,7 @@ class PublicationGateChildResult(PublicationGateModel):
         "codebase",
         "review",
         "public_gate_receipts",
+        "artifact_envelope",
     ]
     decision: PublicationGateDecision
     findings: tuple[str, ...] = Field(default_factory=tuple)

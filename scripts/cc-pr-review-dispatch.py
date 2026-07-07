@@ -104,9 +104,13 @@ _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
         "fanout",
     ),
     "agents/publish_orchestrator/orchestrator.py": (
+        "run_once",
         "_dispatch",
         "_with_public_gate_receipts_child",
+        "_public_gate_receipts_gate_result",
         "_public_gate_receipts_child",
+        "_inbox_artifact_envelope_findings",
+        "_quarantine_invalid_inbox_artifact",
         "_publication_gate_receipt_bindings",
     ),
     "scripts/hapax-glmcp-reviewer": (
@@ -146,6 +150,8 @@ _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
         "public_gate_receipt_ref_exists",
         "_receipt_file_maps_to_gate",
         "_gate_receipt_object_allows",
+        "_iter_receipt_candidate_mappings",
+        "_receipt_candidate_mapping_allows",
         "_receipt_mapping_has_required_bindings",
         "_iter_direct_binding_values",
     ),

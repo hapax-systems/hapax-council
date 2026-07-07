@@ -46,6 +46,7 @@ import importlib
 import json
 import logging
 import os
+import re
 import signal as _signal
 import threading
 from collections.abc import Callable, Mapping
@@ -105,6 +106,11 @@ PUBLICATION_FANOUT_REQUIRED_GATES = (
 PUBLIC_GATE_RECEIPT_ROOTS = (
     Path.home() / ".cache" / "hapax" / "relay" / "receipts",
     REPO_ROOT / "docs" / "research" / "evidence",
+)
+PUBLICATION_SAFE_SEGMENT_RE = re.compile(r"\A[a-z0-9][a-z0-9_.-]{0,119}\Z")
+PUBLICATION_SOURCE_PATH_ROOTS = (
+    Path.home() / "Documents" / "Personal",
+    REPO_ROOT / "docs",
 )
 PUBLIC_EVENT_PATH = Path(
     os.environ.get(
@@ -265,6 +271,10 @@ class Orchestrator:
             if public_gate_receipt_roots is not None
             else (self._state_root / "public-gate-receipts", *PUBLIC_GATE_RECEIPT_ROOTS)
         )
+        self._source_path_roots = tuple(
+            root.expanduser().resolve()
+            for root in (self._state_root, *PUBLICATION_SOURCE_PATH_ROOTS)
+        )
         self._tick_s = max(1.0, tick_s)
         self._max_workers = max(1, max_workers)
         self._stop_evt = threading.Event()
@@ -307,6 +317,11 @@ class Orchestrator:
                 except Exception:  # noqa: BLE001
                     log.exception("failed to load artifact at %s", path)
                     continue
+                envelope_findings = self._inbox_artifact_envelope_findings(artifact)
+                if envelope_findings:
+                    self._quarantine_invalid_inbox_artifact(path, artifact, envelope_findings)
+                    handled += 1
+                    continue
                 self._dispatch(artifact, pool=pool)
                 handled += 1
         return handled
@@ -342,8 +357,21 @@ class Orchestrator:
             log.warning("artifact %s has no surfaces_targeted; skipping", artifact.slug)
             return
 
+        receipt_gate_result = self._public_gate_receipts_gate_result(artifact)
+        receipt_child = receipt_gate_result.child_results[0]
+        if receipt_gate_result.decision != PublicationGateDecision.PASS:
+            artifact.publication_gate_result = receipt_gate_result.to_frontmatter()
+            artifact.publication_review = None
+            self._attach_gate_frontmatter(artifact)
+            self._withhold_for_gate(artifact, receipt_gate_result)
+            return
+
         gate_result = self._hardening_gate.evaluate(artifact)
-        gate_result = self._with_public_gate_receipts_child(artifact, gate_result)
+        gate_result = self._with_public_gate_receipts_child(
+            artifact,
+            gate_result,
+            receipt_child=receipt_child,
+        )
         artifact.publication_gate_result = gate_result.to_frontmatter()
         artifact.publication_review = gate_result.review_report
         self._attach_gate_frontmatter(artifact)
@@ -464,8 +492,10 @@ class Orchestrator:
         self,
         artifact: PreprintArtifact,
         gate_result: PublicationGateResult,
+        *,
+        receipt_child: PublicationGateChildResult | None = None,
     ) -> PublicationGateResult:
-        receipt_child = self._public_gate_receipts_child(artifact)
+        receipt_child = receipt_child or self._public_gate_receipts_child(artifact)
         child_results = (*gate_result.child_results, receipt_child)
         decision = gate_result.decision
         override = gate_result.override
@@ -528,6 +558,25 @@ class Orchestrator:
             name="public_gate_receipts",
             decision=PublicationGateDecision.PASS,
             evidence_refs=tuple(str(receipts[gate]) for gate in required),
+        )
+
+    def _public_gate_receipts_gate_result(
+        self,
+        artifact: PreprintArtifact,
+    ) -> PublicationGateResult:
+        receipt_child = self._public_gate_receipts_child(artifact)
+        decision = PublicationGateDecision.PASS
+        flagged_issues: tuple[str, ...] = ()
+        if receipt_child.decision != PublicationGateDecision.PASS:
+            decision = PublicationGateDecision.HOLD
+            flagged_issues = tuple(
+                f"{receipt_child.name}: {finding}" for finding in receipt_child.findings
+            )
+        return PublicationGateResult(
+            decision=decision,
+            generated_at=datetime.now(UTC).isoformat(),
+            child_results=(receipt_child,),
+            flagged_issues=flagged_issues,
         )
 
     def _withhold_for_gate(
@@ -692,6 +741,97 @@ class Orchestrator:
 
     def _load_artifact(self, path: Path) -> PreprintArtifact:
         return PreprintArtifact.model_validate_json(path.read_text())
+
+    def _inbox_artifact_envelope_findings(self, artifact: PreprintArtifact) -> tuple[str, ...]:
+        findings: list[str] = []
+        if not _safe_publication_segment(artifact.slug):
+            findings.append(
+                "artifact slug must be a single safe path segment; next action: "
+                "regenerate the artifact with a lowercase URL/file-safe slug"
+            )
+        unsafe_surfaces = [
+            surface
+            for surface in artifact.surfaces_targeted
+            if not _safe_publication_segment(surface)
+        ]
+        if unsafe_surfaces:
+            findings.append(
+                "surfaces_targeted contains unsafe path segments: "
+                + ", ".join(sorted(unsafe_surfaces))
+                + "; next action: target registered publication surface ids only"
+            )
+        if artifact.source_path and not self._source_path_allowed(artifact.source_path):
+            findings.append(
+                "source_path must stay under the publish state root, Obsidian vault, "
+                "or repository docs tree; next action: drop a vault/docs-backed artifact"
+            )
+        return tuple(findings)
+
+    def _source_path_allowed(self, raw_path: str) -> bool:
+        source_path = Path(raw_path).expanduser().resolve()
+        return any(source_path.is_relative_to(root) for root in self._source_path_roots)
+
+    def _quarantine_invalid_inbox_artifact(
+        self,
+        inbox_path: Path,
+        artifact: PreprintArtifact,
+        findings: tuple[str, ...],
+    ) -> None:
+        quarantine_slug = _quarantine_slug_for_path(inbox_path)
+        child = PublicationGateChildResult(
+            name="artifact_envelope",
+            decision=PublicationGateDecision.REJECT,
+            findings=findings,
+        )
+        gate_result = PublicationGateResult(
+            decision=PublicationGateDecision.REJECT,
+            generated_at=datetime.now(UTC).isoformat(),
+            child_results=(child,),
+            flagged_issues=tuple(f"{child.name}: {finding}" for finding in findings),
+        )
+        payload = artifact.model_dump(mode="json")
+        payload["approval"] = ApprovalState.FAILED.value
+        payload["publication_gate_result"] = gate_result.to_frontmatter()
+        failed = self._state_root / "publish" / "failed" / f"{quarantine_slug}.json"
+        failed.parent.mkdir(parents=True, exist_ok=True)
+        failed.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        try:
+            inbox_path.unlink()
+        except FileNotFoundError:
+            pass
+        self._record_quarantine_gate_result(quarantine_slug, gate_result, result="rejected")
+        self.dispatches_total.labels(surface="publication-hardening-gate", result="rejected").inc()
+        log.warning(
+            "publication inbox artifact quarantined at %s: %s",
+            failed,
+            "; ".join(gate_result.flagged_issues),
+        )
+
+    def _record_quarantine_gate_result(
+        self,
+        quarantine_slug: str,
+        gate_result: PublicationGateResult,
+        *,
+        result: str,
+    ) -> None:
+        log_path = (
+            self._state_root
+            / "publish"
+            / "log"
+            / f"{quarantine_slug}.publication-hardening-gate.json"
+        )
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "slug": quarantine_slug,
+            "surface": "publication-hardening-gate",
+            "result": result,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "publication_gate_decision": gate_result.decision.value,
+            "publication_gate_fingerprint": publication_gate_fingerprint(gate_result),
+            "flagged_issues": list(gate_result.flagged_issues),
+            "child_results": [child.model_dump(mode="json") for child in gate_result.child_results],
+        }
+        log_path.write_text(json.dumps(record, sort_keys=True))
 
     def _move_to_published(self, artifact: PreprintArtifact, *, artifact_fingerprint: str) -> None:
         artifact.mark_published()
@@ -902,6 +1042,15 @@ def _load_public_event_ids(path: Path) -> set[str]:
 
 def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _safe_publication_segment(value: object) -> bool:
+    return isinstance(value, str) and bool(PUBLICATION_SAFE_SEGMENT_RE.fullmatch(value))
+
+
+def _quarantine_slug_for_path(path: Path) -> str:
+    digest = sha256(str(path).encode()).hexdigest()[:16]
+    return f"invalid-artifact-{digest}"
 
 
 __all__ = [
