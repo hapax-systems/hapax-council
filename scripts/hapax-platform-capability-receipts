@@ -22,10 +22,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.codex_oauth_refresher import (  # noqa: E402
+    DEFAULT_AUTH_JSON,
+    DEFAULT_PUBLISH_DIR,
     DEFAULT_PUBLISHED_ACCESS_TOKEN,
     AccessToken,
+    load_access_token,
     load_published_access_token,
     needs_refresh,
+    publish_access_token,
     token_fingerprint,
 )
 from shared.platform_capability_receipts import (  # noqa: E402
@@ -235,12 +239,32 @@ def codex_oauth_access_token_file() -> Path:
     return DEFAULT_PUBLISHED_ACCESS_TOKEN
 
 
+def maybe_publish_codex_oauth_access_token(*, observed_at: datetime) -> None:
+    """Publish the current Codex access token through the supported receipt boundary.
+
+    This is deliberately default-path only. If the operator configured an exact
+    token file, receipt refresh must probe that path as given rather than writing
+    to a nearby inferred location.
+    """
+
+    if os.environ.get(CODEX_OAUTH_ACCESS_TOKEN_FILE_ENV, "").strip():
+        return
+    published = load_published_access_token(token_file=DEFAULT_PUBLISHED_ACCESS_TOKEN)
+    if published is not None and not needs_refresh(published, now=observed_at.timestamp()):
+        return
+    source = load_access_token(DEFAULT_AUTH_JSON)
+    if source is None or needs_refresh(source, now=observed_at.timestamp()):
+        return
+    publish_access_token(source.raw, DEFAULT_PUBLISH_DIR)
+
+
 def observe_codex_oauth_session(
     *,
     observed_at: datetime,
     stale_after: str,
     timeout: float,
 ) -> SurfaceEvidence:
+    maybe_publish_codex_oauth_access_token(observed_at=observed_at)
     token_file = codex_oauth_access_token_file()
     token = load_published_access_token(token_file=token_file)
     token_ref = display_path(token_file)

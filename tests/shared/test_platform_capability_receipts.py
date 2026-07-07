@@ -132,6 +132,25 @@ def _write_codex_oauth_token(home_dir: Path, *, exp: datetime | None = None) -> 
     return target
 
 
+def _write_codex_auth_json(home_dir: Path, *, exp: datetime | None = None) -> str:
+    token = _jwt(exp=exp or (NOW_DT + timedelta(hours=2)))
+    auth_dir = home_dir / ".codex"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    (auth_dir / "auth.json").write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": token,
+                    "refresh_token": "refresh-token-not-used-by-receipt",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return token
+
+
 def _fresh_quota_ledger(tmp_path: Path, *, captured_at: str) -> Path:
     payload = json.loads(QUOTA_LEDGER.read_text(encoding="utf-8"))
     payload["ledger_id"] = "quota-spend-ledger-test-fresh"
@@ -255,6 +274,37 @@ def test_fresh_subscription_receipt_clears_account_live_quota_blocker(
         for ref in route.freshness.evidence.capability.evidence_refs
     )
     assert route.tool_state[0].evidence_ref.startswith("platform-capability-receipt:codex:")
+
+
+def test_codex_receipt_publishes_fresh_auth_json_access_token_without_printing_secret(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    home_dir = tmp_path / "home"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+    token = _write_codex_auth_json(home_dir, exp=NOW_DT + timedelta(hours=2))
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    published = home_dir / ".cache" / "hapax" / "codex-oauth" / "access_token"
+    assert published.read_text(encoding="utf-8") == token
+    assert stat.S_IMODE(published.stat().st_mode) == 0o600
+    assert token not in result.stdout
+    receipt_text = (tmp_path / "codex.json").read_text(encoding="utf-8")
+    assert token not in receipt_text
+    assert "refresh-token-not-used-by-receipt" not in receipt_text
+    receipt = json.loads(receipt_text)
+    assert receipt["capability"]["status"] == "observed"
+    assert receipt["resource"]["status"] == "observed"
+    assert any(
+        ref.startswith("local:~/.cache/hapax/codex-oauth/access_token:fingerprint:")
+        for ref in receipt["capability"]["evidence_refs"]
+    )
 
 
 def test_future_platform_receipt_is_not_fresh(tmp_path: Path) -> None:

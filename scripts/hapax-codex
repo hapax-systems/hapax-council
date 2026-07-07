@@ -475,6 +475,17 @@ print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).deco
 PYEOF
 }
 
+remote_token_cleanup_payload_b64() {
+  python3 - "${REMOTE_TOKEN_HANDOFF:-}" <<'PYEOF'
+import base64
+import json
+import sys
+
+payload = {"path": sys.argv[1]}
+print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
+PYEOF
+}
+
 REMOTE_PREFLIGHT_PY='import base64,json,os,shutil,subprocess,sys,tempfile,time; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"]));
 missing_dirs=[path for path in p.get("required_dirs",()) if not os.path.isdir(path)]
 missing_exec=[path for path in p.get("executables",()) if not (os.path.isfile(path) and os.access(path, os.X_OK))]
@@ -578,6 +589,37 @@ if proof:
     os.makedirs(os.path.dirname(proof), exist_ok=True)
     data={"schema_version":1,"event":"dispatch_remote_exec","platform":"codex","session":p.get("session"),"task_id":p.get("task_id"),"requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"tmux_name":p.get("tmux_name"),"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[]))}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
 argv=p["argv"]; os.execvp(argv[0], argv)'
+REMOTE_TOKEN_CLEANUP_PY='import base64,json,os,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); path=os.path.expanduser(p.get("path") or "");
+# token_handoff_cleanup: unlink only the governed short-lived handoff path.
+if not path or os.path.dirname(path)!="/tmp" or not os.path.basename(path).startswith("hapax-codex-token-"):
+    sys.exit(0)
+try:
+    os.unlink(path)
+except FileNotFoundError:
+    pass
+sys.exit(0)'
+
+cleanup_remote_token_handoff() {
+  if [ "${REMOTE_TOKEN_HANDOFF_CREATED:-0}" != "1" ]; then
+    return 0
+  fi
+  if [ -z "${REMOTE_TOKEN_HANDOFF:-}" ]; then
+    return 0
+  fi
+  local cleanup_host="${DISPATCH_HOST:-${DISPATCH_HOST_REQUESTED:-}}"
+  if [ -z "$cleanup_host" ]; then
+    return 0
+  fi
+  local cleanup_payload="" cleanup_command=""
+  cleanup_payload="$(remote_token_cleanup_payload_b64)"
+  cleanup_command="$(remote_python_command "$cleanup_payload" "$REMOTE_TOKEN_CLEANUP_PY")"
+  if ! ssh -o BatchMode=yes -o ConnectTimeout=2 -i "$HOME/.ssh/id_ed25519" \
+    -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$cleanup_host" \
+    "$cleanup_command" >/dev/null 2>&1; then
+    echo "hapax-codex: failed to delete preflight-proven Codex OAuth token handoff at $REMOTE_TOKEN_HANDOFF; next action: remove the handoff file on the dispatch host before retrying" >&2
+  fi
+  REMOTE_TOKEN_HANDOFF_CREATED=0
+}
 
 write_local_dispatch_proof() {
   local actual_host="$1" fallback="$2" reason="${3:-}" runner="${4:-}" pane_pid="" cgroup=""
@@ -904,17 +946,19 @@ DISPATCH_PROOF_BASENAME="$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION")-$(slug
 DISPATCH_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-remote.json"
 DISPATCH_LOCAL_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-local.json"
 REMOTE_TOKEN_HANDOFF="/tmp/hapax-codex-token-$SESSION_UUID-$$"
+REMOTE_TOKEN_HANDOFF_CREATED=0
 export HAPAX_REMOTE_TOKEN_HANDOFF="$REMOTE_TOKEN_HANDOFF"
+trap cleanup_remote_token_handoff EXIT
 
 if [ -n "$DISPATCH_HOST_REQUESTED" ]; then
   if dispatch_host_is_local "$DISPATCH_HOST_REQUESTED"; then
     DISPATCH_HOST_REQUESTED=""
   else
-    PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 "$REMOTE_TOKEN_HANDOFF")"
+    PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 "")"
     PREFLIGHT_COMMAND="$(remote_python_command "$PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
     if ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
         -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST_REQUESTED" \
-        "$PREFLIGHT_COMMAND" 2>/dev/null; then
+        "$PREFLIGHT_COMMAND"; then
       DISPATCH_HOST="$DISPATCH_HOST_REQUESTED"
       echo "hapax-codex: dispatch -> $DISPATCH_HOST (codex on appendix; tmux/control podium-local)" >&2
     elif [ "${HAPAX_DISPATCH_HOST_FALLBACK:-}" = "local" ]; then
@@ -1200,10 +1244,26 @@ fi
 
 if [ "$TERMINAL" = "none" ]; then
   if [ -n "$DISPATCH_HOST" ]; then
+    REMOTE_EXEC_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 "$REMOTE_TOKEN_HANDOFF")"
+    REMOTE_EXEC_PREFLIGHT_COMMAND="$(remote_python_command "$REMOTE_EXEC_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+        -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST" \
+        "$REMOTE_EXEC_PREFLIGHT_COMMAND"; then
+      echo "hapax-codex: remote token handoff preflight failed for $DISPATCH_HOST; next action: ssh to the dispatch host and run the codex OAuth refresher or reauth, then retry" >&2
+      exit 75
+    fi
+    REMOTE_TOKEN_HANDOFF_CREATED=1
     REMOTE_EXEC_PAYLOAD="$(remote_exec_payload_b64 "$DISPATCH_PROOF_FILE" codex "${CODEX_ARGS[@]}")"
     REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
-    exec ssh -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+    if ssh -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
       -o ControlPath=none -i "$HOME/.ssh/id_ed25519" "$DISPATCH_HOST" "$REMOTE_EXEC_COMMAND"
+    then
+      REMOTE_EXIT_CODE=0
+    else
+      REMOTE_EXIT_CODE=$?
+    fi
+    cleanup_remote_token_handoff
+    exit "$REMOTE_EXIT_CODE"
   fi
   if [ -n "$DISPATCH_FALLBACK_REASON" ]; then
     write_local_dispatch_proof "$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf local)" "1" "$DISPATCH_FALLBACK_REASON"
@@ -1238,17 +1298,58 @@ CHILD_ARGS+=("${CODEX_EXTRA[@]}")
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 if [ -n "$DISPATCH_HOST" ]; then
+  REMOTE_EXEC_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 "$REMOTE_TOKEN_HANDOFF")"
+  REMOTE_EXEC_PREFLIGHT_COMMAND="$(remote_python_command "$REMOTE_EXEC_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
   REMOTE_EXEC_PAYLOAD="$(remote_exec_payload_b64 "$DISPATCH_PROOF_FILE" codex "${CODEX_ARGS[@]}")"
   REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
+  REMOTE_TOKEN_CLEANUP_PAYLOAD="$(remote_token_cleanup_payload_b64)"
+  REMOTE_TOKEN_CLEANUP_COMMAND="$(remote_python_command "$REMOTE_TOKEN_CLEANUP_PAYLOAD" "$REMOTE_TOKEN_CLEANUP_PY")"
   {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
-    printf 'trap '\''%q %q --reason "clean exit (codex remote)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$SESSION"
+    printf 'DISPATCH_HOST=%q\n' "$DISPATCH_HOST"
+    printf 'REMOTE_TOKEN_HANDOFF=%q\n' "$REMOTE_TOKEN_HANDOFF"
+    printf 'REMOTE_TOKEN_CLEANUP_COMMAND=%q\n' "$REMOTE_TOKEN_CLEANUP_COMMAND"
+    printf 'RELAY_RETIRE=%q\n' "$RELAY_RETIRE"
+    printf 'SESSION=%q\n' "$SESSION"
+    cat <<'EOF'
+REMOTE_TOKEN_HANDOFF_CREATED=0
+cleanup_remote_token_handoff() {
+  if [ "${REMOTE_TOKEN_HANDOFF_CREATED:-0}" != "1" ]; then
+    return 0
+  fi
+  if ! ssh -o BatchMode=yes -o ConnectTimeout=2 -i "$HOME/.ssh/id_ed25519" \
+    -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST" \
+    "$REMOTE_TOKEN_CLEANUP_COMMAND" >/dev/null 2>&1; then
+    echo "hapax-codex: failed to delete preflight-proven Codex OAuth token handoff at $REMOTE_TOKEN_HANDOFF; next action: remove the handoff file on the dispatch host before retrying" >&2
+  fi
+  REMOTE_TOKEN_HANDOFF_CREATED=0
+}
+runner_cleanup() {
+  rc=$?
+  cleanup_remote_token_handoff
+  "$RELAY_RETIRE" "$SESSION" --reason "clean exit (codex remote)" 2>/dev/null || true
+  exit "$rc"
+}
+trap runner_cleanup EXIT
+EOF
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
     printf 'cd %q\n' "$WORKDIR"
-    printf 'exec ssh'
+    printf 'ssh'
+    for arg in \
+      -o BatchMode=yes \
+      -o ConnectTimeout=4 \
+      -i "$HOME/.ssh/id_ed25519" \
+      -o "ControlPath=$HOME/.ssh/cm-%r@%h:%p" \
+      "$DISPATCH_HOST" \
+      "$REMOTE_EXEC_PREFLIGHT_COMMAND"; do
+      printf ' %q' "$arg"
+    done
+    printf '\n'
+    printf '%s\n' 'REMOTE_TOKEN_HANDOFF_CREATED=1'
+    printf 'ssh'
     for arg in \
       -o BatchMode=yes \
       -o RequestTTY=no \

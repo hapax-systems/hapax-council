@@ -157,6 +157,32 @@ exec bash -c "$remote_cmd"
     fake_ssh.chmod(0o755)
 
 
+def _write_fake_ssh_fails_after_handoff_preflight(bin_dir: Path, count_file: Path) -> None:
+    fake_ssh = bin_dir / "ssh"
+    fake_ssh.write_text(
+        f"""#!/usr/bin/env bash
+remote_cmd="${{@: -1}}"
+count=0
+if [ -f {count_file} ]; then
+  count="$(cat {count_file})"
+fi
+count=$((count + 1))
+printf '%s\\n' "$count" > {count_file}
+if [ "$count" -eq 3 ]; then
+  exit 255
+fi
+exec bash -c "$remote_cmd"
+""",
+        encoding="utf-8",
+    )
+    fake_ssh.chmod(0o755)
+
+
+def _clear_handoff_glob(session_id: str) -> None:
+    for path in Path("/tmp").glob(f"hapax-codex-token-{session_id}-*"):
+        path.unlink(missing_ok=True)
+
+
 def test_rejects_slot_name_as_visible_session(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
 
@@ -439,6 +465,118 @@ def test_launcher_uses_configured_relay_dir_for_retired_check(tmp_path: Path) ->
     assert str(relay_file) in result.stderr
     assert f"recheck: sed -n '1,80p' \"{relay_file}\"" in result.stderr
     assert "$RELAY_STATUS_FILE" not in result.stderr
+    assert not args_file.exists()
+
+
+def test_appendix_codex_remote_preflight_oauth_failure_reaches_operator(
+    tmp_path: Path,
+) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+    (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
+    _write_fake_ssh_eval(tmp_path / "bin")
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-red",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 75
+    assert "token_error" in result.stderr
+    assert "missing_codex_oauth_access_token" in result.stderr
+    assert "dispatch_host_unready" in result.stderr
+    assert not args_file.exists()
+
+
+def test_appendix_codex_remote_preflight_does_not_leave_handoff_before_relay_guard(
+    tmp_path: Path,
+) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
+    (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
+    _write_fake_ssh_eval(tmp_path / "bin")
+    relay = Path(env["HOME"]) / ".cache" / "hapax" / "relay"
+    relay.mkdir(parents=True)
+    (relay / "cx-green.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
+    session_id = f"retired-cleanup-{os.getpid()}-{tmp_path.name}"
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_SESSION_ID"] = session_id
+    _clear_handoff_glob(session_id)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-green",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 6
+    assert "retired/wound-down" in result.stderr
+    assert not list(Path("/tmp").glob(f"hapax-codex-token-{session_id}-*"))
+    assert not args_file.exists()
+
+
+def test_appendix_codex_remote_handoff_cleaned_when_ssh_fails_before_exec(
+    tmp_path: Path,
+) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
+    (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
+    count_file = tmp_path / "ssh-count.txt"
+    _write_fake_ssh_fails_after_handoff_preflight(tmp_path / "bin", count_file)
+    session_id = f"remote-cleanup-{os.getpid()}-{tmp_path.name}"
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_SESSION_ID"] = session_id
+    _clear_handoff_glob(session_id)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-red",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 255
+    assert count_file.read_text(encoding="utf-8").strip() == "4"
+    assert not list(Path("/tmp").glob(f"hapax-codex-token-{session_id}-*"))
     assert not args_file.exists()
 
 
@@ -1019,7 +1157,7 @@ esac
     assert tmux_lines[:4] == ["new-session", "-d", "-s", "hapax-codex-cx-amber"]
     runner = Path(tmux_lines[-1])
     runner_text = runner.read_text(encoding="utf-8")
-    assert "exec ssh" in runner_text
+    assert "\nssh " in runner_text
     assert "bash" in runner_text
     assert "exec /" not in runner_text
 
