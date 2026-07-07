@@ -179,7 +179,10 @@ def _path_is_inside_root(path: Path, root: Path) -> bool:
 
 def _receipt_file_maps_to_gate(path: Path, expected_gate: str) -> bool:
     data = _load_receipt_data(path)
-    return _contains_expected_gate(data, expected_gate) and _receipt_outcome_allows(data)
+    return not _receipt_has_failed_outcome(data) and _gate_receipt_object_allows(
+        data,
+        expected_gate,
+    )
 
 
 def _load_receipt_data(path: Path) -> Any:
@@ -218,20 +221,37 @@ def _markdown_frontmatter(text: str) -> Any:
     return None
 
 
-def _contains_expected_gate(data: Any, expected_gate: str) -> bool:
+def _gate_receipt_object_allows(data: Any, expected_gate: str) -> bool:
     if isinstance(data, Mapping):
-        for raw_key, value in data.items():
-            key = str(raw_key).strip().casefold()
-            if key in PUBLIC_GATE_ID_KEYS and _gate_value_matches(value, expected_gate):
-                return True
-            if key in PUBLIC_GATE_LIST_KEYS and _gate_value_contains(value, expected_gate):
-                return True
-            if _gate_value_matches(raw_key, expected_gate) and _truthy_receipt_value(value):
-                return True
-        return any(_contains_expected_gate(value, expected_gate) for value in data.values())
+        if _mapping_contains_expected_gate(data, expected_gate) and _mapping_outcome_allows(data):
+            return True
+        return any(_gate_receipt_object_allows(value, expected_gate) for value in data.values())
     if isinstance(data, (list, tuple, set)):
-        return any(_contains_expected_gate(item, expected_gate) for item in data)
+        return any(_gate_receipt_object_allows(item, expected_gate) for item in data)
     return False
+
+
+def _mapping_contains_expected_gate(data: Mapping[Any, Any], expected_gate: str) -> bool:
+    for raw_key, value in data.items():
+        key = str(raw_key).strip().casefold()
+        if key in PUBLIC_GATE_ID_KEYS and _gate_value_matches(value, expected_gate):
+            return True
+        if key in PUBLIC_GATE_LIST_KEYS and _gate_value_contains(value, expected_gate):
+            return True
+        if _gate_value_matches(raw_key, expected_gate) and _truthy_receipt_value(value):
+            return True
+    return False
+
+
+def _mapping_outcome_allows(data: Mapping[Any, Any]) -> bool:
+    outcomes = [
+        _outcome_value_allows(value)
+        for raw_key, value in data.items()
+        if str(raw_key).strip().casefold() in PUBLIC_GATE_OUTCOME_KEYS
+    ]
+    if any(outcome is False for outcome in outcomes):
+        return False
+    return any(outcome is True for outcome in outcomes)
 
 
 def _gate_value_contains(value: Any, expected_gate: str) -> bool:
@@ -256,11 +276,8 @@ def _truthy_receipt_value(value: Any) -> bool:
     return True
 
 
-def _receipt_outcome_allows(data: Any) -> bool:
-    outcomes = list(_iter_receipt_outcomes(data))
-    if any(outcome is False for outcome in outcomes):
-        return False
-    return any(outcome is True for outcome in outcomes)
+def _receipt_has_failed_outcome(data: Any) -> bool:
+    return any(outcome is False for outcome in _iter_receipt_outcomes(data))
 
 
 def _iter_receipt_outcomes(data: Any) -> Iterable[bool | None]:

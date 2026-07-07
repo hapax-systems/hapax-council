@@ -756,6 +756,7 @@ def report_to_markdown(report: GitHubPublicSurfaceReport) -> str:
         "# GitHub Public Surface Live State Reconcile",
         "",
         f"- Generated: `{report.generated_at}`",
+        f"- Recheck: `uv run python {report.generated_by}`",
         f"- Claim ceiling: `{report.claim_ceiling}`",
         f"- Blocking findings: `{_count_severity(report, 'blocking')}`",
         f"- Report schema: `schema_version={report.schema_version}`",

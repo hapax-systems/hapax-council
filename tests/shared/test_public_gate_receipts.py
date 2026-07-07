@@ -55,6 +55,20 @@ def test_rejects_gate_only_receipt_without_positive_outcome(tmp_path: Path) -> N
     )
 
 
+def test_rejects_positive_outcome_not_bound_to_gate_object(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "receipt-1.yaml",
+        f"gate_id: {GATE}\nmetadata:\n  status: passed\n",
+    )
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
 def test_accepts_iterable_ref_and_markdown_frontmatter(tmp_path: Path) -> None:
     _write(
         tmp_path,
