@@ -1552,6 +1552,18 @@ def test_codex_headless_remote_preflight_refuses_world_readable_published_token(
     assert "unsafe_codex_oauth_access_token" in result.stderr
 
 
+def test_codex_headless_remote_preflight_cleanup_child_clears_bearer_material_before_sleep() -> (
+    None
+):
+    remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
+    child_start = remote_preflight_py.index("if pid == 0:")
+    sleep_start = remote_preflight_py.index("time.sleep(ttl)", child_start)
+    child_before_sleep = remote_preflight_py[child_start:sleep_start]
+
+    assert 'token=""' in child_before_sleep
+    assert 'seal_key=""' in child_before_sleep
+
+
 def test_codex_headless_remote_preflight_fails_closed_when_self_cleanup_cannot_fork(
     tmp_path: Path,
 ) -> None:

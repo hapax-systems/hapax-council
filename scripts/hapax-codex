@@ -712,6 +712,9 @@ if handoff:
         print("hapax-codex: failed to schedule Codex OAuth token handoff self-cleanup ("+exc.__class__.__name__+"); next action: verify remote process limits/fork availability and rerun before dispatching Codex lanes", file=sys.stderr)
         sys.exit(78)
     if pid == 0:
+        token=""
+        seal_key=""
+        p={}
         try:
             os.close(fd)
         except OSError:
