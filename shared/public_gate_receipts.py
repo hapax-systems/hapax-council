@@ -238,7 +238,7 @@ def _mapping_contains_expected_gate(data: Mapping[Any, Any], expected_gate: str)
             return True
         if key in PUBLIC_GATE_LIST_KEYS and _gate_value_contains(value, expected_gate):
             return True
-        if _gate_value_matches(raw_key, expected_gate) and _truthy_receipt_value(value):
+        if _gate_value_matches(raw_key, expected_gate) and _outcome_value_allows(value) is True:
             return True
     return False
 
@@ -256,7 +256,10 @@ def _mapping_outcome_allows(data: Mapping[Any, Any]) -> bool:
 
 def _gate_value_contains(value: Any, expected_gate: str) -> bool:
     if isinstance(value, Mapping):
-        return any(_gate_value_matches(key, expected_gate) for key in value)
+        return any(
+            _gate_value_matches(key, expected_gate) and _outcome_value_allows(item) is True
+            for key, item in value.items()
+        )
     if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, str)):
         return any(_gate_value_matches(item, expected_gate) for item in value)
     return _gate_value_matches(value, expected_gate)
@@ -264,16 +267,6 @@ def _gate_value_contains(value: Any, expected_gate: str) -> bool:
 
 def _gate_value_matches(value: Any, expected_gate: str) -> bool:
     return isinstance(value, str) and value.strip() == expected_gate
-
-
-def _truthy_receipt_value(value: Any) -> bool:
-    if value is None or value is False:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, (Mapping, list, tuple, set)):
-        return bool(value)
-    return True
 
 
 def _receipt_has_failed_outcome(data: Any) -> bool:

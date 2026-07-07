@@ -87,11 +87,31 @@ def test_accepts_nested_gate_mapping_with_positive_status(tmp_path: Path) -> Non
     _write(
         tmp_path,
         "nested.yaml",
-        f"receipt:\n  gates:\n    {GATE}: reviewed\n  outcome: approved\n",
+        f"receipt:\n  gates:\n    {GATE}: passed\n  outcome: approved\n",
     )
 
     assert public_gate_receipt_value_present(
         "public-gate:nested.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_direct_gate_key_with_failed_value(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", f"{GATE}: failed\nstatus: passed\n")
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_nested_gate_key_with_failed_value(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", f"gates:\n  {GATE}: failed\nstatus: passed\n")
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
         expected_gate=GATE,
         roots=(tmp_path,),
     )
