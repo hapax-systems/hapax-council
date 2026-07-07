@@ -868,6 +868,71 @@ exit 0
     )
 
 
+def test_codex_headless_remote_refuses_if_claim_revoked_before_exec_payload(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    _write_claim_epoch(cache, "cx-amber", "task-x")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    primary = home / "projects" / "hapax-council"
+    _init_primary_council_repo(primary)
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    args_file = tmp_path / "codex-args.txt"
+    preflight_count = tmp_path / "preflight-count.txt"
+    ssh_log = tmp_path / "ssh.log"
+    _write_classifying_ssh(
+        bin_dir / "ssh",
+        ssh_log,
+        remove_workdir_on_worktree=workdir,
+        after_preflight_success=f"""  count="$(cat "{preflight_count}" 2>/dev/null || printf '0')"
+  count="$((count + 1))"
+  printf '%s\\n' "$count" > "{preflight_count}"
+  if [ "$count" -ge 3 ]; then
+    rm -f "{cache / "cc-active-task-cx-amber"}" "{cache / "cc-claim-epoch-cx-amber"}"
+  fi
+""",
+    )
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$*" > {args_file}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(primary)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "without a matching local cc-claim epoch" in result.stderr
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == [
+        "preflight",
+        "worktree",
+        "preflight",
+        "preflight",
+        "cleanup",
+    ]
+    assert preflight_count.read_text(encoding="utf-8").strip() == "3"
+    assert not args_file.exists()
+    assert not list((cache / "orchestration" / "dispatch-host-proofs").glob("*remote.json"))
+
+
 def test_codex_headless_refuses_without_task_before_remote_bootstrap(tmp_path: Path) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"

@@ -1221,6 +1221,12 @@ echo "  pid: $PID_FILE"
 
 cd "$WORKDIR"
 if [[ -n "$DISPATCH_HOST" ]]; then
+  CLAIM_EPOCH_LINE="$(claim_epoch_for_task "$SESSION" "$SESSION_UUID" "$CODEX_TASK" || true)"
+  if [[ -z "$CLAIM_EPOCH_LINE" ]]; then
+    echo "hapax-codex-headless: refusing remote dispatch without a matching local cc-claim epoch for '$SESSION' task '$CODEX_TASK'; next action: run governed cc-claim locally for the dispatch task or omit --no-claim before remote dispatch" >&2
+    exit 78
+  fi
+  export HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH="$CLAIM_EPOCH_LINE"
   REMOTE_EXEC_PAYLOAD="$(remote_exec_payload_b64 "$DISPATCH_PROOF_FILE" codex "${CODEX_ARGS[@]}")"
   REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
   ssh -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
