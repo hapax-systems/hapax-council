@@ -40,6 +40,7 @@ from shared.platform_capability_registry import (  # noqa: E402
 )
 
 BINARY_BY_PLATFORM = {
+    "agy": "agy",
     "api": "python3",
     "claude": "claude",
     "codex": "codex",
@@ -47,6 +48,7 @@ BINARY_BY_PLATFORM = {
     "vibe": "vibe",
 }
 VERSION_ARGS_BY_PLATFORM = {
+    "agy": ["--version"],
     "api": ["--version"],
     "claude": ["--version"],
     "codex": ["--version"],
@@ -54,6 +56,10 @@ VERSION_ARGS_BY_PLATFORM = {
     "vibe": ["--version"],
 }
 CONFIG_REFS_BY_PLATFORM = {
+    "agy": [
+        "~/.gemini/antigravity-cli/builtin/skills/antigravity_guide/references/cli.md",
+        "scripts/hapax-agy-reviewer",
+    ],
     "api": [
         "~/llm-stack/litellm-config.yaml",
         "~/llm-stack/docker-compose.yml",
@@ -77,7 +83,7 @@ CONFIG_REFS_BY_PLATFORM = {
     ],
 }
 SECRETISH_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|credential)([=:])(\S+)")
-RETIRED_ANTIGRAV_PLATFORMS = frozenset({"agy", "antigrav", "antigravity", "gemini-cli"})
+RETIRED_ANTIGRAV_PLATFORMS = frozenset({"antigrav", "antigravity", "gemini-cli"})
 
 
 def parse_utc(value: str) -> datetime:
@@ -271,19 +277,33 @@ def build_receipt(
     receipt_id = f"{platform}-{observed_at.strftime('%Y%m%dT%H%M%SZ')}"
     capability_reasons: list[str] = []
     capability_refs: list[str] = []
+    wrapper_usable = wrapper.exists and wrapper.executable and bool(wrapper.sha256)
     if cli.available:
         capability_refs.append(f"local:{platform}:cli-version:{cli.version or 'available'}")
     else:
         capability_reasons.append("cli_missing_or_unusable")
-    if wrapper.exists and wrapper.sha256:
+    if wrapper_usable:
         capability_refs.append(f"local:{wrapper.path}:sha256:{wrapper.sha256}")
+    elif wrapper.exists and wrapper.sha256 and not wrapper.executable:
+        capability_reasons.append("sanctioned_wrapper_not_executable")
     else:
         capability_reasons.append("sanctioned_wrapper_missing_or_unreadable")
     capability_status = (
         EvidenceStatus.OBSERVED if not capability_reasons else EvidenceStatus.BLOCKED
     )
-    resource_status = EvidenceStatus.OBSERVED if wrapper.exists else EvidenceStatus.MISSING
-    resource_refs = [f"local:{wrapper.path}:exists:{str(wrapper.exists).lower()}"]
+    if wrapper_usable:
+        resource_status = EvidenceStatus.OBSERVED
+        resource_reasons: list[str] = []
+    elif wrapper.exists and not wrapper.executable:
+        resource_status = EvidenceStatus.BLOCKED
+        resource_reasons = ["wrapper_not_executable"]
+    else:
+        resource_status = EvidenceStatus.MISSING
+        resource_reasons = ["wrapper_missing"]
+    resource_refs = [
+        f"local:{wrapper.path}:exists:{str(wrapper.exists).lower()}",
+        f"local:{wrapper.path}:executable:{str(wrapper.executable).lower()}",
+    ]
     quota_reason = "account_live_quota_receipt_absent"
     quota = surface_evidence(
         status=EvidenceStatus.UNOBSERVABLE,
@@ -321,7 +341,7 @@ def build_receipt(
             observed_at=observed_at,
             stale_after=stale_after,
             evidence_refs=resource_refs,
-            reason_codes=[] if resource_status is EvidenceStatus.OBSERVED else ["wrapper_missing"],
+            reason_codes=resource_reasons,
         ),
         quota=quota,
         provider_docs=ProviderDocsEvidence(
@@ -422,9 +442,8 @@ def main(argv: list[str] | None = None) -> int:
         retired = [platform for platform in unknown if platform in RETIRED_ANTIGRAV_PLATFORMS]
         for platform in retired:
             print(
-                f"platform '{platform}' is retired/excised; mint measured agy supply-leaf "
-                "intake with route/resource/governance receipts before any future "
-                "interactive worker path",
+                f"platform '{platform}' is retired/excised; use agy.review.direct for "
+                "the live read-only review route",
                 file=sys.stderr,
             )
         if retired:

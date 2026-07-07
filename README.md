@@ -23,6 +23,7 @@ Rendered summary: PolyForm Strict 1.0.0 (source-available, non-distribution, non
 - Issues are redirect-only; no discussions, no pull requests accepted; see `CONTRIBUTING.md` and `SUPPORT.md`
 - Public copy must use `hapax-systems` organization links for first-party Hapax repositories.
 - Publication, weblog, RSS, social, DOI/archive, and other public fanout paths must route through the governed publication bus or a documented guarded legacy surface.
+- Support Hapax research routes through the no-perk public page at https://hapax.weblog.lol/support.
 - Governance reference: https://github.com/hapax-systems/hapax-constitution
 
 ## Portfolio position

@@ -496,7 +496,9 @@ def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str
     lane_norm = (lane or "").strip().lower()
     if not lane_norm:
         return lane_families["default"]
-    if lane_norm in set(lane_families.get("retired") or []):
+    retired = set(lane_families.get("retired") or [])
+    retired_prefixes = tuple(lane_families.get("retired_prefixes") or ())
+    if lane_norm in retired or any(lane_norm.startswith(prefix) for prefix in retired_prefixes):
         raise ValueError(f"retired authoring lane is not admissible: {lane_norm}")
     exact = lane_families.get("exact") or {}
     if lane_norm in exact:

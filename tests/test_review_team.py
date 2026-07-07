@@ -296,7 +296,13 @@ class TestLensRegistry:
         assert lane_families["prefixes"]["cx-"] == "codex"
         assert lane_families["prefixes"]["codex-"] == "codex"
         assert lane_families["prefixes"]["glm-"] == "glm"
+        assert "agy-" not in lane_families["prefixes"]
+        assert "antigrav-" not in lane_families["prefixes"]
         assert "iota" in lane_families["retired"]
+        assert "agy" in lane_families["retired"]
+        assert "antigrav" in lane_families["retired"]
+        assert "agy-" in lane_families["retired_prefixes"]
+        assert "antigrav-" in lane_families["retired_prefixes"]
         assert lane_families["default"] == "claude"
 
 
@@ -634,22 +640,20 @@ class TestConstitution:
         assert rt.writer_family_for_lane("zeta", reg) == "claude"
         assert rt.writer_family_for_lane("cx-gold", reg) == "codex"
         assert rt.writer_family_for_lane("codex-agy-cli", reg) == "codex"
-        assert rt.writer_family_for_lane("antigrav", reg) == "gemini"
-        assert rt.writer_family_for_lane("antigrav-2", reg) == "gemini"
-        assert rt.writer_family_for_lane("agy-review", reg) == "gemini"
         assert rt.writer_family_for_lane("cx-glmcp", reg) == "glm"
         assert rt.writer_family_for_lane("codex-glmcp", reg) == "glm"
         assert rt.writer_family_for_lane("glm-alpha", reg) == "glm"
         assert rt.writer_family_for_lane(None, reg) == "claude"
         assert rt.writer_family_for_lane("mystery-lane", reg) == "claude"
 
-    def test_retired_iota_writer_family_fails_closed(self) -> None:
+    def test_retired_authoring_lanes_fail_closed(self) -> None:
         import pytest
 
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
-        with pytest.raises(ValueError, match="retired authoring lane"):
-            rt.writer_family_for_lane("iota", reg)
+        for lane in ("iota", "antigrav", "antigrav-2", "antigravity", "agy", "agy-review"):
+            with pytest.raises(ValueError, match="retired authoring lane"):
+                rt.writer_family_for_lane(lane, reg)
 
 
 def _review(

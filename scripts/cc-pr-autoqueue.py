@@ -1642,18 +1642,24 @@ def _release_auto_arm_current_evidence_blockers(
     assessment = assess_release_auto_arm(probe, verified_checks=verified_checks)
     blockers = assessment.blockers
     if assess_release_auto_arm(frontmatter, verified_checks=verified_checks).armed:
-        # A sensitive path is an auto-arm veto, not a post-authorization veto.
-        # Once a task is explicitly head-locked with release_authorized: true,
-        # release-head revalidation should still replay current check/risk
-        # evidence, but it must not strand the accepted manual release solely
-        # because the authorized mutation scope includes CLAUDE.md/CODEOWNERS.
+        # These are auto-arm vetoes, not post-authorization vetoes. Once a task
+        # is explicitly head-locked with release_authorized: true, release-head
+        # revalidation should still replay current check/risk evidence, but it
+        # must not strand the accepted manual release solely because the
+        # authorized task is a public/current release or touches protected paths.
         blockers = tuple(
-            blocker for blocker in blockers if not blocker.startswith("sensitive_path:")
+            blocker
+            for blocker in blockers
+            if not (
+                blocker.startswith("sensitive_path:")
+                or blocker == "mutation_surface:public"
+                or blocker == "public_current"
+            )
         )
     return blockers
 
 
-def _release_auto_arm_sensitive_path_waivers(
+def _release_auto_arm_authorized_waivers(
     frontmatter: dict[str, Any],
     *,
     verified_checks: set[str],
@@ -1663,12 +1669,21 @@ def _release_auto_arm_sensitive_path_waivers(
     probe = dict(frontmatter)
     probe["release_authorized"] = False
     assessment = assess_release_auto_arm(probe, verified_checks=verified_checks)
-    prefix = "sensitive_path:"
-    return tuple(
-        f"sensitive_path_waived_by_release_authorization:{blocker.removeprefix(prefix)}"
-        for blocker in assessment.blockers
-        if blocker.startswith(prefix)
-    )
+    waivers: list[str] = []
+    for blocker in assessment.blockers:
+        if blocker.startswith("sensitive_path:"):
+            waivers.append(
+                "sensitive_path_waived_by_release_authorization:"
+                f"{blocker.removeprefix('sensitive_path:')}"
+            )
+        elif blocker == "mutation_surface:public":
+            waivers.append(
+                "mutation_surface_waived_by_release_authorization:"
+                f"{blocker.removeprefix('mutation_surface:')}"
+            )
+        elif blocker == "public_current":
+            waivers.append("public_current_waived_by_release_authorization")
+    return tuple(waivers)
 
 
 def _decision_requires_head_guard(decision: Decision) -> bool:
@@ -1779,7 +1794,7 @@ def _release_head_boundary_blocker(
         return "current_release_auto_arm_blocked:" + ",".join(evidence_blockers)
     if release_authorization_waivers is not None:
         release_authorization_waivers.extend(
-            _release_auto_arm_sensitive_path_waivers(
+            _release_auto_arm_authorized_waivers(
                 current_frontmatter,
                 verified_checks=current_verified_checks,
             )

@@ -26,7 +26,9 @@ Capability differences are expressed at the TYPE level, not via runtime flags: o
 ``send``. :class:`BudgetAuthorityAdapter` (api) and :class:`ReviewSeatAdapter` (glmcp) have
 neither, so ``hasattr(adapter, "launch")`` is the honest test (genuine ``AttributeError``,
 not a ``False`` flag). Retired Antigrav GUI launcher exit codes have only a historical
-receipt classifier; live ``agy`` is represented by :class:`AgyAdapter`.
+receipt classifier; live ``agy`` worker adapter support is represented by
+:class:`AgyAdapter`, while the live agy review route is exposed through
+``scripts/hapax-agy-reviewer``.
 
 NB: the module name is ``capability_adapter_protocol`` because ``capability_adapters`` is
 already taken by the unrelated ``PerceptionBackendAdapter``.
@@ -411,8 +413,8 @@ class CodexAdapter(WorkerAdapter, SendCapableAdapter):
         )
 
 
-class VibeAdapter(WorkerAdapter):
-    """Vibe worker lanes: pure reuse + the shared CLI failure table."""
+class VibeAdapter(WorkerAdapter, SendCapableAdapter):
+    """Vibe worker lanes: pure reuse + shared CLI failure table + wrapper-backed send."""
 
     PLATFORM: ClassVar[Platform] = Platform.VIBE
 

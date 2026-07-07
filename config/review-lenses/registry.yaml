@@ -127,7 +127,9 @@ route_backed_review_families:
     # but the route_id is not live-capacity evidence by itself. The review-team
     # gate seats gemini only when the platform-capability registry admits
     # agy.review.direct with fresh route/resource/quota receipts; otherwise the
-    # family is degraded as blocked supply.
+    # family is degraded as blocked supply. scripts/hapax-agy-reviewer pins the
+    # review model to gemini-3.1-pro-preview so ambient agy model settings cannot
+    # silently change the family counted by the dossier.
     route_id: agy.review.direct
     reviewer_command: ["scripts/hapax-agy-reviewer"]
     timeout_seconds: 1200
@@ -142,6 +144,8 @@ route_backed_review_families:
 
 # Authoring-lane -> model family (writer's family never holds the majority
 # alone). vibe lanes never review (off-limits surfaces per CLAUDE.md).
+# agy.review.direct is a read-only review route, not an authoring lane; agy
+# and retired Antigrav lane names fail closed here instead of mapping to Gemini.
 lane_families:
   exact:
     alpha: claude
@@ -155,15 +159,20 @@ lane_families:
     cx-glmcp: glm
     codex-glmcp: glm
     glmcp: glm
-    antigrav: gemini
-    antigravity: gemini
   prefixes:
     cx-: codex
     codex-: codex
     glm-: glm
     vbe-: vibe
-    antigrav-: gemini
-    agy-: gemini
   retired:
     - iota
+    - agy
+    - antigrav
+    - antigravity
+    - gemini-cli
+  retired_prefixes:
+    - agy-
+    - antigrav-
+    - antigravity-
+    - gemini-cli-
   default: claude
