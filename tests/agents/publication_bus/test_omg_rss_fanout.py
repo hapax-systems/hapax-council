@@ -25,8 +25,27 @@ def _gate_receipts() -> dict[str, str]:
     return {gate: f"receipt:{gate}" for gate in FANOUT_REQUIRED_GATES}
 
 
+def _required_gates_yaml(gates: tuple[str, ...] = FANOUT_REQUIRED_GATES) -> str:
+    return "\n".join(f"    - {gate}" for gate in gates)
+
+
 class TestLoadFanoutConfig:
     def test_loads_addresses_list(self, tmp_path: Path) -> None:
+        path = tmp_path / "fanout.yaml"
+        path.write_text(
+            "publication_frontmatter_policy:\n"
+            "  required_gates:\n"
+            f"{_required_gates_yaml()}\n"
+            "addresses:\n"
+            "  - hapax\n"
+            "  - oudepode\n"
+        )
+        config = load_fanout_config(path=path)
+        assert config.addresses == ["hapax", "oudepode"]
+        assert config.required_gates == list(FANOUT_REQUIRED_GATES)
+        assert config.gate_policy_error is None
+
+    def test_incomplete_gate_policy_is_fail_closed(self, tmp_path: Path) -> None:
         path = tmp_path / "fanout.yaml"
         path.write_text(
             "publication_frontmatter_policy:\n"
@@ -38,8 +57,25 @@ class TestLoadFanoutConfig:
             "  - oudepode\n"
         )
         config = load_fanout_config(path=path)
-        assert config.addresses == ["hapax", "oudepode"]
-        assert config.required_gates == ["source_artifact_public_safe", "source_refs_present"]
+        assert config.required_gates == list(FANOUT_REQUIRED_GATES)
+        assert config.gate_policy_error is not None
+        assert "rights_privacy_redaction_pass" in config.gate_policy_error
+
+    def test_malformed_gate_policy_is_fail_closed(self, tmp_path: Path) -> None:
+        path = tmp_path / "fanout.yaml"
+        path.write_text(
+            "publication_frontmatter_policy:\n"
+            "  required_gates:\n"
+            f"{_required_gates_yaml()}\n"
+            "    - ''\n"
+            "addresses:\n"
+            "  - hapax\n"
+            "  - oudepode\n"
+        )
+        config = load_fanout_config(path=path)
+        assert config.required_gates == list(FANOUT_REQUIRED_GATES)
+        assert config.gate_policy_error is not None
+        assert "blank or non-string" in config.gate_policy_error
 
     def test_missing_file_returns_empty_config(self, tmp_path: Path) -> None:
         config = load_fanout_config(path=tmp_path / "missing.yaml")
@@ -170,4 +206,21 @@ class TestFanout:
             gate_receipts={},
         )
         assert result == {"oudepode": "gate-blocked"}
+        client.set_entry.assert_not_called()
+
+    def test_config_gate_policy_error_blocks_before_public_egress(self) -> None:
+        client = _make_client()
+        config = OmgFanoutConfig(
+            addresses=["hapax", "oudepode"],
+            gate_policy_error="fanout config required_gates missing required gate ids",
+        )
+        result = fanout(
+            source_address="hapax",
+            entry_id="entry-1",
+            content="body",
+            config=config,
+            client=client,
+            gate_receipts=_gate_receipts(),
+        )
+        assert result == {"oudepode": "gate-policy-blocked"}
         client.set_entry.assert_not_called()

@@ -250,6 +250,20 @@ class RecordingReviewers:
         return self.replies.get(seat.family, self.replies.get(seat.id, GOOD_REPLY))
 
 
+class RaisingReviewers(RecordingReviewers):
+    """Stub reviewer runner that fails one family with a local exception."""
+
+    def __init__(self, failing_family: str) -> None:
+        super().__init__()
+        self.failing_family = failing_family
+
+    def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+        self.invocations.append((seat.id, seat.family, prompt))
+        if seat.family == self.failing_family:
+            raise RuntimeError("fixture reviewer runner exploded")
+        return self.replies.get(seat.family, self.replies.get(seat.id, GOOD_REPLY))
+
+
 def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingReviewers, Path]:
     vault = _make_vault(tmp_path)
     note = _write_task(vault, **overrides.pop("task_kwargs", {}))
@@ -708,6 +722,17 @@ class TestApply:
         assert by_family["codex"]["verdict"] == "invalid-output"
         # 2 valid accepts remain -> still quorum for t2
         assert dossier["review_team_verdict"] == "quorum-accept"
+
+    def test_reviewer_runner_exception_records_internal_error(self, tmp_path: Path) -> None:
+        reviewers = RaisingReviewers(failing_family="codex")
+        _result, _, _, note = _review(tmp_path, reviewers=reviewers)
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        by_family = {r["family"]: r for r in dossier["reviewers"]}
+        assert by_family["codex"]["verdict"] == "reviewer-internal-error"
+        assert "RuntimeError" in by_family["codex"]["raw_reply_excerpt"]
+        assert "RuntimeError" in by_family["codex"]["runner_stderr_excerpt"]
 
     def test_reviewer_cannot_self_resolve_findings(self) -> None:
         parsed = dispatch.extract_review(

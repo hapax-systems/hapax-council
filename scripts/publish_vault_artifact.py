@@ -261,7 +261,10 @@ def _assert_target_surfaces_allowed(surfaces: list[str]) -> None:
     disallowed = sorted(set(surfaces) - allowed)
     if disallowed:
         raise SurfaceAllowlistError(
-            "target surfaces outside configured allowlist: " + ", ".join(disallowed)
+            "target surfaces outside configured allowlist: "
+            + ", ".join(disallowed)
+            + "; next action: remove those targets from frontmatter or add them to the "
+            "reviewed publication_frontmatter_policy.target_surfaces allowlist"
         )
     dispatchable = set(dispatch_registry())
     unwired = sorted(set(surfaces) - dispatchable)

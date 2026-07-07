@@ -82,6 +82,8 @@ ACCEPT_VERDICTS = frozenset({"accept", "accept-with-findings"})
 #: hours and t1's require_all_families sealed the merge gate fleet-wide
 #: (postmortem failure class #1). Availability failures must be named so the
 #: constitution can degrade instead of seal, while preserving the true cause.
+#: ``reviewer-internal-error`` is a dispatcher/local runner failure, distinct
+#: from model garbage output and never counted as availability degradation.
 REVIEWER_VERDICTS = frozenset(
     {
         "accept",
@@ -91,6 +93,7 @@ REVIEWER_VERDICTS = frozenset(
         "quota-wall",
         "provider-outage",
         "reviewer-route-unavailable",
+        "reviewer-internal-error",
     }
 )
 FAMILY_OUTAGE_VERDICTS = frozenset({"quota-wall", "provider-outage", "reviewer-route-unavailable"})

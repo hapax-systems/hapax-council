@@ -858,7 +858,7 @@ def dispatch_reviews(
     *,
     task_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Run all seats in parallel; reviewer failure becomes invalid-output, loudly."""
+    """Run all seats in parallel; reviewer failures become named non-accepts."""
 
     family_cfgs = {entry["family"]: entry for entry in review_team.review_family_entries(registry)}
 
@@ -871,6 +871,7 @@ def dispatch_reviews(
         diagnostic_output = ""
         diagnostic_stdout = ""
         runner_stderr_excerpt = ""
+        reviewer_internal_error = False
         try:
             family_cfg = dict(family_cfgs[seat.family])
             if task_id:
@@ -898,8 +899,11 @@ def dispatch_reviews(
         except Exception as exc:  # noqa: BLE001 — one dead reviewer must not kill the round
             LOG.warning("reviewer %s (%s) failed: %s", seat.id, seat.family, exc)
             reply = ""
-            process_failed = False
-            process_output = str(exc)
+            process_failed = True
+            reviewer_internal_error = True
+            process_output = f"{type(exc).__name__}: {exc}"
+            diagnostic_output = process_output
+            runner_stderr_excerpt = sanitize_reviewer_diagnostic(process_output)
         parsed = extract_review(reply or "")
         if parsed is None:
             # a provider usage wall is a FAMILY-AVAILABILITY signal, not a
@@ -909,7 +913,11 @@ def dispatch_reviews(
             # trust (round-6): pattern matching only on process-failure
             # diagnostics. Clean-exit stdout is model-controlled, so even an
             # exact provider-looking literal remains invalid-output.
-            if process_failed:
+            if reviewer_internal_error:
+                walled = False
+                provider_outage = False
+                route_unavailable = False
+            elif process_failed:
                 walled = review_team.is_quota_wall(
                     quota_wall_output, process_failed=True, model_stdout=quota_wall_stdout
                 )
@@ -923,7 +931,15 @@ def dispatch_reviews(
                 walled = False
                 provider_outage = False
                 route_unavailable = False
-            if walled:
+            if reviewer_internal_error:
+                LOG.warning(
+                    "reviewer %s (%s) hit an internal runner error -> verdict "
+                    "reviewer-internal-error",
+                    seat.id,
+                    seat.family,
+                )
+                verdict = "reviewer-internal-error"
+            elif walled:
                 LOG.warning(
                     "reviewer %s (%s) hit a provider quota wall -> verdict quota-wall",
                     seat.id,
@@ -1683,7 +1699,7 @@ def review_pr(
         return {
             "status": "route_gate_unavailable",
             "pr": pr_number,
-            "reason": type(exc).__name__,
+            "reason": truncate_context(f"{type(exc).__name__}: {exc}", limit=500),
         }
 
     pr_info = fetch_pr(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner)
@@ -1957,6 +1973,7 @@ def review_pr(
                     "quota-wall",
                     "provider-outage",
                     "reviewer-route-unavailable",
+                    "reviewer-internal-error",
                 )
             ]
             dossier["no_quorum_cause"] = (

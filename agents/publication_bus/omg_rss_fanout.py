@@ -74,6 +74,7 @@ class OmgFanoutConfig:
 
     addresses: list[str] = field(default_factory=list)
     required_gates: list[str] = field(default_factory=lambda: list(FANOUT_REQUIRED_GATES))
+    gate_policy_error: str | None = None
 
 
 def load_fanout_config(*, path: Path = DEFAULT_CONFIG_PATH) -> OmgFanoutConfig:
@@ -86,16 +87,56 @@ def load_fanout_config(*, path: Path = DEFAULT_CONFIG_PATH) -> OmgFanoutConfig:
     addresses = raw.get("addresses", [])
     if not isinstance(addresses, list):
         addresses = []
-    policy = raw.get("publication_frontmatter_policy")
-    required_gates = FANOUT_REQUIRED_GATES
-    if isinstance(policy, dict):
-        configured_gates = policy.get("required_gates")
-        if isinstance(configured_gates, list) and configured_gates:
-            required_gates = tuple(str(gate) for gate in configured_gates if gate)
+    required_gates, gate_policy_error = _configured_required_gates(
+        raw.get("publication_frontmatter_policy")
+    )
     return OmgFanoutConfig(
         addresses=[str(a) for a in addresses],
-        required_gates=list(required_gates),
+        required_gates=required_gates,
+        gate_policy_error=gate_policy_error,
     )
+
+
+def _configured_required_gates(policy: object) -> tuple[list[str], str | None]:
+    baseline = list(FANOUT_REQUIRED_GATES)
+    if not isinstance(policy, dict):
+        return baseline, (
+            "fanout config missing publication_frontmatter_policy; next action: restore "
+            "required publication gate policy before public fanout"
+        )
+
+    configured = policy.get("required_gates")
+    if not isinstance(configured, list) or not configured:
+        return baseline, (
+            "fanout config publication_frontmatter_policy.required_gates must be a "
+            "non-empty list; next action: restore the full required gate list before "
+            "public fanout"
+        )
+
+    normalized: list[str] = []
+    malformed = False
+    for gate in configured:
+        if not isinstance(gate, str) or not gate.strip():
+            malformed = True
+            continue
+        normalized.append(gate.strip())
+
+    required = list(dict.fromkeys([*baseline, *normalized]))
+    if malformed:
+        return required, (
+            "fanout config required_gates contains blank or non-string gate ids; "
+            "next action: remove malformed gate ids before public fanout"
+        )
+
+    missing = sorted(set(FANOUT_REQUIRED_GATES) - set(normalized))
+    if missing:
+        return required, (
+            "fanout config required_gates missing required gate ids: "
+            + ", ".join(missing)
+            + "; next action: restore every FANOUT_REQUIRED_GATES id before public fanout"
+        )
+
+    return required, None
 
 
 def _receipt_value_present(value: object) -> bool:
@@ -143,6 +184,14 @@ def fanout(
     targets = [addr for addr in config.addresses if addr != source_address]
     if not targets:
         return {}
+
+    if config.gate_policy_error:
+        log.error("fanout blocked before public egress; %s", config.gate_policy_error)
+        for target in targets:
+            omg_fanouts_total.labels(
+                source=source_address, target=target, result="gate-policy-blocked"
+            ).inc()
+        return {target: "gate-policy-blocked" for target in targets}
 
     missing_receipts = _missing_gate_receipts(config.required_gates, gate_receipts)
     if missing_receipts:
