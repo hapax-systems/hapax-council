@@ -785,7 +785,7 @@ exit 99
     assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_token_preflight_refuses_before_claim(tmp_path: Path) -> None:
+def test_codex_headless_remote_token_preflight_refuses_after_claim(tmp_path: Path) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
@@ -827,10 +827,10 @@ exit 0
     assert "remote token preflight failed" in result.stderr
     assert "missing_codex_oauth_access_token" in result.stderr
     assert "HAPAX_DISPATCH_HOST_FALLBACK=local" in result.stderr
-    assert not claim_log.exists()
+    assert claim_log.read_text(encoding="utf-8") == "task-x\n"
 
 
-def test_codex_headless_remote_token_preflight_rejects_unaccepted_bearer_before_claim(
+def test_codex_headless_remote_token_preflight_rejects_unaccepted_bearer_after_claim(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -872,7 +872,7 @@ exit 0
     assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight"]
     assert "remote token preflight failed" in result.stderr
     assert "codex_bearer_actuation_failed:rc=77" in result.stderr
-    assert not claim_log.exists()
+    assert claim_log.read_text(encoding="utf-8") == "task-x\n"
 
 
 def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
@@ -1226,6 +1226,7 @@ def test_codex_headless_remote_exec_uses_preclaim_proven_token_handoff(
     subprocess.run(["git", "-C", str(primary), "branch", "codex/cx-amber"], check=True)
     workdir = home / "projects" / "hapax-council--cx-amber"
     workdir.mkdir(parents=True)
+    _write_executable(workdir / "scripts" / "cc-claim", "exit 0\n")
 
     token_file = _write_codex_access_token(
         home / ".cache" / "hapax" / "codex-oauth",
@@ -1314,6 +1315,7 @@ def test_codex_headless_remote_preflight_refuses_preexisting_token_handoff(
     subprocess.run(["git", "-C", str(primary), "branch", "codex/cx-amber"], check=True)
     workdir = home / "projects" / "hapax-council--cx-amber"
     workdir.mkdir(parents=True)
+    _write_executable(workdir / "scripts" / "cc-claim", "exit 0\n")
 
     token_file = _write_codex_access_token(
         home / ".cache" / "hapax" / "codex-oauth",
@@ -1545,6 +1547,7 @@ def test_codex_headless_claim_failure_does_not_create_remote_handoff(
     subprocess.run(["git", "-C", str(primary), "branch", "codex/cx-amber"], check=True)
     workdir = home / "projects" / "hapax-council--cx-amber"
     workdir.mkdir(parents=True)
+    _write_executable(workdir / "scripts" / "cc-claim", "exit 42\n")
 
     token_file = _write_codex_access_token(
         home / ".cache" / "hapax" / "codex-oauth",
@@ -1577,11 +1580,7 @@ def test_codex_headless_claim_failure_does_not_create_remote_handoff(
 
     assert result.returncode == 42
     assert "failed to delete preflight-proven Codex OAuth token handoff" not in result.stderr
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == [
-        "preflight",
-        "worktree",
-        "preflight",
-    ]
+    assert not ssh_log.exists()
 
 
 def test_codex_headless_remote_handoff_sanitizes_session_id_before_cleanup(
@@ -1604,6 +1603,7 @@ def test_codex_headless_remote_handoff_sanitizes_session_id_before_cleanup(
     subprocess.run(["git", "-C", str(primary), "branch", "codex/cx-amber"], check=True)
     workdir = home / "projects" / "hapax-council--cx-amber"
     workdir.mkdir(parents=True)
+    _write_executable(workdir / "scripts" / "cc-claim", "exit 42\n")
 
     token_file = _write_codex_access_token(
         home / ".cache" / "hapax" / "codex-oauth",
@@ -1640,11 +1640,7 @@ def test_codex_headless_remote_handoff_sanitizes_session_id_before_cleanup(
         )
 
         assert result.returncode == 42
-        assert ssh_log.read_text(encoding="utf-8").splitlines() == [
-            "preflight",
-            "worktree",
-            "preflight",
-        ]
+        assert not ssh_log.exists()
         assert not list(Path("/tmp").glob(f"{leak_prefix}-*"))
     finally:
         for leaked in Path("/tmp").glob(f"{leak_prefix}-*"):
@@ -1690,6 +1686,50 @@ def test_codex_headless_remote_exec_fails_if_token_handoff_cleanup_fails(
     assert result.returncode == 78
     assert "failed to delete preflight-proven Codex OAuth token handoff" in result.stderr
     assert token_path.exists()
+
+
+def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
+    tmp_path: Path,
+) -> None:
+    remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    token_path = _write_codex_access_token(tmp_path / "handoff", exp=int(time.time()) + 3600)
+    seal_key = "e" * 64
+    token_path.write_text(
+        _seal_token_for_test(token_path.read_text(encoding="utf-8").strip(), seal_key),
+        encoding="utf-8",
+    )
+    not_a_home = tmp_path / "not-a-home"
+    not_a_home.write_text("not a directory\n", encoding="utf-8")
+    proof = tmp_path / "proof.json"
+    payload = {
+        "workdir": str(workdir),
+        "env": {
+            "HOME": str(not_a_home),
+            "HAPAX_SESSION_ID": "remote-cache-session",
+            "HAPAX_AGENT_ROLE": "cx-amber",
+            "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
+        },
+        "proof_file": str(proof),
+        "token_handoff_file": str(token_path),
+        "token_handoff_seal_key": seal_key,
+        "argv": ["codex"],
+    }
+    env = os.environ.copy()
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+
+    result = subprocess.run(
+        [sys.executable, "-c", remote_exec_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "failed to materialize remote claim cache" in result.stderr
+    assert not proof.exists()
 
 
 def test_codex_headless_remote_bootstrap_reports_council_not_git_worktree(

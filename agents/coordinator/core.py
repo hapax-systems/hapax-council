@@ -357,7 +357,8 @@ class Coordinator:
         # bb-control-stability: the RecoveryGovernor's per-tick converge ceiling
         # ({open:6, paced:2, closed:0}) bounds how many dispatches the controller
         # may inject per tick — it cannot become the storm it governs.
-        max_dispatches = min(len(idle_lanes), converge_action_cap(admission.state))
+        pressure_cap = converge_action_cap(admission.state)
+        max_dispatches = min(len(idle_lanes), pressure_cap)
         if admission.state != "open":
             log.info(
                 "sdlc-pressure %s: dispatch budget=%d cooldown=%.0fs",
@@ -500,7 +501,10 @@ class Coordinator:
                 t.task_id, escalated_only=True, now=now_mono
             )
         )
-        starvation_offered = (len(offered) - cooled_offered) if idle_lanes else 0
+        # Pressure CLOSED intentionally yields a zero dispatch budget: work remains
+        # queued, but the controller is not failing to use available capacity.
+        starvation_capacity = bool(idle_lanes) and pressure_cap > 0
+        starvation_offered = (len(offered) - cooled_offered) if starvation_capacity else 0
         self._refusal_ledger.tick_starvation(starvation_offered, dispatches, now=now_mono)
 
         # Surface refusal stats in SHM.

@@ -180,4 +180,4 @@ exit 0
     assert "remote worktree bootstrap failed" in result.stderr
     assert "explicit local fallback" in result.stderr
     assert "missing published Codex OAuth access token" in result.stderr
-    assert not claim_log.exists()
+    assert claim_log.read_text(encoding="utf-8") == "task-x\n"

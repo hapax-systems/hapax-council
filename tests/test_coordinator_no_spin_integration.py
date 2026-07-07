@@ -162,6 +162,7 @@ class TestTickIntegration:
         tmp_path: Path,
         *,
         now: float | None = None,
+        admission_state_value: str = "open",
     ) -> int:
         """Run one Coordinator.tick() with mocked internals."""
         with ExitStack() as stack:
@@ -181,7 +182,7 @@ class TestTickIntegration:
                     patch("agents.coordinator.core.time.monotonic", return_value=now)
                 )
                 stack.enter_context(patch("agents.coordinator.core.time.time", return_value=now))
-            mock_admission.return_value = MagicMock(state="open")
+            mock_admission.return_value = MagicMock(state=admission_state_value)
             if isinstance(dispatch_result, Exception):
                 mock_run.side_effect = dispatch_result
             else:
@@ -561,6 +562,29 @@ class TestTickIntegration:
         for _i in range(4):
             now += 30.0
             self._run_tick(coord, [TASK_A], lanes, fail, tmp_path, now=now)
+
+        assert coord._refusal_ledger.stats(now=now)["starvation_escalated"] is False
+        assert coord._refusal_ledger._starvation.starved_since == 0.0
+
+    def test_closed_pressure_fleet_does_not_page_as_starvation(self, tmp_path: Path) -> None:
+        """Pressure CLOSED intentionally has idle lanes and offered work but zero
+        dispatch budget. That is pacing, not dispatch starvation."""
+        coord = self._make_coordinator()
+        coord._refusal_ledger.starvation_horizon_s = 0.0
+        fail = _failing_dispatch_result(DETERMINISTIC_REASON)
+        now = 115_000.0
+
+        for _i in range(4):
+            now += 30.0
+            self._run_tick(
+                coord,
+                [TASK_A],
+                _make_lanes(LANE_ALPHA),
+                fail,
+                tmp_path,
+                now=now,
+                admission_state_value="closed",
+            )
 
         assert coord._refusal_ledger.stats(now=now)["starvation_escalated"] is False
         assert coord._refusal_ledger._starvation.starved_since == 0.0
