@@ -821,6 +821,19 @@ class Orchestrator:
                 + ", ".join(sorted(unsafe_surfaces))
                 + "; next action: target registered publication surface ids only"
             )
+        seen_surfaces: set[str] = set()
+        duplicate_surfaces: set[str] = set()
+        for surface in artifact.surfaces_targeted:
+            if surface in seen_surfaces:
+                duplicate_surfaces.add(surface)
+            else:
+                seen_surfaces.add(surface)
+        if duplicate_surfaces:
+            findings.append(
+                "surfaces_targeted contains duplicate surface ids: "
+                + ", ".join(sorted(duplicate_surfaces))
+                + "; next action: list each target surface once before approval"
+            )
         allowed_surfaces, allowlist_error = self._configured_publication_surfaces()
         if allowlist_error is not None:
             findings.append(allowlist_error)
