@@ -766,8 +766,8 @@ class TestApply:
         assert by_family["codex"]["verdict"] == "reviewer-internal-error"
         assert "ghp_" not in by_family["codex"]["raw_reply_excerpt"]
         assert "ghp_" not in by_family["codex"]["runner_stderr_excerpt"]
-        assert "token=<redacted>" in by_family["codex"]["raw_reply_excerpt"]
-        assert "token=<redacted>" in by_family["codex"]["runner_stderr_excerpt"]
+        assert "detail omitted" in by_family["codex"]["raw_reply_excerpt"]
+        assert "detail omitted" in by_family["codex"]["runner_stderr_excerpt"]
 
     def test_reviewer_process_error_sanitizes_persisted_error_excerpt(self, tmp_path: Path) -> None:
         secretish = "token=ghp_" + ("b" * 36)
@@ -793,8 +793,8 @@ class TestApply:
         assert "ghp_" not in by_family["codex"]["raw_reply_excerpt"]
         assert "sk-" not in by_family["codex"]["raw_reply_excerpt"]
         assert "ghp_" not in by_family["codex"]["runner_stderr_excerpt"]
-        assert "token=<redacted>" in by_family["codex"]["raw_reply_excerpt"]
-        assert "api_key=<redacted>" in by_family["codex"]["raw_reply_excerpt"]
+        assert "output omitted" in by_family["codex"]["raw_reply_excerpt"]
+        assert "output omitted" in by_family["codex"]["runner_stderr_excerpt"]
 
     def test_default_reviewer_runner_sanitizes_process_failure_log(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -818,8 +818,8 @@ class TestApply:
 
         assert "ghp_" not in caplog.text
         assert "ghp_" not in str(excinfo.value)
-        assert "token=<redacted>" in caplog.text
-        assert "token=<redacted>" in str(excinfo.value)
+        assert "stderr/stdout omitted from logs" in caplog.text
+        assert "output omitted" in str(excinfo.value)
 
     def test_reviewer_cannot_self_resolve_findings(self) -> None:
         parsed = dispatch.extract_review(
@@ -2924,16 +2924,23 @@ class TestFamilyOutageDegradation:
         assert "emitted stderr on successful run" in caplog.text
         assert "PAYG fallback used" in caplog.text
 
-    def test_default_runner_exports_review_task_and_seat_env(self) -> None:
+    def test_default_runner_exports_review_task_and_seat_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(
+            dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+            "test-signing-key-not-for-reviewers",
+        )
         family_cfg = {
             "family": "glm",
             "reviewer_command": [
                 "bash",
                 "-c",
                 (
-                    "printf '%s|%s|%s|%s' "
+                    "printf '%s|%s|%s|%s|%s' "
                     '"$HAPAX_GLMCP_REVIEW_TASK_ID" "$HAPAX_CC_TASK_ID" '
-                    '"$HAPAX_REVIEW_SEAT_ID" "$HAPAX_REVIEW_FAMILY"'
+                    '"$HAPAX_REVIEW_SEAT_ID" "$HAPAX_REVIEW_FAMILY" '
+                    '"$HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY"'
                 ),
             ],
             "timeout_seconds": 30,
@@ -2945,7 +2952,7 @@ class TestFamilyOutageDegradation:
 
         assert result.stdout == (
             "cc-task-glmcp-review-seat-glm52-model-contract-20260706|"
-            "cc-task-glmcp-review-seat-glm52-model-contract-20260706|glm-1|glm"
+            "cc-task-glmcp-review-seat-glm52-model-contract-20260706|glm-1|glm|"
         )
 
     def test_successful_reviewer_stderr_is_recorded_and_redacted(self) -> None:

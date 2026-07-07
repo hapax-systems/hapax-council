@@ -1176,8 +1176,7 @@ class ReviewerProcessError(RuntimeError):
 
     def __init__(self, stderr: str, *, returncode: int, stdout: str = "") -> None:
         output = (stderr or stdout).strip()
-        safe_output = sanitize_reviewer_diagnostic(output, limit=300)
-        super().__init__(f"reviewer exited rc={returncode}: {safe_output}")
+        super().__init__(f"reviewer exited rc={returncode}; output omitted")
         self.stdout = stdout
         self.stderr = stderr
         self.output = output
@@ -1226,6 +1225,7 @@ def default_reviewer_runner(
         "HAPAX_REVIEW_SEAT_ID": seat.id,
         "HAPAX_REVIEW_FAMILY": seat.family,
     }
+    env.pop(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, None)
     review_task_id = str(family_cfg.get("_review_task_id") or "").strip()
     if review_task_id:
         env["HAPAX_GLMCP_REVIEW_TASK_ID"] = review_task_id
@@ -1242,11 +1242,10 @@ def default_reviewer_runner(
     )
     if proc.returncode != 0:
         LOG.warning(
-            "reviewer %s (%s) exited rc=%d: %s",
+            "reviewer %s (%s) exited rc=%d; stderr/stdout omitted from logs",
             seat.id,
             seat.family,
             proc.returncode,
-            sanitize_reviewer_diagnostic(proc.stderr, limit=300),
         )
         # a NONZERO exit is the CLI speaking, not the model (round-5 channel
         # trust): raise so the classifier can inspect stderr. Stdout stays
@@ -1298,18 +1297,16 @@ def dispatch_reviews(
                 reply = str(runner_result)
         except ReviewerProcessError as exc:
             LOG.warning(
-                "reviewer %s (%s) process failed: %s",
+                "reviewer %s (%s) process failed rc=%d; diagnostics kept in memory "
+                "for classification only",
                 seat.id,
                 seat.family,
-                sanitize_reviewer_diagnostic(str(exc), limit=300),
+                exc.returncode,
             )
             reply = ""
             process_failed = True
-            process_output = sanitize_reviewer_diagnostic(
-                "\n".join(part for part in (exc.stdout, exc.stderr) if part),
-                limit=MAX_REVIEW_REPLY_EXCERPT_CHARS,
-            )
-            runner_stderr_excerpt = sanitize_reviewer_diagnostic(process_output)
+            process_output = f"reviewer process failed rc={exc.returncode}; output omitted"
+            runner_stderr_excerpt = process_output
             if exc.stderr.strip():
                 quota_wall_output = exc.stderr
                 quota_wall_stdout = exc.stdout
@@ -1321,19 +1318,17 @@ def dispatch_reviews(
                 quota_wall_stdout = "" if quota_wall_output else exc.stdout
         except Exception as exc:  # noqa: BLE001 — one dead reviewer must not kill the round
             LOG.warning(
-                "reviewer %s (%s) failed: %s",
+                "reviewer %s (%s) failed with %s; detail omitted",
                 seat.id,
                 seat.family,
-                sanitize_reviewer_diagnostic(str(exc), limit=300),
+                type(exc).__name__,
             )
             reply = ""
             process_failed = True
             reviewer_internal_error = True
-            process_output = sanitize_reviewer_diagnostic(
-                f"{type(exc).__name__}: {exc}", limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
-            )
+            process_output = f"reviewer internal error {type(exc).__name__}; detail omitted"
             diagnostic_output = process_output
-            runner_stderr_excerpt = sanitize_reviewer_diagnostic(process_output)
+            runner_stderr_excerpt = process_output
         parsed = extract_review(reply or "")
         if parsed is None:
             # a provider usage wall is a FAMILY-AVAILABILITY signal, not a
