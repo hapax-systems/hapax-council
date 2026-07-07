@@ -3,10 +3,11 @@
 
 Operator-facing CLI for the FULL_AUTO publish path. Reads a markdown file
 with YAML frontmatter from the Obsidian vault, constructs a
-``PreprintArtifact`` from it, marks it ``APPROVED``, and writes the JSON
-to ``$HAPAX_STATE/publish/inbox/{slug}.json``. The publish_orchestrator
-service picks it up on the next 30s tick and fans out to every surface
-listed in ``surfaces_targeted`` via ``SURFACE_REGISTRY``.
+``PreprintArtifact`` from it, enforces ``Publication-Allowed`` frontmatter,
+marks allowed artifacts ``APPROVED``, and writes the JSON to
+``$HAPAX_STATE/publish/inbox/{slug}.json``. The publish_orchestrator service
+picks it up on the next 30s tick and fans out to every surface listed in
+``surfaces_targeted`` via ``SURFACE_REGISTRY``.
 
 ## Frontmatter contract
 
@@ -26,10 +27,10 @@ Optional:
 
 ## Approval semantics
 
-This script marks the artifact ``APPROVED`` directly. The vault is the
-operator's editing surface; once a vault file lands at this script, the
-operator has implicitly approved publication. No separate inbox-review
-step.
+This script marks the artifact ``APPROVED`` directly only when frontmatter does
+not forbid publication. The vault is the operator's editing surface; once an
+allowed vault file lands at this script, the operator has implicitly approved
+publication. No separate inbox-review step.
 
 ## Usage
 
@@ -169,6 +170,22 @@ def _parse_lenient_frontmatter_mapping(raw_frontmatter: str) -> dict[str, str]:
         if key:
             parsed[key] = value
     return parsed
+
+
+def _publication_allowed(frontmatter: dict) -> bool:
+    value = _frontmatter_value(
+        frontmatter,
+        "Publication-Allowed",
+        "publication_allowed",
+        "publication-allowed",
+    )
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"false", "no", "0", "blocked", "withheld"}
+    return bool(value)
 
 
 def _build_artifact(
@@ -328,6 +345,13 @@ def main(argv: list[str] | None = None) -> int:
     if not body.strip():
         log.error("empty body in %s", args.path)
         return 2
+    if not _publication_allowed(frontmatter):
+        log.error(
+            "publication not allowed by frontmatter in %s; next action: rewrite and "
+            "clear Publication-Allowed through Claim Verification Council review",
+            args.path,
+        )
+        return 1
 
     surfaces = _parse_surfaces(args.surfaces)
     artifact = _build_artifact(

@@ -75,7 +75,41 @@ class TestBuildArtifact:
         }
 
 
-def test_show_hn_draft_dry_run_uses_existing_frontmatter_casing(tmp_path, capsys) -> None:
+def test_allowed_draft_dry_run_uses_existing_frontmatter_casing(tmp_path, capsys) -> None:
+    draft = tmp_path / "draft.md"
+    draft.write_text(
+        (
+            "---\n"
+            "Title: Allowed Draft\n"
+            "Slug: allowed-draft\n"
+            "Publication-Allowed: true\n"
+            "---\n\n"
+            "# Allowed Draft\n\nBody\n"
+        ),
+        encoding="utf-8",
+    )
+
+    rc = publish_vault_artifact.main(
+        [
+            str(draft),
+            "--surfaces",
+            "omg-weblog",
+            "--state-root",
+            str(tmp_path),
+            "--dry-run",
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["title"] == "Allowed Draft"
+    assert payload["slug"] == "allowed-draft"
+    assert payload["surfaces_targeted"] == ["omg-weblog"]
+    assert payload["approval"] == "approved"
+    assert not (tmp_path / "publish" / "inbox").exists()
+
+
+def test_superseded_show_hn_draft_dry_run_refuses_publication(tmp_path, capsys) -> None:
     rc = publish_vault_artifact.main(
         [
             str(SHOW_HN_DRAFT),
@@ -87,10 +121,7 @@ def test_show_hn_draft_dry_run_uses_existing_frontmatter_casing(tmp_path, capsys
         ]
     )
 
-    assert rc == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["title"] == "Show HN: Mechanical Governance for AI Coding Agents at 3,000+ PRs"
-    assert payload["slug"] == "show-hn-governance-that-ships"
-    assert payload["surfaces_targeted"] == ["omg-weblog"]
-    assert payload["approval"] == "approved"
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert captured.out == ""
     assert not (tmp_path / "publish" / "inbox").exists()

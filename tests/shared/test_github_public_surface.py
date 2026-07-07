@@ -11,9 +11,15 @@ import jsonschema
 from shared.github_public_surface import (
     CLAIM_CEILING,
     INTENDED_PUBLIC_REPOS,
+    ORG_PROFILE_README_PATH,
+    ORG_PROFILE_REPO_ID,
     PROFILE_REPO_CANDIDATES,
     REQUIRED_DRIFT_CATEGORIES,
     GitHubPublicSurfaceReport,
+    LocalPublicSurfaceEvidence,
+    RepoFilePresence,
+    RepoLiveState,
+    build_drift_findings,
     missing_required_categories,
 )
 
@@ -28,6 +34,17 @@ def _payload() -> dict[str, Any]:
 
 def _report() -> GitHubPublicSurfaceReport:
     return GitHubPublicSurfaceReport.model_validate(_payload())
+
+
+def _minimal_local_evidence() -> LocalPublicSurfaceEvidence:
+    return LocalPublicSurfaceEvidence(
+        repo_head="test-head",
+        registry_license_by_repo={},
+        root_file_sha256={},
+        notice_links=(),
+        notice_missing_links=(),
+        package_surfaces=(),
+    )
 
 
 def test_report_schema_validates_committed_live_state_report() -> None:
@@ -80,6 +97,8 @@ def test_hard_blockers_are_explicit_and_feed_downstream_tasks() -> None:
     assert findings["github.notice.links-resolve"].status == "ok"
     assert findings["github.profile.org-profile-readme-present"].severity == "info"
     assert findings["github.profile.org-profile-readme-present"].status == "ok"
+    assert "github.profile.user-profile-readme-missing" not in findings
+    assert "github.profile.org-profile-candidate-not-user-surface" not in findings
     assert findings["github.pages.hapax-assets-pages-present"].status == "ok"
 
 
@@ -106,6 +125,47 @@ def test_closed_repo_pres_false_claims_are_reported_without_deleting_records() -
     assert claims["repo-pres-issues-redirect-walls"].live_status == "unreconciled"
     assert claims["repo-pres-org-level-github"].live_status == "true"
     assert all(claim.task_path.startswith("vault:hapax-cc-tasks/") for claim in claims.values())
+
+
+def test_org_profile_not_collected_blocks_profile_state() -> None:
+    findings = {
+        finding.finding_id: finding
+        for finding in build_drift_findings(repos={}, local=_minimal_local_evidence())
+    }
+
+    finding = findings["github.profile.org-profile-readme-not-collected"]
+    assert finding.severity == "blocking"
+    assert finding.surface == ORG_PROFILE_REPO_ID
+    assert "github-readme-profile-current-project-refresh" in finding.blocks
+
+
+def test_org_profile_without_profile_readme_blocks_profile_state() -> None:
+    repo = RepoLiveState(
+        repo_id=ORG_PROFILE_REPO_ID,
+        owner="hapax-systems",
+        name=".github",
+        exists=True,
+        private=False,
+        visibility="public",
+        files={
+            ORG_PROFILE_README_PATH: RepoFilePresence(
+                path=ORG_PROFILE_README_PATH,
+                exists=False,
+            )
+        },
+    )
+    findings = {
+        finding.finding_id: finding
+        for finding in build_drift_findings(
+            repos={ORG_PROFILE_REPO_ID: repo},
+            local=_minimal_local_evidence(),
+        )
+    }
+
+    finding = findings["github.profile.org-profile-readme-missing"]
+    assert finding.severity == "blocking"
+    assert finding.observed == "visibility=public, private=False, profile_readme=False"
+    assert "github-readme-profile-current-project-refresh" in finding.blocks
 
 
 def test_public_claim_ceiling_and_package_surface_inventory_are_fail_closed() -> None:

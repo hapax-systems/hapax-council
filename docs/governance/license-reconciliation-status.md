@@ -29,3 +29,10 @@ Path 1 adopted per operator directive ("research best license for me and go with
 - ⏳ Verify GitHub `licensee` gem detects PolyForm Strict in repository settings
 - ✅ Profile README at correct public GitHub location (`hapax-systems/.github/profile/README.md`)
 - ✅ README/profile drift checks in `tests/docs/test_readme_current_project_spine.py` and `tests/docs/test_github_profile_readme_spine.py`
+
+## Recheck
+
+```bash
+gh api repos/hapax-systems/.github/contents/profile/README.md --jq '{path,sha,html_url}'
+uv run pytest tests/docs/test_readme_current_project_spine.py tests/docs/test_github_profile_readme_spine.py tests/shared/test_github_public_surface.py -q
+```
