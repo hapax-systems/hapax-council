@@ -93,6 +93,12 @@ def _mark_account_live_quota_observed(route: dict) -> None:
     )
 
 
+def _mark_current_codex_session_usable(route: dict) -> None:
+    route["freshness"]["evidence"]["resource"]["evidence_refs"].append(
+        "local:current-codex-session:filesystem-shell-browser-usable:test"
+    )
+
+
 def test_codex_routes_are_oauth_auth_surface_with_subscription_capacity() -> None:
     registry = load_platform_capability_registry()
 
@@ -119,7 +125,35 @@ def test_fresh_route_emits_available_receipt_without_refresh() -> None:
     assert receipt.reason_codes == ()
 
 
-def test_subscription_route_degrades_when_account_live_quota_is_unobservable() -> None:
+def test_codex_oauth_subscription_route_accepts_current_session_unobservable_quota() -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    _mark_current_codex_session_usable(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    assert freshness.ok is True
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is True
+    assert receipt.status.value == "available"
+    assert receipt.predicate.account_live_quota_attested is True
+    assert receipt.reason_codes == ()
+
+
+def test_codex_oauth_subscription_route_degrades_without_current_session_evidence() -> None:
     payload = _payload()
     route_payload = _route_payload(payload, "codex.headless.full")
     _mark_fresh(route_payload)

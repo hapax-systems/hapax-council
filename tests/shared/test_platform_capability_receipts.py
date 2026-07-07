@@ -213,7 +213,7 @@ def test_future_platform_receipt_is_not_fresh(tmp_path: Path) -> None:
     assert receipt_is_fresh(receipt, now=NOW_DT) is False
 
 
-def test_fresh_subscription_receipt_keeps_oauth_dispatch_degraded_without_account_live(
+def test_fresh_subscription_receipt_allows_codex_oauth_dispatch_with_current_session(
     tmp_path: Path,
 ) -> None:
     bin_dir = tmp_path / "bin"
@@ -252,11 +252,12 @@ def test_fresh_subscription_receipt_keeps_oauth_dispatch_degraded_without_accoun
 
     decision = evaluate_dispatch_policy(request)
 
-    assert decision.action is DispatchAction.HOLD
-    assert decision.route_policy_green is False
-    assert decision.registry_freshness_green is False
-    assert "account_live_quota_evidence_absent" in decision.reason_codes
-    assert "capability_availability_degraded" in decision.reason_codes
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+    assert decision.registry_freshness_green is True
+    assert "policy_launch" in decision.reason_codes
+    assert "account_live_quota_evidence_absent" not in decision.reason_codes
+    assert "capability_availability_degraded" not in decision.reason_codes
 
 
 def test_antigrav_agy_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -> None:

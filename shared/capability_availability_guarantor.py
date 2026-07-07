@@ -483,14 +483,13 @@ def _account_live_quota_attested(
 ) -> bool:
     if route.capacity_pool is not CapacityPool.SUBSCRIPTION_QUOTA:
         return True
-    return any(_account_live_quota_observed_ref(ref) for ref in freshness.evidence_refs)
+    return any(
+        _account_live_quota_observed_ref(ref) for ref in freshness.evidence_refs
+    ) or _current_session_subscription_quota_attested(route, freshness)
 
 
 def _account_live_quota_observed_ref(ref: str) -> bool:
-    normalized = re.sub(r"[\s_:]+", "-", ref.strip().lower())
-    if not normalized:
-        return False
-    tokens = tuple(token for token in normalized.split("-") if token)
+    tokens = _ref_tokens(ref)
     if not tokens:
         return False
     negative_tokens = {
@@ -517,6 +516,45 @@ def _account_live_quota_observed_ref(ref: str) -> bool:
         ("quota", "status", "observed"),
     )
     return any(tokens[-len(suffix) :] == suffix for suffix in allowed_suffixes)
+
+
+def _current_session_subscription_quota_attested(
+    route: PlatformCapabilityRoute,
+    freshness: RouteFreshnessCheck,
+) -> bool:
+    if route.auth_surface is not AuthSurface.OAUTH:
+        return False
+    platform = route.platform.value
+    refs = tuple(_ref_tokens(ref) for ref in freshness.evidence_refs)
+    return (
+        any(_ref_startswith(ref, ("local", "current", platform, "session")) for ref in refs)
+        and any(
+            _ref_startswith(
+                ref,
+                ("local", "current", platform, "session", "filesystem", "shell", "browser"),
+            )
+            and "usable" in ref
+            for ref in refs
+        )
+        and any(
+            _ref_startswith(ref, ("local", platform, "quota", "probe", "unobservable"))
+            for ref in refs
+        )
+        and any(
+            _ref_startswith(ref, ("platform", "capability", "receipt", platform)) for ref in refs
+        )
+    )
+
+
+def _ref_tokens(ref: str) -> tuple[str, ...]:
+    normalized = re.sub(r"[\s_:]+", "-", ref.strip().lower())
+    if not normalized:
+        return ()
+    return tuple(token for token in normalized.split("-") if token)
+
+
+def _ref_startswith(ref: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
+    return ref[: len(prefix)] == prefix
 
 
 def _ensure_utc(value: datetime) -> datetime:
