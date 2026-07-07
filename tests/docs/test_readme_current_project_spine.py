@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 README = REPO_ROOT / "README.md"
 START_HERE = REPO_ROOT / "START_HERE.md"
@@ -194,3 +196,24 @@ class TestLicenseReconciliationStatusDoc:
         zenodo = json.loads((REPO_ROOT / ".zenodo.json").read_text(encoding="utf-8"))
         assert zenodo["license"] == "other-closed"
         assert "PolyForm Strict 1.0.0" in zenodo["notes"]
+        body = self.DOC.read_text(encoding="utf-8")
+        assert (
+            'assert zenodo["license"] == "other-closed" '
+            'and "PolyForm Strict 1.0.0" in zenodo["notes"]'
+        ) in body
+
+
+class TestGithubPublicSurfaceLiveStateDoc:
+    DOC = (
+        REPO_ROOT / "docs" / "research" / "2026-04-30-github-public-surface-live-state-reconcile.md"
+    )
+
+    def test_freshness_uses_frontmatter_and_generated_fields_not_filename_slug(self) -> None:
+        text = self.DOC.read_text(encoding="utf-8")
+        frontmatter = yaml.safe_load(text.split("---", 2)[1])
+        generated_line = next(line for line in text.splitlines() if line.startswith("- Generated:"))
+
+        assert self.DOC.name.startswith("2026-04-30-")
+        assert str(frontmatter["date"]) == "2026-07-07"
+        assert "2026-07-07T" in generated_line
+        assert "Freshness checks must read those fields, not the filename slug." in text

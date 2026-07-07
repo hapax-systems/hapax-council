@@ -45,7 +45,8 @@ def _write_review_evidence(
     artifact_fingerprint: str = "abc123",
 ) -> None:
     del root
-    public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0].mkdir(parents=True, exist_ok=True)
+    authority_root = public_gate_receipts._public_gate_authority_roots()[0]
+    authority_root.mkdir(parents=True, exist_ok=True)
     payload = {
         "dossier_schema": 1,
         "task_id": TASK_ID,
@@ -71,9 +72,7 @@ def _write_review_evidence(
         payload,
         AUTHORITY_SECRET,
     )
-    (
-        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
-    ).write_text(
+    (authority_root / f"{TASK_ID}.review-dossier.yaml").write_text(
         yaml.safe_dump(payload, sort_keys=False),
         encoding="utf-8",
     )
@@ -186,6 +185,43 @@ def test_rejects_unsigned_authority_evidence(tmp_path: Path) -> None:
     evidence.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_tampered_authority_signature(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    evidence = (
+        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+    )
+    payload = yaml.safe_load(evidence.read_text(encoding="utf-8"))
+    payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
+        payload,
+        "wrong-public-gate-authority-secret",
+    )
+    evidence.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_authority_roots_env_override_is_used(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority_root = tmp_path.parent / f"{tmp_path.name}-env-authority"
+    monkeypatch.setenv(public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS_ENV, str(authority_root))
+    monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_AUTHORITY_ROOTS", (tmp_path / "unused",))
+
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+
+    assert (authority_root / f"{TASK_ID}.review-dossier.yaml").exists()
+    assert public_gate_receipt_value_present(
         "public-gate:receipt-1.yaml",
         expected_gate=GATE,
         roots=(tmp_path,),

@@ -720,8 +720,10 @@ class TestSingleSurface:
         assert len(failed) == 1
         payload = json.loads(failed[0].read_text())
         assert payload["quarantine_reason"] == "unexpected_inbox_artifact_load_exception"
+        assert payload["suspected_code_path_error"] is True
         child = payload["publication_gate_result"]["child_results"][0]
         assert child["name"] == "artifact_envelope"
+        assert any("suspected code-path error" in finding for finding in child["findings"])
         assert any("next action" in finding for finding in child["findings"])
         fake_module.publish_artifact.assert_not_called()
 

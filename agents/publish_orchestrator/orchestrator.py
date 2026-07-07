@@ -933,6 +933,7 @@ class Orchestrator:
             inbox_path,
             finding=finding,
             quarantine_reason="invalid_inbox_artifact",
+            suspected_code_path_error=False,
         )
 
     def _quarantine_unexpected_inbox_load_exception(
@@ -942,13 +943,15 @@ class Orchestrator:
     ) -> None:
         finding = (
             "inbox artifact load raised an unexpected exception: "
-            f"{type(exc).__name__}; next action: inspect or regenerate the artifact "
+            f"{type(exc).__name__}; suspected code-path error or unsupported artifact "
+            "shape; next action: inspect the stack trace and regenerate the artifact "
             "before retrying public egress"
         )
         self._quarantine_raw_inbox_artifact(
             inbox_path,
             finding=finding,
             quarantine_reason="unexpected_inbox_artifact_load_exception",
+            suspected_code_path_error=True,
         )
 
     def _quarantine_raw_inbox_artifact(
@@ -957,6 +960,7 @@ class Orchestrator:
         *,
         finding: str,
         quarantine_reason: str,
+        suspected_code_path_error: bool,
     ) -> None:
         quarantine_slug = _quarantine_slug_for_path(inbox_path)
         child = PublicationGateChildResult(
@@ -973,6 +977,7 @@ class Orchestrator:
         payload = {
             "approval": ApprovalState.FAILED.value,
             "quarantine_reason": quarantine_reason,
+            "suspected_code_path_error": suspected_code_path_error,
             "source_inbox_path": str(inbox_path),
             "publication_gate_result": gate_result.to_frontmatter(),
         }

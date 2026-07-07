@@ -40,6 +40,7 @@ PUBLIC_GATE_AUTHORITY_ROOTS: tuple[Path, ...] = (
     Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active",
     Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "closed",
 )
+PUBLIC_GATE_AUTHORITY_ROOTS_ENV = "HAPAX_PUBLIC_GATE_AUTHORITY_ROOTS"
 PUBLIC_GATE_REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
 PUBLIC_GATE_ACCEPTANCE_RECEIPT_SUFFIX = ".acceptance.yaml"
 PUBLIC_GATE_AUTHORITY_SECRET_ENV = "HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY"
@@ -272,7 +273,7 @@ def public_gate_receipt_ref_exists(
 
     candidates = _receipt_candidate_paths(suffix)
     resolved_authority_roots = (
-        PUBLIC_GATE_AUTHORITY_ROOTS if authority_roots is None else tuple(authority_roots)
+        _public_gate_authority_roots() if authority_roots is None else tuple(authority_roots)
     )
     resolved_authority_secret = (
         _public_gate_authority_secret() if authority_secret is None else authority_secret
@@ -781,6 +782,14 @@ def public_gate_authority_signature(data: Mapping[Any, Any], secret: str) -> str
 
 def _public_gate_authority_secret() -> str:
     return os.environ.get(PUBLIC_GATE_AUTHORITY_SECRET_ENV, "").strip()
+
+
+def _public_gate_authority_roots() -> tuple[Path, ...]:
+    raw = os.environ.get(PUBLIC_GATE_AUTHORITY_ROOTS_ENV, "").strip()
+    if not raw:
+        return PUBLIC_GATE_AUTHORITY_ROOTS
+    roots = tuple(Path(part).expanduser() for part in raw.split(os.pathsep) if part.strip())
+    return roots or PUBLIC_GATE_AUTHORITY_ROOTS
 
 
 def _warn_missing_authority_secret() -> None:

@@ -3129,6 +3129,22 @@ class TestFamilyOutageDegradation:
             }
         ]
 
+    def test_payg_allowed_fields_still_redact_secret_shaped_values(self) -> None:
+        secret_shaped_endpoint = "abcdefghijklmnopqrstuvwxyz0123456789abcd"
+        excerpt = dispatch.render_payg_fallback_excerpt(
+            "hapax-glmcp-reviewer: PAYG fallback used "
+            f"endpoint={secret_shaped_endpoint} model=glm-5.2 "
+            "primary_error_class=quota_exhausted spend_gate=eligible_active_budget "
+            "budget_id=tb-secret-budget spend_receipt=secret-receipt.yaml"
+        )
+
+        assert excerpt is not None
+        assert secret_shaped_endpoint not in excerpt
+        assert "endpoint=" not in excerpt
+        assert "model=glm-5.2" in excerpt
+        assert "budget_id=<redacted>" in excerpt
+        assert "spend_receipt=<redacted>" in excerpt
+
     def test_successful_non_payg_reviewer_stderr_is_omitted(self) -> None:
         constitution = dispatch.review_team.Constitution(
             team_class="t2_standard",

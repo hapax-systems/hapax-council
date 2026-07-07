@@ -1262,13 +1262,20 @@ def render_payg_fallback_excerpt(text: str) -> str | None:
         parts = ["hapax-glmcp-reviewer: PAYG fallback used"]
         for key in PAYG_FALLBACK_ALLOWED_FIELDS:
             value = fields.get(key)
-            if value and PAYG_FALLBACK_SAFE_VALUE_RE.fullmatch(value):
+            if value and _payg_fallback_value_is_safe(value):
                 parts.append(f"{key}={value}")
         for key in PAYG_FALLBACK_REDACTED_FIELDS:
             if fields.get(key):
                 parts.append(f"{key}=<redacted>")
         return truncate_context(" ".join(parts), limit=MAX_REVIEW_RUNNER_STDERR_CHARS).strip()
     return None
+
+
+def _payg_fallback_value_is_safe(value: str) -> bool:
+    return bool(
+        PAYG_FALLBACK_SAFE_VALUE_RE.fullmatch(value)
+        and sanitize_reviewer_diagnostic(value, limit=MAX_REVIEW_RUNNER_STDERR_CHARS) == value
+    )
 
 
 def reviewer_success_stderr_excerpt(text: str) -> str:
