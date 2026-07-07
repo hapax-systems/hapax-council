@@ -46,22 +46,25 @@ def _run_receipts(
     env: dict[str, str] | None = None,
     now: str = NOW,
     platform: str = "codex",
+    json_output: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     merged_env = {**os.environ, **(env or {})}
+    args = [
+        sys.executable,
+        str(SCRIPT),
+        "--registry",
+        str(REGISTRY),
+        "--receipt-dir",
+        str(tmp_path),
+        "--platform",
+        platform,
+        "--now",
+        now,
+    ]
+    if json_output:
+        args.append("--json")
     return subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--registry",
-            str(REGISTRY),
-            "--receipt-dir",
-            str(tmp_path),
-            "--platform",
-            platform,
-            "--now",
-            now,
-            "--json",
-        ],
+        args,
         text=True,
         capture_output=True,
         check=False,
@@ -283,6 +286,7 @@ def test_fresh_subscription_receipt_allows_codex_oauth_dispatch_with_current_ses
         tmp_path,
         env={"PATH": str(bin_dir), "HOME": str(home_dir)},
         now=_current_iso_z(),
+        json_output=False,
     )
     assert result.returncode == 0, result.stderr
 
@@ -333,6 +337,7 @@ def test_codex_receipt_blocks_without_published_oauth_token(tmp_path: Path) -> N
         tmp_path,
         env={"PATH": str(bin_dir), "HOME": str(home_dir)},
         now=_current_iso_z(),
+        json_output=False,
     )
 
     assert result.returncode == 0, result.stderr
@@ -412,7 +417,22 @@ def test_codex_receipt_blocks_when_published_token_does_not_actuate(
     bin_dir = tmp_path / "bin"
     home_dir = tmp_path / "home"
     bin_dir.mkdir()
-    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+    codex_bin = bin_dir / "codex"
+    codex_bin.write_text(
+        """#!/bin/sh
+if [ "${1:-}" = "--version" ]; then
+  printf '%s\n' 'codex-cli 9.9.9'
+  exit 0
+fi
+if [ "${1:-}" = "debug" ] && [ "${2:-}" = "models" ]; then
+  echo "unauthorized token" >&2
+  exit 77
+fi
+exit 1
+""",
+        encoding="utf-8",
+    )
+    codex_bin.chmod(0o755)
     token_path = _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
     token = token_path.read_text(encoding="utf-8").strip()
 
@@ -421,7 +441,6 @@ def test_codex_receipt_blocks_when_published_token_does_not_actuate(
         env={
             "PATH": str(bin_dir),
             "HOME": str(home_dir),
-            "HAPAX_FAKE_CODEX_DEBUG_MODELS_RC": "77",
         },
         now=_current_iso_z(),
     )
@@ -438,6 +457,49 @@ def test_codex_receipt_blocks_when_published_token_does_not_actuate(
         ref == "local:codex:bearer-actuation:debug-models:exit:77"
         for ref in receipt["capability"]["evidence_refs"]
     )
+
+
+def test_codex_bearer_actuation_probe_does_not_inherit_unrelated_secrets(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    home_dir = tmp_path / "home"
+    env_log = tmp_path / "actuation-env.log"
+    bin_dir.mkdir()
+    codex_bin = bin_dir / "configured-codex"
+    codex_bin.write_text(
+        f"""#!/bin/sh
+if [ "${{1:-}}" = "--version" ]; then
+  printf '%s\\n' 'codex-cli 9.9.9'
+  exit 0
+fi
+if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
+  if [ -n "${{OPENAI_API_KEY:-}}" ]; then
+    printf '%s\\n' "OPENAI_API_KEY=${{OPENAI_API_KEY}}" > "{env_log}"
+  fi
+  printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
+  exit 0
+fi
+exit 1
+""",
+        encoding="utf-8",
+    )
+    codex_bin.chmod(0o755)
+    _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
+
+    result = _run_receipts(
+        tmp_path,
+        env={
+            "PATH": "",
+            "HOME": str(home_dir),
+            "HAPAX_CODEX_BIN": str(codex_bin),
+            "OPENAI_API_KEY": SECRET,
+        },
+        now=_current_iso_z(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not env_log.exists()
 
 
 def test_codex_receipt_actuation_uses_configured_codex_binary(
@@ -467,6 +529,51 @@ def test_codex_receipt_actuation_uses_configured_codex_binary(
         ref == "local:codex:bearer-actuation:debug-models:model-count:1"
         for ref in receipt["capability"]["evidence_refs"]
     )
+
+
+def test_codex_known_unknowns_disclose_transient_oauth_token_read(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    home_dir = tmp_path / "home"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+    _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
+        now=_current_iso_z(),
+        json_output=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
+    assert any(
+        "reads the published OAuth access token transiently" in item
+        for item in receipt["known_unknowns"]
+    )
+    assert not any("never reads secret values" in item for item in receipt["known_unknowns"])
+
+
+def test_human_receipt_output_includes_blocked_surface_reasons(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    home_dir = tmp_path / "home"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
+        now=_current_iso_z(),
+        json_output=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "capability=blocked" in result.stdout
+    assert "capability_reasons=codex_oauth_access_token_absent" in result.stdout
+    assert "resource=blocked" in result.stdout
+    assert "resource_reasons=codex_oauth_access_token_absent" in result.stdout
 
 
 def test_antigrav_agy_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -> None:

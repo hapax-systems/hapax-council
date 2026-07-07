@@ -27,7 +27,39 @@ def _isolate_headless_pid_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
 
 def _write_executable(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.name == "codex":
+        body = (
+            """if [ "${1:-}" = "debug" ] && [ "${2:-}" = "models" ]; then
+  if [ -z "${CODEX_ACCESS_TOKEN:-}" ]; then
+    echo "missing CODEX_ACCESS_TOKEN" >&2
+    exit 78
+  fi
+  if [ "${HAPAX_FAKE_CODEX_DEBUG_MODELS_RC:-0}" != "0" ]; then
+    echo "unauthorized bearer" >&2
+    exit "${HAPAX_FAKE_CODEX_DEBUG_MODELS_RC}"
+  fi
+  printf '%s\n' '{"models":[{"slug":"gpt-5.5"}]}'
+  exit 0
+fi
+"""
+            + body
+        )
     path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _write_rejecting_codex(path: Path, fallback_body: str = "exit 0\n") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        """#!/usr/bin/env bash
+if [ "${1:-}" = "debug" ] && [ "${2:-}" = "models" ]; then
+  echo "unauthorized bearer" >&2
+  exit 77
+fi
+"""
+        + fallback_body,
+        encoding="utf-8",
+    )
     path.chmod(0o755)
 
 
@@ -56,6 +88,9 @@ def _write_classifying_ssh(
     remote_path_on_preflight: Path | None = None,
 ) -> None:
     bash_bin = shutil.which("bash") or "/bin/bash"
+    codex_stub = path.parent / "codex"
+    if not codex_stub.exists():
+        _write_executable(codex_stub, "exit 0\n")
     remove_workdir = (
         f"""  rm -rf "{remove_workdir_on_worktree}"
 """
@@ -441,6 +476,51 @@ exit 0
     assert not codex_called.exists()
 
 
+def test_codex_headless_refuses_rejected_local_bearer_before_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    codex_args = tmp_path / "codex-args.txt"
+    claim_log = tmp_path / "claim.log"
+    _write_rejecting_codex(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$*" > "{codex_args}"
+exit 0
+""",
+    )
+    _write_executable(
+        workdir / "scripts" / "cc-claim",
+        f"""printf '%s\\n' "$*" >> "{claim_log}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "rejected by codex debug models" in result.stderr
+    assert not claim_log.exists()
+    assert not codex_args.exists()
+
+
 def test_codex_headless_creates_missing_remote_default_worktree(tmp_path: Path) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
@@ -600,6 +680,7 @@ def test_codex_headless_remote_token_preflight_refuses_before_claim(tmp_path: Pa
     bin_dir = tmp_path / "bin"
     ssh_log = tmp_path / "ssh.log"
     claim_log = tmp_path / "claim.log"
+    _write_rejecting_codex(bin_dir / "codex")
     _write_classifying_ssh(bin_dir / "ssh", ssh_log)
     _write_executable(
         workdir / "scripts" / "cc-claim",
@@ -630,6 +711,51 @@ exit 0
     assert "remote token preflight failed" in result.stderr
     assert "missing_codex_oauth_access_token" in result.stderr
     assert "HAPAX_DISPATCH_HOST_FALLBACK=local" in result.stderr
+    assert not claim_log.exists()
+
+
+def test_codex_headless_remote_token_preflight_rejects_unaccepted_bearer_before_claim(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    ssh_log = tmp_path / "ssh.log"
+    claim_log = tmp_path / "claim.log"
+    _write_rejecting_codex(bin_dir / "codex")
+    _write_classifying_ssh(bin_dir / "ssh", ssh_log)
+    _write_executable(
+        workdir / "scripts" / "cc-claim",
+        f"""printf '%s\\n' "$*" >> "{claim_log}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 75
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight"]
+    assert "remote token preflight failed" in result.stderr
+    assert "codex_bearer_actuation_failed:rc=77" in result.stderr
     assert not claim_log.exists()
 
 
@@ -852,16 +978,11 @@ def test_codex_headless_remote_preflight_reports_missing_codex_binary(
     )
 
     assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == [
-        "preflight",
-        "worktree",
-        "preflight",
-    ]
-    assert "remote preflight failed" in result.stderr
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight"]
+    assert "remote token preflight failed" in result.stderr
     assert "missing_binaries" in result.stderr
     assert "codex" in result.stderr
     assert "next action:" in result.stderr
-    assert "hook adapter" in result.stderr
     assert "HAPAX_DISPATCH_HOST_FALLBACK=local" in result.stderr
 
 

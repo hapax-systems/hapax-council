@@ -15,6 +15,23 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
 
 def _write_executable(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.name == "codex":
+        body = (
+            """if [ "${1:-}" = "debug" ] && [ "${2:-}" = "models" ]; then
+  if [ -z "${CODEX_ACCESS_TOKEN:-}" ]; then
+    echo "missing CODEX_ACCESS_TOKEN" >&2
+    exit 78
+  fi
+  if [ "${HAPAX_FAKE_CODEX_DEBUG_MODELS_RC:-0}" != "0" ]; then
+    echo "unauthorized bearer" >&2
+    exit "${HAPAX_FAKE_CODEX_DEBUG_MODELS_RC}"
+  fi
+  printf '%s\n' '{"models":[{"slug":"gpt-5.5"}]}'
+  exit 0
+fi
+"""
+            + body
+        )
     path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
     path.chmod(0o755)
 

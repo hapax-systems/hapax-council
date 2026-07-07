@@ -87,6 +87,20 @@ CONFIG_REFS_BY_PLATFORM = {
 SECRETISH_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|credential)([=:])(\S+)")
 RETIRED_ANTIGRAV_PLATFORMS = frozenset({"agy", "antigrav", "antigravity", "gemini-cli"})
 CODEX_OAUTH_ACCESS_TOKEN_FILE_ENV = "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE"
+CODEX_PROBE_ENV_ALLOWLIST = frozenset(
+    {
+        "ALL_PROXY",
+        "HOME",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "LANG",
+        "LC_ALL",
+        "NO_PROXY",
+        "PATH",
+        "REQUESTS_CA_BUNDLE",
+        "SSL_CERT_FILE",
+    }
+)
 
 
 def parse_utc(value: str) -> datetime:
@@ -303,18 +317,25 @@ def observe_codex_bearer_actuation(
         )
     try:
         with tempfile.TemporaryDirectory(prefix="hapax-codex-actuation-") as codex_home:
+            env = {
+                name: value
+                for name in CODEX_PROBE_ENV_ALLOWLIST
+                if (value := os.environ.get(name)) is not None
+            }
+            env.update(
+                {
+                    "CODEX_ACCESS_TOKEN": token.raw,
+                    "CODEX_HOME": codex_home,
+                    "NO_COLOR": "1",
+                }
+            )
             result = subprocess.run(
                 [resolved, "debug", "models"],
                 check=False,
                 text=True,
                 capture_output=True,
                 timeout=timeout,
-                env={
-                    **os.environ,
-                    "CODEX_ACCESS_TOKEN": token.raw,
-                    "CODEX_HOME": codex_home,
-                    "NO_COLOR": "1",
-                },
+                env=env,
             )
     except subprocess.TimeoutExpired:
         return surface_evidence(
@@ -555,9 +576,16 @@ def known_unknowns_for(platform: str) -> list[str]:
             0,
             "Account-live subscription quota is not exposed by the local receipt probe.",
         )
-        unknowns.append(
-            "Receipt command records config paths and existence only; it never reads secret values."
-        )
+        if platform == "codex":
+            unknowns.append(
+                "Codex receipt refresh reads the published OAuth access token transiently "
+                "to prove bearer actuation; it records only a fingerprint/status and never "
+                "persists the token value."
+            )
+        else:
+            unknowns.append(
+                "Receipt command records config paths and existence only; it never reads secret values."
+            )
     return unknowns
 
 
@@ -671,6 +699,10 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"{item['platform']}: wrote {target} "
                 f"cli={item['cli_available']} wrapper={item['wrapper_exists']} "
+                f"capability={item['capability_status']} "
+                f"capability_reasons={','.join(item['capability_reason_codes']) or '-'} "
+                f"resource={item['resource_status']} "
+                f"resource_reasons={','.join(item['resource_reason_codes']) or '-'} "
                 f"quota={item['quota_status']}"
             )
     return 0

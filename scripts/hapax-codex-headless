@@ -201,6 +201,70 @@ PYEOF
   export CODEX_ACCESS_TOKEN="$token"
 }
 
+resolve_local_codex_bin() {
+  if [[ -n "${HAPAX_CODEX_BIN:-}" ]]; then
+    [[ -x "$HAPAX_CODEX_BIN" ]] || {
+      echo "hapax-codex-headless: configured HAPAX_CODEX_BIN is not executable: $HAPAX_CODEX_BIN" >&2
+      exit 4
+    }
+    printf '%s\n' "$HAPAX_CODEX_BIN"
+    return 0
+  fi
+  local codex_bin=""
+  codex_bin="$(command -v codex || true)"
+  [[ -n "$codex_bin" ]] || { echo "hapax-codex-headless: codex not found in PATH" >&2; exit 4; }
+  printf '%s\n' "$codex_bin"
+}
+
+prove_local_codex_bearer_actuation() {
+  local codex_bin="$1" tmp_codex_home="" models_file="" rc=0 timeout_s=""
+  timeout_s="${HAPAX_CODEX_BEARER_ACTUATION_TIMEOUT_SECONDS:-15}"
+  tmp_codex_home="$(mktemp -d "${TMPDIR:-/tmp}/hapax-codex-actuation.XXXXXX")" || {
+    echo "hapax-codex-headless: failed to create temporary Codex actuation home" >&2
+    exit 78
+  }
+  models_file="$tmp_codex_home/models.json"
+  timeout "${timeout_s}s" env -i \
+    ALL_PROXY="${ALL_PROXY:-}" \
+    HOME="$HOME" \
+    HTTP_PROXY="${HTTP_PROXY:-}" \
+    HTTPS_PROXY="${HTTPS_PROXY:-}" \
+    LANG="${LANG:-C}" \
+    LC_ALL="${LC_ALL:-}" \
+    NO_COLOR=1 \
+    NO_PROXY="${NO_PROXY:-}" \
+    PATH="$PATH" \
+    REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-}" \
+    SSL_CERT_FILE="${SSL_CERT_FILE:-}" \
+    CODEX_ACCESS_TOKEN="$CODEX_ACCESS_TOKEN" \
+    CODEX_HOME="$tmp_codex_home" \
+    "$codex_bin" debug models >"$models_file" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    rm -rf "$tmp_codex_home"
+    echo "hapax-codex-headless: published Codex OAuth access token was rejected by codex debug models (rc=$rc); next action: run the codex OAuth refresher or reauth on the dispatch host before dispatching Codex lanes" >&2
+    exit 78
+  fi
+  if ! python3 - "$models_file" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+models = payload.get("models") if isinstance(payload, dict) else None
+if not isinstance(models, list) or not models:
+    raise SystemExit(1)
+PYEOF
+  then
+    rm -rf "$tmp_codex_home"
+    echo "hapax-codex-headless: codex debug models returned no parseable model catalog; next action: verify the Codex CLI/auth substrate before dispatching Codex lanes" >&2
+    exit 78
+  fi
+  rm -rf "$tmp_codex_home"
+}
+
 remote_preflight_payload_b64() {
   local token_only="${1:-0}"
   python3 - "$WORKDIR" "$COUNCIL_DIR" "$HOME/projects/hapax-mcp" "$token_only" <<'PYEOF'
@@ -217,7 +281,7 @@ token_file = (
 payload = {
     "required_dirs": [] if token_only == "1" else [workdir, council_dir, mcp_dir],
     "executables": [] if token_only == "1" else [f"{council_dir}/hooks/scripts/codex-hook-adapter.sh"],
-    "binaries": [] if token_only == "1" else ["python3", "codex"],
+    "binaries": ["codex"] if token_only == "1" else ["python3", "codex"],
     "token_file": token_file,
 }
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
@@ -302,7 +366,7 @@ print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).deco
 PYEOF
 }
 
-REMOTE_PREFLIGHT_PY='import base64,json,os,shutil,sys,time; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"]));
+REMOTE_PREFLIGHT_PY='import base64,json,os,shutil,subprocess,sys,tempfile,time; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"]));
 missing_dirs=[path for path in p.get("required_dirs",()) if not os.path.isdir(path)]
 missing_exec=[path for path in p.get("executables",()) if not (os.path.isfile(path) and os.access(path, os.X_OK))]
 missing_bins=[binary for binary in p.get("binaries",()) if not shutil.which(binary)]
@@ -314,6 +378,7 @@ def _jwt_exp(token):
         return 0.0
 token_file=os.path.expanduser(p.get("token_file") or "~/.cache/hapax/codex-oauth/access_token")
 token_error=""
+actuation_error=""
 try:
     token=open(token_file,encoding="utf-8").read().strip()
 except OSError:
@@ -321,8 +386,32 @@ except OSError:
 else:
     if not token or _jwt_exp(token) - time.time() <= 300:
         token_error="codex_oauth_access_token_absent_or_expiring:"+token_file
-if missing_dirs or missing_exec or missing_bins or token_error:
-    print("remote preflight failed: missing_dirs="+json.dumps(missing_dirs)+" missing_executables="+json.dumps(missing_exec)+" missing_binaries="+json.dumps(missing_bins)+" token_error="+json.dumps(token_error)+"; next action: ssh to the dispatch host and run the codex OAuth refresher or reauth, then verify required paths before retrying", file=sys.stderr)
+if not token_error:
+    codex_bin=shutil.which("codex")
+    if codex_bin is None:
+        actuation_error="codex_binary_missing"
+    else:
+        with tempfile.TemporaryDirectory(prefix="hapax-codex-actuation-") as codex_home:
+            env={k:v for k in ("ALL_PROXY","HOME","HTTP_PROXY","HTTPS_PROXY","LANG","LC_ALL","NO_PROXY","PATH","REQUESTS_CA_BUNDLE","SSL_CERT_FILE") if (v:=os.environ.get(k)) is not None}
+            env.update({"CODEX_ACCESS_TOKEN":token,"CODEX_HOME":codex_home,"NO_COLOR":"1"})
+            try:
+                result=subprocess.run([codex_bin,"debug","models"],text=True,capture_output=True,timeout=15,env=env)
+            except (OSError,subprocess.TimeoutExpired) as exc:
+                actuation_error="codex_bearer_actuation_failed:"+type(exc).__name__
+            else:
+                if result.returncode != 0:
+                    actuation_error="codex_bearer_actuation_failed:rc="+str(result.returncode)
+                else:
+                    try:
+                        payload=json.loads(result.stdout)
+                    except json.JSONDecodeError:
+                        actuation_error="codex_bearer_actuation_unparseable"
+                    else:
+                        models=payload.get("models") if isinstance(payload,dict) else None
+                        if not isinstance(models,list) or not models:
+                            actuation_error="codex_bearer_actuation_unparseable"
+if missing_dirs or missing_exec or missing_bins or token_error or actuation_error:
+    print("remote preflight failed: missing_dirs="+json.dumps(missing_dirs)+" missing_executables="+json.dumps(missing_exec)+" missing_binaries="+json.dumps(missing_bins)+" token_error="+json.dumps(token_error)+" actuation_error="+json.dumps(actuation_error)+"; next action: ssh to the dispatch host and run the codex OAuth refresher or reauth, then verify required paths before retrying", file=sys.stderr)
     sys.exit(1)
 sys.exit(0)'
 REMOTE_WORKTREE_PY='import base64,json,os,shutil,subprocess,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); workdir=p["workdir"]; council=p["council_dir"];
@@ -583,6 +672,7 @@ DISPATCH_LOCAL_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-local.js
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 CODEX_PID=""
+CODEX_BIN=""
 # shellcheck disable=SC2329
 cleanup() {
   local current_pid=""
@@ -722,6 +812,8 @@ fi
 
 if [[ -z "$DISPATCH_HOST_REQUESTED" && -z "$DISPATCH_HOST" ]]; then
   load_local_codex_access_token
+  CODEX_BIN="$(resolve_local_codex_bin)"
+  prove_local_codex_bearer_actuation "$CODEX_BIN"
 fi
 
 if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
@@ -737,10 +829,8 @@ else
 fi
 COCKPIT_BASE_URL="${COCKPIT_BASE_URL:-$LOGOS_BASE_URL}"
 
-CODEX_BIN=""
 if [[ -z "$DISPATCH_HOST" ]]; then
-  CODEX_BIN="$(command -v codex || true)"
-  [[ -n "$CODEX_BIN" ]] || { echo "hapax-codex-headless: codex not found in PATH" >&2; exit 4; }
+  CODEX_BIN="${CODEX_BIN:-$(resolve_local_codex_bin)}"
 else
   CODEX_BIN="codex"
 fi

@@ -2502,7 +2502,13 @@ def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: P
     codex_args = tmp_path / "codex-args.txt"
     _write(
         bin_dir / "codex",
-        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {codex_args}\n",
+        f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
+  printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
+  exit 0
+fi
+printf '%s\\n' "$*" > {codex_args}
+""",
     )
     (bin_dir / "codex").chmod(0o755)
 
@@ -2575,7 +2581,13 @@ def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path)
     codex_args = tmp_path / "codex-args.txt"
     _write(
         bin_dir / "codex",
-        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {codex_args}\n",
+        f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
+  printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
+  exit 0
+fi
+printf '%s\\n' "$*" > {codex_args}
+""",
     )
     (bin_dir / "codex").chmod(0o755)
 
