@@ -166,9 +166,12 @@ def _public_gate_receipt_suffix(ref: str) -> str | None:
 
 def _receipt_candidate_paths(suffix: str) -> tuple[Path, ...]:
     base = Path(suffix)
-    candidates = [base]
-    if base.suffix.casefold() not in PUBLIC_GATE_RECEIPT_EXTENSIONS:
-        candidates.extend(Path(f"{suffix}{extension}") for extension in (".yaml", ".json", ".md"))
+    if base.suffix:
+        candidates = [base] if base.suffix.casefold() in PUBLIC_GATE_RECEIPT_EXTENSIONS else []
+    else:
+        candidates = [
+            Path(f"{suffix}{extension}") for extension in (".yaml", ".yml", ".json", ".md")
+        ]
     deduped: list[Path] = []
     seen: set[str] = set()
     for candidate in candidates:

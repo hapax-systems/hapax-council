@@ -270,6 +270,17 @@ def test_rejects_mapping_and_bytes_values(tmp_path: Path) -> None:
     )
 
 
+def test_rejects_unsupported_receipt_extension(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.txt", f"gate_id: {GATE}\nstatus: passed\n")
+    _write(tmp_path, "receipt-1.txt.yaml", f"gate_id: {GATE}\nstatus: passed\n")
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.txt",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
 def test_rejects_root_escape_and_malformed_yaml(tmp_path: Path) -> None:
     outside = tmp_path.parent / "outside-public-gate.yaml"
     outside.write_text(f"gate_id: {GATE}\nstatus: passed\n", encoding="utf-8")
