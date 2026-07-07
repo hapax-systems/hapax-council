@@ -71,7 +71,35 @@ def _run_receipts(
 
 def _fake_binary(bin_dir: Path, name: str, output: str) -> None:
     target = bin_dir / name
-    target.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n", encoding="utf-8")
+    if name == "codex":
+        target.write_text(
+            f"""#!/bin/sh
+if [ "${{1:-}}" = "--version" ]; then
+  printf '%s\\n' '{output}'
+  exit 0
+fi
+if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
+  if [ -z "${{CODEX_ACCESS_TOKEN:-}}" ]; then
+    echo "missing CODEX_ACCESS_TOKEN" >&2
+    exit 42
+  fi
+  if [ -z "${{CODEX_HOME:-}}" ]; then
+    echo "missing CODEX_HOME" >&2
+    exit 43
+  fi
+  if [ "${{HAPAX_FAKE_CODEX_DEBUG_MODELS_RC:-0}}" != "0" ]; then
+    echo "unauthorized token" >&2
+    exit "${{HAPAX_FAKE_CODEX_DEBUG_MODELS_RC}}"
+  fi
+  printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
+  exit 0
+fi
+printf '%s\\n' '{output}'
+""",
+            encoding="utf-8",
+        )
+    else:
+        target.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n", encoding="utf-8")
     target.chmod(target.stat().st_mode | stat.S_IXUSR)
 
 
@@ -218,6 +246,10 @@ def test_fresh_subscription_receipt_clears_account_live_quota_blocker(
     assert any(
         ref.startswith("platform-capability-receipt:codex:")
         for ref in route.freshness.evidence.quota.evidence_refs
+    )
+    assert any(
+        ref == "local:codex:bearer-actuation:debug-models:model-count:1"
+        for ref in route.freshness.evidence.capability.evidence_refs
     )
     assert route.tool_state[0].evidence_ref.startswith("platform-capability-receipt:codex:")
 
@@ -372,6 +404,40 @@ def test_codex_receipt_uses_exact_configured_oauth_token_file(tmp_path: Path) ->
     assert "codex_oauth_access_token_absent" in receipt["capability"]["reason_codes"]
     assert receipt["resource"]["status"] == "blocked"
     assert "codex_oauth_access_token_absent" in receipt["resource"]["reason_codes"]
+
+
+def test_codex_receipt_blocks_when_published_token_does_not_actuate(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    home_dir = tmp_path / "home"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+    token_path = _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
+    token = token_path.read_text(encoding="utf-8").strip()
+
+    result = _run_receipts(
+        tmp_path,
+        env={
+            "PATH": str(bin_dir),
+            "HOME": str(home_dir),
+            "HAPAX_FAKE_CODEX_DEBUG_MODELS_RC": "77",
+        },
+        now=_current_iso_z(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt_text = (tmp_path / "codex.json").read_text(encoding="utf-8")
+    assert token not in receipt_text
+    receipt = json.loads(receipt_text)
+    assert receipt["capability"]["status"] == "blocked"
+    assert receipt["resource"]["status"] == "blocked"
+    assert "codex_oauth_bearer_actuation_failed" in receipt["capability"]["reason_codes"]
+    assert "codex_oauth_bearer_actuation_failed" in receipt["resource"]["reason_codes"]
+    assert any(
+        ref == "local:codex:bearer-actuation:debug-models:exit:77"
+        for ref in receipt["capability"]["evidence_refs"]
+    )
 
 
 def test_antigrav_agy_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -> None:

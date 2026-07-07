@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared.codex_oauth_refresher import (  # noqa: E402
     DEFAULT_PUBLISHED_ACCESS_TOKEN,
+    AccessToken,
     load_published_access_token,
     needs_refresh,
     token_fingerprint,
@@ -223,6 +225,7 @@ def observe_codex_oauth_session(
     *,
     observed_at: datetime,
     stale_after: str,
+    timeout: float,
 ) -> SurfaceEvidence:
     token_file = codex_oauth_access_token_file()
     token = load_published_access_token(token_file=token_file)
@@ -245,6 +248,15 @@ def observe_codex_oauth_session(
             evidence_refs=[f"local:{token_ref}:fingerprint:{token_fingerprint(token.raw)}"],
             reason_codes=["codex_oauth_access_token_expiring_or_unparseable"],
         )
+    actuation = observe_codex_bearer_actuation(
+        token=token,
+        token_ref=token_ref,
+        observed_at=observed_at,
+        stale_after=stale_after,
+        timeout=timeout,
+    )
+    if actuation.status is not EvidenceStatus.OBSERVED:
+        return actuation
     return surface_evidence(
         status=EvidenceStatus.OBSERVED,
         source="local_codex_oauth_published_token_probe",
@@ -253,6 +265,113 @@ def observe_codex_oauth_session(
         evidence_refs=[
             f"local:current-codex-session:filesystem-shell-browser-usable:{iso_z(observed_at)}",
             f"local:{token_ref}:fingerprint:{token_fingerprint(token.raw)}",
+            *actuation.evidence_refs,
+        ],
+        reason_codes=[],
+    )
+
+
+def observe_codex_bearer_actuation(
+    *,
+    token: AccessToken,
+    token_ref: str,
+    observed_at: datetime,
+    stale_after: str,
+    timeout: float,
+) -> SurfaceEvidence:
+    """Prove the published bearer can actuate Codex without launching a model turn."""
+
+    fingerprint_ref = f"local:{token_ref}:fingerprint:{token_fingerprint(token.raw)}"
+    binary = shutil.which("codex")
+    if binary is None:
+        return surface_evidence(
+            status=EvidenceStatus.BLOCKED,
+            source="local_codex_oauth_bearer_actuation_probe",
+            observed_at=observed_at,
+            stale_after=stale_after,
+            evidence_refs=[fingerprint_ref],
+            reason_codes=["codex_oauth_bearer_actuation_cli_missing"],
+        )
+    try:
+        with tempfile.TemporaryDirectory(prefix="hapax-codex-actuation-") as codex_home:
+            result = subprocess.run(
+                [binary, "debug", "models"],
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                env={
+                    **os.environ,
+                    "CODEX_ACCESS_TOKEN": token.raw,
+                    "CODEX_HOME": codex_home,
+                    "NO_COLOR": "1",
+                },
+            )
+    except subprocess.TimeoutExpired:
+        return surface_evidence(
+            status=EvidenceStatus.BLOCKED,
+            source="local_codex_oauth_bearer_actuation_probe",
+            observed_at=observed_at,
+            stale_after=stale_after,
+            evidence_refs=[fingerprint_ref, "local:codex:bearer-actuation:debug-models:timeout"],
+            reason_codes=["codex_oauth_bearer_actuation_timeout"],
+        )
+    except OSError as exc:
+        return surface_evidence(
+            status=EvidenceStatus.BLOCKED,
+            source="local_codex_oauth_bearer_actuation_probe",
+            observed_at=observed_at,
+            stale_after=stale_after,
+            evidence_refs=[
+                fingerprint_ref,
+                f"local:codex:bearer-actuation:debug-models:error:{safe_text(str(exc), limit=160)}",
+            ],
+            reason_codes=["codex_oauth_bearer_actuation_failed"],
+        )
+    if result.returncode != 0:
+        return surface_evidence(
+            status=EvidenceStatus.BLOCKED,
+            source="local_codex_oauth_bearer_actuation_probe",
+            observed_at=observed_at,
+            stale_after=stale_after,
+            evidence_refs=[
+                fingerprint_ref,
+                f"local:codex:bearer-actuation:debug-models:exit:{result.returncode}",
+            ],
+            reason_codes=["codex_oauth_bearer_actuation_failed"],
+        )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return surface_evidence(
+            status=EvidenceStatus.BLOCKED,
+            source="local_codex_oauth_bearer_actuation_probe",
+            observed_at=observed_at,
+            stale_after=stale_after,
+            evidence_refs=[
+                fingerprint_ref,
+                "local:codex:bearer-actuation:debug-models:invalid-json",
+            ],
+            reason_codes=["codex_oauth_bearer_actuation_unparseable"],
+        )
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list) or not models:
+        return surface_evidence(
+            status=EvidenceStatus.BLOCKED,
+            source="local_codex_oauth_bearer_actuation_probe",
+            observed_at=observed_at,
+            stale_after=stale_after,
+            evidence_refs=[fingerprint_ref, "local:codex:bearer-actuation:debug-models:no-models"],
+            reason_codes=["codex_oauth_bearer_actuation_unparseable"],
+        )
+    return surface_evidence(
+        status=EvidenceStatus.OBSERVED,
+        source="local_codex_oauth_bearer_actuation_probe",
+        observed_at=observed_at,
+        stale_after=stale_after,
+        evidence_refs=[
+            f"local:codex:bearer-actuation:debug-models:model-count:{len(models)}",
+            fingerprint_ref,
         ],
         reason_codes=[],
     )
@@ -338,6 +457,7 @@ def build_receipt(
         codex_session = observe_codex_oauth_session(
             observed_at=observed_at,
             stale_after=stale_after,
+            timeout=timeout,
         )
         capability_refs.extend(codex_session.evidence_refs)
         if codex_session.status is not EvidenceStatus.OBSERVED:
