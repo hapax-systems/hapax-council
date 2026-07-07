@@ -2468,6 +2468,48 @@ def test_head_locked_public_current_release_passes_revalidation(
     ] in runner.calls
 
 
+def test_head_locked_provider_spend_release_still_blocks_revalidation(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="already-armed-provider-spend-surface",
+        status="pr_open",
+        pr=770,
+        branch="feat/770",
+        mutation_surface="provider_spend",
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-770",
+            "release_authorized_head_ref": "feat/770",
+            "stage": "S7_RELEASE",
+        },
+    )
+    _write_governance_review_dossier(vault, "already-armed-provider-spend-surface", 770)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(770, branch="feat/770")]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert any(
+        item["pr"] == 770
+        and item["action"] == "release_head_revalidation"
+        and item["ok"] is False
+        and item["message"].startswith("current_release_auto_arm_blocked:")
+        and "mutation_surface:provider_spend" in item["message"]
+        for item in report["mutations"]
+    )
+    assert not any(call[:4] == ["gh", "pr", "merge", "770"] for call in runner.calls)
+
+
 def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

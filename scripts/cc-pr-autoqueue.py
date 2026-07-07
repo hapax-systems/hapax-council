@@ -1646,22 +1646,20 @@ def _release_auto_arm_current_evidence_blockers(
         # is explicitly head-locked with release_authorized: true, release-head
         # revalidation should still replay current check/risk evidence, but it
         # must not strand the accepted manual release solely because the
-        # authorized task is public, current, high-risk, or touches protected
-        # paths.
+        # authorized task is a public/current release or touches protected paths.
         blockers = tuple(
             blocker
             for blocker in blockers
             if not (
                 blocker.startswith("sensitive_path:")
-                or blocker.startswith("mutation_surface:")
+                or blocker == "mutation_surface:public"
                 or blocker == "public_current"
-                or blocker == "risk_tier:t3"
             )
         )
     return blockers
 
 
-def _release_auto_arm_manual_release_waivers(
+def _release_auto_arm_authorized_waivers(
     frontmatter: dict[str, Any],
     *,
     verified_checks: set[str],
@@ -1678,15 +1676,13 @@ def _release_auto_arm_manual_release_waivers(
                 "sensitive_path_waived_by_release_authorization:"
                 f"{blocker.removeprefix('sensitive_path:')}"
             )
-        elif blocker.startswith("mutation_surface:"):
+        elif blocker == "mutation_surface:public":
             waivers.append(
                 "mutation_surface_waived_by_release_authorization:"
                 f"{blocker.removeprefix('mutation_surface:')}"
             )
         elif blocker == "public_current":
             waivers.append("public_current_waived_by_release_authorization")
-        elif blocker == "risk_tier:t3":
-            waivers.append("risk_tier_t3_waived_by_release_authorization")
     return tuple(waivers)
 
 
@@ -1798,7 +1794,7 @@ def _release_head_boundary_blocker(
         return "current_release_auto_arm_blocked:" + ",".join(evidence_blockers)
     if release_authorization_waivers is not None:
         release_authorization_waivers.extend(
-            _release_auto_arm_manual_release_waivers(
+            _release_auto_arm_authorized_waivers(
                 current_frontmatter,
                 verified_checks=current_verified_checks,
             )
