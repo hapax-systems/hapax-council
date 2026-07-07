@@ -376,6 +376,25 @@ def test_risky_auto_approval_routes_cannot_be_unrestricted_authoritative() -> No
         PlatformCapabilityRoute.model_validate(payload)
 
 
+def test_vibe_route_uses_explicit_bounded_exclusions_without_quality_equivalence() -> None:
+    registry = load_platform_capability_registry()
+    vibe = registry.require("vibe.headless.full")
+
+    assert vibe.worker_tier.value == "bounded_worker"
+    assert [floor.value for floor in vibe.quality_envelope.eligible_quality_floors] == [
+        "deterministic_ok"
+    ]
+    assert vibe.quality_envelope.explicit_equivalence_records == []
+    assert "frontier_review_required_without_equivalence_record" in (
+        vibe.quality_envelope.excluded_task_classes
+    )
+    assert "quality_equivalence_record_absent" not in vibe.blocked_reasons
+    assert "quality_equivalence_record_absent" not in (
+        vibe.freshness.evidence.capability.blocked_reasons
+    )
+    assert "fresh_capability_evidence_absent" in vibe.blocked_reasons
+
+
 def test_unknown_privacy_posture_is_visible_and_non_permissive() -> None:
     payload = _payload()
     route = _route_payload(payload, "vibe.headless.full")
@@ -493,6 +512,47 @@ def _make_receipt(*, observed_at: datetime, stale_after: str = "24h") -> Platfor
             refs=["test:docs"],
             fetched_at=observed_at,
             stale_after="168h",
+        ),
+    )
+
+
+def _make_vibe_receipt(
+    *, observed_at: datetime, stale_after: str = "24h"
+) -> PlatformCapabilityReceipt:
+    return PlatformCapabilityReceipt(
+        receipt_id="test-vibe-receipt",
+        platform="vibe",
+        routes=["vibe.headless.full"],
+        observed_at=observed_at,
+        stale_after=stale_after,
+        cli=CliEvidence(binary="vibe", available=True, version="0.0-test"),
+        wrapper=WrapperEvidence(path="scripts/hapax-vibe", exists=True, executable=True),
+        capability=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:vibe:cap"],
+        ),
+        resource=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:vibe:res"],
+        ),
+        quota=SurfaceEvidence(
+            status=EvidenceStatus.UNOBSERVABLE,
+            source="test",
+            observed_at=observed_at,
+            stale_after="15m",
+            evidence_refs=["test:vibe:quota"],
+            reason_codes=["account_live_quota_receipt_absent"],
+        ),
+        provider_docs=ProviderDocsEvidence(
+            refs=["test:vibe:docs"],
+            fetched_at=observed_at,
+            stale_after="30d",
         ),
     )
 
@@ -707,6 +767,40 @@ def test_subscription_quota_nonblocking_uses_receipt_stale_after() -> None:
 
     quota_errors = [e for e in result.routes[0].errors if "quota" in e]
     assert not quota_errors, f"quota should not be stale after 1h: {quota_errors}"
+
+
+def test_vibe_receipt_backfills_capability_checked_at_from_observed_at() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "vibe.headless.full")
+    assert route["freshness"]["capability_checked_at"] is None
+    assert "fresh_capability_evidence_absent" in route["blocked_reasons"]
+
+    receipt_time = datetime(2026, 6, 19, 15, 30, tzinfo=UTC)
+    _apply_receipt_to_route_payload(route, _make_vibe_receipt(observed_at=receipt_time))
+
+    assert route["freshness"]["capability_checked_at"] == "2026-06-19T15:30:00Z"
+    assert route["freshness"]["resource_checked_at"] == "2026-06-19T15:30:00Z"
+    assert route["freshness"]["quota_checked_at"] == "2026-06-19T15:30:00Z"
+    assert route["freshness"]["quota_stale_after"] == "24h"
+    assert route["route_state"] == "active"
+    assert route["blocked_reasons"] == []
+    assert (
+        "fresh_capability_evidence_absent"
+        not in (route["freshness"]["evidence"]["capability"]["blocked_reasons"])
+    )
+    assert any(
+        ref.startswith("platform-capability-receipt:vibe:")
+        for ref in route["freshness"]["evidence"]["capability"]["evidence_refs"]
+    )
+
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    result = check_registry_freshness(
+        registry,
+        route_ids=["vibe.headless.full"],
+        now=datetime(2026, 6, 19, 15, 31, tzinfo=UTC),
+    )
+
+    assert result.ok is True
 
 
 def test_provider_gateway_receipt_clears_gateway_evidence_blockers() -> None:
