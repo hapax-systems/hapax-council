@@ -239,14 +239,11 @@ class TestPhase1PublishBusEndToEnd:
         assert "Hapax + Claude Code" in called_text
         assert "unsettled contribution as feature" in called_text
 
-    def test_e2e_discord_typed_artifact_lands_surface_unwired(self, tmp_path, monkeypatch):
+    def test_e2e_discord_typed_artifact_quarantines_refused_surface(self, tmp_path, monkeypatch):
         """discord-webhook was retired 2026-05-01 (cc-task
-        ``discord-public-event-activation-or-retire``). An artifact targeting
-        ``discord-webhook`` now falls through to ``surface_unwired`` because
-        REFUSED-tier surfaces are intentionally absent from the orchestrator
-        dispatch registry. This is the correct fail-mode for a refused surface
-        — no spurious ``no_credentials`` outcome that would imply Discord is
-        merely waiting for a webhook URL.
+        ``discord-public-event-activation-or-retire``). A direct inbox artifact
+        targeting ``discord-webhook`` is now rejected at the configured
+        publication-surface allowlist before registry dispatch.
         """
         monkeypatch.delenv("HAPAX_DISCORD_WEBHOOK_URL", raising=False)
 
@@ -256,10 +253,15 @@ class TestPhase1PublishBusEndToEnd:
 
         handled = orch.run_once()
         assert handled == 1
-        record = _read_log(tmp_path, "e2e-discord-refused", "discord-webhook")
-        assert record["result"] == "surface_unwired", (
-            f"REFUSED surface dispatch must yield surface_unwired, got {record['result']}"
-        )
+        assert not (
+            tmp_path / "publish" / "log" / "e2e-discord-refused.discord-webhook.json"
+        ).exists()
+        failed = list((tmp_path / "publish" / "failed").glob("invalid-artifact-*.json"))
+        assert len(failed) == 1
+        payload = json.loads(failed[0].read_text())
+        child = payload["publication_gate_result"]["child_results"][0]
+        assert child["name"] == "artifact_envelope"
+        assert any("discord-webhook" in finding for finding in child["findings"])
 
     def test_e2e_arena_ok_with_mocked_transport(self, tmp_path, monkeypatch):
         """With token + slug set + mocked Arena adapter, arena returns ``ok``."""
@@ -330,9 +332,9 @@ class TestPhase1PublishBusEndToEnd:
         assert not (tmp_path / "publish" / "published" / "e2e-partial.json").exists()
         assert (tmp_path / "publish" / "failed" / "e2e-partial.json").exists()
 
-    def test_e2e_unwired_surface_logs_surface_unwired(self, tmp_path):
+    def test_e2e_unwired_surface_quarantines_before_dispatch(self, tmp_path):
         """A typo in surfaces_targeted (not in SURFACE_REGISTRY) lands as
-        ``surface_unwired`` in the log, doesn't crash the run."""
+        an artifact-envelope quarantine before dispatch."""
         _drop_approved_artifact(
             tmp_path,
             slug="e2e-typo",
@@ -343,7 +345,11 @@ class TestPhase1PublishBusEndToEnd:
         handled = orch.run_once()
 
         assert handled == 1
-        record = _read_log(tmp_path, "e2e-typo", "bluesky-pst")
-        assert record["result"] == "surface_unwired"
+        assert not (tmp_path / "publish" / "log" / "e2e-typo.bluesky-pst.json").exists()
         assert not (tmp_path / "publish" / "published" / "e2e-typo.json").exists()
-        assert (tmp_path / "publish" / "failed" / "e2e-typo.json").exists()
+        failed = list((tmp_path / "publish" / "failed").glob("invalid-artifact-*.json"))
+        assert len(failed) == 1
+        payload = json.loads(failed[0].read_text())
+        child = payload["publication_gate_result"]["child_results"][0]
+        assert child["name"] == "artifact_envelope"
+        assert any("bluesky-pst" in finding for finding in child["findings"])

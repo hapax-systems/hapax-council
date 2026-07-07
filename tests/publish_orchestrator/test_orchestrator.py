@@ -170,10 +170,18 @@ class _StaticGate:
         )
 
 
-def _make_orchestrator(state_root: Path, *, surface_registry: dict[str, str]) -> Orchestrator:
+def _make_orchestrator(
+    state_root: Path,
+    *,
+    surface_registry: dict[str, str],
+    publication_allowed_surfaces: set[str] | None = None,
+) -> Orchestrator:
     return Orchestrator(
         state_root=state_root,
         surface_registry=surface_registry,
+        publication_allowed_surfaces=publication_allowed_surfaces
+        if publication_allowed_surfaces is not None
+        else set(surface_registry),
         public_event_path=state_root / "public-events.jsonl",
         review_pass=_ApprovingReviewPass(),
         registry=CollectorRegistry(),
@@ -200,7 +208,11 @@ class TestEmptyInbox:
 class TestSingleSurface:
     def test_unwired_surface(self, tmp_path):
         _drop_artifact(tmp_path, slug="x", surfaces=["unknown-surface"])
-        orch = _make_orchestrator(tmp_path, surface_registry={})
+        orch = _make_orchestrator(
+            tmp_path,
+            surface_registry={},
+            publication_allowed_surfaces={"unknown-surface"},
+        )
         orch.run_once()
 
         log_path = tmp_path / "publish/log/x.unknown-surface.json"
@@ -261,6 +273,7 @@ class TestSingleSurface:
         orch = Orchestrator(
             state_root=tmp_path,
             surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
             public_event_path=tmp_path / "public-events.jsonl",
             review_pass=_HoldingReviewPass(),
             registry=CollectorRegistry(),
@@ -300,6 +313,7 @@ class TestSingleSurface:
         orch = Orchestrator(
             state_root=tmp_path,
             surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
             public_event_path=tmp_path / "public-events.jsonl",
             hardening_gate=_StaticGate(PublicationGateDecision.REJECT),
             registry=CollectorRegistry(),
@@ -336,6 +350,7 @@ class TestSingleSurface:
         orch = Orchestrator(
             state_root=tmp_path,
             surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
             public_event_path=tmp_path / "public-events.jsonl",
             review_pass=review_pass,
             registry=CollectorRegistry(),
@@ -368,6 +383,7 @@ class TestSingleSurface:
         orch = Orchestrator(
             state_root=tmp_path,
             surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
             public_event_path=tmp_path / "public-events.jsonl",
             review_pass=review_pass,
             registry=CollectorRegistry(),
@@ -385,6 +401,33 @@ class TestSingleSurface:
         child = payload["publication_gate_result"]["child_results"][0]
         assert child["name"] == "artifact_envelope"
         assert any("source_path" in finding for finding in child["findings"])
+
+    def test_direct_inbox_surface_outside_allowlist_quarantines(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        _drop_artifact(tmp_path, slug="outside-allowlist", surfaces=["fake"])
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"allowed-surface"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=_CountingReviewPass(),
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        fake_module.publish_artifact.assert_not_called()
+        assert not (tmp_path / "publish" / "inbox" / "outside-allowlist.json").exists()
+        failed = list((tmp_path / "publish" / "failed").glob("invalid-artifact-*.json"))
+        assert len(failed) == 1
+        payload = json.loads(failed[0].read_text())
+        child = payload["publication_gate_result"]["child_results"][0]
+        assert child["name"] == "artifact_envelope"
+        assert any(
+            "outside configured publication allowlist" in finding for finding in child["findings"]
+        )
 
     def test_malformed_source_path_quarantines_before_resolution_error(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()
@@ -407,6 +450,7 @@ class TestSingleSurface:
         orch = Orchestrator(
             state_root=tmp_path,
             surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
             public_event_path=tmp_path / "public-events.jsonl",
             review_pass=review_pass,
             registry=CollectorRegistry(),
@@ -465,6 +509,7 @@ class TestSingleSurface:
         orch = Orchestrator(
             state_root=tmp_path,
             surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
             public_event_path=tmp_path / "public-events.jsonl",
             review_pass=review_pass,
             registry=CollectorRegistry(),
@@ -521,6 +566,7 @@ class TestSingleSurface:
         orch = Orchestrator(
             state_root=tmp_path,
             surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
             public_event_path=tmp_path / "public-events.jsonl",
             review_pass=review_pass,
             registry=CollectorRegistry(),
@@ -547,6 +593,7 @@ class TestSingleSurface:
         orch = Orchestrator(
             state_root=tmp_path,
             surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
             public_event_path=tmp_path / "public-events.jsonl",
             hardening_gate=_StaticGate(PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD),
             registry=CollectorRegistry(),
@@ -578,6 +625,7 @@ class TestSingleSurface:
         orch = Orchestrator(
             state_root=tmp_path,
             surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
             public_event_path=tmp_path / "public-events.jsonl",
             hardening_gate=_StaticGate(PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD),
             registry=CollectorRegistry(),
@@ -779,7 +827,11 @@ class TestCounter:
 
     def test_counter_unwired_surface(self, tmp_path):
         _drop_artifact(tmp_path, slug="u", surfaces=["nope"])
-        orch = _make_orchestrator(tmp_path, surface_registry={})
+        orch = _make_orchestrator(
+            tmp_path,
+            surface_registry={},
+            publication_allowed_surfaces={"nope"},
+        )
         orch.run_once()
 
         sample = orch.dispatches_total.labels(surface="nope", result="surface_unwired")._value.get()

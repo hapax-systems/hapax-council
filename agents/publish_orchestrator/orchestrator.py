@@ -107,6 +107,10 @@ PUBLIC_GATE_RECEIPT_ROOTS = (
     Path.home() / ".cache" / "hapax" / "relay" / "receipts",
     REPO_ROOT / "docs" / "research" / "evidence",
 )
+PUBLICATION_POLICY_PATHS = (
+    REPO_ROOT / "config" / "omg-lol.yaml",
+    REPO_ROOT / "config" / "omg-lol-fanout.yaml",
+)
 PUBLICATION_SAFE_SEGMENT_RE = re.compile(r"\A[a-z0-9][a-z0-9_.-]{0,119}\Z")
 PUBLICATION_SOURCE_PATH_ROOTS = (
     Path.home() / "Documents" / "Personal",
@@ -250,6 +254,7 @@ class Orchestrator:
         hardening_gate: PublicationHardeningGate | None = None,
         egress_envelope: EgressSafetyEnvelope | None = None,
         public_gate_receipt_roots: tuple[Path, ...] | None = None,
+        publication_allowed_surfaces: set[str] | None = None,
         registry: CollectorRegistry = REGISTRY,
         tick_s: float = DEFAULT_TICK_S,
         max_workers: int = 8,
@@ -270,6 +275,11 @@ class Orchestrator:
             tuple(public_gate_receipt_roots)
             if public_gate_receipt_roots is not None
             else (self._state_root / "public-gate-receipts", *PUBLIC_GATE_RECEIPT_ROOTS)
+        )
+        self._publication_allowed_surfaces_override = (
+            frozenset(publication_allowed_surfaces)
+            if publication_allowed_surfaces is not None
+            else None
         )
         self._source_path_roots = tuple(
             root.expanduser().resolve()
@@ -319,12 +329,22 @@ class Orchestrator:
                     self._quarantine_unloadable_inbox_artifact(path, exc)
                     handled += 1
                     continue
-                envelope_findings = self._inbox_artifact_envelope_findings(artifact)
+                try:
+                    envelope_findings = self._inbox_artifact_envelope_findings(artifact)
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("artifact envelope validation failed at %s", path)
+                    self._quarantine_unexpected_inbox_artifact_exception(path, artifact, exc)
+                    handled += 1
+                    continue
                 if envelope_findings:
                     self._quarantine_invalid_inbox_artifact(path, artifact, envelope_findings)
                     handled += 1
                     continue
-                self._dispatch(artifact, pool=pool)
+                try:
+                    self._dispatch(artifact, pool=pool)
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("artifact dispatch failed at %s", path)
+                    self._quarantine_unexpected_inbox_artifact_exception(path, artifact, exc)
                 handled += 1
         return handled
 
@@ -762,12 +782,74 @@ class Orchestrator:
                 + ", ".join(sorted(unsafe_surfaces))
                 + "; next action: target registered publication surface ids only"
             )
+        allowed_surfaces, allowlist_error = self._configured_publication_surfaces()
+        if allowlist_error is not None:
+            findings.append(allowlist_error)
+        else:
+            disallowed = sorted(set(artifact.surfaces_targeted) - allowed_surfaces)
+            if disallowed:
+                findings.append(
+                    "target surfaces outside configured publication allowlist: "
+                    + ", ".join(disallowed)
+                    + "; next action: remove those targets or update the reviewed "
+                    "publication_frontmatter_policy.target_surfaces allowlist"
+                )
         if artifact.source_path and not self._source_path_allowed(artifact.source_path):
             findings.append(
                 "source_path must stay under the publish state root, Obsidian vault, "
                 "or repository docs tree; next action: drop a vault/docs-backed artifact"
             )
         return tuple(findings)
+
+    def _configured_publication_surfaces(self) -> tuple[set[str], str | None]:
+        if self._publication_allowed_surfaces_override is not None:
+            return set(self._publication_allowed_surfaces_override), None
+        surfaces: set[str] = set()
+        for policy_path in PUBLICATION_POLICY_PATHS:
+            try:
+                loaded = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError) as exc:
+                return (
+                    set(),
+                    f"publication surface allowlist unreadable: {policy_path}: "
+                    f"{type(exc).__name__}; next action: repair readable YAML policy "
+                    "before processing inbox artifacts",
+                )
+            if not isinstance(loaded, Mapping):
+                return (
+                    set(),
+                    f"publication surface policy must be a mapping: {policy_path}; "
+                    "next action: restore publication_frontmatter_policy",
+                )
+            policy = loaded.get("publication_frontmatter_policy")
+            if not isinstance(policy, Mapping):
+                return (
+                    set(),
+                    f"publication surface policy missing publication_frontmatter_policy: "
+                    f"{policy_path}; next action: restore required public-egress policy fields",
+                )
+            target_surfaces = policy.get("target_surfaces")
+            if not isinstance(target_surfaces, list) or not target_surfaces:
+                return (
+                    set(),
+                    f"publication surface policy target_surfaces must be a non-empty list: "
+                    f"{policy_path}; next action: repair the reviewed surface allowlist",
+                )
+            malformed = [surface for surface in target_surfaces if not isinstance(surface, str)]
+            if malformed:
+                return (
+                    set(),
+                    f"publication surface policy target_surfaces must be strings: "
+                    f"{policy_path}; next action: repair the reviewed surface allowlist",
+                )
+            surfaces.update(target_surfaces)
+        if not surfaces:
+            return (
+                set(),
+                "no publication surface allowlist configured; next action: repair "
+                "config/omg-lol*.yaml before processing inbox artifacts",
+            )
+        return surfaces, None
 
     def _source_path_allowed(self, raw_path: str) -> bool:
         try:
@@ -808,6 +890,18 @@ class Orchestrator:
             pass
         self._record_quarantine_gate_result(quarantine_slug, gate_result, result="rejected")
         self.dispatches_total.labels(surface="publication-hardening-gate", result="rejected").inc()
+
+    def _quarantine_unexpected_inbox_artifact_exception(
+        self,
+        inbox_path: Path,
+        artifact: PreprintArtifact,
+        exc: Exception,
+    ) -> None:
+        findings = (
+            "publication inbox artifact raised during validation or dispatch: "
+            f"{type(exc).__name__}; next action: inspect and regenerate the artifact",
+        )
+        self._quarantine_invalid_inbox_artifact(inbox_path, artifact, findings)
 
     def _quarantine_invalid_inbox_artifact(
         self,

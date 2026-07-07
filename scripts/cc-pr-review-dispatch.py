@@ -110,6 +110,9 @@ _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
         "_public_gate_receipts_gate_result",
         "_public_gate_receipts_child",
         "_inbox_artifact_envelope_findings",
+        "_configured_publication_surfaces",
+        "_quarantine_unloadable_inbox_artifact",
+        "_quarantine_unexpected_inbox_artifact_exception",
         "_quarantine_invalid_inbox_artifact",
         "_publication_gate_receipt_bindings",
     ),
@@ -127,6 +130,11 @@ _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
         "render_reviewer_prompt",
         "dispatch_reviews",
         "review_pr",
+    ),
+    "scripts/publish_vault_artifact.py": (
+        "_build_artifact",
+        "_assert_safe_artifact_slug",
+        "main",
     ),
     "scripts/hapax-quota-telemetry-writer": (
         "_glmcp_payg_spend_gate_ledger",
@@ -150,7 +158,6 @@ _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
         "public_gate_receipt_ref_exists",
         "_receipt_file_maps_to_gate",
         "_gate_receipt_object_allows",
-        "_iter_bound_receipt_candidate_mappings",
         "_iter_receipt_candidate_mappings",
         "_receipt_candidate_mapping_allows",
         "_receipt_mapping_has_required_bindings",
@@ -160,6 +167,9 @@ _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
         "test_rejects_spliced_gate_and_binding_records",
         "test_rejects_list_sibling_gate_and_binding_records",
         "test_rejects_root_gate_with_nested_unrelated_binding_record",
+    ),
+    "tests/scripts/test_publish_vault_artifact.py": (
+        "test_unsafe_slug_refuses_publication_before_inbox_write",
     ),
 }
 SEND_SCRIPTS = {

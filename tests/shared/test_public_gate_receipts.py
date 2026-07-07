@@ -207,11 +207,11 @@ def test_accepts_iterable_ref_and_markdown_frontmatter(tmp_path: Path) -> None:
     )
 
 
-def test_accepts_nested_gate_mapping_with_positive_status(tmp_path: Path) -> None:
+def test_accepts_direct_gate_mapping_with_positive_status(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "nested.yaml",
-        f"receipt:\n  gates:\n    {GATE}: passed\n  outcome: approved\n",
+        f"gates:\n  {GATE}: passed\noutcome: approved\n",
     )
 
     assert public_gate_receipt_value_present(
