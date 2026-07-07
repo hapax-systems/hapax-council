@@ -71,7 +71,7 @@ def _run_receipts(
 
 def _fake_binary(bin_dir: Path, name: str, output: str) -> None:
     target = bin_dir / name
-    if name == "codex":
+    if "codex" in name:
         target.write_text(
             f"""#!/bin/sh
 if [ "${{1:-}}" = "--version" ]; then
@@ -436,6 +436,35 @@ def test_codex_receipt_blocks_when_published_token_does_not_actuate(
     assert "codex_oauth_bearer_actuation_failed" in receipt["resource"]["reason_codes"]
     assert any(
         ref == "local:codex:bearer-actuation:debug-models:exit:77"
+        for ref in receipt["capability"]["evidence_refs"]
+    )
+
+
+def test_codex_receipt_actuation_uses_configured_codex_binary(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    home_dir = tmp_path / "home"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "configured-codex", "codex-cli 9.9.9")
+    _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
+
+    result = _run_receipts(
+        tmp_path,
+        env={
+            "PATH": "",
+            "HOME": str(home_dir),
+            "HAPAX_CODEX_BIN": str(bin_dir / "configured-codex"),
+        },
+        now=_current_iso_z(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
+    assert receipt["cli"]["available"] is True
+    assert receipt["capability"]["status"] == "observed"
+    assert any(
+        ref == "local:codex:bearer-actuation:debug-models:model-count:1"
         for ref in receipt["capability"]["evidence_refs"]
     )
 

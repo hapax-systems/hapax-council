@@ -282,20 +282,29 @@ def observe_codex_bearer_actuation(
     """Prove the published bearer can actuate Codex without launching a model turn."""
 
     fingerprint_ref = f"local:{token_ref}:fingerprint:{token_fingerprint(token.raw)}"
-    binary = shutil.which("codex")
-    if binary is None:
+    attempted: list[str] = []
+    resolved = None
+    for candidate in candidate_binaries("codex"):
+        attempted.append(candidate)
+        resolved = resolve_binary(candidate)
+        if resolved is not None:
+            break
+    if resolved is None:
         return surface_evidence(
             status=EvidenceStatus.BLOCKED,
             source="local_codex_oauth_bearer_actuation_probe",
             observed_at=observed_at,
             stale_after=stale_after,
-            evidence_refs=[fingerprint_ref],
+            evidence_refs=[
+                fingerprint_ref,
+                f"local:codex:bearer-actuation:debug-models:binary-missing:{','.join(attempted)}",
+            ],
             reason_codes=["codex_oauth_bearer_actuation_cli_missing"],
         )
     try:
         with tempfile.TemporaryDirectory(prefix="hapax-codex-actuation-") as codex_home:
             result = subprocess.run(
-                [binary, "debug", "models"],
+                [resolved, "debug", "models"],
                 check=False,
                 text=True,
                 capture_output=True,
