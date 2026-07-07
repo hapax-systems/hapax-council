@@ -50,12 +50,14 @@ worker route is registered with route, resource, and governance receipts.
 Gemini/Claude/GPT-OSS as engines behind the `agy` harness rather than capability
 family names. It is read-only and remains blocked for admission until a
 fresh agy platform-capability receipt clears the review-seat admission blocker.
-No sanctioned agy route-specific quota-admission witness exists yet, so
-`agy.review.direct` remains blocked on `route_specific_quota_receipt_absent`;
-generic fresh quota snapshots and observed platform-receipt quota surfaces for
-`agy.review.direct` fail closed as untrusted. A future agy quota admission path
-must add a route-specific validator, writer, and recheck command comparable to
-the GLMCP quota-admission path before it can clear this blocker. Legacy
+`agy.review.direct` also remains blocked on
+`route_specific_quota_receipt_absent` until a fresh short-lived
+`hapax.agy_quota_admission.v1` receipt is written by
+`scripts/hapax-agy-quota-admission` after a sanctioned
+`scripts/hapax-agy-reviewer` smoke, and then projected into the live quota
+ledger by `scripts/hapax-quota-telemetry-writer`. Generic fresh quota snapshots
+and observed platform-receipt quota surfaces for `agy.review.direct` fail closed
+as untrusted. Legacy
 `gemini-cli` aliases remain retired. The receipt writer still records the agy
 CLI's bundled `~/.gemini/antigravity-cli/.../cli.md` config reference; that
 directory name is the installed CLI bundle path, not a live Antigravity route.
