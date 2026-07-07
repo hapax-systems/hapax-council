@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
 from agents.publication_bus import omg_rss_fanout
 from agents.publication_bus.omg_rss_fanout import (
@@ -20,6 +21,7 @@ from shared import public_gate_receipts
 
 _RECEIPT_ROOT: Path | None = None
 TASK_ID = "cc-task-public-gate-test"
+AUTHORITY_SECRET = "test-public-gate-authority-secret"
 PUBLIC_GATE_AUTHORITY_BLOCK = (
     "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
     "acceptor: claim-verification-council\n"
@@ -36,6 +38,7 @@ def durable_public_gate_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     root.mkdir()
     authority_root.mkdir()
     monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_AUTHORITY_ROOTS", (authority_root,))
+    monkeypatch.setenv(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, AUTHORITY_SECRET)
     _write_public_gate_review_evidence(root, gates=FANOUT_REQUIRED_GATES)
     _RECEIPT_ROOT = root
     monkeypatch.setattr(omg_rss_fanout, "PUBLIC_GATE_RECEIPT_ROOTS", (root,))
@@ -64,9 +67,7 @@ def _write_public_gate_review_evidence(
     if targets is not None:
         target_yaml = "\n".join(f"  - {target}" for target in sorted(targets))
         binding_yaml += f"target_addresses:\n{target_yaml}\n"
-    (
-        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
-    ).write_text(
+    payload = yaml.safe_load(
         "dossier_schema: 1\n"
         f"task_id: {TASK_ID}\n"
         "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
@@ -78,10 +79,20 @@ def _write_public_gate_review_evidence(
         "authorized_public_gate_receipts:\n"
         f"{receipt_yaml}\n"
         f"{binding_yaml}"
+        "authority_issuer: claim-verification-council\n"
         "reviewers:\n"
         "  - id: cvc-1\n"
         "    family: cvc\n"
-        "    verdict: accept\n",
+        "    verdict: accept\n"
+    )
+    payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
+        payload,
+        AUTHORITY_SECRET,
+    )
+    (
+        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+    ).write_text(
+        yaml.safe_dump(payload, sort_keys=False),
         encoding="utf-8",
     )
 

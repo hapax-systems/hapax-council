@@ -5,12 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from shared import public_gate_receipts
 from shared.public_gate_receipts import public_gate_receipt_value_present
 
 GATE = "rights_privacy_redaction_pass"
 TASK_ID = "cc-task-public-gate-test"
+AUTHORITY_SECRET = "test-public-gate-authority-secret"
 AUTHORITY_BLOCK = (
     "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
     "acceptor: claim-verification-council\n"
@@ -24,6 +26,7 @@ def trusted_authority_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     authority_root = tmp_path.parent / f"{tmp_path.name}-authority"
     authority_root.mkdir()
     monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_AUTHORITY_ROOTS", (authority_root,))
+    monkeypatch.setenv(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, AUTHORITY_SECRET)
 
 
 def _write(root: Path, name: str, text: str) -> None:
@@ -43,26 +46,35 @@ def _write_review_evidence(
 ) -> None:
     del root
     public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0].mkdir(parents=True, exist_ok=True)
+    payload = {
+        "dossier_schema": 1,
+        "task_id": TASK_ID,
+        "head_sha": "a" * 40,
+        "review_team_verdict": "quorum-accept",
+        "quorum_required": 1,
+        "accept_count": 1,
+        "gate_id": gate,
+        "authorized_public_gate_receipts": [f"public-gate:{receipt_name}"],
+        "artifact_slug": "demo",
+        "artifact_fingerprint": artifact_fingerprint,
+        "target_surfaces": ["fake"],
+        "authority_issuer": "claim-verification-council",
+        "reviewers": [
+            {
+                "id": "cvc-1",
+                "family": "cvc",
+                "verdict": "accept",
+            }
+        ],
+    }
+    payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
+        payload,
+        AUTHORITY_SECRET,
+    )
     (
         public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
     ).write_text(
-        "dossier_schema: 1\n"
-        f"task_id: {TASK_ID}\n"
-        "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
-        "review_team_verdict: quorum-accept\n"
-        "quorum_required: 1\n"
-        "accept_count: 1\n"
-        f"gate_id: {gate}\n"
-        "authorized_public_gate_receipts:\n"
-        f"  - public-gate:{receipt_name}\n"
-        "artifact_slug: demo\n"
-        f"artifact_fingerprint: {artifact_fingerprint}\n"
-        "target_surfaces:\n"
-        "  - fake\n"
-        "reviewers:\n"
-        "  - id: cvc-1\n"
-        "    family: cvc\n"
-        "    verdict: accept\n",
+        yaml.safe_dump(payload, sort_keys=False),
         encoding="utf-8",
     )
 
@@ -156,6 +168,22 @@ def test_rejects_forged_review_dossier_in_receipt_root(tmp_path: Path) -> None:
     (
         public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
     ).unlink()
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_unsigned_authority_evidence(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    evidence = (
+        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+    )
+    payload = yaml.safe_load(evidence.read_text(encoding="utf-8"))
+    payload.pop("authority_signature")
+    evidence.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     assert not public_gate_receipt_value_present(
         "public-gate:receipt-1.yaml",

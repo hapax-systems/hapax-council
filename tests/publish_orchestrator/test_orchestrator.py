@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from unittest import mock
 
+import yaml
 from prometheus_client import CollectorRegistry
 
 from agents.publish_orchestrator import orchestrator as orchestrator_module
@@ -27,6 +29,7 @@ from shared.publication_hardening.gate import (
 from shared.publication_hardening.review import ReviewReport
 
 TASK_ID = "cc-task-public-gate-test"
+AUTHORITY_SECRET = "test-public-gate-authority-secret"
 PUBLIC_GATE_AUTHORITY_BLOCK = (
     "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
     "acceptor: claim-verification-council\n"
@@ -81,6 +84,7 @@ def _write_public_gate_receipts(
     receipt_root.mkdir(parents=True, exist_ok=True)
     authority_root.mkdir(parents=True, exist_ok=True)
     public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS = (authority_root,)
+    os.environ[public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV] = AUTHORITY_SECRET
     surfaces_yaml = "\n".join(f"  - {surface}" for surface in sorted(surfaces))
     for gate in gates:
         (receipt_root / f"{gate}.yaml").write_text(
@@ -117,9 +121,7 @@ def _write_public_gate_review_evidence(
     gate_yaml = "\n".join(f"  - {gate}" for gate in gates)
     receipt_yaml = "\n".join(f"  - {receipt_ref}" for receipt_ref in receipt_refs)
     surface_yaml = "\n".join(f"  - {surface}" for surface in target_surfaces)
-    (
-        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
-    ).write_text(
+    payload = yaml.safe_load(
         "dossier_schema: 1\n"
         f"task_id: {TASK_ID}\n"
         "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
@@ -134,10 +136,20 @@ def _write_public_gate_review_evidence(
         f"artifact_fingerprint: {artifact_fingerprint}\n"
         "target_surfaces:\n"
         f"{surface_yaml}\n"
+        "authority_issuer: claim-verification-council\n"
         "reviewers:\n"
         "  - id: cvc-1\n"
         "    family: cvc\n"
-        "    verdict: accept\n",
+        "    verdict: accept\n"
+    )
+    payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
+        payload,
+        AUTHORITY_SECRET,
+    )
+    (
+        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+    ).write_text(
+        yaml.safe_dump(payload, sort_keys=False),
         encoding="utf-8",
     )
 

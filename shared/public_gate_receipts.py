@@ -9,6 +9,10 @@ incident path and leave a new authority receipt.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import os
 import re
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -29,6 +33,7 @@ PUBLIC_GATE_AUTHORITY_ROOTS: tuple[Path, ...] = (
 )
 PUBLIC_GATE_REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
 PUBLIC_GATE_ACCEPTANCE_RECEIPT_SUFFIX = ".acceptance.yaml"
+PUBLIC_GATE_AUTHORITY_SECRET_ENV = "HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY"
 PUBLIC_GATE_ID_KEYS = frozenset(
     {
         "gate",
@@ -111,6 +116,29 @@ PUBLIC_GATE_EVIDENCE_RECEIPT_REF_KEYS = frozenset(
         "receipt_refs",
     }
 )
+PUBLIC_GATE_AUTHORITY_ISSUER_KEYS = frozenset(
+    {
+        "authority_issuer",
+        "issued_by",
+        "issuer",
+        "signed_by",
+    }
+)
+PUBLIC_GATE_AUTHORITY_SIGNATURE_KEYS = frozenset(
+    {
+        "authority_signature",
+        "hmac_sha256",
+        "signature",
+        "signature_hmac_sha256",
+    }
+)
+PUBLIC_GATE_TRUSTED_AUTHORITY_ISSUERS = frozenset(
+    {
+        "claim-verification-council",
+        "claim verification council",
+    }
+)
+PUBLIC_GATE_AUTHORITY_SIGNATURE_PREFIX = "hmac-sha256:"
 PUBLIC_GATE_AUTHORITY_CASE_RE = re.compile(r"\A(?:CASE|REQ)-[A-Za-z0-9][A-Za-z0-9_.:-]{2,}\Z")
 PUBLIC_GATE_REVIEW_HEAD_RE = re.compile(r"\A[0-9a-f]{40}\Z", re.IGNORECASE)
 PUBLIC_GATE_SELF_AUTHORITY_VALUES = frozenset(
@@ -191,6 +219,7 @@ def public_gate_receipt_value_present(
     roots: Iterable[Path],
     bindings: Mapping[str, object] | None = None,
     authority_roots: Iterable[Path] | None = None,
+    authority_secret: str | None = None,
 ) -> bool:
     """Return true when ``value`` contains a durable receipt for ``expected_gate``."""
     if isinstance(value, str):
@@ -200,6 +229,7 @@ def public_gate_receipt_value_present(
             roots=roots,
             bindings=bindings,
             authority_roots=authority_roots,
+            authority_secret=authority_secret,
         )
     if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, str, Mapping)):
         return any(
@@ -209,6 +239,7 @@ def public_gate_receipt_value_present(
                 roots=roots,
                 bindings=bindings,
                 authority_roots=authority_roots,
+                authority_secret=authority_secret,
             )
             for item in value
         )
@@ -222,6 +253,7 @@ def public_gate_receipt_ref_exists(
     roots: Iterable[Path],
     bindings: Mapping[str, object] | None = None,
     authority_roots: Iterable[Path] | None = None,
+    authority_secret: str | None = None,
 ) -> bool:
     """Validate that ``ref`` names an existing receipt mapped to ``expected_gate``."""
     suffix = _public_gate_receipt_suffix(ref)
@@ -232,6 +264,9 @@ def public_gate_receipt_ref_exists(
     resolved_authority_roots = (
         PUBLIC_GATE_AUTHORITY_ROOTS if authority_roots is None else tuple(authority_roots)
     )
+    resolved_authority_secret = (
+        _public_gate_authority_secret() if authority_secret is None else authority_secret
+    )
     for root in roots:
         root = root.expanduser()
         for candidate in candidates:
@@ -241,6 +276,7 @@ def public_gate_receipt_ref_exists(
                 expected_gate,
                 root,
                 resolved_authority_roots,
+                resolved_authority_secret,
                 bindings,
             ):
                 return True
@@ -302,6 +338,7 @@ def _receipt_file_maps_to_gate(
     expected_gate: str,
     root: Path,
     authority_roots: tuple[Path, ...],
+    authority_secret: str,
     bindings: Mapping[str, object] | None = None,
 ) -> bool:
     data = _load_receipt_data(path)
@@ -313,6 +350,7 @@ def _receipt_file_maps_to_gate(
             expected_gate,
             root,
             authority_roots,
+            authority_secret,
             bindings,
             receipt_path=path,
         )
@@ -360,6 +398,7 @@ def _gate_receipt_object_allows(
     expected_gate: str,
     root: Path,
     authority_roots: tuple[Path, ...],
+    authority_secret: str,
     bindings: Mapping[str, object] | None = None,
     receipt_path: Path | None = None,
 ) -> bool:
@@ -368,6 +407,7 @@ def _gate_receipt_object_allows(
             candidate,
             root,
             authority_roots,
+            authority_secret,
             expected_gate=expected_gate,
             bindings=bindings,
             receipt_path=receipt_path,
@@ -459,6 +499,7 @@ def _receipt_mapping_has_required_authority(
     data: Mapping[Any, Any],
     root: Path,
     authority_roots: tuple[Path, ...],
+    authority_secret: str,
     *,
     expected_gate: str,
     bindings: Mapping[str, object] | None,
@@ -472,6 +513,7 @@ def _receipt_mapping_has_required_authority(
             data,
             root,
             authority_roots,
+            authority_secret,
             expected_gate=expected_gate,
             bindings=bindings,
             receipt_path=receipt_path,
@@ -501,6 +543,7 @@ def _mapping_has_evidence_ref(
     data: Mapping[Any, Any],
     root: Path,
     authority_roots: tuple[Path, ...],
+    authority_secret: str,
     *,
     expected_gate: str,
     bindings: Mapping[str, object] | None,
@@ -517,6 +560,7 @@ def _mapping_has_evidence_ref(
             normalized,
             root,
             authority_roots,
+            authority_secret,
             expected_gate=expected_gate,
             bindings=bindings,
             receipt_path=receipt_path,
@@ -529,6 +573,7 @@ def _evidence_ref_resolves(
     ref: str,
     root: Path,
     authority_roots: tuple[Path, ...],
+    authority_secret: str,
     *,
     expected_gate: str,
     bindings: Mapping[str, object] | None,
@@ -560,6 +605,7 @@ def _evidence_ref_resolves(
                     expected_gate=expected_gate,
                     bindings=bindings,
                     receipt_refs=receipt_refs,
+                    authority_secret=authority_secret,
                 )
                 for path in (
                     evidence_root / candidate
@@ -602,6 +648,7 @@ def _evidence_file_is_independent(
     expected_gate: str,
     bindings: Mapping[str, object] | None,
     receipt_refs: frozenset[str],
+    authority_secret: str,
 ) -> bool:
     data = _load_receipt_data(path)
     return _review_dossier_evidence_allows(
@@ -610,12 +657,14 @@ def _evidence_file_is_independent(
         expected_gate=expected_gate,
         bindings=bindings,
         receipt_refs=receipt_refs,
+        authority_secret=authority_secret,
     ) or _acceptance_receipt_evidence_allows(
         data,
         path=path,
         expected_gate=expected_gate,
         bindings=bindings,
         receipt_refs=receipt_refs,
+        authority_secret=authority_secret,
     )
 
 
@@ -626,6 +675,7 @@ def _review_dossier_evidence_allows(
     expected_gate: str,
     bindings: Mapping[str, object] | None,
     receipt_refs: frozenset[str],
+    authority_secret: str,
 ) -> bool:
     if not isinstance(data, Mapping):
         return False
@@ -637,6 +687,8 @@ def _review_dossier_evidence_allows(
     if not task_id or task_id != path.name[: -len(PUBLIC_GATE_REVIEW_DOSSIER_SUFFIX)]:
         return False
     if PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(_direct_text_value(data, "head_sha")) is None:
+        return False
+    if not _mapping_has_trusted_authority_signature(data, authority_secret):
         return False
     if not _evidence_mapping_authorizes_receipt(data, expected_gate, bindings, receipt_refs):
         return False
@@ -667,6 +719,7 @@ def _acceptance_receipt_evidence_allows(
     expected_gate: str,
     bindings: Mapping[str, object] | None,
     receipt_refs: frozenset[str],
+    authority_secret: str,
 ) -> bool:
     if not isinstance(data, Mapping):
         return False
@@ -677,6 +730,8 @@ def _acceptance_receipt_evidence_allows(
     if _direct_text_value(data, "timestamp") == "" or _direct_text_value(data, "artifact") == "":
         return False
     if PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(_direct_text_value(data, "head_sha")) is None:
+        return False
+    if not _mapping_has_trusted_authority_signature(data, authority_secret):
         return False
     if not _evidence_mapping_authorizes_receipt(data, expected_gate, bindings, receipt_refs):
         return False
@@ -697,6 +752,65 @@ def _evidence_mapping_authorizes_receipt(
         and _receipt_mapping_has_required_bindings(data, bindings)
         and _evidence_mapping_contains_receipt_ref(data, receipt_refs)
     )
+
+
+def public_gate_authority_signature(data: Mapping[Any, Any], secret: str) -> str:
+    """Return the HMAC signature value for public-gate authority evidence."""
+
+    return (
+        PUBLIC_GATE_AUTHORITY_SIGNATURE_PREFIX
+        + hmac.new(
+            secret.encode("utf-8"),
+            _authority_signature_payload_bytes(data),
+            hashlib.sha256,
+        ).hexdigest()
+    )
+
+
+def _public_gate_authority_secret() -> str:
+    return os.environ.get(PUBLIC_GATE_AUTHORITY_SECRET_ENV, "").strip()
+
+
+def _mapping_has_trusted_authority_signature(
+    data: Mapping[Any, Any],
+    authority_secret: str,
+) -> bool:
+    if not authority_secret:
+        return False
+    if not _mapping_has_trusted_authority_issuer(data):
+        return False
+    expected = public_gate_authority_signature(data, authority_secret)
+    return any(
+        hmac.compare_digest(value.strip(), expected)
+        for value in _iter_direct_text_values(data, PUBLIC_GATE_AUTHORITY_SIGNATURE_KEYS)
+    )
+
+
+def _mapping_has_trusted_authority_issuer(data: Mapping[Any, Any]) -> bool:
+    for value in _iter_direct_text_values(data, PUBLIC_GATE_AUTHORITY_ISSUER_KEYS):
+        normalized = value.strip().casefold()
+        if normalized in PUBLIC_GATE_TRUSTED_AUTHORITY_ISSUERS:
+            return True
+        if normalized.startswith("review-team:"):
+            return True
+    return False
+
+
+def _authority_signature_payload_bytes(data: Mapping[Any, Any]) -> bytes:
+    payload = _authority_signature_payload(data)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _authority_signature_payload(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _authority_signature_payload(item)
+            for key, item in value.items()
+            if str(key).strip().casefold() not in PUBLIC_GATE_AUTHORITY_SIGNATURE_KEYS
+        }
+    if _is_non_string_iterable(value):
+        return [_authority_signature_payload(item) for item in value]
+    return value
 
 
 def _public_gate_receipt_refs_for_path(

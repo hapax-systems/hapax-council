@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts import publish_vault_artifact
 from shared import public_gate_receipts
@@ -24,6 +25,7 @@ PUBLICATION_GATE_RECEIPTS = {
     "no_direct_public_egress": "public-gate:test-no-direct-egress",
 }
 TASK_ID = "cc-task-public-gate-test"
+AUTHORITY_SECRET = "test-public-gate-authority-secret"
 PUBLIC_GATE_AUTHORITY_BLOCK = (
     "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
     "acceptor: claim-verification-council\n"
@@ -39,6 +41,7 @@ def durable_public_gate_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     root.mkdir()
     authority_root.mkdir()
     monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_AUTHORITY_ROOTS", (authority_root,))
+    monkeypatch.setenv(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, AUTHORITY_SECRET)
     _write_public_gate_review_evidence(
         root,
         gates=tuple(PUBLICATION_GATE_RECEIPTS),
@@ -66,9 +69,7 @@ def _write_public_gate_review_evidence(
     if target_surfaces is not None:
         surface_yaml = "\n".join(f"  - {surface}" for surface in target_surfaces)
         binding_yaml += f"target_surfaces:\n{surface_yaml}\n"
-    (
-        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
-    ).write_text(
+    payload = yaml.safe_load(
         "dossier_schema: 1\n"
         f"task_id: {TASK_ID}\n"
         "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
@@ -80,10 +81,20 @@ def _write_public_gate_review_evidence(
         "authorized_public_gate_receipts:\n"
         f"{receipt_yaml}\n"
         f"{binding_yaml}"
+        "authority_issuer: claim-verification-council\n"
         "reviewers:\n"
         "  - id: cvc-1\n"
         "    family: cvc\n"
-        "    verdict: accept\n",
+        "    verdict: accept\n"
+    )
+    payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
+        payload,
+        AUTHORITY_SECRET,
+    )
+    (
+        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+    ).write_text(
+        yaml.safe_dump(payload, sort_keys=False),
         encoding="utf-8",
     )
 
