@@ -56,6 +56,9 @@ def _base_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
         "SAKANA_API_KEY",
     ):
         env.pop(key, None)
+    (home / "projects" / "hapax-council--cx-fugu").mkdir(parents=True)
+    (home / "projects" / "hapax-council--cx-fugu-check").mkdir(parents=True)
+    (home / "projects" / "hapax-council--cx-fugu-ultra").mkdir(parents=True)
     return env, catalog, bin_dir
 
 
@@ -277,6 +280,45 @@ def test_fugu_check_refuses_passthrough_args_before_readiness_ok(tmp_path: Path)
     assert result.returncode == 2
     assert "Fugu mode refuses" in result.stderr
     assert "Fugu check ok" not in result.stdout
+
+
+def test_fugu_check_refuses_missing_explicit_worktree_before_readiness_ok(
+    tmp_path: Path,
+) -> None:
+    env, _catalog, bin_dir = _base_env(tmp_path)
+    pass_called = tmp_path / "pass-called"
+    _install_fake_codex(bin_dir, tmp_path)
+    _write_executable(
+        bin_dir / "pass",
+        f"""printf called > {pass_called}
+printf '%s\\n' super-secret-value
+exit 0
+""",
+    )
+    missing_worktree = tmp_path / "missing-worktree"
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-fugu-check",
+            "--cd",
+            str(missing_worktree),
+            "--fugu-profile",
+            "fugu",
+            "--check",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 3
+    assert "no worktree found" in result.stderr
+    assert str(missing_worktree) in result.stderr
+    assert "Fugu check ok" not in result.stdout
+    assert not pass_called.exists()
 
 
 def test_fugu_print_env_refuses_remote_dispatch_request(tmp_path: Path) -> None:

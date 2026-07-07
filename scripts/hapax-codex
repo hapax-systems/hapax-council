@@ -358,6 +358,23 @@ ensure_codex_worktree() {
   fi
 }
 
+prepare_codex_workdir() {
+  if [ ! -d "$WORKDIR" ] && [ "$WORKDIR_EXPLICIT" -eq 0 ] && [ "$CODEX_WORKTREE_STRATEGY" = "codex-native" ]; then
+    if ! ensure_codex_worktree "$WORKDIR" "$SESSION"; then
+      echo "hapax-codex: codex-native worktree missing and could not be created: $WORKDIR" >&2
+      echo "  session=$SESSION slot=$SLOT strategy=$CODEX_WORKTREE_STRATEGY" >&2
+      return 3
+    fi
+  fi
+
+  if [ -z "$WORKDIR" ] || [ ! -d "$WORKDIR" ]; then
+    echo "hapax-codex: no worktree found for session '$SESSION' slot '$SLOT' at $WORKDIR" >&2
+    return 3
+  fi
+  WORKDIR="$(cd "$WORKDIR" && pwd)"
+  export HAPAX_CODEX_WORKTREE_STRATEGY="$CODEX_WORKTREE_STRATEGY"
+}
+
 pass_first_line() {
   local name="$1"
   command -v pass >/dev/null 2>&1 || return 1
@@ -1539,24 +1556,12 @@ if [ -n "$FUGU_PROFILE" ] && [ "$FUGU_CHECK" -eq 1 ]; then
   if ! fugu_refuse_remote_dispatch; then
     exit 14
   fi
+  prepare_codex_workdir || exit $?
   fugu_check
   exit $?
 fi
 
-if [ ! -d "$WORKDIR" ] && [ "$WORKDIR_EXPLICIT" -eq 0 ] && [ "$CODEX_WORKTREE_STRATEGY" = "codex-native" ]; then
-  if ! ensure_codex_worktree "$WORKDIR" "$SESSION"; then
-    echo "hapax-codex: codex-native worktree missing and could not be created: $WORKDIR" >&2
-    echo "  session=$SESSION slot=$SLOT strategy=$CODEX_WORKTREE_STRATEGY" >&2
-    exit 3
-  fi
-fi
-
-if [ -z "$WORKDIR" ] || [ ! -d "$WORKDIR" ]; then
-  echo "hapax-codex: no worktree found for session '$SESSION' slot '$SLOT' at $WORKDIR" >&2
-  exit 3
-fi
-WORKDIR="$(cd "$WORKDIR" && pwd)"
-export HAPAX_CODEX_WORKTREE_STRATEGY="$CODEX_WORKTREE_STRATEGY"
+prepare_codex_workdir || exit $?
 
 PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
 PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_ROLE:-unknown}}}}"

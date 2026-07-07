@@ -26,7 +26,7 @@ scripts/reins-fugu-ultra --check
 scripts/reins-fugu --print-env
 ```
 
-The check output redacts the secret value, reports `raw_codex_fugu_bypass=false`, and exits nonzero with next-action text when the catalog, pass entry, endpoint, wire API, or hook setup is unsupported. Exit code `2` means an unsupported Fugu configuration or caller override, `7` means launch-time secret load failure, and `14` means remote dispatch was refused.
+The check output redacts the secret value, reports `raw_codex_fugu_bypass=false`, and exits nonzero with next-action text when the worktree, catalog, pass entry, endpoint, wire API, or hook setup is unsupported. For `--check`, exit code `1` means readiness or Fugu configuration failed, `2` means wrapper syntax/profile or caller passthrough override was refused, `3` means the selected worktree is unavailable, and `14` means remote dispatch was refused. Exit code `7` is reserved for launch-time secret load failure after readiness checks.
 
 Negative boundary rechecks:
 
