@@ -1383,8 +1383,13 @@ def classify_pr(
     ]
     if missing_required:
         reasons.append("missing_required_checks:" + ",".join(missing_required))
-    if pr.check_summary.failed:
-        reasons.append("failed_checks:" + ",".join(pr.check_summary.failed))
+    failed_release_checks = [
+        check
+        for check in pr.check_summary.failed
+        if not required_checks or check in required_checks
+    ]
+    if failed_release_checks:
+        reasons.append("failed_checks:" + ",".join(failed_release_checks))
 
     matches = _matching_tasks(pr, tasks)
     matched_tasks = tuple(matches)

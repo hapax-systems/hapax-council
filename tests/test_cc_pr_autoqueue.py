@@ -973,6 +973,37 @@ def test_blocks_failed_dirty_draft_and_hold_prs(tmp_path: Path) -> None:
     assert "hold_labels:do-not-merge" in reasons[4]
 
 
+def test_ignores_failed_non_required_advisory_check(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=47)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(
+            47,
+            checks=[
+                _check("lint"),
+                _check("test"),
+                _check("typecheck"),
+                _check("web-build"),
+                _check("vscode-build"),
+                _check("hkp-advisory", "FAILURE"),
+            ],
+        )
+    ]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert not report["decisions"][0].get("reasons")
+    assert any(call[:4] == ["gh", "pr", "merge", "47"] for call in runner.calls)
+
+
 def test_ignores_prior_autoqueue_admission_checks_when_classifying_checks(
     tmp_path: Path,
 ) -> None:
