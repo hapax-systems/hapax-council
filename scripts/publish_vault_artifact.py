@@ -50,7 +50,10 @@ import argparse
 import logging
 import os
 import sys
+from collections.abc import Iterable, Mapping
 from pathlib import Path
+
+import yaml
 
 from shared.co_author_model import CoAuthor
 from shared.co_author_model import get as get_co_author
@@ -59,13 +62,22 @@ from shared.preprint_artifact import ApprovalState, PreprintArtifact
 
 log = logging.getLogger(__name__)
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SURFACES = ["zenodo-doi", "omg-weblog"]
+PUBLICATION_POLICY_PATHS = (
+    REPO_ROOT / "config" / "omg-lol.yaml",
+    REPO_ROOT / "config" / "omg-lol-fanout.yaml",
+)
 PUBLICATION_ALLOWED_TRUE_VALUES = frozenset({"true", "yes", "1", "allowed", "approved"})
 PUBLICATION_ALLOWED_FALSE_VALUES = frozenset({"false", "no", "0", "blocked", "withheld"})
 
 
 class PublicationGateError(ValueError):
     """Raised when a draft lacks explicit public-publication clearance."""
+
+
+class SurfaceAllowlistError(PublicationGateError):
+    """Raised when a draft targets a surface outside configured public policy."""
 
 
 def _default_state_root() -> Path:
@@ -142,41 +154,9 @@ def _parse_publication_markdown(path: Path) -> tuple[dict, str]:
     if result.ok:
         return result.frontmatter or {}, result.body
 
-    if result.error_kind != "yaml_error":
-        return {}, result.body
-
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return {}, result.body
-
-    if not text.startswith("---"):
-        return {}, text
-    end = text.find("\n---", 3)
-    if end == -1:
-        return {}, text
-
-    frontmatter = _parse_lenient_frontmatter_mapping(text[3:end].strip())
-    body = text[end + 4 :].lstrip("\n")
-    log.warning(
-        "YAML frontmatter in %s is invalid; using lenient publication-field parser",
-        path,
-    )
-    return frontmatter, body
-
-
-def _parse_lenient_frontmatter_mapping(raw_frontmatter: str) -> dict[str, str]:
-    parsed: dict[str, str] = {}
-    for line in raw_frontmatter.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or ":" not in stripped:
-            continue
-        key, value = stripped.split(":", 1)
-        key = key.strip()
-        value = value.strip()
-        if key:
-            parsed[key] = value
-    return parsed
+    if result.error_kind == "yaml_error":
+        log.error("YAML frontmatter in %s is invalid; refusing public publication", path)
+    return {}, result.body
 
 
 def _publication_allowed(frontmatter: dict) -> bool:
@@ -197,6 +177,36 @@ def _publication_allowed(frontmatter: dict) -> bool:
     return False
 
 
+def _configured_publication_surfaces(paths: Iterable[Path] = PUBLICATION_POLICY_PATHS) -> set[str]:
+    surfaces: set[str] = set()
+    for path in paths:
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise SurfaceAllowlistError(f"surface policy unreadable: {path}") from exc
+        if not isinstance(loaded, Mapping):
+            continue
+        policy = loaded.get("publication_frontmatter_policy")
+        if not isinstance(policy, Mapping):
+            continue
+        target_surfaces = policy.get("target_surfaces")
+        if not isinstance(target_surfaces, list):
+            continue
+        surfaces.update(surface for surface in target_surfaces if isinstance(surface, str))
+    if not surfaces:
+        raise SurfaceAllowlistError("no target surface allowlist configured")
+    return surfaces
+
+
+def _assert_target_surfaces_allowed(surfaces: list[str]) -> None:
+    allowed = _configured_publication_surfaces()
+    disallowed = sorted(set(surfaces) - allowed)
+    if disallowed:
+        raise SurfaceAllowlistError(
+            "target surfaces outside configured allowlist: " + ", ".join(disallowed)
+        )
+
+
 def _build_artifact(
     *,
     body_md: str,
@@ -207,6 +217,7 @@ def _build_artifact(
 ) -> PreprintArtifact:
     if not _publication_allowed(frontmatter):
         raise PublicationGateError("Publication-Allowed must be explicitly true")
+    _assert_target_surfaces_allowed(surfaces)
 
     title = _optional_string(_frontmatter_value(frontmatter, "title"))
     title = title or _extract_first_heading(body_md) or "Untitled"
@@ -357,22 +368,24 @@ def main(argv: list[str] | None = None) -> int:
     if not body.strip():
         log.error("empty body in %s", args.path)
         return 2
-    if not _publication_allowed(frontmatter):
+    surfaces = _parse_surfaces(args.surfaces)
+    try:
+        artifact = _build_artifact(
+            body_md=body,
+            frontmatter=frontmatter,
+            surfaces=surfaces,
+            approver=args.approver,
+            source_path=args.path.expanduser().resolve(),
+        )
+    except PublicationGateError as exc:
         log.error(
-            "publication not allowed by frontmatter in %s; next action: rewrite and "
-            "clear Publication-Allowed through Claim Verification Council review",
+            "publication not allowed for %s: %s; next action: rewrite and clear "
+            "Publication-Allowed plus target surfaces through Claim Verification "
+            "Council review",
             args.path,
+            exc,
         )
         return 1
-
-    surfaces = _parse_surfaces(args.surfaces)
-    artifact = _build_artifact(
-        body_md=body,
-        frontmatter=frontmatter,
-        surfaces=surfaces,
-        approver=args.approver,
-        source_path=args.path.expanduser().resolve(),
-    )
 
     payload = artifact.model_dump_json(indent=2)
 

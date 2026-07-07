@@ -95,6 +95,19 @@ class TestBuildArtifact:
                 approver="Oudepode",
             )
 
+    def test_rejects_surface_outside_configured_allowlist(self) -> None:
+        with pytest.raises(publish_vault_artifact.SurfaceAllowlistError):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter={
+                    "title": "Draft",
+                    "slug": "draft",
+                    "Publication-Allowed": True,
+                },
+                surfaces=["perplexity-model-council"],
+                approver="Oudepode",
+            )
+
 
 def test_allowed_draft_dry_run_uses_existing_frontmatter_casing(tmp_path, capsys) -> None:
     draft = tmp_path / "draft.md"
@@ -172,6 +185,67 @@ def test_malformed_publication_allowed_refuses_publication(tmp_path, capsys) -> 
             str(draft),
             "--surfaces",
             "omg-weblog",
+            "--state-root",
+            str(tmp_path),
+            "--dry-run",
+        ]
+    )
+
+    assert rc == 1
+    assert capsys.readouterr().out == ""
+    assert not (tmp_path / "publish" / "inbox").exists()
+
+
+def test_invalid_yaml_frontmatter_refuses_publication_even_when_allowed(tmp_path, capsys) -> None:
+    draft = tmp_path / "draft.md"
+    draft.write_text(
+        (
+            "---\n"
+            "Title: Invalid YAML\n"
+            "Slug: invalid-yaml\n"
+            "Publication-Allowed: true\n"
+            "broken: [unterminated\n"
+            "---\n\n"
+            "# Invalid YAML\n\nBody\n"
+        ),
+        encoding="utf-8",
+    )
+
+    rc = publish_vault_artifact.main(
+        [
+            str(draft),
+            "--surfaces",
+            "omg-weblog",
+            "--state-root",
+            str(tmp_path),
+            "--dry-run",
+        ]
+    )
+
+    assert rc == 1
+    assert capsys.readouterr().out == ""
+    assert not (tmp_path / "publish" / "inbox").exists()
+
+
+def test_surface_outside_allowlist_refuses_publication(tmp_path, capsys) -> None:
+    draft = tmp_path / "draft.md"
+    draft.write_text(
+        (
+            "---\n"
+            "Title: Bad Surface\n"
+            "Slug: bad-surface\n"
+            "Publication-Allowed: true\n"
+            "---\n\n"
+            "# Bad Surface\n\nBody\n"
+        ),
+        encoding="utf-8",
+    )
+
+    rc = publish_vault_artifact.main(
+        [
+            str(draft),
+            "--surfaces",
+            "perplexity-model-council",
             "--state-root",
             str(tmp_path),
             "--dry-run",
