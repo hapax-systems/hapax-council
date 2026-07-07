@@ -650,6 +650,7 @@ def _receipt_surface_unavailable_reasons(receipt_item: dict[str, object]) -> tup
     for surface in ("capability", "resource"):
         status = receipt_item.get(f"{surface}_status")
         if status is None:
+            reasons.append(f"refresh_receipt_{surface}_status:missing")
             continue
         if status != "observed":
             reasons.append(f"refresh_receipt_{surface}_status:{status}")
