@@ -27,7 +27,7 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 )
 
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
-RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset({"glmcp.review.direct"})
+RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset({"agy.review.direct", "glmcp.review.direct"})
 RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
     "glmcp.review.direct": "z_ai-glm-coding-plan",
 }
@@ -122,16 +122,20 @@ class ModelId(StrEnum):
     # mirrored from shared.platform_capability_registry.ModelId — the structured dated identity that
     # replaces the coarse free-text model_or_engine for spend metering; drift-pinned to the registry.
     CLAUDE_OPUS_4_8 = "claude-opus-4-8"
+    CLAUDE_OPUS_4_6 = "claude-opus-4-6"
     CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
     CLAUDE_SONNET_5 = "claude-sonnet-5"
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
     GPT_5_5 = "gpt-5.5"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
+    GPT_OSS_120B = "gpt-oss-120b"
     COMMAND_R_08_2024 = "command-r-08-2024"
     QWEN3_5_9B = "qwen3.5-9b"
     MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    GEMINI_3_5_FLASH = "gemini-3.5-flash"
+    Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
     UNKNOWN = "unknown"
 
@@ -1223,7 +1227,9 @@ def subscription_quota_state_for_route(
         if _subscription_quota_missing_required_fresh_until(snapshot)
     )
     untrusted_fresh_refs = tuple(
-        f"quota-snapshot:{snapshot.snapshot_id}:untrusted_glmcp_admission_evidence"
+        "quota-snapshot:"
+        f"{snapshot.snapshot_id}:"
+        f"{_subscription_quota_untrusted_admission_evidence_reason(snapshot)}"
         for snapshot in snapshots
         if _subscription_quota_missing_required_admission_evidence(ledger, snapshot)
     )
@@ -1306,14 +1312,25 @@ def _subscription_quota_missing_required_admission_evidence(
     if snapshot.subscription_quota_state is not SubscriptionQuotaState.FRESH:
         return False
     normalized_route_id = _normalize_route_id(snapshot.route_id)
+    if normalized_route_id not in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
+        return False
     expected_provider = RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS.get(normalized_route_id)
     if expected_provider is None:
-        return False
+        return True
     if GLMCP_QUOTA_TELEMETRY_WRITER_REF not in ledger.generated_from:
         return True
     if snapshot.provider != expected_provider:
         return True
     return not any(_is_glmcp_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+
+
+def _subscription_quota_untrusted_admission_evidence_reason(snapshot: QuotaSnapshot) -> str:
+    normalized_route_id = _normalize_route_id(snapshot.route_id)
+    if normalized_route_id == "glmcp.review.direct":
+        return "untrusted_glmcp_admission_evidence"
+    if normalized_route_id == "agy.review.direct":
+        return "untrusted_agy_admission_evidence"
+    return "untrusted_route_admission_evidence"
 
 
 def _subscription_quota_missing_required_payg_spend_gate(

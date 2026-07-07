@@ -29,6 +29,8 @@ from shared.platform_capability_registry import (
     PlatformCapabilityRoute,
     RouteState,
     _apply_receipt_to_route_payload,
+    _quota_receipt_removable_reasons,
+    _route_specific_quota_admission_fresh,
     build_supply_vector,
     check_registry_freshness,
     load_platform_capability_registry,
@@ -108,6 +110,7 @@ def test_seed_registry_loads_sanctioned_platform_routes() -> None:
 
     assert set(registry.route_map()) == REQUIRED_ROUTE_IDS
     assert {route.platform.value for route in registry.routes} >= {
+        "agy",
         "claude",
         "codex",
         "vibe",
@@ -133,10 +136,10 @@ def test_registry_route_ids_match_dispatcher_platform_paths() -> None:
     assert launchable_routes == dispatcher_routes
 
 
-def test_glmcp_review_seat_registered_as_fail_closed_read_only_route() -> None:
-    # The GLM Coding-Plan review seat (live in cc-pr-review-dispatch) is now visible
-    # in DESCRIBE as a non-launchable, read-only ReviewSeatAdapter route. The coding
-    # workhorse is a separate, bakeoff-gated route — NOT this one.
+def test_review_seats_registered_as_fail_closed_read_only_routes() -> None:
+    # Review seats (live in cc-pr-review-dispatch) are visible in DESCRIBE as
+    # non-launchable, read-only ReviewSeatAdapter routes. Coding workhorses are
+    # separate, promotion-gated routes — not these review seats.
     from shared.dispatcher_policy import ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED
     from shared.quota_spend_ledger import RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
 
@@ -152,6 +155,8 @@ def test_glmcp_review_seat_registered_as_fail_closed_read_only_route() -> None:
     assert route.route_state == RouteState.BLOCKED  # receipt-bounded admission, fail-closed
     assert not route.mutability.any_mutation()
     # the receipt-bounded subscription-quota machinery already keys this route id
+    assert "agy.review.direct" in ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED
+    assert "agy.review.direct" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
     assert "glmcp.review.direct" in ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED
     assert "glmcp.review.direct" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
 
@@ -264,6 +269,10 @@ def test_read_only_routes_cannot_declare_mutation_access() -> None:
 def test_gemini_routes_are_not_seeded_as_dispatchable_platform_paths() -> None:
     registry = load_platform_capability_registry()
 
+    agy = registry.require("agy.review.direct")
+    assert agy.platform.value == "agy"
+    assert agy.authority_ceiling.value == "read_only"
+    assert agy.route_state is RouteState.BLOCKED
     assert all(not route_id.startswith("gemini.") for route_id in registry.route_map())
     with pytest.raises(KeyError):
         registry.require("gemini.headless.full")
@@ -607,6 +616,62 @@ def _make_api_receipt(
     )
 
 
+def _make_agy_receipt(
+    *,
+    observed_at: datetime,
+    quota_status: EvidenceStatus = EvidenceStatus.UNOBSERVABLE,
+    quota_refs: list[str] | None = None,
+    quota_reason_codes: list[str] | None = None,
+) -> PlatformCapabilityReceipt:
+    if quota_status is EvidenceStatus.OBSERVED:
+        quota_refs = quota_refs or ["test:agy:route-specific-quota"]
+        quota_reason_codes = quota_reason_codes or []
+    else:
+        quota_refs = quota_refs or ["test:agy:quota-unobservable"]
+        quota_reason_codes = quota_reason_codes or ["account_live_quota_receipt_absent"]
+    return PlatformCapabilityReceipt(
+        receipt_id="test-agy-receipt",
+        platform="agy",
+        routes=["agy.review.direct"],
+        observed_at=observed_at,
+        stale_after="24h",
+        cli=CliEvidence(binary="agy", available=True, version="1.0.10"),
+        wrapper=WrapperEvidence(
+            path="scripts/hapax-agy-reviewer",
+            exists=True,
+            executable=True,
+            sha256="abc123",
+        ),
+        capability=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:agy:capability"],
+        ),
+        resource=SurfaceEvidence(
+            status=EvidenceStatus.OBSERVED,
+            source="test",
+            observed_at=observed_at,
+            stale_after="24h",
+            evidence_refs=["test:agy:resource"],
+        ),
+        quota=SurfaceEvidence(
+            status=quota_status,
+            source="test",
+            observed_at=observed_at,
+            stale_after="15m",
+            evidence_refs=quota_refs,
+            reason_codes=quota_reason_codes,
+        ),
+        provider_docs=ProviderDocsEvidence(
+            refs=["test:agy:docs"],
+            fetched_at=observed_at,
+            stale_after="30d",
+        ),
+    )
+
+
 def _make_glmcp_receipt(
     *, observed_at: datetime, stale_after: str = "24h"
 ) -> PlatformCapabilityReceipt:
@@ -880,6 +945,106 @@ def test_provider_gateway_receipt_clears_gateway_evidence_blockers() -> None:
     )
 
     assert result.ok is True
+
+
+def test_agy_local_receipt_clears_review_seat_but_not_route_quota() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "agy.review.direct")
+
+    receipt_time = datetime(2026, 7, 5, 14, 51, tzinfo=UTC)
+    _apply_receipt_to_route_payload(route, _make_agy_receipt(observed_at=receipt_time))
+
+    assert route["route_state"] == "blocked"
+    assert "agy_review_seat_receipt_admission_required" not in route["blocked_reasons"]
+    assert "route_specific_quota_receipt_absent" in route["blocked_reasons"]
+    assert (
+        "route_specific_quota_receipt_absent"
+        in route["freshness"]["evidence"]["quota"]["blocked_reasons"]
+    )
+
+
+def test_agy_observed_route_quota_receipt_does_not_admit_review_route() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "agy.review.direct")
+
+    receipt_time = datetime(2026, 7, 5, 14, 51, tzinfo=UTC)
+    _apply_receipt_to_route_payload(
+        route,
+        _make_agy_receipt(
+            observed_at=receipt_time,
+            quota_status=EvidenceStatus.OBSERVED,
+            quota_refs=["test:agy:route-quota-observed"],
+        ),
+    )
+
+    assert route["route_state"] == "blocked"
+    assert route["blocked_reasons"] == ["route_specific_quota_receipt_absent"]
+    assert route["freshness"]["evidence"]["quota"]["blocked_reasons"] == [
+        "route_specific_quota_receipt_absent"
+    ]
+    assert (
+        "test:agy:route-quota-observed" in route["freshness"]["evidence"]["quota"]["evidence_refs"]
+    )
+
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    result = check_registry_freshness(
+        registry,
+        route_ids=["agy.review.direct"],
+        now=datetime(2026, 7, 5, 14, 52, tzinfo=UTC),
+    )
+    assert result.ok is False
+    assert "route_specific_quota_receipt_absent" in result.routes[0].blocked_reasons
+
+
+def test_forged_agy_observed_quota_receipt_cannot_clear_route_specific_blocker() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "agy.review.direct")
+    quota_blockers = [
+        "account_live_quota_receipt_absent",
+        "quota_telemetry_unknown",
+        "route_specific_quota_receipt_absent",
+    ]
+    route["blocked_reasons"] = [*quota_blockers]
+    route["freshness"]["evidence"]["quota"]["blocked_reasons"] = [*quota_blockers]
+
+    _apply_receipt_to_route_payload(
+        route,
+        _make_agy_receipt(
+            observed_at=datetime(2026, 7, 5, 14, 51, tzinfo=UTC),
+            quota_status=EvidenceStatus.OBSERVED,
+            quota_refs=["test:forged-agy:observed-quota"],
+        ),
+    )
+
+    assert route["route_state"] == "blocked"
+    assert route["blocked_reasons"] == quota_blockers
+    assert route["freshness"]["evidence"]["quota"]["blocked_reasons"] == quota_blockers
+
+
+def test_agy_quota_receipt_removable_reasons_preserve_route_specific_blocker() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "agy.review.direct")
+
+    removable = _quota_receipt_removable_reasons(route)
+
+    assert removable == set()
+    assert "account_live_quota_receipt_absent" not in removable
+    assert "quota_telemetry_unknown" not in removable
+    assert "route_specific_quota_receipt_absent" not in removable
+    assert "agy_review_seat_receipt_admission_required" not in removable
+
+
+def test_agy_has_no_sanctioned_route_specific_quota_admission_path() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "agy.review.direct")
+
+    admitted, refs = _route_specific_quota_admission_fresh(
+        route,
+        now=datetime(2026, 7, 5, 14, 52, tzinfo=UTC),
+    )
+
+    assert admitted is False
+    assert refs == ()
 
 
 def test_api_receipt_does_not_open_cloud_burst_release_gate() -> None:

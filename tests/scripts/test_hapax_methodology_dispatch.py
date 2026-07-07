@@ -3800,8 +3800,8 @@ def test_agy_dispatch_remains_route_gated_without_spawnable_route(tmp_path: Path
     )
 
     assert result.returncode == 10
-    assert "route policy" in result.stderr
-    assert "Supported governed routes:" in result.stderr
+    assert "non-launchable read-only agy.review.direct" in result.stderr
+    assert "scripts/hapax-agy-reviewer" in result.stderr
     assert "agy/" not in result.stderr
     receipt = json.loads(
         (tmp_path / "ledger" / "methodology-dispatch.jsonl")
@@ -3810,8 +3810,9 @@ def test_agy_dispatch_remains_route_gated_without_spawnable_route(tmp_path: Path
     )
     assert receipt["platform"] == "agy"
     assert receipt["launched"] is False
-    assert receipt["route_policy_action"] != "launch"
-    assert "unsupported_route" in receipt["route_policy_reason_codes"]
+    assert receipt["ok"] is False
+    assert "non-launchable read-only agy.review.direct" in receipt["reason"]
+    assert receipt["route_policy_reason_codes"] == ["review_route_not_launchable"]
 
 
 def test_gemini_platform_is_not_dispatchable(tmp_path: Path) -> None:
@@ -3856,7 +3857,25 @@ def test_normalizes_openrouter_api_profile_aliases() -> None:
     assert dispatcher.normalize_profile("api", "openrouter") == "openrouter"
 
 
-def test_legacy_antigrav_platforms_are_not_dispatchable(tmp_path: Path) -> None:
+def test_agy_platform_is_review_route_not_dispatchable_worker(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        "--task",
+        "research-only",
+        "--lane",
+        "agy",
+        "--platform",
+        "agy",
+        "--mode",
+        "interactive",
+    )
+
+    assert result.returncode == 10
+    assert "platform 'agy' is the non-launchable read-only agy.review.direct" in result.stderr
+    assert "scripts/hapax-agy-reviewer" in result.stderr
+
+
+def test_antigrav_platform_is_not_dispatchable(tmp_path: Path) -> None:
     for platform in ("antigrav", "Antigrav", "antigravity", "gemini-cli"):
         result = _run(
             tmp_path,
@@ -3872,8 +3891,8 @@ def test_legacy_antigrav_platforms_are_not_dispatchable(tmp_path: Path) -> None:
 
         assert result.returncode == 10
         assert f"platform '{platform.lower()}' is retired/excised" in result.stderr
-        assert "Use admitted Claude, Codex, or Vibe routes." in result.stderr
-        assert "Agy adapter support is live" in result.stderr
+        assert "Use admitted Claude, Codex, or Vibe routes" in result.stderr
+        assert "agy.review.direct" in result.stderr
 
 
 def test_codex_launch_unsupported_mode_fails_closed(tmp_path: Path) -> None:

@@ -116,6 +116,7 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
     assert history["properties"]["fixed_route_overhead"] == {"$ref": "#/$defs/fixed_route_overhead"}
 
     assert set(schema["$defs"]["platform"]["enum"]) >= {
+        "agy",
         "claude",
         "codex",
         "gemini",
@@ -279,9 +280,59 @@ def test_seed_registry_excises_antigrav_live_route_but_records_deprecated_shape(
     routes = {route["route_id"]: route for route in registry["routes"]}
     shapes = {shape["shape_id"]: shape for shape in registry["omitted_capability_shapes"]}
 
+    assert "agy.review.direct" in registry["required_route_ids"]
+    assert routes["agy.review.direct"]["platform"] == "agy"
+    assert routes["agy.review.direct"]["mode"] == "review"
+    assert routes["agy.review.direct"]["authority_ceiling"] == "read_only"
     assert "antigrav.interactive.full" not in registry["required_route_ids"]
     assert "antigrav.interactive.full" not in routes
     assert shapes["antigrav.interactive.full"]["shape_state"] == "deprecated"
+
+
+def test_seed_registry_records_agy_review_route_as_blocked_review_supply() -> None:
+    registry = _json(REGISTRY)
+    route = {route["route_id"]: route for route in registry["routes"]}["agy.review.direct"]
+
+    assert route["sanctioned_wrapper"] == "scripts/hapax-agy-reviewer"
+    assert (REPO_ROOT / route["sanctioned_wrapper"]).is_file()
+    assert route["route_state"] == "blocked"
+    assert route["blocked_reasons"] == [
+        "agy_review_seat_receipt_admission_required",
+        "route_specific_quota_receipt_absent",
+    ]
+    assert route["mutability"] == {
+        "vault_docs": False,
+        "source": False,
+        "runtime": False,
+        "public": False,
+        "provider_spend": False,
+    }
+    assert route["tool_access"] == {
+        "filesystem": "read_only",
+        "shell": "none",
+        "browser": False,
+        "mcp": [],
+    }
+    assert route["freshness"]["capability_checked_at"] == "2026-07-05T14:51:11Z"
+    assert (
+        "route_specific_quota_receipt_absent"
+        in route["freshness"]["evidence"]["quota"]["blocked_reasons"]
+    )
+    assert {variant["variant_id"] for variant in route["descriptor_variants"]} >= {
+        "agy@gemini-3.5-flash-low",
+        "agy@claude-sonnet-4.6-thinking",
+        "agy@gpt-oss-120b-medium",
+    }
+    variants = {variant["variant_id"]: variant for variant in route["descriptor_variants"]}
+    assert variants["agy@gemini-3.5-flash-low"]["blocked_reasons"] == [
+        "engine_exact_token_smoke_failed"
+    ]
+    assert variants["agy@gemini-3.5-flash-medium"]["blocked_reasons"] == [
+        "engine_exact_token_smoke_failed"
+    ]
+    assert variants["agy@gemini-3.5-flash-high"]["blocked_reasons"] == [
+        "engine_exact_token_smoke_failed"
+    ]
 
 
 def test_surface_delta_for_omitted_shape_holds_until_measurement() -> None:

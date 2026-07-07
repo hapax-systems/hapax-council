@@ -27,6 +27,7 @@ VALID = frozenset(
         "api.headless.provider_gateway",
         "api.headless.api_frontier",
         "vibe.headless.full",
+        "agy.review.direct",
         "glmcp.review.direct",
         "local_tool.local.worker",
     }
@@ -72,13 +73,14 @@ def test_utilization(monkeypatch, capsys) -> None:
     assert "codex.headless.full" in out
 
 
-def test_deprecated_antigrav_alias_fails_closed(monkeypatch, capsys) -> None:
+def test_agy_review_route_is_valid_but_non_spawnable(monkeypatch, capsys) -> None:
     mod = _load()
     _patch_valid(monkeypatch, mod)
     assert mod.main(["agy", "cc-task-x"]) == 2
     err = capsys.readouterr().err
-    assert "cannot dispatch 'agy'" in err and "deprecated" in err.lower()
-    assert "measured agy supply leaves" in err
+    assert "cannot dispatch 'agy'" in err
+    assert "not a spawnable lane" in err
+    assert "agy.review.direct" in err
 
 
 def test_literal_antigrav_capability_fails_with_retired_next_action(monkeypatch, capsys) -> None:
@@ -88,13 +90,13 @@ def test_literal_antigrav_capability_fails_with_retired_next_action(monkeypatch,
     err = capsys.readouterr().err
     assert "cannot dispatch 'antigrav'" in err
     assert "deprecated/excised" in err
-    assert "measured agy supply leaves" in err
+    assert "agy-review" in err
 
     assert mod.main(["antigravity", "cc-task-x"]) == 2
     err = capsys.readouterr().err
     assert "cannot dispatch 'antigravity'" in err
     assert "deprecated/excised" in err
-    assert "measured agy supply leaves" in err
+    assert "agy-review" in err
 
     assert mod.main(["antigrav.interactive.full", "cc-task-x"]) == 2
     err = capsys.readouterr().err

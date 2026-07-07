@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import runpy
 import stat
 import subprocess
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -46,25 +45,23 @@ def _run_receipts(
     env: dict[str, str] | None = None,
     now: str = NOW,
     platform: str = "codex",
-    json_output: bool = True,
+    registry: Path = REGISTRY,
 ) -> subprocess.CompletedProcess[str]:
     merged_env = {**os.environ, **(env or {})}
-    args = [
-        sys.executable,
-        str(SCRIPT),
-        "--registry",
-        str(REGISTRY),
-        "--receipt-dir",
-        str(tmp_path),
-        "--platform",
-        platform,
-        "--now",
-        now,
-    ]
-    if json_output:
-        args.append("--json")
     return subprocess.run(
-        args,
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--registry",
+            str(registry),
+            "--receipt-dir",
+            str(tmp_path),
+            "--platform",
+            platform,
+            "--now",
+            now,
+            "--json",
+        ],
         text=True,
         capture_output=True,
         check=False,
@@ -74,35 +71,7 @@ def _run_receipts(
 
 def _fake_binary(bin_dir: Path, name: str, output: str) -> None:
     target = bin_dir / name
-    if "codex" in name:
-        target.write_text(
-            f"""#!/bin/sh
-if [ "${{1:-}}" = "--version" ]; then
-  printf '%s\\n' '{output}'
-  exit 0
-fi
-if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
-  if [ -z "${{CODEX_ACCESS_TOKEN:-}}" ]; then
-    echo "missing CODEX_ACCESS_TOKEN" >&2
-    exit 42
-  fi
-  if [ -z "${{CODEX_HOME:-}}" ]; then
-    echo "missing CODEX_HOME" >&2
-    exit 43
-  fi
-  if [ "${{HAPAX_FAKE_CODEX_DEBUG_MODELS_RC:-0}}" != "0" ]; then
-    echo "unauthorized token" >&2
-    exit "${{HAPAX_FAKE_CODEX_DEBUG_MODELS_RC}}"
-  fi
-  printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
-  exit 0
-fi
-printf '%s\\n' '{output}'
-""",
-            encoding="utf-8",
-        )
-    else:
-        target.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n", encoding="utf-8")
+    target.write_text(f"#!/bin/sh\nprintf '%s\\n' '{output}'\n", encoding="utf-8")
     target.chmod(target.stat().st_mode | stat.S_IXUSR)
 
 
@@ -111,44 +80,6 @@ def _fake_wrapper(home_dir: Path, relative_path: str) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     target.chmod(target.stat().st_mode | stat.S_IXUSR)
-
-
-def _jwt(*, exp: datetime) -> str:
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
-    payload = (
-        base64.urlsafe_b64encode(json.dumps({"exp": int(exp.timestamp())}).encode())
-        .decode()
-        .rstrip("=")
-    )
-    return f"{header}.{payload}.sig"
-
-
-def _write_codex_oauth_token(home_dir: Path, *, exp: datetime | None = None) -> Path:
-    token_dir = home_dir / ".cache" / "hapax" / "codex-oauth"
-    token_dir.mkdir(parents=True, exist_ok=True)
-    target = token_dir / "access_token"
-    target.write_text(_jwt(exp=exp or (NOW_DT + timedelta(hours=2))), encoding="utf-8")
-    target.chmod(0o600)
-    return target
-
-
-def _write_codex_auth_json(home_dir: Path, *, exp: datetime | None = None) -> str:
-    token = _jwt(exp=exp or (NOW_DT + timedelta(hours=2)))
-    auth_dir = home_dir / ".codex"
-    auth_dir.mkdir(parents=True, exist_ok=True)
-    (auth_dir / "auth.json").write_text(
-        json.dumps(
-            {
-                "auth_mode": "chatgpt",
-                "tokens": {
-                    "access_token": token,
-                    "refresh_token": "refresh-token-not-used-by-receipt",
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    return token
 
 
 def _fresh_quota_ledger(tmp_path: Path, *, captured_at: str) -> Path:
@@ -246,15 +177,10 @@ def test_fresh_subscription_receipt_clears_account_live_quota_blocker(
     tmp_path: Path,
 ) -> None:
     bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "codex", f"codex-cli 9.9.9 api_key={SECRET}")
-    _write_codex_oauth_token(home_dir)
 
-    result = _run_receipts(
-        tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(home_dir), "OPENAI_API_KEY": SECRET},
-    )
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir), "OPENAI_API_KEY": SECRET})
 
     assert result.returncode == 0, result.stderr
     assert SECRET not in (tmp_path / "codex.json").read_text(encoding="utf-8")
@@ -269,42 +195,7 @@ def test_fresh_subscription_receipt_clears_account_live_quota_blocker(
         ref.startswith("platform-capability-receipt:codex:")
         for ref in route.freshness.evidence.quota.evidence_refs
     )
-    assert any(
-        ref == "local:codex:bearer-actuation:debug-models:model-count:1"
-        for ref in route.freshness.evidence.capability.evidence_refs
-    )
     assert route.tool_state[0].evidence_ref.startswith("platform-capability-receipt:codex:")
-
-
-def test_codex_receipt_publishes_fresh_auth_json_access_token_without_printing_secret(
-    tmp_path: Path,
-) -> None:
-    bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
-    bin_dir.mkdir()
-    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-    token = _write_codex_auth_json(home_dir, exp=NOW_DT + timedelta(hours=2))
-
-    result = _run_receipts(
-        tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
-    )
-
-    assert result.returncode == 0, result.stderr
-    published = home_dir / ".cache" / "hapax" / "codex-oauth" / "access_token"
-    assert published.read_text(encoding="utf-8") == token
-    assert stat.S_IMODE(published.stat().st_mode) == 0o600
-    assert token not in result.stdout
-    receipt_text = (tmp_path / "codex.json").read_text(encoding="utf-8")
-    assert token not in receipt_text
-    assert "refresh-token-not-used-by-receipt" not in receipt_text
-    receipt = json.loads(receipt_text)
-    assert receipt["capability"]["status"] == "observed"
-    assert receipt["resource"]["status"] == "observed"
-    assert any(
-        ref.startswith("local:~/.cache/hapax/codex-oauth/access_token:fingerprint:")
-        for ref in receipt["capability"]["evidence_refs"]
-    )
 
 
 def test_future_platform_receipt_is_not_fresh(tmp_path: Path) -> None:
@@ -323,21 +214,14 @@ def test_future_platform_receipt_is_not_fresh(tmp_path: Path) -> None:
     assert receipt_is_fresh(receipt, now=NOW_DT) is False
 
 
-def test_fresh_subscription_receipt_allows_codex_oauth_dispatch_with_current_session(
+def test_fresh_subscription_receipt_allows_local_dispatch_without_account_live_quota_api(
     tmp_path: Path,
 ) -> None:
     bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-    _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
 
-    result = _run_receipts(
-        tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
-        now=_current_iso_z(),
-        json_output=False,
-    )
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
 
     sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
@@ -377,256 +261,7 @@ def test_fresh_subscription_receipt_allows_codex_oauth_dispatch_with_current_ses
     assert "capability_availability_degraded" not in decision.reason_codes
 
 
-def test_codex_receipt_blocks_without_published_oauth_token(tmp_path: Path) -> None:
-    bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
-    bin_dir.mkdir()
-    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-
-    result = _run_receipts(
-        tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
-        now=_current_iso_z(),
-        json_output=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
-    assert receipt["cli"]["available"] is True
-    assert receipt["capability"]["status"] == "blocked"
-    assert "codex_oauth_access_token_absent" in receipt["capability"]["reason_codes"]
-
-    sources = load_dispatch_policy_sources(registry_path=REGISTRY, receipt_dir=tmp_path)
-    task_fields = {
-        "status": "claimed",
-        "assigned_to": "cx-green",
-        "authority_case": "CASE-CAPACITY-ROUTING-001",
-        "authority_item": "PLATFORM-RECEIPT-TEST",
-        "priority": "p0",
-        "wsjf": 12,
-        "route_metadata_schema": 1,
-        "quality_floor": "frontier_required",
-        "authority_level": "authoritative",
-        "mutation_surface": "source",
-        "mutation_scope_refs": ["shared/platform_capability_registry.py"],
-    }
-    request = build_dispatch_request(
-        task_id="platform-receipt-auth-missing",
-        lane="cx-green",
-        platform="codex",
-        mode="headless",
-        profile="full",
-        task_fields=task_fields,
-        registry=sources.registry,
-        registry_error=sources.registry_error,
-        quota_ledger=sources.quota_ledger,
-        quota_error=sources.quota_error,
-    )
-
-    decision = evaluate_dispatch_policy(request)
-
-    assert decision.action is DispatchAction.HOLD
-    assert "capability_availability_degraded" in decision.reason_codes
-    assert any("codex_oauth_access_token_absent" in reason for reason in decision.reason_codes)
-
-
-def test_codex_receipt_uses_exact_configured_oauth_token_file(tmp_path: Path) -> None:
-    bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
-    token_dir = tmp_path / "token-dir"
-    bin_dir.mkdir()
-    token_dir.mkdir()
-    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-    (token_dir / "access_token").write_text(
-        _jwt(exp=datetime.now(UTC) + timedelta(hours=2)),
-        encoding="utf-8",
-    )
-    configured_token = token_dir / "custom-token"
-
-    result = _run_receipts(
-        tmp_path,
-        env={
-            "PATH": str(bin_dir),
-            "HOME": str(home_dir),
-            "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE": str(configured_token),
-        },
-        now=_current_iso_z(),
-    )
-
-    assert result.returncode == 0, result.stderr
-    receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
-    assert receipt["capability"]["status"] == "blocked"
-    assert "codex_oauth_access_token_absent" in receipt["capability"]["reason_codes"]
-    assert receipt["resource"]["status"] == "blocked"
-    assert "codex_oauth_access_token_absent" in receipt["resource"]["reason_codes"]
-
-
-def test_codex_receipt_blocks_when_published_token_does_not_actuate(
-    tmp_path: Path,
-) -> None:
-    bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
-    bin_dir.mkdir()
-    codex_bin = bin_dir / "codex"
-    codex_bin.write_text(
-        """#!/bin/sh
-if [ "${1:-}" = "--version" ]; then
-  printf '%s\n' 'codex-cli 9.9.9'
-  exit 0
-fi
-if [ "${1:-}" = "debug" ] && [ "${2:-}" = "models" ]; then
-  echo "unauthorized token" >&2
-  exit 77
-fi
-exit 1
-""",
-        encoding="utf-8",
-    )
-    codex_bin.chmod(0o755)
-    token_path = _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
-    token = token_path.read_text(encoding="utf-8").strip()
-
-    result = _run_receipts(
-        tmp_path,
-        env={
-            "PATH": str(bin_dir),
-            "HOME": str(home_dir),
-        },
-        now=_current_iso_z(),
-    )
-
-    assert result.returncode == 0, result.stderr
-    receipt_text = (tmp_path / "codex.json").read_text(encoding="utf-8")
-    assert token not in receipt_text
-    receipt = json.loads(receipt_text)
-    assert receipt["capability"]["status"] == "blocked"
-    assert receipt["resource"]["status"] == "blocked"
-    assert "codex_oauth_bearer_actuation_failed" in receipt["capability"]["reason_codes"]
-    assert "codex_oauth_bearer_actuation_failed" in receipt["resource"]["reason_codes"]
-    assert any(
-        ref == "local:codex:bearer-actuation:debug-models:exit:77"
-        for ref in receipt["capability"]["evidence_refs"]
-    )
-
-
-def test_codex_bearer_actuation_probe_does_not_inherit_unrelated_secrets(
-    tmp_path: Path,
-) -> None:
-    bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
-    env_log = tmp_path / "actuation-env.log"
-    bin_dir.mkdir()
-    codex_bin = bin_dir / "configured-codex"
-    codex_bin.write_text(
-        f"""#!/bin/sh
-if [ "${{1:-}}" = "--version" ]; then
-  printf '%s\\n' 'codex-cli 9.9.9'
-  exit 0
-fi
-if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
-  if [ -n "${{OPENAI_API_KEY:-}}" ]; then
-    printf '%s\\n' "OPENAI_API_KEY=${{OPENAI_API_KEY}}" > "{env_log}"
-  fi
-  printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
-  exit 0
-fi
-exit 1
-""",
-        encoding="utf-8",
-    )
-    codex_bin.chmod(0o755)
-    _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
-
-    result = _run_receipts(
-        tmp_path,
-        env={
-            "PATH": "",
-            "HOME": str(home_dir),
-            "HAPAX_CODEX_BIN": str(codex_bin),
-            "OPENAI_API_KEY": SECRET,
-        },
-        now=_current_iso_z(),
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert not env_log.exists()
-
-
-def test_codex_receipt_actuation_uses_configured_codex_binary(
-    tmp_path: Path,
-) -> None:
-    bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
-    bin_dir.mkdir()
-    _fake_binary(bin_dir, "configured-codex", "codex-cli 9.9.9")
-    _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
-
-    result = _run_receipts(
-        tmp_path,
-        env={
-            "PATH": "",
-            "HOME": str(home_dir),
-            "HAPAX_CODEX_BIN": str(bin_dir / "configured-codex"),
-        },
-        now=_current_iso_z(),
-    )
-
-    assert result.returncode == 0, result.stderr
-    receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
-    assert receipt["cli"]["available"] is True
-    assert receipt["capability"]["status"] == "observed"
-    assert any(
-        ref == "local:codex:bearer-actuation:debug-models:model-count:1"
-        for ref in receipt["capability"]["evidence_refs"]
-    )
-
-
-def test_codex_known_unknowns_disclose_transient_oauth_token_read(
-    tmp_path: Path,
-) -> None:
-    bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
-    bin_dir.mkdir()
-    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-    _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
-
-    result = _run_receipts(
-        tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
-        now=_current_iso_z(),
-        json_output=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
-    assert any(
-        "reads the published OAuth access token transiently" in item
-        for item in receipt["known_unknowns"]
-    )
-    assert not any("never reads secret values" in item for item in receipt["known_unknowns"])
-
-
-def test_human_receipt_output_includes_blocked_surface_reasons(tmp_path: Path) -> None:
-    bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
-    bin_dir.mkdir()
-    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-
-    result = _run_receipts(
-        tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
-        now=_current_iso_z(),
-        json_output=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "capability=blocked" in result.stdout
-    assert "capability_reasons=codex_oauth_access_token_absent" in result.stdout
-    assert "resource=blocked" in result.stdout
-    assert "resource_reasons=codex_oauth_access_token_absent" in result.stdout
-
-
-def test_antigrav_agy_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -> None:
+def test_antigrav_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "agy", "1.0.0")
@@ -635,7 +270,7 @@ def test_antigrav_agy_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -
     wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
 
-    for platform in ("agy", "antigrav", "Antigrav", "antigravity", "gemini-cli"):
+    for platform in ("antigrav", "Antigrav", "antigravity", "gemini-cli"):
         result = _run_receipts(
             tmp_path,
             env={"PATH": str(bin_dir), "HOME": str(tmp_path / "home")},
@@ -644,8 +279,112 @@ def test_antigrav_agy_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -
 
         assert result.returncode == 2
         assert f"platform '{platform.lower()}' is retired/excised" in result.stderr
-        assert "measured agy supply-leaf intake" in result.stderr
+        assert "agy.review.direct" in result.stderr
         assert not (tmp_path / f"{platform}.json").exists()
+
+
+def test_agy_receipt_records_live_review_route_without_unblocking_quota(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    home_dir = tmp_path / "home"
+    bin_dir.mkdir()
+    bundled_cli_ref = (
+        home_dir
+        / ".gemini"
+        / "antigravity-cli"
+        / "builtin"
+        / "skills"
+        / "antigravity_guide"
+        / "references"
+        / "cli.md"
+    )
+    bundled_cli_ref.parent.mkdir(parents=True)
+    bundled_cli_ref.write_text("# agy CLI reference\n", encoding="utf-8")
+    _fake_binary(bin_dir, "agy", "1.0.10")
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home_dir)},
+        platform="agy",
+        now="2026-07-05T14:51:11Z",
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["receipts"][0]["platform"] == "agy"
+    assert payload["receipts"][0]["cli_available"] is True
+    assert payload["receipts"][0]["wrapper_exists"] is True
+    assert payload["receipts"][0]["quota_status"] == "unobservable"
+    receipt = json.loads((tmp_path / "agy.json").read_text(encoding="utf-8"))
+    assert receipt["platform"] == "agy"
+    assert receipt["routes"] == ["agy.review.direct"]
+    assert receipt["cli"]["version"] == "1.0.10"
+    assert receipt["quota"]["reason_codes"] == ["account_live_quota_receipt_absent"]
+    config_refs = {item["path"]: item for item in receipt["config_refs"]}
+    assert (
+        config_refs["~/.gemini/antigravity-cli/builtin/skills/antigravity_guide/references/cli.md"][
+            "exists"
+        ]
+        is True
+    )
+    assert all(item["redacted"] is True for item in receipt["config_refs"])
+
+    registry = load_platform_capability_registry(
+        REGISTRY,
+        receipt_dir=tmp_path,
+        now=datetime(2026, 7, 5, 14, 52, tzinfo=UTC),
+    )
+    route = registry.require("agy.review.direct")
+    assert route.route_state.value == "blocked"
+    assert "agy_review_seat_receipt_admission_required" not in route.blocked_reasons
+    assert "route_specific_quota_receipt_absent" in route.blocked_reasons
+
+
+def test_agy_receipt_requires_executable_review_wrapper(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "agy", "1.0.10")
+    wrapper = tmp_path / "non-executable-hapax-agy-reviewer"
+    wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    wrapper.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    registry_payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    for route in registry_payload["routes"]:
+        if route["route_id"] == "agy.review.direct":
+            route["sanctioned_wrapper"] = str(wrapper)
+            break
+    else:  # pragma: no cover - fixture invariant
+        raise AssertionError("agy.review.direct route missing from registry fixture")
+    registry_dir = tmp_path / "registry"
+    registry_dir.mkdir()
+    registry = registry_dir / "platform-capability-registry.json"
+    registry.write_text(json.dumps(registry_payload), encoding="utf-8")
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(tmp_path / "home")},
+        platform="agy",
+        registry=registry,
+        now="2026-07-05T14:51:11Z",
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((tmp_path / "agy.json").read_text(encoding="utf-8"))
+    assert receipt["wrapper"]["exists"] is True
+    assert receipt["wrapper"]["executable"] is False
+    assert receipt["capability"]["status"] == "blocked"
+    assert "sanctioned_wrapper_not_executable" in receipt["capability"]["reason_codes"]
+    assert receipt["resource"]["status"] == "blocked"
+    assert receipt["resource"]["reason_codes"] == ["wrapper_not_executable"]
+
+    registry_with_receipt = load_platform_capability_registry(
+        registry,
+        receipt_dir=tmp_path,
+        now=datetime(2026, 7, 5, 14, 52, tzinfo=UTC),
+    )
+    route = registry_with_receipt.require("agy.review.direct")
+    assert route.route_state.value == "blocked"
+    assert "agy_review_seat_receipt_admission_required" in route.blocked_reasons
+    assert "sanctioned_wrapper_not_executable" in route.blocked_reasons
+    assert "wrapper_not_executable" in route.blocked_reasons
 
 
 def test_api_provider_gateway_receipt_allows_paid_gateway_dispatch(
@@ -987,15 +726,9 @@ def test_runtime_actuation_receipt_allows_task_bound_runtime_dispatch(
     tmp_path: Path,
 ) -> None:
     bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-    _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
-    result = _run_receipts(
-        tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
-        now=_current_iso_z(),
-    )
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
     _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
@@ -1023,15 +756,9 @@ def test_runtime_actuation_receipt_allows_task_bound_runtime_dispatch(
 
 def test_runtime_actuation_receipt_wrong_task_fails_closed(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-    _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
-    result = _run_receipts(
-        tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
-        now=_current_iso_z(),
-    )
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
     _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
@@ -1055,15 +782,9 @@ def test_runtime_actuation_receipt_wrong_task_fails_closed(tmp_path: Path) -> No
 
 def test_runtime_actuation_receipt_wrong_route_fails_closed(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-    _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
-    result = _run_receipts(
-        tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
-        now=_current_iso_z(),
-    )
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
     _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
@@ -1087,15 +808,9 @@ def test_runtime_actuation_receipt_wrong_route_fails_closed(tmp_path: Path) -> N
 
 def test_runtime_actuation_receipt_wrong_surface_fails_closed(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-    _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
-    result = _run_receipts(
-        tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
-        now=_current_iso_z(),
-    )
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
     _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
@@ -1119,15 +834,9 @@ def test_runtime_actuation_receipt_wrong_surface_fails_closed(tmp_path: Path) ->
 
 def test_runtime_actuation_receipt_stale_fails_closed_as_absent(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-    _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
-    result = _run_receipts(
-        tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
-        now=_current_iso_z(),
-    )
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
     _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
@@ -1153,15 +862,9 @@ def test_runtime_actuation_receipt_stale_fails_closed_as_absent(tmp_path: Path) 
 
 def test_runtime_actuation_receipt_stale_on_request_fails_closed(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-    _write_codex_oauth_token(home_dir, exp=datetime(2026, 6, 5, 13, 0, tzinfo=UTC))
-    result = _run_receipts(
-        tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
-        now="2026-06-05T11:00:00Z",
-    )
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now="2026-06-05T11:00:00Z")
     assert result.returncode == 0, result.stderr
     _mark_platform_receipt_account_live_quota_observed(tmp_path)
 
@@ -1202,15 +905,9 @@ def test_runtime_actuation_receipt_allows_dimensional_runtime_candidate(
     tmp_path: Path,
 ) -> None:
     bin_dir = tmp_path / "bin"
-    home_dir = tmp_path / "home"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
-    _write_codex_oauth_token(home_dir, exp=datetime.now(UTC) + timedelta(hours=2))
-    result = _run_receipts(
-        tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(home_dir)},
-        now=_current_iso_z(),
-    )
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
     _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(

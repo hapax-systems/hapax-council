@@ -168,16 +168,19 @@ def _row_to_envelope(row: sqlite3.Row) -> Envelope:
 
 
 # Canonical Claude coordination-lane names (greek slots). Codex lanes are
-# ``cx-<color>``; Vibe lanes start ``vbe``/``vibe``. Antigrav/Antigravity/agy relay
-# peers are retired and filtered/refused here so stale YAML files cannot remain
-# live broadcast targets. These predicates are the single source of truth shared
-# by the per-runtime broadcast groups and the cross-runtime ``workers`` group.
+# ``cx-<color>``; Vibe lanes start ``vbe``/``vibe``. Antigrav/Antigravity/legacy
+# Gemini relay peers are retired and filtered/refused here so stale YAML files
+# cannot remain live broadcast targets. The live agy surface is a read-only
+# review route, not a relay peer. These predicates are the single source of truth
+# shared by the per-runtime broadcast groups and the cross-runtime ``workers``
+# group.
 _CLAUDE_LANE_NAMES = frozenset(
     {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
 )
 _RETIRED_ANTIGRAV_NEXT_ACTION = (
-    "antigrav relay recipients are retired/excised; use measured agy supply-leaf "
-    "intake with route/resource/governance receipts before any future worker path"
+    "antigrav and legacy gemini-cli relay recipients are retired/excised; agy is "
+    "not a relay peer and only exists as agy.review.direct through "
+    "scripts/hapax-agy-reviewer for admitted read-only review-plane work"
 )
 
 

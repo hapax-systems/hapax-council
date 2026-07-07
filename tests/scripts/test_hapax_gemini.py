@@ -15,7 +15,7 @@ def test_hapax_gemini_help_reports_retirement() -> None:
     assert result.returncode == 0
     assert "retired" in result.stdout
     assert "hapax-gemini-sidecar" in result.stdout
-    assert "measured agy supply-leaf intake" in result.stdout
+    assert "agy.review.direct" in result.stdout
     assert "hapax-antigrav" not in result.stdout
 
 
