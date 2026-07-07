@@ -74,6 +74,14 @@ token_handoff_component() {
   printf '%s\n' "$component"
 }
 
+remote_token_handoff_seal_key() {
+  python3 - <<'PYEOF'
+import secrets
+
+print(secrets.token_hex(32))
+PYEOF
+}
+
 session_id_is_safe() {
   local sid="${1:-}" tail=""
   [ "${#sid}" -ge 8 ] && [ "${#sid}" -le 128 ] || return 1
@@ -496,6 +504,7 @@ payload = {
     "binaries": ["python3", "codex"],
     "token_file": token_file,
     "token_handoff_file": token_handoff_file,
+    "token_handoff_seal_key": os.environ.get("HAPAX_REMOTE_TOKEN_HANDOFF_SEAL_KEY", ""),
     "token_handoff_ttl_seconds": token_handoff_ttl_seconds(),
 }
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
@@ -553,6 +562,7 @@ payload = {
     "task_id": task_id,
     "tmux_name": tmux_name,
     "token_handoff_file": os.environ.get("HAPAX_REMOTE_TOKEN_HANDOFF", ""),
+    "token_handoff_seal_key": os.environ.get("HAPAX_REMOTE_TOKEN_HANDOFF_SEAL_KEY", ""),
     "env": env,
     "argv": argv,
 }
@@ -571,7 +581,7 @@ print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).deco
 PYEOF
 }
 
-REMOTE_PREFLIGHT_PY='import base64,json,os,shutil,subprocess,sys,tempfile,time; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"]));
+REMOTE_PREFLIGHT_PY='import base64,hashlib,hmac,json,os,shutil,subprocess,sys,tempfile,time; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"]));
 missing_dirs=[path for path in p.get("required_dirs",()) if not os.path.isdir(path)]
 missing_exec=[path for path in p.get("executables",()) if not (os.path.isfile(path) and os.access(path, os.X_OK))]
 missing_bins=[binary for binary in p.get("binaries",()) if not shutil.which(binary)]
@@ -582,6 +592,19 @@ def _jwt_exp(token):
     except Exception:
         print("hapax-codex: preflight-proven Codex OAuth token handoff is unparseable; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
         sys.exit(78)
+def _seal_token(token,key_hex):
+    try:
+        key=bytes.fromhex(key_hex)
+    except ValueError:
+        key=b""
+    if not key:
+        print("hapax-codex: missing Codex OAuth token handoff seal key; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
+        sys.exit(78)
+    plain=token.encode("utf-8")
+    stream=hashlib.shake_256(key+b":hapax-codex-token-handoff-v1").digest(len(plain))
+    cipher=bytes(a^b for a,b in zip(plain,stream))
+    mac=hmac.new(key,b"hapax-codex-token-handoff-v1\0"+cipher,hashlib.sha256).hexdigest()
+    return "hapax-token-sealed-v1."+base64.urlsafe_b64encode(cipher).decode("ascii").rstrip("=")+"."+mac
 token_file=os.path.expanduser(p.get("token_file") or "~/.cache/hapax/codex-oauth/access_token")
 token_error=""
 actuation_error=""
@@ -621,6 +644,7 @@ if missing_dirs or missing_exec or missing_bins or token_error or actuation_erro
     sys.exit(1)
 handoff=p.get("token_handoff_file") or ""
 if handoff:
+    seal_key=p.get("token_handoff_seal_key") or ""
     handoff=os.path.abspath(os.path.expanduser(handoff))
     if os.path.dirname(handoff)!="/tmp" or not os.path.basename(handoff).startswith("hapax-codex-token-"):
         print("hapax-codex: refused invalid Codex OAuth token handoff path "+handoff+"; next action: rerun remote preflight with a sanitized session id", file=sys.stderr)
@@ -693,9 +717,9 @@ if handoff:
         finally:
             os._exit(0)
     with os.fdopen(fd,"w",encoding="utf-8") as fh:
-        fh.write(token)
+        fh.write(_seal_token(token,seal_key))
 sys.exit(0)'
-REMOTE_EXEC_PY='import base64,json,os,socket,sys,time; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); proof=p.get("proof_file",""); cgroup="";
+REMOTE_EXEC_PY='import base64,hashlib,hmac,json,os,socket,sys,time; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); proof=p.get("proof_file",""); cgroup="";
 try:
     cgroup=open("/proc/self/cgroup",encoding="utf-8").read()
 except OSError:
@@ -707,13 +731,40 @@ def _jwt_exp(token):
     except Exception:
         print("hapax-codex: preflight-proven Codex OAuth token handoff is unparseable; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
         sys.exit(78)
+def _unseal_token(blob,key_hex):
+    try:
+        key=bytes.fromhex(key_hex)
+    except ValueError:
+        key=b""
+    if not key:
+        print("hapax-codex: missing Codex OAuth token handoff seal key; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
+        sys.exit(78)
+    try:
+        prefix,cipher_b64,mac=blob.split(".",2)
+    except ValueError:
+        print("hapax-codex: preflight-proven Codex OAuth token handoff is unsealed; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
+        sys.exit(78)
+    if prefix != "hapax-token-sealed-v1":
+        print("hapax-codex: preflight-proven Codex OAuth token handoff has unknown seal format; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
+        sys.exit(78)
+    try:
+        cipher=base64.urlsafe_b64decode((cipher_b64+"="*(-len(cipher_b64)%4)).encode("ascii"))
+    except Exception:
+        print("hapax-codex: preflight-proven Codex OAuth token handoff seal is unparseable; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
+        sys.exit(78)
+    expected=hmac.new(key,b"hapax-codex-token-handoff-v1\0"+cipher,hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(mac,expected):
+        print("hapax-codex: preflight-proven Codex OAuth token handoff seal failed authentication; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
+        sys.exit(78)
+    stream=hashlib.shake_256(key+b":hapax-codex-token-handoff-v1").digest(len(cipher))
+    return bytes(a^b for a,b in zip(cipher,stream)).decode("utf-8")
 token_handoff=p.get("token_handoff_file") or ""
 if not token_handoff:
     print("hapax-codex: missing preflight-proven Codex OAuth token handoff; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
     sys.exit(78)
 token_path=os.path.expanduser(token_handoff)
 try:
-    token=open(token_path,encoding="utf-8").read().strip()
+    token_blob=open(token_path,encoding="utf-8").read().strip()
 except OSError:
     print("hapax-codex: missing preflight-proven Codex OAuth token handoff at "+token_path+"; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
     sys.exit(78)
@@ -722,6 +773,7 @@ try:
 except OSError as exc:
     print("hapax-codex: failed to delete preflight-proven Codex OAuth token handoff at "+token_path+" ("+exc.__class__.__name__+"); next action: remove the handoff file on the dispatch host before retrying", file=sys.stderr)
     sys.exit(78)
+token=_unseal_token(token_blob,p.get("token_handoff_seal_key") or "")
 if not token:
     print("hapax-codex: preflight-proven Codex OAuth token handoff is absent; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
     sys.exit(78)
@@ -1232,7 +1284,9 @@ if [ -n "$DISPATCH_HOST" ]; then
   # an empty handoff path; the bearer file is created just-in-time before remote
   # exec and then consumed or cleaned.
   REMOTE_TOKEN_HANDOFF="/tmp/hapax-codex-token-$(token_handoff_component "$SESSION_UUID")-$$"
+  REMOTE_TOKEN_HANDOFF_SEAL_KEY="$(remote_token_handoff_seal_key)"
   export HAPAX_REMOTE_TOKEN_HANDOFF="$REMOTE_TOKEN_HANDOFF"
+  export HAPAX_REMOTE_TOKEN_HANDOFF_SEAL_KEY="$REMOTE_TOKEN_HANDOFF_SEAL_KEY"
   trap cleanup_remote_token_handoff EXIT
 fi
 

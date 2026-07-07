@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -78,6 +80,17 @@ def _write_codex_access_token(root: Path, *, exp: int | None = None) -> Path:
     target.write_text(f"{header}.{payload}.sig", encoding="utf-8")
     target.chmod(0o600)
     return target
+
+
+def _seal_token_for_test(token: str, key_hex: str) -> str:
+    key = bytes.fromhex(key_hex)
+    plain = token.encode()
+    stream = hashlib.shake_256(key + b":hapax-codex-token-handoff-v1").digest(len(plain))
+    cipher = bytes(a ^ b for a, b in zip(plain, stream, strict=True))
+    mac = hmac.new(key, b"hapax-codex-token-handoff-v1\0" + cipher, hashlib.sha256).hexdigest()
+    return (
+        "hapax-token-sealed-v1." + base64.urlsafe_b64encode(cipher).decode().rstrip("=") + "." + mac
+    )
 
 
 def _write_classifying_ssh(
@@ -1387,6 +1400,7 @@ def test_codex_headless_remote_preflight_self_cleans_unconsumed_token_handoff(
     bin_dir.mkdir()
     _write_executable(bin_dir / "codex", "exit 0\n")
     token = _write_codex_access_token(tmp_path / "oauth", exp=int(time.time()) + 3600)
+    seal_key = "a" * 64
     handoff = Path("/tmp") / f"hapax-codex-token-headless-ttl-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
@@ -1395,6 +1409,7 @@ def test_codex_headless_remote_preflight_self_cleans_unconsumed_token_handoff(
         "binaries": ["codex"],
         "token_file": str(token),
         "token_handoff_file": str(handoff),
+        "token_handoff_seal_key": seal_key,
         "token_handoff_ttl_seconds": 2,
     }
     env = os.environ.copy()
@@ -1415,6 +1430,9 @@ def test_codex_headless_remote_preflight_self_cleans_unconsumed_token_handoff(
         assert result.returncode == 0, result.stderr
         assert elapsed < 1.5
         assert handoff.exists()
+        sealed = handoff.read_text(encoding="utf-8")
+        assert sealed.startswith("hapax-token-sealed-v1.")
+        assert sealed != token.read_text(encoding="utf-8").strip()
         for _ in range(40):
             if not handoff.exists():
                 break
@@ -1432,6 +1450,7 @@ def test_codex_headless_remote_preflight_refuses_invalid_token_handoff_ttl(
     bin_dir.mkdir()
     _write_executable(bin_dir / "codex", "exit 0\n")
     token = _write_codex_access_token(tmp_path / "oauth", exp=int(time.time()) + 3600)
+    seal_key = "b" * 64
     handoff = Path("/tmp") / f"hapax-codex-token-headless-invalid-ttl-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
@@ -1440,6 +1459,7 @@ def test_codex_headless_remote_preflight_refuses_invalid_token_handoff_ttl(
         "binaries": ["codex"],
         "token_file": str(token),
         "token_handoff_file": str(handoff),
+        "token_handoff_seal_key": seal_key,
         "token_handoff_ttl_seconds": 0,
     }
     env = os.environ.copy()
@@ -1475,6 +1495,7 @@ def test_codex_headless_remote_preflight_fails_closed_when_self_cleanup_cannot_f
         encoding="utf-8",
     )
     token = _write_codex_access_token(tmp_path / "oauth", exp=int(time.time()) + 3600)
+    seal_key = "c" * 64
     handoff = Path("/tmp") / f"hapax-codex-token-headless-fork-fail-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
@@ -1483,6 +1504,7 @@ def test_codex_headless_remote_preflight_fails_closed_when_self_cleanup_cannot_f
         "binaries": ["codex"],
         "token_file": str(token),
         "token_handoff_file": str(handoff),
+        "token_handoff_seal_key": seal_key,
         "token_handoff_ttl_seconds": 2,
     }
     env = os.environ.copy()
@@ -1638,12 +1660,18 @@ def test_codex_headless_remote_exec_fails_if_token_handoff_cleanup_fails(
     handoff_dir = tmp_path / "handoff"
     handoff_dir.mkdir()
     token_path = _write_codex_access_token(handoff_dir, exp=int(time.time()) + 3600)
+    seal_key = "d" * 64
+    token_path.write_text(
+        _seal_token_for_test(token_path.read_text(encoding="utf-8").strip(), seal_key),
+        encoding="utf-8",
+    )
     handoff_dir.chmod(0o500)
     payload = {
         "workdir": str(workdir),
         "env": {},
         "proof_file": "",
         "token_handoff_file": str(token_path),
+        "token_handoff_seal_key": seal_key,
     }
     env = os.environ.copy()
     env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()

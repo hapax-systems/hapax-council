@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import subprocess
@@ -76,6 +78,17 @@ def _write_codex_access_token(home: Path, *, exp: int | None = None) -> Path:
     target.write_text(f"{header}.{payload}.sig", encoding="utf-8")
     target.chmod(0o600)
     return target
+
+
+def _seal_token_for_test(token: str, key_hex: str) -> str:
+    key = bytes.fromhex(key_hex)
+    plain = token.encode()
+    stream = hashlib.shake_256(key + b":hapax-codex-token-handoff-v1").digest(len(plain))
+    cipher = bytes(a ^ b for a, b in zip(plain, stream, strict=True))
+    mac = hmac.new(key, b"hapax-codex-token-handoff-v1\0" + cipher, hashlib.sha256).hexdigest()
+    return (
+        "hapax-token-sealed-v1." + base64.urlsafe_b64encode(cipher).decode().rstrip("=") + "." + mac
+    )
 
 
 def _extract_remote_python(name: str) -> str:
@@ -219,6 +232,7 @@ exit 0
     )
     fake_codex.chmod(0o755)
     token = _write_codex_access_token(tmp_path / "home", exp=int(time.time()) + 3600)
+    seal_key = "a" * 64
     handoff = Path("/tmp") / f"hapax-codex-token-ttl-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
@@ -227,6 +241,7 @@ exit 0
         "binaries": ["codex"],
         "token_file": str(token),
         "token_handoff_file": str(handoff),
+        "token_handoff_seal_key": seal_key,
         "token_handoff_ttl_seconds": 2,
     }
     env = os.environ.copy()
@@ -247,6 +262,9 @@ exit 0
         assert result.returncode == 0, result.stderr
         assert elapsed < 1.5
         assert handoff.exists()
+        sealed = handoff.read_text(encoding="utf-8")
+        assert sealed.startswith("hapax-token-sealed-v1.")
+        assert sealed != token.read_text(encoding="utf-8").strip()
         for _ in range(40):
             if not handoff.exists():
                 break
@@ -273,6 +291,7 @@ exit 0
     )
     fake_codex.chmod(0o755)
     token = _write_codex_access_token(tmp_path / "home", exp=int(time.time()) + 3600)
+    seal_key = "b" * 64
     handoff = Path("/tmp") / f"hapax-codex-token-invalid-ttl-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
@@ -281,6 +300,7 @@ exit 0
         "binaries": ["codex"],
         "token_file": str(token),
         "token_handoff_file": str(handoff),
+        "token_handoff_seal_key": seal_key,
         "token_handoff_ttl_seconds": 0,
     }
     env = os.environ.copy()
@@ -327,6 +347,7 @@ exit 0
         encoding="utf-8",
     )
     token = _write_codex_access_token(tmp_path / "home", exp=int(time.time()) + 3600)
+    seal_key = "c" * 64
     handoff = Path("/tmp") / f"hapax-codex-token-fork-fail-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
@@ -335,6 +356,7 @@ exit 0
         "binaries": ["codex"],
         "token_file": str(token),
         "token_handoff_file": str(handoff),
+        "token_handoff_seal_key": seal_key,
         "token_handoff_ttl_seconds": 2,
     }
     env = os.environ.copy()
@@ -482,8 +504,12 @@ def test_launcher_remote_exec_uses_preclaim_proven_token_handoff(tmp_path: Path)
     workdir = tmp_path / "workdir"
     workdir.mkdir()
     source_token = _write_codex_access_token(tmp_path / "home", exp=int(time.time()) + 3600)
+    seal_key = "d" * 64
     handoff = tmp_path / "hapax-codex-token-test"
-    handoff.write_text(source_token.read_text(encoding="utf-8"), encoding="utf-8")
+    handoff.write_text(
+        _seal_token_for_test(source_token.read_text(encoding="utf-8").strip(), seal_key),
+        encoding="utf-8",
+    )
     handoff.chmod(0o600)
     used_token = tmp_path / "used-token.txt"
     payload = {
@@ -491,6 +517,7 @@ def test_launcher_remote_exec_uses_preclaim_proven_token_handoff(tmp_path: Path)
         "env": {},
         "proof_file": "",
         "token_handoff_file": str(handoff),
+        "token_handoff_seal_key": seal_key,
         "argv": [
             sys.executable,
             "-c",
@@ -527,6 +554,7 @@ def test_launcher_remote_exec_refuses_missing_token_handoff(tmp_path: Path) -> N
         "env": {},
         "proof_file": "",
         "token_handoff_file": str(tmp_path / "missing-handoff"),
+        "token_handoff_seal_key": "e" * 64,
         "argv": [sys.executable, "-c", "raise SystemExit(0)"],
     }
     env = os.environ.copy()

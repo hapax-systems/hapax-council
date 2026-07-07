@@ -41,15 +41,17 @@ Remote appendix dispatch uses this order:
 4. run full remote preflight for required directories, hook adapter, `python3`,
    `codex`, OAuth freshness, and `codex debug models` bearer actuation;
 5. after the local `cc-claim` boundary accepts the dispatch, snapshot the exact
-   preflight-proven token into a short-lived remote handoff file. The handoff
-   create is exclusive, `0600`, and non-following where the dispatch host exposes
-   `O_NOFOLLOW`; a preexisting file or symlink is a hard preflight failure. The
-   remote preflight also schedules an out-of-band self-cleanup before writing
-   token bytes, so a cleanup scheduling failure leaves no bearer handoff behind.
-   The default TTL is 900 seconds and may be set to any positive value through
-   `HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS`, capped at 3600 seconds. Invalid,
-   zero, negative, or out-of-range TTL values fail closed before a live handoff is
-   written;
+   preflight-proven token into a short-lived sealed remote handoff file. The
+   handoff create is exclusive, `0600`, and non-following where the dispatch host
+   exposes `O_NOFOLLOW`; a preexisting file or symlink is a hard preflight
+   failure. The file content is a one-time authenticated sealed blob, not a bearer
+   token; remote exec needs the per-launch seal key from its payload to recover
+   the token after deleting the file. The remote preflight also schedules an
+   out-of-band self-cleanup before writing sealed bytes, so a cleanup scheduling
+   failure leaves no bearer handoff behind. The default TTL is 900 seconds and may
+   be set to any positive value through `HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS`,
+   capped at 3600 seconds. Invalid, zero, negative, or out-of-range TTL values
+   fail closed before a live handoff is written;
 6. execute `codex exec` on the remote host with that handoff token, deleting the
    handoff as it is consumed. Later rotation of the published token file must not
    change the bearer used for this exec. A failed deletion during handoff
