@@ -327,6 +327,28 @@ import json
 import os
 import sys
 
+def token_handoff_ttl_seconds():
+    raw = os.environ.get("HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS", "900")
+    try:
+        ttl = int(raw)
+    except ValueError:
+        print(
+            "hapax-codex-headless: invalid HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS="
+            + raw
+            + "; next action: set a positive integer between 1 and 3600 before remote dispatch",
+            file=sys.stderr,
+        )
+        raise SystemExit(78)
+    if ttl < 1 or ttl > 3600:
+        print(
+            "hapax-codex-headless: invalid HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS="
+            + raw
+            + "; next action: set a positive integer between 1 and 3600 before remote dispatch",
+            file=sys.stderr,
+        )
+        raise SystemExit(78)
+    return ttl
+
 workdir, council_dir, mcp_dir, token_only, token_handoff_file = sys.argv[1:6]
 token_file = (
     os.environ.get("HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE")
@@ -338,7 +360,7 @@ payload = {
     "binaries": ["codex"] if token_only == "1" else ["python3", "codex"],
     "token_file": token_file,
     "token_handoff_file": "" if token_only == "1" else token_handoff_file,
-    "token_handoff_ttl_seconds": int(os.environ.get("HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS", "900")),
+    "token_handoff_ttl_seconds": token_handoff_ttl_seconds(),
 }
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
 PYEOF
@@ -501,38 +523,64 @@ if handoff:
     except OSError as exc:
         print("hapax-codex-headless: refused unsafe preflight-proven Codex OAuth token handoff at "+handoff+" ("+exc.__class__.__name__+"); next action: remove stale hapax-codex-token files owned by this user and rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
         sys.exit(78)
+    try:
+        ttl=int(p.get("token_handoff_ttl_seconds"))
+    except (TypeError,ValueError):
+        os.close(fd)
+        try:
+            os.unlink(handoff)
+        except FileNotFoundError:
+            pass
+        print("hapax-codex-headless: refused invalid Codex OAuth token handoff TTL; next action: set HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS to a positive integer between 1 and 3600", file=sys.stderr)
+        sys.exit(78)
+    if ttl < 1 or ttl > 3600:
+        os.close(fd)
+        try:
+            os.unlink(handoff)
+        except FileNotFoundError:
+            pass
+        print("hapax-codex-headless: refused invalid Codex OAuth token handoff TTL; next action: set HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS to a positive integer between 1 and 3600", file=sys.stderr)
+        sys.exit(78)
+    try:
+        pid=os.fork()
+    except (AttributeError,OSError) as exc:
+        os.close(fd)
+        try:
+            os.unlink(handoff)
+        except FileNotFoundError:
+            pass
+        print("hapax-codex-headless: failed to schedule Codex OAuth token handoff self-cleanup ("+exc.__class__.__name__+"); next action: verify remote process limits/fork availability and rerun before dispatching Codex lanes", file=sys.stderr)
+        sys.exit(78)
+    if pid == 0:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.setsid()
+        except OSError:
+            pass
+        try:
+            devnull=os.open(os.devnull,os.O_RDWR)
+            for fdno in (0,1,2):
+                try:
+                    os.dup2(devnull,fdno)
+                except OSError:
+                    pass
+            if devnull > 2:
+                os.close(devnull)
+        except OSError:
+            pass
+        try:
+            time.sleep(ttl)
+            try:
+                os.unlink(handoff)
+            except FileNotFoundError:
+                pass
+        finally:
+            os._exit(0)
     with os.fdopen(fd,"w",encoding="utf-8") as fh:
         fh.write(token)
-    ttl=int(p.get("token_handoff_ttl_seconds") or 0)
-    if ttl > 0:
-        try:
-            pid=os.fork()
-        except (AttributeError,OSError):
-            pid=-1
-        if pid == 0:
-            try:
-                os.setsid()
-            except OSError:
-                pass
-            try:
-                devnull=os.open(os.devnull,os.O_RDWR)
-                for fdno in (0,1,2):
-                    try:
-                        os.dup2(devnull,fdno)
-                    except OSError:
-                        pass
-                if devnull > 2:
-                    os.close(devnull)
-            except OSError:
-                pass
-            try:
-                time.sleep(ttl)
-                try:
-                    os.unlink(handoff)
-                except FileNotFoundError:
-                    pass
-            finally:
-                os._exit(0)
 sys.exit(0)'
 REMOTE_TOKEN_CLEANUP_PY='import base64,json,os,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); path=os.path.expanduser(p.get("path") or "");
 # token_handoff_cleanup: unlink only the governed short-lived handoff path.

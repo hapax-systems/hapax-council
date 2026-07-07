@@ -44,9 +44,12 @@ Remote appendix dispatch uses this order:
    preflight-proven token into a short-lived remote handoff file. The handoff
    create is exclusive, `0600`, and non-following where the dispatch host exposes
    `O_NOFOLLOW`; a preexisting file or symlink is a hard preflight failure. The
-   remote preflight also schedules an out-of-band self-cleanup for unconsumed
-   handoffs. The default TTL is 900 seconds and may be reduced with
-   `HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS`;
+   remote preflight also schedules an out-of-band self-cleanup before writing
+   token bytes, so a cleanup scheduling failure leaves no bearer handoff behind.
+   The default TTL is 900 seconds and may be set to any positive value through
+   `HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS`, capped at 3600 seconds. Invalid,
+   zero, negative, or out-of-range TTL values fail closed before a live handoff is
+   written;
 6. execute `codex exec` on the remote host with that handoff token, deleting the
    handoff as it is consumed. Later rotation of the published token file must not
    change the bearer used for this exec. A failed deletion during handoff
@@ -91,6 +94,10 @@ Remote bootstrap failures print the failing branch and a next action. Check:
 - `HAPAX_CODEX_CREATE_WORKTREE` (default `1`);
 - `HAPAX_CODEX_BRANCH_PREFIX` (default `codex`);
 - `HAPAX_CODEX_WORKTREE_BASE` if a non-default base was requested.
+- `HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS` for remote bearer handoff cleanup
+  timing. Valid values are integer seconds from 1 through 3600; unset defaults
+  to 900. Invalid values refuse remote dispatch before a bearer handoff is
+  written.
 
 Recheck the contract from the council repo with:
 

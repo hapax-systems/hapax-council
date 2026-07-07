@@ -26,7 +26,7 @@ def _env_with_fake_codex(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
     fake_codex.write_text(
         f"""#!/usr/bin/env bash
 if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
-  printf '{{"models":["test"]}}\\n'
+  printf '{{"models":[{{"slug":"test"}}]}}\\n'
   exit 0
 fi
 printf '%s\\n' "$*" > {args_file}
@@ -52,7 +52,7 @@ printf 'CODEX_ACCESS_TOKEN_PRESENT=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" >> {env
     env["HAPAX_CODEX_TERMINAL"] = "none"
     env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
     env["HOME"] = str(tmp_path / "home")
-    env["HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS"] = "0"
+    env["HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS"] = "1"
     env.pop("CODEX_THREAD_NAME", None)
     env.pop("CODEX_ROLE", None)
     env.pop("CODEX_SESSION_NAME", None)
@@ -210,7 +210,7 @@ def test_remote_preflight_self_cleans_unconsumed_token_handoff(tmp_path: Path) -
     fake_codex.write_text(
         """#!/usr/bin/env bash
 if [ "${1:-}" = "debug" ] && [ "${2:-}" = "models" ]; then
-  printf '%s\n' '{"models":["test"]}'
+  printf '%s\n' '{"models":[{"slug":"test"}]}'
   exit 0
 fi
 exit 0
@@ -254,6 +254,105 @@ exit 0
         assert not handoff.exists()
     finally:
         handoff.unlink(missing_ok=True)
+
+
+def test_remote_preflight_refuses_invalid_token_handoff_ttl(tmp_path: Path) -> None:
+    remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_codex = bin_dir / "codex"
+    fake_codex.write_text(
+        """#!/usr/bin/env bash
+if [ "${1:-}" = "debug" ] && [ "${2:-}" = "models" ]; then
+  printf '%s\n' '{"models":[{"slug":"test"}]}'
+  exit 0
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+    token = _write_codex_access_token(tmp_path / "home", exp=int(time.time()) + 3600)
+    handoff = Path("/tmp") / f"hapax-codex-token-invalid-ttl-{os.getpid()}-{tmp_path.name}"
+    handoff.unlink(missing_ok=True)
+    payload = {
+        "required_dirs": [],
+        "executables": [],
+        "binaries": ["codex"],
+        "token_file": str(token),
+        "token_handoff_file": str(handoff),
+        "token_handoff_ttl_seconds": 0,
+    }
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+
+    result = subprocess.run(
+        [sys.executable, "-c", remote_preflight_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 78
+    assert "refused invalid Codex OAuth token handoff TTL" in result.stderr
+    assert not handoff.exists()
+
+
+def test_remote_preflight_fails_closed_when_self_cleanup_cannot_fork(
+    tmp_path: Path,
+) -> None:
+    remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_codex = bin_dir / "codex"
+    fake_codex.write_text(
+        """#!/usr/bin/env bash
+if [ "${1:-}" = "debug" ] && [ "${2:-}" = "models" ]; then
+  printf '%s\n' '{"models":[{"slug":"test"}]}'
+  exit 0
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+    sitecustomize = tmp_path / "sitecustomize.py"
+    sitecustomize.write_text(
+        "import os\n"
+        "def _fail_fork():\n"
+        "    raise OSError('forced fork failure')\n"
+        "os.fork = _fail_fork\n",
+        encoding="utf-8",
+    )
+    token = _write_codex_access_token(tmp_path / "home", exp=int(time.time()) + 3600)
+    handoff = Path("/tmp") / f"hapax-codex-token-fork-fail-{os.getpid()}-{tmp_path.name}"
+    handoff.unlink(missing_ok=True)
+    payload = {
+        "required_dirs": [],
+        "executables": [],
+        "binaries": ["codex"],
+        "token_file": str(token),
+        "token_handoff_file": str(handoff),
+        "token_handoff_ttl_seconds": 2,
+    }
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["PYTHONPATH"] = str(tmp_path)
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+
+    result = subprocess.run(
+        [sys.executable, "-c", remote_preflight_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 78
+    assert "failed to schedule Codex OAuth token handoff self-cleanup" in result.stderr
+    assert not handoff.exists()
 
 
 def test_rejects_slot_name_as_visible_session(tmp_path: Path) -> None:
