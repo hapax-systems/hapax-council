@@ -90,6 +90,18 @@ GLMCP_SECRETISH_WITNESS_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
     "witness:supported-tool-usage-witness:",
     "witness:sk-live-secret-token-000000000000000000000000:",
 )
+AGY_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:agy-quota-admission.yaml:"
+    "witness:agy-gemini31pro-smoke-witness:"
+    "supported_tool:hapax-agy-reviewer:"
+    "model:gemini-3.1-pro-preview:"
+    "observed_at:2026-05-17T07:59:00Z:"
+    "fresh_until:2026-05-17T08:05:00Z"
+)
+AGY_SECRETISH_WITNESS_EVIDENCE_REF = AGY_ADMISSION_EVIDENCE_REF.replace(
+    "witness:agy-gemini31pro-smoke-witness:",
+    "witness:sk-live-secret-token-000000000000000000000000:",
+)
 
 
 def _payload() -> dict[str, Any]:
@@ -1238,10 +1250,74 @@ def test_effort_and_model_id_enum_parity_with_registry() -> None:
     assert {m.value for m in ModelId} == {m.value for m in RegistryModelId}
 
 
-def test_agy_receipt_bounded_route_has_no_single_provider_mapping() -> None:
+def test_agy_receipt_bounded_route_has_guarded_provider_mapping() -> None:
     assert "agy.review.direct" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
-    assert "agy.review.direct" not in RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS
+    assert (
+        RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS["agy.review.direct"] == "google-antigravity-cli-agy"
+    )
     assert RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS["glmcp.review.direct"] == "z_ai-glm-coding-plan"
+
+
+def test_receipt_bounded_route_accepts_agy_admission_evidence() -> None:
+    payload = _active_budget_payload()
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-agy-review-direct-fresh",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "agy.review.direct",
+            "provider": "google-antigravity-cli-agy",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [AGY_ADMISSION_EVIDENCE_REF],
+            "operator_visible_reason": "fixture agy admission",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "agy.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.FRESH
+    assert refs == (AGY_ADMISSION_EVIDENCE_REF,)
+
+
+def test_receipt_bounded_route_rejects_secretish_agy_witness() -> None:
+    payload = _active_budget_payload()
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-agy-review-direct-secretish-witness",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "agy.review.direct",
+            "provider": "google-antigravity-cli-agy",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [AGY_SECRETISH_WITNESS_EVIDENCE_REF],
+            "operator_visible_reason": "fixture agy secretish witness",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "agy.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert AGY_SECRETISH_WITNESS_EVIDENCE_REF not in refs
+    assert any(ref.startswith("quota-evidence-ref:redacted-secretish-sha256:") for ref in refs)
+    assert (
+        "quota-snapshot:quota-agy-review-direct-secretish-witness:untrusted_agy_admission_evidence"
+    ) in refs
 
 
 def test_agy_receipt_bounded_route_rejects_generic_fresh_quota_snapshot() -> None:

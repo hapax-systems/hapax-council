@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Write passive agy review-route quota admission receipts.
+
+The command records a short-lived local observation from sanctioned agy review
+route use. It does not invoke agy, read credentials, persist prompt/output
+content, or store secret values. Positive receipts are consumed by
+``scripts/hapax-quota-telemetry-writer`` before ``agy.review.direct`` can be
+treated as a live review family.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
+
+DEFAULT_RECEIPT_DIR = Path(
+    os.environ.get(
+        "HAPAX_RELAY_RECEIPT_DIR",
+        str(Path.home() / ".cache/hapax/relay/receipts"),
+    )
+)
+
+ADMISSION_SCHEMA = "hapax.agy_quota_admission.v1"
+PROVIDER = "google-antigravity-cli-agy"
+ROUTE_ID = "agy.review.direct"
+CAPACITY_POOL = "subscription_quota"
+SUPPORTED_TOOL = "hapax-agy-reviewer"
+MODEL = "gemini-3.1-pro-preview"
+BILLING_MODE = "operator_session_subscription"
+SECRET_SOURCE = "agy:operator-session"
+DEFAULT_STALE_AFTER_SECONDS = 900
+MAX_STALE_AFTER_SECONDS = 3600
+
+SAFE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+SAFE_RECEIPT_NAME_RE = re.compile(r"\A[a-z0-9_.+-]+\.yaml\Z")
+SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+
+
+def _parse_utc(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).replace(microsecond=0)
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _now(args: argparse.Namespace) -> datetime:
+    if args.now:
+        parsed = _parse_utc(args.now)
+        if parsed is None:
+            raise ValueError("invalid --now; expected ISO-8601 UTC timestamp")
+        return parsed
+    return datetime.now(UTC).replace(microsecond=0)
+
+
+def _safe_reference(value: str, *, label: str) -> str:
+    normalized = " ".join(value.strip().split())
+    if SAFE_REF_RE.fullmatch(normalized) is None or SECRETISH_RE.search(normalized) is not None:
+        raise ValueError(f"unsafe {label}; expected a 3-240 character sanitized reference")
+    return normalized
+
+
+def _receipt_name(args: argparse.Namespace, *, observed_at: datetime) -> str:
+    default = f"agy-quota-admission-{observed_at.strftime('%Y%m%dT%H%M%SZ').lower()}.yaml"
+    name = args.receipt_name or default
+    if SAFE_RECEIPT_NAME_RE.fullmatch(name) is None or SECRETISH_RE.search(name) is not None:
+        raise ValueError("unsafe receipt name")
+    if "agy-quota-admission" not in name:
+        raise ValueError("receipt name must contain 'agy-quota-admission'")
+    return name
+
+
+def _write_flat_yaml_atomic(path: Path, fields: list[tuple[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            for key, value in fields:
+                if isinstance(value, bool):
+                    rendered = "true" if value else "false"
+                else:
+                    rendered = str(value)
+                handle.write(f"{key}: {rendered}\n")
+        os.replace(tmp_name, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            Path(tmp_name).unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--receipt-dir", type=Path, default=DEFAULT_RECEIPT_DIR)
+    parser.add_argument("--receipt-name")
+    parser.add_argument("--now")
+    parser.add_argument(
+        "--stale-after-seconds",
+        type=int,
+        default=DEFAULT_STALE_AFTER_SECONDS,
+    )
+    parser.add_argument(
+        "--evidence-ref",
+        required=True,
+        help="Sanitized witness ref, for example agy-gemini31pro-smoke-20260707t1300z",
+    )
+    parser.add_argument("--json", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        observed_at = _now(args)
+        if not 60 <= args.stale_after_seconds <= MAX_STALE_AFTER_SECONDS:
+            raise ValueError("--stale-after-seconds must be between 60 and 3600")
+        evidence_ref = _safe_reference(args.evidence_ref, label="evidence-ref")
+        receipt_name = _receipt_name(args, observed_at=observed_at)
+        path = args.receipt_dir / receipt_name
+        fields: list[tuple[str, object]] = [
+            ("schema", ADMISSION_SCHEMA),
+            ("status", "quota_available"),
+            ("provider", PROVIDER),
+            ("route_id", ROUTE_ID),
+            ("capacity_pool", CAPACITY_POOL),
+            ("supported_tool", SUPPORTED_TOOL),
+            ("model", MODEL),
+            ("observed_at", _iso(observed_at)),
+            ("stale_after_seconds", args.stale_after_seconds),
+            ("evidence_ref", evidence_ref),
+            ("secret_source", SECRET_SOURCE),
+            ("secret_value_persisted", False),
+            ("prompt_or_output_persisted", False),
+            ("billing_mode", BILLING_MODE),
+            ("positive_admission", True),
+        ]
+        _write_flat_yaml_atomic(path, fields)
+    except ValueError as exc:
+        print(f"hapax-agy-quota-admission: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"hapax-agy-quota-admission: failed to write receipt: {exc}", file=sys.stderr)
+        return 1
+
+    summary = {
+        "receipt_kind": "admission",
+        "path": str(path),
+        "route_id": ROUTE_ID,
+        "supported_tool": SUPPORTED_TOOL,
+        "model": MODEL,
+        "observed_at": _iso(observed_at),
+        "fresh_until": _iso(
+            datetime.fromtimestamp(
+                observed_at.timestamp() + args.stale_after_seconds,
+                UTC,
+            )
+        ),
+    }
+    if args.json:
+        import json
+
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    else:
+        print(f"hapax-agy-quota-admission: wrote admission receipt -> {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

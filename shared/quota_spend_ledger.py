@@ -29,9 +29,24 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
 RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset({"agy.review.direct", "glmcp.review.direct"})
 RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
+    "agy.review.direct": "google-antigravity-cli-agy",
     "glmcp.review.direct": "z_ai-glm-coding-plan",
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
+AGY_ADMISSION_SUPPORTED_TOOL = "hapax-agy-reviewer"
+AGY_ADMISSION_MODEL = "gemini-3.1-pro-preview"
+AGY_ADMISSION_RECEIPT_LABEL_RE = re.compile(
+    r"\Arelay-receipt:"
+    r"(?:[a-z0-9_.+-]*agy-quota-admission[a-z0-9_.+-]*\.yaml|"
+    r"unsafe-receipt-name-sha256:[0-9a-f]{16})"
+    r":witness:"
+)
+AGY_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+AGY_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+AGY_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):supported_tool:")
 GLMCP_ADMISSION_CODING_PLAN_ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
 GLMCP_ADMISSION_PAYG_ENDPOINT = "https://api.z.ai/api/paas/v4"
 GLMCP_PAYG_BUDGET_ROUTE_ID = "glmcp.review.direct"
@@ -1321,7 +1336,11 @@ def _subscription_quota_missing_required_admission_evidence(
         return True
     if snapshot.provider != expected_provider:
         return True
-    return not any(_is_glmcp_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    if normalized_route_id == "glmcp.review.direct":
+        return not any(_is_glmcp_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    if normalized_route_id == "agy.review.direct":
+        return not any(_is_agy_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    return True
 
 
 def _subscription_quota_untrusted_admission_evidence_reason(snapshot: QuotaSnapshot) -> str:
@@ -1371,6 +1390,17 @@ def _is_glmcp_admission_evidence_ref(ref: str) -> bool:
         and _has_glmcp_admission_tool_endpoint_pair(ref)
         and _has_glmcp_payg_witness_fields_for_endpoint(ref)
         and any(f":model:{model}:" in ref for model in GLMCP_ADMISSION_MODELS)
+        and ":observed_at:" in ref
+        and ":fresh_until:" in ref
+    )
+
+
+def _is_agy_admission_evidence_ref(ref: str) -> bool:
+    return (
+        AGY_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
+        and _has_safe_agy_admission_witness(ref)
+        and f":supported_tool:{AGY_ADMISSION_SUPPORTED_TOOL}:" in ref
+        and f":model:{AGY_ADMISSION_MODEL}:" in ref
         and ":observed_at:" in ref
         and ":fresh_until:" in ref
     )
@@ -1474,6 +1504,17 @@ def _has_safe_glmcp_admission_witness(ref: str) -> bool:
     return (
         GLMCP_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
         and GLMCP_ADMISSION_SECRETISH_RE.search(witness) is None
+    )
+
+
+def _has_safe_agy_admission_witness(ref: str) -> bool:
+    witness_matches = AGY_ADMISSION_WITNESS_REF_RE.findall(ref)
+    if len(witness_matches) != 1:
+        return False
+    witness = witness_matches[0]
+    return (
+        AGY_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
+        and AGY_ADMISSION_SECRETISH_RE.search(witness) is None
     )
 
 
