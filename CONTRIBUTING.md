@@ -14,6 +14,13 @@ Hapax is research infrastructure for one operator's externalised executive funct
 - Funding links, if present, are no-perk research support only.
 - This file is rendered from `hapax-constitution/sdlc/render/`; edits are overwritten on next render.
 
+Recheck:
+
+```bash
+gh api repos/hapax-systems/hapax-council --jq '{has_issues,has_discussions,has_wiki}'
+gh api repos/hapax-systems/hapax-council/contents/.github/ISSUE_TEMPLATE/config.yml --jq '{path,sha,html_url}'
+```
+
 ## If you are reading this because you found a bug
 
 Hapax is a research apparatus, not a staffed product. Bug reports are not actionable through this surface. The codebase is published for citation and reproducibility, not for general use.

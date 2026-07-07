@@ -491,6 +491,10 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
     item = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if item is None:
         try:
+            LOG.warning(
+                "REST pull fetch failed for PR #%d; falling back to `gh pr view`",
+                pr_number,
+            )
             return _fetch_pr_via_view(
                 pr_number,
                 repo=repo,
@@ -545,7 +549,12 @@ def fetch_pr_diff(pr_number: int, *, repo: str, repo_root: Path, runner: Any) ->
             repo_root=repo_root,
             runner=runner,
         )
-    except RuntimeError:
+    except RuntimeError as exc:
+        LOG.warning(
+            "REST diff fetch failed for PR #%d; falling back to `gh pr diff`: %s",
+            pr_number,
+            exc,
+        )
         return _run_gh(
             ["gh", "pr", "diff", str(pr_number), "--repo", repo],
             repo_root=repo_root,

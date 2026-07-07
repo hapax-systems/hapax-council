@@ -37,5 +37,5 @@ Path 1 adopted per operator directive ("research best license for me and go with
 ```bash
 gh api repos/hapax-systems/.github/contents/profile/README.md --jq '{path,sha,html_url}'
 gh api repos/hapax-systems/hapax-council --jq '{repo:.full_name,license:.license}'
-uv run pytest tests/docs/test_readme_current_project_spine.py tests/docs/test_github_profile_readme_spine.py tests/shared/test_github_public_surface.py -q
+uv run pytest tests/docs/test_readme_current_project_spine.py::TestLicenseReconciliationStatusDoc tests/shared/test_github_public_surface.py -q
 ```

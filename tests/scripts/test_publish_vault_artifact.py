@@ -13,6 +13,30 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SHOW_HN_DRAFT = (
     REPO_ROOT / "docs" / "publication-drafts" / "2026-05-10-show-hn-governance-that-ships.md"
 )
+PUBLICATION_GATE_RECEIPTS = {
+    "source_artifact_public_safe": "receipt:test-source-safe",
+    "source_refs_present": "receipt:test-source-refs",
+    "rights_privacy_redaction_pass": "receipt:test-rights-privacy-redaction",
+    "target_surface_allowlist_pass": "receipt:test-target-surfaces",
+    "claim_review_current": "receipt:test-claim-review",
+    "no_direct_public_egress": "receipt:test-no-direct-egress",
+}
+
+
+def _allowed_frontmatter(**extra: object) -> dict[str, object]:
+    return {
+        "title": "Draft",
+        "slug": "draft",
+        "Publication-Allowed": True,
+        "publication_gate_receipts": dict(PUBLICATION_GATE_RECEIPTS),
+        **extra,
+    }
+
+
+def _gate_receipts_yaml() -> str:
+    lines = ["publication_gate_receipts:"]
+    lines.extend(f"  {gate}: {receipt}" for gate, receipt in PUBLICATION_GATE_RECEIPTS.items())
+    return "\n".join(lines) + "\n"
 
 
 class TestBuildArtifact:
@@ -25,12 +49,7 @@ class TestBuildArtifact:
 
         artifact = publish_vault_artifact._build_artifact(
             body_md="Body",
-            frontmatter={
-                "title": "Draft",
-                "slug": "draft",
-                "author_model": "codex",
-                "Publication-Allowed": True,
-            },
+            frontmatter=_allowed_frontmatter(author_model="codex"),
             surfaces=["omg-weblog"],
             approver="Oudepode",
             source_path=source,
@@ -48,6 +67,7 @@ class TestBuildArtifact:
                 "Title": "Canonical Draft",
                 "Slug": "canonical-draft",
                 "Publication-Allowed": "approved",
+                "publication_gate_receipts": dict(PUBLICATION_GATE_RECEIPTS),
             },
             surfaces=["omg-weblog"],
             approver="Oudepode",
@@ -60,19 +80,16 @@ class TestBuildArtifact:
     def test_carries_publication_gate_context_and_override(self) -> None:
         artifact = publish_vault_artifact._build_artifact(
             body_md="Body",
-            frontmatter={
-                "title": "Draft",
-                "slug": "draft",
-                "Publication-Allowed": True,
-                "publication_gate_context": {
+            frontmatter=_allowed_frontmatter(
+                publication_gate_context={
                     "numeric_expectations": {"42 hooks": 42},
                     "currentness_evidence_refs": ["receipt:hn-readiness"],
                 },
-                "publication_gate_override": {
+                publication_gate_override={
                     "by_referent": "Oudepode",
                     "reason": "Reviewed receipts",
                 },
-            },
+            ),
             surfaces=["omg-weblog"],
             approver="Oudepode",
         )
@@ -80,6 +97,7 @@ class TestBuildArtifact:
         assert artifact.publication_gate_context == {
             "numeric_expectations": {"42 hooks": 42},
             "currentness_evidence_refs": ["receipt:hn-readiness"],
+            "publication_gate_receipts": PUBLICATION_GATE_RECEIPTS,
         }
         assert artifact.publication_gate_override == {
             "by_referent": "Oudepode",
@@ -99,12 +117,39 @@ class TestBuildArtifact:
         with pytest.raises(publish_vault_artifact.SurfaceAllowlistError):
             publish_vault_artifact._build_artifact(
                 body_md="Body",
+                frontmatter=_allowed_frontmatter(),
+                surfaces=["perplexity-model-council"],
+                approver="Oudepode",
+            )
+
+    def test_requires_publication_gate_receipts(self) -> None:
+        with pytest.raises(publish_vault_artifact.PublicationGateError, match="source_refs"):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
                 frontmatter={
                     "title": "Draft",
                     "slug": "draft",
                     "Publication-Allowed": True,
                 },
-                surfaces=["perplexity-model-council"],
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+            )
+
+    def test_rejects_empty_explicit_surface_list(self) -> None:
+        with pytest.raises(publish_vault_artifact.SurfaceAllowlistError, match="non-empty"):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(),
+                surfaces=[],
+                approver="Oudepode",
+            )
+
+    def test_rejects_surfaces_without_orchestrator_dispatch(self) -> None:
+        with pytest.raises(publish_vault_artifact.SurfaceAllowlistError, match="not dispatchable"):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(),
+                surfaces=["omg-lol-statuslog"],
                 approver="Oudepode",
             )
 
@@ -127,6 +172,7 @@ def test_allowed_draft_dry_run_uses_existing_frontmatter_casing(tmp_path, capsys
             "Title: Allowed Draft\n"
             "Slug: allowed-draft\n"
             "Publication-Allowed: true\n"
+            f"{_gate_receipts_yaml()}"
             "---\n\n"
             "# Allowed Draft\n\nBody\n"
         ),
@@ -256,6 +302,37 @@ def test_surface_outside_allowlist_refuses_publication(tmp_path, capsys) -> None
             str(draft),
             "--surfaces",
             "perplexity-model-council",
+            "--state-root",
+            str(tmp_path),
+            "--dry-run",
+        ]
+    )
+
+    assert rc == 1
+    assert capsys.readouterr().out == ""
+    assert not (tmp_path / "publish" / "inbox").exists()
+
+
+def test_empty_explicit_surface_list_refuses_publication(tmp_path, capsys) -> None:
+    draft = tmp_path / "draft.md"
+    draft.write_text(
+        (
+            "---\n"
+            "Title: Empty Surfaces\n"
+            "Slug: empty-surfaces\n"
+            "Publication-Allowed: true\n"
+            f"{_gate_receipts_yaml()}"
+            "---\n\n"
+            "# Empty Surfaces\n\nBody\n"
+        ),
+        encoding="utf-8",
+    )
+
+    rc = publish_vault_artifact.main(
+        [
+            str(draft),
+            "--surfaces",
+            ",",
             "--state-root",
             str(tmp_path),
             "--dry-run",

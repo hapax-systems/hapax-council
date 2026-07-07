@@ -17,6 +17,13 @@ The vault file's YAML frontmatter MUST include:
   slug:  str           # used as filename + omg.lol entry slug
   type:  str           # informational only
   Publication-Allowed: true  # explicit Claim Verification Council clearance
+  publication_gate_receipts:
+    source_artifact_public_safe: receipt-ref
+    source_refs_present: receipt-ref
+    rights_privacy_redaction_pass: receipt-ref
+    target_surface_allowlist_pass: receipt-ref
+    claim_review_current: receipt-ref
+    no_direct_public_egress: receipt-ref
 
 Optional:
 
@@ -58,6 +65,7 @@ from pathlib import Path
 
 import yaml
 
+from agents.publication_bus.surface_registry import dispatch_registry
 from shared.co_author_model import CoAuthor
 from shared.co_author_model import get as get_co_author
 from shared.frontmatter import parse_frontmatter_with_diagnostics
@@ -73,6 +81,12 @@ PUBLICATION_POLICY_PATHS = (
 )
 PUBLICATION_ALLOWED_TRUE_VALUES = frozenset({"true", "yes", "1", "allowed", "approved"})
 PUBLICATION_ALLOWED_FALSE_VALUES = frozenset({"false", "no", "0", "blocked", "withheld"})
+PUBLICATION_GATE_RECEIPT_KEYS = (
+    "publication_gate_receipts",
+    "Publication-Gate-Receipts",
+    "publication-gate-receipts",
+)
+FANOUT_SURFACE_IDS = frozenset({"omg-lol-weblog-bearer-fanout"})
 
 
 class PublicationGateError(ValueError):
@@ -186,6 +200,29 @@ def _publication_allowed(frontmatter: dict) -> bool:
 
 def _configured_publication_surfaces(paths: Iterable[Path] = PUBLICATION_POLICY_PATHS) -> set[str]:
     surfaces: set[str] = set()
+    for policy in _configured_publication_policies(paths):
+        target_surfaces = policy.get("target_surfaces")
+        if not isinstance(target_surfaces, list) or not target_surfaces:
+            raise SurfaceAllowlistError(
+                "surface policy target_surfaces must be a non-empty list; "
+                "next action: repair config/omg-lol*.yaml before publishing"
+            )
+        non_string = [surface for surface in target_surfaces if not isinstance(surface, str)]
+        if non_string:
+            raise SurfaceAllowlistError(
+                "surface policy target_surfaces must be strings; "
+                "next action: repair config/omg-lol*.yaml before publishing"
+            )
+        surfaces.update(surface for surface in target_surfaces if isinstance(surface, str))
+    if not surfaces:
+        raise SurfaceAllowlistError("no target surface allowlist configured")
+    return surfaces
+
+
+def _configured_publication_policies(
+    paths: Iterable[Path] = PUBLICATION_POLICY_PATHS,
+) -> list[Mapping[str, object]]:
+    policies: list[Mapping[str, object]] = []
     for path in paths:
         try:
             loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -198,26 +235,89 @@ def _configured_publication_surfaces(paths: Iterable[Path] = PUBLICATION_POLICY_
             raise SurfaceAllowlistError(
                 f"surface policy missing publication_frontmatter_policy: {path}"
             )
-        target_surfaces = policy.get("target_surfaces")
-        if not isinstance(target_surfaces, list) or not target_surfaces:
-            raise SurfaceAllowlistError(
-                f"surface policy target_surfaces must be a non-empty list: {path}"
-            )
-        non_string = [surface for surface in target_surfaces if not isinstance(surface, str)]
-        if non_string:
-            raise SurfaceAllowlistError(f"surface policy target_surfaces must be strings: {path}")
-        surfaces.update(surface for surface in target_surfaces if isinstance(surface, str))
-    if not surfaces:
-        raise SurfaceAllowlistError("no target surface allowlist configured")
-    return surfaces
+        policies.append(policy)
+    return policies
 
 
 def _assert_target_surfaces_allowed(surfaces: list[str]) -> None:
+    if not surfaces:
+        raise SurfaceAllowlistError(
+            "target surfaces must be a non-empty list; next action: pass at least one "
+            "publication-bus dispatchable surface"
+        )
     allowed = _configured_publication_surfaces()
     disallowed = sorted(set(surfaces) - allowed)
     if disallowed:
         raise SurfaceAllowlistError(
             "target surfaces outside configured allowlist: " + ", ".join(disallowed)
+        )
+    dispatchable = set(dispatch_registry())
+    unwired = sorted(set(surfaces) - dispatchable)
+    if unwired:
+        raise SurfaceAllowlistError(
+            "target surfaces are not dispatchable by publish_orchestrator: "
+            + ", ".join(unwired)
+            + "; next action: target a dispatchable surface or wire a dispatch_entry first"
+        )
+
+
+def _required_publication_gate_receipts(surfaces: list[str]) -> set[str]:
+    selected = set(surfaces)
+    required: set[str] = set()
+    for policy in _configured_publication_policies():
+        target_surfaces = policy.get("target_surfaces")
+        if not isinstance(target_surfaces, list):
+            continue
+        policy_targets = {surface for surface in target_surfaces if isinstance(surface, str)}
+        if not selected.intersection(policy_targets):
+            continue
+        if policy.get("status") == "guarded_public_fanout" and not selected.intersection(
+            FANOUT_SURFACE_IDS
+        ):
+            continue
+        gates = policy.get("required_gates")
+        if not isinstance(gates, list) or not gates:
+            raise PublicationGateError(
+                "publication policy has no required_gates; next action: repair "
+                "config/omg-lol*.yaml before publishing"
+            )
+        required.update(str(gate) for gate in gates if isinstance(gate, str) and gate.strip())
+    if not required:
+        raise PublicationGateError(
+            "no publication gate policy covers target surfaces; next action: add the "
+            "surface policy before publishing"
+        )
+    return required
+
+
+def _publication_gate_receipts(frontmatter: dict) -> dict[str, object]:
+    raw = _frontmatter_value(frontmatter, *PUBLICATION_GATE_RECEIPT_KEYS)
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise PublicationGateError(
+            "publication_gate_receipts must be a mapping of gate id to receipt refs"
+        )
+    return {str(key): value for key, value in raw.items()}
+
+
+def _receipt_value_present(value: object) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, str, Mapping)):
+        return any(_receipt_value_present(item) for item in value)
+    return False
+
+
+def _assert_publication_gate_receipts(frontmatter: dict, surfaces: list[str]) -> None:
+    required = _required_publication_gate_receipts(surfaces)
+    receipts = _publication_gate_receipts(frontmatter)
+    missing = sorted(gate for gate in required if not _receipt_value_present(receipts.get(gate)))
+    if missing:
+        raise PublicationGateError(
+            "publication_gate_receipts missing required receipt refs: "
+            + ", ".join(missing)
+            + "; next action: hold the draft until publication-bus gate receipts are recorded"
         )
 
 
@@ -232,6 +332,7 @@ def _build_artifact(
     if not _publication_allowed(frontmatter):
         raise PublicationGateError("Publication-Allowed must be explicitly true")
     _assert_target_surfaces_allowed(surfaces)
+    _assert_publication_gate_receipts(frontmatter, surfaces)
 
     title = _optional_string(_frontmatter_value(frontmatter, "title"))
     title = title or _extract_first_heading(body_md) or "Untitled"
@@ -247,6 +348,10 @@ def _build_artifact(
     publication_gate_context = _optional_mapping(
         _frontmatter_value(frontmatter, "publication_gate_context")
     )
+    publication_gate_receipts = _publication_gate_receipts(frontmatter)
+    if publication_gate_receipts:
+        publication_gate_context = dict(publication_gate_context or {})
+        publication_gate_context["publication_gate_receipts"] = publication_gate_receipts
     publication_gate_override = _optional_mapping(
         _frontmatter_value(frontmatter, "publication_gate_override")
     )

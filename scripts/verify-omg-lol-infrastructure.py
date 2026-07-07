@@ -187,20 +187,40 @@ def validate_config(config: Mapping[str, Any]) -> list[str]:
             "publication_frontmatter_policy.status must be guarded_public_channel "
             "or guarded_public_fanout"
         )
+        errors.append(
+            "publication_frontmatter_policy.status next action: choose the guarded "
+            "channel or fanout status that matches this config file"
+        )
     if policy.get("publication_allowed_without_bus") is not False:
         errors.append(
             "publication_frontmatter_policy.publication_allowed_without_bus must be false"
         )
+        errors.append(
+            "publication_frontmatter_policy.publication_allowed_without_bus next action: "
+            "route public egress through the publication bus"
+        )
     if policy.get("direct_public_egress_allowed") is not False:
         errors.append("publication_frontmatter_policy.direct_public_egress_allowed must be false")
+        errors.append(
+            "publication_frontmatter_policy.direct_public_egress_allowed next action: "
+            "set false and use guarded publication-bus fanout"
+        )
     if policy.get("review_required") != "Claim Verification Council":
         errors.append(
             "publication_frontmatter_policy.review_required must be Claim Verification Council"
+        )
+        errors.append(
+            "publication_frontmatter_policy.review_required next action: require Claim "
+            "Verification Council review before public egress"
         )
     policy_text = str(policy.get("claim_ceiling") or "").lower()
     for required in ("source refs", "rights", "privacy", "redaction", "target surfaces"):
         if required not in policy_text:
             errors.append(f"publication_frontmatter_policy.claim_ceiling missing {required!r}")
+            errors.append(
+                "publication_frontmatter_policy.claim_ceiling next action: state the "
+                "source-ref, rights/privacy/redaction, and target-surface ceiling"
+            )
     target_surfaces = policy.get("target_surfaces")
     if not isinstance(target_surfaces, list) or not target_surfaces:
         errors.append("publication_frontmatter_policy.target_surfaces must be a non-empty list")
