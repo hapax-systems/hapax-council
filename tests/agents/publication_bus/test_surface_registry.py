@@ -54,6 +54,25 @@ class TestSurfaceRegistry:
         assert not is_engageable(NDCVB_PRODUCT_SURFACE_ID)
         assert NDCVB_PRODUCT_SURFACE_ID not in dispatch_registry()
 
+    def test_public_fanout_scope_notes_pin_publication_bus_claim_ceiling(self) -> None:
+        expected_phrases = {
+            "bluesky-post": ("publication bus", "reviewed artifacts"),
+            "arena-post": ("publication bus", "reviewed artifacts"),
+            "mastodon-post": ("publication bus", "reviewed artifacts"),
+            "omg-weblog": ("claim ceilings", "config/omg-lol.yaml"),
+            "omg-lol-weblog-bearer-fanout": ("no direct public egress authority",),
+            "omg-lol-statuslog": ("publication bus", "reviewed artifacts"),
+            "omg-lol-web": ("publication bus", "claim ceilings"),
+            "omg-lol-now": ("publication bus", "claim ceilings"),
+            "omg-lol-pastebin": ("publication bus", "reviewed artifacts"),
+            "omg-lol-purl": ("publication bus", "reviewed artifacts"),
+        }
+
+        for surface, phrases in expected_phrases.items():
+            note = (SURFACE_REGISTRY[surface].scope_note or "").lower()
+            for phrase in phrases:
+                assert phrase in note, f"{surface} scope_note missing {phrase!r}"
+
 
 class TestAutomationStatusEnum:
     def test_three_tiers(self) -> None:

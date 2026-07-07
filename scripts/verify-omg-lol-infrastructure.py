@@ -28,6 +28,19 @@ REQUIRED_ACCEPTANCE_SECTIONS = (
 )
 VALID_PGP_STATUSES = {"uploaded", "deferred"}
 SECRET_KEY_FRAGMENTS = ("api_key", "apikey", "bearer", "password", "secret", "token")
+REQUIRED_PUBLICATION_FRONTMATTER_POLICY_FIELDS = (
+    "status",
+    "publication_allowed_without_bus",
+    "direct_public_egress_allowed",
+    "review_required",
+    "claim_ceiling",
+)
+REQUIRED_PUBLICATION_FRONTMATTER_GATES = {
+    "source_artifact_public_safe",
+    "rights_privacy_redaction_pass",
+    "target_surface_allowlist_pass",
+    "claim_review_current",
+}
 
 
 def load_config(path: Path = DEFAULT_CONFIG) -> dict[str, Any]:
@@ -106,6 +119,35 @@ def validate_config(config: Mapping[str, Any]) -> list[str]:
     blockers = config.get("blockers")
     if not isinstance(blockers, list) or not blockers:
         errors.append("blockers must be a non-empty list while live acceptance is unmet")
+
+    policy = config.get("publication_frontmatter_policy")
+    if not isinstance(policy, Mapping):
+        errors.append("publication_frontmatter_policy must be a mapping")
+        policy = {}
+    for field in REQUIRED_PUBLICATION_FRONTMATTER_POLICY_FIELDS:
+        if field not in policy:
+            errors.append(f"publication_frontmatter_policy.{field} is required")
+    if policy.get("publication_allowed_without_bus") is not False:
+        errors.append(
+            "publication_frontmatter_policy.publication_allowed_without_bus must be false"
+        )
+    if policy.get("direct_public_egress_allowed") is not False:
+        errors.append("publication_frontmatter_policy.direct_public_egress_allowed must be false")
+    if policy.get("review_required") != "Claim Verification Council":
+        errors.append(
+            "publication_frontmatter_policy.review_required must be Claim Verification Council"
+        )
+    policy_text = str(policy.get("claim_ceiling") or "").lower()
+    for required in ("source refs", "rights", "privacy", "redaction", "target surfaces"):
+        if required not in policy_text:
+            errors.append(f"publication_frontmatter_policy.claim_ceiling missing {required!r}")
+    required_gates = set(policy.get("required_gates") or ())
+    if required_gates:
+        missing = sorted(REQUIRED_PUBLICATION_FRONTMATTER_GATES - required_gates)
+        if missing:
+            errors.append(
+                "publication_frontmatter_policy.required_gates missing: " + ", ".join(missing)
+            )
 
     for path, value in _walk_mapping(config):
         if _has_secret_key_name(path):

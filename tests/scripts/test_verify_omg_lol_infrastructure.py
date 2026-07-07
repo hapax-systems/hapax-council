@@ -7,6 +7,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "verify-omg-lol-infrastructure.py"
 CONFIG_PATH = REPO_ROOT / "config" / "omg-lol.yaml"
+FANOUT_CONFIG_PATH = REPO_ROOT / "config" / "omg-lol-fanout.yaml"
 
 
 def _load_module() -> Any:
@@ -31,6 +32,15 @@ def test_validation_requires_acceptance_sections() -> None:
             "schema_version": 1,
             "service": "omg.lol",
             "address": "hapax",
+            "publication_frontmatter_policy": {
+                "status": "guarded_public_channel",
+                "publication_allowed_without_bus": False,
+                "direct_public_egress_allowed": False,
+                "review_required": "Claim Verification Council",
+                "claim_ceiling": (
+                    "source refs, rights gate, privacy gate, redaction posture, and target surfaces"
+                ),
+            },
             "configured_settings": {},
             "acceptance": {},
             "blockers": [{"id": "x", "owner": "operator", "reason": "pending"}],
@@ -56,3 +66,40 @@ def test_validation_rejects_secret_shaped_keys() -> None:
     config["configured_settings"]["api_key"] = "redacted"
     errors = module.validate_config(config)
     assert "secret-like key is not allowed in config: configured_settings.api_key" in errors
+
+
+def test_validation_requires_publication_frontmatter_policy() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config.pop("publication_frontmatter_policy")
+    errors = module.validate_config(config)
+    assert "publication_frontmatter_policy must be a mapping" in errors
+    assert "publication_frontmatter_policy.review_required is required" in errors
+
+
+def test_validation_rejects_direct_public_egress_policy() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["direct_public_egress_allowed"] = True
+    errors = module.validate_config(config)
+    assert "publication_frontmatter_policy.direct_public_egress_allowed must be false" in errors
+
+
+def test_fanout_config_pins_publication_frontmatter_policy_gates() -> None:
+    import yaml
+
+    config = yaml.safe_load(FANOUT_CONFIG_PATH.read_text(encoding="utf-8"))
+    policy = config["publication_frontmatter_policy"]
+    assert policy["publication_allowed_without_bus"] is False
+    assert policy["direct_public_egress_allowed"] is False
+    assert policy["review_required"] == "Claim Verification Council"
+    assert set(policy["required_gates"]) == {
+        "source_artifact_public_safe",
+        "rights_privacy_redaction_pass",
+        "target_surface_allowlist_pass",
+        "fanout_loop_prevention_present",
+        "claim_review_current",
+    }
+    claim_ceiling = policy["claim_ceiling"].lower()
+    assert "already-approved public artifacts" in claim_ceiling
+    assert "comparative claims" in claim_ceiling
