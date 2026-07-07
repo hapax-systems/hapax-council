@@ -1789,7 +1789,7 @@ class TestReceiptAndWake:
                 dispatch.public_gate_receipts.public_gate_authority_signature(payload, secret)
             )
 
-    def test_unsigned_public_gate_warning_names_secret_repair_action(
+    def test_unsigned_public_gate_warning_omits_secret_env_name(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -1805,7 +1805,11 @@ class TestReceiptAndWake:
         )
 
         assert result["status"] == "dispatched"
-        assert "next action: restore HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY from pass" in caplog.text
+        assert (
+            "next action: restore the public-gate authority signing credential from pass"
+            in caplog.text
+        )
+        assert dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV not in caplog.text
 
     def test_review_evidence_authorizes_declared_public_gate_receipt(
         self,

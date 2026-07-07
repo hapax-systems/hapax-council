@@ -207,8 +207,10 @@ def test_missing_authority_secret_warns_with_next_action(
         roots=(tmp_path,),
     )
 
-    assert public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV in caplog.text
-    assert "next action: restore" in caplog.text
+    assert public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV not in caplog.text
+    assert (
+        "next action: restore the public-gate authority signing credential from pass" in caplog.text
+    )
 
 
 def test_rejects_authority_evidence_for_different_gate(tmp_path: Path) -> None:

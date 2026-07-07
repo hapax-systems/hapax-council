@@ -786,10 +786,9 @@ def _warn_missing_authority_secret() -> None:
         return
     _MISSING_AUTHORITY_SECRET_WARNED = True
     log.warning(
-        "public-gate authority evidence cannot be verified because %s is unset; "
-        "next action: restore %s from pass before validating public-gate receipts",
-        PUBLIC_GATE_AUTHORITY_SECRET_ENV,
-        PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+        "public-gate authority evidence cannot be verified because the signing "
+        "credential is unset; next action: restore the public-gate authority signing "
+        "credential from pass before validating public-gate receipts",
     )
 
 

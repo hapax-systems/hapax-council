@@ -298,9 +298,9 @@ def _sign_public_gate_authority_evidence(data: dict[str, Any]) -> None:
     secret = os.environ.get(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, "").strip()
     if not secret:
         LOG.warning(
-            "public-gate authority evidence left unsigned; signing secret is unset; "
-            "next action: restore %s from pass before relying on public-gate receipts",
-            public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+            "public-gate authority evidence left unsigned; signing credential is unset; "
+            "next action: restore the public-gate authority signing credential from pass "
+            "before relying on public-gate receipts",
         )
         return
     data["authority_issuer"] = _review_team_authority_issuer(
