@@ -546,10 +546,14 @@ class Orchestrator:
         self,
         artifact: PreprintArtifact,
     ) -> PublicationGateChildResult:
-        required = _required_publication_gate_receipts(artifact.surfaces_targeted)
+        required, policy_error = self._required_publication_gate_receipts(
+            artifact.surfaces_targeted
+        )
         receipts, error = _artifact_publication_gate_receipts(artifact)
         bindings = _publication_gate_receipt_bindings(artifact)
         findings = (error,) if error is not None else ()
+        if policy_error is not None:
+            findings = (*findings, policy_error)
         missing = tuple(
             gate
             for gate in required
@@ -581,6 +585,15 @@ class Orchestrator:
             decision=PublicationGateDecision.PASS,
             evidence_refs=tuple(str(receipts[gate]) for gate in required),
         )
+
+    def _required_publication_gate_receipts(
+        self,
+        surfaces: list[str],
+    ) -> tuple[tuple[str, ...], str | None]:
+        fallback = _default_publication_gate_receipts(surfaces)
+        if self._publication_allowed_surfaces_override is not None:
+            return fallback, None
+        return _configured_publication_gate_receipts(surfaces, fallback=fallback)
 
     def _public_gate_receipts_gate_result(
         self,
@@ -1089,11 +1102,121 @@ def _default_state_root() -> Path:
     return Path.home() / "hapax-state"
 
 
-def _required_publication_gate_receipts(surfaces: list[str]) -> tuple[str, ...]:
+def _default_publication_gate_receipts(surfaces: list[str]) -> tuple[str, ...]:
     selected = set(surfaces)
     if selected.intersection(FANOUT_SURFACE_IDS):
         return PUBLICATION_FANOUT_REQUIRED_GATES
     return PUBLICATION_BASELINE_REQUIRED_GATES
+
+
+def _configured_publication_gate_receipts(
+    surfaces: list[str],
+    *,
+    fallback: tuple[str, ...],
+) -> tuple[tuple[str, ...], str | None]:
+    selected = set(surfaces)
+    required: list[str] = []
+    errors: list[str] = []
+    policies, policy_error = _configured_publication_policies()
+    if policy_error is not None:
+        return fallback, policy_error
+
+    for path, policy in policies:
+        target_surfaces = policy.get("target_surfaces")
+        if not isinstance(target_surfaces, list):
+            continue
+        policy_targets = {surface for surface in target_surfaces if isinstance(surface, str)}
+        if not selected.intersection(policy_targets):
+            continue
+        if policy.get("status") == "guarded_public_fanout" and not selected.intersection(
+            FANOUT_SURFACE_IDS
+        ):
+            continue
+        gate_ids, gate_error = _policy_required_gate_ids(policy, path=path)
+        required.extend(gate for gate in gate_ids if gate not in required)
+        if gate_error is not None:
+            errors.append(gate_error)
+
+    if not required:
+        return fallback, (
+            "no publication gate policy covers target surfaces; next action: add or repair "
+            "publication_frontmatter_policy before processing inbox artifacts"
+        )
+    return tuple(required), "; ".join(errors) if errors else None
+
+
+def _configured_publication_policies() -> tuple[
+    list[tuple[Path, Mapping[str, object]]],
+    str | None,
+]:
+    policies: list[tuple[Path, Mapping[str, object]]] = []
+    for policy_path in PUBLICATION_POLICY_PATHS:
+        try:
+            loaded = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            return (
+                [],
+                f"publication surface policy unreadable: {policy_path}: "
+                f"{type(exc).__name__}; next action: repair readable YAML policy before "
+                "processing inbox artifacts",
+            )
+        if not isinstance(loaded, Mapping):
+            return (
+                [],
+                f"publication surface policy must be a mapping: {policy_path}; next action: "
+                "restore publication_frontmatter_policy",
+            )
+        policy = loaded.get("publication_frontmatter_policy")
+        if not isinstance(policy, Mapping):
+            return (
+                [],
+                f"publication surface policy missing publication_frontmatter_policy: "
+                f"{policy_path}; next action: restore required public-egress policy fields",
+            )
+        policies.append((policy_path, policy))
+    return policies, None
+
+
+def _policy_required_gate_ids(
+    policy: Mapping[str, object],
+    *,
+    path: Path,
+) -> tuple[list[str], str | None]:
+    baseline = (
+        PUBLICATION_FANOUT_REQUIRED_GATES
+        if policy.get("status") == "guarded_public_fanout"
+        else PUBLICATION_BASELINE_REQUIRED_GATES
+    )
+    gates = policy.get("required_gates")
+    if not isinstance(gates, list) or not gates:
+        return list(baseline), (
+            f"publication policy has no required_gates: {path}; next action: repair "
+            "publication_frontmatter_policy.required_gates before processing inbox artifacts"
+        )
+
+    configured: list[str] = []
+    malformed = False
+    for gate in gates:
+        if not isinstance(gate, str) or not gate.strip():
+            malformed = True
+            continue
+        configured.append(gate.strip())
+
+    required = list(dict.fromkeys([*baseline, *configured]))
+    errors: list[str] = []
+    if malformed:
+        errors.append(
+            f"publication policy required_gates contains blank or non-string gate ids: {path}; "
+            "next action: repair publication_frontmatter_policy.required_gates"
+        )
+    missing = sorted(set(baseline) - set(configured))
+    if missing:
+        errors.append(
+            "publication policy required_gates missing baseline gate ids: "
+            + ", ".join(missing)
+            + f" ({path}); next action: restore the baseline publication gate list"
+        )
+    return required, "; ".join(errors) if errors else None
 
 
 def _artifact_publication_gate_receipts(

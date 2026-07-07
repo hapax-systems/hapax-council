@@ -228,7 +228,9 @@ def fanout(
     Returns ``{target_address: outcome}`` where outcome is one of:
     ``ok`` (set_entry returned a body), ``error`` (set_entry returned
     None), ``client-disabled`` (the client object is disabled — usually
-    because no operator bearer-token is configured). Targets identical
+    because no operator bearer-token is configured), ``gate-policy-blocked``
+    (configured gate policy is unavailable or malformed), or ``gate-blocked``
+    (required gate receipts are missing or invalid). Targets identical
     to ``source_address`` are skipped.
 
     Loop-prevention: when ``content`` already contains

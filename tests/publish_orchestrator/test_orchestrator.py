@@ -9,6 +9,7 @@ from unittest import mock
 
 from prometheus_client import CollectorRegistry
 
+from agents.publish_orchestrator import orchestrator as orchestrator_module
 from agents.publish_orchestrator.orchestrator import (
     FANOUT_SURFACE_IDS,
     PUBLICATION_BASELINE_REQUIRED_GATES,
@@ -80,6 +81,28 @@ def _write_public_gate_receipts(
             encoding="utf-8",
         )
     return {gate: f"public-gate:{gate}.yaml" for gate in gates}
+
+
+def _write_publication_policy(
+    state_root: Path,
+    *,
+    target_surfaces: tuple[str, ...],
+    required_gates: tuple[str, ...],
+    status: str = "guarded_public_surface",
+) -> Path:
+    path = state_root / "publication-policy.yaml"
+    target_lines = "\n".join(f"    - {surface}" for surface in target_surfaces)
+    gate_lines = "\n".join(f"    - {gate}" for gate in required_gates)
+    path.write_text(
+        "publication_frontmatter_policy:\n"
+        f"  status: {status}\n"
+        "  target_surfaces:\n"
+        f"{target_lines}\n"
+        "  required_gates:\n"
+        f"{gate_lines}\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 class _ApprovingReviewPass:
@@ -580,6 +603,61 @@ class TestSingleSurface:
         assert gate_log["result"] == "operator_hold"
         assert gate_log["publication_gate_decision"] == "hold"
         assert any("public_gate_receipts:" in issue for issue in gate_log["flagged_issues"])
+
+    def test_configured_public_gate_receipts_hold_before_surface_dispatch(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+        policy_path = _write_publication_policy(
+            tmp_path,
+            target_surfaces=("fake",),
+            required_gates=(
+                *PUBLICATION_BASELINE_REQUIRED_GATES,
+                "operator_extra_gate",
+            ),
+        )
+        monkeypatch.setattr(
+            orchestrator_module,
+            "PUBLICATION_POLICY_PATHS",
+            (policy_path,),
+        )
+
+        _drop_artifact(tmp_path, slug="missing-configured-gate", surfaces=["fake"])
+        review_pass = _CountingReviewPass()
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=review_pass,
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        assert review_pass.calls == 0
+        fake_module.publish_artifact.assert_not_called()
+        assert not (tmp_path / "publish/inbox/missing-configured-gate.json").exists()
+        assert not (tmp_path / "publish/published/missing-configured-gate.json").exists()
+
+        draft = json.loads((tmp_path / "publish/draft/missing-configured-gate.json").read_text())
+        receipt_child = next(
+            child
+            for child in draft["publication_gate_result"]["child_results"]
+            if child["name"] == "public_gate_receipts"
+        )
+        assert receipt_child["decision"] == "hold"
+        assert any("operator_extra_gate" in finding for finding in receipt_child["findings"])
+
+        gate_log = json.loads(
+            (
+                tmp_path / "publish/log/missing-configured-gate.publication-hardening-gate.json"
+            ).read_text()
+        )
+        assert gate_log["result"] == "operator_hold"
+        assert any("operator_extra_gate" in issue for issue in gate_log["flagged_issues"])
 
     def test_replayed_public_gate_receipt_holds_before_surface_dispatch(
         self,
