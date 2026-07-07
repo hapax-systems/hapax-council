@@ -889,6 +889,13 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
         repo_root=repo_root,
         runner=runner,
     ).strip()
+    if merge_base != pr_info.base_sha:
+        raise RuntimeError(
+            f"local git diff fallback for PR #{pr_info.number} cannot prove head contains "
+            f"the current PR base {pr_info.base_sha[:12]}; merge-base was "
+            f"{merge_base[:12]}. Next action: fetch the GitHub PR diff endpoint or "
+            "update the PR branch to the current base before review dispatch."
+        )
     diff = _run_gh(
         ["git", "diff", "--no-ext-diff", "--find-renames", f"{merge_base}..{head}"],
         repo_root=repo_root,
@@ -1169,7 +1176,8 @@ class ReviewerProcessError(RuntimeError):
 
     def __init__(self, stderr: str, *, returncode: int, stdout: str = "") -> None:
         output = (stderr or stdout).strip()
-        super().__init__(f"reviewer exited rc={returncode}: {output[:300]}")
+        safe_output = sanitize_reviewer_diagnostic(output, limit=300)
+        super().__init__(f"reviewer exited rc={returncode}: {safe_output}")
         self.stdout = stdout
         self.stderr = stderr
         self.output = output
@@ -1238,7 +1246,7 @@ def default_reviewer_runner(
             seat.id,
             seat.family,
             proc.returncode,
-            proc.stderr.strip()[:300],
+            sanitize_reviewer_diagnostic(proc.stderr, limit=300),
         )
         # a NONZERO exit is the CLI speaking, not the model (round-5 channel
         # trust): raise so the classifier can inspect stderr. Stdout stays
@@ -1289,10 +1297,19 @@ def dispatch_reviews(
             else:
                 reply = str(runner_result)
         except ReviewerProcessError as exc:
-            LOG.warning("reviewer %s (%s) process failed: %s", seat.id, seat.family, exc)
+            LOG.warning(
+                "reviewer %s (%s) process failed: %s",
+                seat.id,
+                seat.family,
+                sanitize_reviewer_diagnostic(str(exc), limit=300),
+            )
             reply = ""
             process_failed = True
-            process_output = "\n".join(part for part in (exc.stdout, exc.stderr) if part).strip()
+            process_output = sanitize_reviewer_diagnostic(
+                "\n".join(part for part in (exc.stdout, exc.stderr) if part),
+                limit=MAX_REVIEW_REPLY_EXCERPT_CHARS,
+            )
+            runner_stderr_excerpt = sanitize_reviewer_diagnostic(process_output)
             if exc.stderr.strip():
                 quota_wall_output = exc.stderr
                 quota_wall_stdout = exc.stdout
@@ -1303,11 +1320,18 @@ def dispatch_reviews(
                 quota_wall_output = stdout if stdout and "\n" not in stdout else ""
                 quota_wall_stdout = "" if quota_wall_output else exc.stdout
         except Exception as exc:  # noqa: BLE001 — one dead reviewer must not kill the round
-            LOG.warning("reviewer %s (%s) failed: %s", seat.id, seat.family, exc)
+            LOG.warning(
+                "reviewer %s (%s) failed: %s",
+                seat.id,
+                seat.family,
+                sanitize_reviewer_diagnostic(str(exc), limit=300),
+            )
             reply = ""
             process_failed = True
             reviewer_internal_error = True
-            process_output = f"{type(exc).__name__}: {exc}"
+            process_output = sanitize_reviewer_diagnostic(
+                f"{type(exc).__name__}: {exc}", limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
+            )
             diagnostic_output = process_output
             runner_stderr_excerpt = sanitize_reviewer_diagnostic(process_output)
         parsed = extract_review(reply or "")
