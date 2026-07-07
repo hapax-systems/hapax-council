@@ -386,6 +386,66 @@ class TestSingleSurface:
         assert child["name"] == "artifact_envelope"
         assert any("source_path" in finding for finding in child["findings"])
 
+    def test_malformed_source_path_quarantines_before_resolution_error(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        artifact = PreprintArtifact(
+            slug="malformed-source",
+            title="Malformed Source",
+            abstract="Brief.",
+            body_md="Body.",
+            surfaces_targeted=["fake"],
+            source_path="\0",
+        )
+        artifact.mark_approved(by_referent="Oudepode")
+        inbox_path = tmp_path / "publish" / "inbox" / "malformed-source.json"
+        inbox_path.parent.mkdir(parents=True, exist_ok=True)
+        inbox_path.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
+        review_pass = _CountingReviewPass()
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=review_pass,
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        assert review_pass.calls == 0
+        fake_module.publish_artifact.assert_not_called()
+        assert not inbox_path.exists()
+        failed = list((tmp_path / "publish" / "failed").glob("invalid-artifact-*.json"))
+        assert len(failed) == 1
+        payload = json.loads(failed[0].read_text())
+        child = payload["publication_gate_result"]["child_results"][0]
+        assert child["name"] == "artifact_envelope"
+        assert any("source_path" in finding for finding in child["findings"])
+
+    def test_malformed_inbox_json_quarantines_and_continues(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        bad_path = tmp_path / "publish" / "inbox" / "bad.json"
+        bad_path.parent.mkdir(parents=True, exist_ok=True)
+        bad_path.write_text("{not-json", encoding="utf-8")
+        _drop_artifact(tmp_path, slug="valid-after-bad", surfaces=["fake"])
+        orch = _make_orchestrator(
+            tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+        )
+
+        assert orch.run_once() == 2
+        assert not bad_path.exists()
+        failed = list((tmp_path / "publish" / "failed").glob("invalid-artifact-*.json"))
+        assert len(failed) == 1
+        payload = json.loads(failed[0].read_text())
+        assert payload["approval"] == "failed"
+        assert payload["quarantine_reason"] == "invalid_inbox_artifact"
+        assert (tmp_path / "publish" / "published" / "valid-after-bad.json").exists()
+
     def test_missing_public_gate_receipts_hold_before_surface_dispatch(
         self,
         tmp_path,

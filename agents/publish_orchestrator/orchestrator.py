@@ -314,8 +314,10 @@ class Orchestrator:
             for path in sorted(inbox.glob("*.json")):
                 try:
                     artifact = self._load_artifact(path)
-                except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
                     log.exception("failed to load artifact at %s", path)
+                    self._quarantine_unloadable_inbox_artifact(path, exc)
+                    handled += 1
                     continue
                 envelope_findings = self._inbox_artifact_envelope_findings(artifact)
                 if envelope_findings:
@@ -768,8 +770,44 @@ class Orchestrator:
         return tuple(findings)
 
     def _source_path_allowed(self, raw_path: str) -> bool:
-        source_path = Path(raw_path).expanduser().resolve()
+        try:
+            source_path = Path(raw_path).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            return False
         return any(source_path.is_relative_to(root) for root in self._source_path_roots)
+
+    def _quarantine_unloadable_inbox_artifact(self, inbox_path: Path, exc: Exception) -> None:
+        finding = (
+            "inbox artifact JSON could not be parsed or validated: "
+            f"{type(exc).__name__}; next action: regenerate a valid approved PreprintArtifact"
+        )
+        quarantine_slug = _quarantine_slug_for_path(inbox_path)
+        child = PublicationGateChildResult(
+            name="artifact_envelope",
+            decision=PublicationGateDecision.REJECT,
+            findings=(finding,),
+        )
+        gate_result = PublicationGateResult(
+            decision=PublicationGateDecision.REJECT,
+            generated_at=datetime.now(UTC).isoformat(),
+            child_results=(child,),
+            flagged_issues=(f"{child.name}: {finding}",),
+        )
+        payload = {
+            "approval": ApprovalState.FAILED.value,
+            "quarantine_reason": "invalid_inbox_artifact",
+            "source_inbox_path": str(inbox_path),
+            "publication_gate_result": gate_result.to_frontmatter(),
+        }
+        failed = self._state_root / "publish" / "failed" / f"{quarantine_slug}.json"
+        failed.parent.mkdir(parents=True, exist_ok=True)
+        failed.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        try:
+            inbox_path.unlink()
+        except FileNotFoundError:
+            pass
+        self._record_quarantine_gate_result(quarantine_slug, gate_result, result="rejected")
+        self.dispatches_total.labels(surface="publication-hardening-gate", result="rejected").inc()
 
     def _quarantine_invalid_inbox_artifact(
         self,

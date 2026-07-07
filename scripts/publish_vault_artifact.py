@@ -62,6 +62,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 from collections.abc import Iterable, Mapping
 from hashlib import sha256
@@ -112,6 +113,7 @@ PUBLIC_GATE_RECEIPT_ROOTS = (
     Path.home() / ".cache" / "hapax" / "relay" / "receipts",
     REPO_ROOT / "docs" / "research" / "evidence",
 )
+PUBLICATION_SAFE_SEGMENT_RE = re.compile(r"\A[a-z0-9][a-z0-9_.-]{0,119}\Z")
 
 
 class PublicationGateError(ValueError):
@@ -427,6 +429,7 @@ def _build_artifact(
     title = _optional_string(_frontmatter_value(frontmatter, "title"))
     title = title or _extract_first_heading(body_md) or "Untitled"
     slug = _optional_string(_frontmatter_value(frontmatter, "slug")) or _slugify(title)
+    _assert_safe_artifact_slug(slug)
     abstract = _optional_string(_frontmatter_value(frontmatter, "abstract")) or _summarize(
         body_md, max_chars=500
     )
@@ -506,6 +509,15 @@ def _artifact_fingerprint_for_gate(artifact: PreprintArtifact) -> str:
     }
     encoded = json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode()
     return sha256(encoded).hexdigest()
+
+
+def _assert_safe_artifact_slug(slug: str) -> None:
+    if PUBLICATION_SAFE_SEGMENT_RE.fullmatch(slug):
+        return
+    raise PublicationGateError(
+        "slug must be a single lowercase URL/file-safe path segment; next action: "
+        "replace the draft slug before writing a publish-bus inbox artifact"
+    )
 
 
 def _extract_first_heading(body: str) -> str | None:

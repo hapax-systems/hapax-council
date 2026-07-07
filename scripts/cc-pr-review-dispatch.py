@@ -150,10 +150,16 @@ _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
         "public_gate_receipt_ref_exists",
         "_receipt_file_maps_to_gate",
         "_gate_receipt_object_allows",
+        "_iter_bound_receipt_candidate_mappings",
         "_iter_receipt_candidate_mappings",
         "_receipt_candidate_mapping_allows",
         "_receipt_mapping_has_required_bindings",
         "_iter_direct_binding_values",
+    ),
+    "tests/shared/test_public_gate_receipts.py": (
+        "test_rejects_spliced_gate_and_binding_records",
+        "test_rejects_list_sibling_gate_and_binding_records",
+        "test_rejects_root_gate_with_nested_unrelated_binding_record",
     ),
 }
 SEND_SCRIPTS = {

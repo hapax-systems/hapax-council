@@ -563,6 +563,37 @@ def test_empty_explicit_surface_list_refuses_publication(tmp_path, capsys) -> No
     assert not (tmp_path / "publish" / "inbox").exists()
 
 
+def test_unsafe_slug_refuses_publication_before_inbox_write(tmp_path, capsys) -> None:
+    draft = tmp_path / "draft.md"
+    draft.write_text(
+        (
+            "---\n"
+            "Title: Unsafe Slug\n"
+            "Slug: ../../outside\n"
+            "Publication-Allowed: true\n"
+            "---\n\n"
+            "# Unsafe Slug\n\nBody\n"
+        ),
+        encoding="utf-8",
+    )
+
+    rc = publish_vault_artifact.main(
+        [
+            str(draft),
+            "--surfaces",
+            "omg-weblog",
+            "--state-root",
+            str(tmp_path),
+        ]
+    )
+
+    assert rc == 1
+    assert capsys.readouterr().out == ""
+    assert not (tmp_path / "publish" / "inbox").exists()
+    assert not (tmp_path.parent / "outside.json").exists()
+    assert not (tmp_path / "publish" / "outside.json").exists()
+
+
 def test_superseded_show_hn_draft_dry_run_refuses_publication(tmp_path, capsys) -> None:
     rc = publish_vault_artifact.main(
         [

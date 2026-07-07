@@ -247,10 +247,26 @@ def _gate_receipt_object_allows(
     expected_gate: str,
     bindings: Mapping[str, object] | None = None,
 ) -> bool:
+    candidates = (
+        _iter_bound_receipt_candidate_mappings(data)
+        if bindings
+        else _iter_receipt_candidate_mappings(data)
+    )
     return any(
         _receipt_candidate_mapping_allows(candidate, expected_gate, bindings)
-        for candidate in _iter_receipt_candidate_mappings(data)
+        for candidate in candidates
     )
+
+
+def _iter_bound_receipt_candidate_mappings(data: Any) -> Iterable[Mapping[Any, Any]]:
+    """Yield only root/top-level records for artifact-bound receipt checks."""
+    if isinstance(data, Mapping):
+        yield data
+        return
+    if isinstance(data, (list, tuple, set)):
+        for item in data:
+            if isinstance(item, Mapping):
+                yield item
 
 
 def _iter_receipt_candidate_mappings(data: Any) -> Iterable[Mapping[Any, Any]]:
