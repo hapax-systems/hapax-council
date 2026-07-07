@@ -146,7 +146,8 @@ _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
         "public_gate_receipt_ref_exists",
         "_receipt_file_maps_to_gate",
         "_gate_receipt_object_allows",
-        "_receipt_has_required_bindings",
+        "_receipt_mapping_has_required_bindings",
+        "_iter_direct_binding_values",
     ),
 }
 SEND_SCRIPTS = {

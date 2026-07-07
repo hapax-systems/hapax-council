@@ -59,10 +59,12 @@ own incident/authority receipt before any replacement artifact is published.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
 from collections.abc import Iterable, Mapping
+from hashlib import sha256
 from pathlib import Path
 
 import yaml
@@ -370,23 +372,38 @@ def _publication_gate_receipts(frontmatter: dict) -> dict[str, object]:
     return {str(key): value for key, value in raw.items()}
 
 
-def _receipt_value_present(gate: str, value: object) -> bool:
+def _receipt_value_present(
+    gate: str,
+    value: object,
+    *,
+    bindings: Mapping[str, object] | None = None,
+) -> bool:
     return public_gate_receipt_value_present(
         value,
         expected_gate=gate,
         roots=PUBLIC_GATE_RECEIPT_ROOTS,
+        bindings=bindings,
     )
 
 
-def _assert_publication_gate_receipts(frontmatter: dict, surfaces: list[str]) -> None:
+def _assert_publication_gate_receipts(
+    frontmatter: dict,
+    surfaces: list[str],
+    *,
+    bindings: Mapping[str, object] | None = None,
+) -> None:
     required = _required_publication_gate_receipts(surfaces)
     receipts = _publication_gate_receipts(frontmatter)
     missing = sorted(
-        gate for gate in required if not _receipt_value_present(gate, receipts.get(gate))
+        gate
+        for gate in required
+        if not _receipt_value_present(gate, receipts.get(gate), bindings=bindings)
     )
     if missing:
         raise PublicationGateError(
-            "publication_gate_receipts missing or invalid required receipt refs: "
+            "publication_gate_receipts missing, invalid, or not bound to "
+            "artifact_slug, artifact_fingerprint, and target_surfaces for required "
+            "receipt refs: "
             + ", ".join(missing)
             + "; next action: hold the draft until durable public-gate receipt refs are recorded"
         )
@@ -406,7 +423,6 @@ def _build_artifact(
             "Claim Verification Council clearance is recorded"
         )
     _assert_target_surfaces_allowed(surfaces)
-    _assert_publication_gate_receipts(frontmatter, surfaces)
 
     title = _optional_string(_frontmatter_value(frontmatter, "title"))
     title = title or _extract_first_heading(body_md) or "Untitled"
@@ -453,7 +469,43 @@ def _build_artifact(
 
     artifact = PreprintArtifact(**kwargs)
     artifact.mark_approved(by_referent=approver)
+    _assert_publication_gate_receipts(
+        frontmatter,
+        surfaces,
+        bindings=_publication_gate_receipt_bindings(artifact),
+    )
     return artifact
+
+
+def _publication_gate_receipt_bindings(artifact: PreprintArtifact) -> dict[str, object]:
+    return {
+        "artifact_slug": artifact.slug,
+        "artifact_fingerprint": _artifact_fingerprint_for_gate(artifact),
+        "target_surfaces": tuple(sorted(artifact.surfaces_targeted)),
+    }
+
+
+def _artifact_fingerprint_for_gate(artifact: PreprintArtifact) -> str:
+    """Mirror the orchestrator fingerprint used for receipt replay prevention."""
+
+    payload = artifact.model_dump(mode="json")
+    relevant = {
+        key: payload.get(key)
+        for key in (
+            "slug",
+            "title",
+            "abstract",
+            "body_md",
+            "body_html",
+            "doi",
+            "co_authors",
+            "surfaces_targeted",
+            "attribution_block",
+            "embed_image_url",
+        )
+    }
+    encoded = json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode()
+    return sha256(encoded).hexdigest()
 
 
 def _extract_first_heading(body: str) -> str | None:

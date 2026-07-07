@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from scripts import publish_vault_artifact
+from shared.preprint_artifact import PreprintArtifact
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHOW_HN_DRAFT = (
@@ -27,28 +28,91 @@ PUBLICATION_GATE_RECEIPTS = {
 def durable_public_gate_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "public-gate-receipts"
     root.mkdir()
-    for gate, receipt_ref in PUBLICATION_GATE_RECEIPTS.items():
-        suffix = receipt_ref.removeprefix("public-gate:")
-        (root / f"{suffix}.yaml").write_text(
-            f"gate_id: {gate}\nstatus: passed\n",
-            encoding="utf-8",
-        )
     monkeypatch.setattr(publish_vault_artifact, "PUBLIC_GATE_RECEIPT_ROOTS", (root,))
 
 
-def _allowed_frontmatter(**extra: object) -> dict[str, object]:
-    return {
-        "title": "Draft",
-        "slug": "draft",
+def _allowed_frontmatter(
+    *,
+    title: str = "Draft",
+    slug: str = "draft",
+    body_md: str = "Body",
+    surfaces: tuple[str, ...] = ("omg-weblog",),
+    **extra: object,
+) -> dict[str, object]:
+    frontmatter: dict[str, object] = {
         "Publication-Allowed": True,
-        "publication_gate_receipts": dict(PUBLICATION_GATE_RECEIPTS),
+        "title": title,
+        "slug": slug,
         **extra,
     }
+    if "publication_gate_receipts" not in frontmatter:
+        abstract = frontmatter.get("abstract")
+        attribution_block = frontmatter.get("attribution_block")
+        doi = frontmatter.get("doi")
+        frontmatter["publication_gate_receipts"] = _write_bound_receipts_for_expected_artifact(
+            title=title,
+            slug=slug,
+            body_md=body_md,
+            surfaces=surfaces,
+            abstract=abstract if isinstance(abstract, str) else None,
+            attribution_block=attribution_block if isinstance(attribution_block, str) else "",
+            doi=doi if isinstance(doi, str) else None,
+        )
+    return frontmatter
 
 
-def _gate_receipts_yaml() -> str:
+def _write_bound_receipts_for_expected_artifact(
+    *,
+    title: str = "Draft",
+    slug: str = "draft",
+    body_md: str = "Body",
+    surfaces: tuple[str, ...] = ("omg-weblog",),
+    abstract: str | None = None,
+    attribution_block: str = "",
+    doi: str | None = None,
+) -> dict[str, str]:
+    artifact = PreprintArtifact(
+        slug=slug,
+        title=title,
+        abstract=abstract or publish_vault_artifact._summarize(body_md, max_chars=500),
+        body_md=body_md,
+        attribution_block=attribution_block,
+        surfaces_targeted=list(surfaces),
+        doi=doi,
+    )
+    artifact.mark_approved(by_referent="Oudepode")
+    bindings = publish_vault_artifact._publication_gate_receipt_bindings(artifact)
+    required = (
+        publish_vault_artifact.PUBLICATION_FANOUT_REQUIRED_GATES
+        if set(surfaces).intersection(publish_vault_artifact.FANOUT_SURFACE_IDS)
+        else publish_vault_artifact.PUBLICATION_BASELINE_REQUIRED_GATES
+    )
+    receipts: dict[str, str] = {}
+    root = publish_vault_artifact.PUBLIC_GATE_RECEIPT_ROOTS[0]
+    for gate in required:
+        receipt_ref = PUBLICATION_GATE_RECEIPTS.get(
+            gate,
+            f"public-gate:test-{gate.replace('_', '-')}",
+        )
+        receipts[gate] = receipt_ref
+        suffix = receipt_ref.removeprefix("public-gate:")
+        surfaces_yaml = "".join(f"  - {surface}\n" for surface in bindings["target_surfaces"])
+        (root / f"{suffix}.yaml").write_text(
+            f"gate_id: {gate}\n"
+            "status: passed\n"
+            f"artifact_slug: {bindings['artifact_slug']}\n"
+            f"artifact_fingerprint: {bindings['artifact_fingerprint']}\n"
+            "target_surfaces:\n"
+            f"{surfaces_yaml}",
+            encoding="utf-8",
+        )
+    return receipts
+
+
+def _gate_receipts_yaml(receipts: dict[str, str] | None = None) -> str:
+    receipts = receipts or _write_bound_receipts_for_expected_artifact()
     lines = ["publication_gate_receipts:"]
-    lines.extend(f"  {gate}: {receipt}" for gate, receipt in PUBLICATION_GATE_RECEIPTS.items())
+    lines.extend(f"  {gate}: {receipt}" for gate, receipt in receipts.items())
     return "\n".join(lines) + "\n"
 
 
@@ -97,13 +161,20 @@ class TestBuildArtifact:
         assert artifact.is_approved()
 
     def test_resolves_existing_title_slug_frontmatter_casing(self) -> None:
+        body_md = "# Body Heading\n\nBody"
+        receipts = _write_bound_receipts_for_expected_artifact(
+            title="Canonical Draft",
+            slug="canonical-draft",
+            body_md=body_md,
+        )
+
         artifact = publish_vault_artifact._build_artifact(
-            body_md="# Body Heading\n\nBody",
+            body_md=body_md,
             frontmatter={
                 "Title": "Canonical Draft",
                 "Slug": "canonical-draft",
                 "Publication-Allowed": "approved",
-                "publication_gate_receipts": dict(PUBLICATION_GATE_RECEIPTS),
+                "publication_gate_receipts": receipts,
             },
             surfaces=["omg-weblog"],
             approver="Oudepode",
@@ -179,6 +250,25 @@ class TestBuildArtifact:
                     publication_gate_receipts={
                         gate: "public-gate:forged" for gate in PUBLICATION_GATE_RECEIPTS
                     }
+                ),
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+            )
+
+    def test_rejects_unbound_publication_gate_receipts(self) -> None:
+        root = publish_vault_artifact.PUBLIC_GATE_RECEIPT_ROOTS[0]
+        for gate, receipt_ref in PUBLICATION_GATE_RECEIPTS.items():
+            suffix = receipt_ref.removeprefix("public-gate:")
+            (root / f"{suffix}.yaml").write_text(
+                f"gate_id: {gate}\nstatus: passed\n",
+                encoding="utf-8",
+            )
+
+        with pytest.raises(publish_vault_artifact.PublicationGateError, match="bound"):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(
+                    publication_gate_receipts=dict(PUBLICATION_GATE_RECEIPTS)
                 ),
                 surfaces=["omg-weblog"],
                 approver="Oudepode",
@@ -283,15 +373,21 @@ class TestBuildArtifact:
 
 def test_allowed_draft_dry_run_uses_existing_frontmatter_casing(tmp_path, capsys) -> None:
     draft = tmp_path / "draft.md"
+    body_md = "# Allowed Draft\n\nBody\n"
+    receipts = _write_bound_receipts_for_expected_artifact(
+        title="Allowed Draft",
+        slug="allowed-draft",
+        body_md=body_md,
+    )
     draft.write_text(
         (
             "---\n"
             "Title: Allowed Draft\n"
             "Slug: allowed-draft\n"
             "Publication-Allowed: true\n"
-            f"{_gate_receipts_yaml()}"
+            f"{_gate_receipts_yaml(receipts)}"
             "---\n\n"
-            "# Allowed Draft\n\nBody\n"
+            f"{body_md}"
         ),
         encoding="utf-8",
     )
@@ -432,15 +528,21 @@ def test_surface_outside_allowlist_refuses_publication(tmp_path, capsys) -> None
 
 def test_empty_explicit_surface_list_refuses_publication(tmp_path, capsys) -> None:
     draft = tmp_path / "draft.md"
+    body_md = "# Empty Surfaces\n\nBody\n"
+    receipts = _write_bound_receipts_for_expected_artifact(
+        title="Empty Surfaces",
+        slug="empty-surfaces",
+        body_md=body_md,
+    )
     draft.write_text(
         (
             "---\n"
             "Title: Empty Surfaces\n"
             "Slug: empty-surfaces\n"
             "Publication-Allowed: true\n"
-            f"{_gate_receipts_yaml()}"
+            f"{_gate_receipts_yaml(receipts)}"
             "---\n\n"
-            "# Empty Surfaces\n\nBody\n"
+            f"{body_md}"
         ),
         encoding="utf-8",
     )

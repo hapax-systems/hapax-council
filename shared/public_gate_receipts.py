@@ -251,7 +251,7 @@ def _gate_receipt_object_allows(
         if (
             _mapping_contains_expected_gate(data, expected_gate)
             and _mapping_outcome_allows(data)
-            and _receipt_has_required_bindings(data, bindings)
+            and _receipt_mapping_has_required_bindings(data, bindings)
         ):
             return True
         return any(
@@ -304,25 +304,27 @@ def _receipt_has_failed_outcome(data: Any) -> bool:
     return any(outcome is False for outcome in _iter_receipt_outcomes(data))
 
 
-def _receipt_has_required_bindings(
+def _receipt_mapping_has_required_bindings(
     data: Any,
     bindings: Mapping[str, object] | None,
 ) -> bool:
+    # Bindings must live on the same mapping as the gate/outcome record. Do not
+    # recurse here, or stale gate evidence can be spliced with child/sibling bindings.
     if not bindings:
         return True
-    return all(_receipt_has_binding(data, key, value) for key, value in bindings.items())
+    return all(_receipt_mapping_has_binding(data, key, value) for key, value in bindings.items())
 
 
-def _receipt_has_binding(data: Any, key: str, expected: object) -> bool:
+def _receipt_mapping_has_binding(data: Any, key: str, expected: object) -> bool:
     if not isinstance(data, Mapping):
         return False
     return any(
         _binding_value_matches(value, expected)
-        for value in _iter_binding_values(data, _binding_key_aliases(key))
+        for value in _iter_direct_binding_values(data, _binding_key_aliases(key))
     )
 
 
-def _iter_binding_values(data: Any, keys: frozenset[str]) -> Iterable[Any]:
+def _iter_direct_binding_values(data: Any, keys: frozenset[str]) -> Iterable[Any]:
     for raw_key, value in data.items():
         if str(raw_key).strip().casefold() in keys:
             yield value
