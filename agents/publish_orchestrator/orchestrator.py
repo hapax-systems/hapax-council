@@ -59,6 +59,7 @@ from typing import ClassVar
 
 import yaml
 from prometheus_client import REGISTRY, CollectorRegistry, Counter
+from pydantic import ValidationError
 
 from agents.publication_bus.surface_registry import dispatch_registry
 from shared.preprint_artifact import (
@@ -324,10 +325,22 @@ class Orchestrator:
             for path in sorted(inbox.glob("*.json")):
                 try:
                     artifact = self._load_artifact(path)
-                except Exception as exc:  # noqa: BLE001
-                    log.exception("failed to load artifact at %s", path)
+                except (json.JSONDecodeError, UnicodeDecodeError, ValidationError) as exc:
+                    log.exception("invalid inbox artifact at %s", path)
                     self._quarantine_unloadable_inbox_artifact(path, exc)
                     handled += 1
+                    continue
+                except OSError as exc:
+                    log.warning(
+                        "transient inbox artifact read failure at %s; leaving for retry: %s",
+                        path,
+                        exc,
+                    )
+                    continue
+                except Exception:  # noqa: BLE001
+                    log.exception(
+                        "unexpected inbox artifact load failure at %s; leaving for retry", path
+                    )
                     continue
                 try:
                     envelope_findings = self._inbox_artifact_envelope_findings(artifact)
@@ -783,7 +796,7 @@ class Orchestrator:
         log_path.write_text(json.dumps(record, sort_keys=True))
 
     def _load_artifact(self, path: Path) -> PreprintArtifact:
-        return PreprintArtifact.model_validate_json(path.read_text())
+        return PreprintArtifact.model_validate_json(path.read_text(encoding="utf-8"))
 
     def _inbox_artifact_envelope_findings(self, artifact: PreprintArtifact) -> tuple[str, ...]:
         findings: list[str] = []
