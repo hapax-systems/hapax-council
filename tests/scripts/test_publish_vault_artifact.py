@@ -34,16 +34,44 @@ PUBLIC_GATE_AUTHORITY_BLOCK = (
 def durable_public_gate_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "public-gate-receipts"
     root.mkdir()
-    _write_public_gate_review_evidence(root)
+    _write_public_gate_review_evidence(
+        root,
+        gates=tuple(PUBLICATION_GATE_RECEIPTS),
+    )
     monkeypatch.setattr(publish_vault_artifact, "PUBLIC_GATE_RECEIPT_ROOTS", (root,))
 
 
-def _write_public_gate_review_evidence(root: Path) -> None:
+def _write_public_gate_review_evidence(
+    root: Path,
+    *,
+    gates: tuple[str, ...],
+    receipt_refs: tuple[str, ...] | None = None,
+    artifact_slug: str | None = None,
+    artifact_fingerprint: str | None = None,
+    target_surfaces: tuple[str, ...] | None = None,
+) -> None:
+    gate_yaml = "\n".join(f"  - {gate}" for gate in gates)
+    receipt_yaml = "\n".join(f"  - {receipt_ref}" for receipt_ref in (receipt_refs or ()))
+    binding_yaml = ""
+    if artifact_slug is not None:
+        binding_yaml += f"artifact_slug: {artifact_slug}\n"
+    if artifact_fingerprint is not None:
+        binding_yaml += f"artifact_fingerprint: {artifact_fingerprint}\n"
+    if target_surfaces is not None:
+        surface_yaml = "\n".join(f"  - {surface}" for surface in target_surfaces)
+        binding_yaml += f"target_surfaces:\n{surface_yaml}\n"
     (root / "public-gate-test.yaml").write_text(
         "dossier_schema: 1\n"
+        "task_id: cc-task-public-gate-test\n"
+        "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
         "review_team_verdict: quorum-accept\n"
         "quorum_required: 1\n"
         "accept_count: 1\n"
+        "required_gates:\n"
+        f"{gate_yaml}\n"
+        "authorized_public_gate_receipts:\n"
+        f"{receipt_yaml}\n"
+        f"{binding_yaml}"
         "reviewers:\n"
         "  - id: cvc-1\n"
         "    family: cvc\n"
@@ -110,12 +138,18 @@ def _write_bound_receipts_for_expected_artifact(
     )
     receipts: dict[str, str] = {}
     root = publish_vault_artifact.PUBLIC_GATE_RECEIPT_ROOTS[0]
+    receipt_refs: list[str] = []
     for gate in required:
         receipt_ref = PUBLICATION_GATE_RECEIPTS.get(
             gate,
             f"public-gate:test-{gate.replace('_', '-')}",
         )
         receipts[gate] = receipt_ref
+        receipt_refs.append(
+            receipt_ref
+            if receipt_ref.endswith((".yaml", ".yml", ".json", ".md"))
+            else f"{receipt_ref}.yaml"
+        )
         suffix = receipt_ref.removeprefix("public-gate:")
         surfaces_yaml = "".join(f"  - {surface}\n" for surface in bindings["target_surfaces"])
         (root / f"{suffix}.yaml").write_text(
@@ -128,6 +162,14 @@ def _write_bound_receipts_for_expected_artifact(
             f"{surfaces_yaml}",
             encoding="utf-8",
         )
+    _write_public_gate_review_evidence(
+        root,
+        gates=tuple(required),
+        receipt_refs=tuple(receipt_refs),
+        artifact_slug=bindings["artifact_slug"],
+        artifact_fingerprint=bindings["artifact_fingerprint"],
+        target_surfaces=tuple(bindings["target_surfaces"]),
+    )
     return receipts
 
 

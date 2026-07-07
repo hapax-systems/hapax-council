@@ -31,17 +31,45 @@ def durable_public_gate_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     global _RECEIPT_ROOT
     root = tmp_path / "public-gate-receipts"
     root.mkdir()
-    _write_public_gate_review_evidence(root)
+    _write_public_gate_review_evidence(root, gates=FANOUT_REQUIRED_GATES)
     _RECEIPT_ROOT = root
     monkeypatch.setattr(omg_rss_fanout, "PUBLIC_GATE_RECEIPT_ROOTS", (root,))
 
 
-def _write_public_gate_review_evidence(root: Path) -> None:
+def _write_public_gate_review_evidence(
+    root: Path,
+    *,
+    gates: tuple[str, ...],
+    receipt_refs: tuple[str, ...] | None = None,
+    source_address: str | None = None,
+    entry_id: str | None = None,
+    content_sha256: str | None = None,
+    targets: tuple[str, ...] | None = None,
+) -> None:
+    gate_yaml = "\n".join(f"  - {gate}" for gate in gates)
+    receipt_yaml = "\n".join(f"  - {receipt_ref}" for receipt_ref in (receipt_refs or ()))
+    binding_yaml = ""
+    if source_address is not None:
+        binding_yaml += f"source_address: {source_address}\n"
+    if entry_id is not None:
+        binding_yaml += f"entry_id: {entry_id}\n"
+    if content_sha256 is not None:
+        binding_yaml += f"content_sha256: {content_sha256}\n"
+    if targets is not None:
+        target_yaml = "\n".join(f"  - {target}" for target in sorted(targets))
+        binding_yaml += f"target_addresses:\n{target_yaml}\n"
     (root / "public-gate-test.yaml").write_text(
         "dossier_schema: 1\n"
+        "task_id: cc-task-public-gate-test\n"
+        "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
         "review_team_verdict: quorum-accept\n"
         "quorum_required: 1\n"
         "accept_count: 1\n"
+        "required_gates:\n"
+        f"{gate_yaml}\n"
+        "authorized_public_gate_receipts:\n"
+        f"{receipt_yaml}\n"
+        f"{binding_yaml}"
         "reviewers:\n"
         "  - id: cvc-1\n"
         "    family: cvc\n"
@@ -66,6 +94,17 @@ def _gate_receipts(
 ) -> dict[str, str]:
     if _RECEIPT_ROOT is None:
         raise AssertionError("receipt root fixture did not run")
+    content_hash = sha256(content.encode("utf-8")).hexdigest()
+    receipt_refs = tuple(f"public-gate:{gate}.yaml" for gate in FANOUT_REQUIRED_GATES)
+    _write_public_gate_review_evidence(
+        _RECEIPT_ROOT,
+        gates=FANOUT_REQUIRED_GATES,
+        receipt_refs=receipt_refs,
+        source_address=source_address,
+        entry_id=entry_id,
+        content_sha256=content_hash,
+        targets=targets,
+    )
     target_yaml = "\n".join(f"  - {target}" for target in sorted(targets))
     for gate in FANOUT_REQUIRED_GATES:
         (_RECEIPT_ROOT / f"{gate}.yaml").write_text(
@@ -74,7 +113,7 @@ def _gate_receipts(
             f"{PUBLIC_GATE_AUTHORITY_BLOCK}"
             f"source_address: {source_address}\n"
             f"entry_id: {entry_id}\n"
-            f"content_sha256: {sha256(content.encode('utf-8')).hexdigest()}\n"
+            f"content_sha256: {content_hash}\n"
             "target_addresses:\n"
             f"{target_yaml}\n",
             encoding="utf-8",
@@ -85,6 +124,11 @@ def _gate_receipts(
 def _unbound_gate_receipts() -> dict[str, str]:
     if _RECEIPT_ROOT is None:
         raise AssertionError("receipt root fixture did not run")
+    _write_public_gate_review_evidence(
+        _RECEIPT_ROOT,
+        gates=FANOUT_REQUIRED_GATES,
+        receipt_refs=tuple(f"public-gate:{gate}.yaml" for gate in FANOUT_REQUIRED_GATES),
+    )
     for gate in FANOUT_REQUIRED_GATES:
         (_RECEIPT_ROOT / f"{gate}.yaml").write_text(
             f"gate_id: {gate}\nstatus: passed\n{PUBLIC_GATE_AUTHORITY_BLOCK}",

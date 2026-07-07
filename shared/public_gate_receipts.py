@@ -84,7 +84,22 @@ PUBLIC_GATE_EVIDENCE_REF_KEYS = frozenset(
         "review_receipts",
     }
 )
+PUBLIC_GATE_EVIDENCE_RECEIPT_REF_KEYS = frozenset(
+    {
+        "authorized_public_gate_receipt",
+        "authorized_public_gate_receipts",
+        "authorized_receipt",
+        "authorized_receipts",
+        "public_gate_receipt",
+        "public_gate_receipts",
+        "publication_gate_receipt",
+        "publication_gate_receipts",
+        "receipt_ref",
+        "receipt_refs",
+    }
+)
 PUBLIC_GATE_AUTHORITY_CASE_RE = re.compile(r"\A(?:CASE|REQ)-[A-Za-z0-9][A-Za-z0-9_.:-]{2,}\Z")
+PUBLIC_GATE_REVIEW_HEAD_RE = re.compile(r"\A[0-9a-f]{40}\Z", re.IGNORECASE)
 PUBLIC_GATE_SELF_AUTHORITY_VALUES = frozenset(
     {
         "codex",
@@ -271,7 +286,13 @@ def _receipt_file_maps_to_gate(
     return (
         not _receipt_has_failed_outcome(data)
         and not _receipt_has_gate_contradiction(data, expected_gate)
-        and _gate_receipt_object_allows(data, expected_gate, root, bindings)
+        and _gate_receipt_object_allows(
+            data,
+            expected_gate,
+            root,
+            bindings,
+            receipt_path=path,
+        )
     )
 
 
@@ -316,9 +337,16 @@ def _gate_receipt_object_allows(
     expected_gate: str,
     root: Path,
     bindings: Mapping[str, object] | None = None,
+    receipt_path: Path | None = None,
 ) -> bool:
     return any(
-        _receipt_mapping_has_required_authority(candidate, root)
+        _receipt_mapping_has_required_authority(
+            candidate,
+            root,
+            expected_gate=expected_gate,
+            bindings=bindings,
+            receipt_path=receipt_path,
+        )
         and _receipt_candidate_mapping_allows(candidate, expected_gate, bindings)
         for candidate in _iter_receipt_candidate_mappings(data)
     )
@@ -402,12 +430,25 @@ def _receipt_mapping_has_required_bindings(
     return all(_receipt_mapping_has_binding(data, key, value) for key, value in bindings.items())
 
 
-def _receipt_mapping_has_required_authority(data: Mapping[Any, Any], root: Path) -> bool:
+def _receipt_mapping_has_required_authority(
+    data: Mapping[Any, Any],
+    root: Path,
+    *,
+    expected_gate: str,
+    bindings: Mapping[str, object] | None,
+    receipt_path: Path | None = None,
+) -> bool:
     return (
         _mapping_has_authority_case(data)
         and _mapping_has_non_self_text(data, PUBLIC_GATE_ACCEPTOR_KEYS)
         and _mapping_has_nonblank_text(data, PUBLIC_GATE_REVIEW_PROFILE_KEYS)
-        and _mapping_has_evidence_ref(data, root)
+        and _mapping_has_evidence_ref(
+            data,
+            root,
+            expected_gate=expected_gate,
+            bindings=bindings,
+            receipt_path=receipt_path,
+        )
     )
 
 
@@ -429,7 +470,14 @@ def _mapping_has_nonblank_text(data: Mapping[Any, Any], keys: frozenset[str]) ->
     return any(True for _ in _iter_direct_text_values(data, keys))
 
 
-def _mapping_has_evidence_ref(data: Mapping[Any, Any], root: Path) -> bool:
+def _mapping_has_evidence_ref(
+    data: Mapping[Any, Any],
+    root: Path,
+    *,
+    expected_gate: str,
+    bindings: Mapping[str, object] | None,
+    receipt_path: Path | None = None,
+) -> bool:
     for value in _iter_direct_text_values(data, PUBLIC_GATE_EVIDENCE_REF_KEYS):
         normalized = value.strip()
         lowered = normalized.casefold()
@@ -437,12 +485,25 @@ def _mapping_has_evidence_ref(data: Mapping[Any, Any], root: Path) -> bool:
             continue
         if lowered in PUBLIC_GATE_SELF_AUTHORITY_VALUES:
             continue
-        if _evidence_ref_resolves(normalized, root):
+        if _evidence_ref_resolves(
+            normalized,
+            root,
+            expected_gate=expected_gate,
+            bindings=bindings,
+            receipt_path=receipt_path,
+        ):
             return True
     return False
 
 
-def _evidence_ref_resolves(ref: str, root: Path) -> bool:
+def _evidence_ref_resolves(
+    ref: str,
+    root: Path,
+    *,
+    expected_gate: str,
+    bindings: Mapping[str, object] | None,
+    receipt_path: Path | None = None,
+) -> bool:
     lowered = ref.casefold()
     for prefix in PUBLIC_GATE_EVIDENCE_REF_PREFIXES:
         if not lowered.startswith(prefix):
@@ -459,7 +520,14 @@ def _evidence_ref_resolves(ref: str, root: Path) -> bool:
             return False
         evidence_root = root.expanduser()
         return any(
-            _path_is_inside_root(path, evidence_root) and _evidence_file_is_independent(path)
+            _path_is_inside_root(path, evidence_root)
+            and not _same_resolved_path(path, receipt_path)
+            and _evidence_file_is_independent(
+                path,
+                expected_gate=expected_gate,
+                bindings=bindings,
+                receipt_refs=_public_gate_receipt_refs_for_path(receipt_path, evidence_root),
+            )
             for path in (
                 evidence_root / candidate for candidate in _receipt_candidate_paths(suffix)
             )
@@ -467,13 +535,52 @@ def _evidence_ref_resolves(ref: str, root: Path) -> bool:
     return False
 
 
-def _evidence_file_is_independent(path: Path) -> bool:
+def _same_resolved_path(left: Path, right: Path | None) -> bool:
+    if right is None:
+        return False
+    try:
+        return left.resolve(strict=True) == right.resolve(strict=True)
+    except OSError:
+        return False
+
+
+def _evidence_file_is_independent(
+    path: Path,
+    *,
+    expected_gate: str,
+    bindings: Mapping[str, object] | None,
+    receipt_refs: frozenset[str],
+) -> bool:
     data = _load_receipt_data(path)
-    return _review_dossier_evidence_allows(data) or _acceptance_receipt_evidence_allows(data)
+    return _review_dossier_evidence_allows(
+        data,
+        expected_gate=expected_gate,
+        bindings=bindings,
+        receipt_refs=receipt_refs,
+    ) or _acceptance_receipt_evidence_allows(
+        data,
+        expected_gate=expected_gate,
+        bindings=bindings,
+        receipt_refs=receipt_refs,
+    )
 
 
-def _review_dossier_evidence_allows(data: Any) -> bool:
+def _review_dossier_evidence_allows(
+    data: Any,
+    *,
+    expected_gate: str,
+    bindings: Mapping[str, object] | None,
+    receipt_refs: frozenset[str],
+) -> bool:
     if not isinstance(data, Mapping):
+        return False
+    if data.get("dossier_schema") != 1:
+        return False
+    if not _direct_text_value(data, "task_id"):
+        return False
+    if PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(_direct_text_value(data, "head_sha")) is None:
+        return False
+    if not _evidence_mapping_authorizes_receipt(data, expected_gate, bindings, receipt_refs):
         return False
     verdict = _direct_text_value(data, "review_team_verdict").casefold()
     if verdict != "quorum-accept":
@@ -495,17 +602,83 @@ def _review_dossier_evidence_allows(data: Any) -> bool:
     return len(accepted_families - PUBLIC_GATE_SELF_AUTHORITY_VALUES) >= 1
 
 
-def _acceptance_receipt_evidence_allows(data: Any) -> bool:
+def _acceptance_receipt_evidence_allows(
+    data: Any,
+    *,
+    expected_gate: str,
+    bindings: Mapping[str, object] | None,
+    receipt_refs: frozenset[str],
+) -> bool:
     if not isinstance(data, Mapping):
         return False
     if _outcome_value_allows(data.get("verdict")) is not True:
         return False
     if _direct_text_value(data, "timestamp") == "" or _direct_text_value(data, "artifact") == "":
         return False
+    if PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(_direct_text_value(data, "head_sha")) is None:
+        return False
+    if not _evidence_mapping_authorizes_receipt(data, expected_gate, bindings, receipt_refs):
+        return False
     review_team_verdict = _direct_text_value(data, "review_team_verdict")
     if review_team_verdict and review_team_verdict.casefold() != "quorum-accept":
         return False
     return _mapping_has_independent_acceptor(data)
+
+
+def _evidence_mapping_authorizes_receipt(
+    data: Mapping[Any, Any],
+    expected_gate: str,
+    bindings: Mapping[str, object] | None,
+    receipt_refs: frozenset[str],
+) -> bool:
+    return (
+        _mapping_contains_expected_gate(data, expected_gate)
+        and _receipt_mapping_has_required_bindings(data, bindings)
+        and _evidence_mapping_contains_receipt_ref(data, receipt_refs)
+    )
+
+
+def _public_gate_receipt_refs_for_path(
+    receipt_path: Path | None,
+    root: Path,
+) -> frozenset[str]:
+    if receipt_path is None:
+        return frozenset()
+    try:
+        relative = receipt_path.resolve(strict=True).relative_to(root.resolve(strict=True))
+    except (OSError, ValueError):
+        return frozenset()
+    suffixes = {relative.as_posix()}
+    if relative.suffix.casefold() in PUBLIC_GATE_RECEIPT_EXTENSIONS:
+        suffixes.add(relative.with_suffix("").as_posix())
+    return frozenset(
+        f"{prefix}{suffix}" for prefix in PUBLIC_GATE_RECEIPT_PREFIXES for suffix in suffixes
+    )
+
+
+def _evidence_mapping_contains_receipt_ref(
+    data: Mapping[Any, Any],
+    receipt_refs: frozenset[str],
+) -> bool:
+    if not receipt_refs:
+        return False
+    for raw_key, value in data.items():
+        key = str(raw_key).strip().casefold()
+        if key not in PUBLIC_GATE_EVIDENCE_RECEIPT_REF_KEYS:
+            continue
+        if _receipt_ref_value_contains(value, receipt_refs):
+            return True
+    return False
+
+
+def _receipt_ref_value_contains(value: Any, receipt_refs: frozenset[str]) -> bool:
+    if isinstance(value, str):
+        return value.strip() in receipt_refs
+    if isinstance(value, Mapping):
+        return any(_receipt_ref_value_contains(item, receipt_refs) for item in value.values())
+    if _is_non_string_iterable(value):
+        return any(_receipt_ref_value_contains(item, receipt_refs) for item in value)
+    return False
 
 
 def _mapping_has_independent_acceptor(data: Mapping[Any, Any]) -> bool:

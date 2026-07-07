@@ -76,7 +76,6 @@ def _write_public_gate_receipts(
     )
     receipt_root = state_root / "public-gate-receipts"
     receipt_root.mkdir(parents=True, exist_ok=True)
-    _write_public_gate_review_evidence(receipt_root)
     surfaces_yaml = "\n".join(f"  - {surface}" for surface in sorted(surfaces))
     for gate in gates:
         (receipt_root / f"{gate}.yaml").write_text(
@@ -89,15 +88,44 @@ def _write_public_gate_receipts(
             f"{surfaces_yaml}\n",
             encoding="utf-8",
         )
+    _write_public_gate_review_evidence(
+        receipt_root,
+        gates=tuple(gates),
+        receipt_refs=tuple(f"public-gate:{gate}.yaml" for gate in gates),
+        artifact_slug=artifact.slug,
+        artifact_fingerprint=_artifact_fingerprint(artifact),
+        target_surfaces=tuple(sorted(surfaces)),
+    )
     return {gate: f"public-gate:{gate}.yaml" for gate in gates}
 
 
-def _write_public_gate_review_evidence(receipt_root: Path) -> None:
+def _write_public_gate_review_evidence(
+    receipt_root: Path,
+    *,
+    gates: tuple[str, ...],
+    receipt_refs: tuple[str, ...],
+    artifact_slug: str,
+    artifact_fingerprint: str,
+    target_surfaces: tuple[str, ...],
+) -> None:
+    gate_yaml = "\n".join(f"  - {gate}" for gate in gates)
+    receipt_yaml = "\n".join(f"  - {receipt_ref}" for receipt_ref in receipt_refs)
+    surface_yaml = "\n".join(f"  - {surface}" for surface in target_surfaces)
     (receipt_root / "public-gate-test.yaml").write_text(
         "dossier_schema: 1\n"
+        "task_id: cc-task-public-gate-test\n"
+        "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
         "review_team_verdict: quorum-accept\n"
         "quorum_required: 1\n"
         "accept_count: 1\n"
+        "required_gates:\n"
+        f"{gate_yaml}\n"
+        "authorized_public_gate_receipts:\n"
+        f"{receipt_yaml}\n"
+        f"artifact_slug: {artifact_slug}\n"
+        f"artifact_fingerprint: {artifact_fingerprint}\n"
+        "target_surfaces:\n"
+        f"{surface_yaml}\n"
         "reviewers:\n"
         "  - id: cvc-1\n"
         "    family: cvc\n"

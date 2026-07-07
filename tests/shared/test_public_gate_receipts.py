@@ -17,18 +17,33 @@ AUTHORITY_BLOCK = (
 
 def _write(root: Path, name: str, text: str) -> None:
     if "evidence_ref: review-dossier:public-gate-test" in text:
-        _write_review_evidence(root)
+        _write_review_evidence(root, receipt_name=name)
     target = root / name
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
 
 
-def _write_review_evidence(root: Path) -> None:
+def _write_review_evidence(
+    root: Path,
+    *,
+    receipt_name: str,
+    gate: str = GATE,
+    artifact_fingerprint: str = "abc123",
+) -> None:
     (root / "public-gate-test.yaml").write_text(
         "dossier_schema: 1\n"
+        "task_id: cc-task-public-gate-test\n"
+        "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
         "review_team_verdict: quorum-accept\n"
         "quorum_required: 1\n"
         "accept_count: 1\n"
+        f"gate_id: {gate}\n"
+        "authorized_public_gate_receipts:\n"
+        f"  - public-gate:{receipt_name}\n"
+        "artifact_slug: demo\n"
+        f"artifact_fingerprint: {artifact_fingerprint}\n"
+        "target_surfaces:\n"
+        "  - fake\n"
         "reviewers:\n"
         "  - id: cvc-1\n"
         "    family: cvc\n"
@@ -100,6 +115,85 @@ def test_rejects_circular_public_gate_evidence_ref(tmp_path: Path) -> None:
 
     assert not public_gate_receipt_value_present(
         "public-gate:receipt-1",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_authority_evidence_for_different_gate(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(
+        tmp_path,
+        receipt_name="receipt-1.yaml",
+        gate="claim_review_current",
+    )
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_authority_evidence_for_different_receipt(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(tmp_path, receipt_name="receipt-2.yaml")
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_rejects_authority_evidence_for_different_artifact_binding(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "receipt-1.yaml",
+        _receipt_text(
+            extra=(
+                "artifact_slug: demo\nartifact_fingerprint: abc123\ntarget_surfaces:\n  - fake\n"
+            )
+        ),
+    )
+    _write_review_evidence(
+        tmp_path,
+        receipt_name="receipt-1.yaml",
+        artifact_fingerprint="stale-fingerprint",
+    )
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+        bindings={
+            "artifact_slug": "demo",
+            "artifact_fingerprint": "abc123",
+            "target_surfaces": ("fake",),
+        },
+    )
+
+
+def test_rejects_review_dossier_without_current_head_binding(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    (tmp_path / "public-gate-test.yaml").write_text(
+        "dossier_schema: 1\n"
+        "task_id: cc-task-public-gate-test\n"
+        "review_team_verdict: quorum-accept\n"
+        "quorum_required: 1\n"
+        "accept_count: 1\n"
+        f"gate_id: {GATE}\n"
+        "authorized_public_gate_receipts:\n"
+        "  - public-gate:receipt-1.yaml\n"
+        "reviewers:\n"
+        "  - id: cvc-1\n"
+        "    family: cvc\n"
+        "    verdict: accept\n",
+        encoding="utf-8",
+    )
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
         expected_gate=GATE,
         roots=(tmp_path,),
     )
