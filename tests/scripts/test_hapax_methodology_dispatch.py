@@ -1020,7 +1020,7 @@ def test_blocks_claude_dev_operator_pool_before_worktree_probe(tmp_path: Path) -
         """,
     )
 
-    for lane in ("dev", "dev1", "dev2"):
+    for lane in ("dev", "dev1", "dev2", "DEV12"):
         result = _run(
             tmp_path,
             "--task",

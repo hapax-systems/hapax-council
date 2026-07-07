@@ -566,7 +566,7 @@ def lane_worktree(lane: str, platform: str) -> Path:
 
 def is_claude_operator_pool_lane(lane: str, platform: str | None) -> bool:
     """True for interactive `hapax-claude dev*` sessions, which are not dispatch lanes."""
-    lane = strip_scalar(str(lane)).strip()
+    lane = strip_scalar(str(lane)).strip().lower()
     platform_name = strip_scalar(str(platform or "")).strip().lower()
     return platform_name == "claude" and re.fullmatch(r"dev[0-9]*", lane) is not None
 
