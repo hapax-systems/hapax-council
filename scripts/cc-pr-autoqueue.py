@@ -47,6 +47,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import review_team  # noqa: E402
 from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
+    REST_INDETERMINATE_CHECK_NAME,
     fetch_status_check_rollup_rest,
     get_pull_rest,
     list_open_pr_statuses_rest,
@@ -734,7 +735,11 @@ def fetch_open_prs(
             # rollup through REST/core check-runs and commit statuses, not another GraphQL PR
             # view. Fail-closed: an unfetchable rollup reads as "checks unknown / not green".
             fallback_rollup = item.get("statusCheckRollup")
-            if isinstance(fallback_rollup, list) and fallback_rollup:
+            if (
+                isinstance(fallback_rollup, list)
+                and fallback_rollup
+                and not _rollup_is_rest_indeterminate(fallback_rollup)
+            ):
                 item["statusCheckRollup"] = fallback_rollup
             else:
                 item["statusCheckRollup"] = _fetch_status_check_rollup(
@@ -757,6 +762,7 @@ def _fetch_status_check_rollup(
     repo: str,
     repo_root: Path,
     runner: Any,
+    use_cache: bool | None = None,
 ) -> list[Any]:
     """Fetch one PR's status rollup via REST check-runs/statuses.
 
@@ -777,7 +783,23 @@ def _fetch_status_check_rollup(
         repo=repo,
         repo_root=repo_root,
         runner=runner,
+        use_cache=use_cache,
     )
+
+    if not rollup or _rollup_is_rest_indeterminate(rollup):
+        try:
+            pr_number = int(number)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            pr_number = None
+        if pr_number is not None:
+            ok, gql_sha, gql_rollup = _fetch_status_check_rollup_graphql(
+                pr_number,
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+            )
+            if ok and gql_rollup and (not sha or gql_sha == sha):
+                return gql_rollup
     if not rollup:
         LOG.warning(
             "REST status rollup fetch returned no checks for #%s sha=%s",
@@ -785,6 +807,75 @@ def _fetch_status_check_rollup(
             sha,
         )
     return rollup
+
+
+def _rollup_is_rest_indeterminate(rollup: list[Any]) -> bool:
+    return bool(rollup) and all(
+        isinstance(item, dict) and _check_name(item) == REST_INDETERMINATE_CHECK_NAME
+        for item in rollup
+    )
+
+
+def _fetch_status_check_rollup_graphql(
+    pr_number: int,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> tuple[bool, str, list[Any]]:
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    owner, name = repo.split("/", 1)
+    query = (
+        "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){"
+        "pullRequest(number:$number){headRefOid commits(last:1){nodes{commit{oid "
+        "statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status "
+        "conclusion completedAt startedAt} ... on StatusContext{context state createdAt}}}}}}}}}}"
+    )
+    proc = run_graphql_rate_aware(
+        [
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"repo={name}",
+            "-F",
+            f"number={pr_number}",
+        ],
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if proc.returncode != 0:
+        return False, "invalid_pr_release_evidence_payload", []
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return False, "invalid_pr_release_evidence_payload", []
+    pull = (
+        payload.get("data", {}).get("repository", {}).get("pullRequest")
+        if isinstance(payload, dict)
+        else None
+    )
+    if not isinstance(pull, dict):
+        return False, "invalid_pr_release_evidence_payload", []
+    sha = _scalar(pull.get("headRefOid"))
+    if not sha:
+        return False, "missing_head_sha", []
+    commit_nodes = (
+        pull.get("commits", {}).get("nodes", []) if isinstance(pull.get("commits"), dict) else []
+    )
+    commit = None
+    if commit_nodes and isinstance(commit_nodes[-1], dict):
+        commit = commit_nodes[-1].get("commit")
+    rollup = (
+        commit.get("statusCheckRollup", {}).get("contexts", {}).get("nodes")
+        if isinstance(commit, dict)
+        else None
+    )
+    if not isinstance(rollup, list):
+        return False, "invalid_status_check_rollup", []
+    return True, sha, rollup
 
 
 def fetch_pr_release_evidence(
@@ -815,14 +906,17 @@ def fetch_pr_release_evidence(
             runner=runner,
         )
         return fallback if fallback[0] else (False, "missing_head_sha", set())
-    rollup = fetch_status_check_rollup_rest(
-        sha,
+    rollup = _fetch_status_check_rollup(
+        pr_number,
+        head_sha=sha,
         repo=repo,
         repo_root=repo_root,
         runner=runner,
         use_cache=False,
     )
     if not isinstance(rollup, list):
+        return False, "invalid_status_check_rollup", set()
+    if _rollup_is_rest_indeterminate(rollup):
         return False, "invalid_status_check_rollup", set()
     return True, sha, set(summarize_checks(rollup).verified_passed)
 
@@ -834,58 +928,14 @@ def _fetch_pr_release_evidence_graphql(
     repo_root: Path | None = None,
     runner: Any = None,
 ) -> tuple[bool, str, set[str]]:
-    runner = runner or subprocess.run
-    repo_root = repo_root or default_repo_root()
-    owner, name = repo.split("/", 1)
-    query = (
-        "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){"
-        "pullRequest(number:$number){headRefOid commits(last:1){nodes{commit{oid "
-        "statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status "
-        "conclusion completedAt startedAt} ... on StatusContext{context state createdAt}}}}}}}}}}"
-    )
-    proc = run_graphql_rate_aware(
-        [
-            "-f",
-            f"query={query}",
-            "-f",
-            f"owner={owner}",
-            "-f",
-            f"repo={name}",
-            "-F",
-            f"number={pr_number}",
-        ],
+    ok, sha, rollup = _fetch_status_check_rollup_graphql(
+        pr_number,
+        repo=repo,
         repo_root=repo_root,
         runner=runner,
     )
-    if proc.returncode != 0:
-        return False, "invalid_pr_release_evidence_payload", set()
-    try:
-        payload = json.loads(proc.stdout or "{}")
-    except json.JSONDecodeError:
-        return False, "invalid_pr_release_evidence_payload", set()
-    pull = (
-        payload.get("data", {}).get("repository", {}).get("pullRequest")
-        if isinstance(payload, dict)
-        else None
-    )
-    if not isinstance(pull, dict):
-        return False, "invalid_pr_release_evidence_payload", set()
-    sha = _scalar(pull.get("headRefOid"))
-    if not sha:
-        return False, "missing_head_sha", set()
-    commit_nodes = (
-        pull.get("commits", {}).get("nodes", []) if isinstance(pull.get("commits"), dict) else []
-    )
-    commit = None
-    if commit_nodes and isinstance(commit_nodes[-1], dict):
-        commit = commit_nodes[-1].get("commit")
-    rollup = (
-        commit.get("statusCheckRollup", {}).get("contexts", {}).get("nodes")
-        if isinstance(commit, dict)
-        else None
-    )
-    if not isinstance(rollup, list):
-        return False, "invalid_status_check_rollup", set()
+    if not ok:
+        return False, sha, set()
     return True, sha, set(summarize_checks(rollup).verified_passed)
 
 
