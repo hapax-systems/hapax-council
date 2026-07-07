@@ -90,6 +90,7 @@ def _write_classifying_ssh(
     before_preflight_run: str = "",
     before_exec_run: str = "",
     after_preflight_success: str = "",
+    cleanup_exit: int = 0,
 ) -> None:
     bash_bin = shutil.which("bash") or "/bin/bash"
     codex_stub = path.parent / "codex"
@@ -147,6 +148,10 @@ else:
 PY
 )"
 if [ "$kind" = "cleanup" ]; then
+  printf '%s\\n' "$kind" >> "{log_path}"
+  if [ "{cleanup_exit}" -ne 0 ]; then
+    exit "{cleanup_exit}"
+  fi
   exec "{bash_bin}" -c "$remote_cmd"
 fi
 printf '%s\\n' "$kind" >> "{log_path}"
@@ -668,6 +673,7 @@ exit 0
         "worktree",
         "preflight",
         "exec",
+        "cleanup",
     ]
     assert pwd_file.read_text(encoding="utf-8").strip() == str(workdir)
     branch = subprocess.run(
@@ -1172,6 +1178,7 @@ exit 0
         "worktree",
         "preflight",
         "exec",
+        "cleanup",
     ]
     assert pwd_file.read_text(encoding="utf-8").strip() == str(workdir)
     branch = subprocess.run(
@@ -1263,6 +1270,7 @@ exit 0
         "worktree",
         "preflight",
         "exec",
+        "cleanup",
     ]
     assert preflight_count.read_text(encoding="utf-8").strip() == "2"
     assert token_file.read_text(encoding="utf-8").strip() == rotated_token
@@ -1346,6 +1354,67 @@ PY
             "worktree",
             "preflight",
         ]
+
+
+def test_codex_headless_parent_cleanup_failure_is_operator_visible(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    primary = home / "projects" / "hapax-council"
+    _init_primary_council_repo(primary)
+    _write_executable(primary / "scripts" / "cc-claim", "exit 42\n")
+    subprocess.run(["git", "-C", str(primary), "add", "scripts/cc-claim"], check=True)
+    subprocess.run(
+        ["git", "-C", str(primary), "commit", "-m", "add failing claim helper"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(["git", "-C", str(primary), "branch", "codex/cx-amber"], check=True)
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
+
+    token_file = _write_codex_access_token(
+        home / ".cache" / "hapax" / "codex-oauth",
+        exp=int(time.time()) + 3600,
+    )
+    bin_dir = tmp_path / "bin"
+    ssh_log = tmp_path / "ssh.log"
+    _write_classifying_ssh(
+        bin_dir / "ssh",
+        ssh_log,
+        remove_workdir_on_worktree=workdir,
+        cleanup_exit=23,
+    )
+    _write_executable(bin_dir / "codex", "exit 0\n")
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(primary)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE"] = str(token_file)
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 42
+    assert "failed to delete preflight-proven Codex OAuth token handoff" in result.stderr
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == [
+        "preflight",
+        "worktree",
+        "preflight",
+        "cleanup",
+    ]
 
 
 def test_codex_headless_remote_exec_fails_if_token_handoff_cleanup_fails(
@@ -1479,6 +1548,7 @@ exit 0
         "worktree",
         "preflight",
         "exec",
+        "cleanup",
     ]
     assert pwd_file.read_text(encoding="utf-8").strip() == str(workdir)
     worktree_head = subprocess.run(

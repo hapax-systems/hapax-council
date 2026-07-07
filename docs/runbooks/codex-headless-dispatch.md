@@ -95,10 +95,70 @@ uv run pytest tests/scripts/test_hapax_codex_headless.py -q
 uv run pytest tests/scripts/test_hapax_codex_headless.py tests/scripts/test_hapax_codex_headless_fallback.py -q
 ```
 
-For the P0 dispatch-starvation exit predicate, recheck the live platform and
-quota evidence after the launcher tests:
+For the P0 dispatch-starvation exit predicate, recheck the live coordinator
+predicate and P0 intake ledger after the launcher tests. Platform receipts and
+lane health are supporting evidence; they do not replace the predicate that
+emitted the alert (`offered_tasks > 0`, `dispatches_this_tick == 0`,
+`refusal_ledger.starvation_active == true`, and
+`refusal_ledger.starvation_escalated == true`):
 
 ```bash
+python - <<'PY'
+import json
+from pathlib import Path
+
+coordinator = json.loads(Path("/dev/shm/hapax-coordinator/state.json").read_text())
+refusal = coordinator.get("refusal_ledger", {})
+print(
+    {
+        "timestamp": coordinator.get("timestamp"),
+        "offered_tasks": coordinator.get("offered_tasks"),
+        "lanes_idle": coordinator.get("lanes_idle"),
+        "dispatches_this_tick": coordinator.get("dispatches_this_tick"),
+        "starvation_active": refusal.get("starvation_active"),
+        "starvation_escalated": refusal.get("starvation_escalated"),
+    }
+)
+PY
+python - <<'PY'
+import json
+from pathlib import Path
+
+fingerprint = "sdlc_dispatch_starvation:dispatched"
+state = json.loads(Path("~/.cache/hapax/p0-incident-intake/state.json").expanduser().read_text())
+incident = state.get("incidents", {}).get(fingerprint)
+print(
+    {
+        "fingerprint": fingerprint,
+        "count": None if incident is None else incident.get("count"),
+        "last_seen": None if incident is None else incident.get("last_seen"),
+        "recurrence_count": None if incident is None else incident.get("recurrence_count"),
+        "task_id": None if incident is None else incident.get("task_id"),
+    }
+)
+PY
+python - <<'PY'
+import json
+from pathlib import Path
+
+fingerprint = "sdlc_dispatch_starvation:dispatched"
+latest = None
+events = Path("~/.cache/hapax/p0-incident-intake/events.jsonl").expanduser()
+for line in events.read_text().splitlines():
+    if not line.strip():
+        continue
+    event = json.loads(line)
+    if event.get("fingerprint") == fingerprint:
+        latest = event
+print(
+    {
+        "fingerprint": fingerprint,
+        "latest_ts": None if latest is None else latest.get("ts"),
+        "latest_count": None if latest is None else latest.get("count"),
+        "latest_task_id": None if latest is None else latest.get("task_id"),
+    }
+)
+PY
 uv run python scripts/hapax-platform-capability-receipts --json
 scripts/hapax-codex-health --json cx-agy cx-p0 cx-ghrate
 scripts/hapax-quota-telemetry-writer --json

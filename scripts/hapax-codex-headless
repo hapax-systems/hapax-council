@@ -743,9 +743,11 @@ cleanup() {
     local cleanup_payload="" cleanup_command=""
     cleanup_payload="$(remote_token_cleanup_payload_b64)"
     cleanup_command="$(remote_python_command "$cleanup_payload" "$REMOTE_TOKEN_CLEANUP_PY")"
-    ssh -o BatchMode=yes -o ConnectTimeout=2 -i "$HOME/.ssh/id_ed25519" \
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=2 -i "$HOME/.ssh/id_ed25519" \
       -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST_REQUESTED" \
-      "$cleanup_command" >/dev/null 2>&1 || true
+      "$cleanup_command" >/dev/null 2>&1; then
+      echo "hapax-codex-headless: failed to delete preflight-proven Codex OAuth token handoff at $REMOTE_TOKEN_HANDOFF; next action: remove the handoff file on the dispatch host before retrying" >&2
+    fi
   fi
 }
 trap cleanup EXIT

@@ -390,12 +390,18 @@ PYEOF
 }
 
 remote_preflight_payload_b64() {
-  python3 - "$WORKDIR" "$COUNCIL_DIR" "$HOME/projects/hapax-mcp" <<'PYEOF'
+  local token_handoff_file="${1:-}"
+  python3 - "$WORKDIR" "$COUNCIL_DIR" "$HOME/projects/hapax-mcp" "$token_handoff_file" <<'PYEOF'
 import base64
 import json
+import os
 import sys
 
-workdir, council_dir, mcp_dir = sys.argv[1:4]
+workdir, council_dir, mcp_dir, token_handoff_file = sys.argv[1:5]
+token_file = (
+    os.environ.get("HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE")
+    or "~/.cache/hapax/codex-oauth/access_token"
+)
 payload = {
     "workdir": workdir,
     "required_dirs": [workdir, council_dir, mcp_dir],
@@ -404,6 +410,8 @@ payload = {
         f"{council_dir}/hooks/scripts/codex-hook-adapter.sh",
     ],
     "binaries": ["python3", "codex"],
+    "token_file": token_file,
+    "token_handoff_file": token_handoff_file,
 }
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
 PYEOF
@@ -459,6 +467,7 @@ payload = {
     "session": session,
     "task_id": task_id,
     "tmux_name": tmux_name,
+    "token_handoff_file": os.environ.get("HAPAX_REMOTE_TOKEN_HANDOFF", ""),
     "env": env,
     "argv": argv,
 }
@@ -466,7 +475,71 @@ print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).deco
 PYEOF
 }
 
-REMOTE_PREFLIGHT_PY='import base64,json,os,shutil,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); ok=all(os.path.isdir(path) for path in p.get("required_dirs",())) and all(os.path.isfile(path) and os.access(path, os.X_OK) for path in p.get("executables",())) and all(shutil.which(binary) for binary in p.get("binaries",())); sys.exit(0 if ok else 1)'
+REMOTE_PREFLIGHT_PY='import base64,json,os,shutil,subprocess,sys,tempfile,time; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"]));
+missing_dirs=[path for path in p.get("required_dirs",()) if not os.path.isdir(path)]
+missing_exec=[path for path in p.get("executables",()) if not (os.path.isfile(path) and os.access(path, os.X_OK))]
+missing_bins=[binary for binary in p.get("binaries",()) if not shutil.which(binary)]
+def _jwt_exp(token):
+    try:
+        payload=token.split(".")[1]; payload += "=" * (-len(payload) % 4)
+        return float(json.loads(base64.urlsafe_b64decode(payload.encode("ascii"))).get("exp",0))
+    except Exception:
+        print("hapax-codex: preflight-proven Codex OAuth token handoff is unparseable; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
+        sys.exit(78)
+token_file=os.path.expanduser(p.get("token_file") or "~/.cache/hapax/codex-oauth/access_token")
+token_error=""
+actuation_error=""
+try:
+    token=open(token_file,encoding="utf-8").read().strip()
+except OSError:
+    token_error="missing_codex_oauth_access_token:"+token_file
+else:
+    if not token or _jwt_exp(token) - time.time() <= 300:
+        token_error="codex_oauth_access_token_absent_or_expiring:"+token_file
+if not token_error:
+    codex_bin=shutil.which("codex")
+    if codex_bin is None:
+        actuation_error="codex_binary_missing"
+    else:
+        with tempfile.TemporaryDirectory(prefix="hapax-codex-actuation-") as codex_home:
+            env={k:v for k in ("ALL_PROXY","HOME","HTTP_PROXY","HTTPS_PROXY","LANG","LC_ALL","NO_PROXY","PATH","REQUESTS_CA_BUNDLE","SSL_CERT_FILE") if (v:=os.environ.get(k)) is not None}
+            env.update({"CODEX_ACCESS_TOKEN":token,"CODEX_HOME":codex_home,"NO_COLOR":"1"})
+            try:
+                result=subprocess.run([codex_bin,"debug","models"],text=True,capture_output=True,timeout=15,env=env)
+            except (OSError,subprocess.TimeoutExpired) as exc:
+                actuation_error="codex_bearer_actuation_failed:"+type(exc).__name__
+            else:
+                if result.returncode != 0:
+                    actuation_error="codex_bearer_actuation_failed:rc="+str(result.returncode)
+                else:
+                    try:
+                        payload=json.loads(result.stdout)
+                    except json.JSONDecodeError:
+                        actuation_error="codex_bearer_actuation_unparseable"
+                    else:
+                        models=payload.get("models") if isinstance(payload,dict) else None
+                        if not isinstance(models,list) or not models:
+                            actuation_error="codex_bearer_actuation_unparseable"
+if missing_dirs or missing_exec or missing_bins or token_error or actuation_error:
+    print("remote preflight failed: missing_dirs="+json.dumps(missing_dirs)+" missing_executables="+json.dumps(missing_exec)+" missing_binaries="+json.dumps(missing_bins)+" token_error="+json.dumps(token_error)+" actuation_error="+json.dumps(actuation_error)+"; next action: ssh to the dispatch host and run the codex OAuth refresher or reauth, then verify required paths before retrying", file=sys.stderr)
+    sys.exit(1)
+handoff=p.get("token_handoff_file") or ""
+if handoff:
+    handoff=os.path.expanduser(handoff)
+    directory=os.path.dirname(handoff)
+    if directory:
+        os.makedirs(directory,exist_ok=True)
+    flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL
+    if hasattr(os,"O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd=os.open(handoff,flags,0o600)
+    except OSError as exc:
+        print("hapax-codex: refused unsafe preflight-proven Codex OAuth token handoff at "+handoff+" ("+exc.__class__.__name__+"); next action: remove stale hapax-codex-token files owned by this user and rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
+        sys.exit(78)
+    with os.fdopen(fd,"w",encoding="utf-8") as fh:
+        fh.write(token)
+sys.exit(0)'
 REMOTE_EXEC_PY='import base64,json,os,socket,sys,time; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); proof=p.get("proof_file",""); cgroup="";
 try:
     cgroup=open("/proc/self/cgroup",encoding="utf-8").read()
@@ -477,15 +550,30 @@ def _jwt_exp(token):
         payload=token.split(".")[1]; payload += "=" * (-len(payload) % 4)
         return float(json.loads(base64.urlsafe_b64decode(payload.encode("ascii"))).get("exp",0))
     except Exception:
-        return 0.0
-if not os.environ.get("CODEX_ACCESS_TOKEN"):
-    token_path=os.environ.get("HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE") or os.path.join(os.path.expanduser("~"),".cache","hapax","codex-oauth","access_token")
-    try:
-        token=open(token_path,encoding="utf-8").read().strip()
-    except OSError:
-        token=""
-    if token and _jwt_exp(token) - time.time() > 300:
-        os.environ["CODEX_ACCESS_TOKEN"]=token
+        print("hapax-codex: preflight-proven Codex OAuth token handoff is unparseable; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
+        sys.exit(78)
+token_handoff=p.get("token_handoff_file") or ""
+if not token_handoff:
+    print("hapax-codex: missing preflight-proven Codex OAuth token handoff; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
+    sys.exit(78)
+token_path=os.path.expanduser(token_handoff)
+try:
+    token=open(token_path,encoding="utf-8").read().strip()
+except OSError:
+    print("hapax-codex: missing preflight-proven Codex OAuth token handoff at "+token_path+"; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
+    sys.exit(78)
+try:
+    os.unlink(token_path)
+except OSError as exc:
+    print("hapax-codex: failed to delete preflight-proven Codex OAuth token handoff at "+token_path+" ("+exc.__class__.__name__+"); next action: remove the handoff file on the dispatch host before retrying", file=sys.stderr)
+    sys.exit(78)
+if not token:
+    print("hapax-codex: preflight-proven Codex OAuth token handoff is absent; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
+    sys.exit(78)
+if _jwt_exp(token) - time.time() <= 300:
+    print("hapax-codex: preflight-proven Codex OAuth token handoff is expiring; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
+    sys.exit(78)
+os.environ["CODEX_ACCESS_TOKEN"]=token
 if proof:
     os.makedirs(os.path.dirname(proof), exist_ok=True)
     data={"schema_version":1,"event":"dispatch_remote_exec","platform":"codex","session":p.get("session"),"task_id":p.get("task_id"),"requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"tmux_name":p.get("tmux_name"),"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[]))}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
@@ -801,6 +889,12 @@ fi
 WORKDIR="$(cd "$WORKDIR" && pwd)"
 export HAPAX_CODEX_WORKTREE_STRATEGY="$CODEX_WORKTREE_STRATEGY"
 
+PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
+PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_ROLE:-unknown}}}}"
+
+# Per-session id (coordination reform Phase 1): stable uuid so the gate keys a
+# claim lease to THIS session — two same-role sessions never collide (FM-2).
+SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
 TMUX_NAME="hapax-codex-$SESSION"
 DISPATCH_HOST_REQUESTED="${HAPAX_DISPATCH_HOST:-}"
 DISPATCH_HOST=""
@@ -809,12 +903,14 @@ DISPATCH_PROOF_DIR="${HAPAX_DISPATCH_PROOF_DIR:-$HOME/.cache/hapax/orchestration
 DISPATCH_PROOF_BASENAME="$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION")-$(slugify "${TASK_ID:-no-task}")"
 DISPATCH_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-remote.json"
 DISPATCH_LOCAL_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-local.json"
+REMOTE_TOKEN_HANDOFF="/tmp/hapax-codex-token-$SESSION_UUID-$$"
+export HAPAX_REMOTE_TOKEN_HANDOFF="$REMOTE_TOKEN_HANDOFF"
 
 if [ -n "$DISPATCH_HOST_REQUESTED" ]; then
   if dispatch_host_is_local "$DISPATCH_HOST_REQUESTED"; then
     DISPATCH_HOST_REQUESTED=""
   else
-    PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
+    PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 "$REMOTE_TOKEN_HANDOFF")"
     PREFLIGHT_COMMAND="$(remote_python_command "$PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
     if ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
         -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST_REQUESTED" \
@@ -914,12 +1010,6 @@ if [ "$FORCE" -ne 1 ]; then
   fi
 fi
 
-PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
-PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_ROLE:-unknown}}}}"
-
-# Per-session id (coordination reform Phase 1): stable uuid so the gate keys a
-# claim lease to THIS session — two same-role sessions never collide (FM-2).
-SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
 export HAPAX_AGENT_INTERFACE="codex"
 export HAPAX_AGENT_NAME="$SESSION"
 export CODEX_THREAD_NAME="$SESSION"
