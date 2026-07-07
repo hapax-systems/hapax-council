@@ -724,6 +724,34 @@ class TestSingleSurface:
         assert surface_log["publication_gate_decision"] == "operator_overridden_hold"
         assert surface_log["publication_gate_fingerprint"]
 
+    def test_dispatch_reuses_public_gate_receipt_child(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        _drop_artifact(tmp_path, slug="reuse-receipt-child", surfaces=["fake"])
+        orch = _make_orchestrator(
+            tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+        )
+        original = orch._public_gate_receipts_child
+        calls = 0
+
+        def count_public_gate_receipts_child(artifact: PreprintArtifact):
+            nonlocal calls
+            calls += 1
+            return original(artifact)
+
+        monkeypatch.setattr(
+            orch,
+            "_public_gate_receipts_child",
+            count_public_gate_receipts_child,
+        )
+
+        assert orch.run_once() == 1
+        assert calls == 1
+        fake_module.publish_artifact.assert_called_once()
+
     def test_publication_gate_override_cannot_bypass_missing_public_receipts(
         self,
         tmp_path,
