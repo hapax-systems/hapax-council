@@ -64,11 +64,11 @@ CLI's bundled `~/.gemini/antigravity-cli/.../cli.md` config reference; that
 directory name is the installed CLI bundle path, not a live Antigravity route.
 The "Provider-dependent" context entry is a non-assertion about the universal
 harness shape; current engine entitlements and context windows must be measured
-through future agy route-capability receipts before they can support dispatch or
-review admission. The local entitlement inventory recheck is `agy models`; this
-task records that command only as a human recheck path, not as admission evidence
-until a future receipt writer records model/context limits and route-specific
-quota admission.
+through future agy route-capability receipts before they can support dispatch.
+Review admission is available only through the measured review-seat receipt plus
+short-lived quota-admission receipt chain above. The local entitlement inventory
+recheck is `agy models`; this task records that command only as a human recheck
+path, not as admission evidence for model/context limits.
 
 Recheck the agy review-route/non-worker claims with:
 

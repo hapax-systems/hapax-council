@@ -483,7 +483,7 @@ exit 0
     )
 
     assert result.returncode == 78
-    assert "missing published Codex OAuth access token" in result.stderr
+    assert "missing or unsafe published Codex OAuth access token" in result.stderr
     assert "next action:" in result.stderr
     assert not codex_called.exists()
 
@@ -523,7 +523,48 @@ exit 0
     )
 
     assert result.returncode == 78
-    assert "missing published Codex OAuth access token" in result.stderr
+    assert "missing or unsafe published Codex OAuth access token" in result.stderr
+    assert not codex_called.exists()
+
+
+def test_codex_headless_refuses_unsafe_published_token_file(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+    token_file = _write_codex_access_token(home / "codex-oauth", exp=int(time.time()) + 3600)
+    token_file.chmod(0o644)
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE"] = str(token_file)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "missing or unsafe published Codex OAuth access token" in result.stderr
+    assert "owner-only token file" in result.stderr
     assert not codex_called.exists()
 
 
@@ -1479,6 +1520,36 @@ def test_codex_headless_remote_preflight_refuses_invalid_token_handoff_ttl(
     assert result.returncode == 78
     assert "refused invalid Codex OAuth token handoff TTL" in result.stderr
     assert not handoff.exists()
+
+
+def test_codex_headless_remote_preflight_refuses_world_readable_published_token(
+    tmp_path: Path,
+) -> None:
+    remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
+    token = _write_codex_access_token(tmp_path / "oauth", exp=int(time.time()) + 3600)
+    token.chmod(0o644)
+    payload = {
+        "required_dirs": [],
+        "executables": [],
+        "binaries": [],
+        "token_file": str(token),
+        "token_handoff_file": "",
+        "token_handoff_seal_key": "",
+        "token_handoff_ttl_seconds": 2,
+    }
+    env = os.environ.copy()
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+
+    result = subprocess.run(
+        [sys.executable, "-c", remote_preflight_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 1
+    assert "unsafe_codex_oauth_access_token" in result.stderr
 
 
 def test_codex_headless_remote_preflight_fails_closed_when_self_cleanup_cannot_fork(

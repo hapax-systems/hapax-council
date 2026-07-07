@@ -23,6 +23,7 @@ import base64
 import hashlib
 import json
 import os
+import stat
 import tempfile
 import time
 from collections.abc import Callable
@@ -111,9 +112,28 @@ def load_published_access_token(
 
     path = token_file.expanduser() if token_file is not None else publish_dir / "access_token"
     try:
-        token = path.read_text(encoding="utf-8").strip()
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
     except OSError:
         return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        if info.st_uid != os.getuid():
+            return None
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            return None
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            token = handle.read().strip()
+    except OSError:
+        return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
     if not token:
         return None
     return AccessToken(raw=token, exp=decode_access_token_exp(token))
