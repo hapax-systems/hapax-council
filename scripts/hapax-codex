@@ -1568,6 +1568,8 @@ runner_cleanup() {
   exit "$rc"
 }
 trap runner_cleanup EXIT
+RUNNER_SELF="${BASH_SOURCE[0]:-$0}"
+rm -f -- "$RUNNER_SELF" || true
 EOF
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"

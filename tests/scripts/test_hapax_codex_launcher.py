@@ -1456,6 +1456,7 @@ esac
     )
 
     assert runner_result.returncode == 0, runner_result.stderr
+    assert not runner.exists()
     assert "Bootstrap file:" in args_file.read_text(encoding="utf-8")
     launched_env = env_file.read_text(encoding="utf-8")
     assert "LOGOS_BASE_URL=http://192.168.68.85:8051/api" in launched_env
