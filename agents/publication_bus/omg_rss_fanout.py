@@ -33,6 +33,11 @@ from typing import Any
 import yaml
 from prometheus_client import Counter
 
+from shared.public_gate_receipts import (
+    PUBLIC_GATE_RECEIPT_PREFIXES as _PUBLIC_GATE_RECEIPT_PREFIXES,
+)
+from shared.public_gate_receipts import public_gate_receipt_value_present
+
 log = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH: Path = Path(__file__).resolve().parents[2] / "config" / "omg-lol-fanout.yaml"
@@ -53,12 +58,13 @@ FANOUT_REQUIRED_GATES: tuple[str, ...] = (
 )
 """Receipt ids required before any cross-weblog public fanout egress."""
 
-PUBLIC_GATE_RECEIPT_PREFIXES: tuple[str, ...] = (
-    "public-gate:",
-    "public_gate:",
-    "receipt:public-gate:",
-)
+PUBLIC_GATE_RECEIPT_PREFIXES = _PUBLIC_GATE_RECEIPT_PREFIXES
 """Durable public-gate receipt ref prefixes accepted for fanout egress."""
+
+PUBLIC_GATE_RECEIPT_ROOTS: tuple[Path, ...] = (
+    Path.home() / ".cache" / "hapax" / "relay" / "receipts",
+    Path(__file__).resolve().parents[2] / "docs" / "research" / "evidence",
+)
 
 omg_fanouts_total = Counter(
     "hapax_publication_bus_omg_fanouts_total",
@@ -146,17 +152,12 @@ def _configured_required_gates(policy: object) -> tuple[list[str], str | None]:
     return required, None
 
 
-def _receipt_value_present(value: object) -> bool:
-    if isinstance(value, str):
-        stripped = value.strip()
-        lowered = stripped.casefold()
-        return any(
-            lowered.startswith(prefix) and len(stripped) > len(prefix)
-            for prefix in PUBLIC_GATE_RECEIPT_PREFIXES
-        )
-    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
-        return any(_receipt_value_present(item) for item in value)
-    return False
+def _receipt_value_present(gate: str, value: object) -> bool:
+    return public_gate_receipt_value_present(
+        value,
+        expected_gate=gate,
+        roots=PUBLIC_GATE_RECEIPT_ROOTS,
+    )
 
 
 def _missing_gate_receipts(
@@ -164,7 +165,9 @@ def _missing_gate_receipts(
     gate_receipts: Mapping[str, object] | None,
 ) -> list[str]:
     receipts = gate_receipts or {}
-    return sorted(gate for gate in required_gates if not _receipt_value_present(receipts.get(gate)))
+    return sorted(
+        gate for gate in required_gates if not _receipt_value_present(gate, receipts.get(gate))
+    )
 
 
 def fanout(

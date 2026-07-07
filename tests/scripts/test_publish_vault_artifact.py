@@ -23,6 +23,19 @@ PUBLICATION_GATE_RECEIPTS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def durable_public_gate_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "public-gate-receipts"
+    root.mkdir()
+    for gate, receipt_ref in PUBLICATION_GATE_RECEIPTS.items():
+        suffix = receipt_ref.removeprefix("public-gate:")
+        (root / f"{suffix}.yaml").write_text(
+            f"gate_id: {gate}\nstatus: passed\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(publish_vault_artifact, "PUBLIC_GATE_RECEIPT_ROOTS", (root,))
+
+
 def _allowed_frontmatter(**extra: object) -> dict[str, object]:
     return {
         "title": "Draft",
@@ -164,7 +177,7 @@ class TestBuildArtifact:
                 body_md="Body",
                 frontmatter=_allowed_frontmatter(
                     publication_gate_receipts={
-                        gate: "placeholder" for gate in PUBLICATION_GATE_RECEIPTS
+                        gate: "public-gate:forged" for gate in PUBLICATION_GATE_RECEIPTS
                     }
                 ),
                 surfaces=["omg-weblog"],

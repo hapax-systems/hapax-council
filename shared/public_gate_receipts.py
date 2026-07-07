@@ -1,0 +1,206 @@
+"""Durable public-gate receipt reference validation."""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable, Mapping
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+PUBLIC_GATE_RECEIPT_PREFIXES: tuple[str, ...] = (
+    "public-gate:",
+    "public_gate:",
+    "receipt:public-gate:",
+)
+PUBLIC_GATE_RECEIPT_SUFFIX_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+/-]{0,239}\Z", re.IGNORECASE)
+PUBLIC_GATE_RECEIPT_EXTENSIONS = frozenset({".json", ".md", ".yaml", ".yml"})
+PUBLIC_GATE_ID_KEYS = frozenset(
+    {
+        "gate",
+        "gate_id",
+        "public_gate",
+        "public_gate_id",
+        "publication_gate",
+        "publication_gate_id",
+        "required_gate",
+        "required_gate_id",
+    }
+)
+PUBLIC_GATE_LIST_KEYS = frozenset(
+    {
+        "gates",
+        "gate_ids",
+        "public_gates",
+        "public_gate_ids",
+        "publication_gates",
+        "publication_gate_ids",
+        "required_gates",
+        "required_gate_ids",
+    }
+)
+
+
+def public_gate_receipt_value_present(
+    value: object,
+    *,
+    expected_gate: str,
+    roots: Iterable[Path],
+) -> bool:
+    """Return true when ``value`` contains a durable receipt for ``expected_gate``."""
+    if isinstance(value, str):
+        return public_gate_receipt_ref_exists(value, expected_gate=expected_gate, roots=roots)
+    if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, str, Mapping)):
+        return any(
+            public_gate_receipt_value_present(item, expected_gate=expected_gate, roots=roots)
+            for item in value
+        )
+    return False
+
+
+def public_gate_receipt_ref_exists(
+    ref: str,
+    *,
+    expected_gate: str,
+    roots: Iterable[Path],
+) -> bool:
+    """Validate that ``ref`` names an existing receipt mapped to ``expected_gate``."""
+    suffix = _public_gate_receipt_suffix(ref)
+    if suffix is None:
+        return False
+
+    candidates = _receipt_candidate_paths(suffix)
+    for root in roots:
+        root = root.expanduser()
+        for candidate in candidates:
+            path = root / candidate
+            if _path_is_inside_root(path, root) and _receipt_file_maps_to_gate(path, expected_gate):
+                return True
+    return False
+
+
+def _public_gate_receipt_suffix(ref: str) -> str | None:
+    stripped = ref.strip()
+    lowered = stripped.casefold()
+    for prefix in PUBLIC_GATE_RECEIPT_PREFIXES:
+        if not lowered.startswith(prefix):
+            continue
+        suffix = stripped[len(prefix) :].strip()
+        path = Path(suffix)
+        if (
+            suffix
+            and PUBLIC_GATE_RECEIPT_SUFFIX_RE.fullmatch(suffix)
+            and not path.is_absolute()
+            and ".." not in path.parts
+        ):
+            return suffix
+    return None
+
+
+def _receipt_candidate_paths(suffix: str) -> tuple[Path, ...]:
+    base = Path(suffix)
+    candidates = [base]
+    if base.suffix.casefold() not in PUBLIC_GATE_RECEIPT_EXTENSIONS:
+        candidates.extend(Path(f"{suffix}{extension}") for extension in (".yaml", ".json", ".md"))
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = candidate.as_posix()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return tuple(deduped)
+
+
+def _path_is_inside_root(path: Path, root: Path) -> bool:
+    try:
+        resolved_root = root.resolve(strict=False)
+        resolved_path = path.resolve(strict=True)
+    except OSError:
+        return False
+    try:
+        resolved_path.relative_to(resolved_root)
+    except ValueError:
+        return False
+    return resolved_path.is_file()
+
+
+def _receipt_file_maps_to_gate(path: Path, expected_gate: str) -> bool:
+    data = _load_receipt_data(path)
+    return _contains_expected_gate(data, expected_gate)
+
+
+def _load_receipt_data(path: Path) -> Any:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None
+    except OSError:
+        return None
+
+    if path.suffix.casefold() == ".md":
+        frontmatter = _markdown_frontmatter(text)
+        if frontmatter is not None:
+            return frontmatter
+
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+
+
+def _markdown_frontmatter(text: str) -> Any:
+    if not text.startswith("---"):
+        return None
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() != "---":
+            continue
+        frontmatter = "\n".join(lines[1:index])
+        try:
+            return yaml.safe_load(frontmatter)
+        except yaml.YAMLError:
+            return None
+    return None
+
+
+def _contains_expected_gate(data: Any, expected_gate: str) -> bool:
+    if isinstance(data, Mapping):
+        for raw_key, value in data.items():
+            key = str(raw_key).strip().casefold()
+            if key in PUBLIC_GATE_ID_KEYS and _gate_value_matches(value, expected_gate):
+                return True
+            if key in PUBLIC_GATE_LIST_KEYS and _gate_value_contains(value, expected_gate):
+                return True
+            if _gate_value_matches(raw_key, expected_gate) and _truthy_receipt_value(value):
+                return True
+        return any(_contains_expected_gate(value, expected_gate) for value in data.values())
+    if isinstance(data, (list, tuple, set)):
+        return any(_contains_expected_gate(item, expected_gate) for item in data)
+    return False
+
+
+def _gate_value_contains(value: Any, expected_gate: str) -> bool:
+    if isinstance(value, Mapping):
+        return any(_gate_value_matches(key, expected_gate) for key in value)
+    if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, str)):
+        return any(_gate_value_matches(item, expected_gate) for item in value)
+    return _gate_value_matches(value, expected_gate)
+
+
+def _gate_value_matches(value: Any, expected_gate: str) -> bool:
+    return isinstance(value, str) and value.strip() == expected_gate
+
+
+def _truthy_receipt_value(value: Any) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (Mapping, list, tuple, set)):
+        return bool(value)
+    return True

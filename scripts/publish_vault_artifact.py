@@ -72,6 +72,10 @@ from shared.co_author_model import CoAuthor
 from shared.co_author_model import get as get_co_author
 from shared.frontmatter import parse_frontmatter_with_diagnostics
 from shared.preprint_artifact import ApprovalState, PreprintArtifact
+from shared.public_gate_receipts import (
+    PUBLIC_GATE_RECEIPT_PREFIXES as _PUBLIC_GATE_RECEIPT_PREFIXES,
+)
+from shared.public_gate_receipts import public_gate_receipt_value_present
 
 log = logging.getLogger(__name__)
 
@@ -101,10 +105,10 @@ PUBLICATION_FANOUT_REQUIRED_GATES = (
     *PUBLICATION_BASELINE_REQUIRED_GATES,
     "fanout_loop_prevention_present",
 )
-PUBLIC_GATE_RECEIPT_PREFIXES = (
-    "public-gate:",
-    "public_gate:",
-    "receipt:public-gate:",
+PUBLIC_GATE_RECEIPT_PREFIXES = _PUBLIC_GATE_RECEIPT_PREFIXES
+PUBLIC_GATE_RECEIPT_ROOTS = (
+    Path.home() / ".cache" / "hapax" / "relay" / "receipts",
+    REPO_ROOT / "docs" / "research" / "evidence",
 )
 
 
@@ -366,23 +370,20 @@ def _publication_gate_receipts(frontmatter: dict) -> dict[str, object]:
     return {str(key): value for key, value in raw.items()}
 
 
-def _receipt_value_present(value: object) -> bool:
-    if isinstance(value, str):
-        stripped = value.strip()
-        lowered = stripped.casefold()
-        return any(
-            lowered.startswith(prefix) and len(stripped) > len(prefix)
-            for prefix in PUBLIC_GATE_RECEIPT_PREFIXES
-        )
-    if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, str, Mapping)):
-        return any(_receipt_value_present(item) for item in value)
-    return False
+def _receipt_value_present(gate: str, value: object) -> bool:
+    return public_gate_receipt_value_present(
+        value,
+        expected_gate=gate,
+        roots=PUBLIC_GATE_RECEIPT_ROOTS,
+    )
 
 
 def _assert_publication_gate_receipts(frontmatter: dict, surfaces: list[str]) -> None:
     required = _required_publication_gate_receipts(surfaces)
     receipts = _publication_gate_receipts(frontmatter)
-    missing = sorted(gate for gate in required if not _receipt_value_present(receipts.get(gate)))
+    missing = sorted(
+        gate for gate in required if not _receipt_value_present(gate, receipts.get(gate))
+    )
     if missing:
         raise PublicationGateError(
             "publication_gate_receipts missing or invalid required receipt refs: "

@@ -5,6 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
+from agents.publication_bus import omg_rss_fanout
 from agents.publication_bus.omg_rss_fanout import (
     FANOUT_LOOP_HEADER_PREFIX,
     FANOUT_REQUIRED_GATES,
@@ -12,6 +15,18 @@ from agents.publication_bus.omg_rss_fanout import (
     fanout,
     load_fanout_config,
 )
+
+
+@pytest.fixture(autouse=True)
+def durable_public_gate_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "public-gate-receipts"
+    root.mkdir()
+    for gate in FANOUT_REQUIRED_GATES:
+        (root / f"{gate}.yaml").write_text(
+            f"gate_id: {gate}\nstatus: passed\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(omg_rss_fanout, "PUBLIC_GATE_RECEIPT_ROOTS", (root,))
 
 
 def _make_client(enabled: bool = True) -> MagicMock:
@@ -22,7 +37,7 @@ def _make_client(enabled: bool = True) -> MagicMock:
 
 
 def _gate_receipts() -> dict[str, str]:
-    return {gate: f"public-gate:{gate}" for gate in FANOUT_REQUIRED_GATES}
+    return {gate: f"public-gate:{gate}.yaml" for gate in FANOUT_REQUIRED_GATES}
 
 
 def _required_gates_yaml(gates: tuple[str, ...] = FANOUT_REQUIRED_GATES) -> str:
@@ -217,7 +232,7 @@ class TestFanout:
             content="body",
             config=config,
             client=client,
-            gate_receipts={gate: "placeholder" for gate in FANOUT_REQUIRED_GATES},
+            gate_receipts={gate: "public-gate:forged" for gate in FANOUT_REQUIRED_GATES},
         )
         assert result == {"oudepode": "gate-blocked"}
         client.set_entry.assert_not_called()
