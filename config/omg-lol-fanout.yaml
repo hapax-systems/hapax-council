@@ -8,19 +8,28 @@
 # When the list is empty (the default, until the operator registers
 # additional addresses), the fanout is a no-op. This is the seed
 # state — operator adds addresses as they are bootstrapped.
+schema_version: 1
+service: omg.lol
+address: hapax
 publication_frontmatter_policy:
   status: guarded_public_fanout
   publication_allowed_without_bus: false
   direct_public_egress_allowed: false
   review_required: Claim Verification Council
+  target_surfaces:
+    - omg-lol-weblog-bearer-fanout
+    - omg-weblog
   claim_ceiling: >-
     Cross-weblog fanout may repeat only already-approved public artifacts.
     It may not create new product, support, community, lifecycle-generality,
-    license, or comparative claims.
+    license, or comparative claims. Source refs, rights, privacy, redaction,
+    target surfaces, and loop-prevention receipts must already be present.
   required_gates:
     - source_artifact_public_safe
+    - source_refs_present
     - rights_privacy_redaction_pass
     - target_surface_allowlist_pass
     - fanout_loop_prevention_present
     - claim_review_current
+    - no_direct_public_egress
 addresses: []

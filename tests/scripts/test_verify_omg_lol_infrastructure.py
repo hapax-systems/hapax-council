@@ -25,6 +25,12 @@ def test_repo_omg_lol_config_validates() -> None:
     assert module.validate_config(config) == []
 
 
+def test_fanout_omg_lol_config_validates() -> None:
+    module = _load_module()
+    config = module.load_config(FANOUT_CONFIG_PATH)
+    assert module.validate_config(config) == []
+
+
 def test_validation_requires_acceptance_sections() -> None:
     module = _load_module()
     errors = module.validate_config(
@@ -156,20 +162,14 @@ def test_primary_config_pins_publication_frontmatter_policy_gates_and_targets() 
 
 
 def test_fanout_config_pins_publication_frontmatter_policy_gates() -> None:
-    import yaml
+    module = _load_module()
 
-    config = yaml.safe_load(FANOUT_CONFIG_PATH.read_text(encoding="utf-8"))
-    policy = config["publication_frontmatter_policy"]
+    policy = module.load_config(FANOUT_CONFIG_PATH)["publication_frontmatter_policy"]
     assert policy["publication_allowed_without_bus"] is False
     assert policy["direct_public_egress_allowed"] is False
     assert policy["review_required"] == "Claim Verification Council"
-    assert set(policy["required_gates"]) == {
-        "source_artifact_public_safe",
-        "rights_privacy_redaction_pass",
-        "target_surface_allowlist_pass",
-        "fanout_loop_prevention_present",
-        "claim_review_current",
-    }
+    assert set(policy["required_gates"]) == module.REQUIRED_FANOUT_PUBLICATION_FRONTMATTER_GATES
+    assert set(policy["target_surfaces"]) == module.REQUIRED_FANOUT_PUBLICATION_TARGET_SURFACES
     claim_ceiling = policy["claim_ceiling"].lower()
     assert "already-approved public artifacts" in claim_ceiling
     assert "comparative claims" in claim_ceiling
