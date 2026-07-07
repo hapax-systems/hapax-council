@@ -137,10 +137,14 @@ def _smoke_stdout_valid(stdout: str) -> bool:
     if not text.startswith("```yaml") or not text.endswith("```"):
         return False
     body = text.removeprefix("```yaml").removesuffix("```").strip()
+    lines = [line.rstrip() for line in body.splitlines() if line.strip()]
+    top_level = [line for line in lines if not line.startswith((" ", "\t"))]
+    allowed_top_level = {"verdict: accept", "findings: []", "checklist:", "checklist: {}"}
     return (
-        re.search(r"(?m)^verdict:\s*accept\s*$", body) is not None
-        and re.search(r"(?m)^findings:\s*\[\]\s*$", body) is not None
-        and re.search(r"(?m)^checklist:\s*(?:\{\})?\s*$", body) is not None
+        "verdict: accept" in top_level
+        and "findings: []" in top_level
+        and ("checklist:" in top_level or "checklist: {}" in top_level)
+        and all(line in allowed_top_level for line in top_level)
     )
 
 

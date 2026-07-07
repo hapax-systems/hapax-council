@@ -87,6 +87,38 @@ def test_agy_quota_admission_writes_short_lived_safe_receipt(
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+def test_agy_quota_admission_accepts_nested_reviewer_checklist(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module()
+
+    def fake_run(cmd, **kwargs):
+        return _completed(
+            "```yaml\n"
+            "verdict: accept\n"
+            "findings: []\n"
+            "checklist:\n"
+            "  smoke:\n"
+            "    smoke-test: pass\n"
+            "```\n"
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    rc = module.main(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--evidence-ref",
+            "agy-gemini31pro-smoke-20260707t1300z",
+        ]
+    )
+
+    assert rc == 0
+    assert list(tmp_path.glob("agy-quota-admission-*.yaml"))
+
+
 def test_agy_quota_admission_rejects_failed_reviewer_smoke(
     tmp_path: Path,
     monkeypatch,
