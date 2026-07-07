@@ -139,7 +139,9 @@ def test_agy_quota_admission_rejects_invalid_reviewer_stdout(
     )
 
     assert rc == 2
-    assert "sanctioned agy reviewer smoke produced invalid stdout" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "sanctioned agy reviewer smoke produced invalid stdout" in err
+    assert "next action: rerun with --help" in err
     assert not list(tmp_path.glob("*.yaml"))
 
 
@@ -207,4 +209,6 @@ def test_agy_quota_admission_rejects_secretish_evidence_ref(tmp_path: Path) -> N
 
     assert result.returncode == 2
     assert "unsafe evidence-ref" in result.stderr
+    assert "next action: rerun with --help" in result.stderr
+    assert "api-key-secret-token" not in result.stderr
     assert not list(tmp_path.glob("*.yaml"))

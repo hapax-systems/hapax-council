@@ -736,6 +736,34 @@ def test_agy_admission_rejects_secret_persistence(tmp_path: Path) -> None:
     summary = json.loads(result.stdout)
     assert summary["agy_admissions"] == 0
     assert summary["agy_ignored_admissions"] == 1
+    assert (
+        "validation failed; reason_code=credential-value-persisted-missing-or-unsupported"
+        in result.stderr
+    )
+    assert "false-negative recovery" in result.stderr
+    assert "secret_value_persisted" not in result.stderr
+
+
+def test_ignored_agy_admission_warning_omits_secretish_receipt_dir(tmp_path: Path) -> None:
+    secretish_dir = tmp_path / "sk-secret-token-relay-receipts-000000000000000000000000"
+    secretish_dir.mkdir()
+    (secretish_dir / "agy-quota-admission-invalid-utf8.yaml").write_bytes(b"\xff\xfe\xfa")
+
+    result, out = _run_writer(tmp_path, "--relay-receipt-dir", str(secretish_dir))
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    agy_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "agy.review.direct"
+    )
+    assert agy_snapshot["subscription_quota_state"] == "unknown"
+    assert "validation failed; reason_code=unreadable-receipt-unicodedecodeerror" in result.stderr
+    assert secretish_dir.name not in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["agy_admissions"] == 0
+    assert summary["agy_ignored_admissions"] == 1
 
 
 def test_agy_admission_rejects_missing_smoke_validation(tmp_path: Path) -> None:

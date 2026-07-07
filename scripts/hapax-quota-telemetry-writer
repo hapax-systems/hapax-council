@@ -144,6 +144,13 @@ AGY_ADMISSION_SECRETISH_RE = re.compile(
     r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
     re.IGNORECASE,
 )
+AGY_ADMISSION_RECHECK_COMMAND = (
+    f"find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '{AGY_ADMISSION_RECEIPT_GLOB}' -print"
+)
+AGY_ADMISSION_RECOVERY_HINT = (
+    "false-negative recovery: create a fresh short-lived admission receipt with "
+    "scripts/hapax-agy-quota-admission after a sanctioned agy reviewer smoke succeeds"
+)
 AGY_ADMISSION_FIELDS = frozenset(
     {
         "schema",
@@ -445,6 +452,14 @@ def _reason_code(reason: str) -> str:
     return code[:80] or "ignored"
 
 
+def _log_reason_code(reason: str) -> str:
+    return re.sub(
+        r"(secret|token|bearer|api-key|apikey|sk-[a-z0-9_-]+)",
+        "credential",
+        _reason_code(reason),
+    )
+
+
 def _warn_ignored_glmcp_admission(path: Path, reason: str) -> str:
     receipt_label = _receipt_label(path)
     print(
@@ -645,10 +660,8 @@ def _warn_ignored_agy_admission(path: Path, reason: str) -> str:
     receipt_label = _receipt_label(path)
     print(
         f"hapax-quota-telemetry-writer: ignoring agy admission receipt {receipt_label}: "
-        f"{reason}; recheck: find ~/.cache/hapax/relay/receipts -maxdepth 1 "
-        "-name '*agy-quota-admission*.yaml' -print; false-negative recovery: create a fresh "
-        "short-lived admission receipt with scripts/hapax-agy-quota-admission after a "
-        "sanctioned agy reviewer smoke succeeds",
+        f"validation failed; reason_code={_log_reason_code(reason)}; "
+        f"recheck: {AGY_ADMISSION_RECHECK_COMMAND}; {AGY_ADMISSION_RECOVERY_HINT}",
         file=sys.stderr,
     )
     return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"

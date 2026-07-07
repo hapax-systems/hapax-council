@@ -42,6 +42,10 @@ MAX_STALE_AFTER_SECONDS = 3600
 DEFAULT_PRINT_TIMEOUT = "3m0s"
 DEFAULT_SMOKE_TIMEOUT_SECONDS = 240
 SMOKE_COMMAND_REF = "scripts/hapax-agy-reviewer"
+VALIDATION_RECOVERY_HINT = (
+    "next action: rerun with --help to confirm bounds, use sanitized --evidence-ref and "
+    "--receipt-name values, then rerun after a sanctioned agy reviewer smoke succeeds"
+)
 
 SAFE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
 SAFE_RECEIPT_NAME_RE = re.compile(r"\A[a-z0-9_.+-]+\.yaml\Z")
@@ -259,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         ]
         _write_flat_yaml_atomic(path, fields)
     except ValueError as exc:
-        print(f"hapax-agy-quota-admission: {exc}", file=sys.stderr)
+        print(f"hapax-agy-quota-admission: {exc}; {VALIDATION_RECOVERY_HINT}", file=sys.stderr)
         return 2
     except OSError as exc:
         print(f"hapax-agy-quota-admission: failed to write receipt: {exc}", file=sys.stderr)
