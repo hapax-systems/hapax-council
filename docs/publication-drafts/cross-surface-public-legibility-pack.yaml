@@ -37,6 +37,13 @@ source_ref_policy: |
   events, artifacts, grants, revenue, or comparison must carry a source ref.
   Unsourced claims are removed or held for review.
 
+value_translation_policy: |
+  Public copy must pair technical surfaces with tangible reader value. A
+  feature list is not sufficient unless readers can tell what the mechanism
+  helps them inspect, adopt, audit, or decide. Value statements must remain
+  bounded by the current claim ceiling and must not become sales language,
+  superiority claims, or competitor-style harness positioning.
+
 variants:
   github_org_profile:
     surface: github_org_profile
@@ -85,9 +92,13 @@ variants:
       Hapax Systems publishes evidence-bound software for governing AI-agent
       work. The public portfolio separates adoption commons, source-available
       product/runtime surfaces, source-visible research apparatus, and
-      public-domain evidence artifacts. The point is not another harness page;
-      the point is a system that treats authority, claims, refusals, and public
-      egress as inspectable engineering objects.
+      public-domain evidence artifacts. The reader value is legibility:
+      adopters can pilot bounded hooks, technical buyers can inspect governed
+      command preview, researchers can follow claim authority from source to
+      receipt, and auditors can see the license and public-egress boundary.
+      The point is not another harness page; the point is a system that treats
+      authority, claims, refusals, and public egress as inspectable
+      engineering objects.
 
   statuslog:
     surface: omg_statuslog
@@ -99,7 +110,8 @@ variants:
       - target_surface_allowlist_pass
     text: |
       Hapax Systems: evidence-bound AI-agent governance. Current public copy
-      is held behind claim review; no direct public egress.
+      is held behind claim review so shipped state, reader value, and claim
+      ceiling stay aligned; no direct public egress.
 
   support_page:
     surface: support_offer_page

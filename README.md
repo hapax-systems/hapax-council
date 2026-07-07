@@ -8,6 +8,10 @@
 
 Primary live Hapax estate and research artifact for readers auditing how governance, perception, coordination, public egress, and refusal operate under one single-operator system.
 
+## Reader value
+
+Lets researchers and auditors follow claim authority, refusal, publication egress, and coordination from code to receipts instead of relying on demo claims.
+
 ## Claim ceiling
 
 Research/runtime apparatus only; not a reusable platform, harness, product, support surface, or open-source project.
@@ -23,7 +27,6 @@ Rendered summary: PolyForm Strict 1.0.0 (source-available, non-distribution, non
 - Issues are redirect-only; no discussions, no pull requests accepted; see `CONTRIBUTING.md` and `SUPPORT.md`
 - Public copy must use `hapax-systems` organization links for first-party Hapax repositories.
 - Publication, weblog, RSS, social, DOI/archive, and other public fanout paths must route through the governed publication bus or a documented guarded legacy surface.
-- Support Hapax research routes through the no-perk public page at https://hapax.weblog.lol/support.
 - Governance reference: https://github.com/hapax-systems/hapax-constitution
 
 ## Portfolio position
@@ -48,24 +51,22 @@ not a supported framework, and not the commercial product front door.
 
 ## Reader Map
 
-| Reader Need | Start Here |
-|---|---|
-| Portable governance hooks | [agentgov](https://github.com/hapax-systems/agentgov) |
-| Product cockpit and command preview | [reins](https://github.com/hapax-systems/reins) |
-| Governance specification and repo metadata authority | [hapax-constitution](https://github.com/hapax-systems/hapax-constitution) |
-| Research/runtime inspection | this repository |
-| Public-safe evidence ledger | [hapax-research-ledger](https://github.com/hapax-systems/hapax-research-ledger) |
+| Reader Need | Start Here | Reader value |
+|---|---|---|
+| Portable governance hooks | [agentgov](https://github.com/hapax-systems/agentgov) | Pilot a narrow, MIT-licensed boundary before adopting the broader Hapax estate. |
+| Product cockpit and command preview | [reins](https://github.com/hapax-systems/reins) | Inspect delivery state and proposed writes before any write authority is granted. |
+| Governance specification and repo metadata authority | [hapax-constitution](https://github.com/hapax-systems/hapax-constitution) | Check the source of names, license posture, support boundaries, and claim ceilings. |
+| Research/runtime inspection | this repository | Follow how claims, refusals, route authority, and public egress behave in the live estate. |
+| Public-safe evidence ledger | [hapax-research-ledger](https://github.com/hapax-systems/hapax-research-ledger) | Audit numeric observations with caveats preserved instead of reading polished claims. |
 
 ## What This Repository Shows
 
-- A governed task and lane system with explicit authority, route metadata,
-  evidence, and closeout records.
-- Runtime and review machinery for claim checking, public-surface gating,
-  refusal records, and publication-bus fanout.
-- Research apparatus for studying governed AI-agent work as it happens,
-  including source-visible failures, blocked claims, and redaction paths.
-- Integration points consumed by source-available or adoption-surface repos,
-  including Reins and agentgov.
+| Surface | What is visible | Reader value |
+|---|---|---|
+| Task and lane governance | Authority, route metadata, evidence, and closeout records. | Lets reviewers see whether work is attached to a governed path rather than inferred from agent output. |
+| Claim and publication gates | Claim checking, public-surface gating, refusal records, and publication-bus fanout. | Shows how public statements and egress are treated as engineering objects with receipts. |
+| Research apparatus | Source-visible failures, blocked claims, redaction paths, and repair loops. | Gives researchers material for studying governed agent work under operational pressure. |
+| Extracted interfaces | Integration points consumed by Reins, agentgov, and related surfaces. | Separates reusable/adoption surfaces from the live research estate and its stricter license. |
 
 ## What Not To Infer
 
@@ -81,13 +82,14 @@ not a supported framework, and not the commercial product front door.
 
 ## Public Surfaces
 
-| Surface | Role |
-|---|---|
-| `agents/publication_bus/` | Source-visible publication-bus registry and publisher implementations. |
-| `docs/publication-drafts/` | Draft public copy. Drafts are not publishable unless their frontmatter says so and current claim review passes. |
-| `docs/published-artifacts/` | Public artifact ledger and archive metadata. |
-| `START_HERE.md` | Reader guide for navigating the research artifact. |
-| `SUPPORT.md` / `CONTRIBUTING.md` | Redirect and refusal boundaries. |
+| Surface | Role | Reader value |
+|---|---|---|
+| `agents/publication_bus/` | Source-visible publication-bus registry and publisher implementations. | Audits how public egress is routed, gated, and refused before anything fans out. |
+| `docs/publication-drafts/` | Draft public copy. Drafts are not publishable unless their frontmatter says so and current claim review passes. | Keeps copy reviewable as a controlled artifact instead of a side channel. |
+| `docs/published-artifacts/` | Public artifact ledger and archive metadata. | Gives citations and archive records a place to carry their boundaries. |
+| `START_HERE.md` | Reader guide for navigating the research artifact. | Helps reviewers find the safety/research argument without treating the repo as a product manual. |
+| [Support page](https://hapax.weblog.lol/support) | No-perk research support boundary. | Allows support of the work without creating access, influence, support, or license rights. |
+| `SUPPORT.md` / `CONTRIBUTING.md` | Redirect and refusal boundaries. | Makes the non-community, non-support posture explicit before readers open GitHub workflows. |
 
 ## Verification Contract
 

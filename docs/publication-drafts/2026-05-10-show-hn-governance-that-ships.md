@@ -28,5 +28,8 @@ portfolio frame:
   table surface until exposure is intentionally changed.
 - `hapax-council` is source-visible research/runtime apparatus.
 - `hapax-constitution` is governance and metadata authority.
+- Each technical surface must state its reader value: adoption pilot,
+  command-preview inspection, mechanism audit, research evidence, or metadata
+  coherence.
 - All claims require source refs and Claim Verification Council review.
 - All fanout must route through the publication bus.

@@ -19,6 +19,7 @@ Hapax Systems public-frontmatter reset. Do not publish it to weblog, RSS,
 social, DOI/archive, or other publication-bus fanout.
 
 Any replacement must separate public fact from research impetus. It must cite
-current source evidence and keep private operator framing out of public claims.
-Publication requires Claim Verification Council review plus a publication-bus
-route with rights, privacy, redaction, and surface-target evidence.
+current source evidence, state the reader value of each technical mechanism,
+and keep private operator framing out of public claims. Publication requires
+Claim Verification Council review plus a publication-bus route with rights,
+privacy, redaction, and surface-target evidence.

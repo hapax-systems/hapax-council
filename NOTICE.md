@@ -8,6 +8,10 @@ This repository is part of the Hapax Systems portfolio. Public metadata, issue a
 
 Primary live Hapax estate and research artifact for readers auditing how governance, perception, coordination, public egress, and refusal operate under one single-operator system.
 
+## Reader value
+
+Lets researchers and auditors follow claim authority, refusal, publication egress, and coordination from code to receipts instead of relying on demo claims.
+
 ## Claim ceiling
 
 Research/runtime apparatus only; not a reusable platform, harness, product, support surface, or open-source project.
