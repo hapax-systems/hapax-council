@@ -558,6 +558,9 @@ def test_rejects_root_escape_and_malformed_yaml(tmp_path: Path) -> None:
     outside.write_text(_receipt_text(), encoding="utf-8")
     _write(tmp_path, "bad.yaml", f"gate_id: {GATE}\nstatus: [\n")
 
+    assert not public_gate_receipts.PUBLIC_GATE_RECEIPT_SUFFIX_RE.fullmatch(
+        "a/../../../etc/passwd/receipt.yaml"
+    )
     assert not public_gate_receipt_value_present(
         "public-gate:../outside-public-gate.yaml",
         expected_gate=GATE,

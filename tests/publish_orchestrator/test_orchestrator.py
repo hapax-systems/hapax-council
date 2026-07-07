@@ -701,6 +701,30 @@ class TestSingleSurface:
         assert not (tmp_path / "publish" / "failed" / "retry-after-read-error.json").exists()
         fake_module.publish_artifact.assert_not_called()
 
+    def test_unexpected_inbox_load_error_quarantines_poison_pill(self, tmp_path, monkeypatch):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        inbox_path = _drop_artifact(tmp_path, slug="poison-pill", surfaces=["fake"])
+        orch = _make_orchestrator(
+            tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+        )
+
+        with mock.patch.object(orch, "_load_artifact", side_effect=RuntimeError("boom")):
+            assert orch.run_once() == 1
+
+        assert not inbox_path.exists()
+        failed = list((tmp_path / "publish" / "failed").glob("invalid-artifact-*.json"))
+        assert len(failed) == 1
+        payload = json.loads(failed[0].read_text())
+        assert payload["quarantine_reason"] == "unexpected_inbox_artifact_load_exception"
+        child = payload["publication_gate_result"]["child_results"][0]
+        assert child["name"] == "artifact_envelope"
+        assert any("next action" in finding for finding in child["findings"])
+        fake_module.publish_artifact.assert_not_called()
+
     def test_missing_public_gate_receipts_hold_before_surface_dispatch(
         self,
         tmp_path,
@@ -1153,6 +1177,7 @@ class TestSingleSurface:
 
         fake_module.publish_artifact.assert_called_once()
         assert "publication prior surface log unreadable" in caplog.text
+        assert "next action: inspect or remove the corrupt surface log" in caplog.text
         assert str(log_path) in caplog.text
 
     def test_changed_artifact_republishes_same_slug(self, tmp_path, monkeypatch):

@@ -58,6 +58,7 @@ FANOUT_REQUIRED_GATES: tuple[str, ...] = (
     "claim_review_current",
     "no_direct_public_egress",
 )
+FANOUT_ALLOWED_GATE_IDS = frozenset(FANOUT_REQUIRED_GATES)
 """Receipt ids required before any cross-weblog public fanout egress."""
 
 PUBLIC_GATE_RECEIPT_PREFIXES = _PUBLIC_GATE_RECEIPT_PREFIXES
@@ -205,6 +206,14 @@ def _configured_required_gates(policy: object) -> tuple[list[str], str | None]:
             + "; next action: restore every FANOUT_REQUIRED_GATES id before public fanout"
         )
 
+    unknown = sorted(set(normalized) - FANOUT_ALLOWED_GATE_IDS)
+    if unknown:
+        return required, (
+            "fanout config required_gates contains unknown gate ids: "
+            + ", ".join(unknown)
+            + "; next action: use only FANOUT_REQUIRED_GATES ids before public fanout"
+        )
+
     return required, None
 
 
@@ -250,6 +259,13 @@ def _effective_required_gates(config: OmgFanoutConfig) -> tuple[list[str], str |
         return required, (
             "fanout config required_gates contains blank or non-string gate ids; "
             "next action: remove malformed gate ids before public fanout"
+        )
+    unknown = sorted(set(configured) - FANOUT_ALLOWED_GATE_IDS)
+    if unknown:
+        return required, (
+            "fanout config required_gates contains unknown gate ids: "
+            + ", ".join(unknown)
+            + "; next action: use only FANOUT_REQUIRED_GATES ids before public fanout"
         )
     return required, None
 

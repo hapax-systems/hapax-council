@@ -31,7 +31,10 @@ PUBLIC_GATE_RECEIPT_PREFIXES: tuple[str, ...] = (
     "public_gate:",
     "receipt:public-gate:",
 )
-PUBLIC_GATE_RECEIPT_SUFFIX_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+/-]{0,239}\Z", re.IGNORECASE)
+PUBLIC_GATE_RECEIPT_SUFFIX_RE = re.compile(
+    r"\A(?!.*(?:^|/)\.\.(?:/|$))[a-z0-9][a-z0-9_.+/-]{0,239}\Z",
+    re.IGNORECASE,
+)
 PUBLIC_GATE_RECEIPT_EXTENSIONS = frozenset({".json", ".md", ".yaml", ".yml"})
 PUBLIC_GATE_AUTHORITY_ROOTS: tuple[Path, ...] = (
     Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active",

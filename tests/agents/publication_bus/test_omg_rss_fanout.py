@@ -413,6 +413,23 @@ class TestFanout:
         assert result == {"oudepode": "gate-blocked"}
         client.set_entry.assert_not_called()
 
+    def test_unknown_required_gate_id_blocks_before_public_egress(self) -> None:
+        client = _make_client()
+        config = OmgFanoutConfig(
+            addresses=["hapax", "oudepode"],
+            required_gates=[*FANOUT_REQUIRED_GATES, "Source_Artifact_Public_Safe"],
+        )
+        result = fanout(
+            source_address="hapax",
+            entry_id="entry-1",
+            content="body",
+            config=config,
+            client=client,
+            gate_receipts=_gate_receipts(),
+        )
+        assert result == {"oudepode": "gate-policy-blocked"}
+        client.set_entry.assert_not_called()
+
     def test_unbound_gate_receipts_block_before_public_egress(self) -> None:
         client = _make_client()
         config = OmgFanoutConfig(addresses=["hapax", "oudepode"])

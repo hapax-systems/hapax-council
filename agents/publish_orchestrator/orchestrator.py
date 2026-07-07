@@ -337,10 +337,14 @@ class Orchestrator:
                         exc,
                     )
                     continue
-                except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
                     log.exception(
-                        "unexpected inbox artifact load failure at %s; leaving for retry", path
+                        "unexpected inbox artifact load failure at %s; quarantining; "
+                        "next action: inspect or regenerate the inbox artifact",
+                        path,
                     )
+                    self._quarantine_unexpected_inbox_load_exception(path, exc)
+                    handled += 1
                     continue
                 try:
                     envelope_findings = self._inbox_artifact_envelope_findings(artifact)
@@ -451,7 +455,9 @@ class Orchestrator:
                 except (OSError, json.JSONDecodeError) as exc:
                     log.warning(
                         "publication prior surface log unreadable; redispatching "
-                        "artifact=%s surface=%s path=%s error=%s",
+                        "artifact=%s surface=%s path=%s error=%s; next action: "
+                        "inspect or remove the corrupt surface log to allow durable "
+                        "redispatch evidence",
                         artifact.slug,
                         surface,
                         log_path,
@@ -923,6 +929,35 @@ class Orchestrator:
             "inbox artifact JSON could not be parsed or validated: "
             f"{type(exc).__name__}; next action: regenerate a valid approved PreprintArtifact"
         )
+        self._quarantine_raw_inbox_artifact(
+            inbox_path,
+            finding=finding,
+            quarantine_reason="invalid_inbox_artifact",
+        )
+
+    def _quarantine_unexpected_inbox_load_exception(
+        self,
+        inbox_path: Path,
+        exc: Exception,
+    ) -> None:
+        finding = (
+            "inbox artifact load raised an unexpected exception: "
+            f"{type(exc).__name__}; next action: inspect or regenerate the artifact "
+            "before retrying public egress"
+        )
+        self._quarantine_raw_inbox_artifact(
+            inbox_path,
+            finding=finding,
+            quarantine_reason="unexpected_inbox_artifact_load_exception",
+        )
+
+    def _quarantine_raw_inbox_artifact(
+        self,
+        inbox_path: Path,
+        *,
+        finding: str,
+        quarantine_reason: str,
+    ) -> None:
         quarantine_slug = _quarantine_slug_for_path(inbox_path)
         child = PublicationGateChildResult(
             name="artifact_envelope",
@@ -937,7 +972,7 @@ class Orchestrator:
         )
         payload = {
             "approval": ApprovalState.FAILED.value,
-            "quarantine_reason": "invalid_inbox_artifact",
+            "quarantine_reason": quarantine_reason,
             "source_inbox_path": str(inbox_path),
             "publication_gate_result": gate_result.to_frontmatter(),
         }
