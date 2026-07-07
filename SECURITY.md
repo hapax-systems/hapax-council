@@ -4,11 +4,17 @@ A single individual (Oudepode The Operator) operates this repository. It runs in
 
 ## Disclosure path
 
-Submit security disclosures via the Sigstore-signed disclosure channel at:
+Submit security disclosures through the contact page. Attach Sigstore-signed disclosure artifacts when applicable:
 
   https://hapax.weblog.lol/contact
 
-Repository surfaces do not publish email by constitutional choice. The Sigstore path verifies disclosure authorship via OpenID Connect, eliminating the need for PGP key exchange or private email correspondence.
+Repository surfaces do not publish email by constitutional choice. Sigstore signatures let the operator verify authorship via OpenID Connect without publishing an email address.
+
+Endpoint recheck:
+
+```bash
+curl -fsSIL https://hapax.weblog.lol/contact
+```
 
 ## Scope
 

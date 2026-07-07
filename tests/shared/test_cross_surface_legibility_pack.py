@@ -135,8 +135,14 @@ def test_weblog_variant_pins_publication_bus_surface_gates() -> None:
 def test_github_org_profile_variant_points_to_canonical_renderer() -> None:
     pack = _load_pack()
     profile = pack["variants"]["github_org_profile"]
-    assert profile["publication_allowed"] is True
+    assert profile["publication_allowed"] is False
     assert profile["source_of_truth"] == "hapax-constitution:sdlc.render.org_profile_readme"
+    assert set(profile["required_gates"]) == {
+        "claim_verification_council_review",
+        "source_refs_present",
+        "public_repo_owner_check",
+        "no_direct_public_egress",
+    }
     ceiling = profile["claim_ceiling"].lower()
     assert "shipped read paths" in ceiling
     assert "autonomous write authority" in ceiling

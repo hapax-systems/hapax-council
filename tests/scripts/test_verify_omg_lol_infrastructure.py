@@ -85,6 +85,45 @@ def test_validation_rejects_direct_public_egress_policy() -> None:
     assert "publication_frontmatter_policy.direct_public_egress_allowed must be false" in errors
 
 
+def test_validation_rejects_publication_without_bus_policy() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["publication_allowed_without_bus"] = True
+    errors = module.validate_config(config)
+    assert "publication_frontmatter_policy.publication_allowed_without_bus must be false" in errors
+
+
+def test_validation_rejects_non_council_review_policy() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["review_required"] = "informal review"
+    errors = module.validate_config(config)
+    assert (
+        "publication_frontmatter_policy.review_required must be Claim Verification Council"
+        in errors
+    )
+
+
+def test_validation_rejects_incomplete_claim_ceiling() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["claim_ceiling"] = "source refs only"
+    errors = module.validate_config(config)
+    assert "publication_frontmatter_policy.claim_ceiling missing 'rights'" in errors
+    assert "publication_frontmatter_policy.claim_ceiling missing 'target surfaces'" in errors
+
+
+def test_validation_rejects_incomplete_required_gates() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["required_gates"] = ["source_artifact_public_safe"]
+    errors = module.validate_config(config)
+    assert (
+        "publication_frontmatter_policy.required_gates missing: "
+        "claim_review_current, rights_privacy_redaction_pass, target_surface_allowlist_pass"
+    ) in errors
+
+
 def test_fanout_config_pins_publication_frontmatter_policy_gates() -> None:
     import yaml
 

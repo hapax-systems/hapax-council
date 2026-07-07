@@ -4,12 +4,12 @@ This repository does not accept contributions. Oudepode The Operator is the sole
 
 ## Why
 
-Hapax is research infrastructure for one operator's externalised executive function. This repository is not a staffed product, service, or community library. The refusal is the artifact: see the Refusal Brief at https://hapax.weblog.lol/refusal-brief.
+Hapax is research infrastructure for one operator's externalised executive function. This repository is not a staffed product, service, or community library. The refusal is the artifact: see the Refusal Brief at https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure.
 
 ## What this means in practice
 
 - Issues are redirect-only; `.github/ISSUE_TEMPLATE/config.yml` disables blank issues.
-- `.github/workflows/` auto-closes pull requests.
+- Pull requests are not an intake path for this repository.
 - Repositories disable Discussions and Wiki except for the `hapax-constitution` Wiki, which mirrors the axiom registry.
 - Funding links, if present, are no-perk research support only.
 - This file is rendered from `hapax-constitution/sdlc/render/`; edits are overwritten on next render.

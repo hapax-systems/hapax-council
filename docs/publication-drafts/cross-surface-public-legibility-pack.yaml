@@ -41,7 +41,12 @@ variants:
   github_org_profile:
     surface: github_org_profile
     max_length_chars: 6000
-    publication_allowed: true
+    publication_allowed: false
+    required_gates:
+      - claim_verification_council_review
+      - source_refs_present
+      - public_repo_owner_check
+      - no_direct_public_egress
     source_of_truth: hapax-constitution:sdlc.render.org_profile_readme
     claim_ceiling: |
       May describe shipped read paths, command preview, governed dispatch,
