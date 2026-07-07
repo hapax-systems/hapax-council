@@ -1450,6 +1450,28 @@ class TestReceiptAndWake:
         assert receipt["review_team_verdict"] == "quorum-accept"
         assert len(receipt["reviewers"]) == 3
 
+    def test_review_evidence_is_signed_when_public_gate_secret_is_present(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        secret = "test-public-gate-authority-secret"
+        monkeypatch.setenv(dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, secret)
+
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+
+        assert result["status"] == "dispatched"
+        dossier_path = note.parent / "task-a.review-dossier.yaml"
+        dossier = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
+        receipt = yaml.safe_load((note.parent / "task-a.acceptance.yaml").read_text())
+        for payload in (dossier, receipt):
+            assert payload["authority_issuer"].startswith("review-team:")
+            assert payload["authority_signature"] == (
+                dispatch.public_gate_receipts.public_gate_authority_signature(payload, secret)
+            )
+
     def test_comment_failure_does_not_skip_acceptance_receipt(self, tmp_path: Path) -> None:
         gh = FakeGh()
         gh.fail_comment = True

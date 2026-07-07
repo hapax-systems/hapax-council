@@ -61,6 +61,7 @@ from github_pr_status import (  # noqa: E402
     list_pull_files_rest,
 )
 
+from shared import public_gate_receipts  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
     requires_acceptance_receipt,
@@ -83,6 +84,32 @@ REVIEWER_DIAGNOSTIC_SECRETISH_RE = re.compile(
     r"(?:sk-[a-z0-9_-]+|gh[pousr]_[a-z0-9_]+|[a-z0-9_-]{40,})",
     re.IGNORECASE,
 )
+
+
+def _review_team_authority_issuer(reviewers: list[dict[str, Any]]) -> str:
+    families = sorted(
+        {
+            str(reviewer.get("family") or "").strip().casefold()
+            for reviewer in reviewers
+            if str(reviewer.get("family") or "").strip()
+        }
+    )
+    return "review-team:" + ",".join(families) if families else "review-team:unknown"
+
+
+def _sign_public_gate_authority_evidence(data: dict[str, Any]) -> None:
+    secret = os.environ.get(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, "").strip()
+    if not secret:
+        return
+    data["authority_issuer"] = _review_team_authority_issuer(
+        [reviewer for reviewer in data.get("reviewers") or [] if isinstance(reviewer, dict)]
+    )
+    data["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
+        data,
+        secret,
+    )
+
+
 _LOW_SIGNAL_DIFF_PREFIXES = (
     "docs/architecture/system-dynamics-map",
     "tests/",
@@ -1673,6 +1700,7 @@ def write_acceptance_receipt_if_due(
             for r in dossier.get("reviewers") or []
         ],
     }
+    _sign_public_gate_authority_evidence(receipt)
     receipt_path.write_text(yaml.safe_dump(receipt, sort_keys=False), encoding="utf-8")
     LOG.info("acceptance receipt written: %s", receipt_path)
     return receipt_path
@@ -2149,6 +2177,7 @@ def review_pr(
                 now_iso=now_iso,
                 outage_witness=outage_witness,
             )
+        _sign_public_gate_authority_evidence(dossier)
         target_dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
         LOG.info(
             "dossier written: %s (verdict %s)",
