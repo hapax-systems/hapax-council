@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -86,6 +87,8 @@ def _write_classifying_ssh(
     remove_council_on_worktree: Path | None = None,
     remote_path_on_worktree: Path | None = None,
     remote_path_on_preflight: Path | None = None,
+    before_preflight_run: str = "",
+    before_exec_run: str = "",
     after_preflight_success: str = "",
 ) -> None:
     bash_bin = shutil.which("bash") or "/bin/bash"
@@ -152,6 +155,7 @@ if [ "$kind" = "worktree" ]; then
 {remove_workdir}{remove_council}{run_worktree_with_path}fi
 if [ "$kind" = "preflight" ]; then
   :
+{before_preflight_run}
 {run_preflight_with_path}  "{bash_bin}" -c "$remote_cmd"
   rc=$?
   if [ "$rc" -eq 0 ]; then
@@ -160,9 +164,21 @@ if [ "$kind" = "preflight" ]; then
   fi
   exit "$rc"
 fi
+if [ "$kind" = "exec" ]; then
+  :
+{before_exec_run}
+fi
 exec "{bash_bin}" -c "$remote_cmd"
 """,
     )
+
+
+def _extract_remote_python(name: str) -> str:
+    prefix = f"{name}='"
+    text = SCRIPT.read_text(encoding="utf-8")
+    start = text.index(prefix) + len(prefix)
+    end = text.index("'\n", start)
+    return text[start:end]
 
 
 def _python_only_remote_path(tmp_path: Path) -> Path:
@@ -1251,6 +1267,120 @@ exit 0
     assert preflight_count.read_text(encoding="utf-8").strip() == "2"
     assert token_file.read_text(encoding="utf-8").strip() == rotated_token
     assert used_token.read_text(encoding="utf-8").strip() == proven_token
+
+
+def test_codex_headless_remote_preflight_refuses_preexisting_token_handoff(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    primary = home / "projects" / "hapax-council"
+    _init_primary_council_repo(primary)
+    _write_executable(primary / "scripts" / "cc-claim", "exit 0\n")
+    subprocess.run(["git", "-C", str(primary), "add", "scripts/cc-claim"], check=True)
+    subprocess.run(
+        ["git", "-C", str(primary), "commit", "-m", "add claim helper"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(["git", "-C", str(primary), "branch", "codex/cx-amber"], check=True)
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
+
+    token_file = _write_codex_access_token(
+        home / ".cache" / "hapax" / "codex-oauth",
+        exp=int(time.time()) + 3600,
+    )
+    handoff_path_log = tmp_path / "handoff-path.txt"
+    bin_dir = tmp_path / "bin"
+    ssh_log = tmp_path / "ssh.log"
+    _write_classifying_ssh(
+        bin_dir / "ssh",
+        ssh_log,
+        remove_workdir_on_worktree=workdir,
+        before_preflight_run=f"""  python3 - "$remote_cmd" "{handoff_path_log}" <<'PY'
+import base64
+import json
+import pathlib
+import shlex
+import sys
+
+parts = shlex.split(sys.argv[1])
+payload = json.loads(base64.b64decode(parts[-2]))
+handoff = payload.get("token_handoff_file")
+if handoff:
+    pathlib.Path(sys.argv[2]).write_text(handoff, encoding="utf-8")
+    pathlib.Path(handoff).write_text("preexisting\\n", encoding="utf-8")
+PY
+""",
+    )
+    _write_executable(bin_dir / "codex", "exit 0\n")
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(primary)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE"] = str(token_file)
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    try:
+        if handoff_path_log.exists():
+            Path(handoff_path_log.read_text(encoding="utf-8").strip()).unlink(missing_ok=True)
+    finally:
+        assert result.returncode == 75
+        assert "refused unsafe preflight-proven Codex OAuth token handoff" in result.stderr
+        assert ssh_log.read_text(encoding="utf-8").splitlines() == [
+            "preflight",
+            "worktree",
+            "preflight",
+        ]
+
+
+def test_codex_headless_remote_exec_fails_if_token_handoff_cleanup_fails(
+    tmp_path: Path,
+) -> None:
+    remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    handoff_dir = tmp_path / "handoff"
+    handoff_dir.mkdir()
+    token_path = _write_codex_access_token(handoff_dir, exp=int(time.time()) + 3600)
+    handoff_dir.chmod(0o500)
+    payload = {
+        "workdir": str(workdir),
+        "env": {},
+        "proof_file": "",
+        "token_handoff_file": str(token_path),
+    }
+    env = os.environ.copy()
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", remote_exec_py],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+    finally:
+        handoff_dir.chmod(0o700)
+
+    assert result.returncode == 78
+    assert "failed to delete preflight-proven Codex OAuth token handoff" in result.stderr
+    assert token_path.exists()
 
 
 def test_codex_headless_remote_bootstrap_reports_council_not_git_worktree(

@@ -436,7 +436,14 @@ if handoff:
     directory=os.path.dirname(handoff)
     if directory:
         os.makedirs(directory,exist_ok=True)
-    fd=os.open(handoff,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
+    flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL
+    if hasattr(os,"O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd=os.open(handoff,flags,0o600)
+    except OSError as exc:
+        print("hapax-codex-headless: refused unsafe preflight-proven Codex OAuth token handoff at "+handoff+" ("+exc.__class__.__name__+"); next action: remove stale hapax-codex-token files owned by this user and rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
+        sys.exit(78)
     with os.fdopen(fd,"w",encoding="utf-8") as fh:
         fh.write(token)
 sys.exit(0)'
@@ -501,8 +508,9 @@ except OSError:
     sys.exit(78)
 try:
     os.unlink(token_path)
-except OSError:
-    pass
+except OSError as exc:
+    print("hapax-codex-headless: failed to delete preflight-proven Codex OAuth token handoff at "+token_path+" ("+exc.__class__.__name__+"); next action: remove the handoff file on the dispatch host before retrying", file=sys.stderr)
+    sys.exit(78)
 if not token:
     print("hapax-codex-headless: preflight-proven Codex OAuth token handoff is absent; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
     sys.exit(78)

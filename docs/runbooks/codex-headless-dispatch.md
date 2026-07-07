@@ -40,11 +40,14 @@ Remote appendix dispatch uses this order:
    `HAPAX_CODEX_CREATE_WORKTREE=1` (the unset/default value is `1`);
 4. run full remote preflight for required directories, hook adapter, `python3`,
    `codex`, OAuth freshness, and `codex debug models` bearer actuation;
-5. snapshot the exact preflight-proven token into a short-lived `0600` remote
-   handoff file before the local `cc-claim` boundary;
+5. snapshot the exact preflight-proven token into a short-lived remote handoff
+   file before the local `cc-claim` boundary. The handoff create is exclusive,
+   `0600`, and non-following where the dispatch host exposes `O_NOFOLLOW`; a
+   preexisting file or symlink is a hard preflight failure;
 6. execute `codex exec` on the remote host with that handoff token, deleting the
    handoff as it is consumed. Later rotation of the published token file must not
-   change the bearer used for this exec.
+   change the bearer used for this exec. A failed handoff deletion is a hard
+   launcher failure rather than a best-effort cleanup warning.
 
 Local headless dispatch similarly proves the published OAuth token with
 `codex debug models` before `cc-claim` and reuses that proven bearer for the
@@ -90,4 +93,13 @@ bash -n scripts/hapax-codex-headless
 shellcheck -S warning scripts/hapax-codex-headless
 uv run pytest tests/scripts/test_hapax_codex_headless.py -q
 uv run pytest tests/scripts/test_hapax_codex_headless.py tests/scripts/test_hapax_codex_headless_fallback.py -q
+```
+
+For the P0 dispatch-starvation exit predicate, recheck the live platform and
+quota evidence after the launcher tests:
+
+```bash
+uv run python scripts/hapax-platform-capability-receipts --json
+scripts/hapax-codex-health --json cx-agy cx-p0 cx-ghrate
+scripts/hapax-quota-telemetry-writer --json
 ```
