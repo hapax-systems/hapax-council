@@ -33,13 +33,32 @@ REQUIRED_PUBLICATION_FRONTMATTER_POLICY_FIELDS = (
     "publication_allowed_without_bus",
     "direct_public_egress_allowed",
     "review_required",
+    "target_surfaces",
+    "required_gates",
     "claim_ceiling",
 )
 REQUIRED_PUBLICATION_FRONTMATTER_GATES = {
     "source_artifact_public_safe",
+    "source_refs_present",
     "rights_privacy_redaction_pass",
     "target_surface_allowlist_pass",
     "claim_review_current",
+    "no_direct_public_egress",
+}
+REQUIRED_PUBLICATION_TARGET_SURFACES = {
+    "omg-weblog",
+    "omg-lol-weblog-bearer-fanout",
+    "omg-lol-statuslog",
+    "omg-lol-now",
+    "omg-lol-pastebin",
+    "omg-lol-purl",
+    "omg-lol-web",
+    "bridgy-webmention-publish",
+    "mastodon-post",
+    "bluesky-post",
+    "arena-post",
+    "zenodo-doi",
+    "internet-archive-ias3",
 }
 
 
@@ -141,9 +160,32 @@ def validate_config(config: Mapping[str, Any]) -> list[str]:
     for required in ("source refs", "rights", "privacy", "redaction", "target surfaces"):
         if required not in policy_text:
             errors.append(f"publication_frontmatter_policy.claim_ceiling missing {required!r}")
-    required_gates = set(policy.get("required_gates") or ())
-    if required_gates:
-        missing = sorted(REQUIRED_PUBLICATION_FRONTMATTER_GATES - required_gates)
+    target_surfaces = policy.get("target_surfaces")
+    if not isinstance(target_surfaces, list) or not target_surfaces:
+        errors.append("publication_frontmatter_policy.target_surfaces must be a non-empty list")
+        target_surface_set: set[str] = set()
+    else:
+        target_surface_set = {surface for surface in target_surfaces if isinstance(surface, str)}
+        if any(not isinstance(surface, str) for surface in target_surfaces):
+            errors.append("publication_frontmatter_policy.target_surfaces must contain strings")
+        if len(target_surface_set) != len(target_surfaces):
+            errors.append("publication_frontmatter_policy.target_surfaces must be unique")
+        missing = sorted(REQUIRED_PUBLICATION_TARGET_SURFACES - target_surface_set)
+        if missing:
+            errors.append(
+                "publication_frontmatter_policy.target_surfaces missing: " + ", ".join(missing)
+            )
+    required_gates = policy.get("required_gates")
+    if not isinstance(required_gates, list) or not required_gates:
+        errors.append("publication_frontmatter_policy.required_gates must be a non-empty list")
+        required_gate_set: set[str] = set()
+    else:
+        required_gate_set = {gate for gate in required_gates if isinstance(gate, str)}
+        if any(not isinstance(gate, str) for gate in required_gates):
+            errors.append("publication_frontmatter_policy.required_gates must contain strings")
+        if len(required_gate_set) != len(required_gates):
+            errors.append("publication_frontmatter_policy.required_gates must be unique")
+        missing = sorted(REQUIRED_PUBLICATION_FRONTMATTER_GATES - required_gate_set)
         if missing:
             errors.append(
                 "publication_frontmatter_policy.required_gates missing: " + ", ".join(missing)

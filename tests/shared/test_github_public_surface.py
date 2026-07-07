@@ -77,17 +77,20 @@ def test_hard_blockers_are_explicit_and_feed_downstream_tasks() -> None:
     assert license_finding.category == "license_detection"
     assert "github-readme-profile-current-project-refresh" in license_finding.blocks
 
-    assert findings["github.notice.contributing-link-missing"].severity == "blocking"
-    assert findings["github.profile.user-profile-readme-missing"].severity == "blocking"
-    assert findings["github.pages.hapax-assets-not-public-cdn"].severity == "blocking"
+    assert findings["github.notice.links-resolve"].status == "ok"
+    assert findings["github.profile.org-profile-readme-present"].severity == "info"
+    assert findings["github.profile.org-profile-readme-present"].status == "ok"
+    assert findings["github.pages.hapax-assets-pages-present"].status == "ok"
 
 
-def test_profile_readme_decision_uses_user_repo_not_org_profile_pattern() -> None:
+def test_profile_readme_decision_uses_org_dot_github_profile_pattern() -> None:
     report = _report()
 
-    assert report.docs_evidence.profile_readme_decision == "user_repo_named_ryanklee_required"
-    assert "ryanklee/ryanklee" in report.repos_by_id()
-    assert report.repos_by_id()["ryanklee/ryanklee"].exists is False
+    assert report.docs_evidence.profile_readme_decision == "org_repo_named_dot_github_required"
+    assert "hapax-systems/.github" in report.repos_by_id()
+    org_profile = report.repos_by_id()["hapax-systems/.github"]
+    assert org_profile.exists is True
+    assert org_profile.files["profile/README.md"].exists is True
     assert report.docs_evidence.user_profile_readme_url.startswith("https://docs.github.com/")
     assert report.docs_evidence.organization_profile_readme_url.startswith(
         "https://docs.github.com/"
@@ -99,9 +102,9 @@ def test_closed_repo_pres_false_claims_are_reported_without_deleting_records() -
     claims = {claim.task_id: claim for claim in report.closed_repo_pres_claims}
 
     assert claims["repo-pres-license-policy"].live_status == "false"
-    assert claims["repo-pres-notice-md-all-repos"].live_status == "false"
+    assert claims["repo-pres-notice-md-all-repos"].live_status == "true"
     assert claims["repo-pres-issues-redirect-walls"].live_status == "unreconciled"
-    assert claims["repo-pres-org-level-github"].live_status == "false"
+    assert claims["repo-pres-org-level-github"].live_status == "true"
     assert all(claim.task_path.startswith("vault:hapax-cc-tasks/") for claim in claims.values())
 
 

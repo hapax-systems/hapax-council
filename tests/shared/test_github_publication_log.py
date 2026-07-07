@@ -42,7 +42,7 @@ def test_github_public_surface_report_projects_schema_valid_publication_rows() -
 
     assert events
     assert all(event.event_type.startswith("publication.github.") for event in events)
-    assert {event.surface for event in events} >= {"repo_metadata", "readme", "package"}
+    assert {event.surface for event in events} >= {"repo_metadata", "readme", "profile", "package"}
     assert all(event.claim_ceiling == "publication_witness_rows" for event in events)
 
 
@@ -78,15 +78,15 @@ def test_missing_or_private_rows_do_not_carry_live_urls_or_public_mode() -> None
 def test_public_rows_require_direct_public_evidence() -> None:
     with pytest.raises(ValidationError, match="public GitHub rows need a commit_sha"):
         build_github_publication_event(
-            repo="ryanklee/hapax-council",
+            repo="hapax-systems/hapax-council",
             surface="readme",
             generated_at=GENERATED_AT,
             occurred_at=GENERATED_AT,
             source_refs=("fixture-report",),
-            evidence_refs=("gh:contents/ryanklee/hapax-council/README.md",),
+            evidence_refs=("gh:contents/hapax-systems/hapax-council/README.md",),
             publication_state="public",
             publication_mode="public_archive",
-            live_url="https://github.com/ryanklee/hapax-council/blob/main/README.md",
+            live_url="https://github.com/hapax-systems/hapax-council/blob/main/README.md",
             commit_sha=None,
             content_sha="d19edcddf92f59b91119f689da208056b5cd330f",
             ref="main",

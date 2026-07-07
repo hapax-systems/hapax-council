@@ -189,7 +189,7 @@
           "type": "string"
         },
         "profile_readme_decision": {
-          "const": "user_repo_named_ryanklee_required",
+          "const": "org_repo_named_dot_github_required",
           "title": "Profile Readme Decision",
           "type": "string"
         },

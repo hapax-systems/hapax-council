@@ -432,7 +432,7 @@ def _docs_evidence() -> GitHubDocsEvidence:
             "An organization profile README uses a public .github repository with "
             "profile/README.md."
         ),
-        profile_readme_decision="user_repo_named_ryanklee_required",
+        profile_readme_decision="org_repo_named_dot_github_required",
     )
 
 

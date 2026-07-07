@@ -120,8 +120,39 @@ def test_validation_rejects_incomplete_required_gates() -> None:
     errors = module.validate_config(config)
     assert (
         "publication_frontmatter_policy.required_gates missing: "
-        "claim_review_current, rights_privacy_redaction_pass, target_surface_allowlist_pass"
+        "claim_review_current, no_direct_public_egress, rights_privacy_redaction_pass, "
+        "source_refs_present, target_surface_allowlist_pass"
     ) in errors
+
+
+def test_validation_rejects_missing_required_gates() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"].pop("required_gates")
+    errors = module.validate_config(config)
+    assert "publication_frontmatter_policy.required_gates is required" in errors
+    assert "publication_frontmatter_policy.required_gates must be a non-empty list" in errors
+
+
+def test_validation_rejects_incomplete_target_surfaces() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["target_surfaces"] = ["omg-weblog"]
+    errors = module.validate_config(config)
+    assert "publication_frontmatter_policy.target_surfaces missing: " in "\n".join(errors)
+    assert "mastodon-post" in "\n".join(errors)
+    assert "zenodo-doi" in "\n".join(errors)
+
+
+def test_primary_config_pins_publication_frontmatter_policy_gates_and_targets() -> None:
+    module = _load_module()
+    policy = module.load_config(CONFIG_PATH)["publication_frontmatter_policy"]
+
+    assert policy["publication_allowed_without_bus"] is False
+    assert policy["direct_public_egress_allowed"] is False
+    assert policy["review_required"] == "Claim Verification Council"
+    assert set(policy["required_gates"]) == module.REQUIRED_PUBLICATION_FRONTMATTER_GATES
+    assert set(policy["target_surfaces"]) == module.REQUIRED_PUBLICATION_TARGET_SURFACES
 
 
 def test_fanout_config_pins_publication_frontmatter_policy_gates() -> None:

@@ -22,6 +22,8 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.github_public_surface import (
+    ORG_PROFILE_README_PATH,
+    ORG_PROFILE_REPO_ID,
     GitHubPublicSurfaceReport,
     PackageSurface,
     RepoFilePresence,
@@ -311,8 +313,10 @@ def classify_publication_log_payload(payload: Any) -> tuple[str, tuple[str, ...]
 def file_surface(repo: RepoLiveState, path: str) -> GitHubPublicationSurface | None:
     """Return the publication surface represented by a GitHub file path."""
 
+    if repo.repo_id == ORG_PROFILE_REPO_ID and path == ORG_PROFILE_README_PATH:
+        return "profile"
     if path == "README.md":
-        return "profile" if repo.repo_id == "ryanklee/ryanklee" else "readme"
+        return "readme"
     if path in {"CITATION.cff", "codemeta.json", ".zenodo.json"}:
         return "citation_metadata"
     if path in {"NOTICE.md", "SECURITY.md", "CONTRIBUTING.md", "GOVERNANCE.md"}:
