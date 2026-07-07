@@ -7,7 +7,7 @@ source: github-public-surface-live-state-reconcile
 
 # GitHub Public Surface Live State Reconcile
 
-- Generated: `2026-07-07T16:23:35Z`
+- Generated: `2026-07-07T16:26:12Z`
 - Recheck: `uv run python scripts/github-public-surface-reconcile.py`
 - Claim ceiling: `public_archive`
 - Blocking findings: `1`
