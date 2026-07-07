@@ -948,6 +948,30 @@ def test_agy_observed_route_quota_receipt_does_not_admit_review_route() -> None:
     assert "route_specific_quota_receipt_absent" in result.routes[0].blocked_reasons
 
 
+def test_forged_agy_observed_quota_receipt_cannot_clear_route_specific_blocker() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "agy.review.direct")
+    route["blocked_reasons"] = ["route_specific_quota_receipt_absent"]
+    route["freshness"]["evidence"]["quota"]["blocked_reasons"] = [
+        "route_specific_quota_receipt_absent"
+    ]
+
+    _apply_receipt_to_route_payload(
+        route,
+        _make_agy_receipt(
+            observed_at=datetime(2026, 7, 5, 14, 51, tzinfo=UTC),
+            quota_status=EvidenceStatus.OBSERVED,
+            quota_refs=["test:forged-agy:observed-quota"],
+        ),
+    )
+
+    assert route["route_state"] == "blocked"
+    assert route["blocked_reasons"] == ["route_specific_quota_receipt_absent"]
+    assert route["freshness"]["evidence"]["quota"]["blocked_reasons"] == [
+        "route_specific_quota_receipt_absent"
+    ]
+
+
 def test_agy_quota_receipt_removable_reasons_preserve_route_specific_blocker() -> None:
     payload = _payload()
     route = _route_payload(payload, "agy.review.direct")

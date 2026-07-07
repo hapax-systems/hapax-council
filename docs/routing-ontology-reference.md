@@ -46,7 +46,7 @@ Defined in `RouteConstraints.preferred_platforms` / `allowed_platforms` / `prohi
 route family. The Agy adapter family is distinct and live after the 2026-07-05
 steward correction, but it does not satisfy dispatch demand until a measured
 worker route is registered with route, resource, and governance receipts.
-`agy.review.direct` is the live replacement review route, with
+`agy.review.direct` is the registered replacement review route, with
 Gemini/Claude/GPT-OSS as engines behind the `agy` harness rather than capability
 family names. It is read-only and remains blocked for admission until a
 fresh agy platform-capability receipt clears the review-seat admission blocker.
@@ -72,9 +72,11 @@ uv run pytest \
   tests/shared/test_platform_capability_registry.py::test_gemini_routes_are_not_seeded_as_dispatchable_platform_paths \
   tests/shared/test_capability_dispatch.py::test_resolve_agy_review_route_is_valid_but_non_spawnable \
   tests/shared/test_platform_capability_registry.py::test_agy_observed_route_quota_receipt_does_not_admit_review_route \
+  tests/shared/test_platform_capability_registry.py::test_forged_agy_observed_quota_receipt_cannot_clear_route_specific_blocker \
   tests/shared/test_platform_capability_registry.py::test_agy_has_no_sanctioned_route_specific_quota_admission_path \
   tests/shared/test_quota_spend_ledger.py::test_agy_receipt_bounded_route_rejects_generic_fresh_quota_snapshot \
   tests/shared/test_platform_capability_receipts.py::test_agy_receipt_records_live_review_route_without_unblocking_quota \
+  tests/test_review_team.py::TestConstitution::test_retired_authoring_lanes_fail_closed \
   tests/scripts/test_cc_dispatch.py::test_agy_review_route_is_valid_but_non_spawnable \
   tests/scripts/test_hapax_methodology_dispatch.py::test_agy_platform_is_review_route_not_dispatchable_worker \
   tests/scripts/test_hapax_cross_runtime_dispatch.py::test_agy_platform_is_review_route_not_cross_runtime_worker \

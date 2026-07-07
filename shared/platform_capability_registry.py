@@ -1641,10 +1641,12 @@ def _quota_unobservable_removable_reasons(route_payload: dict[str, Any]) -> set[
 
 
 def _quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
-    reasons = {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
     if route_payload.get("route_id") == "agy.review.direct":
-        reasons.discard("route_specific_quota_receipt_absent")
-    return reasons
+        # Platform receipts can prove local agy CLI/wrapper availability only.
+        # They must not clear route_specific_quota_receipt_absent; that requires
+        # a future route-specific agy quota-admission validator.
+        return {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+    return {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
 
 
 def _apply_surface(
