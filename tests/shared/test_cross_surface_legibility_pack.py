@@ -124,10 +124,12 @@ def test_weblog_variant_pins_publication_bus_surface_gates() -> None:
         "internet-archive-ias3",
     }
     assert set(weblog["required_gates"]) == {
-        "claim_verification_council_review",
+        "source_artifact_public_safe",
         "source_refs_present",
         "rights_privacy_redaction_pass",
-        "publication_bus_surface_allowlist_pass",
+        "target_surface_allowlist_pass",
+        "fanout_loop_prevention_present",
+        "claim_review_current",
         "no_direct_public_egress",
     }
 
@@ -138,7 +140,7 @@ def test_github_org_profile_variant_points_to_canonical_renderer() -> None:
     assert profile["publication_allowed"] is False
     assert profile["source_of_truth"] == "hapax-constitution:sdlc.render.org_profile_readme"
     assert set(profile["required_gates"]) == {
-        "claim_verification_council_review",
+        "claim_review_current",
         "source_refs_present",
         "public_repo_owner_check",
         "no_direct_public_egress",

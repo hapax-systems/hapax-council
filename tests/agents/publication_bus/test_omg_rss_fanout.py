@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from agents.publication_bus.omg_rss_fanout import (
     FANOUT_LOOP_HEADER_PREFIX,
+    FANOUT_REQUIRED_GATES,
     OmgFanoutConfig,
     fanout,
     load_fanout_config,
@@ -20,12 +21,25 @@ def _make_client(enabled: bool = True) -> MagicMock:
     return client
 
 
+def _gate_receipts() -> dict[str, str]:
+    return {gate: f"receipt:{gate}" for gate in FANOUT_REQUIRED_GATES}
+
+
 class TestLoadFanoutConfig:
     def test_loads_addresses_list(self, tmp_path: Path) -> None:
         path = tmp_path / "fanout.yaml"
-        path.write_text("addresses:\n  - hapax\n  - oudepode\n")
+        path.write_text(
+            "publication_frontmatter_policy:\n"
+            "  required_gates:\n"
+            "    - source_artifact_public_safe\n"
+            "    - source_refs_present\n"
+            "addresses:\n"
+            "  - hapax\n"
+            "  - oudepode\n"
+        )
         config = load_fanout_config(path=path)
         assert config.addresses == ["hapax", "oudepode"]
+        assert config.required_gates == ["source_artifact_public_safe", "source_refs_present"]
 
     def test_missing_file_returns_empty_config(self, tmp_path: Path) -> None:
         config = load_fanout_config(path=tmp_path / "missing.yaml")
@@ -48,6 +62,7 @@ class TestFanout:
             content="hello",
             config=config,
             client=client,
+            gate_receipts=_gate_receipts(),
         )
         # Two non-source targets
         assert client.set_entry.call_count == 2
@@ -65,6 +80,7 @@ class TestFanout:
             content="hello",
             config=config,
             client=client,
+            gate_receipts=_gate_receipts(),
         )
         client.set_entry.assert_not_called()
         assert result == {}
@@ -94,6 +110,7 @@ class TestFanout:
             content="hello",
             config=config,
             client=client,
+            gate_receipts=_gate_receipts(),
         )
         client.set_entry.assert_not_called()
         assert result == {"oudepode": "client-disabled"}
@@ -108,6 +125,7 @@ class TestFanout:
             content="hello",
             config=config,
             client=client,
+            gate_receipts=_gate_receipts(),
         )
         assert result["oudepode"] == "error"
 
@@ -120,6 +138,7 @@ class TestFanout:
             content="body",
             config=config,
             client=client,
+            gate_receipts=_gate_receipts(),
         )
         sent = client.set_entry.call_args.kwargs["content"]
         assert FANOUT_LOOP_HEADER_PREFIX in sent
@@ -137,4 +156,18 @@ class TestFanout:
             client=client,
         )
         assert result == {}
+        client.set_entry.assert_not_called()
+
+    def test_missing_gate_receipts_blocks_before_public_egress(self) -> None:
+        client = _make_client()
+        config = OmgFanoutConfig(addresses=["hapax", "oudepode"])
+        result = fanout(
+            source_address="hapax",
+            entry_id="entry-1",
+            content="body",
+            config=config,
+            client=client,
+            gate_receipts={},
+        )
+        assert result == {"oudepode": "gate-blocked"}
         client.set_entry.assert_not_called()

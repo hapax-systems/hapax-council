@@ -38,10 +38,12 @@ Optional:
 This script marks the artifact ``APPROVED`` directly only when frontmatter
 explicitly allows publication. The vault is the operator's editing surface;
 once an allowed vault file lands at this script, the operator has implicitly
-approved publication. No separate inbox-review step. There is no emergency
-bypass for public egress: invalid YAML, missing clearance, malformed
+approved publication. No separate inbox-review step. There is no bypass in
+this CLI for public egress: invalid YAML, missing clearance, malformed
 clearance, unreadable policy, or out-of-allowlist target surfaces must stop
-before an inbox artifact is written.
+before an inbox artifact is written. Break-glass correction or takedown is a
+surface-specific operator action outside this approval path and must leave its
+own incident/authority receipt before any replacement artifact is published.
 
 ## Usage
 
@@ -215,7 +217,10 @@ def _configured_publication_surfaces(paths: Iterable[Path] = PUBLICATION_POLICY_
             )
         surfaces.update(surface for surface in target_surfaces if isinstance(surface, str))
     if not surfaces:
-        raise SurfaceAllowlistError("no target surface allowlist configured")
+        raise SurfaceAllowlistError(
+            "no target surface allowlist configured; next action: repair "
+            "config/omg-lol*.yaml before publishing"
+        )
     return surfaces
 
 
@@ -227,13 +232,20 @@ def _configured_publication_policies(
         try:
             loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError) as exc:
-            raise SurfaceAllowlistError(f"surface policy unreadable: {path}") from exc
+            raise SurfaceAllowlistError(
+                f"surface policy unreadable: {path}; next action: repair readable "
+                "YAML policy before publishing"
+            ) from exc
         if not isinstance(loaded, Mapping):
-            raise SurfaceAllowlistError(f"surface policy must be a mapping: {path}")
+            raise SurfaceAllowlistError(
+                f"surface policy must be a mapping: {path}; next action: restore "
+                "the publication_frontmatter_policy mapping"
+            )
         policy = loaded.get("publication_frontmatter_policy")
         if not isinstance(policy, Mapping):
             raise SurfaceAllowlistError(
-                f"surface policy missing publication_frontmatter_policy: {path}"
+                f"surface policy missing publication_frontmatter_policy: {path}; "
+                "next action: restore required public-egress policy fields"
             )
         policies.append(policy)
     return policies

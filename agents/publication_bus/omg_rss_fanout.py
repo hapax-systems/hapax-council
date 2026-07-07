@@ -25,6 +25,7 @@ on every weblog publish.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,17 @@ DEFAULT_CONFIG_PATH: Path = Path(__file__).resolve().parents[2] / "config" / "om
 FANOUT_LOOP_HEADER_PREFIX: str = "<!-- X-Hapax-Fanout-Source:"
 """HTML-comment header prepended to fanned-out content. Loop-prevention
 checks for this substring in incoming content before re-fanning out."""
+
+FANOUT_REQUIRED_GATES: tuple[str, ...] = (
+    "source_artifact_public_safe",
+    "source_refs_present",
+    "rights_privacy_redaction_pass",
+    "target_surface_allowlist_pass",
+    "fanout_loop_prevention_present",
+    "claim_review_current",
+    "no_direct_public_egress",
+)
+"""Receipt ids required before any cross-weblog public fanout egress."""
 
 omg_fanouts_total = Counter(
     "hapax_publication_bus_omg_fanouts_total",
@@ -61,6 +73,7 @@ class OmgFanoutConfig:
     """
 
     addresses: list[str] = field(default_factory=list)
+    required_gates: list[str] = field(default_factory=lambda: list(FANOUT_REQUIRED_GATES))
 
 
 def load_fanout_config(*, path: Path = DEFAULT_CONFIG_PATH) -> OmgFanoutConfig:
@@ -73,7 +86,32 @@ def load_fanout_config(*, path: Path = DEFAULT_CONFIG_PATH) -> OmgFanoutConfig:
     addresses = raw.get("addresses", [])
     if not isinstance(addresses, list):
         addresses = []
-    return OmgFanoutConfig(addresses=[str(a) for a in addresses])
+    policy = raw.get("publication_frontmatter_policy")
+    required_gates = FANOUT_REQUIRED_GATES
+    if isinstance(policy, dict):
+        configured_gates = policy.get("required_gates")
+        if isinstance(configured_gates, list) and configured_gates:
+            required_gates = tuple(str(gate) for gate in configured_gates if gate)
+    return OmgFanoutConfig(
+        addresses=[str(a) for a in addresses],
+        required_gates=list(required_gates),
+    )
+
+
+def _receipt_value_present(value: object) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
+        return any(_receipt_value_present(item) for item in value)
+    return False
+
+
+def _missing_gate_receipts(
+    required_gates: Sequence[str],
+    gate_receipts: Mapping[str, object] | None,
+) -> list[str]:
+    receipts = gate_receipts or {}
+    return sorted(gate for gate in required_gates if not _receipt_value_present(receipts.get(gate)))
 
 
 def fanout(
@@ -83,6 +121,7 @@ def fanout(
     content: str,
     config: OmgFanoutConfig,
     client: Any,
+    gate_receipts: Mapping[str, object] | None = None,
 ) -> dict[str, str]:
     """Fan out one entry to every address in ``config`` other than the source.
 
@@ -104,6 +143,20 @@ def fanout(
     targets = [addr for addr in config.addresses if addr != source_address]
     if not targets:
         return {}
+
+    missing_receipts = _missing_gate_receipts(config.required_gates, gate_receipts)
+    if missing_receipts:
+        missing_text = ", ".join(missing_receipts)
+        log.error(
+            "fanout blocked before public egress; missing publication gate receipts: %s; "
+            "next action: record required publication-bus receipts before fanout",
+            missing_text,
+        )
+        for target in targets:
+            omg_fanouts_total.labels(
+                source=source_address, target=target, result="gate-blocked"
+            ).inc()
+        return {target: "gate-blocked" for target in targets}
 
     body = f"{FANOUT_LOOP_HEADER_PREFIX} {source_address} -->\n{content}"
     outcomes: dict[str, str] = {}
@@ -127,6 +180,7 @@ def fanout(
 
 __all__ = [
     "DEFAULT_CONFIG_PATH",
+    "FANOUT_REQUIRED_GATES",
     "FANOUT_LOOP_HEADER_PREFIX",
     "OmgFanoutConfig",
     "fanout",
