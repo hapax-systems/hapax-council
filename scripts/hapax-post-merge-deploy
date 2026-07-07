@@ -668,6 +668,21 @@ cleanup_known_stale_user_dropins_for_unit() {
             done
             rmdir "$dropin_dir" 2>/dev/null || true
             ;;
+        hapax-sdlc-vocab-export.service)
+            dropin_dir="$SYSTEMD_USER_DIR/$unit.d"
+            [ -d "$dropin_dir" ] || return 0
+            for dropin in "$dropin_dir"/*.conf; do
+                [ -f "$dropin" ] || continue
+                local dropin_base
+                dropin_base="$(basename "$dropin")"
+                if [[ "$dropin_base" =~ ^[0-9]+-pr-[0-9]+-runtime-bridge\.conf$ ]] \
+                    || grep -Eq '^[[:space:]]*(WorkingDirectory|ExecStart|ConditionPathExists)=.*(hapax-council--cx-[[:alnum:]_-]+-gap1|trainyard-gap1-vocab-export|scratch/vocab-export)' "$dropin"; then
+                    echo "  removing temporary PR-worktree bridge drop-in '$dropin'"
+                    rm -f "$dropin" || true
+                fi
+            done
+            rmdir "$dropin_dir" 2>/dev/null || true
+            ;;
         hapax-cc-task-offer-ready.service|hapax-imagination.service|hapax-reverie.service|\
         hapax-darkplaces-v4l2.service|hapax-segment-prep.service|logos-api.service)
             remove_unversioned_user_dropins_for_unit "$unit"

@@ -2,7 +2,7 @@
 
 All production services run as systemd user units under `user@1000.service` with lingering enabled. No process supervisors (process-compose, supervisord) in the boot chain.
 
-**Topology:** <!-- topology-inventory:services -->292<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->141<!-- /topology-inventory:timers --> timers, 6 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
+**Topology:** <!-- topology-inventory:services -->299<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->146<!-- /topology-inventory:timers --> timers, 6 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
 
 `scripts/hapax_topology_inventory.py` is source-only: it verifies the
 git-tracked `systemd/units/` topology and does not prove what the live user
@@ -46,7 +46,7 @@ n8n, open-webui, minio, ntfy       visual-layer-agg  → perception pipeline
                                     studio-compositor → camera tiling (GPU)
 Managed by:                         studio-fx-output  → ffmpeg /dev/video50
   llm-stack.service (oneshot)       hapax-watch-recv  → Wear OS biometrics
-  llm-stack-analytics.service       141 timers        → sync, health, backups
+  llm-stack-analytics.service       146 timers        → sync, health, backups
 ```
 
 ## Grouping Targets
@@ -324,6 +324,40 @@ Bootstrap: the path unit is canonical at `systemd/units/hapax-post-merge-deploy.
 the operator must `systemctl --user enable --now hapax-post-merge-deploy.path` once
 after the deploy script's normal install step copies the units in place. From the
 next merge onward the chain self-hosts.
+
+### Hapax-Coord Runtime Witness
+
+`hapax-coord.service` must serve from
+`~/.cache/hapax/coord-activation/worktree`, not the mutable
+`~/projects/hapax-coord` checkout. `scripts/hapax-coord-runtime-witness`
+is the read-only proof command: it checks the user unit's active
+`WorkingDirectory`/`ExecStart`, verifies the activation worktree `HEAD` equals
+both `.deployed-sha` and the source repo's local `origin/main` remote-tracking
+ref, probes `http://127.0.0.1:8765/` for the coordination boot render, and
+scans the recent `hapax-coord.service` journal for the prior CLOG
+`handle-new-connection` / `unsigned-byte` overflow signature. The source repo
+defaults to `HAPAX_COORD_WITNESS_SOURCE_REPO`, then `HAPAX_COORD_DEPLOY_REPO`,
+then `/home/hapax/projects/hapax-coord`; `hapax-coord-deploy` is responsible
+for fetching that repo before activation.
+
+`hapax-coord-rebuild.timer` runs `scripts/hapax-coord-deploy` every 5 minutes
+from the source-activation worktree. The deploy helper fetches
+`HAPAX_COORD_DEPLOY_REPO`/`origin/main`, updates the coord activation worktree
+only when that target changes, and restarts only `hapax-coord.service`.
+
+Manual restart/reload is via `scripts/hapax-coord-deploy`, or
+`HAPAX_COORD_DEPLOY_RESTART_IF_UP_TO_DATE=1 scripts/hapax-coord-deploy` when
+the deployed SHA is already current. That helper stops `hapax-coord.service`
+before mutating the activation worktree, writes `.deployed-sha` only after a
+successful restart, and rolls the worktree back to the prior deployed SHA on
+clean/checkout/restart/receipt failures. It does not restart audio, visual, or
+other production units. Recheck with:
+
+```bash
+scripts/hapax-coord-runtime-witness
+systemctl --user status hapax-coord-rebuild.timer hapax-coord-rebuild.service --no-pager
+systemctl --user list-timers --all hapax-coord-rebuild.timer
+```
 
 ### Audio Config Naming
 

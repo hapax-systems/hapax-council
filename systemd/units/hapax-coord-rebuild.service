@@ -1,0 +1,15 @@
+[Unit]
+Description=Deploy hapax-coord activation from origin/main
+Documentation=file://%h/.cache/hapax/source-activation/worktree/systemd/README.md
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-coord-deploy
+Wants=network-online.target
+After=network-online.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-coord-deploy
+TimeoutStartSec=300

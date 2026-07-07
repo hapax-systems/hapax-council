@@ -1,0 +1,13 @@
+# Hapax-Auto-Enable: true
+[Unit]
+Description=Deploy hapax-coord activation from origin/main
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=false
+Unit=hapax-coord-rebuild.service
+
+[Install]
+WantedBy=timers.target

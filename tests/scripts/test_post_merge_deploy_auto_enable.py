@@ -205,6 +205,100 @@ def test_deploy_skips_marked_unit_without_install_section(tmp_path: Path) -> Non
     assert "enable --now" not in calls.read_text(encoding="utf-8")
 
 
+def test_deploy_removes_temporary_sdlc_vocab_pr_worktree_dropin(tmp_path: Path) -> None:
+    """The temporary PR bridge must not survive the source-owned unit deploy."""
+    repo, sha = _make_repo(
+        tmp_path,
+        {
+            "hapax-sdlc-vocab-export.service": """
+            [Unit]
+            Description=Export the SDLC vocabulary for Trainyard/Reins consumers
+            ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-sdlc-vocab-export
+            ConditionPathExists=%h/.local/bin/uv
+            [Service]
+            Type=oneshot
+            TimeoutStartSec=300
+            WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+            ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run --frozen python scripts/hapax-sdlc-vocab-export
+            """,
+        },
+    )
+    home = tmp_path / "home"
+    dropin = (
+        home
+        / ".config/systemd/user/hapax-sdlc-vocab-export.service.d/20-pr-4459-runtime-bridge.conf"
+    )
+    dropin.parent.mkdir(parents=True)
+    dropin.write_text(
+        """
+        [Service]
+        WorkingDirectory=/home/hapax/projects/hapax-council--cx-crit-gap1
+        ExecStart=
+        ExecStart=/home/hapax/projects/hapax-council--cx-crit-gap1/.venv/bin/python /home/hapax/projects/hapax-council--cx-crit-gap1/scripts/hapax-sdlc-vocab-export
+        """,
+        encoding="utf-8",
+    )
+    bin_dir, calls = _make_fake_systemctl(tmp_path)
+
+    res = _run([sha], repo=repo, bin_dir=bin_dir, tmp_path=tmp_path)
+
+    assert res.returncode == 0, res.stderr
+    assert not dropin.exists()
+    assert "removing temporary PR-worktree bridge drop-in" in res.stdout
+    assert "daemon-reload" in calls.read_text(encoding="utf-8")
+
+
+def test_deploy_removes_sdlc_vocab_bridge_by_content_and_preserves_unrelated_dropin(
+    tmp_path: Path,
+) -> None:
+    """Cleanup covers renamed bridge files without deleting unrelated drop-ins."""
+    repo, sha = _make_repo(
+        tmp_path,
+        {
+            "hapax-sdlc-vocab-export.service": """
+            [Unit]
+            Description=Export the SDLC vocabulary for Trainyard/Reins consumers
+            ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-sdlc-vocab-export
+            ConditionPathExists=%h/.local/bin/uv
+            [Service]
+            Type=oneshot
+            TimeoutStartSec=300
+            WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+            ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run --frozen python scripts/hapax-sdlc-vocab-export
+            """,
+        },
+    )
+    dropin_dir = tmp_path / "home/.config/systemd/user/hapax-sdlc-vocab-export.service.d"
+    dropin_dir.mkdir(parents=True)
+    generic_bridge = dropin_dir / "20-pr-9999-runtime-bridge.conf"
+    renamed_bridge = dropin_dir / "90-local-bridge.conf"
+    scratch_bridge = dropin_dir / "10-relocate.conf"
+    unrelated = dropin_dir / "99-operator-note.conf"
+    generic_bridge.write_text("[Service]\nEnvironment=HAPAX_TEMP_BRIDGE=1\n", encoding="utf-8")
+    renamed_bridge.write_text(
+        "ExecStart=/home/hapax/projects/hapax-council--cx-green-gap1/scripts/hapax-sdlc-vocab-export\n",
+        encoding="utf-8",
+    )
+    scratch_bridge.write_text(
+        "ExecStart=%h/.cache/hapax/scratch/vocab-export/scripts/hapax-sdlc-vocab-export\n",
+        encoding="utf-8",
+    )
+    unrelated.write_text(
+        "[Service]\n# retired reference: scratch/vocab-export\nEnvironment=HAPAX_KEEP_THIS_DROPIN=1\n",
+        encoding="utf-8",
+    )
+    bin_dir, _calls = _make_fake_systemctl(tmp_path)
+
+    res = _run([sha], repo=repo, bin_dir=bin_dir, tmp_path=tmp_path)
+
+    assert res.returncode == 0, res.stderr
+    assert not generic_bridge.exists()
+    assert not renamed_bridge.exists()
+    assert not scratch_bridge.exists()
+    assert unrelated.exists()
+    assert dropin_dir.exists()
+
+
 def test_deploy_auto_enables_marked_timer(tmp_path: Path) -> None:
     """The lane-supervisor shape: a marked timer is enable --now'd."""
     repo, sha = _make_repo(tmp_path, {"test-auto.timer": TIMER_AUTOENABLE})
