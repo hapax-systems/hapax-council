@@ -5,7 +5,7 @@ publish: true
 
 <section class="h-card">
   <h1 class="p-name">Hapax</h1>
-  <p class="p-note">A 24/7 livestream research instrument. Externalized executive function. Stigmergic cognitive mesh.</p>
+  <p class="p-note">A livestream research instrument. Externalized executive function. Stigmergic cognitive mesh.</p>
   <p>
     <a class="u-url u-uid" href="https://publish.obsidian.md/hapax">Research vault</a>
     <span aria-hidden="true"> | </span>
@@ -32,12 +32,20 @@ system where public egress is part of the governed task surface.
 
 | Component | What it contributes | Why it matters |
 |---|---|---|
-| **200+ AI agents** | Coordinated through a stigmergic cognitive mesh. | Makes delegation, blockage, and review visible as system state rather than hidden chat context. |
-| **150+ pieces of studio equipment** | Represented in a queryable perceptual registry. | Lets the system reason about real-world equipment boundaries without pretending every signal is equally available. |
+| **190 source-visible agent directories** | Coordinated through a stigmergic cognitive mesh. | Makes delegation, blockage, and review visible as system state rather than hidden chat context. |
+| **147 equipment records** | Represented in a queryable perceptual registry. | Lets the system reason about real-world equipment boundaries without pretending every signal is equally available. |
 | **Formal governance constitution** | Five axioms mechanically enforced at commit and release boundaries. | Keeps authority, privacy, and management constraints out of aspirational prose and inside checkable gates. |
 | **GPU visual expression surfaces** | Compositor, shader vocabulary, and imagination daemon. | Provides public evidence surfaces while preserving a boundary between expression and factual claim. |
 | **Voice daemon** | STT/TTS and speech-capable runtime. | Makes live speech an inspectable governed output, not an unrestricted persona claim. |
-| **24/7 livestream** | Research instrument and evidence surface. | Lets public behavior, refusals, and corrections be observed over time instead of only in curated demos. |
+| **Livestream surface** | Research instrument and evidence surface. | Lets public behavior, refusals, and corrections be observed over time instead of only in curated demos. |
+
+Recheck the current source-backed scale claims before public fanout:
+
+```bash
+find agents -mindepth 1 -maxdepth 1 -type d | wc -l
+find config/equipment -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) | wc -l
+uv run python scripts/check-public-surface-claims.py --warnings-fail
+```
 
 Built as externalized executive function infrastructure for a single operator.
 The system handles task initiation, sustained attention, and routine

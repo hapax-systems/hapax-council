@@ -1362,6 +1362,64 @@ checklist:
         assert "head SHA is unavailable" in str(excinfo.value)
         assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
 
+    def test_local_git_diff_fallback_names_missing_head_fetch_action(self, tmp_path: Path) -> None:
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo_root, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo_root, check=True)
+        target = repo_root / "shared" / "foo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("value = 'base'\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=repo_root, check=True)
+        base_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/main", base_sha],
+            cwd=repo_root,
+            check=True,
+        )
+
+        class MissingHeadFetchGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                self.calls.append(list(cmd))
+                if cmd[:3] == ["git", "fetch", "--quiet"]:
+                    return subprocess.CompletedProcess(cmd, 1, "", "fetch failed")
+                if cmd and cmd[0] == "git":
+                    return subprocess.run(cmd, **kwargs)
+                return super().__call__(cmd, **kwargs)
+
+        gh = MissingHeadFetchGh(base_sha=base_sha, head_sha="c" * 40, files=["shared/foo.py"])
+        with pytest.raises(RuntimeError) as excinfo:
+            dispatch.fetch_pr_diff_from_local(
+                dispatch.PRInfo(
+                    number=42,
+                    title="PR 42",
+                    body="body",
+                    base_ref="main",
+                    base_sha=base_sha,
+                    head_ref="feat/42",
+                    head_sha="c" * 40,
+                    changed_file_count=1,
+                    is_draft=False,
+                    files=("shared/foo.py",),
+                ),
+                repo_root=repo_root,
+                runner=gh,
+            )
+
+        message = str(excinfo.value)
+        assert "head object" in message
+        assert "unavailable locally after fetching pull/42/head" in message
+        assert "fetch pull/42/head before review dispatch" in message
+        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
+
     def test_local_git_diff_fallback_rejects_head_missing_current_base(
         self, tmp_path: Path
     ) -> None:

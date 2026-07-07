@@ -4,7 +4,10 @@ Public-gate receipts are data-plane receipts. Their review authority evidence
 must resolve through the trusted cc-task review/acceptance plane, not through a
 peer file in the receipt root. There is intentionally no module-level bypass for
 public egress; emergency correction or takedown must use the owning surface's
-incident path and leave a new authority receipt.
+incident path and leave a new authority receipt. For publication-bus artifacts,
+that incident path is: withhold or reject the artifact through the publication
+state machine, repair the source artifact or target policy, then issue a fresh
+signed public-gate authority receipt before any retry.
 """
 
 from __future__ import annotations

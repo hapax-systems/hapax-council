@@ -908,6 +908,12 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
         runner=runner,
         allow_fetch_failure=True,
     )
+    if not _local_commit_object_exists(head, repo_root=repo_root, runner=runner):
+        raise RuntimeError(
+            f"PR #{pr_info.number} head object {head[:12]} is unavailable locally after "
+            f"fetching pull/{pr_info.number}/head. Next action: restore GitHub diff "
+            f"access or fetch pull/{pr_info.number}/head before review dispatch."
+        )
 
     merge_base = _run_gh(
         ["git", "merge-base", pr_info.base_sha, head],
@@ -942,6 +948,18 @@ def _resolve_local_ref(ref: str, *, repo_root: Path, runner: Any) -> str | None:
         ).strip()
     except RuntimeError:
         return None
+
+
+def _local_commit_object_exists(ref: str, *, repo_root: Path, runner: Any) -> bool:
+    try:
+        _run_gh(
+            ["git", "cat-file", "-e", f"{ref}^{{commit}}"],
+            repo_root=repo_root,
+            runner=runner,
+        )
+    except RuntimeError:
+        return False
+    return True
 
 
 def _ensure_local_ref_at_sha(
@@ -993,9 +1011,14 @@ def _ensure_local_ref(
             runner=runner,
             timeout=180,
         )
-    except RuntimeError:
+    except RuntimeError as exc:
         if not allow_fetch_failure:
             raise
+        raise RuntimeError(
+            f"local ref {ref[:12]} is unavailable locally and could not be fetched from "
+            f"origin/{fetch_ref}; next action: restore GitHub diff access or fetch "
+            f"{fetch_ref} before review dispatch."
+        ) from exc
 
     _run_gh(["git", "rev-parse", "--verify", ref], repo_root=repo_root, runner=runner)
 

@@ -110,6 +110,19 @@ class TestAudienceValueCopy:
         ):
             assert value_statement in body
 
+    def test_obsidian_home_scale_claims_are_recheckable(self) -> None:
+        body = OBSIDIAN_HOME.read_text(encoding="utf-8")
+        assert "190 source-visible agent directories" in body
+        assert "147 equipment records" in body
+        assert "200+ AI agents" not in body
+        assert "150+ pieces of studio equipment" not in body
+        for command in (
+            "find agents -mindepth 1 -maxdepth 1 -type d | wc -l",
+            "find config/equipment -maxdepth 1 -type f",
+            "uv run python scripts/check-public-surface-claims.py --warnings-fail",
+        ):
+            assert command in body
+
 
 class TestMetadataCoherence:
     def test_no_apache_badge(self) -> None:

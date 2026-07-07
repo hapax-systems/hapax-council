@@ -443,7 +443,7 @@ class Orchestrator:
         # Existing log entries — preserve already-terminal results so
         # deferred re-runs only retry the deferred surfaces.
         prior_results: dict[str, str] = {}
-        for surface in artifact.surfaces_targeted:
+        for surface in deduped_surfaces:
             log_path = artifact.log_path(surface, state_root=self._state_root)
             if log_path.exists():
                 try:
@@ -474,7 +474,7 @@ class Orchestrator:
 
         # Dispatch only surfaces that are not already terminal.
         futures = {}
-        for surface in artifact.surfaces_targeted:
+        for surface in deduped_surfaces:
             if prior_results.get(surface, "") in _TERMINAL_RESULTS:
                 continue
             futures[surface] = pool.submit(self._dispatch_one, artifact, surface)
@@ -499,7 +499,7 @@ class Orchestrator:
         # move the artifact to published/ only if every surface succeeded.
         all_terminal = True
         final_results: list[str] = []
-        for surface in artifact.surfaces_targeted:
+        for surface in deduped_surfaces:
             log_path = artifact.log_path(surface, state_root=self._state_root)
             if not log_path.exists():
                 all_terminal = False

@@ -7,6 +7,9 @@ source: github-public-surface-live-state-reconcile
 
 # GitHub Public Surface Live State Reconcile
 
+- Filename note: the April slug is retained for historical ledger continuity;
+  the YAML `date` and `Generated` fields record the current July 7 live-state
+  refresh. Re-run the `Recheck` command below before treating this as current.
 - Generated: `2026-07-07T16:26:12Z`
 - Recheck: `uv run python scripts/github-public-surface-reconcile.py`
 - Claim ceiling: `public_archive`
