@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 from collections.abc import Iterable, Mapping
@@ -19,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+log = logging.getLogger(__name__)
 
 PUBLIC_GATE_RECEIPT_PREFIXES: tuple[str, ...] = (
     "public-gate:",
@@ -210,6 +213,7 @@ PUBLIC_GATE_FAIL_VALUES = frozenset(
         "rejected",
     }
 )
+_MISSING_AUTHORITY_SECRET_WARNED = False
 
 
 def public_gate_receipt_value_present(
@@ -267,6 +271,8 @@ def public_gate_receipt_ref_exists(
     resolved_authority_secret = (
         _public_gate_authority_secret() if authority_secret is None else authority_secret
     )
+    if authority_secret is None and not resolved_authority_secret:
+        _warn_missing_authority_secret()
     for root in roots:
         root = root.expanduser()
         for candidate in candidates:
@@ -769,6 +775,19 @@ def public_gate_authority_signature(data: Mapping[Any, Any], secret: str) -> str
 
 def _public_gate_authority_secret() -> str:
     return os.environ.get(PUBLIC_GATE_AUTHORITY_SECRET_ENV, "").strip()
+
+
+def _warn_missing_authority_secret() -> None:
+    global _MISSING_AUTHORITY_SECRET_WARNED
+    if _MISSING_AUTHORITY_SECRET_WARNED:
+        return
+    _MISSING_AUTHORITY_SECRET_WARNED = True
+    log.warning(
+        "public-gate authority evidence cannot be verified because %s is unset; "
+        "next action: restore %s from pass before validating public-gate receipts",
+        PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+        PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+    )
 
 
 def _mapping_has_trusted_authority_signature(

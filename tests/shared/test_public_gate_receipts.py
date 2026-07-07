@@ -192,6 +192,25 @@ def test_rejects_unsigned_authority_evidence(tmp_path: Path) -> None:
     )
 
 
+def test_missing_authority_secret_warns_with_next_action(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    monkeypatch.delenv(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, raising=False)
+    monkeypatch.setattr(public_gate_receipts, "_MISSING_AUTHORITY_SECRET_WARNED", False)
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+    assert public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV in caplog.text
+    assert "next action: restore" in caplog.text
+
+
 def test_rejects_authority_evidence_for_different_gate(tmp_path: Path) -> None:
     _write(tmp_path, "receipt-1.yaml", _receipt_text())
     _write_review_evidence(

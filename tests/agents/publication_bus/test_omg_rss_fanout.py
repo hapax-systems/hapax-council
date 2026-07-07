@@ -208,6 +208,38 @@ class TestLoadFanoutConfig:
         assert config.gate_policy_error is not None
         assert "blank or non-string" in config.gate_policy_error
 
+    def test_malformed_addresses_are_fail_closed(self, tmp_path: Path) -> None:
+        path = tmp_path / "fanout.yaml"
+        path.write_text(
+            "publication_frontmatter_policy:\n"
+            "  required_gates:\n"
+            f"{_required_gates_yaml()}\n"
+            "addresses:\n"
+            "  - hapax\n"
+            "  - ../escape\n"
+            "  - 12\n"
+        )
+        config = load_fanout_config(path=path)
+        assert config.addresses == ["hapax"]
+        assert config.gate_policy_error is not None
+        assert "malformed address ids" in config.gate_policy_error
+
+    def test_duplicate_addresses_are_fail_closed(self, tmp_path: Path) -> None:
+        path = tmp_path / "fanout.yaml"
+        path.write_text(
+            "publication_frontmatter_policy:\n"
+            "  required_gates:\n"
+            f"{_required_gates_yaml()}\n"
+            "addresses:\n"
+            "  - hapax\n"
+            "  - oudepode\n"
+            "  - oudepode\n"
+        )
+        config = load_fanout_config(path=path)
+        assert config.addresses == ["hapax", "oudepode", "oudepode"]
+        assert config.gate_policy_error is not None
+        assert "duplicate address ids: oudepode" in config.gate_policy_error
+
     def test_missing_file_returns_empty_config(self, tmp_path: Path) -> None:
         config = load_fanout_config(path=tmp_path / "missing.yaml")
         assert config.addresses == []
@@ -337,6 +369,34 @@ class TestFanout:
             gate_receipts={},
         )
         assert result == {"oudepode": "gate-blocked"}
+        client.set_entry.assert_not_called()
+
+    def test_duplicate_targets_block_before_public_egress(self) -> None:
+        client = _make_client()
+        config = OmgFanoutConfig(addresses=["hapax", "oudepode", "oudepode"])
+        result = fanout(
+            source_address="hapax",
+            entry_id="entry-1",
+            content="body",
+            config=config,
+            client=client,
+            gate_receipts=_gate_receipts(targets=("oudepode",)),
+        )
+        assert result == {"oudepode": "gate-policy-blocked"}
+        client.set_entry.assert_not_called()
+
+    def test_malformed_target_blocks_before_public_egress(self) -> None:
+        client = _make_client()
+        config = OmgFanoutConfig(addresses=["hapax", "../escape"])
+        result = fanout(
+            source_address="hapax",
+            entry_id="entry-1",
+            content="body",
+            config=config,
+            client=client,
+            gate_receipts=_gate_receipts(targets=("../escape",)),
+        )
+        assert result == {"../escape": "gate-policy-blocked"}
         client.set_entry.assert_not_called()
 
     def test_direct_config_cannot_weaken_required_gates(self) -> None:

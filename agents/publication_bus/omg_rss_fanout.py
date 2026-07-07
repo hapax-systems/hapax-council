@@ -25,6 +25,7 @@ on every weblog publish.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -67,6 +68,9 @@ PUBLIC_GATE_RECEIPT_ROOTS: tuple[Path, ...] = (
     Path(__file__).resolve().parents[2] / "docs" / "research" / "evidence",
 )
 
+OMG_LOL_ADDRESS_RE = re.compile(r"\A[a-z0-9][a-z0-9-]{0,62}\Z")
+"""Conservative omg.lol address segment accepted before public fanout egress."""
+
 omg_fanouts_total = Counter(
     "hapax_publication_bus_omg_fanouts_total",
     "omg.lol cross-weblog fanout outcomes per source + target + result.",
@@ -101,14 +105,65 @@ def load_fanout_config(*, path: Path = DEFAULT_CONFIG_PATH) -> OmgFanoutConfig:
     addresses = raw.get("addresses", [])
     if not isinstance(addresses, list):
         addresses = []
+        address_policy_error = (
+            "fanout config addresses must be a list; next action: restore a list of "
+            "operator-owned omg.lol address ids before public fanout"
+        )
+    else:
+        addresses, address_policy_error = _configured_addresses(addresses)
     required_gates, gate_policy_error = _configured_required_gates(
         raw.get("publication_frontmatter_policy")
     )
     return OmgFanoutConfig(
-        addresses=[str(a) for a in addresses],
+        addresses=addresses,
         required_gates=required_gates,
-        gate_policy_error=gate_policy_error,
+        gate_policy_error=_join_policy_errors(address_policy_error, gate_policy_error),
     )
+
+
+def _join_policy_errors(*errors: str | None) -> str | None:
+    present = [error for error in errors if error]
+    return "; ".join(present) if present else None
+
+
+def _safe_omg_lol_address(value: object) -> bool:
+    return isinstance(value, str) and OMG_LOL_ADDRESS_RE.fullmatch(value.strip()) is not None
+
+
+def _duplicate_values(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for value in values:
+        if value in seen:
+            duplicates.add(value)
+        else:
+            seen.add(value)
+    return sorted(duplicates)
+
+
+def _configured_addresses(values: Sequence[object]) -> tuple[list[str], str | None]:
+    addresses: list[str] = []
+    malformed = []
+    for value in values:
+        if _safe_omg_lol_address(value):
+            addresses.append(str(value).strip())
+        else:
+            malformed.append(repr(value))
+    errors: list[str] = []
+    if malformed:
+        errors.append(
+            "fanout config addresses contains malformed address ids: "
+            + ", ".join(sorted(malformed))
+            + "; next action: use lowercase omg.lol address path segments only"
+        )
+    duplicates = _duplicate_values(addresses)
+    if duplicates:
+        errors.append(
+            "fanout config addresses contains duplicate address ids: "
+            + ", ".join(duplicates)
+            + "; next action: list each target address once before public fanout"
+        )
+    return addresses, _join_policy_errors(*errors)
 
 
 def _configured_required_gates(policy: object) -> tuple[list[str], str | None]:
@@ -199,6 +254,30 @@ def _effective_required_gates(config: OmgFanoutConfig) -> tuple[list[str], str |
     return required, None
 
 
+def _fanout_address_policy_error(*, source_address: str, targets: Sequence[str]) -> str | None:
+    errors: list[str] = []
+    if not _safe_omg_lol_address(source_address):
+        errors.append(
+            "fanout source_address is malformed; next action: use a lowercase omg.lol "
+            "address path segment before public fanout"
+        )
+    malformed_targets = [target for target in targets if not _safe_omg_lol_address(target)]
+    if malformed_targets:
+        errors.append(
+            "fanout target addresses contain malformed address ids: "
+            + ", ".join(sorted(malformed_targets))
+            + "; next action: use lowercase omg.lol address path segments only"
+        )
+    duplicate_targets = _duplicate_values(list(targets))
+    if duplicate_targets:
+        errors.append(
+            "fanout target addresses contain duplicate address ids: "
+            + ", ".join(duplicate_targets)
+            + "; next action: list each target address once before public fanout"
+        )
+    return _join_policy_errors(*errors)
+
+
 def _fanout_receipt_bindings(
     *,
     source_address: str,
@@ -243,11 +322,16 @@ def fanout(
         return {}
 
     targets = [addr for addr in config.addresses if addr != source_address]
-    if not targets:
-        return {}
-
     required_gates, boundary_gate_policy_error = _effective_required_gates(config)
-    gate_policy_error = config.gate_policy_error or boundary_gate_policy_error
+    address_policy_error = _fanout_address_policy_error(
+        source_address=source_address,
+        targets=targets,
+    )
+    gate_policy_error = _join_policy_errors(
+        config.gate_policy_error,
+        boundary_gate_policy_error,
+        address_policy_error,
+    )
     if gate_policy_error:
         log.error("fanout blocked before public egress; %s", gate_policy_error)
         for target in targets:
@@ -255,6 +339,9 @@ def fanout(
                 source=source_address, target=target, result="gate-policy-blocked"
             ).inc()
         return {target: "gate-policy-blocked" for target in targets}
+
+    if not targets:
+        return {}
 
     receipt_bindings = _fanout_receipt_bindings(
         source_address=source_address,

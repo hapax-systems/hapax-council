@@ -1,7 +1,10 @@
 # License reconciliation status
 
-**Status:** LOCAL SURFACES RECONCILED — live GitHub/license-detection closure is
-tracked separately in the public-surface live-state report.
+**Status:** LOCAL LICENSE POSTURE RECONCILED — live GitHub/license-detection
+closure is tracked separately in the public-surface live-state report. Zenodo's
+machine `license` field uses `other-closed` because PolyForm Strict is not a
+standard Zenodo license id; the same Zenodo record carries the explicit
+repository-license note.
 
 ## Current Local State
 
@@ -11,7 +14,9 @@ tracked separately in the public-surface live-state report.
 | `NOTICE.md` | PolyForm Strict 1.0.0 |
 | `CITATION.cff` | `license: PolyForm-Strict-1.0.0` |
 | `codemeta.json` | `https://polyformproject.org/licenses/strict/1.0.0/` |
+| `.zenodo.json` | `license: other-closed`; `notes` names PolyForm Strict 1.0.0 |
 | `README.md` | Defers to `NOTICE.md` / `CITATION.cff` / `codemeta.json` |
+| Public prose | Uses "source-visible" to describe inspectability, not an open-source license |
 
 ## Decision rationale (2026-05-09)
 
@@ -26,7 +31,9 @@ Path 1 adopted per operator directive ("research best license for me and go with
 
 ## Remaining Items
 
-- ✅ All four metadata surfaces converged
+- ✅ Repository license posture converges on PolyForm Strict 1.0.0; Zenodo uses
+  `other-closed` only as its platform compatibility field and carries the
+  PolyForm Strict note in `notes`
 - ⏳ Reconcile live GitHub/licensee detection where the live-state report still
   records blocking license-detection drift
 - ✅ Profile README at correct public GitHub location (`hapax-systems/.github/profile/README.md`)
@@ -38,5 +45,12 @@ Path 1 adopted per operator directive ("research best license for me and go with
 uv run python scripts/github-public-surface-reconcile.py
 gh api repos/hapax-systems/.github/contents/profile/README.md --jq '{path,sha,html_url}'
 gh api repos/hapax-systems/hapax-council --jq '{repo:.full_name,license:.license}'
+python - <<'PY'
+import json, pathlib, yaml
+assert yaml.safe_load(pathlib.Path("CITATION.cff").read_text())["license"] == "PolyForm-Strict-1.0.0"
+assert json.loads(pathlib.Path("codemeta.json").read_text())["license"].endswith("/strict/1.0.0/")
+zenodo = json.loads(pathlib.Path(".zenodo.json").read_text())
+assert zenodo["license"] == "other-closed" and "PolyForm Strict 1.0.0" in zenodo["notes"]
+PY
 uv run pytest tests/docs/test_readme_current_project_spine.py::TestLicenseReconciliationStatusDoc tests/shared/test_github_public_surface.py -q
 ```

@@ -18,12 +18,18 @@ The vault file's YAML frontmatter MUST include:
   type:  str           # informational only
   Publication-Allowed: true  # explicit Claim Verification Council clearance
   publication_gate_receipts:
-    source_artifact_public_safe: public-gate:receipt-ref
-    source_refs_present: public-gate:receipt-ref
-    rights_privacy_redaction_pass: public-gate:receipt-ref
-    target_surface_allowlist_pass: public-gate:receipt-ref
-    claim_review_current: public-gate:receipt-ref
-    no_direct_public_egress: public-gate:receipt-ref
+    source_artifact_public_safe: public-gate:my-artifact/source-safe.yaml
+    source_refs_present: public-gate:my-artifact/source-refs.yaml
+    rights_privacy_redaction_pass: public-gate:my-artifact/rights-privacy.yaml
+    target_surface_allowlist_pass: public-gate:my-artifact/target-surfaces.yaml
+    claim_review_current: public-gate:my-artifact/claim-review.yaml
+    no_direct_public_egress: public-gate:my-artifact/no-direct-egress.yaml
+
+The ``public-gate:...`` values above are examples of durable receipt refs under
+the configured public-gate receipt roots. They are not placeholders: each ref
+must resolve to a real YAML/JSON/Markdown receipt whose gate id, artifact
+binding, and signed authority evidence validate before any inbox artifact is
+written.
 
 Optional:
 
