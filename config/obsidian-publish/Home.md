@@ -25,6 +25,11 @@ Hapax is a single-operator system. Its public value is not any one component;
 it is that the components are wired so claims, refusals, context, and public
 egress can be inspected together:
 
+The useful reading lens is legibility: adopters can find bounded hooks,
+technical leaders can see where authority and write paths stop, researchers can
+inspect claim and refusal evidence, and harness readers can compare against a
+system where public egress is part of the governed task surface.
+
 | Component | What it contributes | Why it matters |
 |---|---|---|
 | **200+ AI agents** | Coordinated through a stigmergic cognitive mesh. | Makes delegation, blockage, and review visible as system state rather than hidden chat context. |

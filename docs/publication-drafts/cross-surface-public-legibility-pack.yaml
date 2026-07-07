@@ -44,6 +44,14 @@ value_translation_policy: |
   bounded by the current claim ceiling and must not become sales language,
   superiority claims, or competitor-style harness positioning.
 
+audience_value_policy: |
+  Public copy must cover the reader jobs separately: adopters need a bounded
+  pilot path, technical buyers need visible authority and write boundaries,
+  researchers need claim/refusal evidence, auditors need license and egress
+  boundaries, and harness readers need to see why Hapax is not merely another
+  task-runner wrapper. These values should be stated plainly, not as market
+  slogans.
+
 variants:
   github_org_profile:
     surface: github_org_profile

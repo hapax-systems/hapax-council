@@ -38,6 +38,18 @@ evaluation, agentic oversight, robustness work, and privacy-preserving safety
 methods. The intended external output is a benchmark, dataset, and methods
 paper.
 
+## Reader Value
+
+Different readers should get different evidence from the same system, without
+the copy pretending those values are the same:
+
+| Reader | What Hapax makes inspectable |
+|---|---|
+| AI-safety researchers | Grounding attempts with source state, uncertainty, refusal, correction, and public-egress decisions instead of isolated answer scores. |
+| Technical directors | Authority boundaries, route metadata, release gates, and receipts that can be audited before adapting any mechanism. |
+| Harness evaluators | A live outlier case where orchestration, governance, refusal, and publication are part of the measured surface, not add-ons around a task runner. |
+| Narrow-tool adopters | A way to distinguish portable hooks such as `agentgov` and Reins read/preview surfaces from the stricter research/runtime estate. |
+
 ## Review Path
 
 If you have five minutes:

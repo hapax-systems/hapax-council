@@ -39,6 +39,10 @@ def _load_pack() -> dict:
     return yaml.safe_load(PACK_PATH.read_text())
 
 
+def _squash_whitespace(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
 def test_pack_loads_valid_yaml() -> None:
     pack = _load_pack()
     assert pack["schema_version"] == 2
@@ -88,6 +92,46 @@ def test_source_ref_policy_requires_sources_for_factual_claims() -> None:
     assert "every factual public claim" in policy
     assert "source ref" in policy
     assert "unsourced claims" in policy
+
+
+def test_value_translation_policy_requires_reader_benefits() -> None:
+    pack = _load_pack()
+    policy = pack["value_translation_policy"].lower()
+    for phrase in (
+        "technical surfaces",
+        "tangible reader value",
+        "inspect, adopt, audit, or decide",
+        "must not become sales language",
+        "competitor-style harness positioning",
+    ):
+        assert phrase in policy
+
+
+def test_audience_value_policy_covers_target_reader_jobs() -> None:
+    pack = _load_pack()
+    policy = _squash_whitespace(pack["audience_value_policy"])
+    for phrase in (
+        "adopters need a bounded pilot path",
+        "technical buyers need visible authority and write boundaries",
+        "researchers need claim/refusal evidence",
+        "auditors need license and egress boundaries",
+        "not merely another task-runner wrapper",
+        "not as market slogans",
+    ):
+        assert phrase in policy
+
+
+def test_weblog_variant_covers_target_reader_value_without_hype() -> None:
+    pack = _load_pack()
+    text = _squash_whitespace(pack["variants"]["weblog"]["text"])
+    for phrase in (
+        "adopters can pilot bounded hooks",
+        "technical buyers can inspect governed command preview",
+        "researchers can follow claim authority",
+        "auditors can see the license and public-egress boundary",
+        "not another harness page",
+    ):
+        assert phrase in text
 
 
 def test_support_page_no_perk_language() -> None:

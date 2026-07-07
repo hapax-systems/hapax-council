@@ -7,10 +7,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 README = REPO_ROOT / "README.md"
+START_HERE = REPO_ROOT / "START_HERE.md"
+OBSIDIAN_HOME = REPO_ROOT / "config" / "obsidian-publish" / "Home.md"
 
 
 def _readme() -> str:
     return README.read_text(encoding="utf-8")
+
+
+def _squash_whitespace(text: str) -> str:
+    return " ".join(text.lower().split())
 
 
 class TestNoCtaCopy:
@@ -62,6 +68,47 @@ class TestPublicFrame:
             "https://github.com/hapax-systems/hapax-research-ledger",
         ):
             assert repo in body
+
+    def test_reader_map_translates_features_to_reader_value(self) -> None:
+        body = _readme().lower()
+        for value_statement in (
+            "pilot a narrow, mit-licensed boundary",
+            "inspect delivery state and proposed writes",
+            "follow how claims, refusals, route authority, and public egress behave",
+            "audit numeric observations with caveats preserved",
+        ):
+            assert value_statement in body
+
+
+class TestAudienceValueCopy:
+    def test_start_here_covers_distinct_reader_values(self) -> None:
+        body = START_HERE.read_text(encoding="utf-8").lower()
+        for token in (
+            "ai-safety researchers",
+            "technical directors",
+            "harness evaluators",
+            "narrow-tool adopters",
+            "what hapax makes inspectable",
+        ):
+            assert token in body
+        for value_statement in (
+            "grounding attempts with source state",
+            "authority boundaries",
+            "part of the measured surface",
+            "distinguish portable hooks",
+        ):
+            assert value_statement in body
+
+    def test_obsidian_home_covers_public_reader_values(self) -> None:
+        body = _squash_whitespace(OBSIDIAN_HOME.read_text(encoding="utf-8"))
+        for value_statement in (
+            "adopters can find bounded hooks",
+            "technical leaders can see where authority and write paths stop",
+            "researchers can inspect claim and refusal evidence",
+            "harness readers can compare",
+            "public egress is part of the governed task surface",
+        ):
+            assert value_statement in body
 
 
 class TestMetadataCoherence:
