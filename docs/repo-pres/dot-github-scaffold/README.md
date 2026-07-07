@@ -1,29 +1,29 @@
-# GitHub profile README canonical copy
+# GitHub Organization Profile Scaffold - Superseded
 
-Pre-authored content for the operator account profile README. As of the
-2026-05-11 live-state reconcile, the correct rendered surface is
-`ryanklee/ryanklee/README.md`, not `ryanklee/.github/profile/README.md`.
-The copy in `profile/README.md` is the canonical checked-in source used to
-refresh that live profile surface.
+This directory previously held personal-account profile copy. It is superseded
+by the Hapax Systems organization profile path:
 
-## Why this copy lives here
+`hapax-systems/.github/profile/README.md`
 
-`hapax-council` is the governed public-material source for the current project
-spine. Keeping the profile README copy here lets the docs tests catch stale
-repo links, missing refusal posture, and private-surface overclaims before the
-external profile repo is refreshed.
+The canonical source for that profile is now the renderer in
+`hapax-constitution:sdlc.render.org_profile_readme`. The generated local target
+is `~/projects/hapax-systems--github/profile/README.md`.
 
-## Layout
+Do not refresh first-party Hapax Systems public frontmatter through a personal
+GitHub owner path. Historical personal-account reconciliation records in this
+folder are retained only as audit receipts.
+
+## Current Layout
 
 ```
 docs/repo-pres/dot-github-scaffold/
-├── README.md            # This file
+├── README.md
 └── profile/
-    └── README.md        # Copy pushed to ryanklee/ryanklee/README.md
+    └── README.md        # historical superseded copy; not a publish source
 ```
 
-## Cross-references
+## Cross-References
 
-- cc-task: `github-readme-profile-current-project-refresh`
-- Refusal-as-data substrate: `agents/publication_bus/refusal_brief_publisher.py`
-- V5 publication bus: `agents/publication_bus/`
+- Current task: `cc-task-hapax-public-frontmatter-rewrite-20260706`
+- Canonical renderer: `hapax-constitution/sdlc/render/org_profile_readme.py`
+- Publication bus: `agents/publication_bus/`

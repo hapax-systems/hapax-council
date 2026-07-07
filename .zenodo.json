@@ -1,28 +1,19 @@
 {
   "title": "hapax-council",
-  "doi": "10.5281/zenodo.20113515",
-  "conceptdoi": "10.5281/zenodo.20113514",
-  "description": "Constituent of the Hapax operating environment. Single-operator research apparatus for externalised executive function, built by a neurodivergent solo operator. Stigmergic cognitive mesh with formal constitutional governance, 200+ agents, voice daemon, GPU visual expression, and 24/7 livestream as research instrument. Not a product, not seeking contributors. Research infrastructure published as artifact.",
+  "description": "Source-visible Hapax Systems research/runtime artifact for studying governed AI-agent work, public claim discipline, refusal, and publication-bus egress under a single-operator system.",
   "creators": [
     {
-      "name": "Kleeberger, Ryan",
-      "orcid": "0009-0001-5146-4548"
+      "name": "Hapax Systems"
     }
   ],
+  "license": "other-closed",
   "access_right": "open",
   "upload_type": "software",
-  "publication_date": "2026-05-10",
-  "license": "other-closed",
-  "notes": "Repository license: PolyForm Strict 1.0.0 (https://polyformproject.org/licenses/strict/1.0.0).",
   "keywords": [
     "research-software",
     "single-operator",
-    "stigmergic-cognitive-mesh",
-    "constitutional-governance",
-    "human-ai-collaboration",
-    "externalized-executive-function",
-    "neurodivergent-research-instrument",
     "philosophy-of-science",
+    "governance",
     "infrastructure-as-argument"
   ],
   "related_identifiers": [
@@ -36,5 +27,13 @@
       "relation": "isSupplementTo",
       "scheme": "url"
     }
-  ]
+  ],
+  "communities": [
+    {
+      "identifier": "hapax-publications"
+    }
+  ],
+  "doi": "10.5281/zenodo.20113515",
+  "conceptdoi": "10.5281/zenodo.20113514",
+  "notes": "Repository license: PolyForm Strict 1.0.0 (https://polyformproject.org/licenses/strict/1.0.0/)."
 }
