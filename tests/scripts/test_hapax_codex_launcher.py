@@ -52,6 +52,7 @@ printf 'CODEX_ACCESS_TOKEN_PRESENT=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" >> {env
     env["HAPAX_CODEX_TERMINAL"] = "none"
     env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
     env["HOME"] = str(tmp_path / "home")
+    env["HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS"] = "0"
     env.pop("CODEX_THREAD_NAME", None)
     env.pop("CODEX_ROLE", None)
     env.pop("CODEX_SESSION_NAME", None)
@@ -199,6 +200,60 @@ def test_remote_token_cleanup_refuses_traversal_handoff_path() -> None:
 
     assert result.returncode == 78
     assert "refusing invalid Codex OAuth token handoff cleanup path" in result.stderr
+
+
+def test_remote_preflight_self_cleans_unconsumed_token_handoff(tmp_path: Path) -> None:
+    remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_codex = bin_dir / "codex"
+    fake_codex.write_text(
+        """#!/usr/bin/env bash
+if [ "${1:-}" = "debug" ] && [ "${2:-}" = "models" ]; then
+  printf '%s\n' '{"models":["test"]}'
+  exit 0
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+    token = _write_codex_access_token(tmp_path / "home", exp=int(time.time()) + 3600)
+    handoff = Path("/tmp") / f"hapax-codex-token-ttl-{os.getpid()}-{tmp_path.name}"
+    handoff.unlink(missing_ok=True)
+    payload = {
+        "required_dirs": [],
+        "executables": [],
+        "binaries": ["codex"],
+        "token_file": str(token),
+        "token_handoff_file": str(handoff),
+        "token_handoff_ttl_seconds": 2,
+    }
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+
+    try:
+        started = time.monotonic()
+        result = subprocess.run(
+            [sys.executable, "-c", remote_preflight_py],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=5,
+        )
+        elapsed = time.monotonic() - started
+
+        assert result.returncode == 0, result.stderr
+        assert elapsed < 1.5
+        assert handoff.exists()
+        for _ in range(40):
+            if not handoff.exists():
+                break
+            time.sleep(0.1)
+        assert not handoff.exists()
+    finally:
+        handoff.unlink(missing_ok=True)
 
 
 def test_rejects_slot_name_as_visible_session(tmp_path: Path) -> None:

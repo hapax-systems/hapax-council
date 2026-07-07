@@ -43,7 +43,10 @@ Remote appendix dispatch uses this order:
 5. after the local `cc-claim` boundary accepts the dispatch, snapshot the exact
    preflight-proven token into a short-lived remote handoff file. The handoff
    create is exclusive, `0600`, and non-following where the dispatch host exposes
-   `O_NOFOLLOW`; a preexisting file or symlink is a hard preflight failure;
+   `O_NOFOLLOW`; a preexisting file or symlink is a hard preflight failure. The
+   remote preflight also schedules an out-of-band self-cleanup for unconsumed
+   handoffs. The default TTL is 900 seconds and may be reduced with
+   `HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS`;
 6. execute `codex exec` on the remote host with that handoff token, deleting the
    handoff as it is consumed. Later rotation of the published token file must not
    change the bearer used for this exec. A failed deletion during handoff

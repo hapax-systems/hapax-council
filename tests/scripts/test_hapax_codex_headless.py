@@ -20,6 +20,7 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
 @pytest.fixture(autouse=True)
 def _isolate_headless_pid_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(tmp_path / "headless-pids"))
+    monkeypatch.setenv("HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS", "0")
     monkeypatch.setenv(
         "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE",
         str(_write_codex_access_token(tmp_path / "codex-oauth")),
@@ -1376,6 +1377,51 @@ def test_codex_headless_remote_cleanup_refuses_traversal_handoff_path() -> None:
 
     assert result.returncode == 78
     assert "refusing invalid Codex OAuth token handoff cleanup path" in result.stderr
+
+
+def test_codex_headless_remote_preflight_self_cleans_unconsumed_token_handoff(
+    tmp_path: Path,
+) -> None:
+    remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_executable(bin_dir / "codex", "exit 0\n")
+    token = _write_codex_access_token(tmp_path / "oauth", exp=int(time.time()) + 3600)
+    handoff = Path("/tmp") / f"hapax-codex-token-headless-ttl-{os.getpid()}-{tmp_path.name}"
+    handoff.unlink(missing_ok=True)
+    payload = {
+        "required_dirs": [],
+        "executables": [],
+        "binaries": ["codex"],
+        "token_file": str(token),
+        "token_handoff_file": str(handoff),
+        "token_handoff_ttl_seconds": 2,
+    }
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+
+    try:
+        started = time.monotonic()
+        result = subprocess.run(
+            [sys.executable, "-c", remote_preflight_py],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=5,
+        )
+        elapsed = time.monotonic() - started
+
+        assert result.returncode == 0, result.stderr
+        assert elapsed < 1.5
+        assert handoff.exists()
+        for _ in range(40):
+            if not handoff.exists():
+                break
+            time.sleep(0.1)
+        assert not handoff.exists()
+    finally:
+        handoff.unlink(missing_ok=True)
 
 
 def test_codex_headless_claim_failure_does_not_create_remote_handoff(

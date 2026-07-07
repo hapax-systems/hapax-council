@@ -338,6 +338,7 @@ payload = {
     "binaries": ["codex"] if token_only == "1" else ["python3", "codex"],
     "token_file": token_file,
     "token_handoff_file": "" if token_only == "1" else token_handoff_file,
+    "token_handoff_ttl_seconds": int(os.environ.get("HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS", "900")),
 }
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
 PYEOF
@@ -502,6 +503,36 @@ if handoff:
         sys.exit(78)
     with os.fdopen(fd,"w",encoding="utf-8") as fh:
         fh.write(token)
+    ttl=int(p.get("token_handoff_ttl_seconds") or 0)
+    if ttl > 0:
+        try:
+            pid=os.fork()
+        except (AttributeError,OSError):
+            pid=-1
+        if pid == 0:
+            try:
+                os.setsid()
+            except OSError:
+                pass
+            try:
+                devnull=os.open(os.devnull,os.O_RDWR)
+                for fdno in (0,1,2):
+                    try:
+                        os.dup2(devnull,fdno)
+                    except OSError:
+                        pass
+                if devnull > 2:
+                    os.close(devnull)
+            except OSError:
+                pass
+            try:
+                time.sleep(ttl)
+                try:
+                    os.unlink(handoff)
+                except FileNotFoundError:
+                    pass
+            finally:
+                os._exit(0)
 sys.exit(0)'
 REMOTE_TOKEN_CLEANUP_PY='import base64,json,os,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); path=os.path.expanduser(p.get("path") or "");
 # token_handoff_cleanup: unlink only the governed short-lived handoff path.
