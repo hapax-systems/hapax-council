@@ -3002,7 +3002,9 @@ class TestFamilyOutageDegradation:
                 stderr=(
                     "hapax-glmcp-reviewer: PAYG fallback used "
                     "endpoint=https://api.z.ai/api/paas/v4 model=glm-5.2 "
-                    "primary_error_class=quota_exhausted bearer sk-live-secret-token "
+                    "primary_error_class=quota_exhausted spend_gate=eligible_active_budget "
+                    "budget_id=tb-secret-budget spend_receipt=secret-receipt.yaml "
+                    "bearer sk-live-secret-token "
                     "Authorization=ghp_abcdefghijklmnopqrstuvwxyz012345 "
                     "Authorization: Bearer abc123-secret "
                     "password=p@ss credential=abcdef0123456789abcdef0123456789abcdef0123"
@@ -3020,6 +3022,11 @@ class TestFamilyOutageDegradation:
         assert reviews[0]["verdict"] == "accept"
         assert "PAYG fallback used" in reviews[0]["runner_stderr_excerpt"]
         assert "https://api.z.ai/api/paas/v4" in reviews[0]["runner_stderr_excerpt"]
+        assert "spend_gate=eligible_active_budget" in reviews[0]["runner_stderr_excerpt"]
+        assert "budget_id=<redacted>" in reviews[0]["runner_stderr_excerpt"]
+        assert "spend_receipt=<redacted>" in reviews[0]["runner_stderr_excerpt"]
+        assert "tb-secret-budget" not in reviews[0]["runner_stderr_excerpt"]
+        assert "secret-receipt.yaml" not in reviews[0]["runner_stderr_excerpt"]
         assert "sk-live-secret-token" not in reviews[0]["runner_stderr_excerpt"]
         assert "ghp_abcdefghijklmnopqrstuvwxyz012345" not in reviews[0]["runner_stderr_excerpt"]
         assert "abc123-secret" not in reviews[0]["runner_stderr_excerpt"]
@@ -3068,6 +3075,18 @@ class TestFamilyOutageDegradation:
             "reviewer emitted stderr on successful run; output omitted"
         )
         assert "abc123-secret" not in str(reviews[0])
+
+    def test_reviewer_diagnostic_redacts_authorization_headers_and_quoted_tokens(self) -> None:
+        excerpt = dispatch.sanitize_reviewer_diagnostic(
+            "status=401 Authorization: Bearer abc123-short-token extra "
+            '\n{"token": "short-json-token", "ok": false} X-Api-Token: short-api-token'
+        )
+
+        assert "abc123-short-token" not in excerpt
+        assert "short-json-token" not in excerpt
+        assert "short-api-token" not in excerpt
+        assert "Authorization: Bearer <redacted>" in excerpt
+        assert '"token": "<redacted>"' in excerpt
 
     def test_provider_outage_on_stderr_becomes_provider_outage(self) -> None:
         constitution = dispatch.review_team.Constitution(

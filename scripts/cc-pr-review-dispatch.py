@@ -79,11 +79,27 @@ MAX_TASK_NOTE_CHARS = 60_000
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
 MAX_REVIEW_RUNNER_STDERR_CHARS = 1_000
 REVIEWER_DIAGNOSTIC_SECRETISH_RE = re.compile(
-    r"((?:authorization[=:]\s*(?:bearer\s+)?|bearer\s+)|"
-    r"(?:api[_-]?key|token|secret|password|credential)[=:]\s*)[^\s]+|"
-    r"(?:sk-[a-z0-9_-]+|gh[pousr]_[a-z0-9_]+|[a-z0-9_-]{40,})",
+    r"(?P<auth_prefix>\bauthorization\b\s*[:=]\s*(?:bearer\s+)?)"
+    r"(?P<auth_value>[^\r\n]+)|"
+    r"(?P<bearer_prefix>\bbearer\s+)(?P<bearer_value>[^\s,;]+)|"
+    r"(?P<key_prefix>[\"']?\b(?:x[_-]?)?(?:api[_-]?(?:key|token)|token|secret|password|credential)\b"
+    r"[\"']?\s*[:=]\s*[\"']?)(?P<key_value>[^\"'\s,;}]+)(?P<key_suffix>[\"']?)|"
+    r"(?P<known_secret>\b(?:sk-[a-z0-9_-]+|gh[pousr]_[a-z0-9_]+|[a-z0-9_-]{40,})\b)",
     re.IGNORECASE,
 )
+PAYG_FALLBACK_MARKER = "PAYG fallback used"
+PAYG_FALLBACK_KEY_VALUE_RE = re.compile(r"\b([a-z_]+)=([^\s]+)")
+PAYG_FALLBACK_ALLOWED_FIELDS = (
+    "endpoint",
+    "model",
+    "primary_error_class",
+    "spend_gate",
+)
+PAYG_FALLBACK_REDACTED_FIELDS = (
+    "budget_id",
+    "spend_receipt",
+)
+PAYG_FALLBACK_SAFE_VALUE_RE = re.compile(r"\A[a-z0-9][a-z0-9._:/-]{0,160}\Z", re.IGNORECASE)
 PUBLIC_GATE_AUTHORITY_CONTEXT_KEYS = (
     "public_gate_authority",
     "publication_gate_authority",
@@ -1193,20 +1209,45 @@ class ReviewerRunnerResult:
     stderr: str = ""
 
 
+def _redact_reviewer_diagnostic_match(match: re.Match[str]) -> str:
+    if match.group("auth_prefix") is not None:
+        return f"{match.group('auth_prefix')}<redacted>"
+    if match.group("bearer_prefix") is not None:
+        return f"{match.group('bearer_prefix')}<redacted>"
+    if match.group("key_prefix") is not None:
+        return f"{match.group('key_prefix')}<redacted>{match.group('key_suffix') or ''}"
+    return "<redacted>"
+
+
 def sanitize_reviewer_diagnostic(text: str, *, limit: int = MAX_REVIEW_RUNNER_STDERR_CHARS) -> str:
-    redacted = REVIEWER_DIAGNOSTIC_SECRETISH_RE.sub(
-        lambda match: (match.group(1) or "") + "<redacted>",
-        text.strip(),
-    )
+    redacted = REVIEWER_DIAGNOSTIC_SECRETISH_RE.sub(_redact_reviewer_diagnostic_match, text.strip())
     return truncate_context(redacted, limit=limit).strip()
+
+
+def render_payg_fallback_excerpt(text: str) -> str | None:
+    """Return an allowlisted PAYG fallback diagnostic, never raw reviewer stderr."""
+
+    for line in text.splitlines():
+        if PAYG_FALLBACK_MARKER not in line:
+            continue
+        fields = dict(PAYG_FALLBACK_KEY_VALUE_RE.findall(line))
+        parts = ["hapax-glmcp-reviewer: PAYG fallback used"]
+        for key in PAYG_FALLBACK_ALLOWED_FIELDS:
+            value = fields.get(key)
+            if value and PAYG_FALLBACK_SAFE_VALUE_RE.fullmatch(value):
+                parts.append(f"{key}={value}")
+        for key in PAYG_FALLBACK_REDACTED_FIELDS:
+            if fields.get(key):
+                parts.append(f"{key}=<redacted>")
+        return truncate_context(" ".join(parts), limit=MAX_REVIEW_RUNNER_STDERR_CHARS).strip()
+    return None
 
 
 def reviewer_success_stderr_excerpt(text: str) -> str:
     if not text.strip():
         return ""
-    excerpt = sanitize_reviewer_diagnostic(text)
-    if "PAYG fallback used" in excerpt:
-        return excerpt
+    if payg_excerpt := render_payg_fallback_excerpt(text):
+        return payg_excerpt
     return "reviewer emitted stderr on successful run; output omitted"
 
 
