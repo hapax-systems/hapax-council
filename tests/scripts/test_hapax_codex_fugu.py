@@ -53,6 +53,12 @@ def _base_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
         "HAPAX_AGENT_NAME",
         "HAPAX_AGENT_ROLE",
         "HAPAX_DISPATCH_HOST",
+        "DISPATCH_HOST",
+        "HAPAX_CODEX_BIN_PATH",
+        "HAPAX_CODEX_FUGU_BASE_URL",
+        "HAPAX_CODEX_FUGU_WIRE_API",
+        "HAPAX_CODEX_FUGU_REASONING_EFFORT",
+        "HAPAX_CODEX_FUGU_SECRET_ENTRY",
         "SAKANA_API_KEY",
     ):
         env.pop(key, None)
@@ -247,6 +253,8 @@ def test_fugu_check_uses_pass_without_exposing_secret(tmp_path: Path) -> None:
     assert "prompt_sent=false" in result.stdout
     assert "provider_spend=false" in result.stdout
     assert "raw_codex_fugu_bypass=false" in result.stdout
+    assert f"codex_binary={bin_dir / 'codex'}" in result.stdout
+    assert "codex_bin_path_override=false" in result.stdout
     assert "secret_entry=pass:sakana/api-key" in result.stdout
     assert "secret_value=<redacted>" in result.stdout
     assert "super-secret-value" not in result.stdout
@@ -366,6 +374,24 @@ def test_fugu_print_env_refuses_remote_dispatch_request(tmp_path: Path) -> None:
     assert "HAPAX_CODEX_FUGU_PROFILE" not in result.stdout
 
 
+def test_fugu_print_env_refuses_internal_dispatch_host(tmp_path: Path) -> None:
+    env, _catalog, _bin_dir = _base_env(tmp_path)
+    env["DISPATCH_HOST"] = "appendix"
+
+    result = subprocess.run(
+        [str(REINS_FUGU), "--print-env"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 14
+    assert "Fugu launch refuses remote dispatch" in result.stderr
+    assert "next action" in result.stderr
+    assert "HAPAX_CODEX_FUGU_PROFILE" not in result.stdout
+
+
 def test_fugu_check_rejects_empty_pass_entry(tmp_path: Path) -> None:
     env, _catalog, bin_dir = _base_env(tmp_path)
     _install_fake_codex(bin_dir, tmp_path)
@@ -478,6 +504,33 @@ def test_fugu_refuses_unknown_endpoint_and_secret_route(tmp_path: Path) -> None:
     assert "pass:sakana/api-key" in secret.stderr
 
 
+@pytest.mark.parametrize(
+    ("env_key", "value", "expected"),
+    [
+        ("HAPAX_CODEX_FUGU_WIRE_API", "chat_completions", "unsupported wire_api"),
+        ("HAPAX_CODEX_FUGU_REASONING_EFFORT", "medium", "unsupported reasoning effort"),
+    ],
+)
+def test_fugu_refuses_unsupported_wire_api_and_reasoning_effort(
+    tmp_path: Path, env_key: str, value: str, expected: str
+) -> None:
+    env, _catalog, _bin_dir = _base_env(tmp_path)
+    env[env_key] = value
+
+    result = subprocess.run(
+        [str(REINS_FUGU), "--print-env"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert expected in result.stderr
+    assert "next action" in result.stderr
+    assert "HAPAX_CODEX_FUGU_PROFILE" not in result.stdout
+
+
 def test_fugu_launch_injects_governed_codex_config_without_global_rewrite(
     tmp_path: Path,
 ) -> None:
@@ -524,6 +577,54 @@ def test_fugu_launch_injects_governed_codex_config_without_global_rewrite(
     assert "HAPAX_AGENT_ROLE=cx-fugu-test" in launched_env
     assert "HAPAX_AGENT_SLOT=alpha" in launched_env
     assert CODEX_CONFIG.read_text(encoding="utf-8") == config_before
+
+
+def test_fugu_launch_refuses_codex_bin_path_override_before_loading_secret(
+    tmp_path: Path,
+) -> None:
+    env, _catalog, bin_dir = _base_env(tmp_path)
+    raw_called = tmp_path / "raw-codex-called"
+    pass_called = tmp_path / "pass-called"
+    raw_codex = tmp_path / "codex-fugu"
+    _write_executable(
+        raw_codex,
+        f"""printf called > {raw_called}
+exit 0
+""",
+    )
+    _write_executable(
+        bin_dir / "pass",
+        f"""printf called > {pass_called}
+printf '%s\\n' super-secret-value
+exit 0
+""",
+    )
+    env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
+    env["HAPAX_CODEX_BIN_PATH"] = str(raw_codex)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-fugu-test",
+            "--cd",
+            str(workdir),
+            "--fugu-profile",
+            "fugu",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert "refuses HAPAX_CODEX_BIN_PATH executable override" in result.stderr
+    assert "next action" in result.stderr
+    assert not raw_called.exists()
+    assert not pass_called.exists()
 
 
 def test_fugu_launch_toml_quotes_catalog_path(tmp_path: Path) -> None:
@@ -933,6 +1034,31 @@ def test_fugu_print_env_reports_malformed_catalog(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert "not valid JSON" in result.stderr
     assert "next action" in result.stderr
+
+
+def test_fugu_print_env_adds_next_action_to_raw_catalog_validator_failure(
+    tmp_path: Path,
+) -> None:
+    env, _catalog, bin_dir = _base_env(tmp_path)
+    _write_executable(
+        bin_dir / "python3",
+        """printf '%s\\n' 'python3: command not found' >&2
+exit 127
+""",
+    )
+
+    result = subprocess.run(
+        [str(REINS_FUGU), "--print-env"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert "python3: command not found" in result.stderr
+    assert "next action: verify python3 is available" in result.stderr
+    assert "HAPAX_CODEX_FUGU_PROFILE" not in result.stdout
 
 
 def test_fugu_check_requires_profile_with_next_action(tmp_path: Path) -> None:

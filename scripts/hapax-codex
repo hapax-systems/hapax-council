@@ -577,6 +577,14 @@ fugu_refuse_codex_override_args() {
   done
 }
 
+fugu_refuse_codex_binary_override() {
+  if [ -n "${HAPAX_CODEX_BIN_PATH:-}" ]; then
+    echo "hapax-codex: Fugu mode refuses HAPAX_CODEX_BIN_PATH executable override; next action: expose the supported Codex CLI as 'codex' in PATH and rerun the governed Fugu wrapper" >&2
+    return 1
+  fi
+  return 0
+}
+
 fugu_refuse_remote_dispatch() {
   local requested="${HAPAX_DISPATCH_HOST:-}"
   if [ -n "$requested" ] && ! dispatch_host_is_local "$requested"; then
@@ -629,6 +637,13 @@ fugu_collect_config_errors() {
   if ! catalog_error="$(fugu_catalog_model_error "$catalog" "$model" 2>&1)"; then
     if [ -z "$catalog_error" ]; then
       catalog_error="model catalog validation failed without details; next action: verify python3 is available and rerun --check"
+    else
+      case "$catalog_error" in
+        *"next action:"*) ;;
+        *)
+          catalog_error="$catalog_error; next action: verify python3 is available and rerun --check"
+          ;;
+      esac
     fi
     errors+=("$catalog_error")
   fi
@@ -656,7 +671,7 @@ EOF
 }
 
 fugu_check() {
-  local errors="" config_errors="" model pass_error
+  local errors="" config_errors="" model pass_error codex_bin
   if model="$(fugu_model_for_profile "$FUGU_PROFILE")"; then
     :
   else
@@ -666,7 +681,8 @@ fugu_check() {
     "$FUGU_BASE_URL" "$FUGU_WIRE_API" "$FUGU_REASONING_EFFORT" "$FUGU_SECRET_ENTRY" || true
   errors="$config_errors"
 
-  if ! command -v codex >/dev/null 2>&1; then
+  codex_bin="$(command -v codex || true)"
+  if [ -z "$codex_bin" ]; then
     errors="${errors}codex binary not found in PATH; next action: install or expose the supported Codex CLI before retrying"$'\n'
   fi
   if [ "$FUGU_SECRET_ENTRY" = "sakana/api-key" ]; then
@@ -692,6 +708,8 @@ base_url=$(fugu_normalized_base_url "$FUGU_BASE_URL")
 wire_api=$FUGU_WIRE_API
 reasoning_effort=$FUGU_REASONING_EFFORT
 model_catalog=$FUGU_MODEL_CATALOG
+codex_binary=$codex_bin
+codex_bin_path_override=false
 secret_entry=pass:$FUGU_SECRET_ENTRY
 secret_value=<redacted>
 workdir=$WORKDIR
@@ -1525,6 +1543,9 @@ fi
 
 if [ -n "$FUGU_PROFILE" ]; then
   unset SAKANA_API_KEY
+  if ! fugu_refuse_codex_binary_override; then
+    exit 2
+  fi
 fi
 
 if [ -n "$FUGU_PROFILE" ] && [ "$FUGU_PRINT_ENV" -eq 1 ]; then
@@ -1926,7 +1947,9 @@ if [ -n "$FUGU_PROFILE" ]; then
   )
 fi
 
-CODEX_ARGS+=("${CODEX_EXTRA[@]}")
+if [ -z "$FUGU_PROFILE" ]; then
+  CODEX_ARGS+=("${CODEX_EXTRA[@]}")
+fi
 
 if [ "$append_bootstrap_prompt" -eq 1 ]; then
   CODEX_ARGS+=("Bootstrap file: $BOOTSTRAP_FILE")
