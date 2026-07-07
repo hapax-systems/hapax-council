@@ -168,6 +168,9 @@ secret_source: agy:operator-session
 secret_value_persisted: {secret_value_persisted}
 prompt_or_output_persisted: false
 billing_mode: operator_session_subscription
+smoke_command: scripts/hapax-agy-reviewer
+smoke_returncode: 0
+smoke_stdout_validated: true
 positive_admission: true
 """,
         encoding="utf-8",
@@ -730,6 +733,45 @@ def test_agy_admission_rejects_secret_persistence(tmp_path: Path) -> None:
     )
     assert agy_snapshot["subscription_quota_state"] == "unknown"
     assert any("ignored:secret-value-persisted" in ref for ref in agy_snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["agy_admissions"] == 0
+    assert summary["agy_ignored_admissions"] == 1
+
+
+def test_agy_admission_rejects_missing_smoke_validation(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "agy-quota-admission.yaml").write_text(
+        """schema: hapax.agy_quota_admission.v1
+status: quota_available
+provider: google-antigravity-cli-agy
+capacity_pool: subscription_quota
+route_id: agy.review.direct
+supported_tool: hapax-agy-reviewer
+model: gemini-3.1-pro-preview
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+evidence_ref: agy-gemini31pro-smoke-witness
+secret_source: agy:operator-session
+secret_value_persisted: false
+prompt_or_output_persisted: false
+billing_mode: operator_session_subscription
+positive_admission: true
+""",
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    agy_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "agy.review.direct"
+    )
+    assert agy_snapshot["subscription_quota_state"] == "unknown"
+    assert any("ignored:smoke-command-missing" in ref for ref in agy_snapshot["evidence_refs"])
     summary = json.loads(result.stdout)
     assert summary["agy_admissions"] == 0
     assert summary["agy_ignored_admissions"] == 1

@@ -53,11 +53,12 @@ fresh agy platform-capability receipt clears the review-seat admission blocker.
 `agy.review.direct` also remains blocked on
 `route_specific_quota_receipt_absent` until a fresh short-lived
 `hapax.agy_quota_admission.v1` receipt is written by
-`scripts/hapax-agy-quota-admission` after a sanctioned
-`scripts/hapax-agy-reviewer` smoke, and then projected into the live quota
-ledger by `scripts/hapax-quota-telemetry-writer`. Generic fresh quota snapshots
-and observed platform-receipt quota surfaces for `agy.review.direct` fail closed
-as untrusted. Legacy
+`scripts/hapax-agy-quota-admission`, which runs and validates a sanctioned
+`scripts/hapax-agy-reviewer` smoke without persisting prompt or output content,
+and then projected into the live quota ledger by
+`scripts/hapax-quota-telemetry-writer`. Generic fresh quota snapshots and
+observed platform-receipt quota surfaces for `agy.review.direct` fail closed as
+untrusted. Legacy
 `gemini-cli` aliases remain retired. The receipt writer still records the agy
 CLI's bundled `~/.gemini/antigravity-cli/.../cli.md` config reference; that
 directory name is the installed CLI bundle path, not a live Antigravity route.
@@ -78,8 +79,13 @@ uv run pytest \
   tests/shared/test_capability_dispatch.py::test_resolve_agy_review_route_is_valid_but_non_spawnable \
   tests/shared/test_platform_capability_registry.py::test_agy_observed_route_quota_receipt_does_not_admit_review_route \
   tests/shared/test_platform_capability_registry.py::test_forged_agy_observed_quota_receipt_cannot_clear_route_specific_blocker \
-  tests/shared/test_platform_capability_registry.py::test_agy_has_no_sanctioned_route_specific_quota_admission_path \
+  tests/shared/test_platform_capability_registry.py::test_agy_has_no_route_specific_quota_admission_without_live_ledger \
+  tests/shared/test_platform_capability_registry.py::test_agy_receipt_with_fresh_live_admission_clears_route_quota \
   tests/shared/test_quota_spend_ledger.py::test_agy_receipt_bounded_route_rejects_generic_fresh_quota_snapshot \
+  tests/shared/test_quota_spend_ledger.py::test_receipt_bounded_route_accepts_agy_admission_evidence \
+  tests/scripts/test_hapax_agy_quota_admission.py::test_agy_quota_admission_writes_short_lived_safe_receipt \
+  tests/scripts/test_hapax_agy_quota_admission.py::test_agy_quota_admission_rejects_failed_reviewer_smoke \
+  tests/scripts/test_hapax_agy_quota_admission.py::test_agy_quota_admission_rejects_invalid_reviewer_stdout \
   tests/shared/test_platform_capability_receipts.py::test_agy_receipt_records_live_review_route_without_unblocking_quota \
   tests/test_review_team.py::TestConstitution::test_retired_authoring_lanes_fail_closed \
   tests/scripts/test_hapax_agy_reviewer.py::test_agy_reviewer_ignores_ambient_review_model \
