@@ -1513,7 +1513,16 @@ if [ "$TERMINAL" = "foot" ]; then
   FOOT_TARGET_WORKSPACE="$(active_hyprland_workspace_name || true)"
 fi
 
-RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION").sh"
+RUNNER_TEMPLATE="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$SESSION").XXXXXX.sh"
+RUNNER_UMASK="$(umask)"
+umask 077
+if ! RUNNER="$(mktemp "$RUNNER_TEMPLATE")"; then
+  umask "$RUNNER_UMASK"
+  echo "hapax-codex: failed to create owner-only Codex runner in $SPAWN_DIR" >&2
+  exit 70
+fi
+umask "$RUNNER_UMASK"
+chmod 700 "$RUNNER"
 CHILD_ARGS=(--session "$SESSION" --slot "$SLOT" --cd "$WORKDIR" --terminal none)
 if [ "$FORCE" -eq 1 ]; then
   CHILD_ARGS+=(--force)
