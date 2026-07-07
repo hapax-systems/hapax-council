@@ -18,12 +18,12 @@ The vault file's YAML frontmatter MUST include:
   type:  str           # informational only
   Publication-Allowed: true  # explicit Claim Verification Council clearance
   publication_gate_receipts:
-    source_artifact_public_safe: receipt-ref
-    source_refs_present: receipt-ref
-    rights_privacy_redaction_pass: receipt-ref
-    target_surface_allowlist_pass: receipt-ref
-    claim_review_current: receipt-ref
-    no_direct_public_egress: receipt-ref
+    source_artifact_public_safe: public-gate:receipt-ref
+    source_refs_present: public-gate:receipt-ref
+    rights_privacy_redaction_pass: public-gate:receipt-ref
+    target_surface_allowlist_pass: public-gate:receipt-ref
+    claim_review_current: public-gate:receipt-ref
+    no_direct_public_egress: public-gate:receipt-ref
 
 Optional:
 
@@ -100,6 +100,11 @@ PUBLICATION_BASELINE_REQUIRED_GATES = (
 PUBLICATION_FANOUT_REQUIRED_GATES = (
     *PUBLICATION_BASELINE_REQUIRED_GATES,
     "fanout_loop_prevention_present",
+)
+PUBLIC_GATE_RECEIPT_PREFIXES = (
+    "public-gate:",
+    "public_gate:",
+    "receipt:public-gate:",
 )
 
 
@@ -355,14 +360,20 @@ def _publication_gate_receipts(frontmatter: dict) -> dict[str, object]:
         return {}
     if not isinstance(raw, Mapping):
         raise PublicationGateError(
-            "publication_gate_receipts must be a mapping of gate id to receipt refs"
+            "publication_gate_receipts must be a mapping of gate id to receipt refs; "
+            "next action: provide durable public-gate receipt refs keyed by gate id"
         )
     return {str(key): value for key, value in raw.items()}
 
 
 def _receipt_value_present(value: object) -> bool:
     if isinstance(value, str):
-        return bool(value.strip())
+        stripped = value.strip()
+        lowered = stripped.casefold()
+        return any(
+            lowered.startswith(prefix) and len(stripped) > len(prefix)
+            for prefix in PUBLIC_GATE_RECEIPT_PREFIXES
+        )
     if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, str, Mapping)):
         return any(_receipt_value_present(item) for item in value)
     return False
@@ -374,9 +385,9 @@ def _assert_publication_gate_receipts(frontmatter: dict, surfaces: list[str]) ->
     missing = sorted(gate for gate in required if not _receipt_value_present(receipts.get(gate)))
     if missing:
         raise PublicationGateError(
-            "publication_gate_receipts missing required receipt refs: "
+            "publication_gate_receipts missing or invalid required receipt refs: "
             + ", ".join(missing)
-            + "; next action: hold the draft until publication-bus gate receipts are recorded"
+            + "; next action: hold the draft until durable public-gate receipt refs are recorded"
         )
 
 
@@ -389,7 +400,10 @@ def _build_artifact(
     source_path: Path | None = None,
 ) -> PreprintArtifact:
     if not _publication_allowed(frontmatter):
-        raise PublicationGateError("Publication-Allowed must be explicitly true")
+        raise PublicationGateError(
+            "Publication-Allowed must be explicitly true; next action: hold the draft until "
+            "Claim Verification Council clearance is recorded"
+        )
     _assert_target_surfaces_allowed(surfaces)
     _assert_publication_gate_receipts(frontmatter, surfaces)
 

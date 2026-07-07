@@ -53,6 +53,13 @@ FANOUT_REQUIRED_GATES: tuple[str, ...] = (
 )
 """Receipt ids required before any cross-weblog public fanout egress."""
 
+PUBLIC_GATE_RECEIPT_PREFIXES: tuple[str, ...] = (
+    "public-gate:",
+    "public_gate:",
+    "receipt:public-gate:",
+)
+"""Durable public-gate receipt ref prefixes accepted for fanout egress."""
+
 omg_fanouts_total = Counter(
     "hapax_publication_bus_omg_fanouts_total",
     "omg.lol cross-weblog fanout outcomes per source + target + result.",
@@ -141,7 +148,12 @@ def _configured_required_gates(policy: object) -> tuple[list[str], str | None]:
 
 def _receipt_value_present(value: object) -> bool:
     if isinstance(value, str):
-        return bool(value.strip())
+        stripped = value.strip()
+        lowered = stripped.casefold()
+        return any(
+            lowered.startswith(prefix) and len(stripped) > len(prefix)
+            for prefix in PUBLIC_GATE_RECEIPT_PREFIXES
+        )
     if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
         return any(_receipt_value_present(item) for item in value)
     return False
@@ -197,8 +209,9 @@ def fanout(
     if missing_receipts:
         missing_text = ", ".join(missing_receipts)
         log.error(
-            "fanout blocked before public egress; missing publication gate receipts: %s; "
-            "next action: record required publication-bus receipts before fanout",
+            "fanout blocked before public egress; missing or invalid publication gate "
+            "receipts: %s; next action: record durable public-gate receipt refs before "
+            "fanout",
             missing_text,
         )
         for target in targets:

@@ -22,7 +22,7 @@ def _make_client(enabled: bool = True) -> MagicMock:
 
 
 def _gate_receipts() -> dict[str, str]:
-    return {gate: f"receipt:{gate}" for gate in FANOUT_REQUIRED_GATES}
+    return {gate: f"public-gate:{gate}" for gate in FANOUT_REQUIRED_GATES}
 
 
 def _required_gates_yaml(gates: tuple[str, ...] = FANOUT_REQUIRED_GATES) -> str:
@@ -204,6 +204,20 @@ class TestFanout:
             config=config,
             client=client,
             gate_receipts={},
+        )
+        assert result == {"oudepode": "gate-blocked"}
+        client.set_entry.assert_not_called()
+
+    def test_forged_gate_receipts_block_before_public_egress(self) -> None:
+        client = _make_client()
+        config = OmgFanoutConfig(addresses=["hapax", "oudepode"])
+        result = fanout(
+            source_address="hapax",
+            entry_id="entry-1",
+            content="body",
+            config=config,
+            client=client,
+            gate_receipts={gate: "placeholder" for gate in FANOUT_REQUIRED_GATES},
         )
         assert result == {"oudepode": "gate-blocked"}
         client.set_entry.assert_not_called()

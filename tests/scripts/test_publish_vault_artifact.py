@@ -14,12 +14,12 @@ SHOW_HN_DRAFT = (
     REPO_ROOT / "docs" / "publication-drafts" / "2026-05-10-show-hn-governance-that-ships.md"
 )
 PUBLICATION_GATE_RECEIPTS = {
-    "source_artifact_public_safe": "receipt:test-source-safe",
-    "source_refs_present": "receipt:test-source-refs",
-    "rights_privacy_redaction_pass": "receipt:test-rights-privacy-redaction",
-    "target_surface_allowlist_pass": "receipt:test-target-surfaces",
-    "claim_review_current": "receipt:test-claim-review",
-    "no_direct_public_egress": "receipt:test-no-direct-egress",
+    "source_artifact_public_safe": "public-gate:test-source-safe",
+    "source_refs_present": "public-gate:test-source-refs",
+    "rights_privacy_redaction_pass": "public-gate:test-rights-privacy-redaction",
+    "target_surface_allowlist_pass": "public-gate:test-target-surfaces",
+    "claim_review_current": "public-gate:test-claim-review",
+    "no_direct_public_egress": "public-gate:test-no-direct-egress",
 }
 
 
@@ -154,6 +154,28 @@ class TestBuildArtifact:
                     "slug": "draft",
                     "Publication-Allowed": True,
                 },
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+            )
+
+    def test_rejects_forged_publication_gate_receipts(self) -> None:
+        with pytest.raises(publish_vault_artifact.PublicationGateError, match="invalid"):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(
+                    publication_gate_receipts={
+                        gate: "placeholder" for gate in PUBLICATION_GATE_RECEIPTS
+                    }
+                ),
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+            )
+
+    def test_rejects_non_mapping_publication_gate_receipts(self) -> None:
+        with pytest.raises(publish_vault_artifact.PublicationGateError, match="mapping"):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(publication_gate_receipts=["public-gate:x"]),
                 surfaces=["omg-weblog"],
                 approver="Oudepode",
             )
