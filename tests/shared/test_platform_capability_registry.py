@@ -884,27 +884,41 @@ def _write_glmcp_live_quota_ledger(path: Path) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_subscription_quota_nonblocking_uses_receipt_stale_after() -> None:
-    """Regression: unobservable subscription quota must not go stale at 15m."""
+def test_subscription_quota_nonblocking_uses_receipt_stale_after_without_clearing_admission() -> (
+    None
+):
+    """Regression: unobservable subscription quota extends freshness but does not admit Claude."""
     payload = _payload()
     route = _route_payload(payload, "claude.headless.full")
     assert route["capacity_pool"] == "subscription_quota"
-    _mark_fresh(route)
+    route["blocked_reasons"] = [
+        "account_live_quota_receipt_absent",
+        "quota_telemetry_unknown",
+    ]
+    route["freshness"]["evidence"]["quota"]["blocked_reasons"] = [
+        "account_live_quota_receipt_absent",
+        "quota_telemetry_unknown",
+    ]
 
     receipt_time = datetime(2026, 5, 9, 20, 0, tzinfo=UTC)
     receipt = _make_receipt(observed_at=receipt_time, stale_after="24h")
     _apply_receipt_to_route_payload(route, receipt)
 
     assert route["freshness"]["quota_stale_after"] == "24h"
-    assert route["route_state"] == "active"
-    assert "account_live_quota_receipt_absent" not in route.get("blocked_reasons", [])
+    assert route["route_state"] == "blocked"
+    assert route["blocked_reasons"] == ["account_live_quota_receipt_absent"]
+    assert route["freshness"]["evidence"]["quota"]["blocked_reasons"] == [
+        "account_live_quota_receipt_absent"
+    ]
 
     check_at = datetime(2026, 5, 9, 21, 0, tzinfo=UTC)
     registry = PlatformCapabilityRegistry.model_validate(payload)
     result = check_registry_freshness(registry, route_ids=["claude.headless.full"], now=check_at)
 
-    quota_errors = [e for e in result.routes[0].errors if "quota" in e]
-    assert not quota_errors, f"quota should not be stale after 1h: {quota_errors}"
+    quota_stale_errors = [e for e in result.routes[0].errors if "quota" in e and "stale" in e]
+    assert not quota_stale_errors, f"quota should not be stale after 1h: {quota_stale_errors}"
+    assert result.ok is False
+    assert "account_live_quota_receipt_absent" in result.routes[0].blocked_reasons
 
 
 def test_loader_applies_route_authority_receipts_after_platform_receipts(tmp_path: Path) -> None:
@@ -1173,6 +1187,27 @@ def test_claude_receipt_with_fresh_live_admission_injects_account_live_quota_evi
     assert admitted is True
     assert CLAUDE_ADMISSION_EVIDENCE_REF in refs
     assert any(ref.endswith(":account-live-quota:observed") for ref in refs)
+
+
+def test_claude_receipt_with_fresh_live_admission_clears_account_live_quota_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_claude_live_quota_ledger(live_ledger)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+    route = _route_payload(_payload(), "claude.headless.full")
+
+    _apply_receipt_to_route_payload(
+        route,
+        _make_receipt(observed_at=datetime(2026, 7, 8, 14, 1, tzinfo=UTC)),
+        now=CLAUDE_NOW,
+    )
+
+    assert route["route_state"] == "active"
+    assert route["blocked_reasons"] == []
+    assert route["freshness"]["evidence"]["quota"]["blocked_reasons"] == []
+    assert CLAUDE_ADMISSION_EVIDENCE_REF in route["freshness"]["evidence"]["quota"]["evidence_refs"]
 
 
 def test_claude_has_no_route_specific_quota_admission_without_live_ledger(

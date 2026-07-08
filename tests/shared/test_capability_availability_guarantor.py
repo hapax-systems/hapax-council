@@ -18,6 +18,14 @@ from shared.platform_capability_registry import (
 )
 
 NOW = datetime(2026, 5, 9, 21, 0, tzinfo=UTC)
+CLAUDE_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:"
+    "witness:claude-subscription-headroom-observed-20260708t1400z:"
+    "observation:subscription_quota_headroom_observed:"
+    "observed_at:2026-07-08T14:00:00Z:"
+    "fresh_until:2026-07-08T14:15:00Z:"
+    "account-live-quota:observed"
+)
 
 
 class _FakeOAuthStrategy:
@@ -283,6 +291,30 @@ def test_non_oauth_subscription_route_requires_account_live_quota_evidence() -> 
     assert observed.available is True
     assert observed.predicate.account_live_quota_attested is True
     assert "account_live_quota_evidence_absent" not in observed.reason_codes
+
+
+def test_claude_route_with_admission_receipt_ref_is_available() -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, "claude.headless.full")
+    _mark_fresh(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"].append(
+        CLAUDE_ADMISSION_EVIDENCE_REF
+    )
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("claude.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is True
+    assert receipt.status.value == "available"
+    assert receipt.predicate.account_live_quota_attested is True
+    assert "account_live_quota_evidence_absent" not in receipt.reason_codes
 
 
 def test_oauth_subscription_route_degrades_when_account_live_quota_ref_is_negated() -> None:
@@ -862,6 +894,33 @@ def test_subscription_route_uses_registered_strategy_not_absent() -> None:
     reasons = guarantor.availability_dispatch_reason_codes(receipt)
     assert "refresh_strategy_absent:subscription" not in reasons
     assert "refresh_remediation:scripts/hapax-claude-subscription-quota-admission --json" in reasons
+
+
+def test_subscription_strategy_does_not_emit_claude_remediation_for_other_routes() -> None:
+    registry = load_platform_capability_registry()
+    route = registry.require("vibe.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.default_refresh_strategy_registry(),
+        now=NOW,
+    )
+
+    assert route.auth_surface is AuthSurface.SUBSCRIPTION
+    assert route.route_id != guarantor.CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID
+    assert receipt.refresh_status is guarantor.RefreshStatus.DEFERRED
+    assert "subscription_admission_writer_route_unsupported" in receipt.refresh_reason_codes
+    reasons = guarantor.availability_dispatch_reason_codes(receipt)
+    assert (
+        "refresh_remediation:scripts/hapax-claude-subscription-quota-admission --json"
+        not in reasons
+    )
+    assert (
+        "refresh_remediation:register subscription quota admission writer for vibe.headless.full"
+        in reasons
+    )
 
 
 def test_subscription_strategy_is_non_refreshable_no_side_effect(monkeypatch) -> None:  # noqa: ANN001

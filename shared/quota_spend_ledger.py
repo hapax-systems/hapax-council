@@ -80,6 +80,10 @@ CLAUDE_ADMISSION_SECRETISH_RE = re.compile(
     r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
     re.IGNORECASE,
 )
+CLAUDE_ADMISSION_LANE_PRESENCE_RE = re.compile(
+    r"(?:tmux|hapax-claude-[a-z0-9-]+|session-present|lane-present|lane-exists)",
+    re.IGNORECASE,
+)
 CLAUDE_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):observation:")
 GLMCP_ADMISSION_CODING_PLAN_ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
 GLMCP_ADMISSION_PAYG_ENDPOINT = "https://api.z.ai/api/paas/v4"
@@ -1655,6 +1659,7 @@ def _has_safe_claude_admission_witness(ref: str) -> bool:
     return (
         CLAUDE_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
         and CLAUDE_ADMISSION_SECRETISH_RE.search(witness) is None
+        and CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(witness) is None
     )
 
 

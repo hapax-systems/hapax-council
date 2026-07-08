@@ -836,6 +836,19 @@ def _claude_snapshot(payload: dict) -> dict:
     )
 
 
+def _assert_claude_admission_ignored(tmp_path: Path, expected_reason: str) -> None:
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "unknown"
+    assert any(f":ignored:{expected_reason}" in ref for ref in snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["claude_admissions"] == 0
+    assert summary["claude_ignored_admissions"] == 1
+    assert "ignoring claude admission receipt: validation failed" in result.stderr
+
+
 def test_fresh_claude_admission_receipt_marks_claude_fresh(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
@@ -914,6 +927,80 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
     assert summary["claude_ignored_admissions"] == 1
     # the receipt field name/value must never echo to stderr (generic warning only).
     assert "secret_value_persisted" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected_reason"),
+    [
+        (
+            {"observed_at": "2026-06-09T23:00:00Z", "stale_after_seconds": "60"},
+            "receipt-expired",
+        ),
+        ({"observed_at": "2026-06-10T00:01:00Z"}, "observed-at-is-in-the-future"),
+        ({"observed_at": "not-a-date"}, "missing-or-malformed-observed-at"),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "stale_after_seconds": "soon"},
+            "malformed-stale-after-seconds",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "stale_after_seconds": "0"},
+            "non-positive-stale-after-seconds",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "stale_after_seconds": "3601"},
+            "stale-after-seconds-exceeds-maximum-3600",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "observation": "lane_presence_seen"},
+            "observation-missing-or-unsupported",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "sk-live-secret-token-000000000000000000000000",
+            },
+            "evidence-ref-unsafe-expected-sanitized-account-live-observation-reference",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "bad#claude-subscription-quota-admission.yaml",
+            },
+            "unsafe-receipt-name",
+        ),
+    ],
+)
+def test_claude_admission_fail_closed_validation_cases(
+    tmp_path: Path,
+    kwargs: dict[str, str],
+    expected_reason: str,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, **kwargs)
+
+    _assert_claude_admission_ignored(tmp_path, expected_reason)
+
+
+def test_claude_admission_rejects_unreadable_receipt(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "claude-subscription-quota-admission-invalid-utf8.yaml").write_bytes(b"\xff\xfe\xfa")
+
+    _assert_claude_admission_ignored(tmp_path, "unreadable-receipt-unicodedecodeerror")
+
+
+def test_claude_admission_rejects_strict_parse_failure(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
+    with (relay / "claude-subscription-quota-admission.yaml").open(
+        "a",
+        encoding="utf-8",
+    ) as receipt:
+        receipt.write("status: quota_available\n")
+
+    _assert_claude_admission_ignored(tmp_path, "duplicate-key-on-line-18")
 
 
 def test_agy_admission_rejects_secret_persistence(tmp_path: Path) -> None:

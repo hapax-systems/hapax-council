@@ -28,9 +28,10 @@ Each tick does two writes:
    - subscription ``quota_snapshots``: per-platform state from the quota-wall
      relay receipts (``~/.cache/hapax/relay/receipts/<role>-quota-wall.yaml``,
      written by ``shared.quota_wall`` on observed 429/quota-exhaustion). An
-     unexpired wall marks the platform ``exhausted``; otherwise the established
-     Claude/Codex subscription routes are ``fresh``. GLMCP and agy are stricter:
-     they are ``unknown`` unless a fresh, short-lived admission receipt exists.
+     unexpired wall marks the platform ``exhausted``; Claude, GLMCP, and agy
+     routes are ``unknown`` unless a fresh, short-lived route-specific admission
+     receipt exists. Other established subscription platforms remain wall-absence
+     fresh until their route policy requires a receipt-bounded admission plane.
      Coding Plan quota walls block Coding Plan receipts, but a fresh
      endpoint-matched PAYG admission can supersede that subscription wall only
      when it is bound to the active Coding Plan quota-wall witness and a
@@ -41,10 +42,11 @@ Each tick does two writes:
      If a receipt exists but GLMCP remains ``unknown``, read this writer's
      stderr warnings; malformed, stale, mismatched, or unbounded receipts are
      ignored loudly.
-     Recheck agy reviewer admission evidence with
-     ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*agy-quota-admission*.yaml' -print``
-     and create fresh short-lived agy admission receipts only after a sanctioned
-     ``scripts/hapax-agy-reviewer`` smoke succeeds.
+     Recheck Claude and agy reviewer admission evidence with
+     ``find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*claude-subscription-quota-admission*.yaml' -o -name '*agy-quota-admission*.yaml' -print``
+     and create fresh short-lived Claude admission receipts only after a genuine
+     account-live subscription observation, or agy admission receipts only after
+     a sanctioned ``scripts/hapax-agy-reviewer`` smoke succeeds.
      Admission receipts with ``stale_after_seconds`` above 3600 seconds are
      intentionally ignored; write a fresh short-lived witness instead.
      The emergency false-negative recovery path is to create a fresh

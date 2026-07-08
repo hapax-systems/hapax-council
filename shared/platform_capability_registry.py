@@ -1676,7 +1676,12 @@ def _resource_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[st
 
 
 def _quota_unobservable_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
-    reasons = {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+    reasons = {"quota_telemetry_unknown"}
+    if (
+        ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS.get(route_payload.get("route_id"))
+        != CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER
+    ):
+        reasons.add(CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER)
     if route_payload.get("capacity_pool") in {
         CapacityPool.API_PAID_SPEND.value,
         CapacityPool.BOOTSTRAP_BUDGET.value,
@@ -1691,6 +1696,11 @@ def _quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
         # Route-specific quota admission is consumed from the live quota ledger,
         # not from a platform-capability quota receipt.
         return set()
+    if (
+        ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS.get(route_payload.get("route_id"))
+        == CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER
+    ):
+        return {"quota_telemetry_unknown"}
     return {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
 
 

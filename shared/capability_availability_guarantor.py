@@ -31,6 +31,7 @@ from shared.platform_capability_registry import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID = "claude.headless.full"
 
 
 class _AvailabilityModel(BaseModel):
@@ -324,16 +325,17 @@ class CodexOAuthRefreshStrategy:
 
 
 class SubscriptionRefreshStrategy:
-    """Explicit non-refreshable strategy for ``auth_surface=subscription`` (Claude) routes.
+    """Explicit non-refreshable strategy for ``auth_surface=subscription`` routes.
 
-    Subscription quota (Claude Pro/Max, and any ``auth_surface=subscription`` route) is NOT a
-    programmatically refreshable credential like an OAuth token — no call mints headroom, and
+    Subscription quota is NOT a programmatically refreshable credential like an OAuth token — no
+    call mints headroom, and
     account-live subscription telemetry (OTel usage/cost) is not yet wired
     (CASE-CAPACITY-ROUTING-001 R2, "use receipts and manual refresh until observable"). Account-live
-    quota is proven ONLY by a short-lived, sanitized admission receipt
+    quota for ``claude.headless.full`` is proven ONLY by a short-lived, sanitized admission receipt
     (``scripts/hapax-claude-subscription-quota-admission`` folded into the quota-spend ledger by
     ``scripts/hapax-quota-telemetry-writer``), NEVER inferred from a running lane's tmux/session
-    presence.
+    presence. Other subscription routes must register their own provider/route-specific admission
+    writer before this strategy can name an executable remediation.
 
     So this strategy is deliberately DEFERRED-only: it never executes a side effect and never
     attests on its own (attestation stays with ``_account_live_quota_attested`` reading the ledger's
@@ -353,6 +355,30 @@ class SubscriptionRefreshStrategy:
         *,
         now: datetime,
     ) -> RefreshOutcome:
+        if route.route_id != CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID:
+            return RefreshOutcome(
+                status=RefreshStatus.DEFERRED,
+                strategy_id=self.strategy_id,
+                reason_codes=(
+                    "subscription_quota_not_programmatically_refreshable",
+                    "subscription_admission_writer_route_unsupported",
+                    "provider_specific_subscription_admission_required",
+                ),
+                evidence_refs=tuple(
+                    dict.fromkeys(
+                        [
+                            f"platform-capability-registry:{route.route_id}:auth_surface:subscription",
+                            f"policy:subscription_admission_writer_route_unsupported:{route.platform.value}",
+                            *freshness.evidence_refs,
+                        ]
+                    )
+                ),
+                remediation_commands=(
+                    f"register subscription quota admission writer for {route.route_id}",
+                    "scripts/hapax-quota-telemetry-writer --json",
+                ),
+            )
+
         admission_command = "scripts/hapax-claude-subscription-quota-admission --json"
         telemetry_command = "scripts/hapax-quota-telemetry-writer --json"
         return RefreshOutcome(
