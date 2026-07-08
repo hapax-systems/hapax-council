@@ -672,8 +672,16 @@ def test_payg_task_hash_rejects_malformed_env(monkeypatch: pytest.MonkeyPatch) -
     _clean_env(monkeypatch)
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_TASK_HASH", "not-a-sha256-hash")
 
-    with pytest.raises(module.ApiError, match="malformed task_hash"):
+    with pytest.raises(module.ApiError, match="clear manual task-hash env overrides"):
         module._payg_task_hash()
+
+
+def test_payg_task_hash_accepts_cc_task_hash_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_CC_TASK_HASH", "sha256:" + ("b" * 64))
+
+    assert module._payg_task_hash() == "sha256:" + ("b" * 64)
 
 
 def test_call_glm_real_reservation_blocks_second_payg_when_daily_cap_used(

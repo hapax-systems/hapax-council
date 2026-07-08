@@ -816,7 +816,8 @@ def _payg_task_hash() -> str | None:
             if not TASK_HASH_RE.fullmatch(value):
                 raise ApiError(
                     "PAYG fallback refused by paid-spend gate: malformed task_hash; "
-                    "expected sha256:<64 lowercase hex> from cc-pr-review-dispatch"
+                    "expected sha256:<64 lowercase hex> from cc-pr-review-dispatch; "
+                    "clear manual task-hash env overrides and rerun cc-pr-review-dispatch"
                 )
             return value
     return None

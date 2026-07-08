@@ -62,6 +62,7 @@ from github_pr_status import (  # noqa: E402
 )
 
 from shared import public_gate_receipts  # noqa: E402
+from shared.gate_event_producer import build_gate_event  # noqa: E402
 from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
@@ -1437,10 +1438,21 @@ def default_reviewer_runner(
 
 
 def review_task_hash(frontmatter: dict[str, Any]) -> str:
-    value = stable_payload_hash(frontmatter)
-    if not TASK_HASH_RE.fullmatch(value):
+    stable_hash = stable_payload_hash(frontmatter)
+    if not TASK_HASH_RE.fullmatch(stable_hash):
         raise ValueError("stable frontmatter hash must match sha256:<64 lowercase hex>")
-    return value
+    gate_event = build_gate_event(
+        frontmatter,
+        route="review-dispatch.task-hash-witness",
+        demand_vector=None,
+        gate_result="accept",
+    )
+    if gate_event.task_hash != stable_hash:
+        raise ValueError(
+            "review task hash diverged from gate-event producer task_hash; "
+            "repair shared task_hash canonicalization before dispatching reviewers"
+        )
+    return stable_hash
 
 
 def dispatch_reviews(
@@ -2567,13 +2579,24 @@ def review_pr(
         )
         for seat in constitution.seats
     ]
+    task_hash: str | None = None
+    if len(keyed_matches) == 1:
+        task_hash = review_task_hash(keyed_matches[0][1])
+    elif len(keyed_matches) > 1:
+        LOG.warning(
+            "PR #%d matched %d task notes; omitting review task_hash because the spend "
+            "join key would be ambiguous",
+            pr_number,
+            len(keyed_matches),
+        )
+
     reviews = dispatch_reviews(
         constitution,
         prompts,
         registry,
         reviewer_runner,
         task_id=task_ids[0] if len(task_ids) == 1 else None,
-        task_hash=review_task_hash(keyed_matches[0][1]) if len(keyed_matches) == 1 else None,
+        task_hash=task_hash,
     )
     update_family_outage(reviews, now_iso)
     results: list[dict[str, Any]] = []

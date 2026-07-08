@@ -1310,6 +1310,29 @@ checklist:
         assert set(reviewers.task_hashes) == {expected_hash}
         assert gate_event.task_hash == expected_hash
 
+    def test_review_task_hash_rejects_gate_event_producer_divergence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class DivergedGateEvent:
+            task_hash = "sha256:" + ("0" * 64)
+
+        monkeypatch.setattr(
+            dispatch,
+            "build_gate_event",
+            lambda *args, **kwargs: DivergedGateEvent(),
+        )
+
+        with pytest.raises(ValueError, match="diverged from gate-event producer"):
+            dispatch.review_task_hash({"task_id": "task-a"})
+
+    def test_review_task_hash_rejects_malformed_stable_hash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(dispatch, "stable_payload_hash", lambda _payload: "not-a-hash")
+
+        with pytest.raises(ValueError, match="stable frontmatter hash"):
+            dispatch.review_task_hash({"task_id": "task-a"})
+
     def test_pr_metadata_uses_rest_not_graphql_pr_view(self, tmp_path: Path) -> None:
         gh = FakeGh()
         gh.fail_view_prs.add(42)
@@ -1755,11 +1778,23 @@ checklist:
         assert second["review_team_verdict"] == "blocked"
         assert second_reviewers.invocations == []
 
-    def test_multi_task_pr_writes_each_task_dossier(self, tmp_path: Path) -> None:
+    def test_multi_task_pr_writes_each_task_dossier(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        class HashRecordingReviewers(RecordingReviewers):
+            def __init__(self) -> None:
+                super().__init__()
+                self.task_hashes: list[str | None] = []
+
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.task_hashes.append(family_cfg.get("_review_task_hash"))
+                return super().__call__(seat, family_cfg, prompt)
+
         vault = _make_vault(tmp_path)
         note_a = _write_task(vault, task_id="task-a")
         note_b = _write_task(vault, task_id="task-b", assigned_to="cx-gold")
-        reviewers = RecordingReviewers()
+        reviewers = HashRecordingReviewers()
+        caplog.set_level(logging.WARNING, logger=dispatch.LOG.name)
         result = dispatch.review_pr(
             42,
             repo="owner/repo",
@@ -1775,6 +1810,8 @@ checklist:
         )
         assert result["status"] == "multi_dispatched"
         assert {item["task_id"] for item in result["results"]} == {"task-a", "task-b"}
+        assert set(reviewers.task_hashes) == {None}
+        assert "omitting review task_hash" in caplog.text
         assert (note_a.parent / "task-a.review-dossier.yaml").is_file()
         assert (note_b.parent / "task-b.review-dossier.yaml").is_file()
         dossier_a = yaml.safe_load(

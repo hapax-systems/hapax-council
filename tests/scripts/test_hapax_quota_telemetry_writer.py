@@ -441,6 +441,12 @@ def test_glmcp_payg_spend_receipt_legacy_null_optionals_are_counted(
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
+    receipt = next(
+        receipt
+        for receipt in payload["spend_receipts"]
+        if receipt["spend_id"] == "spend-20260706T140430Z-glmcp-payg-review-test"
+    )
+    assert "task_hash" not in receipt
     glmcp_snapshot = next(
         snapshot
         for snapshot in payload["quota_snapshots"]
@@ -453,6 +459,35 @@ def test_glmcp_payg_spend_receipt_legacy_null_optionals_are_counted(
     summary = json.loads(result.stdout)
     assert summary["glmcp_payg_spend_receipts"] == 1
     assert summary["glmcp_ignored_payg_spend_receipts"] == 0
+
+
+def test_glmcp_payg_spend_receipt_rejects_malformed_task_hash(
+    tmp_path: Path,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    spend_receipt_name = "glmcp-payg-spend-20260706t140430z-test.yaml"
+    _wall_receipt(relay, "cx-glmcp", "2026-07-06T16:00:00Z")
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        evidence_ref=spend_receipt_name,
+    )
+    _glmcp_payg_spend(relay, name=spend_receipt_name, task_hash="not-a-sha256-hash")
+
+    result, out = _run_writer(tmp_path, now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert not any(
+        receipt["spend_id"] == "spend-20260706T140430Z-glmcp-payg-review-test"
+        for receipt in payload["spend_receipts"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_payg_spend_receipts"] == 0
+    assert summary["glmcp_ignored_payg_spend_receipts"] == 1
 
 
 def test_glmcp_payg_admission_rechecks_witness_task_cap(tmp_path: Path) -> None:
