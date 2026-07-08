@@ -276,6 +276,8 @@ def assess_public_surface_freshness(
     result = envelope.freshness_result
     if envelope.is_expired(current):
         result = "stale"
+    elif result in BLOCKING_RESULTS:
+        result = envelope.freshness_result
     elif envelope.rendered_hash and envelope.readback_hash:
         result = "match" if envelope.rendered_hash == envelope.readback_hash else "mismatch"
     elif envelope.readback_hash:

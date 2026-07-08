@@ -90,6 +90,28 @@ def test_assessment_detects_mismatched_readback_hash() -> None:
     assert assessed.blocks == ("public_current", "release_authorized")
 
 
+def test_assessment_preserves_explicit_blocking_result_with_matching_hashes() -> None:
+    envelope = PublicSurfaceFreshnessEnvelope(
+        surface_id="github.readme.hapax-systems/example.README.md",
+        surface_type="github.readme",
+        source_ref="fixture-source",
+        target_ref="https://example.invalid/README.md",
+        source_of_truth="fixture",
+        evidence_refs=("fixture-readback",),
+        rendered_hash="abc123",
+        readback_hash="abc123",
+        checked_at=GENERATED_AT,
+        ttl_s=1_800,
+        expires_at="2026-05-01T01:20:00Z",
+        freshness_result="auth_error",
+    )
+
+    assessed = assess_public_surface_freshness(envelope, now=GENERATED_AT)
+
+    assert assessed.freshness_result == "auth_error"
+    assert assessed.blocks == ("public_current", "release_authorized")
+
+
 def test_assessment_marks_expired_envelope_stale() -> None:
     envelope = PublicSurfaceFreshnessEnvelope(
         surface_id="github.readme.hapax-systems/example.README.md",

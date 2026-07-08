@@ -17,7 +17,7 @@ publish: true
   </p>
 </section>
 
-This started because I wanted to plug a MIDI instrument into my PC.
+Origin point: a MIDI instrument needed to connect to a PC.
 
 ## What This Is
 
@@ -25,9 +25,9 @@ Hapax is a single-operator system. Its public value is not any one component;
 it is that the components are wired so claims, refusals, context, and public
 egress can be inspected together:
 
-The useful reading lens is legibility: adopters can find bounded hooks,
-technical leaders can see where authority and write paths stop, researchers can
-inspect claim and refusal evidence, and harness readers can compare against a
+The useful reading lens is legibility. Adopters can find bounded hooks,
+technical leaders can see where authority and write paths stop, and researchers
+can inspect claim and refusal evidence. Harness readers can compare against a
 system where public egress is part of the governed task surface.
 
 | Component | What it contributes | Why it matters |
