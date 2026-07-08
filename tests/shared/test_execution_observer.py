@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from shared.execution_observer import (
     FallbackEvent,
@@ -182,6 +183,19 @@ def test_missing_file_yields_empty_observation(tmp_path: Path) -> None:
     assert obs.endpoint_attested is False
 
 
+def test_claude_transcript_io_error_yields_empty_observation(tmp_path: Path) -> None:
+    t = tmp_path / "t.jsonl"
+    t.write_text('{"type":"assistant","message":{"model":"claude-opus-4-8"}}\n', encoding="utf-8")
+
+    with patch.object(Path, "open", side_effect=OSError("permission denied")):
+        obs = observe_claude_transcript(t)
+
+    assert obs.models == frozenset()
+    assert obs.turn_count == 0
+    assert obs.source_path == str(t)
+    assert obs.drifted is False
+
+
 def test_codex_rollout_single_model_no_drift(tmp_path: Path) -> None:
     t = _write(
         tmp_path / "rollout.jsonl",
@@ -194,6 +208,19 @@ def test_codex_rollout_single_model_no_drift(tmp_path: Path) -> None:
     obs = observe_codex_rollout(t)
     assert obs.models == frozenset({"gpt-5.5"})
     assert obs.turn_count == 2
+    assert obs.drifted is False
+
+
+def test_codex_rollout_io_error_yields_empty_observation(tmp_path: Path) -> None:
+    t = tmp_path / "rollout.jsonl"
+    t.write_text('{"type":"turn_context","payload":{"model":"gpt-5.5"}}\n', encoding="utf-8")
+
+    with patch.object(Path, "open", side_effect=OSError("permission denied")):
+        obs = observe_codex_rollout(t)
+
+    assert obs.models == frozenset()
+    assert obs.turn_count == 0
+    assert obs.source_path == str(t)
     assert obs.drifted is False
 
 

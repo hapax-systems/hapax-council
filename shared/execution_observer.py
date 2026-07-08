@@ -96,35 +96,38 @@ def observe_claude_transcript(path: str | Path) -> ObservedExecution:
     turns = 0
     malformed = 0
 
-    if not p.is_file():
-        return ObservedExecution(source_path=str(p))
+    try:
+        if not p.is_file():
+            return ObservedExecution(source_path=str(p))
 
-    with p.open("r", encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except (ValueError, TypeError):
-                malformed += 1
-                continue
-            if not isinstance(record, dict):
-                continue
-            model = _model_of_assistant_turn(record)
-            if model is not None:
-                models.add(model)
-                turns += 1
-            fallback = _fallback_of_record(record)
-            if fallback is not None:
-                fallbacks.append(fallback)
-                # BOTH ends of a fallback actually ran and are part of the observed set: the
-                # target served the retried turn, and the SOURCE was invoked with session
-                # content — it produced the refusal that triggered the remap. Omitting
-                # from_model fails open: an unsanctioned source that remapped to a sanctioned
-                # target (with no assistant turn of its own) would otherwise pass the invariant.
-                models.add(fallback.from_model)
-                models.add(fallback.to_model)
+        with p.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except (ValueError, TypeError):
+                    malformed += 1
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                model = _model_of_assistant_turn(record)
+                if model is not None:
+                    models.add(model)
+                    turns += 1
+                fallback = _fallback_of_record(record)
+                if fallback is not None:
+                    fallbacks.append(fallback)
+                    # BOTH ends of a fallback actually ran and are part of the observed set: the
+                    # target served the retried turn, and the SOURCE was invoked with session
+                    # content — it produced the refusal that triggered the remap. Omitting
+                    # from_model fails open: an unsanctioned source that remapped to a sanctioned
+                    # target (with no assistant turn of its own) would otherwise pass the invariant.
+                    models.add(fallback.from_model)
+                    models.add(fallback.to_model)
+    except OSError:
+        return ObservedExecution(source_path=str(p))
 
     return ObservedExecution(
         models=frozenset(models),
@@ -159,25 +162,28 @@ def observe_codex_rollout(path: str | Path) -> ObservedExecution:
     turns = 0
     malformed = 0
 
-    if not p.is_file():
-        return ObservedExecution(source_path=str(p))
+    try:
+        if not p.is_file():
+            return ObservedExecution(source_path=str(p))
 
-    with p.open("r", encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except (ValueError, TypeError):
-                malformed += 1
-                continue
-            if not isinstance(record, dict):
-                continue
-            model = _model_of_codex_turn(record)
-            if model is not None:
-                models.add(model)
-                turns += 1
+        with p.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except (ValueError, TypeError):
+                    malformed += 1
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                model = _model_of_codex_turn(record)
+                if model is not None:
+                    models.add(model)
+                    turns += 1
+    except OSError:
+        return ObservedExecution(source_path=str(p))
 
     return ObservedExecution(
         models=frozenset(models),
