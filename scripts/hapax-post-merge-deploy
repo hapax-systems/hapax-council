@@ -49,8 +49,10 @@
 #                                    ~/.local/lib/hapax-recovery/council
 #   scripts/hapax-*                → ensure ~/.local/bin/ symlink
 #   hooks/scripts/{cc-task-gate.impl.sh,agent-role.sh,escape-grant.sh,
+#                  hapax_check_enable_latch.sh,cc-task-gate-bootstrap.py,
 #                  hooks-doctor.sh,cc-task-gate.sh}
-#                                  → redeploy the ONE canonical gate closure to
+#                                  → reconcile the ONE canonical gate closure
+#                                    on every run and redeploy drift to
 #                                    ~/.local/lib/hapax/hooks via hooks-doctor
 #                                    --deploy-canonical (reform FM-6: every
 #                                    worktree's cc-task-gate.sh is a shim that
@@ -455,6 +457,7 @@ runtime_media_groups = [
         "hapax_scripts",
         "unit_backing_scripts",
         "quake_assets",
+        "canonical_gate_closure",
     )
     if deploy_groups[name]
 ]
@@ -979,7 +982,11 @@ fi
 TRACE_READY=1
 if [ -z "$FILES" ]; then
     reconcile_canonical_gate_closure
-    if record_post_merge_trace "no_changes" "0"; then
+    trace_status="no_changes"
+    if [ "$DID_ANYTHING" -ne 0 ]; then
+        trace_status="completed"
+    fi
+    if record_post_merge_trace "$trace_status" "0"; then
         TRACE_WRITTEN=1
     fi
     record_last_deployed_sha

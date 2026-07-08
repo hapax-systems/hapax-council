@@ -2220,6 +2220,77 @@ def test_gate_untouched_diff_redeploys_drifted_canonical_gate(tmp_path: Path) ->
     ]
     assert record["manual_deploy_needed"] is True
     assert record["manual_deploy_executed"] is True
+    assert record["avsdlc"]["runtime_media_witness_required"] is True
+    assert record["avsdlc"]["runtime_media_witness_groups"] == ["canonical_gate_closure"]
+
+
+def test_dry_run_gate_drift_does_not_redeploy(tmp_path: Path) -> None:
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--dry-run", sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "dry-run: canonical gate drift detected; would redeploy" in result.stdout
+    assert not calls.exists(), "dry-run drift should not invoke hooks-doctor"
+    assert (canon / "cc-task-gate.sh").read_text(encoding="utf-8") == (
+        "#!/usr/bin/env bash\necho stale\n"
+    )
+    assert not (tmp_path / "traces" / "last-deployed-sha").exists()
+    record = json.loads(
+        (tmp_path / "traces" / "post-merge-traces.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert record["status"] == "dry_run"
+    assert record["deploy_groups"]["canonical_gate_closure"] == [
+        "hooks/scripts/cc-task-gate.impl.sh"
+    ]
+    assert record["manual_deploy_needed"] is True
+    assert record["manual_deploy_executed"] is False
+
+
+def test_no_files_path_gate_drift_success_records_completed_deploy(tmp_path: Path) -> None:
+    repo, _ = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    _git(repo, "commit", "--allow-empty", "-m", "empty merge")
+    sha = _git(repo, "rev-parse", "HEAD")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls.exists(), "zero-file drift should still invoke hooks-doctor"
+    assert (tmp_path / "traces" / "last-deployed-sha").read_text(encoding="utf-8").strip() == sha
+    record = json.loads(
+        (tmp_path / "traces" / "post-merge-traces.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert record["status"] == "completed"
+    assert record["changed_files"] == []
+    assert record["deploy_groups"]["canonical_gate_closure"] == [
+        "hooks/scripts/cc-task-gate.impl.sh"
+    ]
+    assert record["manual_deploy_needed"] is True
+    assert record["manual_deploy_executed"] is True
 
 
 def test_healthy_canonical_gate_does_not_redeploy(tmp_path: Path) -> None:
