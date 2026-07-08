@@ -19,6 +19,7 @@ def _stub_registry(
     model_id: str,
     variant_models: list[str] | None = None,
     blocked_variant_models: list[str] | None = None,
+    route_blocked_reasons: list[str] | None = None,
 ):
     variants = [
         SimpleNamespace(knobs_override={"model_id": vm}, blocked_reasons=[])
@@ -34,6 +35,7 @@ def _stub_registry(
     route = SimpleNamespace(
         execution_descriptor=SimpleNamespace(model_id=model_id),
         descriptor_variants=variants,
+        blocked_reasons=route_blocked_reasons or [],
     )
     return SimpleNamespace(route_map=lambda: {route_id: route})
 
@@ -61,9 +63,19 @@ def test_sanctioned_models_exclude_blocked_variant_overrides() -> None:
         variant_models=["qwen3.5-9b"],
         blocked_variant_models=["blocked-model"],
     )
-    assert sanctioned_models_for_route("local_tool.local.worker", reg) == frozenset(
-        {"command-r-08-2024", "qwen3.5-9b"}
+    models = sanctioned_models_for_route("local_tool.local.worker", reg)
+    assert models == frozenset({"command-r-08-2024", "qwen3.5-9b"})
+    assert "blocked-model" not in models
+
+
+def test_sanctioned_models_exclude_blocked_routes_fail_closed() -> None:
+    reg = _stub_registry(
+        "local_tool.local.worker",
+        "command-r-08-2024",
+        variant_models=["qwen3.5-9b"],
+        route_blocked_reasons=["quota_telemetry_unknown"],
     )
+    assert sanctioned_models_for_route("local_tool.local.worker", reg) == frozenset()
 
 
 def test_unknown_route_sanctions_nothing_fail_closed() -> None:

@@ -42,6 +42,8 @@ def sanctioned_models_for_route(
     route = registry.route_map().get(normalize_route_id(route_id))
     if route is None:
         return frozenset()
+    if getattr(route, "blocked_reasons", None):
+        return frozenset()
     models = {str(route.execution_descriptor.model_id)}
     for variant in route.descriptor_variants:
         if variant.blocked_reasons:
