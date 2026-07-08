@@ -11,14 +11,18 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from shared.github_public_claim_gate import (
     GitHubMaterialEvidenceEnvelope,
     evaluate_github_public_claims,
     github_material_envelope_from_mapping,
 )
+from shared.publication_freshness import PublicationFreshnessSnapshot
 from shared.publication_hardening.lint import LintFinding, lint_file
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TOKEN_CLAIM_REPORT = (
     REPO_ROOT / "docs/research/evidence/2026-05-13-token-capital-claim-regate-v2.json"
 )
@@ -33,6 +37,7 @@ DEFAULT_TARGETS = (
 TOKEN_CLAIM_RULE = "Hapax.TokenCapitalClaimCeiling"
 SOURCE_DISPOSITION_RULE = "Hapax.PublicSurfaceSourceDisposition"
 GITHUB_PUBLIC_CLAIM_RULE = "Hapax.GitHubPublicClaimEvidenceGate"
+PUBLICATION_FRESHNESS_RULE = "Hapax.PublicationFreshness"
 
 
 class RequiredInputError(ValueError):
@@ -227,6 +232,36 @@ def check_github_material_claims(
     return findings
 
 
+def load_publication_freshness_state(path: Path) -> PublicationFreshnessSnapshot:
+    payload = load_required_json(path, label="publication freshness state")
+    try:
+        return PublicationFreshnessSnapshot.model_validate(payload)
+    except (TypeError, ValueError) as exc:
+        raise RequiredInputError(
+            f"publication freshness state is malformed: {path}: {exc}"
+        ) from exc
+
+
+def check_publication_freshness_state(
+    state: PublicationFreshnessSnapshot,
+    *,
+    state_path: Path,
+) -> list[LintFinding]:
+    if not state.blockers:
+        return []
+    return [
+        LintFinding(
+            file=str(state_path),
+            line=1,
+            level="error",
+            rule=PUBLICATION_FRESHNESS_RULE,
+            message=(
+                f"Publication freshness has public-current blockers: {', '.join(state.blockers)}"
+            ),
+        )
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="*", type=Path, help="files or directories to scan")
@@ -253,6 +288,11 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="machine-readable envelope for GitHub README/profile/package/release claims",
     )
+    parser.add_argument(
+        "--publication-freshness-state",
+        type=Path,
+        help="machine-readable public-surface freshness snapshot from publication-freshness-audit",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -274,11 +314,23 @@ def main(argv: list[str] | None = None) -> int:
             if args.github_material_envelope is not None
             else None
         )
+        publication_freshness_state = (
+            load_publication_freshness_state(args.publication_freshness_state)
+            if args.publication_freshness_state is not None
+            else None
+        )
     except RequiredInputError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
     paths = args.paths or list(DEFAULT_TARGETS)
+    if publication_freshness_state is not None:
+        findings.extend(
+            check_publication_freshness_state(
+                publication_freshness_state,
+                state_path=args.publication_freshness_state,
+            )
+        )
     for path in iter_files(paths):
         findings.extend(lint_file(path))
         findings.extend(check_token_claim_ceiling(path, token_claim_patterns))

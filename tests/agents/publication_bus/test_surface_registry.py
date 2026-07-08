@@ -89,6 +89,13 @@ class TestSurfaceSpecDataclass:
         assert spec.activation_path is None
         assert spec.refusal_link is None
         assert spec.scope_note is None
+        assert spec.readback_adapter is None
+        assert spec.freshness_slo_s is None
+        assert spec.durable_target_required is False
+        assert spec.content_hash_strategy is None
+        assert spec.surface_owner == "publication_bus"
+        assert spec.correction_policy is None
+        assert spec.blocks_release_when_stale is False
 
     def test_full_construction(self) -> None:
         spec = SurfaceSpec(
@@ -97,10 +104,23 @@ class TestSurfaceSpecDataclass:
             activation_path="some-daemon",
             refusal_link="docs/refusal-briefs/x.md",
             scope_note="some scope",
+            readback_adapter="agents.publication_readback.example:readback",
+            freshness_slo_s=900,
+            durable_target_required=True,
+            content_hash_strategy="canonical_html_sha256",
+            surface_owner="publication_bus",
+            correction_policy="hold_then_mint_correction_task",
+            blocks_release_when_stale=True,
         )
         assert spec.api == "REST"
         assert spec.activation_path == "some-daemon"
         assert spec.refusal_link == "docs/refusal-briefs/x.md"
+        assert spec.readback_adapter == "agents.publication_readback.example:readback"
+        assert spec.freshness_slo_s == 900
+        assert spec.durable_target_required is True
+        assert spec.content_hash_strategy == "canonical_html_sha256"
+        assert spec.correction_policy == "hold_then_mint_correction_task"
+        assert spec.blocks_release_when_stale is True
 
 
 class TestDispatchRegistry:

@@ -114,6 +114,34 @@ def _write_github_envelope(path: Path, **overrides: object) -> Path:
     return path
 
 
+def _write_publication_freshness_state(
+    path: Path,
+    *,
+    blockers: list[str] | None = None,
+) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": "2026-05-01T00:50:00Z",
+                "producer": "shared.publication_freshness",
+                "claim_ceiling": "freshness_witness_only",
+                "envelopes": [],
+                "blockers": blockers or [],
+                "warnings": [],
+                "anti_overclaim": [
+                    (
+                        "freshness_witness_does_not_grant_truth_rights_privacy_egress_"
+                        "support_monetization_or_research_validity"
+                    )
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def _run_gate(
     doc: Path,
     token_report: Path,
@@ -281,6 +309,29 @@ def test_public_surface_gate_allows_api_only_receipt_disposition(tmp_path: Path)
 
     assert result.returncode == 0
     assert result.stdout == ""
+
+
+def test_public_surface_gate_fails_publication_freshness_blocker(tmp_path: Path) -> None:
+    doc = tmp_path / "fresh.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=["github.readme.hapax-systems/example.README.md:missing:public_current"],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicationFreshness" in result.stdout
+    assert "github.readme.hapax-systems/example.README.md" in result.stdout
 
 
 def test_public_surface_gate_json_includes_v2_rule_ids(tmp_path: Path) -> None:

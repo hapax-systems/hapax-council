@@ -4094,6 +4094,12 @@ from shared.world_language import ImageSchemaNode, WorldLanguageNode  # noqa: F4
 ImageSchemaNode._force_requires_efferent_terminus
 WorldLanguageNode._invariants
 
+# Publication freshness envelopes: Pydantic invokes the model validator during
+# construction; vulture cannot trace through @model_validator.
+from shared.publication_freshness import PublicSurfaceFreshnessEnvelope  # noqa: F401, E402
+
+PublicSurfaceFreshnessEnvelope._hash_claims_are_coherent
+
 # HACL Surface Registry — SurfaceSpec policy properties consulted by the Lens +
 # Compressibility Gate (subsequent HACL tasks) and asserted by the registry tests;
 # vulture does not scan tests and the Lens caller doesn't exist on main yet.

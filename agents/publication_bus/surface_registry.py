@@ -55,7 +55,9 @@ class SurfaceSpec:
     Carries the surface's automation status, API style, and (when
     refused) a link to the Refusal Brief docs entry documenting
     why. ``api`` is informational; the actual transport is owned by
-    the surface's Publisher subclass.
+    the surface's Publisher subclass. Freshness fields are optional
+    contract metadata for independent readback/audit paths; they do not
+    grant dispatch authority by themselves.
     """
 
     automation_status: AutomationStatus
@@ -64,6 +66,13 @@ class SurfaceSpec:
     activation_path: str | None = None
     refusal_link: str | None = None
     scope_note: str | None = None
+    readback_adapter: str | None = None
+    freshness_slo_s: int | None = None
+    durable_target_required: bool = False
+    content_hash_strategy: str | None = None
+    surface_owner: str = "publication_bus"
+    correction_policy: str | None = None
+    blocks_release_when_stale: bool = False
 
 
 SurfaceContractType = Literal[
