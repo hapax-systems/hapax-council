@@ -78,9 +78,16 @@ AGY_REVIEW_ROUTE_ID = "agy.review.direct"
 AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
 GLMCP_REVIEW_ROUTE_ID = "glmcp.review.direct"
 GLMCP_REVIEW_ADMISSION_BLOCKER = "glmcp_review_seat_receipt_admission_required"
+CLAUDE_HEADLESS_ROUTE_ID = "claude.headless.full"
+CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER = "account_live_quota_receipt_absent"
 ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     AGY_REVIEW_ROUTE_ID: AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER,
     GLMCP_REVIEW_ROUTE_ID: GLMCP_REVIEW_ADMISSION_BLOCKER,
+    # claude.headless.full: a fresh live ledger admission (telemetry-writer-folded) injects the
+    # account-live-quota:observed evidence ref into quota freshness so the availability guarantor
+    # attests. Without a live ledger, _route_specific_quota_admission_fresh returns (False, ()) and
+    # the route stays held — lane/session presence never clears this.
+    CLAUDE_HEADLESS_ROUTE_ID: CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER,
 }
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
 

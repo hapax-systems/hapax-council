@@ -733,6 +733,47 @@ def _make_glmcp_receipt(
     )
 
 
+CLAUDE_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:"
+    "witness:claude-subscription-headroom-observed-20260708t1400z:"
+    "observation:subscription_quota_headroom_observed:"
+    "observed_at:2026-07-08T14:00:00Z:"
+    "fresh_until:2026-07-08T14:15:00Z:"
+    "account-live-quota:observed"
+)
+CLAUDE_NOW = datetime(2026, 7, 8, 14, 5, tzinfo=UTC)
+
+
+def _write_claude_live_quota_ledger(path: Path) -> None:
+    payload = deepcopy(json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8")))
+    payload["ledger_id"] = "quota-spend-ledger-test-claude-live"
+    payload["captured_at"] = "2026-07-08T13:59:30Z"
+    payload["generated_from"] = list(
+        dict.fromkeys([*payload["generated_from"], "scripts/hapax-quota-telemetry-writer"])
+    )
+    # Drop the base EXHAUSTED operator dry-run claude snapshot so the fresh admission is isolated.
+    payload["quota_snapshots"] = [
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot.get("route_id") != "claude.headless.full"
+    ]
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-claude-headless-full-fresh",
+            "captured_at": "2026-07-08T13:59:00Z",
+            "fresh_until": "2026-07-08T14:15:00Z",
+            "route_id": "claude.headless.full",
+            "provider": "anthropic-claude-subscription",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [CLAUDE_ADMISSION_EVIDENCE_REF],
+            "operator_visible_reason": "fixture claude admission receipt",
+        }
+    )
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def _write_agy_live_quota_ledger(path: Path) -> None:
     payload = deepcopy(json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8")))
     payload["ledger_id"] = "quota-spend-ledger-test-agy-live"
@@ -1113,6 +1154,40 @@ def test_agy_receipt_with_fresh_live_admission_clears_route_quota(
     assert route.blocked_reasons == []
     assert AGY_ADMISSION_EVIDENCE_REF in route.freshness.evidence.quota.evidence_refs
     assert result.ok is True
+
+
+def test_claude_receipt_with_fresh_live_admission_injects_account_live_quota_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # A fresh live ledger admission for claude.headless.full makes _route_specific_quota_admission_fresh
+    # return the account-live-quota:observed evidence ref, which the caller injects into quota
+    # freshness so the availability guarantor attests (proven AVAILABLE in the guarantor test).
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_claude_live_quota_ledger(live_ledger)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+    route = _route_payload(_payload(), "claude.headless.full")
+
+    admitted, refs = _route_specific_quota_admission_fresh(route, now=CLAUDE_NOW)
+
+    assert admitted is True
+    assert CLAUDE_ADMISSION_EVIDENCE_REF in refs
+    assert any(ref.endswith(":account-live-quota:observed") for ref in refs)
+
+
+def test_claude_has_no_route_specific_quota_admission_without_live_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Fail-closed: absent a live ledger, claude gets no route-specific admission — lane/session
+    # presence never clears the account-live quota gate.
+    route = _route_payload(_payload(), "claude.headless.full")
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(tmp_path / "missing-live.json"))
+
+    admitted, refs = _route_specific_quota_admission_fresh(route, now=CLAUDE_NOW)
+
+    assert admitted is False
+    assert refs == ()
 
 
 def test_api_receipt_does_not_open_cloud_burst_release_gate() -> None:
