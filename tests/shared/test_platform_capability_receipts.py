@@ -569,14 +569,15 @@ def test_codex_receipt_exec_auth_exec_oserror_fails_closed(tmp_path: Path) -> No
     configured = tmp_path / "configured-codex"
     configured.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     configured.chmod(0o755)
-    module["resolve_platform_binary"] = lambda platform: (
-        "codex",
-        str(configured),
-        [str(configured)],
-    )
 
     with (
-        patch.dict(os.environ, {"HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE": str(token_file)}),
+        patch.dict(
+            os.environ,
+            {
+                "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE": str(token_file),
+                "HAPAX_CODEX_BIN_PATH": str(configured),
+            },
+        ),
         patch("subprocess.run", side_effect=OSError("exec failed")),
     ):
         refs, reasons = module["observe_codex_exec_auth"](enabled=True, timeout=1.0)

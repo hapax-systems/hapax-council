@@ -669,27 +669,27 @@ def test_public_surface_gate_fails_publication_freshness_blocker(tmp_path: Path)
 def test_public_surface_gate_allows_local_required_file_pending_post_merge_readback(
     tmp_path: Path,
 ) -> None:
-    doc = tmp_path / "fresh-pending-local.md"
-    doc.write_text("Bounded public copy.\n", encoding="utf-8")
-    token_report = _write_token_report(tmp_path / "token-report.json")
-    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
     pending_surface_id = "github.security_governance.hapax-systems/hapax-council.GOVERNANCE.md"
     freshness_state = _write_publication_freshness_state(
         tmp_path / "freshness-state.json",
         blockers=[f"{pending_surface_id}:missing:public_current,release_authorized"],
     )
-
-    result = _run_gate(
-        doc,
-        token_report,
-        source_reconciliation,
-        "--publication-freshness-state",
-        str(freshness_state),
+    gate = _gate_module()
+    gate["check_publication_freshness_state"].__globals__["_git_path_status"] = (
+        lambda relative_path: "A" if relative_path == "GOVERNANCE.md" else None
     )
 
-    assert result.returncode == 0
-    assert "awaiting post-merge public readback" in result.stdout
-    assert pending_surface_id in result.stdout
+    findings = gate["check_publication_freshness_state"](
+        gate["load_publication_freshness_state"](freshness_state),
+        state_path=freshness_state,
+        required_surface_ids=(),
+        expected_envelopes=(),
+    )
+
+    assert len(findings) == 1
+    assert findings[0].level == "info"
+    assert "awaiting post-merge public readback" in findings[0].message
+    assert pending_surface_id in findings[0].message
 
 
 def test_public_surface_gate_keeps_existing_required_file_missing_blocker(

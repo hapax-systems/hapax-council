@@ -794,10 +794,6 @@ if _jwt_exp(token) - time.time() <= 300:
     print("hapax-codex-headless: preflight-proven Codex OAuth token handoff is expiring; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
     sys.exit(78)
 os.environ["CODEX_ACCESS_TOKEN"]=token
-codex_bin,codex_resolution_error=_resolve_codex_bin()
-if codex_bin is None:
-    print("hapax-codex-headless: remote Codex binary is unavailable: "+codex_resolution_error+"; next action: repair PATH on the dispatch host or set HAPAX_CODEX_BIN_PATH to the executable before retrying", file=sys.stderr)
-    sys.exit(78)
 # Exec-host identity materialization mirrors hapax-claude-headless: the
 # session-keyed claim must exist where codex exec runs, or the worker can fall
 # back to stale legacy lane state and reject the governed dispatch.
@@ -826,6 +822,10 @@ try:
             materialized=True; claim_epoch_verified=True
 except Exception as exc:
     print("hapax-codex-headless: failed to materialize remote claim cache ("+exc.__class__.__name__+"); next action: repair ~/.cache/hapax permissions on the dispatch host before retrying", file=sys.stderr)
+    sys.exit(78)
+codex_bin,codex_resolution_error=_resolve_codex_bin()
+if codex_bin is None:
+    print("hapax-codex-headless: remote Codex binary is unavailable: "+codex_resolution_error+"; next action: repair PATH on the dispatch host or set HAPAX_CODEX_BIN_PATH to the executable before retrying", file=sys.stderr)
     sys.exit(78)
 if proof:
     os.makedirs(os.path.dirname(proof), exist_ok=True)
