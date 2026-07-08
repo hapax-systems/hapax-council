@@ -1660,6 +1660,38 @@ def platform_route_validation(
     return True, "eligible platform route"
 
 
+def platform_lane_compatibility_reason(lane: str, route: PlatformPath) -> str | None:
+    """Fail closed when route recomposition changes the platform under a stale lane id."""
+
+    normalized = normalize_lane_name(lane)
+    route_id = f"{route.platform}.{route.mode}.{route.profile}"
+    if route.platform == "codex" and not normalized.startswith("cx-"):
+        return (
+            f"route/lane mismatch: selected route {route_id} requires a Codex cx-* "
+            f"lane/session identity, got lane {lane!r}. Next action: dispatch this "
+            "Codex route to an available cx-* lane/worktree or rerun route selection "
+            "for a route compatible with the requested lane before consuming MQ."
+        )
+    if route.platform == "claude" and normalized not in KNOWN_CLAUDE_LANES:
+        return (
+            f"route/lane mismatch: selected route {route_id} requires a Claude "
+            f"headless role in {sorted(KNOWN_CLAUDE_LANES)!r}, got lane {lane!r}. "
+            "Next action: dispatch this Claude route to a supervised Claude lane or "
+            "rerun route selection for a route compatible with the requested lane "
+            "before consuming MQ."
+        )
+    if route.platform == "vibe" and not (
+        normalized.startswith("vbe") or normalized.startswith("vibe")
+    ):
+        return (
+            f"route/lane mismatch: selected route {route_id} requires a Vibe "
+            f"vbe-* session identity, got lane {lane!r}. Next action: dispatch this "
+            "Vibe route to an available vbe-* lane/worktree or rerun route selection "
+            "for a route compatible with the requested lane before consuming MQ."
+        )
+    return None
+
+
 def _availability_recomposition_candidate_requests(
     primary: DispatchRequest,
     *,
@@ -2382,6 +2414,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"BLOCKED: {reason}", file=sys.stderr)
         print("Supported governed routes:", file=sys.stderr)
         print("\n".join(supported_route_lines()), file=sys.stderr)
+        return 10
+    compatibility_reason = platform_lane_compatibility_reason(args.lane, selected_route)
+    if compatibility_reason is not None:
+        blocked = Validation(
+            False,
+            compatibility_reason,
+            validation.task,
+            validation.parent_spec_path,
+            validation.exempt_read_only,
+        )
+        if not args.no_receipt:
+            write_receipt(
+                task_id=args.task,
+                lane=args.lane,
+                platform=selected_route.platform,
+                mode=selected_route.mode,
+                profile=selected_route.profile,
+                route=selected_route,
+                validation=blocked,
+                prompt=None,
+                launched=False,
+                route_decision=route_decision,
+                route_decision_receipt_path=route_decision_receipt_path,
+            )
+        print(f"BLOCKED: {compatibility_reason}", file=sys.stderr)
         return 10
     route = selected_route
     args.platform = route.platform
