@@ -409,6 +409,22 @@ def build_preprint_draft_from_vehicle_selection(
             "selected receipt missing vehicle/body sketch; "
             "next action: rebuild the selector receipt from a valid publish_candidate disposition"
         )
+    expected_vehicle = _select_vehicle(receipt.selector_input)
+    expected_spec = VEHICLE_SPECS[expected_vehicle]
+    if receipt.selector_input.audience_family not in expected_spec.allowed_audience_families:
+        raise RdlcPublicationVehicleError(
+            "selected receipt audience does not match selected vehicle policy; "
+            "next action: rebuild the selector receipt from a valid publish_candidate disposition"
+        )
+    if (
+        receipt.recommended_vehicle != expected_vehicle
+        or receipt.surface_budget_profile != expected_spec.budget_profile
+        or receipt.selected_surfaces != expected_spec.surfaces
+    ):
+        raise RdlcPublicationVehicleError(
+            "selected receipt vehicle/surface policy mismatch; "
+            "next action: rebuild the selector receipt from a valid publish_candidate disposition"
+        )
 
     artifact_title = title or _title_from_vehicle(receipt.recommended_vehicle)
     context = {

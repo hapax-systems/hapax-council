@@ -17,6 +17,7 @@ from shared.rdlc_experimental_disposition import (
     build_disposition_receipt,
 )
 from shared.rdlc_publication_vehicle_selector import (
+    VEHICLE_SPECS,
     RdlcPublicationAudienceFamily,
     RdlcPublicationSelectorDecision,
     RdlcPublicationVehicle,
@@ -194,6 +195,17 @@ def test_high_risk_governance_audience_selects_restrained_vehicle() -> None:
     assert selector.selected_surface_slugs() == ("omg-weblog", "osf-preprint", "zenodo-doi")
 
 
+def test_high_risk_defaults_from_observation_when_no_explicit_risk_posture() -> None:
+    selector = build_publication_vehicle_selector_receipt(
+        _publish_candidate(observation=_observation(privacy_risk=RdlcRiskLevel.HIGH)),
+        audience_family=RdlcPublicationAudienceFamily.GOVERNANCE_SAFETY,
+    )
+
+    assert selector.decision == RdlcPublicationSelectorDecision.SELECTED
+    assert selector.selector_input.risk_posture == RdlcRiskLevel.HIGH
+    assert selector.recommended_vehicle == RdlcPublicationVehicle.GOVERNANCE_SAFETY_NOTE
+
+
 def test_missing_public_safe_or_currentness_evidence_refuses_publication() -> None:
     missing_public_safe = build_publication_vehicle_selector_receipt(
         _constructed_publish_candidate(public_safe_evidence_refs=()),
@@ -310,6 +322,12 @@ def test_selected_vehicle_builds_draft_only_preprint_artifact(monkeypatch) -> No
     assert artifact.publication_gate_context["claim_ceiling"] == (
         "case-study candidate, not generalized causal proof"
     )
+    assert artifact.publication_gate_context["rdlc_disposition_receipt_id"] == (
+        "rdlc-disp:obs-pr-4460-merge:publish_candidate"
+    )
+    assert artifact.publication_gate_context["frozen_evidence_refs"] == [
+        "sha256:rdlc-ruler@2026-07-08T04:12:33Z"
+    ]
     assert artifact.publication_gate_context["currentness_evidence_refs"] == [
         "gh:merge:2026-07-08T04:12:33Z",
         "gh:pr-4460:3668787",
@@ -359,3 +377,21 @@ def test_reconstructed_selected_receipt_must_still_satisfy_publication_gates() -
 
     with pytest.raises(RdlcPublicationVehicleError, match="currentness_ref"):
         build_preprint_draft_from_vehicle_selection(reconstructed, slug="unsafe")
+
+
+def test_reconstructed_selected_receipt_must_match_vehicle_surface_policy() -> None:
+    selector = build_publication_vehicle_selector_receipt(
+        _publish_candidate(),
+        audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
+    )
+    product_spec = VEHICLE_SPECS[RdlcPublicationVehicle.PRODUCT_RESEARCH_UPDATE]
+    reconstructed = selector.model_copy(
+        update={
+            "recommended_vehicle": product_spec.vehicle,
+            "surface_budget_profile": product_spec.budget_profile,
+            "selected_surfaces": product_spec.surfaces,
+        }
+    )
+
+    with pytest.raises(RdlcPublicationVehicleError, match="vehicle/surface policy mismatch"):
+        build_preprint_draft_from_vehicle_selection(reconstructed, slug="surface-injection")
