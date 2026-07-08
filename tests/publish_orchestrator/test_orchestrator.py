@@ -1389,7 +1389,7 @@ class TestSingleSurface:
         assert any(event_id.endswith(":fake:ok") for event_id in event_ids)
         assert len(event_ids) == len(set(event_ids))
 
-    def test_corrupt_prior_surface_log_warns_before_redispatch(
+    def test_corrupt_prior_surface_log_fails_closed_without_redispatch(
         self,
         tmp_path,
         monkeypatch,
@@ -1411,10 +1411,26 @@ class TestSingleSurface:
         with caplog.at_level("WARNING", logger=orchestrator_module.__name__):
             assert orch.run_once() == 1
 
-        fake_module.publish_artifact.assert_called_once()
+        fake_module.publish_artifact.assert_not_called()
         assert "publication prior surface log unreadable" in caplog.text
-        assert "next action: inspect or remove the corrupt surface log" in caplog.text
+        assert "failing closed" in caplog.text
+        assert "confirming no duplicate public egress occurred" in caplog.text
         assert str(log_path) in caplog.text
+        surface_log = json.loads(log_path.read_text())
+        assert surface_log["result"] == "corrupt_surface_log"
+        assert surface_log["artifact_fingerprint"] == _artifact_fingerprint(
+            PreprintArtifact.model_validate_json(
+                (tmp_path / "publish/failed/corrupt-log.json").read_text()
+            )
+        )
+        assert not (tmp_path / "publish/inbox/corrupt-log.json").exists()
+        assert not (tmp_path / "publish/published/corrupt-log.json").exists()
+        assert (tmp_path / "publish/failed/corrupt-log.json").exists()
+        event_ids = [
+            json.loads(line)["event_id"]
+            for line in (tmp_path / "public-events.jsonl").read_text().splitlines()
+        ]
+        assert any(event_id.endswith(":fake:corrupt_surface_log") for event_id in event_ids)
 
     def test_changed_artifact_republishes_same_slug(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()

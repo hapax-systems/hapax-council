@@ -124,6 +124,14 @@ def test_closed_repo_pres_false_claims_are_reported_without_deleting_records() -
     assert claims["repo-pres-notice-md-all-repos"].live_status == "true"
     assert claims["repo-pres-issues-redirect-walls"].live_status == "unreconciled"
     assert claims["repo-pres-org-level-github"].live_status == "true"
+    profile_claim = claims["repo-pres-org-level-github"]
+    assert "profile_readme=True" in profile_claim.live_status_basis
+    assert any(
+        ref.startswith("live-report:repo:hapax-systems/.github:file:profile/README.md:sha=")
+        for ref in profile_claim.live_witness_refs
+    )
+    assert all(claim.live_status_basis for claim in claims.values())
+    assert all(claim.live_witness_refs for claim in claims.values())
     assert all(claim.task_path.startswith("vault:hapax-cc-tasks/") for claim in claims.values())
 
 

@@ -8,12 +8,13 @@ parallel.
 Per-artifact-per-surface result lands at
 ``~/hapax-state/publish/log/{slug}.{surface}.json`` with one of:
 ``ok | denied | auth_error | no_credentials | rate_limited | deferred |
-error | surface_unwired``. Once every surface reaches a terminal state,
-the artifact moves to ``published/`` only when every surface returned
-``ok``. Non-retryable failures (``denied``, ``auth_error``,
-``no_credentials``, ``error``, ``dropped``, ``surface_unwired``) move
-the artifact to ``failed/``; ``deferred`` and ``rate_limited`` stay in
-``inbox/`` for retry.
+error | surface_unwired | corrupt_surface_log``. Once every surface
+reaches a terminal state, the artifact moves to ``published/`` only when
+every surface returned ``ok``. Non-retryable failures (``denied``,
+``auth_error``, ``no_credentials``, ``error``, ``dropped``,
+``surface_unwired``, ``corrupt_surface_log``) move the artifact to
+``failed/``; ``deferred`` and ``rate_limited`` stay in ``inbox/`` for
+retry.
 
 ``no_credentials`` is terminal but not published: missing env vars are
 configuration state the publisher can't recover from itself; re-dispatching
@@ -157,6 +158,7 @@ _TERMINAL_RESULTS = frozenset(
         "error",
         "dropped",
         "surface_unwired",
+        "corrupt_surface_log",
     }
 )
 """Terminal states stop retry for a surface.
@@ -481,14 +483,25 @@ class Orchestrator:
                     record = json.loads(log_path.read_text())
                 except (OSError, json.JSONDecodeError) as exc:
                     log.warning(
-                        "publication prior surface log unreadable; redispatching "
+                        "publication prior surface log unreadable; failing closed "
                         "artifact=%s surface=%s path=%s error=%s; next action: "
-                        "inspect or remove the corrupt surface log to allow durable "
-                        "redispatch evidence",
+                        "inspect or remove the corrupt surface log and re-drop the "
+                        "artifact only after confirming no duplicate public egress "
+                        "occurred",
                         artifact.slug,
                         surface,
                         log_path,
                         type(exc).__name__,
+                    )
+                    result = "corrupt_surface_log"
+                    prior_results[surface] = result
+                    self._record_result(
+                        artifact,
+                        surface,
+                        result,
+                        artifact_fingerprint=artifact_fingerprint,
+                        publication_gate_decision=gate_result.decision.value,
+                        publication_gate_fingerprint=gate_fingerprint,
                     )
                     continue
                 if record.get("artifact_fingerprint") == artifact_fingerprint:

@@ -91,6 +91,7 @@ _TERMINAL_FAILURE = {
     "error",
     "dropped",
     "surface_unwired",
+    "corrupt_surface_log",
 }
 DIRECT_DISPATCH_SECONDARY_FANOUT_HOLD_REASON = (
     "direct_dispatch_surface_result:secondary_public_event_fanout_not_claimed"

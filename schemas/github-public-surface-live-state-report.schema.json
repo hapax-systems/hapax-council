@@ -24,6 +24,17 @@
           "title": "Live Status",
           "type": "string"
         },
+        "live_status_basis": {
+          "title": "Live Status Basis",
+          "type": "string"
+        },
+        "live_witness_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Live Witness Refs",
+          "type": "array"
+        },
         "summary": {
           "title": "Summary",
           "type": "string"
@@ -42,6 +53,8 @@
         "task_path",
         "claimed_status",
         "live_status",
+        "live_status_basis",
+        "live_witness_refs",
         "summary",
         "evidence_refs"
       ],

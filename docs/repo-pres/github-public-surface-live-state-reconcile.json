@@ -15,6 +15,17 @@
         "gh:repos/hapax-systems/hapax-council"
       ],
       "live_status": "false",
+      "live_status_basis": "expected_license=PolyForm-Strict-1.0.0; github_license_spdx=NOASSERTION",
+      "live_witness_refs": [
+        "live-report:repo:hapax-systems/hapax-council",
+        "gh:repos/hapax-systems/hapax-council",
+        "live-report:repo:hapax-systems/hapax-council:exists=true",
+        "live-report:repo:hapax-systems/hapax-council:visibility=public",
+        "live-report:repo:hapax-systems/hapax-council:default_branch_sha=70da7e1c9c76432a312c47afbb1f303a2eeab912",
+        "live-report:repo:hapax-systems/hapax-council:license_spdx=NOASSERTION",
+        "live-report:repo:hapax-systems/hapax-council:has_issues=true",
+        "live-report:repo:hapax-systems/hapax-council:community.issue_template=false"
+      ],
       "summary": "License policy closed state compared to GitHub detected license.",
       "task_id": "repo-pres-license-policy",
       "task_path": "vault:hapax-cc-tasks/closed/repo-pres-license-policy.md"
@@ -26,6 +37,12 @@
         "gh:contents/CONTRIBUTING.md"
       ],
       "live_status": "true",
+      "live_status_basis": "local_notice_missing_links_contains_CONTRIBUTING.md=false",
+      "live_witness_refs": [
+        "live-report:local_evidence.notice_missing_links",
+        "live-report:local_evidence.root_file_sha256.NOTICE.md",
+        "live-report:local_evidence.root_file_sha256.CONTRIBUTING.md"
+      ],
       "summary": "NOTICE link closure compared to live CONTRIBUTING.md presence.",
       "task_id": "repo-pres-notice-md-all-repos",
       "task_path": "vault:hapax-cc-tasks/closed/repo-pres-notice-md-all-repos.md"
@@ -37,6 +54,19 @@
         "gh:community/profile"
       ],
       "live_status": "unreconciled",
+      "live_status_basis": "has_issues=True; community.issue_template=False",
+      "live_witness_refs": [
+        "live-report:repo:hapax-systems/hapax-council",
+        "gh:repos/hapax-systems/hapax-council",
+        "live-report:repo:hapax-systems/hapax-council:exists=true",
+        "live-report:repo:hapax-systems/hapax-council:visibility=public",
+        "live-report:repo:hapax-systems/hapax-council:default_branch_sha=70da7e1c9c76432a312c47afbb1f303a2eeab912",
+        "live-report:repo:hapax-systems/hapax-council:license_spdx=NOASSERTION",
+        "live-report:repo:hapax-systems/hapax-council:has_issues=true",
+        "live-report:repo:hapax-systems/hapax-council:community.issue_template=false",
+        "live-report:repo:hapax-systems/hapax-council:file:.github/ISSUE_TEMPLATE/config.yml:exists=true",
+        "live-report:repo:hapax-systems/hapax-council:file:.github/ISSUE_TEMPLATE/config.yml:sha=66a3a7a8322fc18dd08d31653b20901c2367f1ae"
+      ],
       "summary": "Issue redirect-wall closure compared to has_issues and community profile state.",
       "task_id": "repo-pres-issues-redirect-walls",
       "task_path": "vault:hapax-cc-tasks/closed/repo-pres-issues-redirect-walls.md"
@@ -49,6 +79,18 @@
         "GitHub organization profile README docs"
       ],
       "live_status": "true",
+      "live_status_basis": "visibility=public, private=False, profile_readme=True",
+      "live_witness_refs": [
+        "live-report:repo:hapax-systems/.github",
+        "gh:repos/hapax-systems/.github",
+        "live-report:repo:hapax-systems/.github:exists=true",
+        "live-report:repo:hapax-systems/.github:visibility=public",
+        "live-report:repo:hapax-systems/.github:default_branch_sha=b2a52510c2970e09f065662017e37ab19e1b25d4",
+        "live-report:repo:hapax-systems/.github:has_issues=false",
+        "live-report:repo:hapax-systems/.github:community.issue_template=false",
+        "live-report:repo:hapax-systems/.github:file:profile/README.md:exists=true",
+        "live-report:repo:hapax-systems/.github:file:profile/README.md:sha=7dee45aa83bbc98987214a22b747822743fcc3b6"
+      ],
       "summary": "Profile README closure compared to current organization-profile README docs and repo state.",
       "task_id": "repo-pres-org-level-github",
       "task_path": "vault:hapax-cc-tasks/closed/repo-pres-org-level-github.md"
@@ -60,6 +102,16 @@
         "gh:repos/hapax-systems/hapax-assets"
       ],
       "live_status": "true",
+      "live_status_basis": "visibility=public, private=False, pages=True",
+      "live_witness_refs": [
+        "live-report:repo:hapax-systems/hapax-assets",
+        "gh:repos/hapax-systems/hapax-assets",
+        "live-report:repo:hapax-systems/hapax-assets:exists=true",
+        "live-report:repo:hapax-systems/hapax-assets:visibility=public",
+        "live-report:repo:hapax-systems/hapax-assets:default_branch_sha=69325016921c64b634e861ce00085205a7a858e2",
+        "live-report:repo:hapax-systems/hapax-assets:has_issues=true",
+        "live-report:repo:hapax-systems/hapax-assets:community.issue_template=false"
+      ],
       "summary": "hapax-assets CDN/public visibility claim compared to live repo and Pages state.",
       "task_id": "repo-pres-hapax-assets-public-cdn",
       "task_path": "vault:hapax-cc-tasks/closed/repo-pres-hapax-assets-public-cdn.md"

@@ -179,6 +179,8 @@ class ClosedRepoPresClaim(StrictModel):
     task_path: str
     claimed_status: str
     live_status: Literal["true", "false", "unreconciled", "not_applicable"]
+    live_status_basis: str
+    live_witness_refs: tuple[str, ...]
     summary: str
     evidence_refs: tuple[str, ...]
 
@@ -617,6 +619,50 @@ def _closed_repo_pres_findings(
     )
 
 
+def _repo_live_witness_refs(
+    repo_id: str,
+    repo: RepoLiveState | None,
+    *file_paths: str,
+) -> tuple[str, ...]:
+    refs = [
+        f"live-report:repo:{repo_id}",
+        f"gh:repos/{repo_id}",
+    ]
+    if repo is None:
+        refs.append("live-report:repo_not_collected")
+        return tuple(refs)
+
+    refs.extend(
+        (
+            f"live-report:repo:{repo_id}:exists={str(repo.exists).lower()}",
+            f"live-report:repo:{repo_id}:visibility={repo.visibility or 'unknown'}",
+        )
+    )
+    if repo.default_branch_sha:
+        refs.append(f"live-report:repo:{repo_id}:default_branch_sha={repo.default_branch_sha}")
+    if repo.license_spdx:
+        refs.append(f"live-report:repo:{repo_id}:license_spdx={repo.license_spdx}")
+    if repo.has_issues is not None:
+        refs.append(f"live-report:repo:{repo_id}:has_issues={str(repo.has_issues).lower()}")
+    issue_template = repo.community.files.get("issue_template")
+    if issue_template is not None:
+        refs.append(
+            f"live-report:repo:{repo_id}:community.issue_template={str(issue_template).lower()}"
+        )
+
+    for path in file_paths:
+        file_state = repo.files.get(path)
+        if file_state is None:
+            refs.append(f"live-report:repo:{repo_id}:file:{path}:not_collected")
+            continue
+        refs.append(
+            f"live-report:repo:{repo_id}:file:{path}:exists={str(file_state.exists).lower()}"
+        )
+        if file_state.sha:
+            refs.append(f"live-report:repo:{repo_id}:file:{path}:sha={file_state.sha}")
+    return tuple(dict.fromkeys(refs))
+
+
 def build_closed_repo_pres_claims(
     *,
     local: LocalPublicSurfaceEvidence,
@@ -661,6 +707,15 @@ def build_closed_repo_pres_claims(
             task_path=f"{closed_root}/repo-pres-license-policy.md",
             claimed_status="done",
             live_status=license_live,
+            live_status_basis=(
+                "expected_license="
+                f"{expected_license or 'unknown'}; github_license_spdx="
+                f"{council.license_spdx if council is not None else 'repo_not_collected'}"
+            ),
+            live_witness_refs=_repo_live_witness_refs(
+                "hapax-systems/hapax-council",
+                council,
+            ),
             summary="License policy closed state compared to GitHub detected license.",
             evidence_refs=(
                 "docs/repo-pres/repo-registry.yaml",
@@ -672,6 +727,15 @@ def build_closed_repo_pres_claims(
             task_path=f"{closed_root}/repo-pres-notice-md-all-repos.md",
             claimed_status="done",
             live_status=contributing_live,
+            live_status_basis=(
+                "local_notice_missing_links_contains_CONTRIBUTING.md="
+                f"{'true' if 'CONTRIBUTING.md' in local.notice_missing_links else 'false'}"
+            ),
+            live_witness_refs=(
+                "live-report:local_evidence.notice_missing_links",
+                "live-report:local_evidence.root_file_sha256.NOTICE.md",
+                "live-report:local_evidence.root_file_sha256.CONTRIBUTING.md",
+            ),
             summary="NOTICE link closure compared to live CONTRIBUTING.md presence.",
             evidence_refs=("NOTICE.md", "gh:contents/CONTRIBUTING.md"),
         ),
@@ -680,6 +744,17 @@ def build_closed_repo_pres_claims(
             task_path=f"{closed_root}/repo-pres-issues-redirect-walls.md",
             claimed_status="done",
             live_status=issue_live,
+            live_status_basis=(
+                "has_issues="
+                f"{council.has_issues if council is not None else 'repo_not_collected'}; "
+                "community.issue_template="
+                f"{council.community.files.get('issue_template') if council is not None else 'repo_not_collected'}"
+            ),
+            live_witness_refs=_repo_live_witness_refs(
+                "hapax-systems/hapax-council",
+                council,
+                ".github/ISSUE_TEMPLATE/config.yml",
+            ),
             summary="Issue redirect-wall closure compared to has_issues and community profile state.",
             evidence_refs=("scripts/repo-presentation-enforce.sh", "gh:community/profile"),
         ),
@@ -688,6 +763,14 @@ def build_closed_repo_pres_claims(
             task_path=f"{closed_root}/repo-pres-org-level-github.md",
             claimed_status="done",
             live_status=profile_live,
+            live_status_basis=_org_profile_observed(org_profile)
+            if org_profile is not None
+            else "profile repo not collected",
+            live_witness_refs=_repo_live_witness_refs(
+                ORG_PROFILE_REPO_ID,
+                org_profile,
+                ORG_PROFILE_README_PATH,
+            ),
             summary=(
                 "Profile README closure compared to current organization-profile "
                 "README docs and repo state."
@@ -703,6 +786,13 @@ def build_closed_repo_pres_claims(
             task_path=f"{closed_root}/repo-pres-hapax-assets-public-cdn.md",
             claimed_status="implicit-or-docs",
             live_status=assets_live,
+            live_status_basis=_repo_visibility_observed(assets)
+            if assets is not None
+            else "assets repo not collected",
+            live_witness_refs=_repo_live_witness_refs(
+                "hapax-systems/hapax-assets",
+                assets,
+            ),
             summary="hapax-assets CDN/public visibility claim compared to live repo and Pages state.",
             evidence_refs=("CLAUDE.md", "gh:repos/hapax-systems/hapax-assets"),
         ),
@@ -755,6 +845,10 @@ def report_to_markdown(report: GitHubPublicSurfaceReport) -> str:
         "",
         "# GitHub Public Surface Live State Reconcile",
         "",
+        "- Filename note: the April slug is retained for historical ledger continuity; "
+        "the YAML `date` and `Generated` fields record the current live-state refresh. "
+        "Freshness checks must read those fields, not the filename slug. Re-run the "
+        "`Recheck` command below before treating this as current.",
         f"- Generated: `{report.generated_at}`",
         f"- Recheck: `uv run python {report.generated_by}`",
         f"- Claim ceiling: `{report.claim_ceiling}`",
