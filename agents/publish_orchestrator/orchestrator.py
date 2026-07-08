@@ -175,6 +175,12 @@ _TERMINAL_RESULTS = frozenset(
 states move the artifact to ``failed/``, never ``published/``.
 """
 
+_RETRYABLE_RESULTS = frozenset({"deferred", "rate_limited"})
+"""Known non-terminal surface states that may be retried."""
+
+_KNOWN_SURFACE_RESULTS = _TERMINAL_RESULTS | _RETRYABLE_RESULTS
+"""All per-surface results that a prior log may safely name."""
+
 
 # ── Surface registry ────────────────────────────────────────────────
 
@@ -492,31 +498,60 @@ class Orchestrator:
                 try:
                     record = json.loads(log_path.read_text())
                 except (OSError, json.JSONDecodeError) as exc:
-                    log.warning(
-                        "publication prior surface log unreadable; failing closed "
-                        "artifact=%s surface=%s path=%s error=%s; next action: "
-                        "inspect or remove the corrupt surface log and re-drop the "
-                        "artifact only after confirming no duplicate public egress "
-                        "occurred",
-                        artifact.slug,
-                        surface,
-                        log_path,
-                        type(exc).__name__,
-                    )
-                    self._notify_corrupt_surface_log(artifact, surface, log_path, exc)
-                    result = "corrupt_surface_log"
-                    prior_results[surface] = result
-                    self._record_result(
+                    result = self._record_corrupt_prior_surface_log(
                         artifact,
                         surface,
-                        result,
+                        log_path,
+                        reason=type(exc).__name__,
+                        detail=str(exc),
                         artifact_fingerprint=artifact_fingerprint,
                         publication_gate_decision=gate_result.decision.value,
                         publication_gate_fingerprint=gate_fingerprint,
                     )
+                    prior_results[surface] = result
                     continue
-                if record.get("artifact_fingerprint") == artifact_fingerprint:
-                    result = record.get("result", "")
+                if not isinstance(record, Mapping):
+                    result = self._record_corrupt_prior_surface_log(
+                        artifact,
+                        surface,
+                        log_path,
+                        reason="non_object_json",
+                        detail=f"surface log root is {type(record).__name__}",
+                        artifact_fingerprint=artifact_fingerprint,
+                        publication_gate_decision=gate_result.decision.value,
+                        publication_gate_fingerprint=gate_fingerprint,
+                    )
+                    prior_results[surface] = result
+                    continue
+                record_fingerprint = record.get("artifact_fingerprint")
+                if not isinstance(record_fingerprint, str) or not record_fingerprint:
+                    result = self._record_corrupt_prior_surface_log(
+                        artifact,
+                        surface,
+                        log_path,
+                        reason="missing_artifact_fingerprint",
+                        detail="surface log cannot be bound to a publication artifact",
+                        artifact_fingerprint=artifact_fingerprint,
+                        publication_gate_decision=gate_result.decision.value,
+                        publication_gate_fingerprint=gate_fingerprint,
+                    )
+                    prior_results[surface] = result
+                    continue
+                if record_fingerprint == artifact_fingerprint:
+                    result = record.get("result")
+                    if not isinstance(result, str) or result not in _KNOWN_SURFACE_RESULTS:
+                        result = self._record_corrupt_prior_surface_log(
+                            artifact,
+                            surface,
+                            log_path,
+                            reason="invalid_result",
+                            detail=f"surface log result is {result!r}",
+                            artifact_fingerprint=artifact_fingerprint,
+                            publication_gate_decision=gate_result.decision.value,
+                            publication_gate_fingerprint=gate_fingerprint,
+                        )
+                        prior_results[surface] = result
+                        continue
                     prior_results[surface] = result
                     if result in _TERMINAL_RESULTS:
                         self._record_public_event(
@@ -566,10 +601,16 @@ class Orchestrator:
             except (OSError, json.JSONDecodeError):
                 all_terminal = False
                 break
+            if not isinstance(record, Mapping):
+                all_terminal = False
+                break
             if record.get("artifact_fingerprint") != artifact_fingerprint:
                 all_terminal = False
                 break
-            result = record.get("result", "")
+            result = record.get("result")
+            if not isinstance(result, str):
+                all_terminal = False
+                break
             final_results.append(result)
             if result not in _TERMINAL_RESULTS:
                 all_terminal = False
@@ -596,16 +637,59 @@ class Orchestrator:
             log.exception("publisher %s raised for artifact %s", surface, artifact.slug)
             return "error"
 
+    def _record_corrupt_prior_surface_log(
+        self,
+        artifact: PreprintArtifact,
+        surface: str,
+        log_path: Path,
+        *,
+        reason: str,
+        detail: str,
+        artifact_fingerprint: str,
+        publication_gate_decision: str,
+        publication_gate_fingerprint: str,
+    ) -> str:
+        log.warning(
+            "publication prior surface log unreadable or invalid; failing closed "
+            "artifact=%s surface=%s path=%s reason=%s detail=%s; next action: "
+            "inspect or remove the corrupt surface log and re-drop the artifact only "
+            "after confirming no duplicate public egress occurred",
+            artifact.slug,
+            surface,
+            log_path,
+            reason,
+            detail,
+        )
+        self._notify_corrupt_surface_log(
+            artifact,
+            surface,
+            log_path,
+            reason=reason,
+            detail=detail,
+        )
+        result = "corrupt_surface_log"
+        self._record_result(
+            artifact,
+            surface,
+            result,
+            artifact_fingerprint=artifact_fingerprint,
+            publication_gate_decision=publication_gate_decision,
+            publication_gate_fingerprint=publication_gate_fingerprint,
+        )
+        return result
+
     def _notify_corrupt_surface_log(
         self,
         artifact: PreprintArtifact,
         surface: str,
         log_path: Path,
-        exc: Exception,
+        *,
+        reason: str,
+        detail: str,
     ) -> None:
         message = (
             f"artifact={artifact.slug} surface={surface} path={log_path} "
-            f"error={type(exc).__name__}. Public egress failed closed. "
+            f"reason={reason} detail={detail}. Public egress failed closed. "
             "Inspect or remove the corrupt surface log and re-drop the artifact only "
             "after confirming no duplicate public egress occurred."
         )

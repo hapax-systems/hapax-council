@@ -1442,6 +1442,51 @@ class TestSingleSurface:
         ]
         assert any(event_id.endswith(":fake:corrupt_surface_log") for event_id in event_ids)
 
+    @pytest.mark.parametrize(
+        ("prior_payload", "reason"),
+        (
+            ({"result": "ok"}, "missing_artifact_fingerprint"),
+            (["not", "an", "object"], "non_object_json"),
+        ),
+    )
+    def test_schema_invalid_prior_surface_log_fails_closed_without_redispatch(
+        self,
+        tmp_path,
+        monkeypatch,
+        caplog,
+        prior_payload,
+        reason,
+    ):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+
+        _drop_artifact(tmp_path, slug="invalid-log", surfaces=["fake"])
+        log_path = tmp_path / "publish/log/invalid-log.fake.json"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(json.dumps(prior_payload), encoding="utf-8")
+        notify_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        orch = _make_orchestrator(
+            tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            operator_notify=lambda *args, **kwargs: notify_calls.append((args, kwargs)),
+        )
+
+        with caplog.at_level("WARNING", logger=orchestrator_module.__name__):
+            assert orch.run_once() == 1
+
+        fake_module.publish_artifact.assert_not_called()
+        assert "publication prior surface log unreadable or invalid" in caplog.text
+        assert reason in caplog.text
+        assert "confirming no duplicate public egress occurred" in caplog.text
+        assert notify_calls
+        assert reason in str(notify_calls[0][0][1])
+        surface_log = json.loads(log_path.read_text())
+        assert surface_log["result"] == "corrupt_surface_log"
+        assert not (tmp_path / "publish/inbox/invalid-log.json").exists()
+        assert not (tmp_path / "publish/published/invalid-log.json").exists()
+        assert (tmp_path / "publish/failed/invalid-log.json").exists()
+
     def test_changed_artifact_republishes_same_slug(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()
         fake_module.publish_artifact = mock.Mock(return_value="ok")
