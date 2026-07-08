@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""Write Claude subscription-quota admission receipts from an account-live observation.
+
+The command records a short-lived, sanitized observation that ``claude.headless.full`` (and the
+other ``auth_surface=subscription`` Claude routes) has fresh account-live subscription quota. It is
+patterned after ``scripts/hapax-agy-quota-admission`` / ``scripts/hapax-glmcp-quota-admission``:
+positive receipts are consumed by ``scripts/hapax-quota-telemetry-writer`` before the Claude
+subscription family is treated as quota-fresh.
+
+Account-live subscription quota is NOT mechanically observable yet (Claude Code OTel usage/cost
+integration is incomplete — CASE-CAPACITY-ROUTING-001 R2, "use receipts and manual refresh until
+observable"). So this writer records an OPERATOR / governed-probe attestation of a bounded
+account-live observation (an evidence ref naming what was observed), NEVER a live Claude smoke
+(no runtime side effect, no provider spend) and NEVER lane/tmux/session presence. It persists no
+secret value and no prompt/response content, and the receipt is short-lived so it cannot stand as
+stale evidence. Fail-closed: an unsafe/invalid observation exits non-zero and writes nothing, so the
+route stays held.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
+
+DEFAULT_RECEIPT_DIR = Path(
+    os.environ.get(
+        "HAPAX_RELAY_RECEIPT_DIR",
+        str(Path.home() / ".cache/hapax/relay/receipts"),
+    )
+)
+
+ADMISSION_SCHEMA = "hapax.claude_quota_admission.v1"
+PROVIDER = "anthropic-claude-subscription"
+ROUTE_ID = "claude.headless.full"
+CAPACITY_POOL = "subscription_quota"
+AUTH_SURFACE = "subscription"
+BILLING_MODE = "operator_session_subscription"
+SECRET_SOURCE = "claude:operator-session-subscription"
+DEFAULT_STALE_AFTER_SECONDS = 900
+MIN_STALE_AFTER_SECONDS = 60
+MAX_STALE_AFTER_SECONDS = 3600
+
+# The bounded observation kinds this writer will attest. Each names an account-live subscription
+# observation that is NOT lane/tmux/session presence: a real Claude invocation completed without a
+# subscription quota wall, or an operator confirmed live subscription headroom out-of-band. Keep this
+# set small and explicit — a free-form observation string is refused.
+ALLOWED_OBSERVATIONS = (
+    "subscription_quota_headroom_observed",
+    "operator_confirmed_subscription_headroom",
+)
+
+VALIDATION_RECOVERY_HINT = (
+    "next action: rerun with --help to confirm bounds, pass a sanitized --evidence-ref that names "
+    "the account-live observation (never a lane/tmux name), pick an allowed --observation, then "
+    "rerun after a genuine account-live subscription observation"
+)
+
+SAFE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+SAFE_RECEIPT_NAME_RE = re.compile(r"\A[a-z0-9_.+-]+\.yaml\Z")
+SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+# Guard against laundering lane/session presence into quota evidence (the exact anti-pattern this
+# task closes): an evidence ref that names a tmux/session/lane is refused.
+LANE_PRESENCE_RE = re.compile(
+    r"(?:tmux|hapax-claude-[a-z0-9-]+|session-present|lane-present|lane-exists)",
+    re.IGNORECASE,
+)
+
+
+def _parse_utc(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).replace(microsecond=0)
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _now(args: argparse.Namespace) -> datetime:
+    if args.now:
+        parsed = _parse_utc(args.now)
+        if parsed is None:
+            raise ValueError("invalid --now; expected ISO-8601 UTC timestamp")
+        return parsed
+    return datetime.now(UTC).replace(microsecond=0)
+
+
+def _safe_reference(value: str, *, label: str) -> str:
+    normalized = " ".join(value.strip().split())
+    if SAFE_REF_RE.fullmatch(normalized) is None or SECRETISH_RE.search(normalized) is not None:
+        raise ValueError(f"unsafe {label}; expected a 3-240 character sanitized reference")
+    if LANE_PRESENCE_RE.search(normalized) is not None:
+        raise ValueError(
+            f"unsafe {label}; lane/tmux/session presence must not be used as quota evidence"
+        )
+    return normalized
+
+
+def _observation(value: str) -> str:
+    normalized = " ".join(value.strip().split())
+    if normalized not in ALLOWED_OBSERVATIONS:
+        raise ValueError(
+            "invalid --observation; expected one of: " + ", ".join(ALLOWED_OBSERVATIONS)
+        )
+    return normalized
+
+
+def _receipt_name(args: argparse.Namespace, *, observed_at: datetime) -> str:
+    stamp = observed_at.strftime("%Y%m%dT%H%M%SZ").lower()
+    default = f"claude-subscription-quota-admission-{stamp}.yaml"
+    name = args.receipt_name or default
+    if SAFE_RECEIPT_NAME_RE.fullmatch(name) is None or SECRETISH_RE.search(name) is not None:
+        raise ValueError("unsafe receipt name")
+    if "claude-subscription-quota-admission" not in name:
+        raise ValueError("receipt name must contain 'claude-subscription-quota-admission'")
+    return name
+
+
+def _write_flat_yaml_atomic(path: Path, fields: list[tuple[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            for key, value in fields:
+                if isinstance(value, bool):
+                    rendered = "true" if value else "false"
+                else:
+                    rendered = str(value)
+                handle.write(f"{key}: {rendered}\n")
+        os.replace(tmp_name, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            Path(tmp_name).unlink()
+        except OSError:
+            # Cleanup is best-effort; preserve and re-raise the original write failure.
+            pass
+        raise
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--receipt-dir", type=Path, default=DEFAULT_RECEIPT_DIR)
+    parser.add_argument("--receipt-name")
+    parser.add_argument("--now")
+    parser.add_argument(
+        "--evidence-ref",
+        required=True,
+        help=(
+            "Sanitized ref naming the account-live observation (never a lane/tmux name), "
+            "for example claude-subscription-headroom-observed-20260708t1400z"
+        ),
+    )
+    parser.add_argument(
+        "--observation",
+        default=ALLOWED_OBSERVATIONS[0],
+        help="Account-live observation kind: " + ", ".join(ALLOWED_OBSERVATIONS),
+    )
+    parser.add_argument(
+        "--stale-after-seconds",
+        type=int,
+        default=DEFAULT_STALE_AFTER_SECONDS,
+    )
+    parser.add_argument("--json", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        observed_at = _now(args)
+        if not MIN_STALE_AFTER_SECONDS <= args.stale_after_seconds <= MAX_STALE_AFTER_SECONDS:
+            raise ValueError(
+                f"--stale-after-seconds must be between {MIN_STALE_AFTER_SECONDS} and "
+                f"{MAX_STALE_AFTER_SECONDS}"
+            )
+        observation = _observation(args.observation)
+        evidence_ref = _safe_reference(args.evidence_ref, label="evidence-ref")
+        receipt_name = _receipt_name(args, observed_at=observed_at)
+        path = args.receipt_dir / receipt_name
+        fields: list[tuple[str, object]] = [
+            ("schema", ADMISSION_SCHEMA),
+            ("status", "quota_available"),
+            ("provider", PROVIDER),
+            ("route_id", ROUTE_ID),
+            ("capacity_pool", CAPACITY_POOL),
+            ("auth_surface", AUTH_SURFACE),
+            ("observation", observation),
+            ("observed_at", _iso(observed_at)),
+            ("stale_after_seconds", args.stale_after_seconds),
+            ("evidence_ref", evidence_ref),
+            ("secret_source", SECRET_SOURCE),
+            ("secret_value_persisted", False),
+            ("prompt_or_output_persisted", False),
+            ("billing_mode", BILLING_MODE),
+            ("account_live_quota_observed", True),
+            ("lane_presence_used_as_quota_evidence", False),
+            ("positive_admission", True),
+        ]
+        _write_flat_yaml_atomic(path, fields)
+    except ValueError as exc:
+        print(
+            f"hapax-claude-subscription-quota-admission: {exc}; {VALIDATION_RECOVERY_HINT}",
+            file=sys.stderr,
+        )
+        return 2
+    except OSError as exc:
+        print(
+            "hapax-claude-subscription-quota-admission: failed to write receipt: "
+            f"{exc}; check receipt-dir existence/permissions or rerun with a writable "
+            "--receipt-dir under the governed relay receipts path",
+            file=sys.stderr,
+        )
+        return 1
+
+    summary = {
+        "receipt_kind": "admission",
+        "path": str(path),
+        "route_id": ROUTE_ID,
+        "capacity_pool": CAPACITY_POOL,
+        "auth_surface": AUTH_SURFACE,
+        "observation": observation,
+        "observed_at": _iso(observed_at),
+        "stale_after_seconds": args.stale_after_seconds,
+        "fresh_until": _iso(
+            datetime.fromtimestamp(observed_at.timestamp() + args.stale_after_seconds, UTC)
+        ),
+        "account_live_quota_observed": True,
+        "lane_presence_used_as_quota_evidence": False,
+    }
+    if args.json:
+        import json
+
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    else:
+        print(f"hapax-claude-subscription-quota-admission: wrote admission receipt -> {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
