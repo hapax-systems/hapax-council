@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -236,6 +238,79 @@ def load_github_public_surface_report(path: Path) -> GitHubPublicSurfaceReport:
         ) from exc
 
 
+def load_github_public_surface_report_for_gate(
+    path: Path,
+    *,
+    skip_live_refresh: bool,
+) -> GitHubPublicSurfaceReport:
+    if skip_live_refresh:
+        return load_github_public_surface_report(path)
+    if path != DEFAULT_GITHUB_PUBLIC_SURFACE_REPORT:
+        raise RequiredInputError(
+            "custom --github-public-surface-report requires "
+            "--skip-live-github-public-surface-refresh. Next action: rerun without the "
+            "custom report for a fresh GitHub readback, or use the explicit offline flag "
+            "only for focused tests/emergency offline diagnosis."
+        )
+    return refresh_live_github_public_surface_report()
+
+
+def refresh_live_github_public_surface_report() -> GitHubPublicSurfaceReport:
+    with tempfile.TemporaryDirectory(prefix="hapax-public-surface-") as temp_dir:
+        temp_root = Path(temp_dir)
+        report_path = temp_root / "github-public-surface-live-state-reconcile.json"
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "github-public-surface-reconcile.py"),
+                    "--output",
+                    str(report_path),
+                    "--markdown",
+                    str(temp_root / "github-public-surface-live-state-reconcile.md"),
+                    "--vault-markdown",
+                    str(temp_root / "vault-github-public-surface-live-state-reconcile.md"),
+                    "--schema",
+                    str(temp_root / "github-public-surface-live-state-report.schema.json"),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired as exc:
+            detail = _first_nonempty_line(exc.stderr, exc.stdout) or "timed out after 120s"
+            raise RequiredInputError(
+                "fresh GitHub public-surface reconcile failed: "
+                f"{detail}. Next action: rerun scripts/github-public-surface-reconcile.py "
+                "with GitHub credentials/rate limit available and hold release until the "
+                "public-surface claim gate passes."
+            ) from exc
+        if result.returncode != 0:
+            detail = _first_nonempty_line(result.stderr, result.stdout) or (
+                f"exit code {result.returncode}"
+            )
+            raise RequiredInputError(
+                "fresh GitHub public-surface reconcile failed: "
+                f"{detail}. Next action: rerun scripts/github-public-surface-reconcile.py "
+                "with GitHub credentials/rate limit available and hold release until the "
+                "public-surface claim gate passes."
+            )
+        return load_github_public_surface_report(report_path)
+
+
+def _first_nonempty_line(*values: str | None) -> str | None:
+    for value in values:
+        if not value:
+            continue
+        for line in value.splitlines():
+            stripped = line.strip()
+            if stripped:
+                return stripped
+    return None
+
+
 def expected_freshness_envelopes_from_report(
     report: GitHubPublicSurfaceReport,
 ) -> tuple[PublicSurfaceFreshnessEnvelope, ...]:
@@ -287,6 +362,7 @@ def check_publication_freshness_state(
     state_path: Path,
     required_surface_ids: tuple[str, ...],
     expected_envelopes: tuple[PublicSurfaceFreshnessEnvelope, ...],
+    compare_expected_temporal_fields: bool = True,
 ) -> list[LintFinding]:
     findings: list[LintFinding] = []
     now = datetime.now(tz=UTC)
@@ -314,6 +390,7 @@ def check_publication_freshness_state(
             state_path=state_path,
             observed_by_surface_id=observed_by_surface_id,
             expected_envelopes=expected_envelopes,
+            compare_temporal_fields=compare_expected_temporal_fields,
         )
     )
     generated_at = _parse_freshness_timestamp(
@@ -393,13 +470,18 @@ def _check_expected_freshness_envelopes(
     state_path: Path,
     observed_by_surface_id: dict[str, PublicSurfaceFreshnessEnvelope],
     expected_envelopes: tuple[PublicSurfaceFreshnessEnvelope, ...],
+    compare_temporal_fields: bool,
 ) -> list[LintFinding]:
     findings: list[LintFinding] = []
     for expected in expected_envelopes:
         observed = observed_by_surface_id.get(expected.surface_id)
         if observed is None:
             continue
-        mismatches = _expected_envelope_mismatches(expected=expected, observed=observed)
+        mismatches = _expected_envelope_mismatches(
+            expected=expected,
+            observed=observed,
+            compare_temporal_fields=compare_temporal_fields,
+        )
         if not mismatches:
             continue
         findings.append(
@@ -423,12 +505,10 @@ def _expected_envelope_mismatches(
     *,
     expected: PublicSurfaceFreshnessEnvelope,
     observed: PublicSurfaceFreshnessEnvelope,
+    compare_temporal_fields: bool,
 ) -> list[str]:
-    fields = (
+    fields = [
         "freshness_result",
-        "checked_at",
-        "ttl_s",
-        "expires_at",
         "source_ref",
         "source_of_truth",
         "evidence_refs",
@@ -436,7 +516,9 @@ def _expected_envelope_mismatches(
         "rendered_hash",
         "published_hash",
         "readback_hash",
-    )
+    ]
+    if compare_temporal_fields:
+        fields[1:1] = ["checked_at", "ttl_s", "expires_at"]
     mismatches: list[str] = []
     for field in fields:
         expected_value = getattr(expected, field)
@@ -515,7 +597,19 @@ def main(argv: list[str] | None = None) -> int:
         "--github-public-surface-report",
         type=Path,
         default=DEFAULT_GITHUB_PUBLIC_SURFACE_REPORT,
-        help="machine-readable GitHub public-surface report used to derive required witnesses",
+        help=(
+            "offline machine-readable GitHub public-surface report used only with "
+            "--skip-live-github-public-surface-refresh; default gate runs refresh live GitHub "
+            "state before deriving required witnesses"
+        ),
+    )
+    parser.add_argument(
+        "--skip-live-github-public-surface-refresh",
+        action="store_true",
+        help=(
+            "use --github-public-surface-report as the witness source instead of refreshing "
+            "live GitHub state; intended for focused tests and emergency offline diagnosis"
+        ),
     )
     parser.add_argument(
         "--required-publication-freshness-surface-id",
@@ -553,8 +647,9 @@ def main(argv: list[str] | None = None) -> int:
         required_surface_ids = tuple(args.required_publication_freshness_surface_id)
         expected_envelopes: tuple[PublicSurfaceFreshnessEnvelope, ...] = ()
         if not required_surface_ids:
-            github_public_surface_report = load_github_public_surface_report(
-                args.github_public_surface_report
+            github_public_surface_report = load_github_public_surface_report_for_gate(
+                args.github_public_surface_report,
+                skip_live_refresh=args.skip_live_github_public_surface_refresh,
             )
             expected_envelopes = expected_freshness_envelopes_from_report(
                 github_public_surface_report
@@ -571,6 +666,7 @@ def main(argv: list[str] | None = None) -> int:
             state_path=args.publication_freshness_state,
             required_surface_ids=required_surface_ids,
             expected_envelopes=expected_envelopes,
+            compare_expected_temporal_fields=args.skip_live_github_public_surface_refresh,
         )
     )
     for path in iter_files(paths):

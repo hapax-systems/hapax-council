@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import json
+import runpy
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+from shared.publication_freshness import (
+    PublicationFreshnessSnapshot,
+    PublicSurfaceFreshnessEnvelope,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check-public-surface-claims.py"
@@ -220,6 +226,10 @@ def _freshness_envelope(**overrides: object) -> dict[str, object]:
 
 def _isoformat_z(value: datetime) -> str:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _gate_module() -> dict[str, object]:
+    return runpy.run_path(str(SCRIPT))
 
 
 def _run_gate(
@@ -568,6 +578,7 @@ def test_public_surface_gate_rejects_forged_witness_against_live_report(
         source_reconciliation,
         "--publication-freshness-state",
         str(freshness_state),
+        "--skip-live-github-public-surface-refresh",
         "--github-public-surface-report",
         str(github_report),
     )
@@ -577,6 +588,89 @@ def test_public_surface_gate_rejects_forged_witness_against_live_report(
     assert "does not match live report evidence" in result.stdout
     assert forged_surface_id in result.stdout
     assert "freshness_result expected missing observed match" in result.stdout
+
+
+def test_public_surface_gate_rejects_custom_report_without_offline_switch(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-custom-report.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    github_report = _write_profile_report_without_required_readme(tmp_path / "github-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+        "--github-public-surface-report",
+        str(github_report),
+    )
+
+    assert result.returncode == 2
+    assert "custom --github-public-surface-report requires" in result.stderr
+    assert "--skip-live-github-public-surface-refresh" in result.stderr
+
+
+def test_live_expected_comparison_allows_independent_freshness_timestamp(
+    tmp_path: Path,
+) -> None:
+    checked_at = datetime.now(tz=UTC).replace(microsecond=0) - timedelta(minutes=5)
+    expected_checked_at = checked_at + timedelta(minutes=1)
+    observed = PublicSurfaceFreshnessEnvelope.model_validate(
+        _freshness_envelope(
+            checked_at=_isoformat_z(checked_at),
+            expires_at=_isoformat_z(checked_at + timedelta(seconds=1800)),
+            freshness_result="match",
+            source_hash="same-source",
+            rendered_hash="same-content",
+            published_hash="same-content",
+            readback_hash="same-content",
+        )
+    )
+    expected = PublicSurfaceFreshnessEnvelope.model_validate(
+        _freshness_envelope(
+            checked_at=_isoformat_z(expected_checked_at),
+            expires_at=_isoformat_z(expected_checked_at + timedelta(seconds=1800)),
+            freshness_result="match",
+            source_hash="same-source",
+            rendered_hash="same-content",
+            published_hash="same-content",
+            readback_hash="same-content",
+        )
+    )
+    state = PublicationFreshnessSnapshot(
+        generated_at=_isoformat_z(datetime.now(tz=UTC).replace(microsecond=0)),
+        envelopes=(observed,),
+    )
+    gate = _gate_module()
+    check_publication_freshness_state = gate["check_publication_freshness_state"]
+
+    live_findings = check_publication_freshness_state(
+        state,
+        state_path=tmp_path / "freshness-state.json",
+        required_surface_ids=(TEST_FRESHNESS_SURFACE_ID,),
+        expected_envelopes=(expected,),
+        compare_expected_temporal_fields=False,
+    )
+    offline_findings = check_publication_freshness_state(
+        state,
+        state_path=tmp_path / "freshness-state.json",
+        required_surface_ids=(TEST_FRESHNESS_SURFACE_ID,),
+        expected_envelopes=(expected,),
+        compare_expected_temporal_fields=True,
+    )
+
+    assert live_findings == []
+    assert len(offline_findings) == 1
+    assert "checked_at expected" in offline_findings[0].message
 
 
 def test_public_surface_gate_rejects_redated_live_report_witness(
@@ -611,6 +705,7 @@ def test_public_surface_gate_rejects_redated_live_report_witness(
         source_reconciliation,
         "--publication-freshness-state",
         str(freshness_state),
+        "--skip-live-github-public-surface-refresh",
         "--github-public-surface-report",
         str(github_report),
     )
