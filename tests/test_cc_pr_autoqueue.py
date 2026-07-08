@@ -2335,6 +2335,7 @@ def test_summarize_checks_keeps_admission_context_ignored_until_written_by_autoq
         [
             _check(autoqueue.AUTOQUEUE_ADMISSION_CONTEXT),
             _check("governance-gate"),
+            _check("hkp-advisory", "CANCELLED"),
             _check("pr-admission"),
             _check("review"),
             _check(autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE),
@@ -2345,9 +2346,11 @@ def test_summarize_checks_keeps_admission_context_ignored_until_written_by_autoq
     assert "review" in summary.verified_passed
     assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE not in summary.verified_passed
     assert "governance-gate" not in summary.verified_passed
+    assert "hkp-advisory" not in summary.verified_passed
     assert "pr-admission" not in summary.verified_passed
     assert autoqueue.AUTOQUEUE_ADMISSION_CONTEXT not in summary.passed
     assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE not in summary.passed
+    assert "hkp-advisory" not in summary.failed
 
 
 def test_auto_arms_release_unauthorized_pr_open_task(tmp_path: Path) -> None:
