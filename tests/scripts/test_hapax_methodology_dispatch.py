@@ -2179,7 +2179,7 @@ printf '%s\\n' "$@" > {launcher_args}
         "--task",
         "governed-build",
         "--lane",
-        "cx-green",
+        "eta",
         "--platform",
         "codex",
         "--mode",
@@ -2196,7 +2196,7 @@ printf '%s\\n' "$@" > {launcher_args}
 
     assert result.returncode == 0, result.stderr
     recorded = launcher_args.read_text(encoding="utf-8")
-    assert recorded.startswith("--task\ngoverned-build\ncx-green\n")
+    assert recorded.startswith("--task\ngoverned-build\neta\n")
     assert "Platform: claude" in recorded
     assert "Profile: full" in recorded
     assert launcher_env.read_text(encoding="utf-8").splitlines() == [
@@ -2224,6 +2224,406 @@ printf '%s\\n' "$@" > {launcher_args}
         reason.startswith("capability-availability-receipt:codex.headless.full:")
         for reason in reasons
     )
+
+
+def test_claude_lane_recomposed_to_codex_fails_before_mq_consumption(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    registry = _availability_degraded_registry(tmp_path, "claude.headless.full")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: frontier_required
+        authority_level: authoritative
+        mutation_surface: source
+        mutation_scope_refs: []
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: [claude, codex]
+          prohibited_platforms: []
+          required_mode: headless
+          required_profile: full
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
+        """,
+    )
+    launcher_args = tmp_path / "codex-launcher-args.txt"
+    fake_codex = tmp_path / "bin" / "hapax-codex-headless"
+    fake_codex.parent.mkdir(parents=True, exist_ok=True)
+    fake_codex.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "eta",
+        "--platform",
+        "claude",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_codex),
+            "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(registry),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 10
+    assert "selected route codex.headless.full requires a Codex cx-* lane" in result.stderr
+    assert not launcher_args.exists()
+    with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
+        message_id = conn.execute("SELECT message_id FROM messages").fetchone()[0]
+    row = _recipient_row(tmp_path / "relay" / "messages.db", message_id, "eta")
+    assert row["state"] == "offered"
+    assert row["reason"] is None
+
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["launched"] is False
+    assert receipt["platform"] == "codex"
+    assert receipt["mode"] == "headless"
+    assert receipt["profile"] == "full"
+    assert receipt["dimensional_selected_route_id"] == "codex.headless.full"
+    assert "availability_recomposed_from:claude.headless.full" in set(
+        receipt["route_policy_reason_codes"]
+    )
+    assert "durable_mq_dispatch_bound" not in receipt
+
+
+def test_cx_lane_recomposed_to_codex_remains_launch_admissible(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    registry = _availability_degraded_registry(tmp_path, "claude.headless.full")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: frontier_required
+        authority_level: authoritative
+        mutation_surface: source
+        mutation_scope_refs: []
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: [claude, codex]
+          prohibited_platforms: []
+          required_mode: headless
+          required_profile: full
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
+        """,
+    )
+    launcher_args = tmp_path / "codex-launcher-args.txt"
+    fake_codex = tmp_path / "bin" / "hapax-codex-headless"
+    fake_codex.parent.mkdir(parents=True, exist_ok=True)
+    fake_codex.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "claude",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_codex),
+            "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(registry),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "cx-green" in launcher_args.read_text(encoding="utf-8").splitlines()
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is True
+    assert receipt["launched"] is True
+    assert receipt["platform"] == "codex"
+    assert receipt["lane"] == "cx-green"
+    assert receipt["dimensional_selected_route_id"] == "codex.headless.full"
+    assert receipt["durable_mq_dispatch_bound"] is True
+    assert "availability_recomposed_from:claude.headless.full" in set(
+        receipt["route_policy_reason_codes"]
+    )
+
+
+def test_claude_route_with_codex_lane_fails_before_mq_consumption(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "claude-launcher-args.txt"
+    fake_claude = tmp_path / "bin" / "hapax-claude-headless"
+    fake_claude.parent.mkdir(parents=True, exist_ok=True)
+    fake_claude.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_claude.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "claude",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_CLAUDE_HEADLESS": str(fake_claude)},
+    )
+
+    assert result.returncode == 10
+    assert "selected route claude.headless.full requires a Claude headless role" in result.stderr
+    assert not launcher_args.exists()
+    with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
+        message_id = conn.execute("SELECT message_id FROM messages").fetchone()[0]
+    row = _recipient_row(tmp_path / "relay" / "messages.db", message_id, "cx-green")
+    assert row["state"] == "offered"
+    assert row["reason"] is None
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["launched"] is False
+    assert receipt["platform"] == "claude"
+    assert "durable_mq_dispatch_bound" not in receipt
+
+
+def test_vibe_route_with_codex_lane_fails_before_mq_consumption(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: deterministic_ok
+        authority_level: support_non_authoritative
+        mutation_surface: source
+        mutation_scope_refs: []
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: []
+          prohibited_platforms: []
+          required_mode: null
+          required_profile: null
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
+        """,
+        route_metadata_defaults=False,
+    )
+    launcher_args = tmp_path / "vibe-launcher-args.txt"
+    fake_vibe = tmp_path / "bin" / "hapax-vibe"
+    fake_vibe.parent.mkdir(parents=True, exist_ok=True)
+    fake_vibe.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_vibe.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "vibe",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_VIBE_LAUNCHER": str(fake_vibe)},
+    )
+
+    assert result.returncode == 10
+    assert "selected route vibe.headless.full requires a Vibe" in result.stderr
+    assert not launcher_args.exists()
+    with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
+        message_id = conn.execute("SELECT message_id FROM messages").fetchone()[0]
+    row = _recipient_row(tmp_path / "relay" / "messages.db", message_id, "cx-green")
+    assert row["state"] == "offered"
+    assert row["reason"] is None
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["launched"] is False
+    assert receipt["platform"] == "vibe"
+    assert "durable_mq_dispatch_bound" not in receipt
+
+
+def test_codex_route_with_cx_lane_remains_launch_admissible(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "codex-launcher-args.txt"
+    fake_codex = tmp_path / "bin" / "hapax-codex-headless"
+    fake_codex.parent.mkdir(parents=True, exist_ok=True)
+    fake_codex.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_codex)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    codex_args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert codex_args[0:2] == ["--task", "governed-build"]
+    assert "cx-green" in codex_args
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is True
+    assert receipt["launched"] is True
+    assert receipt["platform"] == "codex"
+    assert receipt["lane"] == "cx-green"
+    assert receipt["durable_mq_dispatch_bound"] is True
 
 
 def test_unsupported_selected_route_writes_blocked_receipt_with_next_action(
@@ -3250,7 +3650,7 @@ printf '%s\\n' "$@" > {launcher_args}
         "--task",
         "governed-build",
         "--lane",
-        "cx-green",
+        "eta",
         "--platform",
         "codex",
         "--mode",

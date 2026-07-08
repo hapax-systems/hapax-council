@@ -822,6 +822,12 @@ WorldSurfaceHealthFixtureSet.rows_for_fixture_case
 # while projecting model/search/MCP/publication/local routes into WCS rows.
 ProviderToolRouteHealth._validate_route_claim_authority
 
+# Tavily usage telemetry normalizers are Pydantic field validators invoked
+# dynamically when account/key usage payloads are materialized.
+from shared.tavily_client import TavilyAccountUsage as _TavilyAccountUsage  # noqa: E402
+
+_TavilyAccountUsage._normalize_nullable_numeric
+
 # Route authority receipts are Pydantic-validated when loaded from receipt
 # files; vulture cannot see model_validator invocation.
 RouteAuthorityReceipt._valid_signed_receipt
@@ -4671,6 +4677,40 @@ from shared.durable_jsonl_sink import DurableJsonlSink as _Stage0DurableJsonlSin
 _ = (
     _Stage0DurableJsonlSink,
     _Stage0DurableJsonlSink.path_for_stream,
+)
+
+# CEI SLICE 4: the transcript execution observer + the attest_transcript close-gate CORE
+# ship in this PR (attest_transcript composes observe + verdict); its remaining consumer —
+# the cc-close wiring + the Yard Crow recomposition attestation — lands in a follow-up
+# slice. Tests exercise these now; the cc-close static call path lands next. Keep the
+# library entrypoints explicit.
+from shared.execution_attestation import (  # noqa: E402
+    attest_transcript as _attest_transcript,
+)
+from shared.execution_attestation import (  # noqa: E402
+    sanctioned_models_for_route as _sanctioned_models_for_route,
+)
+from shared.execution_observer import (  # noqa: E402
+    ExecutionInvariantVerdict as _ExecutionInvariantVerdict,
+)
+from shared.execution_observer import (  # noqa: E402
+    check_execution_invariant as _check_execution_invariant,
+)
+from shared.execution_observer import (  # noqa: E402
+    observe_claude_transcript as _observe_claude_transcript,
+)
+from shared.execution_observer import (  # noqa: E402
+    observe_codex_rollout as _observe_codex_rollout,
+)
+
+_ = (
+    _observe_claude_transcript,
+    _observe_codex_rollout,
+    _check_execution_invariant,
+    _ExecutionInvariantVerdict,
+    _ExecutionInvariantVerdict.admissible,
+    _attest_transcript,
+    _sanctioned_models_for_route,
 )
 
 # Entitlement→capability classifier: the pure core the entitlement reconciler consumes in
