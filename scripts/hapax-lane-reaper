@@ -11,7 +11,7 @@
 # cache is absent or HAPAX_DISPATCH_SCHEDULER_LEGACY=1.
 #
 # Usage:
-#   hapax-lane-reaper [--dry-run] [--threshold MINUTES]
+#   hapax-lane-reaper [--dry-run] [--threshold MINUTES] [--help]
 #
 # Run via timer: systemd/units/hapax-lane-reaper.timer (every 30 min)
 
@@ -23,15 +23,44 @@ IDLE_THRESHOLD_MIN=30
 DRY_RUN=0
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
 
+log() { printf 'lane-reaper: %s\n' "$*" >&2; }
+
+usage() {
+    cat <<'EOF'
+Usage: hapax-lane-reaper [--dry-run] [--threshold MINUTES] [--help]
+
+Recover idle Hapax lanes without whole-session teardown.
+
+Options:
+  --dry-run             Report candidate releases/reaps without mutating state.
+  --threshold MINUTES   Legacy fixed idle threshold when measured tau is absent.
+  -h, --help            Show this help text.
+EOF
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run) DRY_RUN=1; shift ;;
-        --threshold) IDLE_THRESHOLD_MIN="$2"; shift 2 ;;
-        *) shift ;;
+        --threshold)
+            if [[ $# -lt 2 || "$2" == --* ]]; then
+                log "--threshold requires a MINUTES argument"
+                usage >&2
+                exit 64
+            fi
+            IDLE_THRESHOLD_MIN="$2"
+            shift 2
+            ;;
+        --help | -h)
+            usage
+            exit 0
+            ;;
+        *)
+            log "unknown argument: $1"
+            usage >&2
+            exit 64
+            ;;
     esac
 done
-
-log() { printf 'lane-reaper: %s\n' "$*" >&2; }
 
 # ─── RecoveryGovernor admission for the load-injecting reap action ────────────
 # bb-control-stability: the kill + worktree-cleanup + hygiene-sweep a reap
@@ -60,6 +89,22 @@ governor_record() {
     [[ "${HAPAX_RECOVERY_GOVERNOR_OFF:-}" == "1" ]] && return 0
     (cd "$(governor_repo)" 2>/dev/null && python3 -m shared.recovery_governor --record "$1" "$2" >/dev/null 2>&1) || true
 }
+
+is_quota_wall_output() {
+    local text="$1"
+    [[ -z "$text" ]] && return 1
+    printf '%s\n' "$text" | grep -Eiq \
+        '(^|[^[:alnum:]])(HTTP[[:space:]]*)?429([^[:alnum:]]|$)|Too Many Requests|rate[-_.[:space:]]*limit(ed)?[-_.[:space:]]*(exceeded|reached|hit|error)|rate[-_.[:space:]]*limited|Usage limit[[:space:]]+(reached|exceeded)|weekly[[:space:]]+limit|quota[-_[:space:]]+(wall|limit|exceeded|reached)'
+}
+
+if [[ "${HAPAX_LANE_REAPER_CLASSIFY_STDIN:-}" == "1" ]]; then
+    if is_quota_wall_output "$(cat)"; then
+        printf 'stuck\n'
+    else
+        printf 'active\n'
+    fi
+    exit 0
+fi
 
 # ─── bb-dispatch-scheduler: measured tau timeout + bounded PID-targeted kill ───
 # The reap threshold is no longer a fixed 30m; it is the MEASURED per-lineage tau
@@ -95,6 +140,19 @@ target_pid_for() {
         case "$comm" in claude | node | codex) found="$cpid" ;; esac
     done
     echo "${found:-$pane}"
+}
+
+active_child_count() {
+    local pane="$1" count=0 cpid comm
+    while IFS= read -r cpid; do
+        [[ -z "$cpid" ]] && continue
+        comm=$(ps -o comm= -p "$cpid" 2>/dev/null || true)
+        case "$comm" in
+            fish | bash | zsh | sh | "") ;;
+            *) count=$((count + 1)) ;;
+        esac
+    done < <(pgrep -P "$pane" 2>/dev/null || true)
+    echo "$count"
 }
 
 reap_kill() {
@@ -141,12 +199,12 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
     role="${role#hapax-claude-}"
 
     # Count child processes (excluding the shell itself)
-    children=$(ps --ppid "$pane_pid" -o comm= 2>/dev/null | grep -cv "^fish$\|^bash$\|^zsh$\|^sh$" || echo 0)
+    children=$(active_child_count "$pane_pid")
 
-    # Check last output for stuck patterns (quota, rate limit, error loops)
+    # Check last output for explicit provider quota/rate-limit walls.
     last_output=$(tmux capture-pane -t "$session" -p 2>/dev/null | grep -v "^$" | tail -3)
     is_stuck=0
-    if echo "$last_output" | grep -qi "rate.limit\|quota\|429\|Usage limit\|BLOCKED.*quota"; then
+    if is_quota_wall_output "$last_output"; then
         is_stuck=1
     fi
 
@@ -164,14 +222,24 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
             if [[ -n "$claim" ]]; then
                 for task_file in "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active/${claim}"*.md; do
                     if [[ -f "$task_file" ]]; then
-                        sed -i "s/^status: claimed/status: offered/" "$task_file"
-                        sed -i "s/^status: in_progress/status: offered/" "$task_file"
-                        sed -i "s/^assigned_to: .*/assigned_to: unassigned/" "$task_file"
-                        log "  Released task: $claim → offered"
+                        if [[ "$DRY_RUN" -eq 0 ]]; then
+                            sed -i "s/^status: claimed/status: offered/" "$task_file"
+                            sed -i "s/^status: in_progress/status: offered/" "$task_file"
+                            sed -i "s/^assigned_to: .*/assigned_to: unassigned/" "$task_file"
+                            log "  Released task: $claim → offered"
+                        else
+                            log "  DRY RUN: would release task: $claim → offered"
+                        fi
                     fi
                 done
             fi
-            rm -f "$claim_file"
+            if [[ "$DRY_RUN" -eq 0 ]]; then
+                rm -f "$claim_file"
+            else
+                log "  DRY RUN: would remove claim file: $claim_file"
+            fi
+        elif [[ "$DRY_RUN" -eq 1 ]]; then
+            log "  DRY RUN: no claim file to release for $role"
         fi
         continue  # Don't kill — session may recover
     fi
