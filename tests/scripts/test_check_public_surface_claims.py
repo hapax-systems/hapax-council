@@ -414,6 +414,29 @@ def test_public_surface_gate_marks_expired_freshness_state_stale(tmp_path: Path)
     assert "stale" in result.stdout
 
 
+def test_public_surface_gate_malformed_freshness_state_exits_2_with_next_action(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-malformed.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = tmp_path / "freshness-state.json"
+    freshness_state.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 2
+    assert "publication freshness state is malformed" in result.stderr
+    assert "Next action: regenerate or repair the state" in result.stderr
+
+
 def test_public_surface_gate_json_includes_v2_rule_ids(tmp_path: Path) -> None:
     doc = tmp_path / "bad.md"
     doc.write_text("Token Capital is an existence proof.\n", encoding="utf-8")

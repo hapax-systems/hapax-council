@@ -440,21 +440,34 @@ def fanout(
     Returns ``{target_address: outcome}`` where outcome is one of:
     ``ok`` (set_entry returned a body), ``error`` (set_entry returned
     None), ``client-disabled`` (the client object is disabled — usually
-    because no operator bearer-token is configured), ``gate-policy-blocked``
+    because no operator bearer-token is configured), ``loop-skipped``
+    (loop-prevention header already present), ``gate-policy-blocked``
     (configured gate policy is unavailable or malformed), or ``gate-blocked``
     (required gate receipts are missing or invalid). Targets identical
     to ``source_address`` are skipped.
 
     Loop-prevention: when ``content`` already contains
-    :data:`FANOUT_LOOP_HEADER_PREFIX`, the fanout is a no-op (returns
-    empty dict). This catches re-fanouts from a peer-driven flow and
-    prevents A→B→A loops without requiring graph-topology validation.
+    :data:`FANOUT_LOOP_HEADER_PREFIX`, the fanout is a no-egress skip
+    that records a ``loop-skipped`` outcome for each non-source target.
+    This catches re-fanouts from a peer-driven flow and prevents A→B→A
+    loops without requiring graph-topology validation.
     """
-    if FANOUT_LOOP_HEADER_PREFIX in content:
-        log.debug("fanout skipped — loop-prevention header detected")
-        return {}
-
     targets = [addr for addr in config.addresses if addr != source_address]
+    if FANOUT_LOOP_HEADER_PREFIX in content:
+        log.warning(
+            "fanout skipped before public egress; loop-prevention header detected "
+            "source=%s entry_id=%s targets=%s; next action: inspect source content if "
+            "this was not an intentional replay",
+            source_address,
+            entry_id,
+            ",".join(targets) if targets else "none",
+        )
+        for target in targets:
+            omg_fanouts_total.labels(
+                source=source_address, target=target, result="loop-skipped"
+            ).inc()
+        return {target: "loop-skipped" for target in targets}
+
     required_gates, boundary_gate_policy_error = _effective_required_gates(config)
     address_policy_error = _fanout_address_policy_error(
         source_address=source_address,

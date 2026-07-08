@@ -359,21 +359,31 @@ class TestFanout:
         client.set_entry.assert_not_called()
         assert result == {}
 
-    def test_loop_prevention_skips_already_fanned_out_content(self) -> None:
+    def test_loop_prevention_skips_already_fanned_out_content(self, caplog) -> None:
         client = _make_client()
         config = _config()
         # Content already contains the fanout-source header
         body = f"{FANOUT_LOOP_HEADER_PREFIX} hapax -->\nthis entry already came from hapax fanout\n"
-        result = fanout(
-            source_address="oudepode",  # different "source" but body still has header
-            entry_id="entry-1",
-            content=body,
-            config=config,
-            client=client,
+        counter = omg_rss_fanout.omg_fanouts_total.labels(
+            source="oudepode",
+            target="hapax",
+            result="loop-skipped",
         )
+        before = counter._value.get()
+        with caplog.at_level("WARNING", logger=omg_rss_fanout.__name__):
+            result = fanout(
+                source_address="oudepode",  # different "source" but body still has header
+                entry_id="entry-1",
+                content=body,
+                config=config,
+                client=client,
+            )
         # Skipped due to loop-prevention
         client.set_entry.assert_not_called()
-        assert result == {}
+        assert result == {"hapax": "loop-skipped"}
+        assert counter._value.get() == before + 1
+        assert "loop-prevention header detected" in caplog.text
+        assert "next action" in caplog.text
 
     def test_disabled_client_short_circuits(self) -> None:
         client = _make_client(enabled=False)

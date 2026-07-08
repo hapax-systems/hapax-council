@@ -243,7 +243,10 @@ def load_publication_freshness_state(path: Path) -> PublicationFreshnessSnapshot
         return PublicationFreshnessSnapshot.model_validate(payload)
     except (TypeError, ValueError) as exc:
         raise RequiredInputError(
-            f"publication freshness state is malformed: {path}: {exc}"
+            f"publication freshness state is malformed: {path}: {exc}. "
+            "Next action: regenerate or repair the state with "
+            "scripts/publication-freshness-audit.py and hold release until the "
+            "public-surface claim gate passes."
         ) from exc
 
 
