@@ -61,6 +61,30 @@ ssh -t appendix 'codex login'
 ssh appendix 'codex exec --ephemeral --skip-git-repo-check --ignore-rules --sandbox read-only --json --cd ~ "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"'
 ```
 
+If `codex login --device-auth` is unavailable by account or workspace policy,
+use the documented saved-login cache fallback only under explicit
+credential-transfer authorization. Treat `~/.codex/auth.json` like a password:
+do not paste it into chat, tickets, task notes, or logs. Copy from a
+browser-authenticated host to the dispatch host, preserve an owner-only backup,
+and immediately re-run both the host sentinel and the platform capability
+receipt probe:
+
+```bash
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+ssh appendix "bash -lc 'mkdir -p ~/.codex && chmod 700 ~/.codex && if [ -f ~/.codex/auth.json ]; then cp -p ~/.codex/auth.json ~/.codex/auth.json.pre-copy-$stamp; fi'"
+ssh appendix "bash -lc 'umask 077; cat > ~/.codex/auth.json.tmp && chmod 600 ~/.codex/auth.json.tmp && mv ~/.codex/auth.json.tmp ~/.codex/auth.json'" < ~/.codex/auth.json
+ssh appendix "bash -lc 'stat -c \"%a %U %G %s\" ~/.codex/auth.json && codex login status'"
+ssh appendix 'bash -lc '\''codex exec --ephemeral --skip-git-repo-check --ignore-rules --sandbox read-only --json --cd ~ "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"'\'''
+uv run python scripts/hapax-platform-capability-receipts --platform codex --codex-exec-auth-probe --json
+scripts/hapax-quota-telemetry-writer --json
+```
+
+`scripts/hapax-quota-telemetry-writer` must not mark Codex subscription quota
+fresh while the current Codex platform capability receipt reports
+`codex_exec_auth_failed`, `codex_exec_auth_token_invalidated`, or
+`codex_exec_auth_refresh_token_invalidated`; it records the subscription snapshot
+as `unknown` until the saved-login witness is repaired.
+
 On the remote host, the launcher materializes both the legacy and session-keyed
 claim caches plus their epoch sidecars before `codex exec` starts, using the
 matched local claim epoch. Remote exec refuses task-bound dispatch if the local

@@ -818,6 +818,7 @@ exit 0
 
     assert result.returncode == 78
     assert "saved Codex auth was rejected by codex exec" in result.stderr
+    assert "codex_saved_auth_login_required" in result.stderr
     assert not claim_log.exists()
     assert not codex_args.exists()
 
@@ -1141,7 +1142,7 @@ exit 0
     assert result.returncode == 75
     assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight"]
     assert "remote Codex auth preflight failed" in result.stderr
-    assert "codex_saved_auth_exec_failed:rc=77" in result.stderr
+    assert "codex_saved_auth_login_required" in result.stderr
     assert "HAPAX_DISPATCH_HOST_FALLBACK=local" in result.stderr
     assert claim_log.read_text(encoding="utf-8") == "task-x\n"
 
@@ -1190,7 +1191,7 @@ exit 0
     assert result.returncode == 75
     assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight"]
     assert "remote Codex auth preflight failed" in result.stderr
-    assert "codex_saved_auth_exec_failed:rc=77" in result.stderr
+    assert "codex_saved_auth_login_required" in result.stderr
     assert claim_log.read_text(encoding="utf-8") == "task-x\n"
 
 

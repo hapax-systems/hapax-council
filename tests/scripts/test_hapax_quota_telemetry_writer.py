@@ -117,6 +117,65 @@ action: exit_clean_await_restart
     )
 
 
+def _codex_platform_receipt(
+    receipt_dir: Path,
+    *,
+    reason_code: str,
+    observed_at: str = "2026-06-09T23:59:00Z",
+) -> None:
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "receipt_schema": 1,
+        "receipt_id": "codex-auth-blocked-test",
+        "platform": "codex",
+        "routes": ["codex.headless.full"],
+        "observed_at": observed_at,
+        "stale_after": "15m",
+        "cli": {"binary": "codex", "available": True, "version": "codex-test"},
+        "wrapper": {
+            "path": "scripts/hapax-codex-headless",
+            "exists": True,
+            "executable": True,
+            "sha256": None,
+        },
+        "config_refs": [],
+        "tool_state": [],
+        "mcp_status": [],
+        "capability": {
+            "status": "blocked",
+            "source": "live",
+            "observed_at": observed_at,
+            "stale_after": "15m",
+            "evidence_refs": [],
+            "reason_codes": ["codex_exec_auth_failed", reason_code],
+        },
+        "resource": {
+            "status": "blocked",
+            "source": "live",
+            "observed_at": observed_at,
+            "stale_after": "15m",
+            "evidence_refs": [],
+            "reason_codes": ["codex_exec_auth_failed", reason_code],
+        },
+        "quota": {
+            "status": "observed",
+            "source": "live",
+            "observed_at": observed_at,
+            "stale_after": "15m",
+            "evidence_refs": ["test:quota:observed"],
+            "reason_codes": [],
+        },
+        "provider_docs": {
+            "refs": ["test:provider-docs"],
+            "fetched_at": observed_at,
+            "stale_after": "7d",
+            "fetch_status": "observed",
+        },
+        "known_unknowns": [],
+    }
+    (receipt_dir / "codex.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
 def _glmcp_admission(
     relay: Path,
     *,
@@ -369,6 +428,36 @@ def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None
     assert "gemini.headless.full" not in states
     assert states["glmcp.review.direct"] == "unknown"
     assert states["litellm.local.command-r-35b"] == "fresh"
+
+
+def test_codex_snapshot_unknown_when_exec_auth_receipt_reports_refresh_token_invalidated(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts"
+    _codex_platform_receipt(
+        platform_receipts,
+        reason_code="codex_exec_auth_refresh_token_invalidated",
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_exec_auth_refresh_token_invalidated" in codex_snapshot["operator_visible_reason"]
+    assert (
+        "codex-auth-blocker:codex_exec_auth_refresh_token_invalidated"
+        in codex_snapshot["evidence_refs"]
+    )
 
 
 def test_governance_records_carry_over_unchanged(tmp_path: Path) -> None:

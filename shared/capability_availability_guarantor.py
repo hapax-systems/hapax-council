@@ -175,7 +175,7 @@ class RefreshStrategyRegistry:
 
 
 class CodexOAuthRefreshStrategy:
-    """First OAuth strategy: supported Codex refresh boundary, no bearer-token daemon."""
+    """Codex OAuth strategy: saved-login exec witness, no bearer-token daemon."""
 
     auth_surface = AuthSurface.OAUTH
     strategy_id = "codex-oauth-supported-refresh"
@@ -203,6 +203,7 @@ class CodexOAuthRefreshStrategy:
                 "script:scripts/hapax-platform-capability-receipts --platform codex "
                 "--codex-exec-auth-probe --json"
             ),
+            "policy:codex_saved_login_exec_auth_witness",
             "policy:not_codex_access_token_daemon",
             *freshness.evidence_refs,
         )
@@ -219,7 +220,7 @@ class CodexOAuthRefreshStrategy:
                 status=RefreshStatus.DEFERRED,
                 strategy_id=self.strategy_id,
                 reason_codes=(
-                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "oauth_refresh_uses_codex_saved_login_exec_witness",
                     "refresh_execution_not_requested",
                     "availability_recheck_required_after_refresh",
                 ),
@@ -244,7 +245,7 @@ class CodexOAuthRefreshStrategy:
                 status=RefreshStatus.FAILED,
                 strategy_id=self.strategy_id,
                 reason_codes=(
-                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "oauth_refresh_uses_codex_saved_login_exec_witness",
                     f"refresh_command_failed:{result.returncode}",
                 ),
                 evidence_refs=base_refs,
@@ -256,7 +257,7 @@ class CodexOAuthRefreshStrategy:
                 status=RefreshStatus.FAILED,
                 strategy_id=self.strategy_id,
                 reason_codes=(
-                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "oauth_refresh_uses_codex_saved_login_exec_witness",
                     "refresh_receipt_missing_from_command_output",
                 ),
                 evidence_refs=base_refs,
@@ -275,7 +276,7 @@ class CodexOAuthRefreshStrategy:
                 status=RefreshStatus.FAILED,
                 strategy_id=self.strategy_id,
                 reason_codes=(
-                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "oauth_refresh_uses_codex_saved_login_exec_witness",
                     "refresh_receipt_observed_codex_unavailable",
                 ),
                 evidence_refs=tuple(dict.fromkeys(evidence_refs)),
@@ -288,7 +289,7 @@ class CodexOAuthRefreshStrategy:
                 status=RefreshStatus.FAILED,
                 strategy_id=self.strategy_id,
                 reason_codes=(
-                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "oauth_refresh_uses_codex_saved_login_exec_witness",
                     "refresh_receipt_observed_codex_unavailable",
                     *surface_unavailable_reasons,
                 ),
@@ -302,7 +303,7 @@ class CodexOAuthRefreshStrategy:
                 status=RefreshStatus.DEFERRED,
                 strategy_id=self.strategy_id,
                 reason_codes=(
-                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "oauth_refresh_uses_codex_saved_login_exec_witness",
                     "refresh_receipt_account_live_unverified",
                     *account_live_reasons,
                     "availability_recheck_required_after_refresh",
@@ -315,7 +316,7 @@ class CodexOAuthRefreshStrategy:
             status=RefreshStatus.REFRESHED,
             strategy_id=self.strategy_id,
             reason_codes=(
-                "oauth_refresh_uses_supported_codex_auth_path",
+                "oauth_refresh_uses_codex_saved_login_exec_witness",
                 "refresh_receipt_written",
                 "availability_recheck_required_after_refresh",
             ),

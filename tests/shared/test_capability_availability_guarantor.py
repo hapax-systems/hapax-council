@@ -417,7 +417,7 @@ def test_default_codex_oauth_strategy_is_pure_deferred_action() -> None:
     )
 
 
-def test_executable_codex_oauth_strategy_runs_receipt_refresher_without_bearer_daemon() -> None:
+def test_executable_codex_oauth_strategy_runs_saved_login_receipt_refresher() -> None:
     route, freshness = _degraded_codex_route_and_freshness()
     runner = _FakeRefreshRunner(
         guarantor.RefreshCommandResult(
@@ -470,6 +470,7 @@ def test_executable_codex_oauth_strategy_runs_receipt_refresher_without_bearer_d
     assert "platform-capability-receipt:codex:codex-20260509T210000Z" in (
         receipt.refresh_evidence_refs
     )
+    assert "policy:codex_saved_login_exec_auth_witness" in receipt.refresh_evidence_refs
     assert "policy:not_codex_access_token_daemon" in receipt.refresh_evidence_refs
     serialized = " ".join(
         [
@@ -566,7 +567,7 @@ def test_executable_codex_oauth_strategy_defers_when_account_live_quota_unverifi
     assert "refresh_receipt_written" not in receipt.refresh_reason_codes
 
 
-def test_executable_codex_oauth_strategy_fails_when_auth_receipt_blocked() -> None:
+def test_executable_codex_oauth_strategy_preserves_token_invalidation_reason_codes() -> None:
     route, freshness = _degraded_codex_route_and_freshness()
     runner = _FakeRefreshRunner(
         guarantor.RefreshCommandResult(
@@ -581,9 +582,15 @@ def test_executable_codex_oauth_strategy_fails_when_auth_receipt_blocked() -> No
                             "cli_available": True,
                             "wrapper_exists": True,
                             "capability_status": "blocked",
-                            "capability_reason_codes": ["codex_oauth_access_token_absent"],
+                            "capability_reason_codes": [
+                                "codex_exec_auth_failed",
+                                "codex_exec_auth_refresh_token_invalidated",
+                            ],
                             "resource_status": "blocked",
-                            "resource_reason_codes": ["codex_oauth_access_token_absent"],
+                            "resource_reason_codes": [
+                                "codex_exec_auth_failed",
+                                "codex_exec_auth_refresh_token_invalidated",
+                            ],
                             "quota_status": "unobservable",
                             "quota_reason_codes": ["account_live_quota_receipt_absent"],
                         }
@@ -605,7 +612,11 @@ def test_executable_codex_oauth_strategy_fails_when_auth_receipt_blocked() -> No
     assert receipt.refresh_status is guarantor.RefreshStatus.FAILED
     assert "refresh_receipt_observed_codex_unavailable" in receipt.refresh_reason_codes
     assert (
-        "refresh_receipt_capability_reason:codex_oauth_access_token_absent"
+        "refresh_receipt_capability_reason:codex_exec_auth_refresh_token_invalidated"
+        in receipt.refresh_reason_codes
+    )
+    assert (
+        "refresh_receipt_resource_reason:codex_exec_auth_refresh_token_invalidated"
         in receipt.refresh_reason_codes
     )
 

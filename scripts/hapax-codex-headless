@@ -138,7 +138,7 @@ dispatch_host_is_local() {
   return 1
 }
 
-token_handoff_component() {
+safe_path_component() {
   local component
   component="$(printf '%s\n' "$1" | tr -cs 'A-Za-z0-9_-' '-' | sed 's/^-//; s/-$//' | cut -c1-96)"
   if [[ -z "$component" ]]; then
@@ -172,7 +172,7 @@ mint_session_uuid() {
   cat /proc/sys/kernel/random/uuid 2>/dev/null \
     || uuidgen 2>/dev/null \
     || python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null \
-    || printf '%s-%s-p%sx\n' "$(token_handoff_component "$SESSION")" "$(date -u +%Y%m%dT%H%M%SZ)" "$$"
+    || printf '%s-%s-p%sx\n' "$(safe_path_component "$SESSION")" "$(date -u +%Y%m%dT%H%M%SZ)" "$$"
 }
 
 normalize_session_uuid() {
@@ -220,7 +220,7 @@ remote_python_command() {
   printf "bash -c '%s' bash '%s' '%s'" "$quoted_script" "$quoted_payload" "$quoted_code"
 }
 
-load_local_codex_access_token() {
+strip_inherited_codex_access_token() {
   if [[ -n "${CODEX_ACCESS_TOKEN:-}" ]]; then
     echo "hapax-codex-headless: ignoring inherited CODEX_ACCESS_TOKEN; governed Codex lanes use saved ChatGPT auth on the dispatch host" >&2
     unset CODEX_ACCESS_TOKEN
@@ -250,8 +250,8 @@ resolve_local_codex_bin() {
   printf '%s\n' "$codex_bin"
 }
 
-prove_local_codex_bearer_actuation() {
-  local codex_bin="$1" output_file="" error_file="" rc=0 timeout_s=""
+prove_local_codex_exec_auth() {
+  local codex_bin="$1" output_file="" error_file="" rc=0 timeout_s="" auth_output="" auth_error=""
   timeout_s="${HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS:-30}"
   output_file="$(mktemp "${TMPDIR:-/tmp}/hapax-codex-exec-auth.XXXXXX")" || {
     echo "hapax-codex-headless: failed to create temporary Codex auth witness file; next action: verify TMPDIR or /tmp permissions before retrying" >&2
@@ -284,7 +284,20 @@ prove_local_codex_bearer_actuation() {
       "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK" \
       >"$output_file" 2>"$error_file" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
-    echo "hapax-codex-headless: saved Codex auth was rejected by codex exec (rc=$rc); next action: run codex login on the dispatch host, then retry governed dispatch" >&2
+    auth_output="$(cat "$output_file" "$error_file" 2>/dev/null || true)"
+    auth_error="codex_saved_auth_exec_failed:rc=$rc"
+    case "$auth_output" in
+      *refresh_token_invalidated*)
+        auth_error="codex_saved_auth_refresh_token_invalidated"
+        ;;
+      *token_invalidated*)
+        auth_error="codex_saved_auth_token_invalidated"
+        ;;
+      *"login required"*|*"not logged in"*)
+        auth_error="codex_saved_auth_login_required"
+        ;;
+    esac
+    echo "hapax-codex-headless: saved Codex auth was rejected by codex exec ($auth_error; rc=$rc); next action: repair saved Codex login on the dispatch host via codex login or the documented auth-cache transfer fallback, then retry governed dispatch" >&2
     sed -n '1,4p' "$error_file" >&2 || true
     rm -f "$output_file" "$error_file"
     exit 78
@@ -301,13 +314,13 @@ prove_local_fallback_before_claim() {
   if [[ "${HAPAX_DISPATCH_HOST_FALLBACK:-}" != "local" ]]; then
     return 0
   fi
-  if [[ "$LOCAL_FALLBACK_BEARER_PROVEN" == "1" ]]; then
+  if [[ "$LOCAL_FALLBACK_AUTH_PROVEN" == "1" ]]; then
     return 0
   fi
-  load_local_codex_access_token
+  strip_inherited_codex_access_token
   CODEX_BIN="$(resolve_local_codex_bin)"
-  prove_local_codex_bearer_actuation "$CODEX_BIN"
-  LOCAL_FALLBACK_BEARER_PROVEN=1
+  prove_local_codex_exec_auth "$CODEX_BIN"
+  LOCAL_FALLBACK_AUTH_PROVEN=1
 }
 
 remote_preflight_payload_b64() {
@@ -433,6 +446,15 @@ def _resolve_codex_bin():
             if resolved:
                 return resolved,""
     return None,"codex_binary_missing"
+def _auth_error(output, default):
+    if "refresh_token_invalidated" in output:
+        return "codex_saved_auth_refresh_token_invalidated"
+    if "token_invalidated" in output:
+        return "codex_saved_auth_token_invalidated"
+    lowered=output.lower()
+    if "login required" in lowered or "not logged in" in lowered:
+        return "codex_saved_auth_login_required"
+    return default
 actuation_error=""
 codex_bin,codex_resolution_error=_resolve_codex_bin()
 if codex_bin is None:
@@ -450,12 +472,13 @@ else:
     except (OSError,subprocess.TimeoutExpired) as exc:
         actuation_error="codex_saved_auth_exec_failed:"+type(exc).__name__
     else:
+        output=(result.stdout or "")+"\n"+(result.stderr or "")
         if result.returncode != 0:
-            actuation_error="codex_saved_auth_exec_failed:rc="+str(result.returncode)
+            actuation_error=_auth_error(output,"codex_saved_auth_exec_failed:rc="+str(result.returncode))
         elif sentinel not in result.stdout:
-            actuation_error="codex_saved_auth_sentinel_missing"
+            actuation_error=_auth_error(output,"codex_saved_auth_sentinel_missing")
 if missing_dirs or missing_exec or missing_bins or actuation_error:
-    print("remote preflight failed: missing_dirs="+json.dumps(missing_dirs)+" missing_executables="+json.dumps(missing_exec)+" missing_binaries="+json.dumps(missing_bins)+" auth_error="+json.dumps(actuation_error)+"; next action: ssh to the dispatch host and run codex login, then verify required paths before retrying", file=sys.stderr)
+    print("remote preflight failed: missing_dirs="+json.dumps(missing_dirs)+" missing_executables="+json.dumps(missing_exec)+" missing_binaries="+json.dumps(missing_bins)+" auth_error="+json.dumps(actuation_error)+"; next action: repair saved Codex login on the dispatch host via codex login or the documented auth-cache transfer fallback, then verify required paths before retrying", file=sys.stderr)
     sys.exit(1)
 sys.exit(0)'
 REMOTE_WORKTREE_PY='import base64,json,os,shutil,subprocess,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); workdir=p["workdir"]; council=p["council_dir"];
@@ -656,7 +679,7 @@ if [[ -n "$DISPATCH_HOST_REQUESTED" ]] && dispatch_host_is_local "$DISPATCH_HOST
 fi
 
 if [[ -z "$DISPATCH_HOST_REQUESTED" ]]; then
-  load_local_codex_access_token
+  strip_inherited_codex_access_token
 fi
 
 # Identity env — same contract as hapax-codex so the gate keys a session-scoped
@@ -730,7 +753,7 @@ DISPATCH_LOCAL_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-local.js
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 CODEX_PID=""
 CODEX_BIN=""
-LOCAL_FALLBACK_BEARER_PROVEN=0
+LOCAL_FALLBACK_AUTH_PROVEN=0
 # shellcheck disable=SC2329
 cleanup() {
   local current_pid=""
@@ -883,11 +906,11 @@ if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
 fi
 
 if [[ -z "$DISPATCH_HOST_REQUESTED" && -z "$DISPATCH_HOST" ]]; then
-  if [[ "$LOCAL_FALLBACK_BEARER_PROVEN" != "1" ]]; then
-    load_local_codex_access_token
+  if [[ "$LOCAL_FALLBACK_AUTH_PROVEN" != "1" ]]; then
+    strip_inherited_codex_access_token
     CODEX_BIN="$(resolve_local_codex_bin)"
-    prove_local_codex_bearer_actuation "$CODEX_BIN"
-    LOCAL_FALLBACK_BEARER_PROVEN=1
+    prove_local_codex_exec_auth "$CODEX_BIN"
+    LOCAL_FALLBACK_AUTH_PROVEN=1
   fi
   if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
     [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
