@@ -167,7 +167,7 @@ def render_footer(
     parts.append("")
     parts.append(
         "Full refusal index: "
-        "[docs/refusal-briefs/](https://github.com/ryanklee/hapax-council/tree/main/docs/refusal-briefs/)"
+        "[docs/refusal-briefs/](https://github.com/hapax-systems/hapax-council/tree/main/docs/refusal-briefs/)"
     )
     parts.append("")
     return "\n".join(parts)

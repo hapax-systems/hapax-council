@@ -11,14 +11,13 @@ from typing import Protocol
 
 log = logging.getLogger(__name__)
 
-CITABLE_NEXUS_URL = "https://hapax.github.io"
+CITABLE_NEXUS_URL = "https://hapax.weblog.lol"
 RAIL_PAGES = {
-    "github_sponsors": "https://github.com/sponsors/ryanklee",
-    "open_collective": "https://opencollective.com/hapax",
+    "support": "https://hapax.weblog.lol/support",
 }
 NON_ENGAGEMENT_CLAUSE = (
     "This clip was auto-generated from the 24/7 Hapax ambient broadcast. "
-    "No engagement is solicited. V5 attribution: hapax.github.io | CC-BY-4.0"
+    "No engagement is solicited. V5 attribution: hapax.weblog.lol | CC-BY-4.0"
 )
 
 

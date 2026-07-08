@@ -2,7 +2,7 @@
   "@context": "https://w3id.org/codemeta/3.0",
   "@type": "SoftwareSourceCode",
   "name": "hapax-council",
-  "description": "Source-visible Hapax Systems research/runtime artifact for studying governed AI-agent work, public claim discipline, refusal, and publication-bus egress under a single-operator system.",
+  "description": "Source-visible Hapax Systems research/runtime for evidence-bound AI-agent delivery: governed dispatch, route receipts, claim review, refusal, and publication-egress controls in a single-operator estate.",
   "codeRepository": "https://github.com/hapax-systems/hapax-council",
   "url": "https://github.com/hapax-systems/hapax-council",
   "license": "https://polyformproject.org/licenses/strict/1.0.0/",
@@ -19,9 +19,10 @@
   "keywords": [
     "research-software",
     "single-operator",
-    "philosophy-of-science",
-    "governance",
-    "infrastructure-as-argument"
+    "governed-sdlc",
+    "claim-authority",
+    "publication-egress",
+    "refusal-systems"
   ],
   "identifier": "https://doi.org/10.5281/zenodo.20113515",
   "relatedLink": [

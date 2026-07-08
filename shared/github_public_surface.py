@@ -549,6 +549,25 @@ def build_drift_findings(
 
     findings.extend(_package_surface_findings(local.package_surfaces))
     findings.extend(_closed_repo_pres_findings(local, council, org_profile, assets))
+
+    # Every required category must carry a positive witness even when its
+    # checks find no drift; otherwise a healthier estate makes the report
+    # invalid (missing_required_categories fails on absent-because-clean).
+    for category in REQUIRED_DRIFT_CATEGORIES:
+        if not any(finding.category == category for finding in findings):
+            findings.append(
+                DriftFinding(
+                    finding_id=f"github.{category.replace('_', '-')}.no-drift-observed",
+                    severity="info",
+                    category=category,
+                    surface="hapax-systems/hapax-council",
+                    status="ok",
+                    summary=f"Category '{category}' checks ran and observed no drift.",
+                    expected="Every required drift category carries a positive witness.",
+                    observed="No drift findings were produced by this category's checks.",
+                    evidence_refs=("shared/github_public_surface.py",),
+                )
+            )
     return tuple(findings)
 
 

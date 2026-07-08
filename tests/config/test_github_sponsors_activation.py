@@ -13,7 +13,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_funding_yml_targets_verified_public_sponsors_listing() -> None:
     funding = yaml.safe_load((REPO_ROOT / ".github" / "FUNDING.yml").read_text())
 
-    assert funding["github"] == ["ryanklee"]
+    # Funding routes through the no-perk support boundary, not a personal
+    # sponsors listing.
+    assert funding == {"custom": ["https://hapax.weblog.lol/support"]}
 
 
 def test_readme_and_omg_landing_route_through_no_perk_support_page() -> None:

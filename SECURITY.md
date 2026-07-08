@@ -1,6 +1,6 @@
 # Security policy
 
-A single individual (Oudepode The Operator) operates this repository. It runs in a single-operator deployment with no external users and no third-party auth surface. Governed public/archive egress may use third-party publication services, but those surfaces carry public artifacts, not private third-party user data.
+A single individual operates this repository in a single-operator deployment. Public repository surfaces are not a multi-tenant product, customer-data processor, or public auth service. That boundary is a scope statement, not a warranty about every internal integration.
 
 ## Disclosure path
 
@@ -8,7 +8,7 @@ Submit security disclosures through the contact page. Attach Sigstore-signed dis
 
   https://hapax.weblog.lol/contact
 
-Security disclosures use the contact-page path rather than a repository-published email address. Sigstore signatures let the operator verify authorship via OpenID Connect without relying on email identity.
+Repository surfaces do not publish email by constitutional choice. Sigstore signatures let the operator verify authorship via OpenID Connect without publishing an email address.
 
 Endpoint recheck:
 
@@ -18,15 +18,15 @@ curl -fsSIL https://hapax.weblog.lol/contact
 
 ## Scope
 
-Security reports about deployment hardening, architectural choices, or features absent from a single-operator system (multi-tenancy, RBAC, federated identity) are out of scope; the single-operator axiom forecloses these.
+In scope: exposure of secrets or private material in public commits/artifacts, public-egress bypasses, supply-chain or workflow weaknesses, and concrete remotely exploitable defects. Out of scope: feature requests for multi-tenancy, RBAC, federated identity, general hardening consultations, or integration support.
 
 ## Response time
 
-Best-effort, single-operator basis; no SLA. Critical disclosures are acknowledged promptly and prioritized out of band, even if remediation lands in a later maintenance window.
+Best-effort, single-operator basis; no SLA. Critical disclosures such as remote code execution or leaked secrets in published commits are triaged out of band immediately; other reports wait for a maintenance window.
 
-## Past advisories
+## Advisory record
 
-None to date.
+This rendered policy does not maintain a complete dated advisory ledger. Current advisories, if any, belong in release notes, security notices, or publication-bus records with their own dates and receipts.
 
 ---
 
