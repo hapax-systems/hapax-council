@@ -34,37 +34,32 @@ Remote appendix dispatch uses this order:
 
 1. validate the session name, relay state, local worktree, hook adapter, task/claim,
    and live PID guard;
-2. run a remote token-only preflight before any remote worktree mutation; the
-   published Codex OAuth token must be fresh and accepted by `codex debug models`;
+2. run a remote saved-login auth preflight before any remote worktree mutation;
+   the dispatch host must already have a working `codex login` session, and the
+   preflight runs a bounded `codex exec` sentinel with inherited
+   `CODEX_ACCESS_TOKEN` stripped;
 3. bootstrap the default remote session worktree if it is missing and
    `HAPAX_CODEX_CREATE_WORKTREE=1` (the unset/default value is `1`);
 4. run full remote preflight for required directories, hook adapter, `python3`,
-   `codex`, OAuth freshness, and `codex debug models` bearer actuation;
+   `codex`, and saved-login `codex exec` actuation;
 5. after the local `cc-claim` boundary accepts the dispatch, carry the matching
    local `cc-claim-epoch-<cx-session>` line plus matching `cc-active-task` as the
-   remote claim proof and snapshot the exact preflight-proven token into a
-   short-lived sealed remote handoff file. The handoff create is exclusive,
-   `0600`, and non-following where the dispatch host exposes `O_NOFOLLOW`; a
-   preexisting file or symlink is a hard preflight
-   failure. The file content is a one-time authenticated sealed blob, not a bearer
-   token; remote exec needs the per-launch seal key from its payload to recover
-   the token after deleting the file. The remote preflight also schedules an
-   out-of-band self-cleanup before writing sealed bytes, so a cleanup scheduling
-   failure leaves no bearer handoff behind. The default TTL is 900 seconds and may
-   be set to any positive value through `HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS`,
-   capped at 3600 seconds. Invalid, zero, negative, or out-of-range TTL values
-   fail closed before a live handoff is written;
-6. execute `codex exec` on the remote host with that handoff token, deleting the
-   handoff as it is consumed. Later rotation of the published token file must not
-   change the bearer used for this exec. A failed deletion during handoff
-   consumption is a hard launcher failure. If a parent-side cleanup attempt for an
-   abandoned preflight cannot reach the dispatch host, the launcher prints an
-   operator-visible next action while preserving the primary claim/launch failure
-   status.
+   remote claim proof, then rerun the remote saved-login preflight;
+6. execute `codex exec` on the remote host using that host's saved ChatGPT auth.
+   The launcher never ships, injects, persists, or reuses a published bearer
+   token, and remote exec strips inherited `CODEX_ACCESS_TOKEN` before starting.
 
-Local headless dispatch similarly proves the published OAuth token with
-`codex debug models` before `cc-claim` and reuses that proven bearer for the
-subsequent `codex exec`; it must not reread a mutable token file after claim.
+Local headless dispatch similarly proves saved-login auth with a bounded
+`codex exec` sentinel before `cc-claim`; it must strip inherited
+`CODEX_ACCESS_TOKEN` and must not treat the published token cache as authority.
+
+If appendix reports `token_invalidated` or `refresh_token_invalidated`, refresh
+the dispatch-host login and recheck the sentinel before launching governed lanes:
+
+```bash
+ssh -t appendix 'codex login'
+ssh appendix 'codex exec --ephemeral --skip-git-repo-check --ignore-rules --sandbox read-only --json --cd ~ "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"'
+```
 
 On the remote host, the launcher materializes both the legacy and session-keyed
 claim caches plus their epoch sidecars before `codex exec` starts, using the
@@ -101,10 +96,8 @@ Remote bootstrap failures print the failing branch and a next action. Check:
 - `HAPAX_CODEX_CREATE_WORKTREE` (default `1`);
 - `HAPAX_CODEX_BRANCH_PREFIX` (default `codex`);
 - `HAPAX_CODEX_WORKTREE_BASE` if a non-default base was requested.
-- `HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS` for remote bearer handoff cleanup
-  timing. Valid values are integer seconds from 1 through 3600; unset defaults
-  to 900. Invalid values refuse remote dispatch before a bearer handoff is
-  written.
+- saved-login Codex auth on the dispatch host with inherited
+  `CODEX_ACCESS_TOKEN` stripped.
 
 Recheck the contract from the council repo with:
 

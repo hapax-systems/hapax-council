@@ -51,8 +51,11 @@ def _run_receipts(
     codex_exec_auth_probe: bool = True,
     codex_access_token: bool = True,
     timeout: float | None = None,
+    codex_exec_auth_timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     merged_env = {**os.environ, **(env or {})}
+    if platform == "codex" and (env is None or "HAPAX_CODEX_EXEC_AUTH_HOST" not in env):
+        merged_env["HAPAX_CODEX_EXEC_AUTH_HOST"] = "local"
     if platform == "codex" and (env is None or "HAPAX_CODEX_BIN" not in env):
         merged_env.pop("HAPAX_CODEX_BIN", None)
     if platform == "codex" and (env is None or "HAPAX_CODEX_BIN_PATH" not in env):
@@ -80,6 +83,8 @@ def _run_receipts(
     ]
     if timeout is not None:
         args += ["--timeout", str(timeout)]
+    if codex_exec_auth_timeout is not None:
+        args += ["--codex-exec-auth-timeout", str(codex_exec_auth_timeout)]
     if codex_exec_auth_probe:
         args.append("--codex-exec-auth-probe")
     args.append("--json")
@@ -369,6 +374,44 @@ def test_codex_receipt_exec_auth_failure_fails_closed_with_classified_reason(
     )
 
 
+def test_codex_receipt_exec_auth_failure_classifies_mixed_streams(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    target = bin_dir / "codex"
+    target.write_text(
+        "\n".join(
+            [
+                "#!/bin/sh",
+                'if [ "$1" = "--version" ]; then',
+                "  printf '%s\\n' 'codex-cli 9.9.9'",
+                "  exit 0",
+                "fi",
+                'if [ "$1" = "exec" ]; then',
+                "  printf '%s\\n' 'Reading additional input from stdin...' >&2",
+                "  printf '%s\\n' 'auth error code: token_invalidated'",
+                "  printf '%s\\n' 'code: refresh_token_invalidated'",
+                "  exit 1",
+                "fi",
+                "exit 2",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    target.chmod(target.stat().st_mode | stat.S_IXUSR)
+
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)})
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
+    reasons = receipt["capability"]["reason_codes"]
+    assert "codex_exec_auth_failed" in reasons
+    assert "codex_exec_auth_token_invalidated" in reasons
+    assert "codex_exec_auth_refresh_token_invalidated" in reasons
+
+
 def test_codex_receipt_exec_auth_failure_does_not_overmatch_login_substring(
     tmp_path: Path,
 ) -> None:
@@ -464,7 +507,11 @@ def test_codex_receipt_exec_auth_timeout_fails_closed(tmp_path: Path) -> None:
     bin_dir.mkdir()
     _fake_codex_exec_timeout(bin_dir)
 
-    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, timeout=0.1)
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir)},
+        codex_exec_auth_timeout=0.1,
+    )
 
     assert result.returncode == 0, result.stderr
     receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
@@ -474,7 +521,37 @@ def test_codex_receipt_exec_auth_timeout_fails_closed(tmp_path: Path) -> None:
     assert "codex_exec_auth_timeout" in reasons
 
 
-def test_codex_receipt_exec_auth_missing_published_token_fails_closed(
+def test_codex_receipt_exec_auth_timeout_is_separate_from_cli_timeout(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    marker = tmp_path / "codex-marker.txt"
+    target = bin_dir / "codex"
+    _fake_codex_exec_success(target, marker)
+    target.write_text(
+        target.read_text(encoding="utf-8").replace(
+            "  printf '%s\\n' exec >",
+            "  /bin/sleep 0.2\n  printf '%s\\n' exec >",
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir)},
+        timeout=0.1,
+        codex_exec_auth_timeout=1.0,
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
+    assert receipt["cli"]["available"] is True
+    assert receipt["capability"]["status"] == "observed"
+    assert "codex_exec_auth_timeout" not in receipt["capability"]["reason_codes"]
+
+
+def test_codex_receipt_exec_auth_ignores_missing_published_token(
     tmp_path: Path,
 ) -> None:
     configured = tmp_path / "configured-codex"
@@ -495,18 +572,12 @@ def test_codex_receipt_exec_auth_missing_published_token_fails_closed(
 
     assert result.returncode == 0, result.stderr
     receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
-    assert not marker.exists()
-    assert receipt["capability"]["status"] == "blocked"
-    assert (
-        "codex_exec_auth_published_access_token_absent_or_unsafe"
-        in receipt["capability"]["reason_codes"]
-    )
-    assert not any(
-        ref == "local:codex:exec:auth:observed" for ref in receipt["capability"]["evidence_refs"]
-    )
+    assert marker.read_text(encoding="utf-8").strip() == "exec"
+    assert receipt["capability"]["status"] == "observed"
+    assert "local:codex:exec:auth:observed" in receipt["capability"]["evidence_refs"]
 
 
-def test_codex_receipt_exec_auth_unsafe_published_token_fails_closed(
+def test_codex_receipt_exec_auth_ignores_unsafe_published_token(
     tmp_path: Path,
 ) -> None:
     configured = tmp_path / "configured-codex"
@@ -527,15 +598,12 @@ def test_codex_receipt_exec_auth_unsafe_published_token_fails_closed(
 
     assert result.returncode == 0, result.stderr
     receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
-    assert not marker.exists()
-    assert receipt["capability"]["status"] == "blocked"
-    assert (
-        "codex_exec_auth_published_access_token_absent_or_unsafe"
-        in receipt["capability"]["reason_codes"]
-    )
+    assert marker.read_text(encoding="utf-8").strip() == "exec"
+    assert receipt["capability"]["status"] == "observed"
+    assert "local:codex:exec:auth:observed" in receipt["capability"]["evidence_refs"]
 
 
-def test_codex_receipt_exec_auth_expiring_published_token_fails_closed(
+def test_codex_receipt_exec_auth_ignores_expiring_published_token(
     tmp_path: Path,
 ) -> None:
     configured = tmp_path / "configured-codex"
@@ -555,12 +623,9 @@ def test_codex_receipt_exec_auth_expiring_published_token_fails_closed(
 
     assert result.returncode == 0, result.stderr
     receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
-    assert not marker.exists()
-    assert receipt["capability"]["status"] == "blocked"
-    assert (
-        "codex_exec_auth_published_access_token_absent_or_expiring"
-        in receipt["capability"]["reason_codes"]
-    )
+    assert marker.read_text(encoding="utf-8").strip() == "exec"
+    assert receipt["capability"]["status"] == "observed"
+    assert "local:codex:exec:auth:observed" in receipt["capability"]["evidence_refs"]
 
 
 def test_codex_receipt_exec_auth_exec_oserror_fails_closed(tmp_path: Path) -> None:
@@ -586,7 +651,7 @@ def test_codex_receipt_exec_auth_exec_oserror_fails_closed(tmp_path: Path) -> No
     assert reasons == ["codex_exec_auth_exec_failed"]
 
 
-def test_codex_receipt_exec_auth_probe_uses_published_token_not_ambient(
+def test_codex_receipt_exec_auth_probe_strips_access_token_and_codex_home(
     tmp_path: Path,
 ) -> None:
     configured = tmp_path / "configured-codex"
@@ -600,7 +665,6 @@ def test_codex_receipt_exec_auth_probe_uses_published_token_not_ambient(
         codex_home_marker=codex_home_marker,
     )
     token_file = _write_codex_access_token(tmp_path / "codex-oauth")
-    published_token = token_file.read_text(encoding="utf-8").strip()
     ambient_codex_home = tmp_path / "ambient-codex-home"
 
     result = _run_receipts(
@@ -618,11 +682,9 @@ def test_codex_receipt_exec_auth_probe_uses_published_token_not_ambient(
     assert result.returncode == 0, result.stderr
     receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
     assert marker.read_text(encoding="utf-8").strip() == "exec"
-    assert token_marker.read_text(encoding="utf-8").strip() == published_token
+    assert token_marker.read_text(encoding="utf-8").strip() == ""
     observed_codex_home = codex_home_marker.read_text(encoding="utf-8").strip()
-    assert observed_codex_home
-    assert observed_codex_home != str(ambient_codex_home)
-    assert "hapax-codex-receipt-" in Path(observed_codex_home).name
+    assert observed_codex_home == ""
     assert receipt["capability"]["status"] == "observed"
     assert "local:codex:exec:auth:observed" in receipt["capability"]["evidence_refs"]
 
@@ -993,8 +1055,8 @@ def test_codex_known_unknowns_disclose_secret_read_without_persistence() -> None
 
     unknowns = namespace["known_unknowns_for"]("codex")
 
-    assert any("reads the published OAuth access token" in item for item in unknowns)
-    assert any("never persists the secret value" in item for item in unknowns)
+    assert any("saved-login codex exec sentinel" in item for item in unknowns)
+    assert any("never injects or persists bearer tokens" in item for item in unknowns)
     assert not any("never reads secret values" in item for item in unknowns)
 
 

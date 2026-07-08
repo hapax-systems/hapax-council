@@ -22,7 +22,6 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
 @pytest.fixture(autouse=True)
 def _isolate_headless_pid_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(tmp_path / "headless-pids"))
-    monkeypatch.setenv("HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS", "1")
     monkeypatch.setenv(
         "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE",
         str(_write_codex_access_token(tmp_path / "codex-oauth")),
@@ -33,16 +32,12 @@ def _write_executable(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.name == "codex":
         body = (
-            """if [ "${1:-}" = "debug" ] && [ "${2:-}" = "models" ]; then
-  if [ -z "${CODEX_ACCESS_TOKEN:-}" ]; then
-    echo "missing CODEX_ACCESS_TOKEN" >&2
-    exit 78
+            """if [ "${1:-}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
+  if [ "${HAPAX_FAKE_CODEX_EXEC_AUTH_RC:-0}" != "0" ]; then
+    echo "login required" >&2
+    exit "${HAPAX_FAKE_CODEX_EXEC_AUTH_RC}"
   fi
-  if [ "${HAPAX_FAKE_CODEX_DEBUG_MODELS_RC:-0}" != "0" ]; then
-    echo "unauthorized bearer" >&2
-    exit "${HAPAX_FAKE_CODEX_DEBUG_MODELS_RC}"
-  fi
-  printf '%s\n' '{"models":[{"slug":"gpt-5.5"}]}'
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}'
   exit 0
 fi
 """
@@ -63,8 +58,8 @@ def _write_rejecting_codex(path: Path, fallback_body: str = "exit 0\n") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         """#!/usr/bin/env bash
-if [ "${1:-}" = "debug" ] && [ "${2:-}" = "models" ]; then
-  echo "unauthorized bearer" >&2
+if [ "${1:-}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
+  echo "login required" >&2
   exit 77
 fi
 """
@@ -130,7 +125,6 @@ def _write_classifying_ssh(
     before_preflight_run: str = "",
     before_exec_run: str = "",
     after_preflight_success: str = "",
-    cleanup_exit: int = 0,
 ) -> None:
     bash_bin = shutil.which("bash") or "/bin/bash"
     codex_stub = path.parent / "codex"
@@ -165,9 +159,6 @@ def _write_classifying_ssh(
     _write_executable(
         path,
         f"""remote_cmd="${{@: -1}}"
-if [[ "$remote_cmd" == rm\\ -f*hapax-codex-token-* ]]; then
-  exec "{bash_bin}" -c "$remote_cmd"
-fi
 kind="$(python3 - "$remote_cmd" <<'PY'
 import base64
 import shlex
@@ -179,21 +170,12 @@ if "create_worktree" in code and "worktree" in code:
     print("worktree")
 elif "required_dirs" in code and "executables" in code:
     print("preflight")
-elif "token_handoff_cleanup" in code:
-    print("cleanup")
 elif "os.execv" in code:
     print("exec")
 else:
     print("unknown")
 PY
 )"
-if [ "$kind" = "cleanup" ]; then
-  printf '%s\\n' "$kind" >> "{log_path}"
-  if [ "{cleanup_exit}" -ne 0 ]; then
-    exit "{cleanup_exit}"
-  fi
-  exec "{bash_bin}" -c "$remote_cmd"
-fi
 printf '%s\\n' "$kind" >> "{log_path}"
 if [ "$kind" = "worktree" ]; then
   :
@@ -365,7 +347,7 @@ exit 0
     launched_env = env_file.read_text(encoding="utf-8")
     assert "LOGOS_BASE_URL=http://192.168.68.85:8051/api" in launched_env
     assert "HAPAX_DISPATCH_HOST=local" in launched_env
-    assert "CODEX_ACCESS_TOKEN_PRESENT=yes" in launched_env
+    assert "CODEX_ACCESS_TOKEN_PRESENT=" in launched_env
     proofs = list(
         (home / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs").glob(
             "*cx-amber-task-x-headless-remote.json"
@@ -673,7 +655,9 @@ exit 0
     assert codex_args.exists()
 
 
-def test_codex_headless_refuses_local_launch_without_published_token(tmp_path: Path) -> None:
+def test_codex_headless_local_launch_uses_saved_auth_without_published_token(
+    tmp_path: Path,
+) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
@@ -706,13 +690,13 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 78
-    assert "missing or unsafe published Codex OAuth access token" in result.stderr
-    assert "next action:" in result.stderr
-    assert not codex_called.exists()
+    assert result.returncode == 0, result.stderr
+    assert codex_called.exists()
 
 
-def test_codex_headless_refuses_inherited_token_without_published_token(tmp_path: Path) -> None:
+def test_codex_headless_ignores_inherited_access_token_without_published_token(
+    tmp_path: Path,
+) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
@@ -746,12 +730,12 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 78
-    assert "missing or unsafe published Codex OAuth access token" in result.stderr
-    assert not codex_called.exists()
+    assert result.returncode == 0, result.stderr
+    assert "ignoring inherited CODEX_ACCESS_TOKEN" in result.stderr
+    assert codex_called.exists()
 
 
-def test_codex_headless_refuses_unsafe_published_token_file(tmp_path: Path) -> None:
+def test_codex_headless_ignores_unsafe_published_token_file(tmp_path: Path) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
@@ -786,10 +770,8 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 78
-    assert "missing or unsafe published Codex OAuth access token" in result.stderr
-    assert "owner-only token file" in result.stderr
-    assert not codex_called.exists()
+    assert result.returncode == 0, result.stderr
+    assert codex_called.exists()
 
 
 def test_codex_headless_refuses_rejected_local_bearer_before_claim(tmp_path: Path) -> None:
@@ -835,7 +817,7 @@ exit 0
     )
 
     assert result.returncode == 78
-    assert "rejected by codex debug models" in result.stderr
+    assert "saved Codex auth was rejected by codex exec" in result.stderr
     assert not claim_log.exists()
     assert not codex_args.exists()
 
@@ -854,7 +836,6 @@ def test_codex_headless_uses_preclaim_proven_local_bearer_after_claim_rotation(
         home / ".cache" / "hapax" / "codex-oauth",
         exp=int(time.time()) + 3600,
     )
-    proven_token = token_file.read_text(encoding="utf-8").strip()
     rotated_token = (
         _write_codex_access_token(
             tmp_path / "rotated-token",
@@ -900,7 +881,7 @@ exit 0
     assert result.returncode == 0, result.stderr
     assert claim_log.exists()
     assert token_file.read_text(encoding="utf-8").strip() == rotated_token
-    assert used_token.read_text(encoding="utf-8").strip() == proven_token
+    assert used_token.read_text(encoding="utf-8").strip() == ""
 
 
 def test_codex_headless_creates_missing_remote_default_worktree(tmp_path: Path) -> None:
@@ -957,7 +938,6 @@ exit 0
         "preflight",
         "preflight",
         "exec",
-        "cleanup",
     ]
     assert pwd_file.read_text(encoding="utf-8").strip() == str(workdir)
     branch = subprocess.run(
@@ -1030,7 +1010,6 @@ exit 0
         "worktree",
         "preflight",
         "preflight",
-        "cleanup",
     ]
     assert preflight_count.read_text(encoding="utf-8").strip() == "3"
     assert not args_file.exists()
@@ -1119,7 +1098,7 @@ exit 99
     assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_token_preflight_refuses_after_claim(tmp_path: Path) -> None:
+def test_codex_headless_remote_saved_auth_preflight_refuses_after_claim(tmp_path: Path) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
@@ -1161,13 +1140,13 @@ exit 0
 
     assert result.returncode == 75
     assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight"]
-    assert "remote token preflight failed" in result.stderr
-    assert "missing_codex_oauth_access_token" in result.stderr
+    assert "remote Codex auth preflight failed" in result.stderr
+    assert "codex_saved_auth_exec_failed:rc=77" in result.stderr
     assert "HAPAX_DISPATCH_HOST_FALLBACK=local" in result.stderr
     assert claim_log.read_text(encoding="utf-8") == "task-x\n"
 
 
-def test_codex_headless_remote_token_preflight_rejects_unaccepted_bearer_after_claim(
+def test_codex_headless_remote_saved_auth_preflight_rejects_unaccepted_login_after_claim(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -1210,8 +1189,8 @@ exit 0
 
     assert result.returncode == 75
     assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight"]
-    assert "remote token preflight failed" in result.stderr
-    assert "codex_bearer_actuation_failed:rc=77" in result.stderr
+    assert "remote Codex auth preflight failed" in result.stderr
+    assert "codex_saved_auth_exec_failed:rc=77" in result.stderr
     assert claim_log.read_text(encoding="utf-8") == "task-x\n"
 
 
@@ -1440,7 +1419,7 @@ def test_codex_headless_remote_preflight_reports_missing_codex_binary(
 
     assert result.returncode == 75
     assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight"]
-    assert "remote token preflight failed" in result.stderr
+    assert "remote Codex auth preflight failed" in result.stderr
     assert "missing_binaries" in result.stderr
     assert "codex" in result.stderr
     assert "next action:" in result.stderr
@@ -1541,7 +1520,6 @@ exit 0
         "preflight",
         "preflight",
         "exec",
-        "cleanup",
     ]
     assert pwd_file.read_text(encoding="utf-8").strip() == str(workdir)
     branch = subprocess.run(
@@ -1593,7 +1571,6 @@ exit 0
         home / ".cache" / "hapax" / "codex-oauth",
         exp=int(time.time()) + 3600,
     )
-    proven_token = token_file.read_text(encoding="utf-8").strip()
     rotated_token = (
         _write_codex_access_token(
             tmp_path / "rotated-remote-token",
@@ -1649,14 +1626,13 @@ exit 0
         "preflight",
         "preflight",
         "exec",
-        "cleanup",
     ]
     assert preflight_count.read_text(encoding="utf-8").strip() == "3"
     assert token_file.read_text(encoding="utf-8").strip() == rotated_token
-    assert used_token.read_text(encoding="utf-8").strip() == proven_token
+    assert used_token.read_text(encoding="utf-8").strip() == ""
 
 
-def test_codex_headless_remote_preflight_refuses_preexisting_token_handoff(
+def test_codex_headless_remote_preflight_does_not_materialize_token_handoff(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -1741,35 +1717,26 @@ PY
         if handoff_path_log.exists():
             Path(handoff_path_log.read_text(encoding="utf-8").strip()).unlink(missing_ok=True)
     finally:
-        assert result.returncode == 75
-        assert "refused unsafe preflight-proven Codex OAuth token handoff" in result.stderr
+        assert result.returncode == 0, result.stderr
+        assert not handoff_path_log.exists()
         assert ssh_log.read_text(encoding="utf-8").splitlines() == [
             "preflight",
             "worktree",
             "preflight",
             "preflight",
+            "exec",
         ]
 
 
-def test_codex_headless_remote_cleanup_refuses_traversal_handoff_path() -> None:
-    cleanup_py = _extract_remote_python("REMOTE_TOKEN_CLEANUP_PY")
-    payload = {"path": "/tmp/hapax-codex-token-../../hapax-codex-headless-cleanup-leak"}
-    env = os.environ.copy()
-    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+def test_codex_headless_remote_token_cleanup_surface_is_retired() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
 
-    result = subprocess.run(
-        [sys.executable, "-c", cleanup_py],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=5,
-    )
-
-    assert result.returncode == 78
-    assert "refusing invalid Codex OAuth token handoff cleanup path" in result.stderr
+    assert "REMOTE_TOKEN_CLEANUP_PY" not in text
+    assert "remote_token_cleanup_payload_b64" not in text
+    assert "preflight-proven Codex OAuth token handoff" not in text
 
 
-def test_codex_headless_remote_preflight_self_cleans_unconsumed_token_handoff(
+def test_codex_headless_remote_preflight_ignores_token_handoff_payload(
     tmp_path: Path,
 ) -> None:
     remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
@@ -1803,20 +1770,12 @@ def test_codex_headless_remote_preflight_self_cleans_unconsumed_token_handoff(
         )
 
         assert result.returncode == 0, result.stderr
-        assert handoff.exists()
-        sealed = handoff.read_text(encoding="utf-8")
-        assert sealed.startswith("hapax-token-sealed-v1.")
-        assert sealed != token.read_text(encoding="utf-8").strip()
-        for _ in range(40):
-            if not handoff.exists():
-                break
-            time.sleep(0.1)
         assert not handoff.exists()
     finally:
         handoff.unlink(missing_ok=True)
 
 
-def test_codex_headless_remote_preflight_refuses_invalid_token_handoff_ttl(
+def test_codex_headless_remote_preflight_ignores_invalid_token_handoff_ttl(
     tmp_path: Path,
 ) -> None:
     remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
@@ -1848,15 +1807,17 @@ def test_codex_headless_remote_preflight_refuses_invalid_token_handoff_ttl(
         timeout=5,
     )
 
-    assert result.returncode == 78
-    assert "refused invalid Codex OAuth token handoff TTL" in result.stderr
+    assert result.returncode == 0, result.stderr
     assert not handoff.exists()
 
 
-def test_codex_headless_remote_preflight_refuses_world_readable_published_token(
+def test_codex_headless_remote_preflight_ignores_world_readable_published_token(
     tmp_path: Path,
 ) -> None:
     remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_executable(bin_dir / "codex", "exit 0\n")
     token = _write_codex_access_token(tmp_path / "oauth", exp=int(time.time()) + 3600)
     token.chmod(0o644)
     payload = {
@@ -1869,6 +1830,7 @@ def test_codex_headless_remote_preflight_refuses_world_readable_published_token(
         "token_handoff_ttl_seconds": 2,
     }
     env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
 
     result = subprocess.run(
@@ -1879,23 +1841,19 @@ def test_codex_headless_remote_preflight_refuses_world_readable_published_token(
         timeout=5,
     )
 
-    assert result.returncode == 1
-    assert "unsafe_codex_oauth_access_token" in result.stderr
+    assert result.returncode == 0, result.stderr
 
 
 def test_codex_headless_remote_preflight_cleanup_child_clears_bearer_material_before_sleep() -> (
     None
 ):
     remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
-    child_start = remote_preflight_py.index("if pid == 0:")
-    sleep_start = remote_preflight_py.index("time.sleep(ttl)", child_start)
-    child_before_sleep = remote_preflight_py[child_start:sleep_start]
 
-    assert 'token=""' in child_before_sleep
-    assert 'seal_key=""' in child_before_sleep
+    assert "os.fork" not in remote_preflight_py
+    assert 'env.pop("CODEX_ACCESS_TOKEN",None)' in remote_preflight_py
 
 
-def test_codex_headless_remote_preflight_fails_closed_when_self_cleanup_cannot_fork(
+def test_codex_headless_remote_preflight_does_not_fork_for_token_cleanup(
     tmp_path: Path,
 ) -> None:
     remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
@@ -1936,12 +1894,11 @@ def test_codex_headless_remote_preflight_fails_closed_when_self_cleanup_cannot_f
         timeout=5,
     )
 
-    assert result.returncode == 78
-    assert "failed to schedule Codex OAuth token handoff self-cleanup" in result.stderr
+    assert result.returncode == 0, result.stderr
     assert not handoff.exists()
 
 
-def test_codex_headless_claim_failure_does_not_create_remote_handoff(
+def test_codex_headless_claim_failure_does_not_create_remote_bearer_handoff(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -1993,11 +1950,11 @@ def test_codex_headless_claim_failure_does_not_create_remote_handoff(
     )
 
     assert result.returncode == 42
-    assert "failed to delete preflight-proven Codex OAuth token handoff" not in result.stderr
+    assert "token handoff" not in result.stderr
     assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_handoff_sanitizes_session_id_before_cleanup(
+def test_codex_headless_malicious_session_id_does_not_escape_tmp(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -2061,45 +2018,42 @@ def test_codex_headless_remote_handoff_sanitizes_session_id_before_cleanup(
             leaked.unlink(missing_ok=True)
 
 
-def test_codex_headless_remote_exec_fails_if_token_handoff_cleanup_fails(
+def test_codex_headless_remote_exec_strips_inherited_access_token(
     tmp_path: Path,
 ) -> None:
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
     workdir = tmp_path / "workdir"
     workdir.mkdir()
-    handoff_dir = tmp_path / "handoff"
-    handoff_dir.mkdir()
-    token_path = _write_codex_access_token(handoff_dir, exp=int(time.time()) + 3600)
-    seal_key = "d" * 64
-    token_path.write_text(
-        _seal_token_for_test(token_path.read_text(encoding="utf-8").strip(), seal_key),
-        encoding="utf-8",
+    codex_bin = tmp_path / "bin" / "codex"
+    used_token = tmp_path / "used-token.txt"
+    _write_executable(
+        codex_bin,
+        f"""printf '%s\\n' "${{CODEX_ACCESS_TOKEN:-}}" > "{used_token}"
+exit 0
+""",
     )
-    handoff_dir.chmod(0o500)
     payload = {
         "workdir": str(workdir),
-        "env": {},
+        "env": {"CODEX_ACCESS_TOKEN": "ambient-token-must-not-reach-worker"},
         "proof_file": "",
-        "token_handoff_file": str(token_path),
-        "token_handoff_seal_key": seal_key,
+        "argv": ["codex"],
     }
     env = os.environ.copy()
     env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+    env["NPM_CONFIG_PREFIX"] = ""
+    env["PATH"] = str(_python_only_remote_path(tmp_path))
+    env["HAPAX_CODEX_BIN_PATH"] = str(codex_bin)
 
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", remote_exec_py],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=10,
-        )
-    finally:
-        handoff_dir.chmod(0o700)
+    result = subprocess.run(
+        [sys.executable, "-c", remote_exec_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
 
-    assert result.returncode == 78
-    assert "failed to delete preflight-proven Codex OAuth token handoff" in result.stderr
-    assert token_path.exists()
+    assert result.returncode == 0, result.stderr
+    assert used_token.read_text(encoding="utf-8").strip() == ""
 
 
 def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
@@ -2365,7 +2319,6 @@ exit 0
         "preflight",
         "preflight",
         "exec",
-        "cleanup",
     ]
     assert pwd_file.read_text(encoding="utf-8").strip() == str(workdir)
     worktree_head = subprocess.run(

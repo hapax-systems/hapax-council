@@ -17,16 +17,12 @@ def _write_executable(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.name == "codex":
         body = (
-            """if [ "${1:-}" = "debug" ] && [ "${2:-}" = "models" ]; then
-  if [ -z "${CODEX_ACCESS_TOKEN:-}" ]; then
-    echo "missing CODEX_ACCESS_TOKEN" >&2
-    exit 78
+            """if [ "${1:-}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
+  if [ "${HAPAX_FAKE_CODEX_EXEC_AUTH_RC:-0}" != "0" ]; then
+    echo "login required" >&2
+    exit "${HAPAX_FAKE_CODEX_EXEC_AUTH_RC}"
   fi
-  if [ "${HAPAX_FAKE_CODEX_DEBUG_MODELS_RC:-0}" != "0" ]; then
-    echo "unauthorized bearer" >&2
-    exit "${HAPAX_FAKE_CODEX_DEBUG_MODELS_RC}"
-  fi
-  printf '%s\n' '{"models":[{"slug":"gpt-5.5"}]}'
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}'
   exit 0
 fi
 """
@@ -113,7 +109,7 @@ exit 0
     launched_env = env_file.read_text(encoding="utf-8")
     assert "LOGOS_BASE_URL=http://localhost:8051/api" in launched_env
     assert "HAPAX_DISPATCH_HOST=appendix" in launched_env
-    assert "CODEX_ACCESS_TOKEN_PRESENT=yes" in launched_env
+    assert "CODEX_ACCESS_TOKEN_PRESENT=" in launched_env
     proofs = list((tmp_path / "proofs").glob("*cx-amber-task-x-headless-local.json"))
     assert len(proofs) == 1
     proof = json.loads(proofs[0].read_text(encoding="utf-8"))
@@ -122,7 +118,7 @@ exit 0
     assert proof["requested_host"] == "appendix"
 
 
-def test_codex_headless_validates_local_fallback_token_before_claim(tmp_path: Path) -> None:
+def test_codex_headless_validates_local_fallback_saved_auth_before_claim(tmp_path: Path) -> None:
     home = tmp_path / "home"
     (home / ".cache" / "hapax").mkdir(parents=True)
     _write_codex_access_token(home)
@@ -135,6 +131,7 @@ def test_codex_headless_validates_local_fallback_token_before_claim(tmp_path: Pa
     bin_dir = tmp_path / "bin"
     ssh_log = tmp_path / "ssh.log"
     claim_log = tmp_path / "claim.log"
+    _write_executable(bin_dir / "codex", "exit 0\n")
     _write_executable(
         bin_dir / "ssh",
         f"""remote_cmd="${{@: -1}}"
@@ -189,13 +186,13 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 78
-    assert "Codex OAuth access token" in result.stderr
-    assert not ssh_log.exists()
-    assert not claim_log.exists()
+    assert result.returncode == 0, result.stderr
+    assert "explicit local fallback" in result.stderr
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
+    assert claim_log.read_text(encoding="utf-8").strip() == "task-x"
 
 
-def test_codex_headless_keeps_preclaim_proven_bearer_on_token_fallback(
+def test_codex_headless_strips_bearer_on_local_fallback_after_claim(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -203,7 +200,6 @@ def test_codex_headless_keeps_preclaim_proven_bearer_on_token_fallback(
     cache.mkdir(parents=True)
     _write_codex_access_token(home, signature="preclaim")
     token_path = home / ".cache" / "hapax" / "codex-oauth" / "access_token"
-    preclaim_token = token_path.read_text(encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     workdir = tmp_path / "worktree"
     workdir.mkdir()
@@ -250,8 +246,8 @@ exit 0
     )
 
     assert result.returncode == 0, result.stderr
-    assert "remote token preflight failed" in result.stderr
+    assert "remote Codex auth preflight failed" in result.stderr
     assert "explicit local fallback" in result.stderr
     assert claim_log.read_text(encoding="utf-8").strip() == "task-x"
     assert token_path.read_text(encoding="utf-8") == "rotated.after.claim.token\n"
-    assert exec_token_file.read_text(encoding="utf-8") == preclaim_token + "\n"
+    assert exec_token_file.read_text(encoding="utf-8") == "\n"

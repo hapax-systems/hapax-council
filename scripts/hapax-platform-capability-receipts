@@ -10,9 +10,9 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -21,11 +21,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.codex_oauth_refresher import (  # noqa: E402
-    DEFAULT_PUBLISHED_ACCESS_TOKEN,
-    load_published_access_token,
-    needs_refresh,
-)
 from shared.platform_capability_receipts import (  # noqa: E402
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -62,6 +57,7 @@ VERSION_ARGS_BY_PLATFORM = {
     "vibe": ["--version"],
 }
 CODEX_EXEC_AUTH_SENTINEL = "HAPAX_CODEX_EXEC_AUTH_OK"
+HOST_ALIASES = {"appendix": "hapax-appendix", "podium": "hapax-podium"}
 CONFIG_REFS_BY_PLATFORM = {
     "agy": [
         "~/.gemini/antigravity-cli/builtin/skills/antigravity_guide/references/cli.md",
@@ -280,22 +276,30 @@ def assistant_content_text(content: Any) -> str:
     return "\n".join(parts)
 
 
-def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str], list[str]]:
-    if not enabled:
-        return [], ["codex_exec_auth_probe_not_requested"]
-    _, resolved, _ = resolve_platform_binary("codex")
-    if resolved is None:
-        return [], ["codex_exec_auth_binary_missing"]
-    token_file = Path(
-        os.environ.get("HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE", str(DEFAULT_PUBLISHED_ACCESS_TOKEN))
-    ).expanduser()
-    token = load_published_access_token(token_file=token_file)
-    if token is None:
-        return [], ["codex_exec_auth_published_access_token_absent_or_unsafe"]
-    if needs_refresh(token):
-        return [], ["codex_exec_auth_published_access_token_absent_or_expiring"]
-    command = [
-        resolved,
+def normalize_host(value: str) -> str:
+    return HOST_ALIASES.get(value.strip(), value.strip())
+
+
+def current_host() -> str:
+    return normalize_host(socket.gethostname().split(".", 1)[0])
+
+
+def codex_exec_auth_host() -> str:
+    explicit = os.environ.get("HAPAX_CODEX_EXEC_AUTH_HOST", "").strip()
+    if explicit:
+        return explicit
+    dispatch_host = os.environ.get("HAPAX_DISPATCH_HOST", "").strip()
+    if dispatch_host:
+        return dispatch_host
+    default_host = os.environ.get("HAPAX_DEFAULT_DISPATCH_HOST", "").strip()
+    if default_host:
+        return default_host
+    return "appendix"
+
+
+def codex_exec_auth_command(*, codex_bin: str, cwd: Path) -> list[str]:
+    return [
+        codex_bin,
         "exec",
         "--ephemeral",
         "--skip-git-repo-check",
@@ -304,41 +308,84 @@ def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str]
         "read-only",
         "--json",
         "--cd",
-        str(REPO_ROOT),
+        str(cwd),
         "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK",
     ]
+
+
+def codex_exec_auth_env() -> dict[str, str]:
+    env = {
+        key: value
+        for key in (
+            "ALL_PROXY",
+            "HOME",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "LANG",
+            "LC_ALL",
+            "NO_PROXY",
+            "PATH",
+            "REQUESTS_CA_BUNDLE",
+            "SSL_CERT_FILE",
+        )
+        if (value := os.environ.get(key)) is not None
+    }
+    env["NO_COLOR"] = "1"
+    env.pop("CODEX_ACCESS_TOKEN", None)
+    return env
+
+
+def classify_codex_exec_auth_failure(output: str) -> list[str]:
+    reasons = ["codex_exec_auth_failed"]
+    if "agent identity JWT payload is not valid JSON" in output:
+        reasons.append("codex_exec_auth_agent_identity_jwt_invalid_json")
+    if "refresh_token_invalidated" in output:
+        reasons.append("codex_exec_auth_refresh_token_invalidated")
+    if "token_invalidated" in output:
+        reasons.append("codex_exec_auth_token_invalidated")
+    if re.search(r"(?i)(login required|required to log in|please log in|not logged in)", output):
+        reasons.append("codex_exec_auth_login_required")
+    return reasons
+
+
+def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str], list[str]]:
+    if not enabled:
+        return [], ["codex_exec_auth_probe_not_requested"]
+    _, resolved, _ = resolve_platform_binary("codex")
+    if resolved is None:
+        return [], ["codex_exec_auth_binary_missing"]
+    target_host = codex_exec_auth_host()
+    normalized_target = normalize_host(target_host)
+    command = codex_exec_auth_command(codex_bin=resolved, cwd=REPO_ROOT)
     try:
-        with tempfile.TemporaryDirectory(prefix="hapax-codex-receipt-") as codex_home:
-            env = {
-                key: value
-                for key in (
-                    "ALL_PROXY",
-                    "HOME",
-                    "HTTP_PROXY",
-                    "HTTPS_PROXY",
-                    "LANG",
-                    "LC_ALL",
-                    "NO_PROXY",
-                    "PATH",
-                    "REQUESTS_CA_BUNDLE",
-                    "SSL_CERT_FILE",
-                )
-                if (value := os.environ.get(key)) is not None
-            }
-            env.update(
-                {
-                    "CODEX_ACCESS_TOKEN": token.raw,
-                    "CODEX_HOME": codex_home,
-                    "NO_COLOR": "1",
-                }
-            )
+        if normalized_target in {"", "local", current_host()}:
             result = subprocess.run(
                 command,
                 check=False,
                 text=True,
                 capture_output=True,
                 timeout=timeout,
-                env=env,
+                env=codex_exec_auth_env(),
+            )
+        else:
+            remote_cwd = Path(os.environ.get("HAPAX_CODEX_EXEC_AUTH_REMOTE_CWD", str(Path.home())))
+            remote_command = "bash -lc " + shlex.quote(
+                shlex.join(codex_exec_auth_command(codex_bin="codex", cwd=remote_cwd))
+            )
+            result = subprocess.run(
+                [
+                    "ssh",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    f"ConnectTimeout={max(1, int(timeout))}",
+                    target_host,
+                    remote_command,
+                ],
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=max(timeout + 5, 10),
             )
     except subprocess.TimeoutExpired:
         return [], ["codex_exec_auth_timeout"]
@@ -346,18 +393,14 @@ def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str]
         return [], ["codex_exec_auth_exec_failed"]
     if result.returncode == 0:
         if codex_exec_auth_sentinel_observed(result.stdout):
-            return ["local:codex:exec:auth:observed"], []
+            return [
+                "local:codex:exec:auth:observed",
+                f"host:{normalize_host(target_host)}:codex:exec:auth:saved-login:observed",
+            ], []
         return [], ["codex_exec_auth_sentinel_missing"]
 
-    output = safe_text(result.stderr or result.stdout or "", limit=300) or ""
-    reasons = ["codex_exec_auth_failed"]
-    if "agent identity JWT payload is not valid JSON" in output:
-        reasons.append("codex_exec_auth_agent_identity_jwt_invalid_json")
-    if "refresh_token_invalidated" in output:
-        reasons.append("codex_exec_auth_refresh_token_invalidated")
-    if re.search(r"(?i)(login required|required to log in|please log in|not logged in)", output):
-        reasons.append("codex_exec_auth_login_required")
-    return [], reasons
+    output = safe_text("\n".join([result.stderr or "", result.stdout or ""]), limit=2000) or ""
+    return [], classify_codex_exec_auth_failure(output)
 
 
 def observe_wrapper(route: PlatformCapabilityRoute) -> WrapperEvidence:
@@ -428,6 +471,7 @@ def build_receipt(
     stale_after: str,
     provider_docs_stale_after: str,
     timeout: float,
+    codex_exec_auth_timeout: float,
     codex_exec_auth_probe: bool,
 ) -> PlatformCapabilityReceipt:
     primary_route = routes[0]
@@ -451,7 +495,7 @@ def build_receipt(
     if platform == "codex":
         exec_auth_refs, exec_auth_reasons = observe_codex_exec_auth(
             enabled=codex_exec_auth_probe,
-            timeout=timeout,
+            timeout=codex_exec_auth_timeout,
         )
         capability_refs.extend(exec_auth_refs)
         capability_reasons.extend(exec_auth_reasons)
@@ -548,7 +592,7 @@ def known_unknowns_for(platform: str) -> list[str]:
             "Account-live subscription quota is not exposed by the local receipt probe.",
         )
         unknowns.append(
-            "Codex exec-auth probe reads the published OAuth access token for a bounded CODEX_ACCESS_TOKEN witness; it records only redacted availability metadata and never persists the secret value."
+            "Codex exec-auth probe runs a bounded saved-login codex exec sentinel on the effective dispatch host; it never injects or persists bearer tokens."
         )
     else:
         unknowns.insert(
@@ -601,6 +645,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--provider-docs-stale-after", default="30d")
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument(
+        "--codex-exec-auth-timeout",
+        type=float,
+        default=float(os.environ.get("HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS", "30")),
+        help=(
+            "Timeout in seconds for the bounded Codex exec-auth sentinel. "
+            "Defaults to HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS or 30."
+        ),
+    )
+    parser.add_argument(
         "--codex-exec-auth-probe",
         action="store_true",
         help=(
@@ -652,6 +705,7 @@ def main(argv: list[str] | None = None) -> int:
             stale_after=args.stale_after,
             provider_docs_stale_after=args.provider_docs_stale_after,
             timeout=args.timeout,
+            codex_exec_auth_timeout=args.codex_exec_auth_timeout,
             codex_exec_auth_probe=args.codex_exec_auth_probe,
         )
         path = None if args.dry_run else write_receipt(receipt, args.receipt_dir)
