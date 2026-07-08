@@ -1026,6 +1026,25 @@ checklist: {}
         )
         assert parsed is None
 
+    def test_extract_review_quotes_colon_in_prose_fields(self) -> None:
+        parsed = dispatch.extract_review(
+            """```yaml
+verdict: accept-with-findings
+findings:
+  - severity: minor
+    lens: sdlc-legibility
+    file: scripts/hapax-quota-telemetry-writer
+    line: 1134
+    title: malformed task_hash reason
+    detail: invalid SpendReceipt contract: ValidationError needs a named field
+checklist: {}
+```"""
+        )
+        assert parsed is not None
+        assert parsed["findings"][0]["detail"] == (
+            "invalid SpendReceipt contract: ValidationError needs a named field"
+        )
+
     def test_extract_review_rejects_multiple_yaml_fences(self) -> None:
         parsed = dispatch.extract_review(
             """```yaml

@@ -1266,11 +1266,42 @@ def _coerce_review_yaml(loaded: Any) -> dict[str, Any] | None:
     }
 
 
+_REVIEW_TEXT_SCALAR_RE = re.compile(r"\A(?P<prefix>\s+(?:title|detail):\s*)(?P<value>.+?)\s*\Z")
+
+
+def _quote_review_text_scalars(raw: str) -> str | None:
+    """Repair common reviewer YAML where prose fields contain ``: `` unquoted."""
+
+    lines: list[str] = []
+    changed = False
+    for line in raw.splitlines():
+        match = _REVIEW_TEXT_SCALAR_RE.match(line)
+        if match is None:
+            lines.append(line)
+            continue
+        value = match.group("value").strip()
+        if ": " not in value or value.startswith(("'", '"', "|", ">", "{", "[")):
+            lines.append(line)
+            continue
+        quoted = yaml.safe_dump(value, default_flow_style=True).strip()
+        lines.append(f"{match.group('prefix')}{quoted}")
+        changed = True
+    if not changed:
+        return None
+    return "\n".join(lines)
+
+
 def _parse_review_yaml(raw: str, *, parse_path: str) -> dict[str, Any] | None:
     try:
         loaded = yaml.safe_load(raw)
     except yaml.YAMLError:
-        return None
+        repaired = _quote_review_text_scalars(raw)
+        if repaired is None:
+            return None
+        try:
+            loaded = yaml.safe_load(repaired)
+        except yaml.YAMLError:
+            return None
     parsed = _coerce_review_yaml(loaded)
     if parsed is None:
         return None
