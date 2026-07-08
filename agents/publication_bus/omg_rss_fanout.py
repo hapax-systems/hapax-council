@@ -37,9 +37,6 @@ import yaml
 from prometheus_client import Counter
 
 from shared.public_gate_receipts import (
-    PUBLIC_GATE_RECEIPT_PREFIXES as _PUBLIC_GATE_RECEIPT_PREFIXES,
-)
-from shared.public_gate_receipts import (
     PUBLIC_GATE_REVIEW_HEAD_RE,
     public_gate_expected_head_sha_from_mapping,
     public_gate_receipt_value_present,
@@ -68,9 +65,6 @@ FANOUT_ALLOWED_GATE_IDS = frozenset(FANOUT_REQUIRED_GATES)
 """Receipt ids required before any cross-weblog public fanout egress."""
 FANOUT_SURFACE_ID = "omg-lol-weblog-bearer-fanout"
 FANOUT_REVIEW_REQUIRED = "Claim Verification Council"
-
-PUBLIC_GATE_RECEIPT_PREFIXES = _PUBLIC_GATE_RECEIPT_PREFIXES
-"""Durable public-gate receipt ref prefixes accepted for fanout egress."""
 
 PUBLIC_GATE_RECEIPT_ROOTS: tuple[Path, ...] = (
     Path.home() / ".cache" / "hapax" / "relay" / "receipts",

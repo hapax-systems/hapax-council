@@ -22,7 +22,7 @@ Security reports about deployment hardening, architectural choices, or features 
 
 ## Response time
 
-Best-effort, single-operator basis; no SLA. The next maintenance window handles critical disclosures such as remote code execution or secret leaks in published commits.
+Best-effort, single-operator basis; no SLA. Critical disclosures are acknowledged promptly and prioritized out of band, even if remediation lands in a later maintenance window.
 
 ## Past advisories
 

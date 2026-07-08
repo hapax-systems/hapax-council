@@ -845,10 +845,12 @@ def report_to_markdown(report: GitHubPublicSurfaceReport) -> str:
         "",
         "# GitHub Public Surface Live State Reconcile",
         "",
-        "- Filename note: the April slug is retained for historical ledger continuity; "
-        "the YAML `date` and `Generated` fields record the current live-state refresh. "
-        "Freshness checks must read those fields, not the filename slug. Re-run the "
-        "`Recheck` command below before treating this as current.",
+        (
+            "- Filename note: the April slug is retained for historical ledger continuity; "
+            + "the YAML `date` and `Generated` fields record the current live-state refresh. "
+            + "Freshness checks must read those fields, not the filename slug. Re-run the "
+            + "`Recheck` command below before treating this as current."
+        ),
         f"- Generated: `{report.generated_at}`",
         f"- Recheck: `uv run python {report.generated_by}`",
         f"- Claim ceiling: `{report.claim_ceiling}`",

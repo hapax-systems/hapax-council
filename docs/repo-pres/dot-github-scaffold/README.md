@@ -15,7 +15,7 @@ are retained only as audit receipts.
 
 ## Current Layout
 
-```
+```text
 docs/repo-pres/dot-github-scaffold/
 ├── README.md
 └── profile/

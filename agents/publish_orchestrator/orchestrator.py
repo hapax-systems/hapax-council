@@ -1180,7 +1180,10 @@ class Orchestrator:
         try:
             inbox_path.unlink()
         except FileNotFoundError:
-            pass
+            log.debug(
+                "publication inbox artifact already removed before quarantine cleanup: %s",
+                inbox_path,
+            )
         self._record_quarantine_gate_result(quarantine_slug, gate_result, result="rejected")
         self.dispatches_total.labels(surface="publication-hardening-gate", result="rejected").inc()
 
@@ -1223,7 +1226,10 @@ class Orchestrator:
         try:
             inbox_path.unlink()
         except FileNotFoundError:
-            pass
+            log.debug(
+                "publication inbox artifact already removed before quarantine cleanup: %s",
+                inbox_path,
+            )
         self._record_quarantine_gate_result(quarantine_slug, gate_result, result="rejected")
         self.dispatches_total.labels(surface="publication-hardening-gate", result="rejected").inc()
         log.warning(

@@ -829,8 +829,10 @@ def _fetch_pr_via_view(
             "--repo",
             repo,
             "--json",
-            "number,title,body,baseRefName,baseRefOid,headRefName,headRefOid,"
-            "changedFiles,isDraft,files",
+            (
+                "number,title,body,baseRefName,baseRefOid,headRefName,headRefOid,"
+                + "changedFiles,isDraft,files"
+            ),
         ],
         repo_root=repo_root,
         runner=runner,
@@ -1501,11 +1503,10 @@ def dispatch_reviews(
             # trust (round-6): pattern matching only on process-failure
             # diagnostics. Clean-exit stdout is model-controlled, so even an
             # exact provider-looking literal remains invalid-output.
-            if reviewer_internal_error:
-                walled = False
-                provider_outage = False
-                route_unavailable = False
-            elif process_failed:
+            walled = False
+            provider_outage = False
+            route_unavailable = False
+            if process_failed and not reviewer_internal_error:
                 walled = review_team.is_quota_wall(
                     quota_wall_output, process_failed=True, model_stdout=quota_wall_stdout
                 )
@@ -1515,10 +1516,6 @@ def dispatch_reviews(
                 route_unavailable = review_team.is_reviewer_route_unavailable(
                     diagnostic_output, process_failed=True, model_stdout=diagnostic_stdout
                 )
-            else:
-                walled = False
-                provider_outage = False
-                route_unavailable = False
             if reviewer_internal_error:
                 LOG.warning(
                     "reviewer %s (%s) hit an internal runner error -> verdict "
