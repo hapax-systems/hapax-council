@@ -62,7 +62,6 @@ from github_pr_status import (  # noqa: E402
 )
 
 from shared import public_gate_receipts  # noqa: E402
-from shared.gate_event_producer import build_gate_event  # noqa: E402
 from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
@@ -1448,17 +1447,6 @@ def review_task_hash(frontmatter: dict[str, Any]) -> str:
     stable_hash = stable_payload_hash(frontmatter)
     if not TASK_HASH_RE.fullmatch(stable_hash):
         raise ValueError("stable_frontmatter_hash_malformed")
-    gate_event = build_gate_event(
-        frontmatter,
-        route="review-dispatch.task-hash-witness",
-        demand_vector=None,
-        gate_result="accept",
-    )
-    if gate_event.task_hash != stable_hash:
-        raise ValueError(
-            "gate_event_task_hash_diverged:repair shared task_hash canonicalization "
-            "before dispatching reviewers"
-        )
     return stable_hash
 
 

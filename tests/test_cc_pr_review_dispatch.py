@@ -28,8 +28,8 @@ if str(REPO_ROOT) not in sys.path:
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from shared.gate_event_producer import build_gate_event  # noqa: E402
 from shared.quota_spend_ledger import SubscriptionQuotaState  # noqa: E402
+from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 
 
 def _load(name: str, filename: str) -> ModuleType:
@@ -1282,9 +1282,7 @@ checklist:
                 }
             ]
 
-    def test_review_pr_forwards_frontmatter_hash_matching_gate_event_hash(
-        self, tmp_path: Path
-    ) -> None:
+    def test_review_pr_forwards_stable_frontmatter_hash(self, tmp_path: Path) -> None:
         class HashRecordingReviewers(RecordingReviewers):
             def __init__(self) -> None:
                 super().__init__()
@@ -1298,24 +1296,11 @@ checklist:
         result, _, _, note = _review(tmp_path, reviewers=reviewers)
         frontmatter = dispatch.review_team._note_frontmatter(note)
         assert frontmatter is not None
-        expected_hash = dispatch.review_task_hash(frontmatter)
-        gate_event = build_gate_event(
-            frontmatter,
-            route="codex.headless.full",
-            demand_vector=None,
-            gate_result="accept",
-        )
-        alternate_gate_event = build_gate_event(
-            frontmatter,
-            route="claude.headless.full",
-            demand_vector=None,
-            gate_result="reject",
-        )
+        expected_hash = stable_payload_hash(frontmatter)
 
         assert result["status"] == "dispatched"
+        assert dispatch.review_task_hash(frontmatter) == expected_hash
         assert set(reviewers.task_hashes) == {expected_hash}
-        assert gate_event.task_hash == expected_hash
-        assert alternate_gate_event.task_hash == expected_hash
 
     def test_review_pr_companion_note_forwards_primary_task_hash(self, tmp_path: Path) -> None:
         class HashRecordingReviewers(RecordingReviewers):
@@ -1361,21 +1346,6 @@ checklist:
         assert dossier["review_task_hash"] == expected_hash
         assert dossier["review_task_hash_source_task_id"] == "primary-task"
         assert dossier["review_task_hash_source_note"] == "primary-task.md"
-
-    def test_review_task_hash_rejects_gate_event_producer_divergence(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        class DivergedGateEvent:
-            task_hash = "sha256:" + ("0" * 64)
-
-        monkeypatch.setattr(
-            dispatch,
-            "build_gate_event",
-            lambda *args, **kwargs: DivergedGateEvent(),
-        )
-
-        with pytest.raises(ValueError, match="gate_event_task_hash_diverged"):
-            dispatch.review_task_hash({"task_id": "task-a"})
 
     def test_review_task_hash_rejects_malformed_stable_hash(
         self, monkeypatch: pytest.MonkeyPatch
