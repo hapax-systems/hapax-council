@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -54,6 +55,7 @@ TOKEN_CLAIM_RULE = "Hapax.TokenCapitalClaimCeiling"
 SOURCE_DISPOSITION_RULE = "Hapax.PublicSurfaceSourceDisposition"
 GITHUB_PUBLIC_CLAIM_RULE = "Hapax.GitHubPublicClaimEvidenceGate"
 PUBLICATION_FRESHNESS_RULE = "Hapax.PublicationFreshness"
+_GIT_HEAD_DEEPEN_ATTEMPTED = False
 
 
 class RequiredInputError(ValueError):
@@ -693,6 +695,15 @@ def _local_required_public_file_newly_supplied(surface_id: str) -> bool:
 
 
 def _git_path_status(relative_path: str) -> str | None:
+    status = _git_path_status_from_available_history(relative_path)
+    if status is not None:
+        return status
+    if _git_deepen_head_for_path_status():
+        return _git_path_status_from_available_history(relative_path)
+    return None
+
+
+def _git_path_status_from_available_history(relative_path: str) -> str | None:
     base_ref = _git_merge_base()
     if base_ref is not None:
         status = _git_diff_path_status(f"{base_ref}...HEAD", relative_path)
@@ -716,6 +727,59 @@ def _git_diff_path_status(diff_range: str, relative_path: str) -> str | None:
     if first_line is None:
         return None
     return first_line.split(maxsplit=1)[0]
+
+
+def _git_deepen_head_for_path_status() -> bool:
+    global _GIT_HEAD_DEEPEN_ATTEMPTED
+    if _GIT_HEAD_DEEPEN_ATTEMPTED:
+        return False
+    _GIT_HEAD_DEEPEN_ATTEMPTED = True
+    if not _git_repository_is_shallow():
+        return False
+    head_sha = _git_rev_parse("HEAD")
+    fetch_targets = [
+        os.environ.get("GITHUB_REF"),
+        os.environ.get("GITHUB_SHA"),
+        head_sha,
+    ]
+    for target in dict.fromkeys(target for target in fetch_targets if target):
+        result = subprocess.run(
+            ["git", "fetch", "--deepen=1", "origin", target],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            return True
+    return False
+
+
+def _git_repository_is_shallow() -> bool:
+    result = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+    return result.returncode == 0 and _first_nonempty_line(result.stdout) == "true"
+
+
+def _git_rev_parse(revision: str) -> str | None:
+    result = subprocess.run(
+        ["git", "rev-parse", revision],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+    if result.returncode != 0:
+        return None
+    return _first_nonempty_line(result.stdout)
 
 
 def _git_merge_base() -> str | None:

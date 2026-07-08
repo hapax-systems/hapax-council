@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import runpy
 import subprocess
 import sys
@@ -395,6 +396,52 @@ def test_git_path_status_uses_parent_diff_when_merge_base_unavailable() -> None:
 
     assert status == "A"
     assert diff_ranges == ["HEAD^..HEAD"]
+
+
+def test_git_path_status_deepens_shallow_head_when_parent_missing() -> None:
+    gate = _gate_module()
+    git_path_status = gate["_git_path_status"]
+    subprocess_module = gate["subprocess"]
+    original_run = subprocess_module.run
+    original_github_ref = os.environ.pop("GITHUB_REF", None)
+    original_github_sha = os.environ.pop("GITHUB_SHA", None)
+    diff_ranges: list[str] = []
+    fetch_targets: list[str] = []
+    deepened = False
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        nonlocal deepened
+        if args[:3] == ["git", "merge-base", "HEAD"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="missing ref\n")
+        if args[:3] == ["git", "diff", "--name-status"]:
+            diff_ranges.append(args[3])
+            if not deepened:
+                return subprocess.CompletedProcess(args, 128, stdout="", stderr="missing parent\n")
+            return subprocess.CompletedProcess(args, 0, stdout="A\tGOVERNANCE.md\n", stderr="")
+        if args == ["git", "rev-parse", "--is-shallow-repository"]:
+            return subprocess.CompletedProcess(args, 0, stdout="true\n", stderr="")
+        if args == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args, 0, stdout="6296818332e9\n", stderr="")
+        if args[:4] == ["git", "fetch", "--deepen=1", "origin"]:
+            fetch_targets.append(args[4])
+            deepened = True
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {args!r}")
+
+    subprocess_module.run = fake_run
+    try:
+        status = git_path_status("GOVERNANCE.md")
+    finally:
+        subprocess_module.run = original_run
+        if original_github_ref is not None:
+            os.environ["GITHUB_REF"] = original_github_ref
+        if original_github_sha is not None:
+            os.environ["GITHUB_SHA"] = original_github_sha
+
+    assert status == "A"
+    assert diff_ranges == ["HEAD^..HEAD", "HEAD^..HEAD"]
+    assert fetch_targets == ["6296818332e9"]
 
 
 def test_public_surface_claim_gate_fails_absolute_claim(tmp_path: Path) -> None:
