@@ -119,7 +119,10 @@ class RdlcPublicationVehicleSelectorInput(_FrozenSelectorModel):
             frozen_evidence_refs=frozen_refs,
             public_safe_evidence_refs=receipt.public_safe_evidence_refs,
             audience_family=RdlcPublicationAudienceFamily(audience_family),
-            risk_posture=RdlcRiskLevel(risk_posture or receipt.observation.privacy_risk),
+            risk_posture=RdlcRiskLevel(
+                risk_posture
+                or _highest_risk(receipt.observation.privacy_risk, receipt.observation.air_risk)
+            ),
             freshness_ref=receipt.freshness_ref,
             currentness_ref=receipt.currentness_ref,
         )
@@ -425,10 +428,22 @@ def build_preprint_draft_from_vehicle_selection(
             "selected receipt vehicle/surface policy mismatch; "
             "next action: rebuild the selector receipt from a valid publish_candidate disposition"
         )
+    expected_hardening_context = _hardening_context(receipt.selector_input, expected_spec)
+    expected_abstract = _public_abstract(receipt.selector_input, expected_vehicle)
+    expected_body = _public_body_md(receipt.selector_input, expected_spec)
+    if (
+        receipt.hardening_context != expected_hardening_context
+        or receipt.public_abstract != expected_abstract
+        or receipt.public_body_md != expected_body
+    ):
+        raise RdlcPublicationVehicleError(
+            "selected receipt content/hardening policy mismatch; "
+            "next action: rebuild the selector receipt from a valid publish_candidate disposition"
+        )
 
     artifact_title = title or _title_from_vehicle(receipt.recommended_vehicle)
     context = {
-        **receipt.hardening_context,
+        **expected_hardening_context,
         "rdlc_publication_vehicle_selector": receipt.model_dump(mode="json"),
         "egress_state": "draft_only_no_inbox_write",
         "publication_authorized": False,
@@ -436,8 +451,8 @@ def build_preprint_draft_from_vehicle_selection(
     return PreprintArtifact(
         slug=slug,
         title=artifact_title,
-        abstract=receipt.public_abstract or "",
-        body_md=receipt.public_body_md,
+        abstract=expected_abstract,
+        body_md=expected_body,
         surfaces_targeted=list(receipt.selected_surface_slugs()),
         approval=ApprovalState.DRAFT,
         publication_gate_context=context,
@@ -488,6 +503,15 @@ def _frozen_ruler_ref(receipt: RdlcDispositionReceipt) -> str | None:
     if receipt.frozen_ruler_ref and receipt.frozen_ruler_version:
         return f"{receipt.frozen_ruler_ref}@{receipt.frozen_ruler_version}"
     return None
+
+
+def _highest_risk(*levels: RdlcRiskLevel) -> RdlcRiskLevel:
+    order = {
+        RdlcRiskLevel.LOW: 0,
+        RdlcRiskLevel.MODERATE: 1,
+        RdlcRiskLevel.HIGH: 2,
+    }
+    return max(levels, key=lambda level: order[level])
 
 
 def _hardening_context(

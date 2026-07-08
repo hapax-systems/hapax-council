@@ -206,6 +206,22 @@ def test_high_risk_defaults_from_observation_when_no_explicit_risk_posture() -> 
     assert selector.recommended_vehicle == RdlcPublicationVehicle.GOVERNANCE_SAFETY_NOTE
 
 
+def test_high_air_risk_defaults_to_restrained_vehicle() -> None:
+    selector = build_publication_vehicle_selector_receipt(
+        _publish_candidate(
+            observation=_observation(
+                privacy_risk=RdlcRiskLevel.LOW,
+                air_risk=RdlcRiskLevel.HIGH,
+            )
+        ),
+        audience_family=RdlcPublicationAudienceFamily.GOVERNANCE_SAFETY,
+    )
+
+    assert selector.decision == RdlcPublicationSelectorDecision.SELECTED
+    assert selector.selector_input.risk_posture == RdlcRiskLevel.HIGH
+    assert selector.recommended_vehicle == RdlcPublicationVehicle.GOVERNANCE_SAFETY_NOTE
+
+
 def test_missing_public_safe_or_currentness_evidence_refuses_publication() -> None:
     missing_public_safe = build_publication_vehicle_selector_receipt(
         _constructed_publish_candidate(public_safe_evidence_refs=()),
@@ -395,3 +411,36 @@ def test_reconstructed_selected_receipt_must_match_vehicle_surface_policy() -> N
 
     with pytest.raises(RdlcPublicationVehicleError, match="vehicle/surface policy mismatch"):
         build_preprint_draft_from_vehicle_selection(reconstructed, slug="surface-injection")
+
+
+def test_reconstructed_selected_receipt_must_match_audience_vehicle_policy() -> None:
+    selector = build_publication_vehicle_selector_receipt(
+        _publish_candidate(observation=_observation(privacy_risk=RdlcRiskLevel.HIGH)),
+        audience_family=RdlcPublicationAudienceFamily.GOVERNANCE_SAFETY,
+    )
+    mismatched_input = selector.selector_input.model_copy(
+        update={"audience_family": RdlcPublicationAudienceFamily.RESEARCH_METHODS}
+    )
+    reconstructed = selector.model_copy(update={"selector_input": mismatched_input})
+
+    with pytest.raises(RdlcPublicationVehicleError, match="audience does not match"):
+        build_preprint_draft_from_vehicle_selection(reconstructed, slug="audience-mismatch")
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"hardening_context": {}},
+        {"public_abstract": "tampered abstract"},
+        {"public_body_md": "# Tampered body"},
+    ],
+)
+def test_reconstructed_selected_receipt_must_match_selector_content(updates) -> None:
+    selector = build_publication_vehicle_selector_receipt(
+        _publish_candidate(),
+        audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
+    )
+    reconstructed = selector.model_copy(update=updates)
+
+    with pytest.raises(RdlcPublicationVehicleError, match="content/hardening policy mismatch"):
+        build_preprint_draft_from_vehicle_selection(reconstructed, slug="tampered")
