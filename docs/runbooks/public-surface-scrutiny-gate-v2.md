@@ -11,9 +11,12 @@ mutation_surface: source_docs
 Run this gate before publishing weblog or `hapax.omg.lol` copy.
 
 ```bash
+uv run python scripts/github-public-surface-reconcile.py
+uv run python scripts/publication-freshness-audit.py --fail-on-blockers
 uv run python scripts/check-public-surface-claims.py --warnings-fail \
   --token-claim-report docs/research/evidence/2026-05-13-token-capital-claim-regate-v2.json \
-  --source-reconciliation docs/research/evidence/2026-05-13-public-surface-source-of-truth-reconciliation.json
+  --source-reconciliation docs/research/evidence/2026-05-13-public-surface-source-of-truth-reconciliation.json \
+  --publication-freshness-state ~/hapax-state/publication/freshness-state.json
 ```
 
 Default targets are:
@@ -24,10 +27,12 @@ Default targets are:
 Exit codes:
 
 - `0`: no blocking findings.
-- `1`: public copy violates the deterministic claim ceiling or the current
-  source reconciliation has unreconciled live items.
+- `1`: public copy violates the deterministic claim ceiling, the current source
+  reconciliation has unreconciled live items, or publication freshness has
+  public-current blockers.
 - `2`: a required machine-readable receipt is missing or malformed.
 
-The gate consumes the Token Capital claim re-gate receipt and the public-surface
-source-of-truth reconciliation receipt. It is not a replacement for legal,
-privacy, entity, citation, or operator override review.
+The gate consumes the Token Capital claim re-gate receipt, the public-surface
+source-of-truth reconciliation receipt, and the publication freshness snapshot
+from `scripts/publication-freshness-audit.py`. It is not a replacement for
+legal, privacy, entity, citation, or operator override review.
