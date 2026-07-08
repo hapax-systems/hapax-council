@@ -52,6 +52,13 @@ fi
     path.chmod(0o755)
 
 
+def _extract_shell_function(name: str) -> str:
+    text = SCRIPT.read_text(encoding="utf-8")
+    start = text.index(f"{name}() {{")
+    end = text.index("\n}\n\n", start) + len("\n}\n")
+    return text[start:end]
+
+
 def _write_rejecting_codex(path: Path, fallback_body: str = "exit 0\n") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -229,6 +236,37 @@ def _python_only_remote_path(tmp_path: Path) -> Path:
     (remote_bin / "python3").symlink_to(python_bin)
     (remote_bin / "bash").symlink_to(bash_bin)
     return remote_bin
+
+
+def test_resolve_local_codex_bin_skips_directory_candidates(tmp_path: Path) -> None:
+    bad_dir = tmp_path / "not-a-codex-binary"
+    bad_dir.mkdir()
+    home = tmp_path / "home"
+    fallback_codex = home / ".npm-global" / "bin" / "codex"
+    _write_executable(fallback_codex, "exit 0\n")
+    path_dir = tmp_path / "path"
+    path_dir.mkdir()
+    bash = shutil.which("bash") or "/usr/bin/bash"
+
+    result = subprocess.run(
+        [
+            bash,
+            "-c",
+            f"{_extract_shell_function('resolve_local_codex_bin')}\nresolve_local_codex_bin",
+        ],
+        capture_output=True,
+        text=True,
+        env={
+            "HOME": str(home),
+            "HAPAX_CODEX_BIN_PATH": str(bad_dir),
+            "NPM_CONFIG_PREFIX": "",
+            "PATH": str(path_dir),
+        },
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(fallback_codex)
 
 
 def _write_minimal_council(council_dir: Path, retire_log: Path) -> None:
@@ -2070,8 +2108,6 @@ def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
     workdir = tmp_path / "workdir"
     workdir.mkdir()
-    codex_bin = tmp_path / "bin" / "codex"
-    _write_executable(codex_bin, "exit 0\n")
     token_path = _write_codex_access_token(tmp_path / "handoff", exp=int(time.time()) + 3600)
     seal_key = "e" * 64
     token_path.write_text(
@@ -2089,7 +2125,6 @@ def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
             "HAPAX_AGENT_ROLE": "cx-amber",
             "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
             "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH": "1234567890 task-x",
-            "HAPAX_CODEX_BIN_PATH": str(codex_bin),
         },
         "proof_file": str(proof),
         "token_handoff_file": str(token_path),
@@ -2098,6 +2133,9 @@ def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
     }
     env = os.environ.copy()
     env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+    env["NPM_CONFIG_PREFIX"] = ""
+    env["PATH"] = str(_python_only_remote_path(tmp_path))
+    env.pop("HAPAX_CODEX_BIN_PATH", None)
 
     result = subprocess.run(
         [sys.executable, "-c", remote_exec_py],
@@ -2116,8 +2154,6 @@ def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: P
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
     workdir = tmp_path / "workdir"
     workdir.mkdir()
-    codex_bin = tmp_path / "bin" / "codex"
-    _write_executable(codex_bin, "exit 0\n")
     token_path = _write_codex_access_token(tmp_path / "handoff", exp=int(time.time()) + 3600)
     seal_key = "f" * 64
     token_path.write_text(
@@ -2132,7 +2168,6 @@ def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: P
             "HAPAX_SESSION_ID": "remote-cache-session",
             "HAPAX_AGENT_ROLE": "cx-amber",
             "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
-            "HAPAX_CODEX_BIN_PATH": str(codex_bin),
         },
         "proof_file": str(proof),
         "token_handoff_file": str(token_path),
@@ -2141,6 +2176,9 @@ def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: P
     }
     env = os.environ.copy()
     env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+    env["NPM_CONFIG_PREFIX"] = ""
+    env["PATH"] = str(_python_only_remote_path(tmp_path))
+    env.pop("HAPAX_CODEX_BIN_PATH", None)
 
     result = subprocess.run(
         [sys.executable, "-c", remote_exec_py],

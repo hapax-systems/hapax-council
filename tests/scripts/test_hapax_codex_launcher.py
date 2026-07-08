@@ -590,6 +590,42 @@ def test_launcher_ignores_inherited_codex_access_token_without_published_token(
     assert "CODEX_ACCESS_TOKEN_PRESENT=\n" in env_file.read_text(encoding="utf-8")
 
 
+def test_launcher_skips_directory_codex_candidates(tmp_path: Path) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+    fallback_codex = Path(env["HOME"]) / ".npm-global" / "bin" / "codex"
+    fallback_codex.parent.mkdir(parents=True)
+    path_codex = Path(env["PATH"].split(":", 1)[0]) / "codex"
+    shutil.copy2(path_codex, fallback_codex)
+    bad_candidate = tmp_path / "not-a-codex-binary"
+    bad_candidate.mkdir()
+
+    env["HAPAX_CODEX_BIN_PATH"] = str(bad_candidate)
+    env["NPM_CONFIG_PREFIX"] = ""
+    env["PATH"] = "/usr/bin:/bin"
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-red",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "mcp list" in args_file.read_text(encoding="utf-8")
+
+
 def test_launcher_remote_exec_uses_preclaim_proven_token_handoff(tmp_path: Path) -> None:
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
     assert "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE" not in remote_exec_py

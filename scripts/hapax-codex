@@ -1259,7 +1259,7 @@ if [ -z "$DISPATCH_HOST" ]; then
       "${NPM_CONFIG_PREFIX:+$NPM_CONFIG_PREFIX/bin/codex}" \
       "$HOME/.local/share/npm/bin/codex" \
       "/usr/local/bin/codex"; do
-      if [ -n "$_cand" ] && [ -x "$_cand" ]; then
+      if [ -n "$_cand" ] && [ -f "$_cand" ] && [ -x "$_cand" ]; then
         CODEX_BIN="$_cand"
         break
       fi

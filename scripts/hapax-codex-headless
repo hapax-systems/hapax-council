@@ -280,7 +280,7 @@ resolve_local_codex_bin() {
       "${NPM_CONFIG_PREFIX:+$NPM_CONFIG_PREFIX/bin/codex}" \
       "$HOME/.local/share/npm/bin/codex" \
       "/usr/local/bin/codex"; do
-      if [[ -n "$candidate" && -x "$candidate" ]]; then
+      if [[ -n "$candidate" && -f "$candidate" && -x "$candidate" ]]; then
         codex_bin="$candidate"
         break
       fi
