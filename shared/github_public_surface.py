@@ -16,6 +16,7 @@ REPORT_SCHEMA_VERSION: int = 1
 CLAIM_CEILING: str = "public_archive"
 ORG_PROFILE_REPO_ID: str = "hapax-systems/.github"
 ORG_PROFILE_README_PATH: str = "profile/README.md"
+MARKDOWN_LEDGER_DATE: str = "2026-04-30"
 
 INTENDED_PUBLIC_REPOS: tuple[str, ...] = (
     "hapax-systems/agentgov",
@@ -851,7 +852,9 @@ def report_to_markdown(report: GitHubPublicSurfaceReport) -> str:
     lines = [
         "---",
         "title: GitHub public surface live state reconcile",
-        f"date: {report.generated_at[:10]}",
+        f"date: {MARKDOWN_LEDGER_DATE}",
+        f"refresh_date: {report.generated_at[:10]}",
+        f"generated_at: {report.generated_at}",
         "status: evidence-produced",
         "source: github-public-surface-live-state-reconcile",
         "---",
@@ -860,9 +863,9 @@ def report_to_markdown(report: GitHubPublicSurfaceReport) -> str:
         "",
         (
             "- Filename note: the April slug is retained for historical ledger continuity; "
-            + "the YAML `date` and `Generated` fields record the current live-state refresh. "
-            + "Freshness checks must read those fields, not the filename slug. Re-run the "
-            + "`Recheck` command below before treating this as current."
+            + "the YAML `date` field matches that slug, while `refresh_date`, "
+            + "`generated_at`, and `Generated` record the current live-state refresh. "
+            + "Freshness checks must read the refresh fields before treating this as current."
         ),
         f"- Generated: `{report.generated_at}`",
         f"- Recheck: `uv run python {report.generated_by}`",

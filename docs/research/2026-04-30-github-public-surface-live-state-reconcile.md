@@ -1,13 +1,15 @@
 ---
 title: GitHub public surface live state reconcile
-date: 2026-07-08
+date: 2026-04-30
+refresh_date: 2026-07-08
+generated_at: 2026-07-08T18:07:11Z
 status: evidence-produced
 source: github-public-surface-live-state-reconcile
 ---
 
 # GitHub Public Surface Live State Reconcile
 
-- Filename note: the April slug is retained for historical ledger continuity; the YAML `date` and `Generated` fields record the current live-state refresh. Freshness checks must read those fields, not the filename slug. Re-run the `Recheck` command below before treating this as current.
+- Filename note: the April slug is retained for historical ledger continuity; the YAML `date` field matches that slug, while `refresh_date`, `generated_at`, and `Generated` record the current live-state refresh. Freshness checks must read the refresh fields before treating this as current.
 - Generated: `2026-07-08T18:07:11Z`
 - Recheck: `uv run python scripts/github-public-surface-reconcile.py`
 - Claim ceiling: `public_archive`
