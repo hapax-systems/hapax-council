@@ -355,6 +355,7 @@ def _repo_metadata_event(
             "repo_id": repo.repo_id,
             "visibility": repo.visibility,
             "description": repo.description,
+            "homepage": repo.homepage,
             "topics": repo.topics,
             "default_branch_sha": repo.default_branch_sha,
             "license_spdx": repo.license_spdx,

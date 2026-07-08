@@ -60,6 +60,56 @@ def test_github_publication_rows_are_witness_only_and_anti_overclaim() -> None:
     assert ANTI_OVERCLAIM_REASON in public_event.notes
 
 
+def test_repo_metadata_witness_hash_includes_homepage() -> None:
+    report = _report()
+    repo = RepoLiveState(
+        repo_id="hapax-systems/homepage-example",
+        owner="hapax-systems",
+        name="homepage-example",
+        exists=True,
+        private=False,
+        visibility="public",
+        default_branch="main",
+        default_branch_sha="a" * 40,
+        description="Example repo",
+        homepage="https://example.com/a",
+        topics=("hapax",),
+        license_spdx="NOASSERTION",
+        has_issues=True,
+        has_discussions=False,
+        has_wiki=False,
+        has_projects=False,
+        pushed_at=GENERATED_AT,
+        html_url="https://github.com/hapax-systems/homepage-example",
+        files={},
+    )
+    fixture = report.model_copy(
+        update={
+            "live_repos": (repo,),
+            "profile_repo_candidates": (),
+            "local_evidence": report.local_evidence.model_copy(update={"package_surfaces": ()}),
+        }
+    )
+    changed = fixture.model_copy(
+        update={"live_repos": (repo.model_copy(update={"homepage": "https://example.com/b"}),)}
+    )
+
+    first_event = next(
+        event
+        for event in events_from_github_public_surface_report(fixture, generated_at=GENERATED_AT)
+        if event.surface == "repo_metadata"
+    )
+    second_event = next(
+        event
+        for event in events_from_github_public_surface_report(changed, generated_at=GENERATED_AT)
+        if event.surface == "repo_metadata"
+    )
+
+    assert first_event.content_sha is not None
+    assert second_event.content_sha is not None
+    assert first_event.content_sha != second_event.content_sha
+
+
 def test_missing_or_private_rows_do_not_carry_live_urls_or_public_mode() -> None:
     private_event = build_github_publication_event(
         repo="hapax-systems/private-example",
