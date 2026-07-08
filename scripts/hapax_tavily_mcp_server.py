@@ -50,15 +50,18 @@ def _json(value: Any) -> str:
     return text
 
 
-def _error(exc: Exception) -> str:
+def _error(exc: Exception, *, next_action: str | None = None) -> str:
     logger.warning("tavily MCP tool failed: %s", exc)
-    return _json(
-        {
-            "ok": False,
-            "error_type": type(exc).__name__,
-            "error": str(exc),
-        }
-    )
+    error = str(exc)
+    payload: dict[str, Any] = {
+        "ok": False,
+        "error_type": type(exc).__name__,
+        "error": error,
+    }
+    if next_action:
+        payload["next_action"] = next_action
+        payload["error"] = f"{error}; next action: {next_action}"
+    return _json(payload)
 
 
 def _client() -> TavilyClient:
@@ -279,7 +282,12 @@ def tavily_usage(project_id: str | None = None) -> str:
     try:
         response = _client().usage(project_id=project_id)
         return _json({"ok": True, **response.model_dump(mode="json")})
-    except (TavilyConfigError, TavilyRequestError, ValidationError) as exc:
+    except ValidationError as exc:
+        return _error(
+            exc,
+            next_action="recheck the provider /usage response shape or proxy logs",
+        )
+    except (TavilyConfigError, TavilyRequestError) as exc:
         return _error(exc)
 
 

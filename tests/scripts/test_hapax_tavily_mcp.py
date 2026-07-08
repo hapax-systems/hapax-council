@@ -79,6 +79,8 @@ def test_tavily_mcp_usage_returns_structured_validation_error(monkeypatch) -> No
     assert payload["ok"] is False
     assert payload["error_type"] == "ValidationError"
     assert "not-a-number" in payload["error"]
+    assert payload["next_action"] == "recheck the provider /usage response shape or proxy logs"
+    assert "next action: recheck" in payload["error"]
 
 
 def test_tavily_mcp_default_proxy_execs_repo_server_without_exported_token(
