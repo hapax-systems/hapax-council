@@ -38,7 +38,6 @@ def _report() -> GitHubPublicSurfaceReport:
 
 def _minimal_local_evidence() -> LocalPublicSurfaceEvidence:
     return LocalPublicSurfaceEvidence(
-        repo_generation_ref="test-head",
         registry_license_by_repo={},
         root_file_sha256={},
         notice_links=(),

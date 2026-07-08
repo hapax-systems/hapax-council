@@ -266,16 +266,22 @@ def events_from_github_public_surface_report(
         if repo.pages.exists and repo.pages.html_url:
             events.append(_pages_event(repo, generated_at=generated, source_refs=source_refs))
 
+    council_repo = report.repos_by_id().get("hapax-systems/hapax-council")
+    package_commit_sha = council_repo.default_branch_sha if council_repo is not None else None
+    package_ref = council_repo.default_branch if council_repo is not None else None
     for package_surface in report.local_evidence.package_surfaces:
         if (
             package_surface.has_readme
             or package_surface.has_citation
             or package_surface.has_pyproject
         ):
+            if not package_commit_sha:
+                continue
             events.append(
                 _package_event(
                     package_surface,
-                    repo_generation_ref=report.local_evidence.repo_generation_ref,
+                    repo_ref=package_ref or "main",
+                    commit_sha=package_commit_sha,
                     generated_at=generated,
                     source_refs=source_refs,
                 )
@@ -464,7 +470,8 @@ def _pages_event(
 def _package_event(
     package_surface: PackageSurface,
     *,
-    repo_generation_ref: str,
+    repo_ref: str,
+    commit_sha: str,
     generated_at: str,
     source_refs: tuple[str, ...],
 ) -> GitHubPublicationLogEvent:
@@ -475,16 +482,14 @@ def _package_event(
         surface="package",
         generated_at=generated_at,
         occurred_at=generated_at,
-        commit_sha=repo_generation_ref
-        if re.fullmatch(r"[0-9a-f]{40}", repo_generation_ref)
-        else None,
+        commit_sha=commit_sha,
         content_sha=digest_json(payload),
         source_refs=source_refs,
         evidence_refs=tuple(package_surface.evidence_refs),
         publication_state="public",
         publication_mode="public_archive",
-        live_url=f"https://github.com/hapax-systems/hapax-council/tree/{repo_generation_ref}/{path}",
-        ref=repo_generation_ref,
+        live_url=f"https://github.com/hapax-systems/hapax-council/tree/{commit_sha}/{path}",
+        ref=repo_ref,
         surface_id=f"github.package.hapax-systems/hapax-council.{path}",
         notes=(f"package_claim_status:{package_surface.claim_status}",),
     )

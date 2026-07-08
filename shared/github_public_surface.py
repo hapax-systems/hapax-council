@@ -144,7 +144,6 @@ class PackageSurface(StrictModel):
 
 
 class LocalPublicSurfaceEvidence(StrictModel):
-    repo_generation_ref: str
     registry_license_by_repo: dict[str, str]
     registry_assets_policy: str | None = None
     root_file_sha256: dict[str, str]

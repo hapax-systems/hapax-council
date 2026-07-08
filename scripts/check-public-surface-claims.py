@@ -405,11 +405,7 @@ def _drift_finding_is_documented_nonrelease_drift(drift: Any) -> bool:
         return True
     if _drift_finding_has_readme_freshness_delegation(drift):
         return True
-    if _drift_finding_has_documented_metadata_license_posture(drift):
-        return True
-    return getattr(
-        drift, "category", ""
-    ) == "closed_repo_pres_claims" and not _drift_finding_blocks_release(drift)
+    return _drift_finding_has_documented_metadata_license_posture(drift)
 
 
 def _drift_finding_is_custom_license_detection(drift: Any) -> bool:

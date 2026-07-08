@@ -90,6 +90,88 @@ def test_gh_json_uses_authenticated_graphql_on_repo_rest_rate_limit(
     assert "using authenticated GraphQL fallback" in caplog.text
 
 
+def test_authenticated_graphql_fallback_shapes_branch_topics_tags_and_community(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    subprocess_module = module["subprocess"]
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        query_arg = next(arg for arg in args if arg.startswith("query="))
+        if "ref(qualifiedName" in query_arg:
+            stdout = '{"data":{"repository":{"ref":{"target":{"oid":"abc123"}}}}}'
+        elif "repositoryTopics" in query_arg:
+            stdout = (
+                '{"data":{"repository":{"repositoryTopics":{"nodes":['
+                '{"topic":{"name":"ai-governance"}},{"topic":{"name":"single-operator"}}'
+                "]}}}}"
+            )
+        elif 'refs(refPrefix:"refs/tags/"' in query_arg:
+            stdout = (
+                '{"data":{"repository":{"refs":{"nodes":[{"name":"v1.0.0"},{"name":"v0.9.0"}]}}}}'
+            )
+        elif 'object(expression:"HEAD:.github/ISSUE_TEMPLATE")' in query_arg:
+            stdout = (
+                '{"data":{"repository":{"description":"Council",'
+                '"object":{"entries":[{"name":"config.yml","type":"blob"}]}}}}'
+            )
+        else:
+            raise AssertionError(f"unexpected GraphQL query: {query_arg}")
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+
+    branch_payload, branch_error = module["_authenticated_graphql_json"](
+        "repos/hapax-systems/hapax-council/branches/main"
+    )
+    topics_payload, topics_error = module["_authenticated_graphql_json"](
+        "repos/hapax-systems/hapax-council/topics"
+    )
+    tags_payload, tags_error = module["_authenticated_graphql_json"](
+        "repos/hapax-systems/hapax-council/tags?per_page=100"
+    )
+    community_payload, community_error = module["_authenticated_graphql_json"](
+        "repos/hapax-systems/hapax-council/community/profile"
+    )
+
+    assert branch_error is None
+    assert branch_payload == {"name": "main", "commit": {"sha": "abc123"}}
+    assert topics_error is None
+    assert topics_payload == {"names": ["ai-governance", "single-operator"]}
+    assert tags_error is None
+    assert tags_payload == [{"name": "v1.0.0"}, {"name": "v0.9.0"}]
+    assert community_error is None
+    assert community_payload == {
+        "health_percentage": None,
+        "description": "Council",
+        "files": {"issue_template": None},
+    }
+
+
+def test_authenticated_graphql_fallback_reports_graphql_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    subprocess_module = module["subprocess"]
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout='{"errors":[{"message":"rate-limited by GraphQL"}]}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+
+    payload, error = module["_authenticated_graphql_json"]("repos/hapax-systems/hapax-council")
+
+    assert payload is None
+    assert "rate-limited by GraphQL" in error
+
+
 def test_gh_json_falls_back_to_public_rest_on_authenticated_rate_limit(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,

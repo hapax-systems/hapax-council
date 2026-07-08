@@ -21,7 +21,7 @@
         "gh:repos/hapax-systems/hapax-council",
         "live-report:repo:hapax-systems/hapax-council:exists=true",
         "live-report:repo:hapax-systems/hapax-council:visibility=public",
-        "live-report:repo:hapax-systems/hapax-council:default_branch_sha=21b9e9153e98f82cc7b9c1adbb5cc86894c2a386",
+        "live-report:repo:hapax-systems/hapax-council:default_branch_sha=955cf0ae010c60675cd690486650864b902a2172",
         "live-report:repo:hapax-systems/hapax-council:license_spdx=NOASSERTION",
         "live-report:repo:hapax-systems/hapax-council:has_issues=true",
         "live-report:repo:hapax-systems/hapax-council:community.issue_template=false"
@@ -60,7 +60,7 @@
         "gh:repos/hapax-systems/hapax-council",
         "live-report:repo:hapax-systems/hapax-council:exists=true",
         "live-report:repo:hapax-systems/hapax-council:visibility=public",
-        "live-report:repo:hapax-systems/hapax-council:default_branch_sha=21b9e9153e98f82cc7b9c1adbb5cc86894c2a386",
+        "live-report:repo:hapax-systems/hapax-council:default_branch_sha=955cf0ae010c60675cd690486650864b902a2172",
         "live-report:repo:hapax-systems/hapax-council:license_spdx=NOASSERTION",
         "live-report:repo:hapax-systems/hapax-council:has_issues=true",
         "live-report:repo:hapax-systems/hapax-council:community.issue_template=false",
@@ -359,7 +359,7 @@
       "surface": "cc-task closed/repo-pres-*"
     }
   ],
-  "generated_at": "2026-07-08T15:08:57Z",
+  "generated_at": "2026-07-08T15:36:39Z",
   "generated_by": "scripts/github-public-surface-reconcile.py",
   "live_repos": [
     {
@@ -380,7 +380,7 @@
         "health_percentage": 75
       },
       "default_branch": "main",
-      "default_branch_sha": "21b9e9153e98f82cc7b9c1adbb5cc86894c2a386",
+      "default_branch_sha": "955cf0ae010c60675cd690486650864b902a2172",
       "description": "Single-operator Hapax operating environment: externalized executive function, constitutional governance, semantic recruitment, multimodal perception, and refusal-as-data research infrastructure.",
       "exists": true,
       "expected_public": true,
@@ -502,7 +502,7 @@
         "status": null
       },
       "private": false,
-      "pushed_at": "2026-07-08T15:07:53Z",
+      "pushed_at": "2026-07-08T15:34:46Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -1625,7 +1625,6 @@
       "hapax-watch": "PolyForm-Strict-1.0.0",
       "reins": "BUSL-1.1"
     },
-    "repo_generation_ref": "7980f03b312706ca52b5d615aafd5af9b83c764f",
     "root_file_sha256": {
       ".zenodo.json": "sha256:717b50fe0969239dbd36d2f70b923a649e930af771c2449da73d3c1ee96cbcde",
       "CITATION.cff": "sha256:04fba7c6d6a5abfb8340fb3621cfa2fe813c30fb2dcf50688fd91c3f99425b98",
