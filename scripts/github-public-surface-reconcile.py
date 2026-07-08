@@ -11,6 +11,7 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
+from urllib import error, request
 from urllib.parse import quote
 
 import yaml
@@ -180,11 +181,50 @@ def _gh_json(endpoint: str) -> tuple[Any | None, str | None]:
         check=False,
     )
     if result.returncode != 0:
-        return None, _first_line(result.stderr) or f"gh api {endpoint} failed"
+        detail = _first_line(result.stderr) or f"gh api {endpoint} failed"
+        if _is_github_api_rate_limit(detail):
+            payload, fallback_error = _public_github_json(endpoint)
+            if fallback_error is None:
+                return payload, None
+            return None, f"{detail}; public unauthenticated fallback failed: {fallback_error}"
+        return None, detail
     try:
         return json.loads(result.stdout), None
     except json.JSONDecodeError as exc:
         return None, f"gh api {endpoint} returned malformed JSON: {exc}"
+
+
+def _is_github_api_rate_limit(detail: str) -> bool:
+    return "api rate limit exceeded" in detail.lower()
+
+
+def _public_github_json(endpoint: str) -> tuple[Any | None, str | None]:
+    url = f"https://api.github.com/{endpoint}"
+    github_request = request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "hapax-public-surface-reconcile",
+        },
+    )
+    try:
+        with request.urlopen(github_request, timeout=30) as response:
+            body = response.read().decode("utf-8")
+    except error.HTTPError as exc:
+        return None, f"HTTP {exc.code}: {_first_line(_decode_http_error(exc)) or exc.reason}"
+    except OSError as exc:
+        return None, str(exc)
+    try:
+        return json.loads(body), None
+    except json.JSONDecodeError as exc:
+        return None, f"public GitHub API returned malformed JSON: {exc}"
+
+
+def _decode_http_error(exc: error.HTTPError) -> str:
+    try:
+        return exc.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def _branch_sha(owner: str, name: str, default_branch: str | None) -> str | None:
