@@ -451,7 +451,6 @@ def admit_cockpit_agent_invocation(
     non_read_only_reasons = _non_read_only_invocation_reasons(
         capability,
         flags,
-        include_classification_surfaces=not capability.requires_llm_admission,
     )
     if non_read_only_reasons:
         return CockpitInvocationAdmission(
@@ -545,16 +544,11 @@ def _admit_leaf(leaf: CockpitSupplyLeaf, *, now: datetime) -> CockpitAdmissionRe
 def _non_read_only_invocation_reasons(
     capability: CockpitAgentCapability,
     flags: tuple[str, ...] | list[str],
-    *,
-    include_classification_surfaces: bool,
 ) -> tuple[str, ...]:
     reasons: list[str] = []
     if CockpitCommandClass.RUNTIME_MUTATION in capability.classifications:
         reasons.append("runtime_mutation_surface_requires_route_receipt")
-    if (
-        include_classification_surfaces
-        and CockpitCommandClass.PUBLIC_EGRESS in capability.classifications
-    ):
+    if CockpitCommandClass.PUBLIC_EGRESS in capability.classifications:
         reasons.append("public_egress_surface_requires_route_receipt")
     for configured_flag in capability.runtime_mutation_flags:
         if _configured_flag_present(configured_flag, flags):

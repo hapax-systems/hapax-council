@@ -308,6 +308,35 @@ def test_non_read_only_local_write_surfaces_refuse_before_subprocess(
     assert expected_reason in admission.reason_codes
 
 
+@pytest.mark.parametrize(
+    ("agent", "expected_reason"),
+    [
+        ("profiler", "runtime_mutation_surface_requires_route_receipt"),
+        ("research", "public_egress_surface_requires_route_receipt"),
+        ("scout", "public_egress_surface_requires_route_receipt"),
+    ],
+)
+def test_non_read_only_class_surfaces_refuse_before_fresh_leaf_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    agent: str,
+    expected_reason: str,
+) -> None:
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(_write_fresh_ledger(tmp_path)))
+    monkeypatch.setenv(
+        COCKPIT_PLATFORM_CAPABILITY_REGISTRY_ENV, str(_write_fresh_registry(tmp_path))
+    )
+    monkeypatch.setenv(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV, "none")
+
+    admission = admit_cockpit_agent_invocation(agent, flags=(), now=NOW)
+
+    assert admission.admitted is False
+    assert admission.requires_admission is True
+    assert admission.receipts == ()
+    assert "non_read_only_invocation_requires_route_receipt" in admission.reason_codes
+    assert expected_reason in admission.reason_codes
+
+
 def test_code_review_model_override_accepts_space_separated_value() -> None:
     capability = cockpit_capability_for_invocation(
         "code-review",
