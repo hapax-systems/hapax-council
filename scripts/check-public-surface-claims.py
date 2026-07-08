@@ -8,6 +8,7 @@ import json
 import re
 import sys
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,11 @@ from shared.github_public_claim_gate import (
     evaluate_github_public_claims,
     github_material_envelope_from_mapping,
 )
-from shared.publication_freshness import PublicationFreshnessSnapshot
+from shared.publication_freshness import (
+    PublicationFreshnessSnapshot,
+    build_publication_freshness_snapshot,
+    isoformat_z,
+)
 from shared.publication_hardening.lint import LintFinding, lint_file
 
 DEFAULT_TOKEN_CLAIM_REPORT = (
@@ -247,7 +252,12 @@ def check_publication_freshness_state(
     *,
     state_path: Path,
 ) -> list[LintFinding]:
-    if not state.blockers:
+    reassessed = build_publication_freshness_snapshot(
+        state.envelopes,
+        generated_at=isoformat_z(datetime.now(tz=UTC)),
+    )
+    blockers = tuple(dict.fromkeys((*state.blockers, *reassessed.blockers)))
+    if not blockers:
         return []
     return [
         LintFinding(
@@ -255,9 +265,7 @@ def check_publication_freshness_state(
             line=1,
             level="error",
             rule=PUBLICATION_FRESHNESS_RULE,
-            message=(
-                f"Publication freshness has public-current blockers: {', '.join(state.blockers)}"
-            ),
+            message=(f"Publication freshness has public-current blockers: {', '.join(blockers)}"),
         )
     ]
 

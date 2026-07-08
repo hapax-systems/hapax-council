@@ -160,6 +160,10 @@ def _write_publication_policy(
     target_surfaces: tuple[str, ...],
     required_gates: tuple[str, ...],
     status: str = "guarded_public_channel",
+    publication_allowed_without_bus: bool = False,
+    direct_public_egress_allowed: bool = False,
+    review_required: str = "Claim Verification Council",
+    claim_ceiling: str = "source refs, rights, privacy, redaction, and target surfaces",
 ) -> Path:
     path = state_root / "publication-policy.yaml"
     target_lines = "\n".join(f"    - {surface}" for surface in target_surfaces)
@@ -167,10 +171,14 @@ def _write_publication_policy(
     path.write_text(
         "publication_frontmatter_policy:\n"
         f"  status: {status}\n"
+        f"  publication_allowed_without_bus: {str(publication_allowed_without_bus).lower()}\n"
+        f"  direct_public_egress_allowed: {str(direct_public_egress_allowed).lower()}\n"
+        f"  review_required: {review_required}\n"
         "  target_surfaces:\n"
         f"{target_lines}\n"
         "  required_gates:\n"
-        f"{gate_lines}\n",
+        f"{gate_lines}\n"
+        f"  claim_ceiling: {claim_ceiling}\n",
         encoding="utf-8",
     )
     return path
@@ -966,6 +974,50 @@ class TestSingleSurface:
         )
         assert gate_log["result"] == "operator_hold"
         assert any("guarded_public_channel" in issue for issue in gate_log["flagged_issues"])
+
+    def test_publication_policy_boundary_fields_hold_before_surface_dispatch(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+        policy_path = _write_publication_policy(
+            tmp_path,
+            target_surfaces=("fake",),
+            required_gates=PUBLICATION_BASELINE_REQUIRED_GATES,
+            publication_allowed_without_bus=True,
+        )
+        monkeypatch.setattr(
+            orchestrator_module,
+            "PUBLICATION_POLICY_PATHS",
+            (policy_path,),
+        )
+
+        _drop_artifact(tmp_path, slug="bad-policy-boundary", surfaces=["fake"])
+        review_pass = _CountingReviewPass()
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=review_pass,
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        assert review_pass.calls == 0
+        fake_module.publish_artifact.assert_not_called()
+        gate_log = json.loads(
+            (
+                tmp_path / "publish/log/bad-policy-boundary.publication-hardening-gate.json"
+            ).read_text()
+        )
+        assert gate_log["result"] == "operator_hold"
+        assert any(
+            "publication_allowed_without_bus must be false" in issue
+            for issue in gate_log["flagged_issues"]
+        )
 
     def test_publication_gate_override_dispatches_with_surface_receipt(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()

@@ -105,6 +105,22 @@ PUBLICATION_FANOUT_REQUIRED_GATES = (
     "fanout_loop_prevention_present",
 )
 PUBLICATION_POLICY_ALLOWED_STATUSES = frozenset({"guarded_public_channel", "guarded_public_fanout"})
+PUBLICATION_POLICY_REQUIRED_FIELDS = (
+    "status",
+    "publication_allowed_without_bus",
+    "direct_public_egress_allowed",
+    "review_required",
+    "target_surfaces",
+    "required_gates",
+    "claim_ceiling",
+)
+PUBLICATION_POLICY_CLAIM_CEILING_TERMS = (
+    "source refs",
+    "rights",
+    "privacy",
+    "redaction",
+    "target surfaces",
+)
 PUBLIC_GATE_RECEIPT_ROOTS = (
     Path.home() / ".cache" / "hapax" / "relay" / "receipts",
     REPO_ROOT / "docs" / "research" / "evidence",
@@ -1333,7 +1349,7 @@ def _policy_required_gate_ids(
         configured.append(gate.strip())
 
     required = list(dict.fromkeys([*baseline, *configured]))
-    errors: list[str] = []
+    errors = _publication_policy_boundary_errors(policy, path=path)
     if status not in PUBLICATION_POLICY_ALLOWED_STATUSES:
         errors.append(
             "publication policy status must be guarded_public_channel or "
@@ -1359,6 +1375,59 @@ def _policy_required_gate_ids(
             + f" ({path}); next action: restore the baseline publication gate list"
         )
     return required, "; ".join(errors) if errors else None
+
+
+def _publication_policy_boundary_errors(
+    policy: Mapping[str, object],
+    *,
+    path: Path,
+) -> list[str]:
+    errors: list[str] = []
+    for field in PUBLICATION_POLICY_REQUIRED_FIELDS:
+        if field not in policy:
+            errors.append(
+                f"publication policy missing publication_frontmatter_policy.{field}: {path}; "
+                "next action: restore required public-egress policy fields before "
+                "processing inbox artifacts"
+            )
+    if policy.get("publication_allowed_without_bus") is not False:
+        errors.append(
+            "publication policy publication_allowed_without_bus must be false: "
+            f"{path}; next action: route public egress through the publication bus"
+        )
+    if policy.get("direct_public_egress_allowed") is not False:
+        errors.append(
+            "publication policy direct_public_egress_allowed must be false: "
+            f"{path}; next action: keep direct public egress disabled"
+        )
+    if policy.get("review_required") != "Claim Verification Council":
+        errors.append(
+            "publication policy review_required must be Claim Verification Council: "
+            f"{path}; next action: require CVC review before public egress"
+        )
+    policy_text = str(policy.get("claim_ceiling") or "").lower()
+    missing_terms = [
+        term for term in PUBLICATION_POLICY_CLAIM_CEILING_TERMS if term not in policy_text
+    ]
+    if missing_terms:
+        errors.append(
+            "publication policy claim_ceiling missing required terms "
+            + ", ".join(missing_terms)
+            + f": {path}; next action: state source-ref, rights/privacy/redaction, "
+            "and target-surface ceilings"
+        )
+    target_surfaces = policy.get("target_surfaces")
+    if not isinstance(target_surfaces, list) or not target_surfaces:
+        errors.append(
+            f"publication policy target_surfaces must be a non-empty list: {path}; "
+            "next action: configure target surface ids before processing inbox artifacts"
+        )
+    elif any(not isinstance(surface, str) or not surface.strip() for surface in target_surfaces):
+        errors.append(
+            f"publication policy target_surfaces must contain non-empty strings: {path}; "
+            "next action: replace malformed target surface ids"
+        )
+    return errors
 
 
 def _artifact_publication_gate_receipts(

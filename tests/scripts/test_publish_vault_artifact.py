@@ -205,6 +205,10 @@ def _write_policy(
     required_gates: tuple[object, ...],
     status: str = "guarded_public_channel",
     target_surfaces: tuple[str, ...] = ("omg-weblog",),
+    publication_allowed_without_bus: bool = False,
+    direct_public_egress_allowed: bool = False,
+    review_required: str = "Claim Verification Council",
+    claim_ceiling: str = "source refs, rights, privacy, redaction, and target surfaces",
 ) -> Path:
     path = tmp_path / "policy.yaml"
     gate_lines = "\n".join(f"    - {gate}" for gate in required_gates)
@@ -213,10 +217,14 @@ def _write_policy(
         "schema_version: 1\n"
         "publication_frontmatter_policy:\n"
         f"  status: {status}\n"
+        f"  publication_allowed_without_bus: {str(publication_allowed_without_bus).lower()}\n"
+        f"  direct_public_egress_allowed: {str(direct_public_egress_allowed).lower()}\n"
+        f"  review_required: {review_required}\n"
         "  target_surfaces:\n"
         f"{target_lines}\n"
         "  required_gates:\n"
-        f"{gate_lines}\n",
+        f"{gate_lines}\n"
+        f"  claim_ceiling: {claim_ceiling}\n",
         encoding="utf-8",
     )
     return path
@@ -454,6 +462,22 @@ class TestBuildArtifact:
                 surfaces=["omg-weblog"],
                 approver="Oudepode",
             )
+
+    def test_rejects_policy_with_weakened_publication_bus_boundary(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        policy = _write_policy(
+            tmp_path,
+            required_gates=publish_vault_artifact.PUBLICATION_BASELINE_REQUIRED_GATES,
+            publication_allowed_without_bus=True,
+        )
+        monkeypatch.setattr(publish_vault_artifact, "PUBLICATION_POLICY_PATHS", (policy,))
+
+        with pytest.raises(
+            publish_vault_artifact.SurfaceAllowlistError,
+            match="publication_allowed_without_bus must be false",
+        ):
+            publish_vault_artifact._configured_publication_surfaces((policy,))
 
     def test_fanout_policy_requires_loop_prevention_gate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

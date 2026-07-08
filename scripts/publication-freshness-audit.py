@@ -22,6 +22,7 @@ from shared.publication_freshness import (
     build_publication_freshness_event,
     build_publication_freshness_snapshot,
     github_events_to_freshness_envelopes,
+    parse_iso_z,
     write_publication_freshness_events,
     write_publication_freshness_snapshot,
 )
@@ -49,13 +50,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     report = _read_github_report(args.github_report)
+    _validate_audit_timestamp(args.generated_at, report.generated_at)
+    github_checked_at = report.generated_at
     github_events = events_from_github_public_surface_report(
         report,
-        generated_at=args.generated_at,
+        generated_at=github_checked_at,
     )
     envelopes = github_events_to_freshness_envelopes(
         github_events,
-        checked_at=args.generated_at,
+        checked_at=github_checked_at,
         ttl_s=args.github_ttl_s,
     )
     snapshot = build_publication_freshness_snapshot(envelopes, generated_at=args.generated_at)
@@ -64,9 +67,9 @@ def main(argv: list[str] | None = None) -> int:
             envelope,
             event_type="publication.surface_readback",
             generated_at=args.generated_at,
-            occurred_at=args.generated_at,
+            occurred_at=github_checked_at,
         )
-        for envelope in snapshot.envelopes
+        for envelope in envelopes
     )
 
     if args.dry_run:
@@ -76,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
                     "authority": "freshness_witness_only",
                     "claim_ceiling": "freshness_witness_only",
                     "events": [event.model_dump(mode="json") for event in freshness_events],
+                    "github_checked_at": github_checked_at,
                     "github_report": str(args.github_report),
                     "state": snapshot.model_dump(mode="json"),
                 },
@@ -95,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
                     "authority": "freshness_witness_only",
                     "claim_ceiling": "freshness_witness_only",
                     "events_written": len(event_lines),
+                    "github_checked_at": github_checked_at,
                     "output_events": str(args.output_events),
                     "output_state": str(args.output_state),
                     "github_report": str(args.github_report),
@@ -115,6 +120,15 @@ def _read_github_report(path: Path) -> GitHubPublicSurfaceReport:
     except json.JSONDecodeError as exc:
         raise SystemExit(f"malformed GitHub public-surface report: {path}: {exc}") from exc
     return GitHubPublicSurfaceReport.model_validate(payload)
+
+
+def _validate_audit_timestamp(generated_at: str, checked_at: str) -> None:
+    if parse_iso_z(generated_at) < parse_iso_z(checked_at):
+        raise SystemExit(
+            "publication freshness audit generated_at predates the source GitHub "
+            f"report generated_at ({checked_at}); rerun with a generated_at at or "
+            "after the checked report timestamp"
+        )
 
 
 def _now_iso() -> str:

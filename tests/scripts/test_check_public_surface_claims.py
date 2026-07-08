@@ -118,6 +118,7 @@ def _write_publication_freshness_state(
     path: Path,
     *,
     blockers: list[str] | None = None,
+    envelopes: list[dict[str, object]] | None = None,
 ) -> Path:
     path.write_text(
         json.dumps(
@@ -126,7 +127,7 @@ def _write_publication_freshness_state(
                 "generated_at": "2026-05-01T00:50:00Z",
                 "producer": "shared.publication_freshness",
                 "claim_ceiling": "freshness_witness_only",
-                "envelopes": [],
+                "envelopes": envelopes or [],
                 "blockers": blockers or [],
                 "warnings": [],
                 "anti_overclaim": [
@@ -140,6 +141,24 @@ def _write_publication_freshness_state(
         encoding="utf-8",
     )
     return path
+
+
+def _freshness_envelope(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "surface_id": "github.readme.hapax-systems/example.README.md",
+        "surface_type": "github.readme",
+        "source_ref": "docs/repo-pres/example.md",
+        "source_of_truth": "fixture",
+        "evidence_refs": ["fixture-readback"],
+        "checked_at": "2026-05-01T00:50:00Z",
+        "ttl_s": 1800,
+        "expires_at": "2030-01-01T00:00:00Z",
+        "freshness_result": "missing",
+        "blocks": [],
+    }
+    payload.update(overrides)
+    return payload
 
 
 def _run_gate(
@@ -332,6 +351,64 @@ def test_public_surface_gate_fails_publication_freshness_blocker(tmp_path: Path)
     assert result.returncode == 1
     assert "Hapax.PublicationFreshness" in result.stdout
     assert "github.readme.hapax-systems/example.README.md" in result.stdout
+
+
+def test_public_surface_gate_recomputes_freshness_blockers_from_envelopes(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-forged.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[_freshness_envelope()],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicationFreshness" in result.stdout
+    assert "missing" in result.stdout
+
+
+def test_public_surface_gate_marks_expired_freshness_state_stale(tmp_path: Path) -> None:
+    doc = tmp_path / "fresh-expired.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[
+            _freshness_envelope(
+                checked_at="2000-01-01T00:00:00Z",
+                expires_at="2000-01-01T00:30:00Z",
+                freshness_result="match",
+                rendered_hash="abc123",
+                readback_hash="abc123",
+            )
+        ],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicationFreshness" in result.stdout
+    assert "stale" in result.stdout
 
 
 def test_public_surface_gate_json_includes_v2_rule_ids(tmp_path: Path) -> None:

@@ -115,6 +115,22 @@ PUBLICATION_FANOUT_REQUIRED_GATES = (
     "fanout_loop_prevention_present",
 )
 PUBLICATION_POLICY_ALLOWED_STATUSES = frozenset({"guarded_public_channel", "guarded_public_fanout"})
+PUBLICATION_POLICY_REQUIRED_FIELDS = (
+    "status",
+    "publication_allowed_without_bus",
+    "direct_public_egress_allowed",
+    "review_required",
+    "target_surfaces",
+    "required_gates",
+    "claim_ceiling",
+)
+PUBLICATION_POLICY_CLAIM_CEILING_TERMS = (
+    "source refs",
+    "rights",
+    "privacy",
+    "redaction",
+    "target surfaces",
+)
 PUBLIC_GATE_RECEIPT_PREFIXES = _PUBLIC_GATE_RECEIPT_PREFIXES
 PUBLIC_GATE_RECEIPT_ROOTS = (
     Path.home() / ".cache" / "hapax" / "relay" / "receipts",
@@ -281,6 +297,9 @@ def _configured_publication_policies(
                 f"surface policy missing publication_frontmatter_policy: {path}; "
                 "next action: restore required public-egress policy fields"
             )
+        boundary_error = _publication_policy_boundary_error(policy, path=path)
+        if boundary_error is not None:
+            raise SurfaceAllowlistError(boundary_error)
         policies.append(policy)
     return policies
 
@@ -342,6 +361,9 @@ def _policy_required_gate_ids(
     *,
     fanout_policy: bool = False,
 ) -> set[str]:
+    boundary_error = _publication_policy_boundary_error(policy)
+    if boundary_error is not None:
+        raise PublicationGateError(boundary_error)
     status = policy.get("status")
     if status not in PUBLICATION_POLICY_ALLOWED_STATUSES:
         raise PublicationGateError(
@@ -388,6 +410,59 @@ def _policy_required_gate_ids(
             + "; next action: restore the baseline publication gate list before publishing"
         )
     return set(baseline) | normalized
+
+
+def _publication_policy_boundary_error(
+    policy: Mapping[str, object],
+    *,
+    path: Path | None = None,
+) -> str | None:
+    location = f": {path}" if path is not None else ""
+    errors: list[str] = []
+    for field in PUBLICATION_POLICY_REQUIRED_FIELDS:
+        if field not in policy:
+            errors.append(
+                f"publication policy missing publication_frontmatter_policy.{field}{location}; "
+                "next action: restore required public-egress policy fields"
+            )
+    if policy.get("publication_allowed_without_bus") is not False:
+        errors.append(
+            f"publication policy publication_allowed_without_bus must be false{location}; "
+            "next action: route public egress through the publication bus"
+        )
+    if policy.get("direct_public_egress_allowed") is not False:
+        errors.append(
+            f"publication policy direct_public_egress_allowed must be false{location}; "
+            "next action: keep direct public egress disabled"
+        )
+    if policy.get("review_required") != "Claim Verification Council":
+        errors.append(
+            f"publication policy review_required must be Claim Verification Council{location}; "
+            "next action: require CVC review before public egress"
+        )
+    policy_text = str(policy.get("claim_ceiling") or "").lower()
+    missing_terms = [
+        term for term in PUBLICATION_POLICY_CLAIM_CEILING_TERMS if term not in policy_text
+    ]
+    if missing_terms:
+        errors.append(
+            "publication policy claim_ceiling missing required terms "
+            + ", ".join(missing_terms)
+            + f"{location}; next action: state source-ref, rights/privacy/redaction, "
+            "and target-surface ceilings"
+        )
+    target_surfaces = policy.get("target_surfaces")
+    if not isinstance(target_surfaces, list) or not target_surfaces:
+        errors.append(
+            f"publication policy target_surfaces must be a non-empty list{location}; "
+            "next action: configure target surface ids before publishing"
+        )
+    elif any(not isinstance(surface, str) or not surface.strip() for surface in target_surfaces):
+        errors.append(
+            f"publication policy target_surfaces must contain non-empty strings{location}; "
+            "next action: replace malformed target surface ids"
+        )
+    return "; ".join(errors) if errors else None
 
 
 def _publication_gate_receipts(frontmatter: dict) -> dict[str, object]:

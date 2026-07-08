@@ -8,7 +8,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "publication-freshness-audit.py"
 REPORT = REPO_ROOT / "docs/repo-pres/github-public-surface-live-state-reconcile.json"
-GENERATED_AT = "2026-05-01T00:50:00Z"
+GENERATED_AT = "2026-07-07T16:40:00Z"
+
+
+def _report_generated_at() -> str:
+    return json.loads(REPORT.read_text(encoding="utf-8"))["generated_at"]
 
 
 def test_publication_freshness_audit_dry_run_prints_state_without_writing(
@@ -38,10 +42,17 @@ def test_publication_freshness_audit_dry_run_prints_state_without_writing(
     )
 
     payload = json.loads(result.stdout)
+    report_generated_at = _report_generated_at()
     assert payload["authority"] == "freshness_witness_only"
     assert payload["claim_ceiling"] == "freshness_witness_only"
+    assert payload["github_checked_at"] == report_generated_at
     assert payload["events"]
+    assert {event["occurred_at"] for event in payload["events"]} == {report_generated_at}
+    assert {event["generated_at"] for event in payload["events"]} == {GENERATED_AT}
     assert payload["state"]["envelopes"]
+    assert {envelope["checked_at"] for envelope in payload["state"]["envelopes"]} == {
+        report_generated_at
+    }
     assert not events.exists()
     assert not state.exists()
 
@@ -72,7 +83,36 @@ def test_publication_freshness_audit_writes_events_and_state(tmp_path: Path) -> 
     summary = json.loads(result.stdout)
     event_rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
     state_payload = json.loads(state.read_text(encoding="utf-8"))
+    report_generated_at = _report_generated_at()
     assert summary["authority"] == "freshness_witness_only"
+    assert summary["github_checked_at"] == report_generated_at
     assert summary["events_written"] == len(event_rows)
     assert state_payload["claim_ceiling"] == "freshness_witness_only"
+    assert {row["occurred_at"] for row in event_rows} == {report_generated_at}
     assert any(row["event_type"] == "publication.surface_readback" for row in event_rows)
+
+
+def test_publication_freshness_audit_rejects_run_time_before_source_report(
+    tmp_path: Path,
+) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--github-report",
+            str(REPORT),
+            "--output-events",
+            str(tmp_path / "freshness-events.jsonl"),
+            "--output-state",
+            str(tmp_path / "freshness-state.json"),
+            "--generated-at",
+            "2026-05-01T00:50:00Z",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "generated_at predates the source GitHub report generated_at" in result.stderr
