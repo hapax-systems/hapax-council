@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from shared.preprint_artifact import ApprovalState, PreprintArtifact
 from shared.rdlc_experimental_disposition import (
     RdlcDispositionKind,
+    RdlcDispositionReceipt,
     RdlcExperimentalObservation,
     RdlcRiskLevel,
     RdlcTaskConversion,
@@ -62,6 +64,27 @@ def _publish_candidate(**overrides):
     defaults.update(overrides)
     observation = defaults.pop("observation")
     return build_disposition_receipt(observation, **defaults)
+
+
+def _constructed_publish_candidate(**overrides) -> RdlcDispositionReceipt:
+    defaults = {
+        "schema_version": 1,
+        "receipt_id": "rdlc-disp:constructed:publish_candidate",
+        "observation": _observation(),
+        "disposition": RdlcDispositionKind.PUBLISH_CANDIDATE,
+        "rationale": "constructed receipt for selector-layer gate coverage",
+        "claim_text": "The SDLC can provide adjacent experimental context for the RDLC loop.",
+        "claim_ceiling": "case-study candidate, not generalized causal proof",
+        "frozen_ruler_ref": "sha256:rdlc-ruler",
+        "frozen_ruler_version": "2026-07-08T04:12:33Z",
+        "public_safe_evidence_refs": ("public:pr-4460-merge-summary",),
+        "freshness_ref": "gh:pr-4460:3668787",
+        "currentness_ref": "gh:merge:2026-07-08T04:12:33Z",
+        "task_conversion": None,
+        "blocked_reasons": (),
+    }
+    defaults.update(overrides)
+    return RdlcDispositionReceipt.model_construct(**defaults)
 
 
 @pytest.mark.parametrize(
@@ -173,45 +196,45 @@ def test_high_risk_governance_audience_selects_restrained_vehicle() -> None:
 
 def test_missing_public_safe_or_currentness_evidence_refuses_publication() -> None:
     missing_public_safe = build_publication_vehicle_selector_receipt(
-        _publish_candidate(public_safe_evidence_refs=()),
+        _constructed_publish_candidate(public_safe_evidence_refs=()),
         audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
     )
     missing_currentness = build_publication_vehicle_selector_receipt(
-        _publish_candidate(currentness_ref=None),
+        _constructed_publish_candidate(currentness_ref=None),
         audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
     )
 
     assert missing_public_safe.decision == RdlcPublicationSelectorDecision.REFUSED
-    assert "missing_publication:disposition:blocked" in missing_public_safe.blocked_reasons
+    assert "missing_publication:disposition:blocked" not in missing_public_safe.blocked_reasons
     assert "missing_publication:public_safe_evidence_refs" in missing_public_safe.blocked_reasons
     assert missing_currentness.decision == RdlcPublicationSelectorDecision.REFUSED
-    assert "missing_publication:disposition:blocked" in missing_currentness.blocked_reasons
+    assert "missing_publication:disposition:blocked" not in missing_currentness.blocked_reasons
     assert "missing_publication:currentness_ref" in missing_currentness.blocked_reasons
 
 
 def test_public_safe_refs_do_not_satisfy_frozen_evidence_gate() -> None:
     selector = build_publication_vehicle_selector_receipt(
-        _publish_candidate(frozen_ruler_ref=None),
+        _constructed_publish_candidate(frozen_ruler_ref=None),
         audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
     )
 
     assert selector.decision == RdlcPublicationSelectorDecision.REFUSED
     assert selector.selector_input.public_safe_evidence_refs == ("public:pr-4460-merge-summary",)
     assert selector.selector_input.frozen_evidence_refs == ()
-    assert "missing_publication:disposition:blocked" in selector.blocked_reasons
+    assert "missing_publication:disposition:blocked" not in selector.blocked_reasons
     assert "missing_publication:frozen_evidence_refs" in selector.blocked_reasons
 
 
-def test_unversioned_frozen_ruler_ref_is_preserved_but_still_refuses_blocked_receipt() -> None:
+def test_unversioned_frozen_ruler_ref_does_not_satisfy_frozen_evidence_gate() -> None:
     selector = build_publication_vehicle_selector_receipt(
-        _publish_candidate(frozen_ruler_version=None),
+        _constructed_publish_candidate(frozen_ruler_version=None),
         audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
     )
 
     assert selector.decision == RdlcPublicationSelectorDecision.REFUSED
-    assert selector.selector_input.frozen_evidence_refs == ("sha256:rdlc-ruler",)
-    assert "missing_publication:disposition:blocked" in selector.blocked_reasons
-    assert "missing_publication:frozen_evidence_refs" not in selector.blocked_reasons
+    assert selector.selector_input.frozen_evidence_refs == ()
+    assert "missing_publication:disposition:blocked" not in selector.blocked_reasons
+    assert "missing_publication:frozen_evidence_refs" in selector.blocked_reasons
 
 
 @pytest.mark.parametrize(
@@ -230,26 +253,40 @@ def test_missing_claim_or_freshness_fields_emit_specific_selector_reasons(
     expected_reason: str,
 ) -> None:
     selector = build_publication_vehicle_selector_receipt(
-        _publish_candidate(**overrides),
+        _constructed_publish_candidate(**overrides),
         audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
     )
 
     assert selector.decision == RdlcPublicationSelectorDecision.REFUSED
-    assert "missing_publication:disposition:blocked" in selector.blocked_reasons
+    assert "missing_publication:disposition:blocked" not in selector.blocked_reasons
     assert expected_reason in selector.blocked_reasons
 
 
 def test_selected_vehicle_builds_draft_only_preprint_artifact(monkeypatch) -> None:
-    write_attempts: list[tuple[str, str]] = []
+    write_attempts: list[str] = []
     original_open = Path.open
+    original_builtin_open = builtins.open
 
     def fail_on_write(path: Path, mode: str = "r", *args, **kwargs):  # type: ignore[no-untyped-def]
         if any(flag in mode for flag in ("w", "a", "x", "+")):
-            write_attempts.append((str(path), mode))
+            write_attempts.append(f"Path.open:{path}:{mode}")
             raise AssertionError(f"unexpected artifact write to {path} with mode {mode}")
         return original_open(path, mode, *args, **kwargs)
 
+    def fail_path_write(path: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        write_attempts.append(f"Path.write:{path}")
+        raise AssertionError(f"unexpected artifact write to {path}")
+
+    def fail_builtin_write(file, mode: str = "r", *args, **kwargs):  # type: ignore[no-untyped-def]
+        if any(flag in mode for flag in ("w", "a", "x", "+")):
+            write_attempts.append(f"builtins.open:{file}:{mode}")
+            raise AssertionError(f"unexpected artifact write to {file} with mode {mode}")
+        return original_builtin_open(file, mode, *args, **kwargs)
+
     monkeypatch.setattr(Path, "open", fail_on_write)
+    monkeypatch.setattr(Path, "write_text", fail_path_write)
+    monkeypatch.setattr(Path, "write_bytes", fail_path_write)
+    monkeypatch.setattr(builtins, "open", fail_builtin_write)
     selector = build_publication_vehicle_selector_receipt(
         _publish_candidate(),
         audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,

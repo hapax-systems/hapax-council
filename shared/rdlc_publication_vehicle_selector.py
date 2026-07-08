@@ -471,7 +471,7 @@ def _refusal_receipt(
 def _frozen_ruler_ref(receipt: RdlcDispositionReceipt) -> str | None:
     if receipt.frozen_ruler_ref and receipt.frozen_ruler_version:
         return f"{receipt.frozen_ruler_ref}@{receipt.frozen_ruler_version}"
-    return receipt.frozen_ruler_ref
+    return None
 
 
 def _hardening_context(
