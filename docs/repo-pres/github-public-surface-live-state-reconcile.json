@@ -368,7 +368,7 @@
       "surface": "cc-task closed/repo-pres-*"
     }
   ],
-  "generated_at": "2026-07-08T11:11:12Z",
+  "generated_at": "2026-07-08T11:37:50Z",
   "generated_by": "scripts/github-public-surface-reconcile.py",
   "live_repos": [
     {
@@ -511,7 +511,7 @@
         "status": null
       },
       "private": false,
-      "pushed_at": "2026-07-08T11:00:23Z",
+      "pushed_at": "2026-07-08T11:37:27Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -1634,7 +1634,7 @@
       "hapax-watch": "PolyForm-Strict-1.0.0",
       "reins": "BUSL-1.1"
     },
-    "repo_head": "c0191c2fc23dbf448a069f7e6459fd2fe5977d31",
+    "repo_head": "5daf3edee815375b002cb34f5c508c2be2badcf5",
     "root_file_sha256": {
       ".zenodo.json": "sha256:717b50fe0969239dbd36d2f70b923a649e930af771c2449da73d3c1ee96cbcde",
       "CITATION.cff": "sha256:04fba7c6d6a5abfb8340fb3621cfa2fe813c30fb2dcf50688fd91c3f99425b98",
