@@ -327,6 +327,34 @@ def test_lane_reaper_classifier_keeps_http_429_receipt_label_active() -> None:
     assert result.stdout.strip() == "active"
 
 
+def test_lane_reaper_classifier_keeps_http_429_quota_receipt_label_active() -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input="Map HTTP 429 quota-receipt pattern surface\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "active"
+
+
+def test_lane_reaper_classifier_keeps_http_429_error_taxonomy_label_active() -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input="HTTP 429 error taxonomy\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "active"
+
+
 def test_lane_reaper_classifier_accepts_http_429_too_many_requests_wall() -> None:
     result = subprocess.run(
         [str(REAPER)],

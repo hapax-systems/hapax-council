@@ -93,8 +93,17 @@ governor_record() {
 is_quota_wall_output() {
     local text="$1"
     [[ -z "$text" ]] && return 1
-    printf '%s\n' "$text" | grep -Eiq \
-        'HTTP[[:space:]]*429[^[:cntrl:]]*(Too Many Requests|rate[-_.[:space:]]*limit|quota|limit|blocked|exceeded|reached|error)|429[[:space:]]+Too Many Requests|rate[-_.[:space:]]*limit(ed)?[-_.[:space:]]*(exceeded|reached|hit|error)|rate[-_.[:space:]]*limited|Usage limit[[:space:]]+(reached|exceeded|hit)|weekly[[:space:]]+limit[[:space:]]+(reached|exceeded|hit)|hit[^[:cntrl:]]*weekly[[:space:]]+limit|quota[-_[:space:]]+(wall|exceeded|reached|blocked|exhausted)|quota[-_[:space:]]+limit[-_[:space:]]+(reached|exceeded|hit)|blocked[: _-]+quota([^[:alnum:]-]|$)'
+    printf '%s\n' "$text" | grep -Eiq 'HTTP[[:space:]]*429[[:space:]:-]+Too Many Requests' && return 0
+    printf '%s\n' "$text" | grep -Eiq '(^|[^[:alnum:]])429[[:space:]]+Too Many Requests([^[:alnum:]]|$)' && return 0
+    printf '%s\n' "$text" | grep -Eiq 'rate[-_.[:space:]]*limit(ed)?[-_.[:space:]]*(exceeded|reached|hit|error)' && return 0
+    printf '%s\n' "$text" | grep -Eiq 'rate[-_.[:space:]]*limited' && return 0
+    printf '%s\n' "$text" | grep -Eiq 'Usage limit[[:space:]]+(reached|exceeded|hit)' && return 0
+    printf '%s\n' "$text" | grep -Eiq 'weekly[[:space:]]+limit[[:space:]]+(reached|exceeded|hit)' && return 0
+    printf '%s\n' "$text" | grep -Eiq 'hit[^[:cntrl:]]*weekly[[:space:]]+limit' && return 0
+    printf '%s\n' "$text" | grep -Eiq 'quota[-_[:space:]]+(wall|exceeded|reached|blocked|exhausted)' && return 0
+    printf '%s\n' "$text" | grep -Eiq 'quota[-_[:space:]]+limit[-_[:space:]]+(reached|exceeded|hit)' && return 0
+    printf '%s\n' "$text" | grep -Eiq 'blocked[: _-]+quota([^[:alnum:]-]|$)' && return 0
+    return 1
 }
 
 if [[ "${HAPAX_LANE_REAPER_CLASSIFY_STDIN:-}" == "1" ]]; then
