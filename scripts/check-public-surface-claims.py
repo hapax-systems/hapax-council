@@ -699,8 +699,10 @@ def _git_path_status(relative_path: str) -> str | None:
     if status is not None:
         return status
     if _git_deepen_head_for_path_status():
-        return _git_path_status_from_available_history(relative_path)
-    return None
+        status = _git_path_status_from_available_history(relative_path)
+        if status is not None:
+            return status
+    return _git_path_status_from_base_tree(relative_path)
 
 
 def _git_path_status_from_available_history(relative_path: str) -> str | None:
@@ -727,6 +729,77 @@ def _git_diff_path_status(diff_range: str, relative_path: str) -> str | None:
     if first_line is None:
         return None
     return first_line.split(maxsplit=1)[0]
+
+
+def _git_path_status_from_base_tree(relative_path: str) -> str | None:
+    head_exists = _git_tree_path_exists("HEAD", relative_path)
+    if head_exists is not True:
+        return None
+    if _git_path_added_against_base(relative_path):
+        return "A"
+    if _git_fetch_base_refs_for_path_status() and _git_path_added_against_base(relative_path):
+        return "A"
+    return None
+
+
+def _git_path_added_against_base(relative_path: str) -> bool:
+    for base_ref in _git_base_ref_candidates():
+        base_exists = _git_tree_path_exists(base_ref, relative_path)
+        if base_exists is False:
+            return True
+    return False
+
+
+def _git_base_ref_candidates() -> tuple[str, ...]:
+    candidates: list[str] = []
+    for branch in (os.environ.get("GITHUB_BASE_REF"), "main"):
+        if branch:
+            candidates.append(f"origin/{branch}")
+            candidates.append(branch)
+    return tuple(dict.fromkeys(candidates))
+
+
+def _git_tree_path_exists(revision: str, relative_path: str) -> bool | None:
+    if not _git_revision_exists(revision):
+        return None
+    result = subprocess.run(
+        ["git", "cat-file", "-e", f"{revision}:{relative_path}"],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+    return result.returncode == 0
+
+
+def _git_revision_exists(revision: str) -> bool:
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+    return result.returncode == 0
+
+
+def _git_fetch_base_refs_for_path_status() -> bool:
+    fetched = False
+    for branch in dict.fromkeys(
+        branch for branch in (os.environ.get("GITHUB_BASE_REF"), "main") if branch
+    ):
+        result = subprocess.run(
+            ["git", "fetch", "--depth=1", "origin", f"{branch}:refs/remotes/origin/{branch}"],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        fetched = fetched or result.returncode == 0
+    return fetched
 
 
 def _git_deepen_head_for_path_status() -> bool:

@@ -233,5 +233,10 @@ class TestGithubPublicSurfaceLiveStateDoc:
 
         assert self.DOC.name.startswith("2026-04-30-")
         generated_at = generated_line.split("`", 2)[1]
-        assert str(frontmatter["date"]) == generated_at.split("T", 1)[0]
-        assert "Freshness checks must read those fields, not the filename slug." in text
+        assert str(frontmatter["date"]) == "2026-04-30"
+        assert str(frontmatter["refresh_date"]) == generated_at.split("T", 1)[0]
+        parsed_generated_at = frontmatter["generated_at"]
+        assert parsed_generated_at.isoformat().replace("+00:00", "Z") == generated_at
+        assert (
+            "Freshness checks must read the refresh fields before treating this as current." in text
+        )

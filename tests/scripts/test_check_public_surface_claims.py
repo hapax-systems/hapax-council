@@ -444,6 +444,48 @@ def test_git_path_status_deepens_shallow_head_when_parent_missing() -> None:
     assert fetch_targets == ["6296818332e9"]
 
 
+def test_git_path_status_uses_base_tree_when_history_unavailable() -> None:
+    gate = _gate_module()
+    git_path_status = gate["_git_path_status"]
+    subprocess_module = gate["subprocess"]
+    original_run = subprocess_module.run
+    original_github_base_ref = os.environ.get("GITHUB_BASE_REF")
+    os.environ["GITHUB_BASE_REF"] = "main"
+    cat_file_checks: list[str] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        if args[:3] == ["git", "merge-base", "HEAD"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="missing ref\n")
+        if args[:3] == ["git", "diff", "--name-status"]:
+            return subprocess.CompletedProcess(args, 128, stdout="", stderr="missing parent\n")
+        if args == ["git", "rev-parse", "--is-shallow-repository"]:
+            return subprocess.CompletedProcess(args, 0, stdout="false\n", stderr="")
+        if args[:4] == ["git", "rev-parse", "--verify", "--quiet"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:3] == ["git", "cat-file", "-e"]:
+            cat_file_checks.append(args[3])
+            if args[3] == "HEAD:GOVERNANCE.md":
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            if args[3] == "origin/main:GOVERNANCE.md":
+                return subprocess.CompletedProcess(args, 128, stdout="", stderr="")
+            raise AssertionError(f"unexpected cat-file target: {args[3]!r}")
+        raise AssertionError(f"unexpected command: {args!r}")
+
+    subprocess_module.run = fake_run
+    try:
+        status = git_path_status("GOVERNANCE.md")
+    finally:
+        subprocess_module.run = original_run
+        if original_github_base_ref is None:
+            os.environ.pop("GITHUB_BASE_REF", None)
+        else:
+            os.environ["GITHUB_BASE_REF"] = original_github_base_ref
+
+    assert status == "A"
+    assert cat_file_checks == ["HEAD:GOVERNANCE.md", "origin/main:GOVERNANCE.md"]
+
+
 def test_public_surface_claim_gate_fails_absolute_claim(tmp_path: Path) -> None:
     doc = tmp_path / "bad.md"
     doc.write_text("No test results, no push.\n", encoding="utf-8")
