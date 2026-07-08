@@ -240,6 +240,8 @@ def test_lane_reaper_dry_run_does_not_release_dead_lane_stale_claim(tmp_path: Pa
         assert "DRY RUN: would release stale task: quota-task" in result.stderr
         assert "DRY RUN: would remove stale claim file:" in result.stderr
         assert claim_file.exists()
+        assert pane.poll() is None
+        assert not (Path(env["HAPAX_REAP_ATTEMPTS_DIR"]) / "cx-red").exists()
         task_text = task_file.read_text(encoding="utf-8")
         assert "status: in_progress" in task_text
         assert "assigned_to: cx-red" in task_text
@@ -322,6 +324,48 @@ def test_lane_reaper_classifier_accepts_http_429_wall() -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "stuck"
+
+
+def test_lane_reaper_classifier_keeps_weekly_limit_receipt_label_active() -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input="Map weekly limit receipt pattern surface\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "active"
+
+
+def test_lane_reaper_classifier_accepts_hit_weekly_limit_wall() -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input="You've hit your weekly limit\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "stuck"
+
+
+def test_lane_reaper_classifier_keeps_quota_limit_receipt_label_active() -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input="quota limit receipt pattern surface\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "active"
 
 
 def test_lane_reaper_classifier_accepts_blocked_quota_exhausted_wall() -> None:
