@@ -6,7 +6,8 @@ No LLM calls; tests focus on deterministic split/repair/classification logic.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic_ai.messages import (
@@ -19,11 +20,14 @@ from pydantic_ai.messages import (
 )
 
 from logos.chat_agent import (
+    ChatDeps,
     ChatSession,
     _find_safe_split,
     classify_chat_error,
+    create_chat_agent,
     format_conversation_export,
 )
+from shared.cockpit_agent_capabilities import COCKPIT_QUOTA_SPEND_LEDGER_ENV
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -218,6 +222,23 @@ def test_last_turn_tokens_default():
     """ChatSession.last_turn_tokens defaults to 0."""
     session = ChatSession(project_dir=Path("/tmp"))
     assert session.last_turn_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_run_agent_tool_refuses_before_subprocess_without_cockpit_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = create_chat_agent()
+    run_agent_tool = agent._function_toolset.tools["run_agent"].function
+    ctx = SimpleNamespace(deps=ChatDeps(project_dir=tmp_path))
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(tmp_path / "missing-ledger.json"))
+
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as subprocess_mock:
+        result = await run_agent_tool(ctx, "briefing", "")
+
+    assert "Agent admission refused:" in result
+    assert "cockpit_agent_capability_admission_refused" in result
+    subprocess_mock.assert_not_called()
 
 
 # ── format_conversation_export tests ───────────────────────────────────────

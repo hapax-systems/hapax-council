@@ -141,6 +141,12 @@ class CockpitInvocationAdmission:
     evidence_only_waiver: str | None = None
 
 
+@dataclass(frozen=True)
+class _FlagArg:
+    key: str
+    value: str | None = None
+
+
 _ALIAS_TO_MODEL_ROUTE = {
     "fast": "gemini-flash",
     "balanced": "claude-sonnet",
@@ -323,7 +329,7 @@ COCKPIT_AGENT_CAPABILITIES: dict[str, CockpitAgentCapability] = {
             _model_leaf("profiler", "balanced", leaf_name="profile_extraction"),
             _model_leaf("profiler", "fast", leaf_name="profile_classification"),
         ),
-        runtime_flags=("--auto", "--curate", "--digest", "--full", "--ingest", "--index-profile"),
+        runtime_flags=("--auto", "--curate", "--digest", "--full", "--index-profile", "--ingest"),
     ),
     "research": _capability(
         "research",
@@ -363,7 +369,7 @@ COCKPIT_AGENT_CAPABILITIES: dict[str, CockpitAgentCapability] = {
         leaves=(
             _model_leaf(
                 "scout",
-                "balanced",
+                "fast",
                 leaf_name="fitness_evaluation",
                 tool_refs=("tavily_search",),
                 public_egress=True,
@@ -418,12 +424,11 @@ def cockpit_capability_for_invocation(
     leaves = list(capability.supply_leaves)
     classes = set(capability.classifications)
     overlay = capability.llm_flag_overlays or {}
-    if capability.agent_id == "code_review" and _has_flag_key(flags, "--model"):
-        leaves = [_model_leaf("code_review", _flag_value_for(flags, "--model") or "balanced")]
-    for flag in flags:
-        key = _flag_key(flag)
-        if key in overlay:
-            leaves.extend(overlay[key])
+    for flag in _flag_args(flags):
+        if capability.agent_id == "code_review" and flag.key == "--model":
+            leaves = [_model_leaf("code_review", flag.value or "balanced")]
+        elif flag.key in overlay:
+            leaves.extend(overlay[flag.key])
     if leaves:
         classes.add(CockpitCommandClass.LLM_BACKED_MODEL_USE)
     if leaves and CockpitCommandClass.DETERMINISTIC_EVIDENCE in classes:
@@ -555,15 +560,16 @@ def _non_read_only_invocation_reasons(
     flags: tuple[str, ...] | list[str],
 ) -> tuple[str, ...]:
     reasons: list[str] = []
+    flags_by_key = _flag_args(flags)
     if CockpitCommandClass.RUNTIME_MUTATION in capability.classifications:
         reasons.append("runtime_mutation_surface_requires_route_receipt")
     if CockpitCommandClass.PUBLIC_EGRESS in capability.classifications:
         reasons.append("public_egress_surface_requires_route_receipt")
     for configured_flag in capability.runtime_mutation_flags:
-        if _configured_flag_present(configured_flag, flags):
+        if any(_flag_matches(configured_flag, flag) for flag in flags_by_key):
             reasons.append(f"runtime_mutation_flag:{configured_flag}")
     for configured_flag in capability.public_egress_flags:
-        if _configured_flag_present(configured_flag, flags):
+        if any(_flag_matches(configured_flag, flag) for flag in flags_by_key):
             reasons.append(f"public_egress_flag:{configured_flag}")
     if not reasons:
         return ()
@@ -835,6 +841,26 @@ def _admission_now(now: datetime | None) -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
 
+def _flag_args(flags: tuple[str, ...] | list[str]) -> tuple[_FlagArg, ...]:
+    args: list[_FlagArg] = []
+    tokens = list(flags)
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith("-"):
+            index += 1
+            continue
+
+        key = _flag_key(token)
+        value = _flag_value(token)
+        if value is None and index + 1 < len(tokens) and not tokens[index + 1].startswith("-"):
+            value = tokens[index + 1].strip() or None
+            index += 1
+        args.append(_FlagArg(key=key, value=value))
+        index += 1
+    return tuple(args)
+
+
 def _flag_key(flag: str) -> str:
     return flag.split("=", 1)[0]
 
@@ -846,28 +872,11 @@ def _flag_value(flag: str) -> str | None:
     return value or None
 
 
-def _has_flag_key(flags: tuple[str, ...] | list[str], key: str) -> bool:
-    return any(_flag_key(flag) == key for flag in flags)
-
-
-def _flag_value_for(flags: tuple[str, ...] | list[str], key: str) -> str | None:
-    for index, flag in enumerate(flags):
-        if _flag_key(flag) != key:
-            continue
-        value = _flag_value(flag)
-        if value:
-            return value
-        if index + 1 < len(flags) and not flags[index + 1].startswith("-"):
-            return flags[index + 1].strip() or None
-        return None
-    return None
-
-
-def _configured_flag_present(configured: str, flags: tuple[str, ...] | list[str]) -> bool:
-    if "=" not in configured:
-        return _has_flag_key(flags, _flag_key(configured))
-    key, expected_value = configured.split("=", 1)
-    return _flag_value_for(flags, key) == expected_value
+def _flag_matches(configured: str, observed: _FlagArg) -> bool:
+    if observed.key != _flag_key(configured):
+        return False
+    configured_value = _flag_value(configured)
+    return configured_value is None or observed.value == configured_value
 
 
 def _reason_code(value: str) -> str:

@@ -21,6 +21,7 @@ from shared.cockpit_agent_capabilities import (
     cockpit_capability_for_invocation,
 )
 from shared.platform_capability_receipts import PLATFORM_CAPABILITY_RECEIPT_DIR_ENV
+from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_LIVE_ENV, QuotaSpendLedgerError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
@@ -142,6 +143,16 @@ def test_cockpit_inventory_covers_all_manifest_cli_agents() -> None:
                 assert leaf.cost_source
 
 
+def test_logos_get_agent_registry_resolves_real_manifest_capabilities() -> None:
+    from logos.data.agents import get_agent_registry as get_logos_agent_registry
+
+    agents = get_logos_agent_registry()
+
+    assert agents
+    assert any(agent.name == "briefing" for agent in agents)
+    assert all(agent.capability.classifications for agent in agents)
+
+
 def test_unknown_llm_manifest_fails_closed_instead_of_synthesizing_leaf() -> None:
     with pytest.raises(KeyError, match="untracked cockpit agent capability"):
         cockpit_capability_for("new-llm-agent", manifest_model="fast")
@@ -150,6 +161,14 @@ def test_unknown_llm_manifest_fails_closed_instead_of_synthesizing_leaf() -> Non
 def test_known_unmetered_manifest_model_drift_fails_closed() -> None:
     with pytest.raises(KeyError, match="manifest declares LLM model"):
         cockpit_capability_for("health-monitor", manifest_model="fast")
+
+
+def test_manifest_model_alias_is_represented_in_supply_leaves() -> None:
+    for manifest in get_registry().cli_agents():
+        if manifest.model is None:
+            continue
+        capability = cockpit_capability_for(manifest.id, manifest_model=manifest.model)
+        assert any(leaf.model_alias == manifest.model for leaf in capability.supply_leaves)
 
 
 def test_flag_overlay_projection_exposes_supply_leaf_details() -> None:
@@ -162,6 +181,19 @@ def test_flag_overlay_projection_exposes_supply_leaf_details() -> None:
     assert leaves[0].capability_id == "cockpit.agent.activity_analyzer.fast_synthesis"
     assert leaves[0].platform_route_id == "api.headless.provider_gateway"
     assert leaves[0].resource_pools == ["api_paid_spend"]
+
+
+def test_base_supply_leaf_projection_exposes_primary_route_fields() -> None:
+    from logos.data.agents import _capability_info
+
+    info = _capability_info(cockpit_capability_for("briefing"))
+
+    assert info.route_id == "api.headless.provider_gateway"
+    assert info.provider == "google"
+    assert info.model_alias == "fast"
+    assert info.model_route == "gemini-flash"
+    assert info.supply_leaves[0].capability_id == "cockpit.agent.briefing.briefing_synthesis"
+    assert info.supply_leaves[0].spend_authority_required is True
 
 
 def test_model_alias_leaf_routes_match_agents_config() -> None:
@@ -246,6 +278,19 @@ def test_optional_llm_flag_requires_admission_and_fails_without_ledger(
     assert "quota_spend_ledger_unavailable:QuotaSpendLedgerError" in admission.reason_codes
 
 
+def test_live_ledger_fixture_fallback_is_refused_for_cockpit_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live = tmp_path / "quota-spend-ledger-live.json"
+    live.write_text("{not json", encoding="utf-8")
+    monkeypatch.delenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, raising=False)
+    monkeypatch.delenv("HAPAX_QUOTA_SPEND_LEDGER", raising=False)
+    monkeypatch.setenv(QUOTA_SPEND_LEDGER_LIVE_ENV, str(live))
+
+    with pytest.raises(QuotaSpendLedgerError, match="fixture fallback"):
+        cockpit_caps._load_ledger()
+
+
 @pytest.mark.parametrize(
     ("agent", "flags", "expected_reason"),
     [
@@ -259,6 +304,9 @@ def test_optional_llm_flag_requires_admission_and_fails_without_ledger(
         ("knowledge-maint", ("--save", "--summarize"), "runtime_mutation_flag:--save"),
         ("knowledge-maint", ("--notify", "--summarize"), "public_egress_flag:--notify"),
         ("drift-detector", ("--apply",), "runtime_mutation_flag:--apply"),
+        ("introspect", ("--save",), "runtime_mutation_flag:--save"),
+        ("profiler", ("--auto",), "runtime_mutation_flag:--auto"),
+        ("profiler", ("--index-profile",), "runtime_mutation_flag:--index-profile"),
         ("demo", ("--format=app",), "public_egress_flag:--format=app"),
         ("demo", ("--format", "app"), "public_egress_flag:--format=app"),
     ],
@@ -300,11 +348,19 @@ def test_llm_backed_non_read_only_flags_refuse_before_leaf_admission(
     ],
 )
 def test_non_read_only_local_write_surfaces_refuse_before_subprocess(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     agent: str,
     flags: tuple[str, ...],
     expected_reason: str,
 ) -> None:
-    admission = admit_cockpit_agent_invocation(agent, flags=flags)
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(_write_fresh_ledger(tmp_path)))
+    monkeypatch.setenv(
+        COCKPIT_PLATFORM_CAPABILITY_REGISTRY_ENV, str(_write_fresh_registry(tmp_path))
+    )
+    monkeypatch.setenv(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV, "none")
+
+    admission = admit_cockpit_agent_invocation(agent, flags=flags, now=NOW)
 
     assert admission.admitted is False
     assert admission.requires_admission is True
@@ -465,6 +521,18 @@ def test_local_compute_leaf_admits_with_fresh_local_resource(
     assert "local_resource_green" in admission.receipts[0].reason_codes
 
 
+def test_space_separated_model_override_changes_code_review_supply_leaf() -> None:
+    capability = cockpit_capability_for_invocation(
+        "code-review",
+        manifest_model="balanced",
+        flags=("--model", "local-fast"),
+    )
+
+    assert len(capability.supply_leaves) == 1
+    assert capability.supply_leaves[0].model_alias == "local-fast"
+    assert capability.supply_leaves[0].capacity_pool == "local_compute"
+
+
 def test_local_compute_leaf_route_aliases_match_fixture_snapshot_route() -> None:
     capability = cockpit_capability_for_invocation(
         "code-review",
@@ -574,6 +642,30 @@ def test_platform_route_missing_is_reported_directly(
             "api.headless.provider_gateway: provider_docs freshness is unknown",
             "platform_route_provider_docs_unknown",
         ),
+        (
+            "api.headless.provider_gateway: blocked: provider quota exhausted",
+            "provider_quota_exhausted",
+        ),
+        (
+            "api.headless.provider_gateway: capability evidence refs missing",
+            "platform_route_capability_evidence_missing",
+        ),
+        (
+            "api.headless.provider_gateway: privacy posture is unknown",
+            "platform_route_privacy_posture_unknown",
+        ),
+        (
+            "api.headless.provider_gateway: quota telemetry source is fixture",
+            "platform_route_quota_telemetry_unknown",
+        ),
+        (
+            "api.headless.provider_gateway: resource telemetry source is fixture",
+            "platform_route_resource_telemetry_unknown",
+        ),
+        (
+            "api.headless.provider_gateway: unexpected freshness failure",
+            "platform_route_freshness_failed:unexpected_freshness_failure",
+        ),
     ],
 )
 def test_platform_route_freshness_reason_normalizes_errors(
@@ -612,6 +704,27 @@ def test_model_override_changes_code_review_supply_leaf() -> None:
     assert len(capability.supply_leaves) == 1
     assert capability.supply_leaves[0].model_alias == "fast"
     assert capability.supply_leaves[0].model_route == "gemini-flash"
+
+
+def test_unknown_model_override_fails_admission_with_unknown_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(_write_fresh_ledger(tmp_path)))
+    monkeypatch.setenv(
+        COCKPIT_PLATFORM_CAPABILITY_REGISTRY_ENV, str(_write_fresh_registry(tmp_path))
+    )
+    monkeypatch.setenv(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV, "none")
+
+    admission = admit_cockpit_agent_invocation(
+        "code-review",
+        manifest_model="balanced",
+        flags=("--model=bogus",),
+        now=NOW,
+    )
+
+    assert admission.admitted is False
+    assert admission.receipts[0].provider == "unknown"
+    assert admission.receipts[0].route_id == "bogus"
 
 
 @pytest.mark.asyncio
