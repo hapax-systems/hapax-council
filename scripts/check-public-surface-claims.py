@@ -21,6 +21,8 @@ from shared.github_public_claim_gate import (
     evaluate_github_public_claims,
     github_material_envelope_from_mapping,
 )
+from shared.github_public_surface import GitHubPublicSurfaceReport
+from shared.github_publication_log import events_from_github_public_surface_report
 from shared.publication_freshness import (
     DEFAULT_FRESHNESS_STATE,
     PublicationFreshnessSnapshot,
@@ -36,6 +38,9 @@ DEFAULT_TOKEN_CLAIM_REPORT = (
 DEFAULT_SOURCE_RECONCILIATION = (
     REPO_ROOT
     / "docs/research/evidence/2026-05-13-public-surface-source-of-truth-reconciliation.json"
+)
+DEFAULT_GITHUB_PUBLIC_SURFACE_REPORT = (
+    REPO_ROOT / "docs/repo-pres/github-public-surface-live-state-reconcile.json"
 )
 DEFAULT_TARGETS = (
     REPO_ROOT / "agents" / "omg_web_builder" / "static" / "index.html",
@@ -217,6 +222,28 @@ def load_github_material_envelope(path: Path) -> GitHubMaterialEvidenceEnvelope:
         raise RequiredInputError(f"github material envelope is malformed: {path}: {exc}") from exc
 
 
+def load_github_public_surface_report(path: Path) -> GitHubPublicSurfaceReport:
+    payload = load_required_json(path, label="github public-surface report")
+    try:
+        return GitHubPublicSurfaceReport.model_validate(payload)
+    except (TypeError, ValueError) as exc:
+        raise RequiredInputError(
+            f"github public-surface report is malformed: {path}: {exc}. "
+            "Next action: regenerate the report with scripts/github-public-surface-reconcile.py "
+            "and hold release until the public-surface claim gate passes."
+        ) from exc
+
+
+def required_freshness_surface_ids_from_report(
+    report: GitHubPublicSurfaceReport,
+) -> tuple[str, ...]:
+    events = events_from_github_public_surface_report(
+        report,
+        generated_at=report.generated_at,
+    )
+    return tuple(dict.fromkeys(event.surface_id for event in events))
+
+
 def check_github_material_claims(
     path: Path,
     envelope: GitHubMaterialEvidenceEnvelope,
@@ -256,10 +283,28 @@ def check_publication_freshness_state(
     state: PublicationFreshnessSnapshot,
     *,
     state_path: Path,
+    required_surface_ids: tuple[str, ...],
 ) -> list[LintFinding]:
     findings: list[LintFinding] = []
     now = datetime.now(tz=UTC)
     future_witnesses: list[str] = []
+    observed_surface_ids = {envelope.surface_id for envelope in state.envelopes}
+    missing_required_surface_ids = sorted(set(required_surface_ids) - observed_surface_ids)
+    if missing_required_surface_ids:
+        findings.append(
+            LintFinding(
+                file=str(state_path),
+                line=1,
+                level="error",
+                rule=PUBLICATION_FRESHNESS_RULE,
+                message=(
+                    "Publication freshness state omits required public-surface witnesses: "
+                    f"{', '.join(missing_required_surface_ids)}. Next action: regenerate the "
+                    "publication freshness audit/live-state readback and hold release until "
+                    "every required public surface has a current witness."
+                ),
+            )
+        )
     generated_at = _parse_freshness_timestamp(
         state.generated_at,
     )
@@ -388,6 +433,21 @@ def main(argv: list[str] | None = None) -> int:
             "publication-freshness-audit"
         ),
     )
+    parser.add_argument(
+        "--github-public-surface-report",
+        type=Path,
+        default=DEFAULT_GITHUB_PUBLIC_SURFACE_REPORT,
+        help="machine-readable GitHub public-surface report used to derive required witnesses",
+    )
+    parser.add_argument(
+        "--required-publication-freshness-surface-id",
+        action="append",
+        default=[],
+        help=(
+            "explicit required freshness surface id; primarily for focused tests. "
+            "If omitted, the required universe is derived from --github-public-surface-report."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -412,6 +472,11 @@ def main(argv: list[str] | None = None) -> int:
         publication_freshness_state = load_publication_freshness_state(
             args.publication_freshness_state
         )
+        required_surface_ids = tuple(args.required_publication_freshness_surface_id)
+        if not required_surface_ids:
+            required_surface_ids = required_freshness_surface_ids_from_report(
+                load_github_public_surface_report(args.github_public_surface_report)
+            )
     except RequiredInputError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -421,6 +486,7 @@ def main(argv: list[str] | None = None) -> int:
         check_publication_freshness_state(
             publication_freshness_state,
             state_path=args.publication_freshness_state,
+            required_surface_ids=required_surface_ids,
         )
     )
     for path in iter_files(paths):
