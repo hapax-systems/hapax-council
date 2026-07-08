@@ -2197,6 +2197,75 @@ def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: P
     assert not proof.exists()
 
 
+def test_codex_headless_remote_exec_claim_guards_precede_missing_codex(
+    tmp_path: Path,
+) -> None:
+    remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
+    no_codex_path = _python_only_remote_path(tmp_path)
+
+    def run_remote_exec(case: str, payload_env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        workdir = tmp_path / f"workdir-{case}"
+        workdir.mkdir()
+        token_path = _write_codex_access_token(
+            tmp_path / f"handoff-{case}",
+            exp=int(time.time()) + 3600,
+        )
+        seal_key = "a" * 64
+        token_path.write_text(
+            _seal_token_for_test(token_path.read_text(encoding="utf-8").strip(), seal_key),
+            encoding="utf-8",
+        )
+        payload = {
+            "workdir": str(workdir),
+            "env": payload_env,
+            "proof_file": str(tmp_path / f"proof-{case}.json"),
+            "token_handoff_file": str(token_path),
+            "token_handoff_seal_key": seal_key,
+            "argv": ["codex"],
+        }
+        env = os.environ.copy()
+        env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+        env["NPM_CONFIG_PREFIX"] = ""
+        env["PATH"] = str(no_codex_path)
+        env.pop("HAPAX_CODEX_BIN_PATH", None)
+        return subprocess.run(
+            [sys.executable, "-c", remote_exec_py],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+
+    not_a_home = tmp_path / "not-a-home"
+    not_a_home.write_text("not a directory\n", encoding="utf-8")
+    materialization_result = run_remote_exec(
+        "materialization",
+        {
+            "HOME": str(not_a_home),
+            "HAPAX_SESSION_ID": "remote-cache-session",
+            "HAPAX_AGENT_ROLE": "cx-amber",
+            "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
+            "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH": "1234567890 task-x",
+        },
+    )
+    epoch_result = run_remote_exec(
+        "epoch",
+        {
+            "HOME": str(tmp_path / "home"),
+            "HAPAX_SESSION_ID": "remote-cache-session",
+            "HAPAX_AGENT_ROLE": "cx-amber",
+            "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
+        },
+    )
+
+    assert materialization_result.returncode == 78
+    assert "failed to materialize remote claim cache" in materialization_result.stderr
+    assert "remote Codex binary is unavailable" not in materialization_result.stderr
+    assert epoch_result.returncode == 78
+    assert "without matching local cc-claim epoch" in epoch_result.stderr
+    assert "remote Codex binary is unavailable" not in epoch_result.stderr
+
+
 def test_codex_headless_remote_bootstrap_reports_council_not_git_worktree(
     tmp_path: Path,
 ) -> None:
