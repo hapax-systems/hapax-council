@@ -57,6 +57,7 @@ class AvailabilityPredicate(_AvailabilityModel):
     not_degraded: bool
     mask_permitted: bool = True
     account_live_quota_attested: bool = True
+    exec_auth_attested: bool = True
 
     @property
     def available(self) -> bool:
@@ -67,6 +68,7 @@ class AvailabilityPredicate(_AvailabilityModel):
             and self.not_degraded
             and self.mask_permitted
             and self.account_live_quota_attested
+            and self.exec_auth_attested
         )
 
 
@@ -196,11 +198,17 @@ class CodexOAuthRefreshStrategy:
     ) -> RefreshOutcome:
         base_refs = (
             f"platform-capability-registry:{route.route_id}:auth_surface:oauth",
-            "script:scripts/hapax-platform-capability-receipts --platform codex --json",
+            (
+                "script:scripts/hapax-platform-capability-receipts --platform codex "
+                "--codex-exec-auth-probe --json"
+            ),
             "policy:not_codex_access_token_daemon",
             *freshness.evidence_refs,
         )
-        refresh_command = "scripts/hapax-platform-capability-receipts --platform codex --json"
+        refresh_command = (
+            "scripts/hapax-platform-capability-receipts --platform codex "
+            "--codex-exec-auth-probe --json"
+        )
         freshness_command = (
             f"scripts/hapax-platform-capability-freshness --route {route.route_id} --json"
         )
@@ -222,6 +230,7 @@ class CodexOAuthRefreshStrategy:
             str(REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"),
             "--platform",
             "codex",
+            "--codex-exec-auth-probe",
             "--json",
             "--now",
             _iso_z(now),
@@ -427,17 +436,20 @@ def _availability_predicate(
 ) -> AvailabilityPredicate:
     reason_text = "\n".join([*freshness.errors, *freshness.blocked_reasons]).lower()
     account_live_quota_attested = _account_live_quota_attested(route, freshness)
+    exec_auth_attested = _exec_auth_attested(route, freshness)
     return AvailabilityPredicate(
         admitted=route.route_state is RouteState.ACTIVE and not route.blocked_reasons,
         auth_fresh=not _contains_reason_token(
             reason_text,
             ("auth", "credential", "oauth", "account_live"),
         )
-        and account_live_quota_attested,
+        and account_live_quota_attested
+        and exec_auth_attested,
         quota_headroom=not _contains_reason_token(reason_text, ("quota",))
         and account_live_quota_attested,
         not_degraded=freshness.ok,
         account_live_quota_attested=account_live_quota_attested,
+        exec_auth_attested=exec_auth_attested,
     )
 
 
@@ -458,6 +470,8 @@ def _availability_reason_codes(
         reasons.append("capability_degraded")
     if not predicate.account_live_quota_attested:
         reasons.append("account_live_quota_evidence_absent")
+    if not predicate.exec_auth_attested:
+        reasons.append("codex_exec_auth_witness_absent")
     reasons.extend(_blocked_reason_refs(freshness))
     return tuple(dict.fromkeys(reasons))
 
@@ -558,6 +572,16 @@ def _current_session_subscription_quota_attested(
             _ref_startswith(ref, ("platform", "capability", "receipt", platform)) for ref in refs
         )
     )
+
+
+def _exec_auth_attested(
+    route: PlatformCapabilityRoute,
+    freshness: RouteFreshnessCheck,
+) -> bool:
+    if route.platform.value != "codex" or route.auth_surface is not AuthSurface.OAUTH:
+        return True
+    refs = tuple(_ref_tokens(ref) for ref in freshness.evidence_refs)
+    return ("local", "codex", "exec", "auth", "observed") in refs
 
 
 def _ref_tokens(ref: str) -> tuple[str, ...]:

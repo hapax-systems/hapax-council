@@ -441,7 +441,7 @@ if token is None:
     print(
         "hapax-codex: published Codex OAuth access token is absent or unsafe; "
         "continuing without CODEX_ACCESS_TOKEN for interactive launch; next action: "
-        "run scripts/hapax-platform-capability-receipts --platform codex --json or reauth Codex",
+        "run scripts/hapax-platform-capability-receipts --platform codex --codex-exec-auth-probe --json or reauth Codex",
         file=sys.stderr,
     )
     raise SystemExit(0)
@@ -449,7 +449,7 @@ if needs_refresh(token):
     print(
         "hapax-codex: published Codex OAuth access token is absent or expiring; "
         "continuing without CODEX_ACCESS_TOKEN for interactive launch; next action: "
-        "run scripts/hapax-platform-capability-receipts --platform codex --json or reauth Codex",
+        "run scripts/hapax-platform-capability-receipts --platform codex --codex-exec-auth-probe --json or reauth Codex",
         file=sys.stderr,
     )
     raise SystemExit(0)
@@ -513,6 +513,8 @@ payload = {
     "token_handoff_file": token_handoff_file,
     "token_handoff_seal_key": os.environ.get("HAPAX_REMOTE_TOKEN_HANDOFF_SEAL_KEY", ""),
     "token_handoff_ttl_seconds": token_handoff_ttl_seconds(),
+    "codex_bin_path": os.environ.get("HAPAX_CODEX_BIN_PATH", ""),
+    "npm_config_prefix": os.environ.get("NPM_CONFIG_PREFIX", ""),
 }
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
 PYEOF
@@ -556,6 +558,8 @@ for name in (
     "HAPAX_CC_TASK_GATE",
     "HAPAX_IDLE_UPDATE_SECONDS",
     "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE",
+    "HAPAX_CODEX_BIN_PATH",
+    "NPM_CONFIG_PREFIX",
     "PASSWORD_STORE_DIR",
 ):
     value = os.environ.get(name)
@@ -591,7 +595,23 @@ PYEOF
 REMOTE_PREFLIGHT_PY='import base64,hashlib,hmac,json,os,shutil,subprocess,sys,tempfile,time; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"]));
 missing_dirs=[path for path in p.get("required_dirs",()) if not os.path.isdir(path)]
 missing_exec=[path for path in p.get("executables",()) if not (os.path.isfile(path) and os.access(path, os.X_OK))]
-missing_bins=[binary for binary in p.get("binaries",()) if not shutil.which(binary)]
+missing_bins=[binary for binary in p.get("binaries",()) if binary!="codex" and not shutil.which(binary)]
+def _resolve_path(binary):
+    path=os.path.expanduser(binary)
+    if os.path.isabs(path) or os.sep in path:
+        return os.path.abspath(path) if os.path.isfile(path) and os.access(path,os.X_OK) else None
+    return shutil.which(binary)
+def _resolve_codex_bin():
+    codex_bin=shutil.which("codex")
+    if codex_bin:
+        return codex_bin,""
+    npm_prefix=(p.get("npm_config_prefix") or os.environ.get("NPM_CONFIG_PREFIX","")).rstrip("/")
+    for candidate in ((p.get("codex_bin_path") or os.environ.get("HAPAX_CODEX_BIN_PATH") or "").strip(),os.path.expanduser("~/.npm-global/bin/codex"),(npm_prefix+"/bin/codex") if npm_prefix else "",os.path.expanduser("~/.local/share/npm/bin/codex"),"/usr/local/bin/codex"):
+        if candidate:
+            resolved=_resolve_path(candidate)
+            if resolved:
+                return resolved,""
+    return None,"codex_binary_missing"
 def _jwt_exp(token):
     try:
         payload=token.split(".")[1]; payload += "=" * (-len(payload) % 4)
@@ -640,9 +660,9 @@ if not token_error:
     if not token or _jwt_exp(token) - time.time() <= 300:
         token_error="codex_oauth_access_token_absent_or_expiring:"+token_file
 if not token_error:
-    codex_bin=shutil.which("codex")
+    codex_bin,codex_resolution_error=_resolve_codex_bin()
     if codex_bin is None:
-        actuation_error="codex_binary_missing"
+        actuation_error=codex_resolution_error
     else:
         with tempfile.TemporaryDirectory(prefix="hapax-codex-actuation-") as codex_home:
             env={k:v for k in ("ALL_PROXY","HOME","HTTP_PROXY","HTTPS_PROXY","LANG","LC_ALL","NO_PROXY","PATH","REQUESTS_CA_BUNDLE","SSL_CERT_FILE") if (v:=os.environ.get(k)) is not None}
@@ -746,11 +766,27 @@ if handoff:
     with os.fdopen(fd,"w",encoding="utf-8") as fh:
         fh.write(_seal_token(token,seal_key))
 sys.exit(0)'
-REMOTE_EXEC_PY='import base64,hashlib,hmac,json,os,socket,sys,time; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); proof=p.get("proof_file",""); cgroup="";
+REMOTE_EXEC_PY='import base64,hashlib,hmac,json,os,shutil,socket,sys,time; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); proof=p.get("proof_file",""); cgroup="";
 try:
     cgroup=open("/proc/self/cgroup",encoding="utf-8").read()
 except OSError:
     pass
+def _resolve_path(binary):
+    path=os.path.expanduser(binary)
+    if os.path.isabs(path) or os.sep in path:
+        return os.path.abspath(path) if os.path.isfile(path) and os.access(path,os.X_OK) else None
+    return shutil.which(binary)
+def _resolve_codex_bin():
+    codex_bin=shutil.which("codex")
+    if codex_bin:
+        return codex_bin,""
+    npm_prefix=(p.get("npm_config_prefix") or os.environ.get("NPM_CONFIG_PREFIX","")).rstrip("/")
+    for candidate in ((p.get("codex_bin_path") or os.environ.get("HAPAX_CODEX_BIN_PATH") or "").strip(),os.path.expanduser("~/.npm-global/bin/codex"),(npm_prefix+"/bin/codex") if npm_prefix else "",os.path.expanduser("~/.local/share/npm/bin/codex"),"/usr/local/bin/codex"):
+        if candidate:
+            resolved=_resolve_path(candidate)
+            if resolved:
+                return resolved,""
+    return None,"codex_binary_missing"
 def _jwt_exp(token):
     try:
         payload=token.split(".")[1]; payload += "=" * (-len(payload) % 4)
@@ -808,10 +844,14 @@ if _jwt_exp(token) - time.time() <= 300:
     print("hapax-codex: preflight-proven Codex OAuth token handoff is expiring; next action: rerun remote preflight before dispatching Codex lanes", file=sys.stderr)
     sys.exit(78)
 os.environ["CODEX_ACCESS_TOKEN"]=token
+codex_bin,codex_resolution_error=_resolve_codex_bin()
+if codex_bin is None:
+    print("hapax-codex: remote Codex binary is unavailable: "+codex_resolution_error+"; next action: repair PATH on the dispatch host or set HAPAX_CODEX_BIN_PATH to the executable before retrying", file=sys.stderr)
+    sys.exit(78)
 if proof:
     os.makedirs(os.path.dirname(proof), exist_ok=True)
-    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"codex","session":p.get("session"),"task_id":p.get("task_id"),"requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"tmux_name":p.get("tmux_name"),"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[]))}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
-argv=p["argv"]; os.execvp(argv[0], argv)'
+    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"codex","session":p.get("session"),"task_id":p.get("task_id"),"requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"tmux_name":p.get("tmux_name"),"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":codex_bin,"argc":len(p.get("argv",[]))}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
+argv=p["argv"]; argv[0]=codex_bin; os.execv(codex_bin, argv)'
 REMOTE_TOKEN_CLEANUP_PY='import base64,json,os,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); path=os.path.expanduser(p.get("path") or "");
 # token_handoff_cleanup: unlink only the governed short-lived handoff path.
 path=os.path.abspath(path) if path else ""
@@ -1219,14 +1259,14 @@ if [ -z "$DISPATCH_HOST" ]; then
       "${NPM_CONFIG_PREFIX:+$NPM_CONFIG_PREFIX/bin/codex}" \
       "$HOME/.local/share/npm/bin/codex" \
       "/usr/local/bin/codex"; do
-      if [ -n "$_cand" ] && [ -x "$_cand" ]; then
+      if [ -n "$_cand" ] && [ -f "$_cand" ] && [ -x "$_cand" ]; then
         CODEX_BIN="$_cand"
         break
       fi
     done
   fi
   if [ -z "$CODEX_BIN" ]; then
-    echo "hapax-codex: codex not found in PATH" >&2
+    echo "hapax-codex: codex not found in PATH; next action: install the Codex CLI, repair PATH, or set HAPAX_CODEX_BIN_PATH to the executable before retrying" >&2
     exit 4
   fi
 else

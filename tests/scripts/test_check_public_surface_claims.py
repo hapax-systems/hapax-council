@@ -668,6 +668,7 @@ def test_public_surface_gate_fails_publication_freshness_blocker(tmp_path: Path)
 
 def test_public_surface_gate_allows_local_required_file_pending_post_merge_readback(
     tmp_path: Path,
+    capsys,
 ) -> None:
     doc = tmp_path / "fresh-pending-local.md"
     doc.write_text("Bounded public copy.\n", encoding="utf-8")
@@ -678,18 +679,31 @@ def test_public_surface_gate_allows_local_required_file_pending_post_merge_readb
         tmp_path / "freshness-state.json",
         blockers=[f"{pending_surface_id}:missing:public_current,release_authorized"],
     )
-
-    result = _run_gate(
-        doc,
-        token_report,
-        source_reconciliation,
-        "--publication-freshness-state",
-        str(freshness_state),
+    gate = _gate_module()
+    gate["main"].__globals__["_git_path_status"] = lambda relative_path: (
+        "A" if relative_path == "GOVERNANCE.md" else None
     )
 
-    assert result.returncode == 0
-    assert "awaiting post-merge public readback" in result.stdout
-    assert pending_surface_id in result.stdout
+    rc = gate["main"](
+        [
+            str(doc),
+            "--token-claim-report",
+            str(token_report),
+            "--source-reconciliation",
+            str(source_reconciliation),
+            "--publication-freshness-state",
+            str(freshness_state),
+            "--skip-live-github-public-surface-refresh",
+            "--required-publication-freshness-surface-id",
+            TEST_FRESHNESS_SURFACE_ID,
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert rc == 0
+    assert "info: Hapax.PublicationFreshness" in output
+    assert "awaiting post-merge public readback" in output
+    assert pending_surface_id in output
 
 
 def test_public_surface_gate_keeps_existing_required_file_missing_blocker(

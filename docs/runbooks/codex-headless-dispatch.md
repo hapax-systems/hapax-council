@@ -198,7 +198,7 @@ print(
     }
 )
 PY
-uv run python scripts/hapax-platform-capability-receipts --json
+uv run python scripts/hapax-platform-capability-receipts --platform codex --codex-exec-auth-probe --json
 scripts/hapax-codex-health --json cx-agy cx-p0 cx-ghrate
 scripts/hapax-quota-telemetry-writer --json
 ```
