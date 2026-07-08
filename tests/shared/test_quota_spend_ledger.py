@@ -700,6 +700,52 @@ def test_successful_task_scoped_glmcp_payg_review_spend_witness_is_discovered() 
     assert has_successful_task_scoped_glmcp_payg_review_spend(ledger, task_id) is True
 
 
+def test_spend_receipt_accepts_gate_event_task_hash_alias() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+    receipt = payload["spend_receipts"][-1]
+    receipt["task_hash"] = "sha256:" + ("a" * 64)
+
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    assert ledger.spend_receipts[-1].task_hash == "sha256:" + ("a" * 64)
+
+
+def test_spend_receipt_task_hash_is_optional_and_omitted_when_absent() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+
+    ledger = QuotaSpendLedger.model_validate(payload)
+    dumped_receipt = ledger.spend_receipts[-1].model_dump(mode="json")
+
+    assert ledger.spend_receipts[-1].task_hash is None
+    assert "task_hash" not in dumped_receipt
+
+
+@pytest.mark.parametrize(
+    "task_hash",
+    [
+        "",
+        "sha256:" + ("g" * 64),
+        "sk-live-secret-token-000000000000000000000000",
+        "/home/hapax/private-task-note.md",
+    ],
+)
+def test_spend_receipt_rejects_malformed_task_hash_alias(task_hash: str) -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+    payload["spend_receipts"][-1]["task_hash"] = task_hash
+
+    with pytest.raises(ValidationError):
+        QuotaSpendLedger.model_validate(payload)
+
+
 def test_pending_task_scoped_glmcp_payg_review_spend_is_not_successful_witness() -> None:
     payload = _active_budget_payload()
     budget_id = _add_glmcp_payg_budget(payload)

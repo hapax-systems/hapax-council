@@ -62,6 +62,7 @@ from github_pr_status import (  # noqa: E402
 )
 
 from shared import public_gate_receipts  # noqa: E402
+from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
     requires_acceptance_receipt,
@@ -74,6 +75,7 @@ DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "h
 DEFAULT_WAKE_DIR = Path.home() / ".cache" / "hapax" / "review-team" / "wake"
 KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 MAX_DIFF_CHARS = 80_000
 MAX_TASK_NOTE_CHARS = 60_000
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
@@ -1264,11 +1266,42 @@ def _coerce_review_yaml(loaded: Any) -> dict[str, Any] | None:
     }
 
 
+_REVIEW_TEXT_SCALAR_RE = re.compile(r"\A(?P<prefix>\s+(?:title|detail):\s*)(?P<value>.+?)\s*\Z")
+
+
+def _quote_review_text_scalars(raw: str) -> str | None:
+    """Repair common reviewer YAML where prose fields contain ``: `` unquoted."""
+
+    lines: list[str] = []
+    changed = False
+    for line in raw.splitlines():
+        match = _REVIEW_TEXT_SCALAR_RE.match(line)
+        if match is None:
+            lines.append(line)
+            continue
+        value = match.group("value").strip()
+        if ": " not in value or value.startswith(("'", '"', "|", ">", "{", "[")):
+            lines.append(line)
+            continue
+        quoted = yaml.safe_dump(value, default_flow_style=True).strip()
+        lines.append(f"{match.group('prefix')}{quoted}")
+        changed = True
+    if not changed:
+        return None
+    return "\n".join(lines)
+
+
 def _parse_review_yaml(raw: str, *, parse_path: str) -> dict[str, Any] | None:
     try:
         loaded = yaml.safe_load(raw)
     except yaml.YAMLError:
-        return None
+        repaired = _quote_review_text_scalars(raw)
+        if repaired is None:
+            return None
+        try:
+            loaded = yaml.safe_load(repaired)
+        except yaml.YAMLError:
+            return None
     parsed = _coerce_review_yaml(loaded)
     if parsed is None:
         return None
@@ -1389,11 +1422,24 @@ def default_reviewer_runner(
         "HAPAX_REVIEW_SEAT_ID": seat.id,
         "HAPAX_REVIEW_FAMILY": seat.family,
     }
-    env.pop(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, None)
+    for env_name in (
+        public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+        "HAPAX_GLMCP_REVIEW_TASK_ID",
+        "HAPAX_CC_TASK_ID",
+        "HAPAX_GLMCP_REVIEW_TASK_HASH",
+        "HAPAX_CC_TASK_HASH",
+    ):
+        env.pop(env_name, None)
     review_task_id = str(family_cfg.get("_review_task_id") or "").strip()
     if review_task_id:
         env["HAPAX_GLMCP_REVIEW_TASK_ID"] = review_task_id
         env["HAPAX_CC_TASK_ID"] = review_task_id
+    review_task_hash = str(family_cfg.get("_review_task_hash") or "").strip()
+    if review_task_hash:
+        if not TASK_HASH_RE.fullmatch(review_task_hash):
+            raise ValueError("review task hash must match sha256:<64 lowercase hex>")
+        env["HAPAX_GLMCP_REVIEW_TASK_HASH"] = review_task_hash
+        env["HAPAX_CC_TASK_HASH"] = review_task_hash
     proc = subprocess.run(
         cmd,
         input=prompt,
@@ -1428,6 +1474,36 @@ def default_reviewer_runner(
     return ReviewerRunnerResult(stdout=proc.stdout, stderr=proc.stderr)
 
 
+def review_task_hash(frontmatter: dict[str, Any]) -> str:
+    try:
+        stable_hash = stable_payload_hash(frontmatter)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"stable_frontmatter_hash_unavailable:{type(exc).__name__}") from exc
+    if not TASK_HASH_RE.fullmatch(stable_hash):
+        raise ValueError("stable_frontmatter_hash_malformed")
+    return stable_hash
+
+
+def review_task_hash_frontmatter_source(
+    note_path: Path,
+    frontmatter: dict[str, Any],
+) -> tuple[dict[str, Any], str, str]:
+    task_id = str(frontmatter.get("task_id") or "").strip()
+    primary_task = str(frontmatter.get("primary_task") or "").strip()
+    if not primary_task or primary_task == task_id:
+        return frontmatter, task_id, note_path.name
+
+    primary_path = note_path.with_name(f"{primary_task}.md")
+    primary_frontmatter = review_team._note_frontmatter(primary_path)
+    if (
+        primary_frontmatter is None
+        or primary_frontmatter.get("type") != "cc-task"
+        or str(primary_frontmatter.get("task_id") or "").strip() != primary_task
+    ):
+        raise ValueError(f"primary_task_hash_source_missing:{primary_task}")
+    return primary_frontmatter, primary_task, primary_path.name
+
+
 def dispatch_reviews(
     constitution: review_team.Constitution,
     prompts: list[str],
@@ -1435,6 +1511,7 @@ def dispatch_reviews(
     reviewer_runner: Any,
     *,
     task_id: str | None = None,
+    task_hash: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run all seats in parallel; reviewer failures become named non-accepts."""
 
@@ -1454,6 +1531,8 @@ def dispatch_reviews(
             family_cfg = dict(family_cfgs[seat.family])
             if task_id:
                 family_cfg["_review_task_id"] = task_id
+            if task_hash:
+                family_cfg["_review_task_hash"] = task_hash
             runner_result = reviewer_runner(seat, family_cfg, prompts[index])
             if isinstance(runner_result, ReviewerRunnerResult):
                 reply = runner_result.stdout
@@ -2549,12 +2628,45 @@ def review_pr(
         )
         for seat in constitution.seats
     ]
+    task_hash: str | None = None
+    task_hash_source_task_id: str | None = None
+    task_hash_source_note: str | None = None
+    task_hash_omitted_reason: str | None = None
+    if len(keyed_matches) == 1:
+        note_path, frontmatter, _task_id = keyed_matches[0]
+        try:
+            source_frontmatter, task_hash_source_task_id, task_hash_source_note = (
+                review_task_hash_frontmatter_source(note_path, frontmatter)
+            )
+            task_hash = review_task_hash(source_frontmatter)
+        except ValueError as exc:
+            LOG.warning(
+                "PR #%d blocked review dispatch because review task_hash could not be proven: %s",
+                pr_number,
+                exc,
+            )
+            return {
+                "status": "task_hash_unavailable",
+                "pr": pr_number,
+                "task_id": task_ids[0],
+                "reason": str(exc),
+            }
+    elif len(keyed_matches) > 1:
+        task_hash_omitted_reason = f"ambiguous_task_notes:{len(keyed_matches)}"
+        LOG.warning(
+            "PR #%d matched %d task notes; omitting review task_hash because the spend "
+            "join key would be ambiguous",
+            pr_number,
+            len(keyed_matches),
+        )
+
     reviews = dispatch_reviews(
         constitution,
         prompts,
         registry,
         reviewer_runner,
         task_id=task_ids[0] if len(task_ids) == 1 else None,
+        task_hash=task_hash,
     )
     update_family_outage(reviews, now_iso)
     results: list[dict[str, Any]] = []
@@ -2588,6 +2700,12 @@ def review_pr(
             "excerpts": prior_evidence_records,
             "changed_source_excerpts": changed_source_evidence_records,
         }
+        if task_hash:
+            dossier["review_task_hash"] = task_hash
+            dossier["review_task_hash_source_task_id"] = task_hash_source_task_id
+            dossier["review_task_hash_source_note"] = task_hash_source_note
+        elif task_hash_omitted_reason:
+            dossier["review_task_hash_omitted_reason"] = task_hash_omitted_reason
         if dossier["review_team_verdict"] == "no-quorum":
             dead = [
                 str(r.get("id") or r.get("family"))

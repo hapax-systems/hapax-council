@@ -16,7 +16,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_serializer,
+    model_validator,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QUOTA_SPEND_LEDGER_FIXTURES = REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json"
@@ -334,6 +341,7 @@ class SpendReceipt(StrictModel):
     spend_receipt_schema: Literal[1] = 1
     spend_id: str = Field(pattern=r"^spend-\d{8}T\d{6}Z-[a-z0-9_.:-]+$")
     task_id: str = Field(min_length=1)
+    task_hash: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     authority_case: str = Field(min_length=1)
     route_id: str = Field(min_length=1)
     capacity_pool: CapacityPool
@@ -400,6 +408,7 @@ class SpendReceipt(StrictModel):
             _refs(
                 self.spend_id,
                 self.task_id,
+                self.task_hash,
                 self.authority_case,
                 self.route_id,
                 self.budget_id,
@@ -416,6 +425,13 @@ class SpendReceipt(StrictModel):
             "spend receipt",
         )
         return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_without_empty_task_hash(self, handler: Any) -> dict[str, Any]:
+        payload = handler(self)
+        if payload.get("task_hash") is None:
+            payload.pop("task_hash", None)
+        return payload
 
     def cost_against_cap(self) -> Decimal:
         if self.actual_cost_usd is not None:

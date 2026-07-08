@@ -265,6 +265,7 @@ GLMCP_PAYG_SPEND_RECEIPT_GLOB = "*glmcp-payg-spend*.yaml"
 GLMCP_PAYG_SPEND_SAFE_RECEIPT_NAME_RE = re.compile(
     r"\A[a-z0-9_.+-]*glmcp-payg-spend[a-z0-9_.+-]*\.yaml\Z"
 )
+GLMCP_PAYG_SPEND_TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 GLMCP_PAYG_SPEND_FIELDS = frozenset(
     {
         "auth_surface",
@@ -300,6 +301,7 @@ GLMCP_PAYG_SPEND_FIELDS = frozenset(
         "status",
         "support_artifact_authority",
         "supported_tool",
+        "task_hash",
         "task_id",
     }
 )
@@ -474,6 +476,16 @@ def _warn_ignored_glmcp_payg_spend(path: Path, reason: str) -> str:
         file=sys.stderr,
     )
     return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
+
+
+def _warn_stripped_glmcp_payg_spend_task_hash(path: Path, task_hash: str) -> None:
+    receipt_label = _receipt_label(path)
+    print(
+        "hapax-quota-telemetry-writer: stripped malformed optional task_hash from "
+        f"GLMCP PAYG spend receipt {receipt_label}; spend still counts against cap; "
+        f"task_hash={task_hash!r}",
+        file=sys.stderr,
+    )
 
 
 def _glmcp_payg_spend_field_is_nullish(key: str, value: str) -> bool:
@@ -1121,10 +1133,15 @@ def active_glmcp_payg_spend_receipts(
                 "spend_id",
                 "spend_reason",
                 "support_artifact_authority",
+                "task_hash",
                 "task_id",
             }
             and not _glmcp_payg_spend_field_is_nullish(key, value)
         }
+        task_hash = receipt_payload.get("task_hash")
+        if isinstance(task_hash, str) and not GLMCP_PAYG_SPEND_TASK_HASH_RE.fullmatch(task_hash):
+            _warn_stripped_glmcp_payg_spend_task_hash(path, task_hash)
+            receipt_payload.pop("task_hash", None)
         receipt_payload["spend_receipt_schema"] = 1
         try:
             receipts.append(SpendReceipt.model_validate(receipt_payload))

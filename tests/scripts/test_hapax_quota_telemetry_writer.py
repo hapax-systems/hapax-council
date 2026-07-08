@@ -217,17 +217,19 @@ def _glmcp_payg_spend(
     name: str = "glmcp-payg-spend.yaml",
     spend_id: str = "spend-20260706T140430Z-glmcp-payg-review-test",
     task_id: str = "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+    task_hash: str | None = None,
     created_at: str = "2026-07-06T14:04:30Z",
     reconcile_by: str = "2026-07-07T14:04:30Z",
     estimated_cost_usd: str = "0.05",
     extra_fields: str = "",
 ) -> None:
+    task_hash_line = f"task_hash: {task_hash}\n" if task_hash is not None else ""
     (relay / name).write_text(
         f"""schema: hapax.glmcp_payg_spend.v1
 status: spend_estimated
 spend_id: {spend_id}
 task_id: {task_id}
-authority_case: CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706
+{task_hash_line}authority_case: CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706
 route_id: glmcp.review.direct
 capacity_pool: api_paid_spend
 budget_id: tb-20260706-zai-glmcp-payg-review
@@ -405,7 +407,11 @@ def test_glmcp_payg_spend_receipt_counts_against_budget_gate(tmp_path: Path) -> 
         name="glmcp-quota-admission-payg.yaml",
         evidence_ref=spend_receipt_name,
     )
-    _glmcp_payg_spend(relay, name=spend_receipt_name)
+    _glmcp_payg_spend(
+        relay,
+        name=spend_receipt_name,
+        task_hash="sha256:" + ("a" * 64),
+    )
     base = tmp_path / "quota-spend-ledger-fixtures.json"
     base_payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
     for budget in base_payload["transition_budgets"]:
@@ -417,10 +423,12 @@ def test_glmcp_payg_spend_receipt_counts_against_budget_gate(tmp_path: Path) -> 
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert any(
-        receipt["spend_id"] == "spend-20260706T140430Z-glmcp-payg-review-test"
+    receipt = next(
+        receipt
         for receipt in payload["spend_receipts"]
+        if receipt["spend_id"] == "spend-20260706T140430Z-glmcp-payg-review-test"
     )
+    assert receipt["task_hash"] == "sha256:" + ("a" * 64)
     glmcp_snapshot = next(
         snapshot
         for snapshot in payload["quota_snapshots"]
@@ -467,6 +475,12 @@ def test_glmcp_payg_spend_receipt_legacy_null_optionals_are_counted(
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
+    receipt = next(
+        receipt
+        for receipt in payload["spend_receipts"]
+        if receipt["spend_id"] == "spend-20260706T140430Z-glmcp-payg-review-test"
+    )
+    assert "task_hash" not in receipt
     glmcp_snapshot = next(
         snapshot
         for snapshot in payload["quota_snapshots"]
@@ -476,6 +490,38 @@ def test_glmcp_payg_spend_receipt_legacy_null_optionals_are_counted(
     assert (
         "spend-gate:glmcp.review.direct:eligible_active_budget" in glmcp_snapshot["evidence_refs"]
     )
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_payg_spend_receipts"] == 1
+    assert summary["glmcp_ignored_payg_spend_receipts"] == 0
+
+
+def test_glmcp_payg_spend_receipt_strips_malformed_task_hash_but_counts_spend(
+    tmp_path: Path,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    spend_receipt_name = "glmcp-payg-spend-20260706t140430z-test.yaml"
+    _wall_receipt(relay, "cx-glmcp", "2026-07-06T16:00:00Z")
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        evidence_ref=spend_receipt_name,
+    )
+    _glmcp_payg_spend(relay, name=spend_receipt_name, task_hash="not-a-sha256-hash")
+
+    result, out = _run_writer(tmp_path, now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    receipt = next(
+        receipt
+        for receipt in payload["spend_receipts"]
+        if receipt["spend_id"] == "spend-20260706T140430Z-glmcp-payg-review-test"
+    )
+    assert "task_hash" not in receipt
+    assert "stripped malformed optional task_hash" in result.stderr
     summary = json.loads(result.stdout)
     assert summary["glmcp_payg_spend_receipts"] == 1
     assert summary["glmcp_ignored_payg_spend_receipts"] == 0

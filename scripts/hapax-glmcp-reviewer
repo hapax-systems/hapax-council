@@ -73,6 +73,7 @@ DEFAULT_THINKING = "disabled"
 PAYG_FALLBACK_ERROR_CLASSES = frozenset({"daily_limit_exhausted", "quota_exhausted"})
 PAYG_SPEND_RECEIPT_SCHEMA = "hapax.glmcp_payg_spend.v1"
 PAYG_SPEND_RECEIPT_RECONCILE_AFTER = timedelta(hours=24)
+TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 # Z.ai's GLM-5 repository and Coding Plan docs now identify GLM-5.2 as the
 # current high-value coding model. The direct OpenAI-compatible review endpoint
 # uses ``glm-5.2``; the Claude Code/Anthropic wrapper uses ``glm-5.2[1m]``.
@@ -184,6 +185,7 @@ Environment overrides:
   HAPAX_GLMCP_REVIEW_PAYG_FALLBACK     1 enables API-credit fallback on quota wall (default: 1)
   HAPAX_GLMCP_REVIEW_PAYG_BASE_URL     Z.ai PAYG API base URL (default: https://api.z.ai/api/paas/v4)
   HAPAX_GLMCP_REVIEW_TASK_ID           task id for PAYG spend receipts
+  HAPAX_GLMCP_REVIEW_TASK_HASH         gate-event task_hash alias for PAYG spend receipts
   HAPAX_RELAY_RECEIPT_DIR              receipt directory for PAYG spend receipts
   HAPAX_QUOTA_SPEND_LEDGER_LIVE        live quota/spend ledger path for paid-spend gate
   HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL=1 allow a non-docs-pinned model
@@ -807,6 +809,20 @@ def _payg_task_id() -> str:
     )
 
 
+def _payg_task_hash() -> str | None:
+    for env_name in ("HAPAX_GLMCP_REVIEW_TASK_HASH", "HAPAX_CC_TASK_HASH"):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            if not TASK_HASH_RE.fullmatch(value):
+                raise ApiError(
+                    "PAYG fallback refused by paid-spend gate: malformed task_hash; "
+                    "expected sha256:<64 lowercase hex> from cc-pr-review-dispatch; "
+                    "clear manual task-hash env overrides and rerun cc-pr-review-dispatch"
+                )
+            return value
+    return None
+
+
 def _require_payg_spend_gate() -> PaygSpendGate:
     live_path = _quota_spend_live_path_from_env()
     try:
@@ -982,6 +998,9 @@ def _build_payg_spend_receipt(
         "reconciliation_state": "pending",
         "support_artifact_authority": "none",
     }
+    task_hash = _payg_task_hash()
+    if task_hash is not None:
+        receipt_payload["task_hash"] = task_hash
     if gate.cap_remaining_usd is not None:
         receipt_payload["cap_remaining_usd"] = gate.cap_remaining_usd
     spend_receipt = SpendReceipt.model_validate(receipt_payload)
@@ -1056,6 +1075,7 @@ def _payg_spend_receipt_fields(
             for key in (
                 "spend_id",
                 "task_id",
+                "task_hash",
                 "authority_case",
                 "route_id",
                 "capacity_pool",
