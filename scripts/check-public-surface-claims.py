@@ -617,12 +617,24 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help=(
             "explicit required freshness surface id; primarily for focused tests. "
-            "If omitted, the required universe is derived from --github-public-surface-report."
+            "Requires --skip-live-github-public-surface-refresh; if omitted, the required "
+            "universe is derived from a fresh live GitHub public-surface readback."
         ),
     )
     args = parser.parse_args(argv)
 
     try:
+        if (
+            args.required_publication_freshness_surface_id
+            and not args.skip_live_github_public_surface_refresh
+        ):
+            raise RequiredInputError(
+                "--required-publication-freshness-surface-id requires "
+                "--skip-live-github-public-surface-refresh. Next action: rerun without explicit "
+                "required ids so the gate derives and checks the required universe from fresh "
+                "live GitHub readback, or use the offline switch only for focused tests/"
+                "emergency offline diagnosis."
+            )
         token_claim_report = load_required_json(args.token_claim_report, label="token claim report")
         source_reconciliation = load_required_json(
             args.source_reconciliation,

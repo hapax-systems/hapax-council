@@ -8,7 +8,7 @@ Submit security disclosures through the contact page. Attach Sigstore-signed dis
 
   https://hapax.weblog.lol/contact
 
-Repository surfaces do not publish email by constitutional choice. Sigstore signatures let the operator verify authorship via OpenID Connect without publishing an email address.
+Security disclosures use the contact-page path rather than a repository-published email address. Sigstore signatures let the operator verify authorship via OpenID Connect without relying on email identity.
 
 Endpoint recheck:
 

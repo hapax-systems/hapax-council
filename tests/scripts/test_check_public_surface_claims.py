@@ -247,8 +247,17 @@ def _run_gate(
         and "--github-public-surface-report" not in effective_extra_args
     ):
         effective_extra_args.extend(
-            ["--required-publication-freshness-surface-id", TEST_FRESHNESS_SURFACE_ID]
+            [
+                "--skip-live-github-public-surface-refresh",
+                "--required-publication-freshness-surface-id",
+                TEST_FRESHNESS_SURFACE_ID,
+            ]
         )
+    elif (
+        "--required-publication-freshness-surface-id" in effective_extra_args
+        and "--skip-live-github-public-surface-refresh" not in effective_extra_args
+    ):
+        effective_extra_args.append("--skip-live-github-public-surface-refresh")
     try:
         return subprocess.run(
             [
@@ -616,6 +625,51 @@ def test_public_surface_gate_rejects_custom_report_without_offline_switch(
 
     assert result.returncode == 2
     assert "custom --github-public-surface-report requires" in result.stderr
+    assert "--skip-live-github-public-surface-refresh" in result.stderr
+
+
+def test_public_surface_gate_rejects_explicit_required_ids_without_offline_switch(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-explicit-required-id.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[
+            _freshness_envelope(
+                freshness_result="match",
+                rendered_hash="abc123",
+                readback_hash="abc123",
+            )
+        ],
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--token-claim-report",
+            str(token_report),
+            "--source-reconciliation",
+            str(source_reconciliation),
+            "--publication-freshness-state",
+            str(freshness_state),
+            "--required-publication-freshness-surface-id",
+            TEST_FRESHNESS_SURFACE_ID,
+            str(doc),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 2
+    assert "--required-publication-freshness-surface-id requires" in result.stderr
     assert "--skip-live-github-public-surface-refresh" in result.stderr
 
 
