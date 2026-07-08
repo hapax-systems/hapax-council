@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import re
 import subprocess
 from datetime import UTC, datetime
@@ -35,6 +36,7 @@ from shared.github_public_surface import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+log = logging.getLogger(__name__)
 REPORT_PATH = REPO_ROOT / "docs/repo-pres/github-public-surface-live-state-reconcile.json"
 MARKDOWN_PATH = REPO_ROOT / "docs/research/2026-04-30-github-public-surface-live-state-reconcile.md"
 SCHEMA_PATH = REPO_ROOT / "schemas/github-public-surface-live-state-report.schema.json"
@@ -185,6 +187,13 @@ def _gh_json(endpoint: str) -> tuple[Any | None, str | None]:
         if _is_github_api_rate_limit(detail):
             payload, fallback_error = _public_github_json(endpoint)
             if fallback_error is None:
+                log.warning(
+                    "authenticated GitHub API readback hit a rate limit; using public "
+                    "unauthenticated fallback endpoint=%s; next action: refresh with "
+                    "authenticated gh api when quota recovers before treating auth-sensitive "
+                    "visibility as proven",
+                    endpoint,
+                )
                 return payload, None
             return None, f"{detail}; public unauthenticated fallback failed: {fallback_error}"
         return None, detail
@@ -195,7 +204,12 @@ def _gh_json(endpoint: str) -> tuple[Any | None, str | None]:
 
 
 def _is_github_api_rate_limit(detail: str) -> bool:
-    return "api rate limit exceeded" in detail.lower()
+    normalized = detail.lower()
+    return (
+        "api rate limit exceeded" in normalized
+        or "secondary rate limit" in normalized
+        or "abuse detection" in normalized
+    )
 
 
 def _public_github_json(endpoint: str) -> tuple[Any | None, str | None]:

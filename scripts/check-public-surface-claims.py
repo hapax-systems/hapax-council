@@ -376,6 +376,10 @@ def _drift_finding_is_documented_nonrelease_drift(drift: Any) -> bool:
         return True
     if _drift_finding_has_issue_redirect_config(drift):
         return True
+    if _drift_finding_has_readme_freshness_delegation(drift):
+        return True
+    if _drift_finding_has_documented_metadata_license_posture(drift):
+        return True
     return getattr(drift, "category", "") == "closed_repo_pres_claims"
 
 
@@ -405,15 +409,51 @@ def _drift_finding_has_issue_redirect_config(drift: Any) -> bool:
     return "blank_issues_enabled: false" in text and "contact_links:" in text
 
 
+def _drift_finding_has_readme_freshness_delegation(drift: Any) -> bool:
+    if getattr(drift, "finding_id", "") != "github.readme.current-project-spine-stale":
+        return False
+    try:
+        text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    normalized = " ".join(text.split())
+    required_phrases = (
+        "Public-current readback is not asserted by this README",
+        "live GitHub public-surface reconcile",
+        "publication freshness audit",
+        "release gate output",
+    )
+    return all(phrase in normalized for phrase in required_phrases)
+
+
+def _drift_finding_has_documented_metadata_license_posture(drift: Any) -> bool:
+    if getattr(drift, "finding_id", "") != "github.metadata.citation-codemeta-zenodo-coherence":
+        return False
+    expected_files = {
+        "CITATION.cff": "PolyForm-Strict-1.0.0",
+        "codemeta.json": "polyformproject.org/licenses/strict/1.0.0",
+        ".zenodo.json": "other-closed",
+        "LICENSE": "PolyForm Strict License 1.0.0",
+    }
+    for rel_path, expected_text in expected_files.items():
+        try:
+            text = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+        except OSError:
+            return False
+        if expected_text not in text:
+            return False
+    return True
+
+
 def _pending_post_merge_drift_path(drift: Any) -> str | None:
     finding_id = str(getattr(drift, "finding_id", ""))
     if finding_id == "github.governance.root-file-missing":
         return "GOVERNANCE.md" if _git_path_status("GOVERNANCE.md") == "A" else None
     if finding_id == "github.readme.current-project-spine-stale":
-        return "README.md" if _git_path_status("README.md") in {"A", "M"} else None
+        return "README.md" if _git_path_status("README.md") == "A" else None
     if finding_id == "github.metadata.citation-codemeta-zenodo-coherence":
         metadata_paths = ("CITATION.cff", "codemeta.json", ".zenodo.json")
-        if any(_git_path_status(path) in {"A", "M"} for path in metadata_paths):
+        if any(_git_path_status(path) == "A" for path in metadata_paths):
             return "CITATION.cff/codemeta.json/.zenodo.json"
     return None
 

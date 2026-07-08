@@ -945,6 +945,128 @@ def test_public_surface_gate_allows_documented_polyform_license_detection(
     assert findings == []
 
 
+def test_public_surface_gate_blocks_modified_existing_readme_drift(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "README.md").write_text("No freshness delegation.\n", encoding="utf-8")
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    payload["drift_findings"] = [
+        {
+            "finding_id": "github.readme.current-project-spine-stale",
+            "severity": "high",
+            "category": "readme_currentness",
+            "surface": "README.md",
+            "status": "drift",
+            "summary": "README currentness must be regenerated after live-state reconciliation.",
+            "expected": "README/profile copy cites current project-spine evidence and report head.",
+            "observed": "README predates this live-state report and cannot claim reconciled state.",
+            "evidence_refs": ["fixture"],
+            "blocks": ["github-readme-profile-current-project-refresh"],
+        }
+    ]
+    report = GitHubPublicSurfaceReport.model_validate(payload)
+    gate = _gate_module()
+    check_github_public_surface_drift = gate["check_github_public_surface_drift"]
+    check_github_public_surface_drift.__globals__["REPO_ROOT"] = tmp_path
+    check_github_public_surface_drift.__globals__["_git_path_status"] = lambda path: (
+        "M" if path == "README.md" else None
+    )
+
+    findings = check_github_public_surface_drift(
+        report,
+        report_path=tmp_path / "github-report.json",
+    )
+
+    assert len(findings) == 1
+    assert findings[0].level == "error"
+    assert "blocks release/public-current claims" in findings[0].message
+    assert "github.readme.current-project-spine-stale" in findings[0].message
+
+
+def test_public_surface_gate_allows_readme_freshness_claim_delegation(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "README.md").write_text(
+        "Public-current readback is not asserted by this README. Treat the live "
+        "GitHub public-surface reconcile, publication freshness audit, and release "
+        "gate output as the freshness witness.\n",
+        encoding="utf-8",
+    )
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    payload["drift_findings"] = [
+        {
+            "finding_id": "github.readme.current-project-spine-stale",
+            "severity": "high",
+            "category": "readme_currentness",
+            "surface": "README.md",
+            "status": "drift",
+            "summary": "README currentness must be regenerated after live-state reconciliation.",
+            "expected": "README/profile copy cites current project-spine evidence and report head.",
+            "observed": "README predates this live-state report and cannot claim reconciled state.",
+            "evidence_refs": ["fixture"],
+            "blocks": ["github-readme-profile-current-project-refresh"],
+        }
+    ]
+    report = GitHubPublicSurfaceReport.model_validate(payload)
+    gate = _gate_module()
+    check_github_public_surface_drift = gate["check_github_public_surface_drift"]
+    check_github_public_surface_drift.__globals__["REPO_ROOT"] = tmp_path
+
+    findings = check_github_public_surface_drift(
+        report,
+        report_path=tmp_path / "github-report.json",
+    )
+
+    assert findings == []
+
+
+def test_public_surface_gate_allows_documented_metadata_license_posture(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "CITATION.cff").write_text(
+        "license: PolyForm-Strict-1.0.0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "codemeta.json").write_text(
+        '{"license":"https://polyformproject.org/licenses/strict/1.0.0/"}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / ".zenodo.json").write_text(
+        '{"license":"other-closed"}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "LICENSE").write_text(
+        "PolyForm Strict License 1.0.0\n",
+        encoding="utf-8",
+    )
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    payload["drift_findings"] = [
+        {
+            "finding_id": "github.metadata.citation-codemeta-zenodo-coherence",
+            "severity": "high",
+            "category": "citation_codemeta_zenodo",
+            "surface": "CITATION.cff/codemeta.json/.zenodo.json",
+            "status": "unreconciled",
+            "summary": "Citation/CodeMeta/Zenodo metadata must be reconciled after license drift.",
+            "expected": "Metadata license, preferred citation, and DOI posture agree with live surfaces.",
+            "observed": "Metadata cannot be treated as coherent while GitHub detects a contradictory license.",
+            "evidence_refs": ["fixture"],
+            "blocks": ["github-public-claim-evidence-gate"],
+        }
+    ]
+    report = GitHubPublicSurfaceReport.model_validate(payload)
+    gate = _gate_module()
+    check_github_public_surface_drift = gate["check_github_public_surface_drift"]
+    check_github_public_surface_drift.__globals__["REPO_ROOT"] = tmp_path
+
+    findings = check_github_public_surface_drift(
+        report,
+        report_path=tmp_path / "github-report.json",
+    )
+
+    assert findings == []
+
+
 def test_public_surface_gate_rejects_redated_live_report_witness(
     tmp_path: Path,
 ) -> None:

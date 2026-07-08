@@ -77,6 +77,9 @@ not a supported framework, and not the commercial product front door.
 - Public material may describe shipped read paths, dispatch mechanisms,
   evidence ledgers, and publication-bus controls. It must not claim autonomous
   write authority, unrestricted portability, or general framework status.
+- Public-current readback is not asserted by this README. Treat the live
+  GitHub public-surface reconcile, publication freshness audit, and release
+  gate output as the freshness witness.
 - Direct public egress is not a reader-facing affordance. Weblog, RSS, social,
   DOI/archive, and other public channels are governed publication-bus surfaces.
 

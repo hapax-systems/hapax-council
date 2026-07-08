@@ -6,8 +6,8 @@ with YAML frontmatter from the Obsidian vault, constructs a
 ``PreprintArtifact`` from it, enforces ``Publication-Allowed`` frontmatter,
 marks allowed artifacts ``APPROVED``, and writes the JSON to
 ``$HAPAX_STATE/publish/inbox/{slug}.json``. The publish_orchestrator service
-picks it up on the next 30s tick and fans out to every surface listed in
-``surfaces_targeted`` via ``SURFACE_REGISTRY``.
+picks it up on the next 30s tick and fans out through the operator-supplied
+``--surfaces`` list, or the CLI default, after policy allowlist validation.
 
 ## Frontmatter contract
 
@@ -36,7 +36,6 @@ written.
 
 Optional:
 
-  surfaces_targeted: list[str]  # else default to [zenodo-doi, omg-weblog]
   attribution_block: str        # else inferred from operator + co-authors
   abstract:          str        # else first ~500 chars of body
   author_model:      str        # reviewer author-model hint
