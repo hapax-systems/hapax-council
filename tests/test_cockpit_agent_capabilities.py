@@ -241,6 +241,40 @@ def test_optional_llm_flag_requires_admission_and_fails_without_ledger(
     assert "quota_spend_ledger_unavailable:QuotaSpendLedgerError" in admission.reason_codes
 
 
+@pytest.mark.parametrize(
+    ("agent", "flags", "expected_reason"),
+    [
+        ("knowledge-maint", ("--apply", "--summarize"), "runtime_mutation_flag:--apply"),
+        ("drift-detector", ("--apply",), "runtime_mutation_flag:--apply"),
+        ("demo", ("--format=app",), "public_egress_flag:--format=app"),
+    ],
+)
+def test_llm_backed_non_read_only_flags_refuse_before_leaf_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    agent: str,
+    flags: tuple[str, ...],
+    expected_reason: str,
+) -> None:
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(_write_fresh_ledger(tmp_path)))
+    monkeypatch.setenv(
+        COCKPIT_PLATFORM_CAPABILITY_REGISTRY_ENV, str(_write_fresh_registry(tmp_path))
+    )
+    monkeypatch.setenv(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV, "none")
+
+    admission = admit_cockpit_agent_invocation(
+        agent,
+        flags=flags,
+        now=NOW,
+    )
+
+    assert admission.admitted is False
+    assert admission.requires_admission is True
+    assert admission.receipts == ()
+    assert "non_read_only_invocation_requires_route_receipt" in admission.reason_codes
+    assert expected_reason in admission.reason_codes
+
+
 def test_paid_llm_command_admits_with_fresh_gateway_and_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -285,6 +319,27 @@ def test_local_compute_leaf_admits_with_fresh_local_resource(
     assert admission.requires_admission is True
     assert admission.receipts[0].capacity_pool == "local_compute"
     assert "local_resource_green" in admission.receipts[0].reason_codes
+
+
+def test_local_compute_leaf_route_aliases_match_fixture_snapshot_route() -> None:
+    capability = cockpit_capability_for_invocation(
+        "code-review",
+        manifest_model="balanced",
+        flags=("--model=local-fast",),
+    )
+    leaf = capability.supply_leaves[0]
+    aliases = cockpit_caps._local_leaf_route_aliases(leaf)
+    payload = json.loads(LEDGER.read_text(encoding="utf-8"))
+    local_snapshot_routes = {
+        snapshot["route_id"]
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["capacity_pool"] == "local_compute"
+    }
+
+    assert leaf.route_id in aliases
+    assert leaf.platform_route_id in aliases
+    assert leaf.model_route in aliases
+    assert local_snapshot_routes & aliases == {"litellm.local.command-r-35b"}
 
 
 @pytest.mark.parametrize(
@@ -597,12 +652,15 @@ async def test_admitted_dict_agent_cockpit_run_reaches_subprocess(
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post("/api/agents/briefing/run", json={"flags": []})
+        response = await client.post(
+            "/api/agents/briefing/run",
+            json={"flags": ["--json"]},
+        )
 
     assert response.status_code == 200
     run_mock.assert_awaited_once_with(
         "briefing",
-        ["uv", "run", "python", "-m", "agents.briefing"],
+        ["uv", "run", "python", "-m", "agents.briefing", "--json"],
     )
     cancel_mock.assert_awaited_once()
 

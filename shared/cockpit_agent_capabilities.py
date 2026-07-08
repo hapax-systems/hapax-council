@@ -611,14 +611,7 @@ def _admit_local_leaf(
     *,
     now: datetime,
 ) -> CockpitAdmissionReceipt:
-    route_aliases = {
-        leaf.route_id,
-        leaf.platform_route_id,
-        leaf.model_route or "",
-        "local-fast",
-        "appendix-fast",
-        "litellm.local.command-r-35b",
-    }
+    route_aliases = _local_leaf_route_aliases(leaf)
     snapshots = tuple(
         snapshot
         for snapshot in ledger.quota_snapshots
@@ -653,6 +646,21 @@ def _admit_local_leaf(
                 (f"quota.local_resource_state:{ledger.local_resource_state.value}", *platform_refs)
             )
         ),
+    )
+
+
+def _local_leaf_route_aliases(leaf: CockpitSupplyLeaf) -> frozenset[str]:
+    return frozenset(
+        alias
+        for alias in (
+            leaf.route_id,
+            leaf.platform_route_id,
+            leaf.model_route,
+            "local-fast",
+            "appendix-fast",
+            "litellm.local.command-r-35b",
+        )
+        if alias
     )
 
 
