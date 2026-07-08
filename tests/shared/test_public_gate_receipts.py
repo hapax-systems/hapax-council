@@ -8,7 +8,9 @@ import pytest
 import yaml
 
 from shared import public_gate_receipts
-from shared.public_gate_receipts import public_gate_receipt_value_present
+from shared.public_gate_receipts import (
+    public_gate_receipt_value_present as _public_gate_receipt_value_present,
+)
 
 GATE = "rights_privacy_redaction_pass"
 TASK_ID = "cc-task-public-gate-test"
@@ -19,6 +21,11 @@ AUTHORITY_BLOCK = (
     "review_profile: claim_verification_council_public_egress\n"
     f"evidence_ref: review-dossier:{TASK_ID}\n"
 )
+
+
+def public_gate_receipt_value_present(*args: object, **kwargs: object) -> bool:
+    kwargs.setdefault("expected_head_sha", "a" * 40)
+    return _public_gate_receipt_value_present(*args, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -361,6 +368,11 @@ def test_rejects_review_dossier_without_current_head_binding(tmp_path: Path) -> 
 def test_rejects_signed_review_dossier_for_unexpected_head(tmp_path: Path) -> None:
     _write(tmp_path, "receipt-1.yaml", _receipt_text())
 
+    assert not _public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
     assert public_gate_receipt_value_present(
         "public-gate:receipt-1.yaml",
         expected_gate=GATE,
@@ -393,7 +405,7 @@ def test_claim_review_current_requires_expected_head(tmp_path: Path) -> None:
         gate="claim_review_current",
     )
 
-    assert not public_gate_receipt_value_present(
+    assert not _public_gate_receipt_value_present(
         "public-gate:receipt-1.yaml",
         expected_gate="claim_review_current",
         roots=(tmp_path,),

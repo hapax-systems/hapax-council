@@ -852,6 +852,11 @@ class Orchestrator:
                 "artifact slug must be a single safe path segment; next action: "
                 "regenerate the artifact with a lowercase URL/file-safe slug"
             )
+        if not artifact.surfaces_targeted:
+            findings.append(
+                "surfaces_targeted must contain at least one target surface; next action: "
+                "drop only artifacts with reviewed publication targets into publish/inbox"
+            )
         unsafe_surfaces = [
             surface
             for surface in artifact.surfaces_targeted

@@ -310,6 +310,21 @@ class TestLoadFanoutConfig:
         config = load_fanout_config(path=path)
         assert config.addresses == []
 
+    def test_malformed_yaml_is_fail_closed(self, tmp_path: Path) -> None:
+        path = tmp_path / "fanout.yaml"
+        path.write_text("addresses: [")
+        config = load_fanout_config(path=path)
+        assert config.gate_policy_error is not None
+        assert "YAML is malformed" in config.gate_policy_error
+        assert "next action" in config.gate_policy_error
+
+    def test_non_mapping_yaml_is_fail_closed(self, tmp_path: Path) -> None:
+        path = tmp_path / "fanout.yaml"
+        path.write_text("- hapax\n")
+        config = load_fanout_config(path=path)
+        assert config.gate_policy_error is not None
+        assert "must be a mapping" in config.gate_policy_error
+
 
 class TestFanout:
     def test_posts_to_every_target_except_source(self) -> None:

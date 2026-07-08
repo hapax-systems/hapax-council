@@ -110,9 +110,29 @@ def load_fanout_config(*, path: Path = DEFAULT_CONFIG_PATH) -> OmgFanoutConfig:
     """Load the fanout config from YAML; return empty config when absent."""
     if not path.exists():
         return OmgFanoutConfig()
-    raw = yaml.safe_load(path.read_text()) or {}
+    try:
+        raw = yaml.safe_load(path.read_text()) or {}
+    except OSError:
+        return OmgFanoutConfig(
+            gate_policy_error=(
+                "fanout config unreadable; next action: restore a readable guarded_public_fanout "
+                "policy before public fanout"
+            )
+        )
+    except yaml.YAMLError:
+        return OmgFanoutConfig(
+            gate_policy_error=(
+                "fanout config YAML is malformed; next action: repair the guarded_public_fanout "
+                "policy before public fanout"
+            )
+        )
     if not isinstance(raw, dict):
-        return OmgFanoutConfig()
+        return OmgFanoutConfig(
+            gate_policy_error=(
+                "fanout config must be a mapping; next action: restore a guarded_public_fanout "
+                "policy before public fanout"
+            )
+        )
     addresses = raw.get("addresses", [])
     if not isinstance(addresses, list):
         addresses = []
