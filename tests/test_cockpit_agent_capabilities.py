@@ -9,9 +9,11 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from agents._agent_registry import get_registry
+from shared import cockpit_agent_capabilities as cockpit_caps
 from shared.cockpit_agent_capabilities import (
     COCKPIT_PLATFORM_CAPABILITY_REGISTRY_ENV,
     COCKPIT_QUOTA_SPEND_LEDGER_ENV,
+    CockpitSupplyLeaf,
     admit_cockpit_agent_invocation,
     cockpit_capability_for,
     cockpit_capability_for_invocation,
@@ -96,6 +98,30 @@ def _write_exhausted_ledger(tmp_path: Path) -> Path:
     return path
 
 
+def _write_local_resource_ledger(
+    tmp_path: Path,
+    *,
+    include_snapshot: bool = True,
+    snapshot_fresh_until: str | None = None,
+    local_resource_state: str = "green",
+) -> Path:
+    path = _write_fresh_ledger(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["local_resource_state"] = local_resource_state
+    snapshots = []
+    for snapshot in payload["quota_snapshots"]:
+        if snapshot["capacity_pool"] != "local_compute":
+            snapshots.append(snapshot)
+            continue
+        if include_snapshot:
+            if snapshot_fresh_until is not None:
+                snapshot["fresh_until"] = snapshot_fresh_until
+            snapshots.append(snapshot)
+    payload["quota_snapshots"] = snapshots
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
 def test_cockpit_inventory_covers_all_manifest_cli_agents() -> None:
     for manifest in get_registry().cli_agents():
         capability = cockpit_capability_for(manifest.id, manifest_model=manifest.model)
@@ -151,6 +177,27 @@ def test_deterministic_default_path_keeps_evidence_waiver() -> None:
     assert admission.requires_admission is False
     assert admission.receipts == ()
     assert admission.evidence_only_waiver is not None
+
+
+def test_runtime_mutation_flag_refuses_evidence_waiver() -> None:
+    admission = admit_cockpit_agent_invocation("health-monitor", flags=("--fix",))
+
+    assert admission.admitted is False
+    assert admission.requires_admission is True
+    assert admission.receipts == ()
+    assert "non_read_only_invocation_requires_route_receipt" in admission.reason_codes
+    assert "runtime_mutation_flag:--fix" in admission.reason_codes
+
+
+def test_runtime_public_surface_without_supply_leaves_fails_closed() -> None:
+    admission = admit_cockpit_agent_invocation("studio-compositor", flags=())
+
+    assert admission.admitted is False
+    assert admission.requires_admission is True
+    assert admission.receipts == ()
+    assert "non_read_only_invocation_requires_route_receipt" in admission.reason_codes
+    assert "runtime_mutation_surface_requires_route_receipt" in admission.reason_codes
+    assert "public_egress_surface_requires_route_receipt" in admission.reason_codes
 
 
 def test_optional_llm_flag_requires_admission_and_fails_without_ledger(
@@ -215,6 +262,102 @@ def test_local_compute_leaf_admits_with_fresh_local_resource(
     assert "local_resource_green" in admission.receipts[0].reason_codes
 
 
+@pytest.mark.parametrize(
+    ("ledger_kwargs", "expected_reason"),
+    [
+        ({"include_snapshot": False}, "local_resource_snapshot_missing"),
+        (
+            {"snapshot_fresh_until": "2026-05-31T00:00:00Z"},
+            "local_resource_snapshot_not_fresh",
+        ),
+        ({"local_resource_state": "red"}, "local_resource_state:red"),
+    ],
+)
+def test_local_compute_leaf_refuses_on_local_resource_blockers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ledger_kwargs: dict[str, object],
+    expected_reason: str,
+) -> None:
+    monkeypatch.setenv(
+        COCKPIT_QUOTA_SPEND_LEDGER_ENV,
+        str(_write_local_resource_ledger(tmp_path, **ledger_kwargs)),
+    )
+    monkeypatch.setenv(
+        COCKPIT_PLATFORM_CAPABILITY_REGISTRY_ENV,
+        str(_write_fresh_registry(tmp_path, route_ids=("local_tool.local.worker",))),
+    )
+    monkeypatch.setenv(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV, "none")
+
+    admission = admit_cockpit_agent_invocation(
+        "code-review",
+        manifest_model="balanced",
+        flags=("--model=local-fast",),
+        now=NOW,
+    )
+
+    assert admission.admitted is False
+    assert expected_reason in admission.reason_codes
+
+
+def test_unsupported_capacity_pool_refuses_with_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(_write_fresh_ledger(tmp_path)))
+    leaf = CockpitSupplyLeaf(
+        capability_id="cockpit.agent.test.unsupported",
+        route_id="unsupported.route",
+        platform_route_id="api.headless.provider_gateway",
+        provider="test",
+        model_alias=None,
+        model_route=None,
+        capacity_pool="unsupported_pool",
+        profile="test",
+    )
+
+    receipt = cockpit_caps._admit_leaf(leaf, now=NOW)
+
+    assert receipt.admitted is False
+    assert receipt.reason_codes == ("unsupported_capacity_pool:unsupported_pool",)
+
+
+def test_platform_route_missing_is_reported_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        COCKPIT_PLATFORM_CAPABILITY_REGISTRY_ENV, str(_write_fresh_registry(tmp_path))
+    )
+    monkeypatch.setenv(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV, "none")
+
+    reasons, refs = cockpit_caps._platform_route_block_reasons("missing.route", now=NOW)
+
+    assert reasons == ("platform_route_missing:missing.route",)
+    assert refs == ()
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_reason"),
+    [
+        (
+            "api.headless.provider_gateway: quota stale; checked_at expired",
+            "platform_route_quota_stale",
+        ),
+        (
+            "api.headless.provider_gateway: resource checked_at is in the future",
+            "platform_route_resource_future",
+        ),
+        (
+            "api.headless.provider_gateway: provider_docs freshness is unknown",
+            "platform_route_provider_docs_unknown",
+        ),
+    ],
+)
+def test_platform_route_freshness_reason_normalizes_errors(
+    error: str, expected_reason: str
+) -> None:
+    assert cockpit_caps._platform_route_freshness_reason(error) == expected_reason
+
+
 def test_paid_llm_command_refuses_when_budget_is_exhausted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -277,6 +420,80 @@ async def test_llm_cockpit_run_refuses_before_subprocess(
 
     assert response.status_code == 403
     assert "cockpit_agent_capability_admission_refused" in response.json()["detail"]
+    run_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_llm_flag_overlay_cockpit_run_refuses_before_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from logos.api.app import app
+    from logos.api.cache import cache
+    from logos.api.routes import agents as agent_route
+    from logos.data.agents import AgentInfo
+
+    cache.agents = [
+        AgentInfo(
+            name="activity-analyzer",
+            uses_llm=False,
+            description="Analyze cockpit activity",
+            command="uv run python -m agents.activity_analyzer",
+            model_alias=None,
+            module="agents.activity_analyzer",
+        )
+    ]
+    monkeypatch.setattr(agent_route, "_IN_CONTAINER", False)
+    run_mock = AsyncMock()
+    monkeypatch.setattr(agent_route.agent_run_manager, "run", run_mock)
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(tmp_path / "missing-ledger.json"))
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/agents/activity-analyzer/run",
+            json={"flags": ["--synthesize"]},
+        )
+
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert "cockpit_agent_capability_admission_refused" in detail
+    assert "activity_analyzer.fast_synthesis" in detail
+    run_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cockpit_run_admission_errors_fail_clean_before_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from logos.api.app import app
+    from logos.api.cache import cache
+    from logos.api.routes import agents as agent_route
+    from logos.data.agents import AgentInfo
+
+    def raise_runtime_error(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("synthetic admission failure")
+
+    cache.agents = [
+        AgentInfo(
+            name="activity-analyzer",
+            uses_llm=False,
+            description="Analyze cockpit activity",
+            command="uv run python -m agents.activity_analyzer",
+            model_alias=None,
+            module="agents.activity_analyzer",
+        )
+    ]
+    monkeypatch.setattr(agent_route, "_IN_CONTAINER", False)
+    monkeypatch.setattr(agent_route, "require_cockpit_agent_admission", raise_runtime_error)
+    run_mock = AsyncMock()
+    monkeypatch.setattr(agent_route.agent_run_manager, "run", run_mock)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/agents/activity-analyzer/run", json={"flags": []})
+
+    assert response.status_code == 403
+    assert "cockpit_admission_unavailable:RuntimeError" in response.json()["detail"]
     run_mock.assert_not_called()
 
 

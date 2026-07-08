@@ -439,6 +439,16 @@ def admit_cockpit_agent_invocation(
         flags=flags,
     )
     if not capability.requires_llm_admission:
+        non_read_only_reasons = _non_read_only_invocation_reasons(capability, flags)
+        if non_read_only_reasons:
+            return CockpitInvocationAdmission(
+                agent_id=capability.agent_id,
+                display_name=capability.display_name,
+                requires_admission=True,
+                admitted=False,
+                reason_codes=non_read_only_reasons,
+                evidence_only_waiver=capability.evidence_only_waiver,
+            )
         return CockpitInvocationAdmission(
             agent_id=capability.agent_id,
             display_name=capability.display_name,
@@ -487,7 +497,7 @@ def require_cockpit_agent_admission(
         f"agent={admission.display_name} reason_codes={','.join(admission.reason_codes)} "
         f"receipts={';'.join(receipt_bits)} "
         "next_action=refresh platform capability receipts and quota/spend ledger before "
-        "retrying LLM-backed cockpit execution"
+        "retrying guarded cockpit execution"
     )
 
 
@@ -500,15 +510,42 @@ def _admit_leaf(leaf: CockpitSupplyLeaf, *, now: datetime) -> CockpitAdmissionRe
             action="refused",
             reason_codes=(f"quota_spend_ledger_unavailable:{type(exc).__name__}",),
         )
-    if leaf.capacity_pool == CapacityPool.API_PAID_SPEND.value:
-        return _admit_paid_leaf(leaf, ledger, now=now)
-    if leaf.capacity_pool == CapacityPool.LOCAL_COMPUTE.value:
-        return _admit_local_leaf(leaf, ledger, now=now)
-    return _build_receipt(
-        leaf,
-        action="refused",
-        reason_codes=(f"unsupported_capacity_pool:{leaf.capacity_pool}",),
-    )
+    try:
+        if leaf.capacity_pool == CapacityPool.API_PAID_SPEND.value:
+            return _admit_paid_leaf(leaf, ledger, now=now)
+        if leaf.capacity_pool == CapacityPool.LOCAL_COMPUTE.value:
+            return _admit_local_leaf(leaf, ledger, now=now)
+        return _build_receipt(
+            leaf,
+            action="refused",
+            reason_codes=(f"unsupported_capacity_pool:{leaf.capacity_pool}",),
+        )
+    except Exception as exc:
+        return _build_receipt(
+            leaf,
+            action="refused",
+            reason_codes=(f"cockpit_admission_unavailable:{type(exc).__name__}",),
+        )
+
+
+def _non_read_only_invocation_reasons(
+    capability: CockpitAgentCapability,
+    flags: tuple[str, ...] | list[str],
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    if CockpitCommandClass.RUNTIME_MUTATION in capability.classifications:
+        reasons.append("runtime_mutation_surface_requires_route_receipt")
+    if CockpitCommandClass.PUBLIC_EGRESS in capability.classifications:
+        reasons.append("public_egress_surface_requires_route_receipt")
+    for configured_flag in capability.runtime_mutation_flags:
+        if any(_flag_matches(configured_flag, flag) for flag in flags):
+            reasons.append(f"runtime_mutation_flag:{configured_flag}")
+    for configured_flag in capability.public_egress_flags:
+        if any(_flag_matches(configured_flag, flag) for flag in flags):
+            reasons.append(f"public_egress_flag:{configured_flag}")
+    if not reasons:
+        return ()
+    return tuple(dict.fromkeys(("non_read_only_invocation_requires_route_receipt", *reasons)))
 
 
 def _admit_paid_leaf(
@@ -777,6 +814,12 @@ def _flag_value(flag: str) -> str | None:
         return None
     value = flag.split("=", 1)[1].strip()
     return value or None
+
+
+def _flag_matches(configured: str, observed: str) -> bool:
+    if "=" in configured:
+        return observed == configured
+    return _flag_key(observed) == _flag_key(configured)
 
 
 def _reason_code(value: str) -> str:

@@ -93,6 +93,14 @@ async def run_agent(name: str, req: AgentRunRequest):
         )
     except (CockpitAdmissionError, KeyError) as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from None
+    except Exception as exc:
+        detail = (
+            "cockpit_agent_capability_admission_refused "
+            f"agent={name} reason_codes=cockpit_admission_unavailable:{type(exc).__name__} "
+            "next_action=inspect cockpit capability admission inputs before retrying guarded "
+            "cockpit execution"
+        )
+        raise HTTPException(status_code=403, detail=detail) from None
 
     # Build command args from agent's base command + validated flags
     command = agent.command if hasattr(agent, "command") else agent.get("command", "")
