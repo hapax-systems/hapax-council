@@ -135,7 +135,12 @@ launcher_source_root() {
     (cd "$activation_root" && pwd -P)
     return 0
   fi
-  printf '%s\n' "$root"
+  # Fail closed: neither this launcher's physical root nor the activation
+  # worktree carries the verifier. Emit NOTHING and signal failure so the
+  # caller aborts. Printing an empty/untrusted root here would let the verifier
+  # prepend "" (== cwd) to sys.path, so a hostile external worktree could supply
+  # a fake dispatch_redemption module and forge redemption success.
+  return 1
 }
 
 validate_dispatch_redemption_authority() {
@@ -145,13 +150,22 @@ validate_dispatch_redemption_authority() {
   # verifier imports from this launcher's physical council checkout, never from
   # caller-controlled HAPAX_COUNCIL_DIR, PATH, the external WORKDIR, cwd, or PYTHONPATH.
   local council_dir python_bin="/usr/bin/python3" profile="${HAPAX_METHODOLOGY_DISPATCH_PROFILE:-full}"
-  council_dir="$(launcher_source_root)"
+  if ! council_dir="$(launcher_source_root)" \
+    || [[ -z "$council_dir" || ! -r "$council_dir/shared/governance/dispatch_redemption.py" ]]; then
+    echo "hapax-claude-headless: no trusted council source root for the dispatch redemption verifier; refusing launch (fail-closed)" >&2
+    exit 17
+  fi
   if ! "$python_bin" -I - "$council_dir" "$CLAUDE_TASK" "$ROLE" "$WORKDIR" claude headless "$profile" <<'PYEOF'
 import os
 import sys
 import time
 
 council_dir, task_id, lane, worktree, platform, mode, profile = sys.argv[1:]
+if not council_dir or not os.path.isfile(
+    os.path.join(council_dir, "shared", "governance", "dispatch_redemption.py")
+):
+    print("dispatch redemption verifier: untrusted or empty council root", file=sys.stderr)
+    raise SystemExit(1)
 sys.path = [council_dir] + [p for p in sys.path if p not in ("", os.getcwd())]
 
 try:

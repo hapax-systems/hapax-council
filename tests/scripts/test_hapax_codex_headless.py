@@ -1950,3 +1950,37 @@ exit 0
     assert result.returncode == 0, result.stderr
     assert (pid_dir / "cx-amber.pid").read_text(encoding="utf-8") == "999999\n"
     assert not retire_log.exists()
+
+
+def test_codex_headless_rejects_session_with_path_separators(tmp_path: Path) -> None:
+    # SESSION flows into relay/log/PID/proof paths; a value with slashes or `..`
+    # (e.g. cx-a/../../x) must be refused before it can route state out of the
+    # per-lane namespace, regardless of which hapax_agent_is_codex_name is active.
+    home = tmp_path / "home"
+    (home / ".cache" / "hapax").mkdir(parents=True)
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    for bad in ("cx-a/../../x", "cx-a/b", "../cx-x", "cx-a;rm", "cx-A"):
+        result = subprocess.run(
+            [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", bad, "prompt"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+        assert result.returncode == 2, (
+            f"{bad!r} not rejected (rc={result.returncode}): {result.stderr}"
+        )
+        assert "invalid session" in result.stderr
+
+    # A legitimate lane name must NOT be a format rejection (it may fail later for
+    # unrelated setup, but never with the invalid-session guard).
+    ok = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-p0", "prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+    assert not (ok.returncode == 2 and "invalid session" in ok.stderr), ok.stderr

@@ -140,9 +140,9 @@ def _protocol_probe(socket_path: Path, *, timeout_s: float = 0.5) -> dict[str, o
         return {"ok": False, "reason": f"malformed_response:{type(exc).__name__}"}
     ok = (
         isinstance(payload, dict)
-        and payload.get("schema") == "hapax.dispatch_launch_redeem_response.v1"
-        and payload.get("ok") is False
-        and payload.get("reason") == "invalid_request:unsupported_schema"
+        and payload.get("schema") == "hapax.dispatch_launch_probe_response.v1"
+        and payload.get("ok") is True
+        and payload.get("reason") == "probe_witnessed"
     )
     return {
         "ok": ok,

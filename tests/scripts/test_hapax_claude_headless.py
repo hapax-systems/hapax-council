@@ -1,6 +1,7 @@
 import fcntl
 import json
 import os
+import shutil
 import subprocess
 import textwrap
 import time
@@ -176,6 +177,43 @@ def test_claude_headless_external_workdir_fails_closed_without_redemption_bindin
     assert result.returncode == 17
     assert "missing dispatch redemption binding env" in result.stderr
     assert "requires live methodology dispatch redemption" in result.stderr
+    assert not claude_called.exists()
+
+
+def test_claude_headless_fails_closed_when_no_trusted_council_source_root(
+    tmp_path: Path,
+) -> None:
+    # launcher_source_root must fail closed when neither the launcher's physical
+    # root nor the activation worktree carries the verifier. Otherwise it would
+    # emit an empty root, the verifier would prepend "" (== cwd) to sys.path, and
+    # a hostile external worktree could supply a fake dispatch_redemption module
+    # to forge redemption success. Run a COPY from an isolated tree with no module
+    # nearby and no activation stub.
+    home = tmp_path / "home"
+    iso_scripts = tmp_path / "isolated" / "scripts"
+    iso_scripts.mkdir(parents=True)
+    iso_script = iso_scripts / "hapax-claude-headless"
+    shutil.copy2(SCRIPT, iso_script)
+    workdir = tmp_path / "outside" / "reins"
+    workdir.mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude_called = tmp_path / "claude-called"
+    _stub_bin(bin_dir, "claude", f": > {claude_called}\nexit 0\n")
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
+    env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(iso_script), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "no trusted council source root" in result.stderr
     assert not claude_called.exists()
 
 

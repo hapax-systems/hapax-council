@@ -192,7 +192,16 @@ for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REP
     fi
     if system_install_scope "$unit"; then
         if [ -e "$dest" ] || [ -L "$dest" ]; then
+            # Stop + disable any live user-manager shadow BEFORE removing the file.
+            # rm alone leaves an already-enabled/running instance and its wants
+            # links active (deployed-vs-repo drift) even though we report removal.
+            systemctl --user disable --now "$name" >/dev/null 2>&1 || true
             rm -f "$dest"
+            for wants_link in "$DEST_DIR"/*.wants/"$name"; do
+                [ -e "$wants_link" ] || [ -L "$wants_link" ] || continue
+                rm -f "$wants_link"
+                echo "removed system-scoped user shadow wants link: $wants_link"
+            done
             echo "removed system-scoped user shadow: $name"
             changed=$((changed + 1))
         else

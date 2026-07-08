@@ -70,8 +70,9 @@ def test_runtime_receipt_requires_live_governor_protocol(tmp_path: Path) -> None
     runtime_dir.mkdir()
     runtime_dir.chmod(0o750)
     socket_path = runtime_dir / "dispatch-redemption.sock"
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
     server = DispatchLaunchRedemptionServer(
-        DispatchLaunchRedemptionAuthority(now=lambda: 1000.0),
+        authority,
         socket_path=socket_path,
     )
     thread = threading.Thread(target=server.serve_once, kwargs={"timeout_s": 5.0})
@@ -88,6 +89,9 @@ def test_runtime_receipt_requires_live_governor_protocol(tmp_path: Path) -> None
     assert receipt["runtime_dir"]["mode"] == "0750"
     assert receipt["socket"]["mode"] == "0660"
     assert receipt["protocol_probe"] == {"ok": True, "reason": "protocol_witnessed"}
+    # A health receipt must be a read-only witness: the probe must NOT manufacture
+    # durable refusal evidence in the token-free ledger.
+    assert [event.event_type for event in authority.events()] == []
 
 
 def _receipt_with_retry(

@@ -22,6 +22,7 @@ from shared.governance.dispatch_redemption import (
     handle_authority_bytes,
     mint_launch_via_socket,
     mint_request_payload,
+    parse_mint_request,
     parse_mint_response,
     parse_redemption_response,
     redeem_launch_via_socket,
@@ -288,9 +289,11 @@ def test_authority_records_wire_refusal_for_malformed_json():
 def test_authority_records_wire_refusal_for_unsupported_schema():
     authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
 
+    # A genuinely-unknown schema (NOT the read-only probe schema, which is now a
+    # legitimate no-record witness — see test_probe_schema_is_read_only_*).
     response_payload = handle_authority_bytes(
         authority,
-        json.dumps({"schema": "hapax.dispatch_launch_probe.v1"}).encode() + b"\n",
+        json.dumps({"schema": "hapax.dispatch_launch_bogus.v1"}).encode() + b"\n",
     )
     response = parse_redemption_response(response_payload)
 
@@ -934,3 +937,44 @@ def test_parse_responses_reject_non_bool_ok_fields():
                 "reason": "malformed",
             }
         )
+
+
+@pytest.mark.parametrize("bad_ttl", [float("nan"), float("inf"), float("-inf")])
+def test_parse_mint_request_rejects_non_finite_ttl(bad_ttl):
+    # A NaN/Inf ttl passes float() and the <= 0 check (NaN comparisons are false),
+    # which would leave a grant that never expires or purges. Must fail closed.
+    payload = mint_request_payload(_mint_request())
+    payload["ttl_s"] = bad_ttl
+    with pytest.raises(ValueError, match="ttl_s must be a finite positive number"):
+        parse_mint_request(payload)
+
+
+def test_parse_mint_request_rejects_non_finite_observed_at():
+    payload = mint_request_payload(_mint_request())
+    payload["observed_at"] = float("inf")
+    with pytest.raises(ValueError, match="observed_at must be a finite number"):
+        parse_mint_request(payload)
+
+
+def test_probe_schema_is_read_only_and_records_no_wire_refusal():
+    # A --receipt health probe must be an idempotent read-only witness: it must
+    # NOT manufacture durable refusal evidence in the token-free ledger.
+    authority = DispatchLaunchRedemptionAuthority(now=lambda: 1000.0)
+    before = len(authority.events())
+    response = handle_authority_bytes(
+        authority, json.dumps({"schema": "hapax.dispatch_launch_probe.v1"}).encode("utf-8")
+    )
+    assert response == {
+        "schema": "hapax.dispatch_launch_probe_response.v1",
+        "ok": True,
+        "reason": "probe_witnessed",
+    }
+    assert len(authority.events()) == before  # no grant_refused / wire refusal recorded
+
+    # A genuinely unknown schema still refuses AND records (the probe is the only exemption).
+    unsupported = handle_authority_bytes(
+        authority, json.dumps({"schema": "hapax.bogus.v1"}).encode("utf-8")
+    )
+    assert unsupported["ok"] is False
+    assert unsupported["reason"] == "invalid_request:unsupported_schema"
+    assert len(authority.events()) > before

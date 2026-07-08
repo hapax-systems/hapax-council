@@ -114,8 +114,12 @@ class TestSystemScopedUnits:
         assert "removed system-scoped user shadow: hapax-dispatch-redemption.service" in (
             result.stdout
         )
-        assert "--user enable --now hapax-dispatch-redemption.service" not in calls.read_text(
-            encoding="utf-8"
+        call_log = calls.read_text(encoding="utf-8")
+        assert "--user enable --now hapax-dispatch-redemption.service" not in call_log
+        # rm alone leaves an enabled/running user shadow alive; the sweep must
+        # stop+disable it before removing the file (deployed-vs-repo drift).
+        assert "--user disable --now hapax-dispatch-redemption.service" in call_log, (
+            "system-scoped user shadow must be stopped+disabled, not just file-removed"
         )
 
 

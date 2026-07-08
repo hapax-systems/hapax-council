@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import pwd
 import secrets
@@ -741,8 +742,13 @@ def parse_mint_request(payload: dict[str, object]) -> LaunchMintRequest:
     if requester_pid <= 0:
         raise ValueError("launch mint request missing requester_pid")
     ttl_s = float(payload.get("ttl_s", 0.0) or 0.0)
-    if ttl_s <= 0:
-        raise ValueError("launch mint request missing ttl_s")
+    if not math.isfinite(ttl_s) or ttl_s <= 0:
+        # NaN/Infinity pass float() and the <= 0 check (NaN comparisons are
+        # false), leaving a grant that never expires or purges. Reject non-finite.
+        raise ValueError("launch mint request ttl_s must be a finite positive number")
+    observed_at = float(payload.get("observed_at", 0.0) or 0.0)
+    if not math.isfinite(observed_at):
+        raise ValueError("launch mint request observed_at must be a finite number")
     return LaunchMintRequest(
         context=LaunchRedemptionContext(
             task_id=str(payload.get("task_id", "")),
@@ -760,7 +766,7 @@ def parse_mint_request(payload: dict[str, object]) -> LaunchMintRequest:
         requester=requester,
         requester_pid=requester_pid,
         ttl_s=ttl_s,
-        observed_at=float(payload.get("observed_at", 0.0) or 0.0),
+        observed_at=observed_at,
     )
 
 
@@ -972,6 +978,15 @@ def handle_authority_bytes(
         )
     if schema == "hapax.dispatch_launch_redeem.v1":
         return handle_redemption_payload(authority, payload, peer=peer)
+    if schema == "hapax.dispatch_launch_probe.v1":
+        # Read-only liveness witness: a health receipt must be idempotent and
+        # MUST NOT manufacture refusal evidence. Answer without touching the
+        # token-free ledger or recording a wire refusal.
+        return {
+            "schema": "hapax.dispatch_launch_probe_response.v1",
+            "ok": True,
+            "reason": "probe_witnessed",
+        }
     reason = "invalid_request:unsupported_schema"
     try:
         authority.record_wire_refusal(reason=reason, peer=peer)

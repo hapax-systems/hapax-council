@@ -12,10 +12,10 @@ set -euo pipefail
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
 if ! declare -F hapax_agent_is_codex_name >/dev/null 2>&1; then
   hapax_agent_is_codex_name() {
-    case "${1:-}" in
-      cx-[a-z]*) return 0 ;;
-      *) return 1 ;;
-    esac
+    # Anchored: cx- followed by dash-separated lowercase-alnum segments only.
+    # A glob such as cx-[a-z]* accepts cx-a/../../x (the * spans slashes), which
+    # would route relay/log/PID/proof paths outside the per-lane namespace.
+    [[ "${1:-}" =~ ^cx-[a-z0-9]+(-[a-z0-9]+)*$ ]]
   }
 fi
 
@@ -137,7 +137,12 @@ launcher_source_root() {
     (cd "$activation_root" && pwd -P)
     return 0
   fi
-  printf '%s\n' "$root"
+  # Fail closed: neither this launcher's physical root nor the activation
+  # worktree carries the verifier. Emit NOTHING and signal failure so the
+  # caller aborts. Printing an empty/untrusted root here would let the verifier
+  # prepend "" (== cwd) to sys.path, so a hostile external worktree could supply
+  # a fake dispatch_redemption module and forge redemption success.
+  return 1
 }
 
 remote_python_command() {
@@ -366,8 +371,11 @@ if [[ -z "$SESSION" ]]; then
   usage
   exit 1
 fi
-if ! hapax_agent_is_codex_name "$SESSION"; then
-  echo "hapax-codex-headless: invalid session '$SESSION' (expected cx-<color>)" >&2
+# Enforce the anchored lane-identity format independently of which
+# hapax_agent_is_codex_name (canonical or fallback) is in scope: SESSION flows
+# into relay/log/PID/proof paths, so a value with slashes or `..` must never pass.
+if ! hapax_agent_is_codex_name "$SESSION" || [[ ! "$SESSION" =~ ^cx-[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+  echo "hapax-codex-headless: invalid session '$SESSION' (expected cx-<lane>, [a-z0-9-] only, no path separators)" >&2
   exit 2
 fi
 
@@ -478,13 +486,22 @@ validate_dispatch_redemption_authority() {
   # this launcher's physical council checkout, never from caller-controlled
   # HAPAX_COUNCIL_DIR, PATH, the external WORKDIR, cwd, or PYTHONPATH.
   local council_dir python_bin="/usr/bin/python3" profile="${HAPAX_METHODOLOGY_DISPATCH_PROFILE:-full}"
-  council_dir="$(launcher_source_root)"
+  if ! council_dir="$(launcher_source_root)" \
+    || [[ -z "$council_dir" || ! -r "$council_dir/shared/governance/dispatch_redemption.py" ]]; then
+    echo "hapax-codex-headless: no trusted council source root for the dispatch redemption verifier; refusing launch (fail-closed)" >&2
+    exit 17
+  fi
   if ! "$python_bin" -I - "$council_dir" "$CODEX_TASK" "$SESSION" "$WORKDIR" codex headless "$profile" <<'PYEOF'
 import os
 import sys
 import time
 
 council_dir, task_id, lane, worktree, platform, mode, profile = sys.argv[1:]
+if not council_dir or not os.path.isfile(
+    os.path.join(council_dir, "shared", "governance", "dispatch_redemption.py")
+):
+    print("dispatch redemption verifier: untrusted or empty council root", file=sys.stderr)
+    raise SystemExit(1)
 sys.path = [council_dir] + [p for p in sys.path if p not in ("", os.getcwd())]
 
 try:
