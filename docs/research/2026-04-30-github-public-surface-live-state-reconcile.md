@@ -8,7 +8,7 @@ source: github-public-surface-live-state-reconcile
 # GitHub Public Surface Live State Reconcile
 
 - Filename note: the April slug is retained for historical ledger continuity; the YAML `date` and `Generated` fields record the current live-state refresh. Freshness checks must read those fields, not the filename slug. Re-run the `Recheck` command below before treating this as current.
-- Generated: `2026-07-08T11:37:50Z`
+- Generated: `2026-07-08T14:45:05Z`
 - Recheck: `uv run python scripts/github-public-surface-reconcile.py`
 - Claim ceiling: `public_archive`
 - Blocking findings: `1`
@@ -42,7 +42,7 @@ source: github-public-surface-live-state-reconcile
 | info | profile_repo_state | hapax-systems/.github | Organization profile README is present at the selected Hapax Systems path. |
 | info | notice_links | NOTICE.md | NOTICE links resolve against the current local public-surface evidence. |
 | info | pages_cdn_state | hapax-systems/hapax-assets | hapax-assets is visible with a readable GitHub Pages state. |
-| medium | package_public_surfaces | packages/ | Some package README/PyPI surfaces contain issue/support language needing claim discipline. |
+| info | package_public_surfaces | packages/ | Package public surfaces were inventoried and did not trigger issue/support drift. |
 | high | closed_repo_pres_claims | cc-task closed/repo-pres-* | Closed repo-pres task claims were compared to live state. |
 
 ## Profile README Decision

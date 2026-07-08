@@ -331,24 +331,17 @@
       "surface": "hapax-systems/hapax-assets"
     },
     {
-      "blocks": [
-        "github-public-claim-evidence-gate"
-      ],
+      "blocks": [],
       "category": "package_public_surfaces",
       "evidence_refs": [
-        "packages/hapax-refusals/README.md",
-        "packages/hapax-refusals/CITATION.cff",
-        "packages/hapax-refusals/pyproject.toml",
-        "packages/hapax-swarm/README.md",
-        "packages/hapax-swarm/CITATION.cff",
-        "packages/hapax-swarm/pyproject.toml"
+        "packages/"
       ],
-      "expected": "Package-public surfaces inherit the repo refusal/claim ceiling before refresh.",
-      "finding_id": "github.packages.issue-support-language-present",
-      "observed": "packages/hapax-refusals/README.md, packages/hapax-swarm/README.md",
-      "severity": "medium",
-      "status": "unreconciled",
-      "summary": "Some package README/PyPI surfaces contain issue/support language needing claim discipline.",
+      "expected": "Package README/CITATION/PyPI surfaces are explicitly inventoried.",
+      "finding_id": "github.packages.public-surfaces-inventory",
+      "observed": "No issue/support language detected by the current scanner.",
+      "severity": "info",
+      "status": "observed",
+      "summary": "Package public surfaces were inventoried and did not trigger issue/support drift.",
       "surface": "packages/"
     },
     {
@@ -368,7 +361,7 @@
       "surface": "cc-task closed/repo-pres-*"
     }
   ],
-  "generated_at": "2026-07-08T11:37:50Z",
+  "generated_at": "2026-07-08T14:45:05Z",
   "generated_by": "scripts/github-public-surface-reconcile.py",
   "live_repos": [
     {
@@ -511,7 +504,7 @@
         "status": null
       },
       "private": false,
-      "pushed_at": "2026-07-08T11:37:27Z",
+      "pushed_at": "2026-07-08T14:44:29Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -1561,7 +1554,7 @@
         "readme_mentions_support": false
       },
       {
-        "claim_status": "needs_claim_discipline",
+        "claim_status": "evidence_only",
         "evidence_refs": [
           "packages/hapax-refusals/README.md",
           "packages/hapax-refusals/CITATION.cff",
@@ -1572,11 +1565,11 @@
         "has_readme": true,
         "package_name": "hapax-refusals",
         "path": "packages/hapax-refusals/README.md",
-        "readme_mentions_issues": true,
+        "readme_mentions_issues": false,
         "readme_mentions_support": false
       },
       {
-        "claim_status": "needs_claim_discipline",
+        "claim_status": "evidence_only",
         "evidence_refs": [
           "packages/hapax-swarm/README.md",
           "packages/hapax-swarm/CITATION.cff",
@@ -1587,7 +1580,7 @@
         "has_readme": true,
         "package_name": "hapax-swarm",
         "path": "packages/hapax-swarm/README.md",
-        "readme_mentions_issues": true,
+        "readme_mentions_issues": false,
         "readme_mentions_support": false
       },
       {
@@ -1634,15 +1627,15 @@
       "hapax-watch": "PolyForm-Strict-1.0.0",
       "reins": "BUSL-1.1"
     },
-    "repo_head": "5daf3edee815375b002cb34f5c508c2be2badcf5",
+    "repo_head": "f5e8b8baa6edaa5f23f3bb0038961965894e521f",
     "root_file_sha256": {
       ".zenodo.json": "sha256:717b50fe0969239dbd36d2f70b923a649e930af771c2449da73d3c1ee96cbcde",
       "CITATION.cff": "sha256:04fba7c6d6a5abfb8340fb3621cfa2fe813c30fb2dcf50688fd91c3f99425b98",
       "CLAUDE.md": "sha256:023b149f0a94a873f25da74a48330b1985abbf1f85fad338608d5b222e905d07",
       "LICENSE": "sha256:2183f4abce696be915854ba97c2f1e95d60eb1ff776777c13e787dfec2fa105b",
       "NOTICE.md": "sha256:96b698773389a3316bd3f9bb5e8d2cd7eabd84f90ec2eb345f7eeb85b194b309",
-      "README.md": "sha256:7dbabf8b9a18d233aa4c73a8ffb0b3bc605cc1f7d31713a76099fd0d6310b7d6",
-      "SECURITY.md": "sha256:0f36b9cca4baee2129fd82d454285dec7ac9ccc33faf9a22ad4d9449efebb11c",
+      "README.md": "sha256:b3d31f59e69b1888c988d172c2624af94896d0bb2fd1db1f6663ea1119d1de54",
+      "SECURITY.md": "sha256:65a4a343101fa225615b4515af0d28a45c7fb54270e994a33dc7ce2f4a84acda",
       "codemeta.json": "sha256:9c3e47ee3760cf4e7e2303dd7c364528c39f119c0581c231be8f9ad04e6f790f"
     }
   },

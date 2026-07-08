@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from shared.publication_freshness import (
     build_publication_freshness_event,
     build_publication_freshness_snapshot,
     github_events_to_freshness_envelopes,
+    parse_iso_z,
     write_publication_freshness_events,
     write_publication_freshness_snapshot,
 )
@@ -192,6 +194,22 @@ def test_public_freshness_ttl_cannot_exceed_governed_slo() -> None:
             expires_at="2026-05-01T01:20:01Z",
             freshness_result="match",
         )
+
+
+def test_parse_iso_z_rejects_timezone_less_string() -> None:
+    with pytest.raises(ValueError, match="timezone offset"):
+        parse_iso_z("2026-07-08T14:00:00")
+
+
+def test_parse_iso_z_rejects_timezone_less_datetime() -> None:
+    with pytest.raises(ValueError, match="timezone offset"):
+        parse_iso_z(datetime(2026, 7, 8, 14, 0, 0))
+
+
+def test_parse_iso_z_normalizes_offset_datetime_to_utc() -> None:
+    parsed = parse_iso_z(datetime(2026, 7, 8, 9, 0, 0, tzinfo=UTC))
+
+    assert parsed == datetime(2026, 7, 8, 9, 0, 0, tzinfo=UTC)
 
 
 def test_freshness_event_and_snapshot_are_witness_only(tmp_path: Path) -> None:

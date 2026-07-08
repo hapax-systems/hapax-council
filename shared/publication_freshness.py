@@ -464,11 +464,16 @@ def parse_iso_z(value: datetime | str | None) -> datetime:
     """Parse UTC ISO strings with optional ``Z`` suffix."""
 
     if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("publication freshness timestamps must include a timezone offset")
         return value.astimezone(UTC)
     if value is None:
         return datetime.now(tz=UTC)
     normalised = value.replace("Z", "+00:00")
-    return datetime.fromisoformat(normalised).astimezone(UTC)
+    parsed = datetime.fromisoformat(normalised)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("publication freshness timestamps must include a timezone offset")
+    return parsed.astimezone(UTC)
 
 
 def isoformat_z(value: datetime) -> str:

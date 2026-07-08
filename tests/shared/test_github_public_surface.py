@@ -187,7 +187,7 @@ def test_public_claim_ceiling_and_package_surface_inventory_are_fail_closed() ->
     assert report.claim_ceiling == "public_archive"
     assert package_findings
     assert "monetization readiness" in " ".join(report.anti_overclaim)
-    assert any(
-        surface.claim_status == "needs_claim_discipline"
-        for surface in report.local_evidence.package_surfaces
-    )
+    assert package_findings[0].status == "observed"
+    assert {surface.claim_status for surface in report.local_evidence.package_surfaces} == {
+        "evidence_only"
+    }
