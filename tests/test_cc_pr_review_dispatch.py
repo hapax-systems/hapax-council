@@ -13,6 +13,7 @@ import json
 import logging
 import subprocess
 import sys
+from datetime import date
 from hashlib import sha256
 from pathlib import Path
 from types import ModuleType
@@ -1321,6 +1322,13 @@ checklist:
         assert dispatch.review_task_hash(frontmatter) == expected_hash
         assert set(reviewers.task_hashes) == {expected_hash}
 
+    def test_review_task_hash_accepts_date_only_frontmatter_scalars(self) -> None:
+        frontmatter = {"task_id": "task-a", "created_at": date(2026, 6, 9)}
+
+        assert dispatch.review_task_hash(frontmatter) == stable_payload_hash(
+            {"task_id": "task-a", "created_at": "2026-06-09"}
+        )
+
     def test_review_pr_companion_note_forwards_primary_task_hash(self, tmp_path: Path) -> None:
         class HashRecordingReviewers(RecordingReviewers):
             def __init__(self) -> None:
@@ -1372,6 +1380,17 @@ checklist:
         monkeypatch.setattr(dispatch, "stable_payload_hash", lambda _payload: "not-a-hash")
 
         with pytest.raises(ValueError, match="stable_frontmatter_hash_malformed"):
+            dispatch.review_task_hash({"task_id": "task-a"})
+
+    def test_review_task_hash_rejects_unhashable_frontmatter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fail_hash(_payload: dict[str, Any]) -> str:
+            raise TypeError("Object of type date is not JSON serializable")
+
+        monkeypatch.setattr(dispatch, "stable_payload_hash", fail_hash)
+
+        with pytest.raises(ValueError, match="stable_frontmatter_hash_unavailable:TypeError"):
             dispatch.review_task_hash({"task_id": "task-a"})
 
     def test_review_pr_blocks_when_hash_source_fails(

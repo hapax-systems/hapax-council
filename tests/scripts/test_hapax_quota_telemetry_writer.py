@@ -495,7 +495,7 @@ def test_glmcp_payg_spend_receipt_legacy_null_optionals_are_counted(
     assert summary["glmcp_ignored_payg_spend_receipts"] == 0
 
 
-def test_glmcp_payg_spend_receipt_rejects_malformed_task_hash(
+def test_glmcp_payg_spend_receipt_strips_malformed_task_hash_but_counts_spend(
     tmp_path: Path,
 ) -> None:
     relay = tmp_path / "relay-receipts"
@@ -515,13 +515,16 @@ def test_glmcp_payg_spend_receipt_rejects_malformed_task_hash(
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert not any(
-        receipt["spend_id"] == "spend-20260706T140430Z-glmcp-payg-review-test"
+    receipt = next(
+        receipt
         for receipt in payload["spend_receipts"]
+        if receipt["spend_id"] == "spend-20260706T140430Z-glmcp-payg-review-test"
     )
+    assert "task_hash" not in receipt
+    assert "stripped malformed optional task_hash" in result.stderr
     summary = json.loads(result.stdout)
-    assert summary["glmcp_payg_spend_receipts"] == 0
-    assert summary["glmcp_ignored_payg_spend_receipts"] == 1
+    assert summary["glmcp_payg_spend_receipts"] == 1
+    assert summary["glmcp_ignored_payg_spend_receipts"] == 0
 
 
 def test_glmcp_payg_admission_rechecks_witness_task_cap(tmp_path: Path) -> None:

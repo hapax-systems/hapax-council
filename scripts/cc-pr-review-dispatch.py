@@ -1475,7 +1475,10 @@ def default_reviewer_runner(
 
 
 def review_task_hash(frontmatter: dict[str, Any]) -> str:
-    stable_hash = stable_payload_hash(frontmatter)
+    try:
+        stable_hash = stable_payload_hash(frontmatter)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"stable_frontmatter_hash_unavailable:{type(exc).__name__}") from exc
     if not TASK_HASH_RE.fullmatch(stable_hash):
         raise ValueError("stable_frontmatter_hash_malformed")
     return stable_hash
