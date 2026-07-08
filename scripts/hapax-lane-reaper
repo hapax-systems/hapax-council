@@ -94,7 +94,7 @@ is_quota_wall_output() {
     local text="$1"
     [[ -z "$text" ]] && return 1
     printf '%s\n' "$text" | grep -Eiq \
-        '(^|[^[:alnum:]])(HTTP[[:space:]]*)?429([^[:alnum:]]|$)|Too Many Requests|rate[-_.[:space:]]*limit(ed)?[-_.[:space:]]*(exceeded|reached|hit|error)|rate[-_.[:space:]]*limited|Usage limit[[:space:]]+(reached|exceeded)|weekly[[:space:]]+limit|quota[-_[:space:]]+(wall|limit|exceeded|reached|blocked|exhausted)|blocked[: _-]+quota([^[:alnum:]-]|$)'
+        'HTTP[[:space:]]*429|429[[:space:]]+Too Many Requests|Too Many Requests|rate[-_.[:space:]]*limit(ed)?[-_.[:space:]]*(exceeded|reached|hit|error)|rate[-_.[:space:]]*limited|Usage limit[[:space:]]+(reached|exceeded)|weekly[[:space:]]+limit|quota[-_[:space:]]+(wall|limit|exceeded|reached|blocked|exhausted)|blocked[: _-]+quota([^[:alnum:]-]|$)'
 }
 
 if [[ "${HAPAX_LANE_REAPER_CLASSIFY_STDIN:-}" == "1" ]]; then
@@ -116,7 +116,6 @@ fi
 # reverts the THRESHOLD to the fixed minutes; the bounded-kill fix is permanent.
 DISPATCH_CACHE="${HAPAX_DISPATCH_SERVICE_TIME_CACHE:-$HOME/.cache/hapax/dispatch-service-time.json}"
 REAP_ATTEMPTS_DIR="${HAPAX_REAP_ATTEMPTS_DIR:-$HOME/.cache/hapax/lane-reap-attempts}"
-mkdir -p "$REAP_ATTEMPTS_DIR"
 
 reap_decide() {
     # echo skip|reap|escalate for (role, progress_age_s, attempts). Legacy or an
@@ -167,8 +166,14 @@ except (ValueError, ProcessLookupError, PermissionError):
 }
 
 reap_attempts() { cat "$REAP_ATTEMPTS_DIR/$1" 2>/dev/null || echo 0; }
-bump_reap_attempts() { echo "$(($(reap_attempts "$1") + 1))" >"$REAP_ATTEMPTS_DIR/$1"; }
-reset_reap_attempts() { rm -f "$REAP_ATTEMPTS_DIR/$1" 2>/dev/null || true; }
+bump_reap_attempts() {
+    mkdir -p "$REAP_ATTEMPTS_DIR"
+    echo "$(($(reap_attempts "$1") + 1))" >"$REAP_ATTEMPTS_DIR/$1"
+}
+reset_reap_attempts() {
+    [[ "$DRY_RUN" -eq 0 ]] || return 0
+    rm -f "$REAP_ATTEMPTS_DIR/$1" 2>/dev/null || true
+}
 
 # Keep the measured service-time cache warm on the reaper's already-scheduled cadence
 # (hourly), so the tau the coordinator + idle-watchdog + this reaper read is current.

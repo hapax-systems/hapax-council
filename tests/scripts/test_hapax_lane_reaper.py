@@ -50,7 +50,7 @@ def _base_env(tmp_path: Path, *, pane_pid: int, pane_text: str) -> dict[str, str
     bin_dir = tmp_path / "bin"
     attempts = tmp_path / "reap-attempts"
     cache = tmp_path / "dispatch-service-time.json"
-    for directory in (home, bin_dir, attempts):
+    for directory in (home, bin_dir):
         directory.mkdir(parents=True, exist_ok=True)
     cache.write_text("{}\n", encoding="utf-8")
     _write_fake_tmux(bin_dir)
@@ -247,6 +247,27 @@ def test_lane_reaper_dry_run_does_not_release_dead_lane_stale_claim(tmp_path: Pa
         _cleanup(pane)
 
 
+def test_lane_reaper_dry_run_does_not_reset_attempt_state(tmp_path: Path) -> None:
+    pane = _spawn_pane_shell()
+    try:
+        env = _base_env(
+            tmp_path,
+            pane_pid=pane.pid,
+            pane_text="ready",
+        )
+        attempts_dir = Path(env["HAPAX_REAP_ATTEMPTS_DIR"])
+        attempts_dir.mkdir(parents=True)
+        attempt_file = attempts_dir / "cx-red"
+        attempt_file.write_text("2\n", encoding="utf-8")
+
+        result = _run(env, "--dry-run")
+
+        assert result.returncode == 0, result.stderr
+        assert attempt_file.read_text(encoding="utf-8") == "2\n"
+    finally:
+        _cleanup(pane)
+
+
 def test_lane_reaper_classifier_keeps_quota_receipts_active() -> None:
     result = subprocess.run(
         [str(REAPER)],
@@ -273,6 +294,34 @@ def test_lane_reaper_classifier_keeps_quota_receipt_footer_active() -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "active"
+
+
+def test_lane_reaper_classifier_keeps_line_number_429_active() -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input="review note at line 429: update parser\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "active"
+
+
+def test_lane_reaper_classifier_accepts_http_429_wall() -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input="HTTP 429\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "stuck"
 
 
 def test_lane_reaper_classifier_accepts_blocked_quota_exhausted_wall() -> None:
