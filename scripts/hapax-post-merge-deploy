@@ -247,6 +247,8 @@ fi
 #
 # Only deploy-installed `scripts/hapax-*` symlinks are in scope: their target
 # is `<root>/scripts/<name>` and the target basename matches the link name.
+# A link to a different managed hapax-* script is still deploy drift; legacy
+# aliases to non-hapax script names remain outside this check.
 # Symlinks to non-worktree install dirs (e.g. hapax-hooks-doctor ->
 # ~/.local/lib/hapax/hooks/...) or legacy aliases to non-hapax script names
 # (e.g. hapax-request-decompose -> scripts/request-decompose) are not
@@ -281,6 +283,11 @@ check_symlink_drift() {
             */scripts/*)
                 target_base="$(basename "$target")"
                 if [ "$target_base" != "$base" ]; then
+                    case "$target_base" in
+                        hapax-*)
+                            offtree+=("$base -> $target (target name mismatch)")
+                            ;;
+                    esac
                     continue
                 fi
                 root="${target%/scripts/*}"

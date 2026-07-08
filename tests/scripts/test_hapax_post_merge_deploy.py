@@ -2015,6 +2015,23 @@ def test_check_symlink_drift_flags_offtree(tmp_path: Path) -> None:
     assert "off-tree" in result.stderr
 
 
+def test_check_symlink_drift_flags_hapax_script_name_mismatch(tmp_path: Path) -> None:
+    """A managed ``hapax-*`` symlink to a different managed script is drift."""
+    canonical = tmp_path / "worktree"
+    scripts = canonical / "scripts"
+    scripts.mkdir(parents=True)
+    target = scripts / "hapax-other"
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    _link(bin_dir, "hapax-demo", target)
+
+    result = _check_drift(_drift_env(tmp_path, bin_dir, HAPAX_DEPLOY_SYMLINK_ROOTS=str(canonical)))
+
+    assert result.returncode == 1, result.stdout
+    assert "target name mismatch" in result.stderr
+    assert "hapax-demo" in result.stderr
+
+
 def test_check_symlink_drift_ignores_non_script_install_symlinks(tmp_path: Path) -> None:
     """``hapax-hooks-doctor -> ~/.local/lib/hapax/hooks/hooks-doctor.sh`` is a
     manifest-installed hook, not a deploy-tree symlink — its target is not under
