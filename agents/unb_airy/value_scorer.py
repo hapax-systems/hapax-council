@@ -1,8 +1,8 @@
 """10-dimension value scoring for Unb-AIRy assertions.
 
-The scorer combines deterministic priors with a LiteLLM ``balanced`` review.
-Tests inject a fake completion callable; production callers use the LiteLLM
-proxy route from ``shared.config.MODELS["balanced"]``.
+The scorer combines deterministic priors with an explicit LiteLLM judgment
+route. Tests inject a fake completion callable; production callers use the
+configured LiteLLM proxy.
 """
 
 from __future__ import annotations
@@ -253,7 +253,7 @@ def score_assertion_heuristic(
 def score_assertion(
     assertion: Assertion,
     *,
-    model_alias: str = "balanced",
+    model_alias: str = "gemini-pro",
     completion_fn: CompletionFn | None = None,
     use_llm: bool = True,
     allow_heuristic_fallback: bool = False,
@@ -300,7 +300,7 @@ def score_assertion(
 def score_assertions(
     assertions: Iterable[Assertion],
     *,
-    model_alias: str = "balanced",
+    model_alias: str = "gemini-pro",
     completion_fn: CompletionFn | None = None,
     use_llm: bool = True,
     allow_heuristic_fallback: bool = False,
@@ -398,8 +398,9 @@ def _default_completion_fn() -> CompletionFn:
 
 def _model_id(alias_or_id: str) -> str:
     from shared.config import MODELS
+    from shared.model_route_policy import sanitize_model_route
 
-    return MODELS.get(alias_or_id, alias_or_id)
+    return sanitize_model_route(MODELS.get(alias_or_id, alias_or_id))
 
 
 def _litellm_proxy_kwargs(completion_fn: CompletionFn | None) -> dict[str, Any]:
@@ -409,7 +410,7 @@ def _litellm_proxy_kwargs(completion_fn: CompletionFn | None) -> dict[str, Any]:
 
     return {
         "api_base": LITELLM_BASE,
-        "api_key": LITELLM_KEY or "not-set",
+        "api_key": LITELLM_KEY,
     }
 
 
@@ -655,8 +656,8 @@ def _cli_main(argv: list[str] | None = None) -> int:
     parser.add_argument("-o", "--output", type=Path, help="Output JSON path. Defaults to stdout.")
     parser.add_argument(
         "--model",
-        default="balanced",
-        help="LiteLLM model alias or id for LLM scoring. Default: balanced.",
+        default="gemini-pro",
+        help="LiteLLM model alias or id for LLM scoring. Default: gemini-pro.",
     )
     parser.add_argument(
         "--no-llm", action="store_true", help="Use deterministic heuristic scoring only."

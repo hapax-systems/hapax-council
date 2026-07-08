@@ -35,7 +35,6 @@ import base64
 import json
 import logging
 import os
-import subprocess
 import threading
 import time
 import urllib.error
@@ -188,19 +187,15 @@ _LITELLM_KEY_CACHE: dict[str, str] = {}
 
 
 def _get_litellm_key() -> str:
-    """Fetch the LiteLLM master key via ``pass``. Cached process-wide."""
+    """Fetch the configured LiteLLM key. Cached process-wide."""
     if "key" in _LITELLM_KEY_CACHE:
         return _LITELLM_KEY_CACHE["key"]
     try:
-        result = subprocess.run(
-            ["pass", "show", "litellm/master-key"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        key = result.stdout.strip()
+        from shared.config import LITELLM_KEY
+
+        key = LITELLM_KEY
     except Exception:
-        log.debug("pass show litellm/master-key failed", exc_info=True)
+        log.debug("LiteLLM key resolution failed", exc_info=True)
         key = ""
     _LITELLM_KEY_CACHE["key"] = key
     return key

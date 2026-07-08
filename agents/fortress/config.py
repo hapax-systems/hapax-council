@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from shared.model_route_policy import STRONG_DEFAULT_MODEL
+
 
 @dataclass(frozen=True)
 class BridgeConfig:
@@ -82,7 +84,7 @@ class DeliberationConfig:
     """ReAct deliberation loop parameters."""
 
     model_daily: str = "local-fast"
-    model_seasonal: str = "anthropic/claude-opus-4-6"
+    model_seasonal: str = STRONG_DEFAULT_MODEL
     max_iterations: int = 3
     max_tool_calls: int = 5
     timeout_s: float = 15.0

@@ -14,7 +14,6 @@ import asyncio
 import base64
 import json
 import logging
-import os
 import time
 from contextlib import nullcontext
 from pathlib import Path
@@ -42,9 +41,11 @@ async def _call_vision_model(frame_b64: str, narrative: str) -> str:
     """Call gemini-flash via LiteLLM to describe the visual surface."""
     from openai import AsyncOpenAI
 
+    from shared.config import LITELLM_BASE, LITELLM_KEY
+
     client = AsyncOpenAI(
-        base_url="http://localhost:4000",
-        api_key=os.environ.get("LITELLM_API_KEY", "sk-dummy"),
+        base_url=LITELLM_BASE,
+        api_key=LITELLM_KEY,
     )
     user_content: list[dict] = [
         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{frame_b64}"}},

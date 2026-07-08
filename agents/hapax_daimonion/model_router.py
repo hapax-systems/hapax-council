@@ -10,14 +10,13 @@ Tiers (ascending latency + intelligence):
   LOCAL   — the ``local-fast`` LiteLLM route; what it serves is
             single-sourced in ``shared.config.LOCAL_FAST_SUBSTRATE``
   FAST    — gemini-flash via LiteLLM (~500-1400ms TTFT, tools)
-  STRONG  — claude-sonnet via LiteLLM (~800-2000ms TTFT)
+  STRONG  — gemini-pro via LiteLLM for ramping complexity
   CAPABLE — claude-opus via LiteLLM (~1500-3000ms TTFT)
 
 LOCAL handles greetings, source-conditioned responses, and simple
 multi-turn conversation on-device. All tiers use preference-optimized
 models; LOCAL requires supplied evidence, cloud tiers make open-world claims.
-STRONG uses natural dysfluency fillers ("um", "so", "let's see")
-that signal a normal thinking cadence.
+STRONG is a capability tier, not a vendor carve-out.
 
 The operator is always willing to wait for CAPABLE if the situation
 warrants it — the bridge phrase system tells them it's thinking.
@@ -47,7 +46,7 @@ class ModelTier(IntEnum):
     CANNED = 0
     LOCAL = 1  # local-fast route (shared.config.LOCAL_FAST_SUBSTRATE)
     FAST = 2  # gemini-flash — tools, general conversation
-    STRONG = 3  # claude-sonnet — ramping complexity
+    STRONG = 3  # gemini-pro — ramping complexity
     CAPABLE = 4  # claude-opus — full intelligence
 
 
@@ -56,7 +55,7 @@ TIER_ROUTES: dict[ModelTier, str] = {
     ModelTier.CANNED: "",  # no LLM call
     ModelTier.LOCAL: "local-fast",
     ModelTier.FAST: "gemini-flash",
-    ModelTier.STRONG: "claude-sonnet",
+    ModelTier.STRONG: "gemini-pro",
     ModelTier.CAPABLE: "claude-opus",
 }
 
@@ -227,7 +226,7 @@ def route(
     if any(p.search(text) for p in _ESCALATION_PATTERNS):
         hard_escalated = True
 
-    # Soft escalation → STRONG (Sonnet) — complexity is ramping
+    # Soft escalation → STRONG — complexity is ramping
     soft_escalated = False
     # Longer utterances suggest the operator is thinking harder
     if words >= 10:

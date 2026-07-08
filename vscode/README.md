@@ -43,9 +43,9 @@ All settings are under the `hapax.*` namespace in VS Code settings.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `hapax.provider` | `litellm` | LLM provider: `litellm`, `openai`, or `anthropic` |
+| `hapax.provider` | `litellm` | LLM provider: `litellm` |
 | `hapax.apiKey` | | API key (falls back to env var, then `pass` store) |
-| `hapax.model` | `claude-sonnet` | Model name (provider-specific) |
+| `hapax.model` | `local-fast` | Model name (provider-specific) |
 | `hapax.litellmUrl` | `http://localhost:4000` | LiteLLM proxy URL |
 | `hapax.qdrantUrl` | `http://localhost:6333` | Qdrant vector DB URL |
 | `hapax.qdrantCollection` | `documents` | Default Qdrant collection |
@@ -56,17 +56,15 @@ All settings are under the `hapax.*` namespace in VS Code settings.
 
 ### API Key Resolution
 
-Keys are resolved in order: VS Code setting > environment variable (via direnv) > `pass` GPG store. The environment variable and pass path are provider-specific:
+Keys are resolved in order: VS Code setting > environment variable (via direnv) > `pass` GPG store. The extension only reads the LiteLLM gateway credential:
 
 | Provider | Env Var | Pass Path |
 |----------|---------|-----------|
 | litellm | `LITELLM_API_KEY` | `litellm/master-key` |
-| openai | `OPENAI_API_KEY` | `api/openai` |
-| anthropic | `ANTHROPIC_API_KEY` | `api/anthropic` |
 
 ### Work vs. Home Network
 
-On corporate networks where LiteLLM is unreachable, the extension automatically switches to a sanctioned direct provider (OpenAI or Anthropic). RAG search and health status degrade silently -- chat continues working via direct API calls.
+On networks where LiteLLM is unreachable, the extension leaves the route pinned to the gateway and surfaces the failure. It does not fall through to direct provider APIs.
 
 ## Architecture
 
@@ -76,8 +74,7 @@ src/
   chat-view.ts           Webview chat UI with streaming
   llm-client.ts          LLM client (delegates to providers)
   providers/             LLM provider abstraction
-    openai-compatible.ts   LiteLLM + OpenAI (shared SSE format)
-    anthropic.ts           Anthropic Messages API
+    openai-compatible.ts   LiteLLM gateway transport (OpenAI-compatible SSE)
   commands/              Management commands (1:1, snapshot, search, etc.)
   interview/             Guided setup interview engine
   vault.ts               Vault file I/O + frontmatter parsing

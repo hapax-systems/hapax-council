@@ -38,12 +38,22 @@ def test_env_defaults():
 
 def test_get_model_returns_correct_type():
     model = get_model("balanced")
-    assert model.model_name == "claude-sonnet"
+    assert model.model_name == "local-fast"
 
 
-def test_get_model_alias_fallthrough():
+def test_get_model_sanitizes_sonnet_routes():
+    model = get_model("anthropic:claude-sonnet-4-6")
+    assert model.model_name == "gemini-pro"
+
+
+def test_get_model_sanitizes_openrouter_routes():
+    model = get_model("openrouter/openai/gpt-5")
+    assert model.model_name == "gemini-pro"
+
+
+def test_get_model_strips_provider_prefixes():
     model = get_model("anthropic/claude-opus-4")
-    assert model.model_name == "anthropic/claude-opus-4"
+    assert model.model_name == "claude-opus-4"
 
 
 def test_get_model_opus_returns_valid():

@@ -16,6 +16,11 @@ from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 
+from shared.model_route_policy import (
+    ROUTINE_DEFAULT_MODEL,
+    STRONG_DEFAULT_MODEL,
+    sanitize_model_route,
+)
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -149,7 +154,9 @@ class _FlagArg:
 
 _ALIAS_TO_MODEL_ROUTE = {
     "fast": "gemini-flash",
-    "balanced": "claude-sonnet",
+    "balanced": ROUTINE_DEFAULT_MODEL,
+    "strong": STRONG_DEFAULT_MODEL,
+    "gemini-pro": "gemini-pro",
     "claude-opus": "claude-opus",
     "opus": "claude-opus",
     "web-scout": "web-scout",
@@ -161,7 +168,7 @@ _ALIAS_TO_MODEL_ROUTE = {
 
 _MODEL_ROUTE_TO_PROVIDER = {
     "gemini-flash": "google",
-    "claude-sonnet": "anthropic",
+    "gemini-pro": "google",
     "claude-opus": "anthropic",
     "web-scout": "perplexity",
     "web-deep": "perplexity",
@@ -190,7 +197,7 @@ def _model_leaf(
     tool_refs: tuple[str, ...] = (),
     public_egress: bool = False,
 ) -> CockpitSupplyLeaf:
-    model_route = _ALIAS_TO_MODEL_ROUTE.get(alias, alias)
+    model_route = sanitize_model_route(_ALIAS_TO_MODEL_ROUTE.get(alias, alias))
     provider = _MODEL_ROUTE_TO_PROVIDER.get(model_route, "unknown")
     local = model_route in _LOCAL_MODEL_ROUTES
     capacity_pool = CapacityPool.LOCAL_COMPUTE.value if local else CapacityPool.API_PAID_SPEND.value

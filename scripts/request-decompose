@@ -760,7 +760,7 @@ def _decompose_with_llm(request_data: dict) -> RequestDecomposition | None:
 
         model = MODELS.get("balanced", "balanced")
     except Exception:
-        model = "balanced"
+        model = "local-fast"
         LITELLM_KEY = os.environ.get("LITELLM_API_KEY", "")
 
     fm = request_data["frontmatter"]

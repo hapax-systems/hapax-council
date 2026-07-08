@@ -171,15 +171,15 @@ class TestPipelineWiring:
 
         with (
             patch(
-                "agents.hapax_daimonion.config.LITELLM_BASE",
+                "shared.config.LITELLM_BASE",
                 "http://127.0.0.1:4000",
             ),
-            patch.dict("os.environ", {"LITELLM_API_KEY": "test-key"}),
+            patch("shared.config.LITELLM_KEY", "test-key"),
         ):
-            build_pipeline_task(llm_model="claude-sonnet")
+            build_pipeline_task(llm_model="local-fast")
 
         mock_llm_cls.assert_called_once_with(
-            model="claude-sonnet",
+            model="local-fast",
             api_key="test-key",
             base_url="http://127.0.0.1:4000",
         )

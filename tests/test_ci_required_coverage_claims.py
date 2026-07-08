@@ -92,6 +92,27 @@ def test_auto_fix_workflow_escalates_without_privileged_pr_checkout() -> None:
     assert 'gh run view "$RUN_ID"' in auto_fix_job
 
 
+def test_github_workflows_do_not_use_escaped_model_providers() -> None:
+    for workflow in (REPO_ROOT / ".github" / "workflows").glob("*.yml"):
+        text = workflow.read_text(encoding="utf-8")
+        assert "anthropics/claude-code-action" not in text, workflow
+        assert "ANTHROPIC_API_KEY" not in text, workflow
+        assert "OPENROUTER_API_KEY" not in text, workflow
+        assert "claude-sonnet-4-6" not in text, workflow
+
+
+def test_model_watchdogs_use_central_secret_boundary() -> None:
+    watchdog_dir = REPO_ROOT / "systemd" / "watchdogs"
+    for watchdog in watchdog_dir.glob("*-watchdog"):
+        text = watchdog.read_text(encoding="utf-8")
+        if "LITELLM_API_KEY" not in text:
+            continue
+        assert "changeme" not in text, watchdog
+        assert "pass show litellm/master-key" not in text, watchdog
+        assert "hapax-secrets.env" in text, watchdog
+        assert ': "${LITELLM_API_KEY:?' in text, watchdog
+
+
 def test_sdlc_implement_shell_uses_validated_issue_env_not_inline_payload() -> None:
     workflow_text = _read(".github/workflows/sdlc-implement.yml")
     plan_job = _workflow_job_block(workflow_text, "plan-and-implement")
@@ -466,7 +487,12 @@ def test_claude_review_docs_only_prs_trigger_review_sentinel() -> None:
     assert "Detect docs-only review change set" in review_job
     assert "Docs-only review sentinel" in review_job
     assert "steps.docs.outputs.docs_only == 'true'" in review_job
-    assert "env.CLAUDE_REVIEW_CONFIGURED == 'true'" in review_job
+    assert "No-escape review hold" in review_job
+    assert (
+        "External Claude review is disabled until a no-escape route receipt exists." in review_job
+    )
+    assert "review_ready=false" in review_job
+    assert "steps.claude.outputs.review_ready == 'true'" in review_job
     assert "steps.docs.outputs.docs_only != 'true'" in review_job
 
 

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 import time
 import uuid
@@ -858,11 +857,9 @@ async def handle_confirm_send_sms(params) -> None:
 
 def _vision_analyze(images: list[str], question: str) -> str:
     """Send base64 images to Gemini Flash for visual analysis via LiteLLM."""
-    from agents.hapax_daimonion.config import LITELLM_BASE
+    from shared.config import LITELLM_BASE, LITELLM_KEY
 
-    base_url = LITELLM_BASE
-    api_key = os.environ.get("LITELLM_API_KEY", "not-set")
-    client = OpenAI(base_url=base_url, api_key=api_key)
+    client = OpenAI(base_url=LITELLM_BASE, api_key=LITELLM_KEY)
 
     content = []
     for img in images:

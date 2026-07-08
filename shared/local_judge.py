@@ -150,10 +150,12 @@ class LocalJudge:
         timeout: float = 30.0,
         max_tokens: int = 8,
     ) -> None:
+        from shared.config import LITELLM_BASE, LITELLM_KEY
+
         self.route = route
         self.shadow = shadow
-        self.api_base = api_base or os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000")
-        self.api_key = api_key or os.environ.get("LITELLM_API_KEY", "not-set")
+        self.api_base = api_base or LITELLM_BASE
+        self.api_key = api_key or LITELLM_KEY
         self.timeout = timeout
         self.max_tokens = max_tokens
 

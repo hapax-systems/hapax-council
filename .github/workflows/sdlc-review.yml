@@ -33,7 +33,6 @@ jobs:
       - name: Run adversarial review
         id: review
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LANGFUSE_EXPORT_FILE: /tmp/langfuse-traces.jsonl
         run: |
           set -eo pipefail

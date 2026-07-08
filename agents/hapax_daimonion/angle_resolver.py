@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -193,7 +192,7 @@ def _reangle_queries(topic: str, packets: list[SourcePacket], *, limit: int = 2)
     try:
         import litellm
 
-        from shared.config import MODELS
+        from shared.config import LITELLM_BASE, LITELLM_KEY, MODELS
 
         found = "; ".join(p.snippet[:80] for p in packets[:3]) or "(nothing found locally)"
         prompt = (
@@ -208,8 +207,8 @@ def _reangle_queries(topic: str, packets: list[SourcePacket], *, limit: int = 2)
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200,
             temperature=0.4,
-            api_base=os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000"),
-            api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
+            api_base=LITELLM_BASE,
+            api_key=LITELLM_KEY,
             timeout=PREP_LLM_TIMEOUT_S,
         )
         text = response.choices[0].message.content or ""
@@ -422,7 +421,7 @@ def _select_angle(topic: str, packets: list[SourcePacket]) -> AngleHypothesis | 
     this call, so a missing angle costs only the thesis/tension prose, never the
     citable handles.
     """
-    from shared.config import MODELS
+    from shared.config import LITELLM_BASE, LITELLM_KEY, MODELS
 
     try:
         import litellm
@@ -458,8 +457,8 @@ def _select_angle(topic: str, packets: list[SourcePacket]) -> AngleHypothesis | 
             messages=[{"role": "user", "content": prompt}],
             max_tokens=500,
             temperature=0.3,
-            api_base=os.environ.get("LITELLM_API_BASE", "http://127.0.0.1:4000"),
-            api_key=os.environ.get("LITELLM_API_KEY", "not-set"),
+            api_base=LITELLM_BASE,
+            api_key=LITELLM_KEY,
             # Audit v2 §5e "every LLM call bounded": this was the one
             # daimonion call site with no timeout (litellm default: 600s).
             timeout=PREP_LLM_TIMEOUT_S,

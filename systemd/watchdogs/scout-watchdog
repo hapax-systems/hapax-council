@@ -5,18 +5,17 @@ set -euo pipefail
 
 cd /home/hapax/projects/hapax-council
 
-# Load credentials from pass store (systemd sets PASSWORD_STORE_DIR + GNUPGHOME)
-pass_first_line() {
-    local name="$1"
-    pass show "$name" 2>/dev/null | sed -n '1p'
-}
-
-LITELLM_API_KEY="$(pass_first_line litellm/master-key || echo "changeme")"
-LANGFUSE_PUBLIC_KEY="$(pass_first_line langfuse/public-key || true)"
-LANGFUSE_SECRET_KEY="$(pass_first_line langfuse/secret-key || true)"
-export LITELLM_API_KEY
-export LANGFUSE_PUBLIC_KEY
-export LANGFUSE_SECRET_KEY
+# Load credentials from the central tmpfs secret boundary.
+SECRETS_ENV="${HAPAX_SECRETS_ENV:-/run/user/1000/hapax-secrets.env}"
+if [[ ! -r "$SECRETS_ENV" ]]; then
+    echo "ERROR: missing $SECRETS_ENV; hapax-secrets.service must materialize runtime credentials" >&2
+    exit 1
+fi
+set -a
+# shellcheck source=/run/user/1000/hapax-secrets.env
+source "$SECRETS_ENV"
+set +a
+: "${LITELLM_API_KEY:?missing LITELLM_API_KEY in $SECRETS_ENV}"
 # Tavily credentials are resolved inside shared.tavily_client from env/pass
 # so the watchdog does not export them into the process supervisor boundary.
 

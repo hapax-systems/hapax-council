@@ -13,7 +13,6 @@ import asyncio
 import enum
 import json
 import logging
-import os
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -153,7 +152,7 @@ class ConversationPipeline:
         system_prompt: str,
         tools: list[dict] | None = None,
         tool_handlers: dict[str, object] | None = None,
-        llm_model: str = "claude-sonnet",
+        llm_model: str = "local-fast",
         event_log=None,
         conversation_buffer=None,  # ConversationBuffer
         timeout_s: float = _SILENCE_TIMEOUT_S,
@@ -437,7 +436,7 @@ class ConversationPipeline:
                     max_tokens=80,
                     temperature=0.7,
                     api_base=_voice_litellm_base,
-                    api_key=LITELLM_KEY or os.environ.get("LITELLM_API_KEY", "not-set"),
+                    api_key=LITELLM_KEY,
                     timeout=SPONTANEOUS_LLM_TIMEOUT_S,
                 )
             budget.mark("llm", t0=_t_llm)
@@ -1389,8 +1388,6 @@ class ConversationPipeline:
         """Stream LLM response, accumulate sentences, synthesize and play."""
         speech_tasks: list[asyncio.Task[str]] = []
         try:
-            import os
-
             import litellm
 
             # Bound message history: drop old turns, keep system + last 5 exchanges.
@@ -1471,7 +1468,7 @@ class ConversationPipeline:
                 ),
                 "temperature": 0.7,
                 "api_base": _voice_litellm_base,
-                "api_key": os.environ.get("LITELLM_API_KEY", "not-set"),
+                "api_key": LITELLM_KEY,
             }
             if self.tools and self._tool_recruitment_gate:
                 recruited_names = self._tool_recruitment_gate.recruit(envelope)

@@ -33,7 +33,6 @@ jobs:
       - name: Run axiom compliance gate
         id: gate
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LANGFUSE_EXPORT_FILE: /tmp/langfuse-traces.jsonl
         run: |
           set -eo pipefail

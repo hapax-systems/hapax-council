@@ -12,6 +12,8 @@ from pathlib import Path
 from opentelemetry import trace
 from qdrant_client import QdrantClient
 
+from shared.model_route_policy import ROUTINE_DEFAULT_MODEL, sanitize_model_route
+
 # -- Environment ---------------------------------------------------------------
 
 LITELLM_BASE: str = os.environ.get(
@@ -92,7 +94,7 @@ HAPAX_VSCODE_DIR: Path = HAPAX_COUNCIL_DIR / "vscode"
 
 MODELS: dict[str, str] = {
     "fast": "gemini-flash",
-    "balanced": "claude-sonnet",
+    "balanced": ROUTINE_DEFAULT_MODEL,
     "long-context": "gemini-flash",
     "reasoning": "reasoning",
     "coding": "coding",
@@ -113,7 +115,7 @@ def get_model(alias_or_id: str = "balanced"):
     from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.litellm import LiteLLMProvider
 
-    model_id = MODELS.get(alias_or_id, alias_or_id)
+    model_id = sanitize_model_route(MODELS.get(alias_or_id, alias_or_id))
     return OpenAIChatModel(
         model_id,
         provider=LiteLLMProvider(api_base=LITELLM_BASE, api_key=LITELLM_KEY),

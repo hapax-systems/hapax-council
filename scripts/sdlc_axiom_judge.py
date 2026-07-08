@@ -39,6 +39,7 @@ from sdlc.github import (
 )
 from sdlc.trace_export import TraceContext, is_file_export
 from shared.diff_context import DiffContext, evaluate_deterministic
+from shared.model_route_policy import SDLC_DEFAULT_MODEL, sanitize_model_route
 
 # ---------------------------------------------------------------------------
 # Structured output
@@ -175,7 +176,7 @@ Return a JSON array of objects: [{{axiom_id, compliant, tier_violated, reasoning
 
 
 def _call_judge(system: str, diff: str, *, dry_run: bool = False) -> list[SemanticVerdict]:
-    model = os.environ.get("SDLC_JUDGE_MODEL", "claude-haiku-4-5-20251001")
+    model = sanitize_model_route(os.environ.get("SDLC_JUDGE_MODEL", SDLC_DEFAULT_MODEL))
 
     if dry_run:
         return [
@@ -190,38 +191,17 @@ def _call_judge(system: str, diff: str, *, dry_run: bool = False) -> list[Semant
     user_prompt = f"## Code Diff\n```diff\n{diff[:30000]}\n```"
 
     try:
-        import anthropic
-
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model=model,
-            max_tokens=2048,
-            system=system,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        text = response.content[0].text
-    except ImportError:
         from pydantic_ai import Agent
 
+        from shared.config import get_model
+
         agent = Agent(
-            f"anthropic:{model}" if ":" not in model else model,
+            get_model(model),
             system_prompt=system,
             output_type=list[SemanticVerdict],
         )
         result = agent.run_sync(user_prompt)
         verdicts = result.output
-        for v in verdicts:
-            v.provenance_model = model
-        return _wrap_says(verdicts, model)
-
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0]
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0]
-
-    try:
-        raw = json.loads(text.strip())
-        verdicts = [SemanticVerdict.model_validate(v) for v in raw]
         for v in verdicts:
             v.provenance_model = model
         return _wrap_says(verdicts, model)

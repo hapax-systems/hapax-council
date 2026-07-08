@@ -26,7 +26,6 @@ jobs:
       - name: Run triage agent
         id: triage
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LANGFUSE_EXPORT_FILE: /tmp/langfuse-traces.jsonl
         run: |
           set -eo pipefail

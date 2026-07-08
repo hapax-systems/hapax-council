@@ -4,10 +4,8 @@ import type { HapaxSettings, LLMProviderType } from "./types";
 import { WORK_VAULT_PROVIDERS, PROVIDER_MODELS } from "./types";
 
 /** Map provider to the pass path and env var that holds its key. */
-const PROVIDER_KEY_SOURCES: Record<LLMProviderType, { env: string; pass: string }> = {
+const PROVIDER_KEY_SOURCES: Partial<Record<LLMProviderType, { env: string; pass: string }>> = {
   litellm: { env: "LITELLM_API_KEY", pass: "litellm/master-key" },
-  anthropic: { env: "ANTHROPIC_API_KEY", pass: "api/anthropic" },
-  openai: { env: "OPENAI_API_KEY", pass: "api/openai" },
 };
 
 /**
@@ -40,7 +38,7 @@ export function getSettings(): HapaxSettings {
   return {
     provider,
     apiKey: resolveApiKey(provider, explicitKey),
-    model: config.get<string>("model", "claude-sonnet"),
+    model: config.get<string>("model", "local-fast"),
     litellmUrl: config.get<string>("litellmUrl", "http://localhost:4000"),
     qdrantUrl: config.get<string>("qdrantUrl", "http://localhost:6333"),
     qdrantCollection: config.get<string>("qdrantCollection", "documents"),
@@ -55,14 +53,11 @@ export function getSettings(): HapaxSettings {
 }
 
 /**
- * Enforce provider allowlist for work vaults on corporate networks.
+ * Enforce the local gateway boundary for work vaults on corporate networks.
  *
- * The work vault exists on both home and corporate machines (synced via git).
- * At home, LiteLLM is available and should be used. At work, LiteLLM is
- * unreachable and only sanctioned providers (OpenAI, Anthropic) are allowed.
- *
- * Detection: if LiteLLM is reachable, we're at home — no restriction needed.
- * If unreachable and provider is litellm, switch to a sanctioned provider.
+ * The extension must not silently fall through to a direct provider. When the
+ * gateway is unavailable, leave the provider pinned to LiteLLM and make the
+ * missing route visible to the operator.
  */
 export async function enforceWorkVaultProvider(
   isWork: boolean
@@ -71,17 +66,13 @@ export async function enforceWorkVaultProvider(
 
   const config = vscode.workspace.getConfiguration("hapax");
   const provider = config.get<LLMProviderType>("provider", "litellm");
-
-  // Only enforce when using a non-sanctioned provider
-  if (WORK_VAULT_PROVIDERS.includes(provider)) return;
-
-  // Check if LiteLLM is reachable (home network indicator)
   const litellmUrl = config.get<string>("litellmUrl", "http://localhost:4000");
+
   try {
     const resp = await fetch(`${litellmUrl}/health/liveliness`, { signal: AbortSignal.timeout(2000) });
-    if (resp.ok) return; // LiteLLM reachable — we're at home, no restriction
+    if (resp.ok && provider === "litellm") return;
   } catch {
-    // Unreachable — we're on corporate network
+    // Unreachable; fall through to the no-escape correction below.
   }
 
   const corrected = WORK_VAULT_PROVIDERS[0];
@@ -101,6 +92,6 @@ export async function enforceWorkVaultProvider(
   }
 
   vscode.window.showWarningMessage(
-    `Hapax: LiteLLM unreachable on corporate network. Switched to "${corrected}".`
+    "Hapax: direct provider fallback is disabled. Route through the LiteLLM gateway."
   );
 }

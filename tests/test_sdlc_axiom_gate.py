@@ -225,20 +225,13 @@ class TestFailClosedParsing:
     """Tests for fail-closed JSON parsing in _call_judge."""
 
     def test_json_parse_failure_blocks(self):
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
-        import anthropic
+        class BadAgent:
+            def run_sync(self, _user: str):
+                raise ValueError("not valid json at all")
 
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="not valid json at all")]
-
-        with patch.object(
-            anthropic,
-            "Anthropic",
-            return_value=MagicMock(
-                messages=MagicMock(create=MagicMock(return_value=mock_response))
-            ),
-        ):
+        with patch("pydantic_ai.Agent", return_value=BadAgent()):
             result = _call_judge("system prompt", "diff content")
             assert len(result) == 1
             assert not result[0].compliant
@@ -246,19 +239,12 @@ class TestFailClosedParsing:
             assert "parse_failure" in result[0].axiom_id
 
     def test_json_parse_failure_never_passes(self):
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
-        import anthropic
+        class BadAgent:
+            def run_sync(self, _user: str):
+                raise ValueError('{"partial": true')
 
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text='{"partial": true')]
-
-        with patch.object(
-            anthropic,
-            "Anthropic",
-            return_value=MagicMock(
-                messages=MagicMock(create=MagicMock(return_value=mock_response))
-            ),
-        ):
+        with patch("pydantic_ai.Agent", return_value=BadAgent()):
             result = _call_judge("system prompt", "diff content")
             assert all(not v.compliant for v in result)

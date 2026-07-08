@@ -203,7 +203,7 @@ def test_stimmung_downgrade_non_dict_root_returns_input(payload, kind):
     from agents.hapax_daimonion.conversation_helpers import _stimmung_downgrade
     from agents.hapax_daimonion.model_router import ModelTier
 
-    initial_model = "claude-sonnet"
+    initial_model = "gemini-pro"
     initial_tier = ModelTier.STRONG
 
     # Patch the file content via Path.read_text just like other tests.

@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
 from agents._operator import get_system_prompt_fragment
+from shared.model_route_policy import ROUTINE_DEFAULT_MODEL, sanitize_model_route
 from shared.tavily_client import (
     TavilyBudgetExceeded,
     TavilyClient,
@@ -53,7 +54,7 @@ _LITELLM_BASE: str = os.environ.get(
 _LITELLM_KEY: str = os.environ.get("LITELLM_API_KEY", "")
 _MODELS: dict[str, str] = {
     "fast": "gemini-flash",
-    "balanced": "claude-sonnet",
+    "balanced": ROUTINE_DEFAULT_MODEL,
     "long-context": "gemini-flash",
     "reasoning": "reasoning",
     "coding": "coding",
@@ -66,7 +67,7 @@ def get_model(alias_or_id: str = "balanced"):
     from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.litellm import LiteLLMProvider
 
-    model_id = _MODELS.get(alias_or_id, alias_or_id)
+    model_id = sanitize_model_route(_MODELS.get(alias_or_id, alias_or_id))
     return OpenAIChatModel(
         model_id,
         provider=LiteLLMProvider(api_base=_LITELLM_BASE, api_key=_LITELLM_KEY),

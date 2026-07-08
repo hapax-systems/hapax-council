@@ -10,6 +10,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.litellm import LiteLLMProvider
 
 from shared.config import LITELLM_BASE, LITELLM_KEY, MODELS
+from shared.model_route_policy import sanitize_model_route
 
 from .capability_admission import admit_model_alias
 from .litellm_request_policy import litellm_no_fallback_model_settings
@@ -33,7 +34,7 @@ MODEL_TOOL_LEVELS: dict[str, ToolLevel] = {
 
 MODEL_FAMILIES: dict[str, str] = {
     "opus": "anthropic",
-    "balanced": "anthropic",
+    "balanced": "google",
     "gemini-3-pro": "google",
     "local-fast": "cohere",
     "web-research": "perplexity",
@@ -201,7 +202,12 @@ def cache_policy_for_aliases(model_aliases: tuple[str, ...]) -> dict[str, dict[s
 
 def model_route_for_alias(model_alias: str) -> str:
     alias = normalize_model_alias(model_alias)
-    return MODELS.get(alias, alias)
+    council_routes = {
+        # Legacy council seat name. Do not inherit shared.MODELS["balanced"],
+        # which is now the routine local default.
+        "balanced": "gemini-pro",
+    }
+    return sanitize_model_route(council_routes.get(alias, MODELS.get(alias, alias)))
 
 
 def get_cctv_model(model_alias: str) -> CCTVLiteLLMChatModel:

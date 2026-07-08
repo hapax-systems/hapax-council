@@ -43,7 +43,7 @@ KNOWN_LANES: dict[str, dict] = {
 MODEL_DEFAULTS: dict[str, tuple[str, int]] = {
     "claude-code": ("claude-opus-4-6", 1_000_000),
     "codex": ("o3", 200_000),
-    "vibe": ("claude-sonnet-4-6", 200_000),
+    "vibe": ("mistral-medium-3.5", 256_000),
 }
 
 TOOL_DEFAULTS: dict[str, list[str]] = {

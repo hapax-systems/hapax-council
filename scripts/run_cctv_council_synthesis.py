@@ -87,7 +87,7 @@ CLAIMS = [
         "source": "council_synthesis_3",
         "text": "The conversation path is NOT fixed to local models: salience routing escalates to cloud (local-fast threshold 0.20, anything above routes to cloud RLHF)",
         "source_ref": "agents/hapax_daimonion/model_router.py",
-        "evidence_cited": "TIER_ROUTES: LOCAL(0-0.20)->local-fast, FAST->gemini-flash, STRONG->claude-sonnet, CAPABLE->claude-opus",
+        "evidence_cited": "TIER_ROUTES: LOCAL(0-0.20)->local-fast, FAST->gemini-flash, STRONG->gemini-pro, CAPABLE->claude-opus",
     },
     {
         "id": "C3-4",

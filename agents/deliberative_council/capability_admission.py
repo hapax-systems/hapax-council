@@ -121,8 +121,8 @@ MODEL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
     ),
     "balanced": CapabilityDescriptor(
         capability_id="cctv.model.balanced",
-        route_id="claude-sonnet",
-        provider="anthropic",
+        route_id="gemini-pro",
+        provider="google",
         capacity_pool=CapacityPool.API_PAID_SPEND,
         profile="frontier-fast",
         platform_route_id="api.headless.provider_gateway",
