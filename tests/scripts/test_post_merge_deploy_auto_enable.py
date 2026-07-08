@@ -105,13 +105,22 @@ def _git(repo: Path, *args: str) -> None:
     )
 
 
-def _make_repo(tmp_path: Path, units: dict[str, str]) -> tuple[Path, str]:
+def _make_repo(
+    tmp_path: Path,
+    units: dict[str, str],
+    *,
+    files: dict[str, str] | None = None,
+) -> tuple[Path, str]:
     repo = tmp_path / "repo"
     (repo / "systemd" / "units").mkdir(parents=True)
     for name, body in units.items():
         (repo / "systemd" / "units" / name).write_text(
             textwrap.dedent(body).strip() + "\n", encoding="utf-8"
         )
+    for relpath, body in (files or {}).items():
+        path = repo / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(body).strip() + "\n", encoding="utf-8")
     _git(repo, "init", "-q")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "fixture units")
@@ -297,6 +306,71 @@ def test_deploy_removes_sdlc_vocab_bridge_by_content_and_preserves_unrelated_dro
     assert not scratch_bridge.exists()
     assert unrelated.exists()
     assert dropin_dir.exists()
+
+
+def test_deploy_removes_stale_coord_rebuild_dropins_and_preserves_unrelated(
+    tmp_path: Path,
+) -> None:
+    """Source-owned coord rebuild must not keep stale local/recovery overrides."""
+    repo, sha = _make_repo(
+        tmp_path,
+        {
+            "hapax-coord-rebuild.service": """
+            [Unit]
+            Description=Deploy hapax-coord activation from origin/main
+            ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-coord-deploy
+            Wants=network-online.target
+            After=network-online.target
+            [Service]
+            Type=oneshot
+            WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+            ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-coord-deploy
+            """,
+        },
+        files={
+            "scripts/hapax-recovery-plane-install": """
+            #!/usr/bin/env bash
+            exit 0
+            """,
+        },
+    )
+    dropin_dir = tmp_path / "home/.config/systemd/user/hapax-coord-rebuild.service.d"
+    dropin_dir.mkdir(parents=True)
+    scratch = dropin_dir / "10-relocate.conf"
+    recovery = dropin_dir / "99-d2-stable-recovery-bundle.conf"
+    mutable_root = dropin_dir / "20-old-pr-root.conf"
+    unrelated = dropin_dir / "50-operator-environment.conf"
+    scratch.write_text(
+        "[Service]\nExecStart=\n"
+        "ExecStart=%h/.cache/hapax/scratch/vocab-export/scripts/hapax-coord-deploy\n",
+        encoding="utf-8",
+    )
+    recovery.write_text(
+        "[Unit]\n"
+        "ConditionPathExists=%h/.local/lib/hapax-recovery/council/current/scripts/hapax-coord-deploy\n"
+        "[Service]\nExecStart=\n"
+        "ExecStart=%h/.local/lib/hapax-recovery/council/current/scripts/hapax-coord-deploy\n",
+        encoding="utf-8",
+    )
+    mutable_root.write_text(
+        "[Service]\nWorkingDirectory=!/home/hapax\n",
+        encoding="utf-8",
+    )
+    unrelated.write_text(
+        "[Service]\nEnvironment=HAPAX_COORD_REBUILD_NOTE=keep\n",
+        encoding="utf-8",
+    )
+    bin_dir, _calls = _make_fake_systemctl(tmp_path)
+
+    res = _run([sha], repo=repo, bin_dir=bin_dir, tmp_path=tmp_path)
+
+    assert res.returncode == 0, res.stderr
+    assert not scratch.exists()
+    assert not recovery.exists()
+    assert not mutable_root.exists()
+    assert unrelated.exists()
+    assert dropin_dir.exists()
+    assert "removing stale coord rebuild drop-in" in res.stdout
 
 
 def test_deploy_auto_enables_marked_timer(tmp_path: Path) -> None:
