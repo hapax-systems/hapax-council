@@ -2108,6 +2108,8 @@ def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
     workdir = tmp_path / "workdir"
     workdir.mkdir()
+    codex_bin = tmp_path / "bin" / "codex"
+    _write_executable(codex_bin, "exit 0\n")
     token_path = _write_codex_access_token(tmp_path / "handoff", exp=int(time.time()) + 3600)
     seal_key = "e" * 64
     token_path.write_text(
@@ -2135,7 +2137,7 @@ def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
     env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
     env["NPM_CONFIG_PREFIX"] = ""
     env["PATH"] = str(_python_only_remote_path(tmp_path))
-    env.pop("HAPAX_CODEX_BIN_PATH", None)
+    env["HAPAX_CODEX_BIN_PATH"] = str(codex_bin)
 
     result = subprocess.run(
         [sys.executable, "-c", remote_exec_py],
@@ -2154,6 +2156,8 @@ def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: P
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
     workdir = tmp_path / "workdir"
     workdir.mkdir()
+    codex_bin = tmp_path / "bin" / "codex"
+    _write_executable(codex_bin, "exit 0\n")
     token_path = _write_codex_access_token(tmp_path / "handoff", exp=int(time.time()) + 3600)
     seal_key = "f" * 64
     token_path.write_text(
@@ -2178,7 +2182,7 @@ def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: P
     env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
     env["NPM_CONFIG_PREFIX"] = ""
     env["PATH"] = str(_python_only_remote_path(tmp_path))
-    env.pop("HAPAX_CODEX_BIN_PATH", None)
+    env["HAPAX_CODEX_BIN_PATH"] = str(codex_bin)
 
     result = subprocess.run(
         [sys.executable, "-c", remote_exec_py],
