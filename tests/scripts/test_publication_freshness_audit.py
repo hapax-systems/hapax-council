@@ -173,6 +173,68 @@ def test_publication_freshness_audit_rejects_run_time_before_source_report(
     assert "generated_at predates the source GitHub report generated_at" in result.stderr
 
 
+def test_publication_freshness_audit_rejects_malformed_generated_at(
+    tmp_path: Path,
+) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--github-report",
+            str(REPORT),
+            "--output-events",
+            str(tmp_path / "freshness-events.jsonl"),
+            "--output-state",
+            str(tmp_path / "freshness-state.json"),
+            "--generated-at",
+            "not-a-timestamp",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "invalid --generated-at timestamp" in result.stderr
+    assert "Next action: rerun with a valid UTC ISO timestamp" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_publication_freshness_audit_rejects_invalid_github_ttl(
+    tmp_path: Path,
+) -> None:
+    generated_at = _iso_after_report()
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--github-report",
+            str(REPORT),
+            "--output-events",
+            str(tmp_path / "freshness-events.jsonl"),
+            "--output-state",
+            str(tmp_path / "freshness-state.json"),
+            "--generated-at",
+            generated_at,
+            "--github-ttl-s",
+            "315360000",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "invalid --github-ttl-s 315360000" in result.stderr
+    assert "Next action: rerun with the governed GitHub public-readback freshness SLO" in (
+        result.stderr
+    )
+    assert "Traceback" not in result.stderr
+
+
 def test_publication_freshness_audit_malformed_report_names_next_action(
     tmp_path: Path,
 ) -> None:

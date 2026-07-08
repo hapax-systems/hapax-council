@@ -19,6 +19,7 @@ from shared.publication_freshness import (
     DEFAULT_FRESHNESS_EVENTS,
     DEFAULT_FRESHNESS_STATE,
     DEFAULT_GITHUB_TTL_S,
+    MAX_PUBLIC_SURFACE_FRESHNESS_TTL_S,
     build_publication_freshness_event,
     build_publication_freshness_snapshot,
     github_events_to_freshness_envelopes,
@@ -50,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     report = _read_github_report(args.github_report)
+    _validate_github_ttl(args.github_ttl_s)
     _validate_audit_timestamp(args.generated_at, report.generated_at)
     github_checked_at = report.generated_at
     github_events = events_from_github_public_surface_report(
@@ -140,12 +142,35 @@ def _read_github_report(path: Path) -> GitHubPublicSurfaceReport:
 
 
 def _validate_audit_timestamp(generated_at: str, checked_at: str) -> None:
-    if parse_iso_z(generated_at) < parse_iso_z(checked_at):
+    generated = _parse_required_iso_z("--generated-at", generated_at)
+    checked = _parse_required_iso_z("GitHub report generated_at", checked_at)
+    if generated < checked:
         raise SystemExit(
             "publication freshness audit generated_at predates the source GitHub "
             f"report generated_at ({checked_at}); rerun with a generated_at at or "
             "after the checked report timestamp"
         )
+
+
+def _validate_github_ttl(ttl_s: int) -> None:
+    if ttl_s <= 0 or ttl_s > MAX_PUBLIC_SURFACE_FRESHNESS_TTL_S:
+        raise SystemExit(
+            f"invalid --github-ttl-s {ttl_s}; expected an integer between 1 and "
+            f"{MAX_PUBLIC_SURFACE_FRESHNESS_TTL_S}. Next action: rerun with the governed "
+            "GitHub public-readback freshness SLO and hold release until "
+            "publication-freshness-audit passes."
+        )
+
+
+def _parse_required_iso_z(label: str, value: str) -> datetime:
+    try:
+        return parse_iso_z(value)
+    except ValueError as exc:
+        raise SystemExit(
+            f"invalid {label} timestamp {value!r}: {exc}. Next action: rerun with a "
+            "valid UTC ISO timestamp and hold release until publication-freshness-audit "
+            "passes."
+        ) from exc
 
 
 def _now_iso() -> str:

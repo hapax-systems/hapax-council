@@ -31,6 +31,7 @@ ANTI_OVERCLAIM_REASON = (
     "monetization_or_research_validity"
 )
 DEFAULT_GITHUB_TTL_S = 1_800
+MAX_PUBLIC_SURFACE_FRESHNESS_TTL_S = DEFAULT_GITHUB_TTL_S
 
 type PublicationFreshnessEventType = Literal[
     "publication.intent_registered",
@@ -125,6 +126,11 @@ class PublicSurfaceFreshnessEnvelope(PublicationFreshnessModel):
 
     @model_validator(mode="after")
     def _hash_claims_are_coherent(self) -> PublicSurfaceFreshnessEnvelope:
+        if self.ttl_s > MAX_PUBLIC_SURFACE_FRESHNESS_TTL_S:
+            raise ValueError(
+                f"ttl_s must be <= {MAX_PUBLIC_SURFACE_FRESHNESS_TTL_S} "
+                "for public freshness witnesses"
+            )
         expected_expires_at = parse_iso_z(self.checked_at) + timedelta(seconds=self.ttl_s)
         if self.expires_datetime() != expected_expires_at:
             raise ValueError("expires_at must equal checked_at plus ttl_s")
@@ -492,6 +498,7 @@ __all__ = [
     "DEFAULT_FRESHNESS_EVENTS",
     "DEFAULT_FRESHNESS_STATE",
     "DEFAULT_GITHUB_TTL_S",
+    "MAX_PUBLIC_SURFACE_FRESHNESS_TTL_S",
     "PRODUCER",
     "PublicationFreshnessEvent",
     "PublicationFreshnessSnapshot",

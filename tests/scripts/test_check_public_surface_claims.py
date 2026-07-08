@@ -552,6 +552,76 @@ def test_public_surface_gate_marks_expired_freshness_state_stale(tmp_path: Path)
     assert "stale" in result.stdout
 
 
+def test_public_surface_gate_rejects_forged_oversized_freshness_ttl(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-forged-ttl.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[
+            _freshness_envelope(
+                checked_at="2020-01-01T00:00:00Z",
+                ttl_s=315_360_000,
+                expires_at="2029-12-29T00:00:00Z",
+                freshness_result="match",
+                rendered_hash="abc123",
+                readback_hash="abc123",
+            )
+        ],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 2
+    assert "publication freshness state is malformed" in result.stderr
+    assert "ttl_s must be <=" in result.stderr
+    assert "Next action: regenerate or repair the state" in result.stderr
+
+
+def test_public_surface_gate_reports_malformed_freshness_state_generated_at(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-bad-generated-at.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        generated_at="not-a-timestamp",
+        blockers=[],
+        envelopes=[
+            _freshness_envelope(
+                freshness_result="match",
+                rendered_hash="abc123",
+                readback_hash="abc123",
+            )
+        ],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicationFreshness" in result.stdout
+    assert "malformed timestamp snapshot.generated_at" in result.stdout
+    assert "Next action: regenerate the publication freshness audit/live-state" in result.stdout
+
+
 def test_public_surface_gate_malformed_freshness_state_exits_2_with_next_action(
     tmp_path: Path,
 ) -> None:

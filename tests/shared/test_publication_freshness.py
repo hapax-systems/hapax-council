@@ -10,6 +10,7 @@ from shared.github_public_surface import GitHubPublicSurfaceReport
 from shared.github_publication_log import events_from_github_public_surface_report
 from shared.publication_freshness import (
     ANTI_OVERCLAIM_REASON,
+    MAX_PUBLIC_SURFACE_FRESHNESS_TTL_S,
     PublicSurfaceFreshnessEnvelope,
     assess_public_surface_freshness,
     build_publication_freshness_event,
@@ -173,6 +174,23 @@ def test_expires_at_must_match_checked_at_plus_ttl() -> None:
             ttl_s=1_800,
             expires_at="2030-01-01T00:00:00Z",
             freshness_result="observed",
+        )
+
+
+def test_public_freshness_ttl_cannot_exceed_governed_slo() -> None:
+    with pytest.raises(ValidationError, match="ttl_s must be <="):
+        PublicSurfaceFreshnessEnvelope(
+            surface_id="github.readme.hapax-systems/example.README.md",
+            surface_type="github.readme",
+            source_ref="fixture-source",
+            source_of_truth="fixture",
+            evidence_refs=("fixture-readback",),
+            rendered_hash="abc123",
+            readback_hash="abc123",
+            checked_at=GENERATED_AT,
+            ttl_s=MAX_PUBLIC_SURFACE_FRESHNESS_TTL_S + 1,
+            expires_at="2026-05-01T01:20:01Z",
+            freshness_result="match",
         )
 
 

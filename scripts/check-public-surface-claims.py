@@ -260,10 +260,25 @@ def check_publication_freshness_state(
     findings: list[LintFinding] = []
     now = datetime.now(tz=UTC)
     future_witnesses: list[str] = []
-    if parse_iso_z(state.generated_at) > now:
+    generated_at = _parse_freshness_timestamp(
+        state.generated_at,
+    )
+    if generated_at is None:
+        findings.append(_malformed_freshness_timestamp_finding(state_path, "snapshot.generated_at"))
+    elif generated_at > now:
         future_witnesses.append(f"snapshot.generated_at={state.generated_at}")
     for envelope in state.envelopes:
-        if parse_iso_z(envelope.checked_at) > now:
+        checked_at = _parse_freshness_timestamp(
+            envelope.checked_at,
+        )
+        if checked_at is None:
+            findings.append(
+                _malformed_freshness_timestamp_finding(
+                    state_path,
+                    f"{envelope.surface_id}.checked_at",
+                )
+            )
+        elif checked_at > now:
             future_witnesses.append(f"{envelope.surface_id}.checked_at={envelope.checked_at}")
     if future_witnesses:
         findings.append(
@@ -315,6 +330,27 @@ def check_publication_freshness_state(
         )
     )
     return findings
+
+
+def _parse_freshness_timestamp(value: str) -> datetime | None:
+    try:
+        return parse_iso_z(value)
+    except ValueError:
+        return None
+
+
+def _malformed_freshness_timestamp_finding(state_path: Path, label: str) -> LintFinding:
+    return LintFinding(
+        file=str(state_path),
+        line=1,
+        level="error",
+        rule=PUBLICATION_FRESHNESS_RULE,
+        message=(
+            f"Publication freshness state has malformed timestamp {label}. "
+            "Next action: regenerate the publication freshness audit/live-state "
+            "readback and hold release until the public-surface claim gate passes."
+        ),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
