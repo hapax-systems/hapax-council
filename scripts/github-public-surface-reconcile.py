@@ -365,7 +365,7 @@ def _local_evidence(repo_root: Path) -> LocalPublicSurfaceEvidence:
     notice_links = _notice_links(repo_root / "NOTICE.md")
     package_surfaces = _package_surfaces(repo_root / "packages")
     return LocalPublicSurfaceEvidence(
-        repo_head=_git_head(repo_root),
+        repo_generation_ref=_git_head(repo_root),
         registry_license_by_repo=registry["license_by_repo"],
         registry_assets_policy=registry["assets_policy"],
         root_file_sha256=_root_hashes(repo_root),

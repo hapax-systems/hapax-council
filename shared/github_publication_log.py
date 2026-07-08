@@ -275,7 +275,7 @@ def events_from_github_public_surface_report(
             events.append(
                 _package_event(
                     package_surface,
-                    repo_head=report.local_evidence.repo_head,
+                    repo_generation_ref=report.local_evidence.repo_generation_ref,
                     generated_at=generated,
                     source_refs=source_refs,
                 )
@@ -464,7 +464,7 @@ def _pages_event(
 def _package_event(
     package_surface: PackageSurface,
     *,
-    repo_head: str,
+    repo_generation_ref: str,
     generated_at: str,
     source_refs: tuple[str, ...],
 ) -> GitHubPublicationLogEvent:
@@ -475,14 +475,16 @@ def _package_event(
         surface="package",
         generated_at=generated_at,
         occurred_at=generated_at,
-        commit_sha=repo_head if re.fullmatch(r"[0-9a-f]{40}", repo_head) else None,
+        commit_sha=repo_generation_ref
+        if re.fullmatch(r"[0-9a-f]{40}", repo_generation_ref)
+        else None,
         content_sha=digest_json(payload),
         source_refs=source_refs,
         evidence_refs=tuple(package_surface.evidence_refs),
         publication_state="public",
         publication_mode="public_archive",
-        live_url=f"https://github.com/hapax-systems/hapax-council/tree/{repo_head}/{path}",
-        ref=repo_head,
+        live_url=f"https://github.com/hapax-systems/hapax-council/tree/{repo_generation_ref}/{path}",
+        ref=repo_generation_ref,
         surface_id=f"github.package.hapax-systems/hapax-council.{path}",
         notes=(f"package_claim_status:{package_surface.claim_status}",),
     )

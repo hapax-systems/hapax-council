@@ -268,8 +268,8 @@
           "title": "Registry License By Repo",
           "type": "object"
         },
-        "repo_head": {
-          "title": "Repo Head",
+        "repo_generation_ref": {
+          "title": "Repo Generation Ref",
           "type": "string"
         },
         "root_file_sha256": {
@@ -281,7 +281,7 @@
         }
       },
       "required": [
-        "repo_head",
+        "repo_generation_ref",
         "registry_license_by_repo",
         "root_file_sha256",
         "notice_links",

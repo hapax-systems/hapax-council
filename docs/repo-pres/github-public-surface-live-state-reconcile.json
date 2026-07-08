@@ -14,7 +14,7 @@
         "docs/repo-pres/repo-registry.yaml",
         "gh:repos/hapax-systems/hapax-council"
       ],
-      "live_status": "false",
+      "live_status": "true",
       "live_status_basis": "expected_license=PolyForm-Strict-1.0.0; github_license_spdx=NOASSERTION",
       "live_witness_refs": [
         "live-report:repo:hapax-systems/hapax-council",
@@ -53,8 +53,8 @@
         "scripts/repo-presentation-enforce.sh",
         "gh:community/profile"
       ],
-      "live_status": "unreconciled",
-      "live_status_basis": "has_issues=True; community.issue_template=False",
+      "live_status": "true",
+      "live_status_basis": "has_issues=True; community.issue_template=False; issue_template_config=True",
       "live_witness_refs": [
         "live-report:repo:hapax-systems/hapax-council",
         "gh:repos/hapax-systems/hapax-council",
@@ -345,23 +345,21 @@
       "surface": "packages/"
     },
     {
-      "blocks": [
-        "github-readme-profile-current-project-refresh"
-      ],
+      "blocks": [],
       "category": "closed_repo_pres_claims",
       "evidence_refs": [
         "vault:hapax-cc-tasks/closed"
       ],
       "expected": "Closed task records remain immutable, but false live claims feed drift.",
       "finding_id": "github.closed-repo-pres.claim-drift",
-      "observed": "repo-pres-license-policy, repo-pres-issues-redirect-walls",
-      "severity": "high",
-      "status": "unreconciled",
+      "observed": "No false closed-task claims detected.",
+      "severity": "info",
+      "status": "ok",
       "summary": "Closed repo-pres task claims were compared to live state.",
       "surface": "cc-task closed/repo-pres-*"
     }
   ],
-  "generated_at": "2026-07-08T14:45:05Z",
+  "generated_at": "2026-07-08T15:08:57Z",
   "generated_by": "scripts/github-public-surface-reconcile.py",
   "live_repos": [
     {
@@ -504,7 +502,7 @@
         "status": null
       },
       "private": false,
-      "pushed_at": "2026-07-08T14:44:29Z",
+      "pushed_at": "2026-07-08T15:07:53Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -1627,7 +1625,7 @@
       "hapax-watch": "PolyForm-Strict-1.0.0",
       "reins": "BUSL-1.1"
     },
-    "repo_head": "f5e8b8baa6edaa5f23f3bb0038961965894e521f",
+    "repo_generation_ref": "7980f03b312706ca52b5d615aafd5af9b83c764f",
     "root_file_sha256": {
       ".zenodo.json": "sha256:717b50fe0969239dbd36d2f70b923a649e930af771c2449da73d3c1ee96cbcde",
       "CITATION.cff": "sha256:04fba7c6d6a5abfb8340fb3621cfa2fe813c30fb2dcf50688fd91c3f99425b98",

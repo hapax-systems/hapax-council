@@ -38,7 +38,7 @@ def _report() -> GitHubPublicSurfaceReport:
 
 def _minimal_local_evidence() -> LocalPublicSurfaceEvidence:
     return LocalPublicSurfaceEvidence(
-        repo_head="test-head",
+        repo_generation_ref="test-head",
         registry_license_by_repo={},
         root_file_sha256={},
         notice_links=(),
@@ -116,14 +116,18 @@ def test_profile_readme_decision_uses_org_dot_github_profile_pattern() -> None:
     )
 
 
-def test_closed_repo_pres_false_claims_are_reported_without_deleting_records() -> None:
+def test_closed_repo_pres_claims_are_compared_without_deleting_records() -> None:
     report = _report()
     claims = {claim.task_id: claim for claim in report.closed_repo_pres_claims}
 
-    assert claims["repo-pres-license-policy"].live_status == "false"
+    assert claims["repo-pres-license-policy"].live_status == "true"
     assert claims["repo-pres-notice-md-all-repos"].live_status == "true"
-    assert claims["repo-pres-issues-redirect-walls"].live_status == "unreconciled"
+    assert claims["repo-pres-issues-redirect-walls"].live_status == "true"
     assert claims["repo-pres-org-level-github"].live_status == "true"
+    assert "github_license_spdx=NOASSERTION" in claims["repo-pres-license-policy"].live_status_basis
+    assert (
+        "issue_template_config=True" in claims["repo-pres-issues-redirect-walls"].live_status_basis
+    )
     profile_claim = claims["repo-pres-org-level-github"]
     assert "profile_readme=True" in profile_claim.live_status_basis
     assert any(

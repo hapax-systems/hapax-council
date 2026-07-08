@@ -915,6 +915,39 @@ def test_public_surface_gate_blocks_live_state_drift_finding(tmp_path: Path) -> 
     assert "github.license.example.registry-mismatch" in findings[0].message
 
 
+def test_public_surface_gate_blocks_closed_repo_pres_claims_when_blocking(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    payload["drift_findings"] = [
+        {
+            "finding_id": "github.closed-repo-pres.claim-drift",
+            "severity": "blocking",
+            "category": "closed_repo_pres_claims",
+            "surface": "docs/repo-pres",
+            "status": "blocked",
+            "summary": "Closed repo-pres claims still block public refresh.",
+            "expected": "Closed repo-pres claims are reconciled before release.",
+            "observed": "Closed repo-pres claims remain false or unreconciled.",
+            "evidence_refs": ["fixture"],
+            "blocks": ["github-readme-profile-current-project-refresh"],
+        }
+    ]
+    report = GitHubPublicSurfaceReport.model_validate(payload)
+    gate = _gate_module()
+    check_github_public_surface_drift = gate["check_github_public_surface_drift"]
+
+    findings = check_github_public_surface_drift(
+        report,
+        report_path=tmp_path / "github-report.json",
+    )
+
+    assert len(findings) == 1
+    assert findings[0].level == "error"
+    assert "blocks release/public-current claims" in findings[0].message
+    assert "github.closed-repo-pres.claim-drift" in findings[0].message
+
+
 def test_public_surface_gate_warns_on_unauthenticated_fallback_provenance(
     tmp_path: Path,
 ) -> None:

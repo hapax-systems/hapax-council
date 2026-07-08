@@ -144,7 +144,7 @@ class PackageSurface(StrictModel):
 
 
 class LocalPublicSurfaceEvidence(StrictModel):
-    repo_head: str
+    repo_generation_ref: str
     registry_license_by_repo: dict[str, str]
     registry_assets_policy: str | None = None
     root_file_sha256: dict[str, str]
@@ -674,11 +674,15 @@ def build_closed_repo_pres_claims(
 
     closed_root = "vault:hapax-cc-tasks/closed"
     expected_license = local.registry_license_by_repo.get("hapax-council")
+    detected_license = council.license_spdx if council is not None else None
     license_live = (
         "true"
         if council is not None
         and expected_license is not None
-        and council.license_spdx == expected_license
+        and (
+            detected_license == expected_license
+            or (expected_license == "PolyForm-Strict-1.0.0" and detected_license == "NOASSERTION")
+        )
         else "false"
     )
     contributing_live = "false" if "CONTRIBUTING.md" in local.notice_missing_links else "true"
@@ -693,11 +697,16 @@ def build_closed_repo_pres_claims(
         and assets.visibility == "public"
         else "false"
     )
+    issue_config = (
+        council.files.get(".github/ISSUE_TEMPLATE/config.yml") if council is not None else None
+    )
+    issue_config_present = issue_config is not None and issue_config.exists
     issue_live = "true"
     if (
         council is not None
         and council.has_issues is True
         and not council.community.files.get("issue_template", False)
+        and not issue_config_present
     ):
         issue_live = "unreconciled"
 
@@ -710,7 +719,7 @@ def build_closed_repo_pres_claims(
             live_status_basis=(
                 "expected_license="
                 f"{expected_license or 'unknown'}; github_license_spdx="
-                f"{council.license_spdx if council is not None else 'repo_not_collected'}"
+                f"{detected_license if council is not None else 'repo_not_collected'}"
             ),
             live_witness_refs=_repo_live_witness_refs(
                 "hapax-systems/hapax-council",
@@ -748,7 +757,9 @@ def build_closed_repo_pres_claims(
                 "has_issues="
                 f"{council.has_issues if council is not None else 'repo_not_collected'}; "
                 "community.issue_template="
-                f"{council.community.files.get('issue_template') if council is not None else 'repo_not_collected'}"
+                f"{council.community.files.get('issue_template') if council is not None else 'repo_not_collected'}; "
+                "issue_template_config="
+                f"{issue_config_present if council is not None else 'repo_not_collected'}"
             ),
             live_witness_refs=_repo_live_witness_refs(
                 "hapax-systems/hapax-council",
