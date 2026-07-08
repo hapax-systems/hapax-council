@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from urllib import error, request
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import yaml
 
@@ -50,10 +50,12 @@ VAULT_MARKDOWN_PATH = (
     / "2026-04-30-github-public-surface-live-state-reconcile.md"
 )
 PUBLIC_GITHUB_FALLBACK_ENDPOINTS: set[str] = set()
+AUTHENTICATED_GRAPHQL_FALLBACK_ENDPOINTS: set[str] = set()
 
 
 def main() -> int:
     PUBLIC_GITHUB_FALLBACK_ENDPOINTS.clear()
+    AUTHENTICATED_GRAPHQL_FALLBACK_ENDPOINTS.clear()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
     parser.add_argument("--output", type=Path, default=REPORT_PATH)
@@ -180,6 +182,15 @@ def _gh_json(endpoint: str) -> tuple[Any | None, str | None]:
     if result.returncode != 0:
         detail = _first_line(result.stderr) or f"gh api {endpoint} failed"
         if _is_github_api_rate_limit(detail):
+            graphql_payload, graphql_error = _authenticated_graphql_json(endpoint)
+            if graphql_error is None:
+                AUTHENTICATED_GRAPHQL_FALLBACK_ENDPOINTS.add(endpoint)
+                log.warning(
+                    "authenticated GitHub REST readback hit a rate limit; using "
+                    "authenticated GraphQL fallback endpoint=%s",
+                    endpoint,
+                )
+                return graphql_payload, None
             payload, fallback_error = _public_github_json(endpoint)
             if fallback_error is None:
                 PUBLIC_GITHUB_FALLBACK_ENDPOINTS.add(endpoint)
@@ -191,7 +202,10 @@ def _gh_json(endpoint: str) -> tuple[Any | None, str | None]:
                     endpoint,
                 )
                 return payload, None
-            return None, f"{detail}; public unauthenticated fallback failed: {fallback_error}"
+            return None, (
+                f"{detail}; authenticated GraphQL fallback failed: {graphql_error}; "
+                f"public unauthenticated fallback failed: {fallback_error}"
+            )
         return None, detail
     try:
         return json.loads(result.stdout), None
@@ -212,7 +226,253 @@ def _source_refs() -> tuple[str, ...]:
         f"public_unauthenticated_fallback:gh api {endpoint}"
         for endpoint in sorted(PUBLIC_GITHUB_FALLBACK_ENDPOINTS)
     )
-    return (*base_refs, *fallback_refs)
+    graphql_refs = tuple(
+        f"authenticated_graphql_fallback:gh api graphql {endpoint}"
+        for endpoint in sorted(AUTHENTICATED_GRAPHQL_FALLBACK_ENDPOINTS)
+    )
+    return (*base_refs, *graphql_refs, *fallback_refs)
+
+
+def _authenticated_graphql_json(endpoint: str) -> tuple[Any | None, str | None]:
+    repo_match = re.fullmatch(r"repos/([^/]+)/([^/?]+)(?:\?.*)?", endpoint)
+    if repo_match:
+        owner, name = repo_match.groups()
+        return _graphql_repo_payload(owner, name)
+
+    branch_match = re.fullmatch(r"repos/([^/]+)/([^/]+)/branches/([^?]+)(?:\?.*)?", endpoint)
+    if branch_match:
+        owner, name, branch = branch_match.groups()
+        return _graphql_branch_payload(owner, name, unquote(branch))
+
+    topics_match = re.fullmatch(r"repos/([^/]+)/([^/]+)/topics(?:\?.*)?", endpoint)
+    if topics_match:
+        owner, name = topics_match.groups()
+        return _graphql_topics_payload(owner, name)
+
+    tags_match = re.fullmatch(r"repos/([^/]+)/([^/]+)/tags(?:\?.*)?", endpoint)
+    if tags_match:
+        owner, name = tags_match.groups()
+        return _graphql_tags_payload(owner, name)
+
+    community_match = re.fullmatch(r"repos/([^/]+)/([^/]+)/community/profile(?:\?.*)?", endpoint)
+    if community_match:
+        owner, name = community_match.groups()
+        return _graphql_community_profile_payload(owner, name)
+
+    return None, f"no authenticated GraphQL fallback for endpoint {endpoint}"
+
+
+def _gh_graphql(query: str, **variables: str) -> tuple[dict[str, Any] | None, str | None]:
+    args = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for key, value in variables.items():
+        args.extend(["-f", f"{key}={value}"])
+    result = subprocess.run(
+        args,
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None, _first_line(result.stderr) or "gh api graphql failed"
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return None, f"gh api graphql returned malformed JSON: {exc}"
+    errors = payload.get("errors")
+    if errors:
+        return None, json.dumps(errors, sort_keys=True)
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None, "gh api graphql returned no data object"
+    return data, None
+
+
+def _graphql_repository(data: dict[str, Any]) -> dict[str, Any] | None:
+    repo = data.get("repository")
+    return repo if isinstance(repo, dict) else None
+
+
+def _graphql_repo_payload(owner: str, name: str) -> tuple[dict[str, Any] | None, str | None]:
+    data, error = _gh_graphql(
+        """
+        query($owner:String!, $name:String!) {
+          repository(owner:$owner, name:$name) {
+            nameWithOwner
+            visibility
+            isPrivate
+            isArchived
+            url
+            defaultBranchRef { name target { oid } }
+            description
+            homepageUrl
+            licenseInfo { spdxId name }
+            hasIssuesEnabled
+            hasDiscussionsEnabled
+            hasWikiEnabled
+            hasProjectsEnabled
+            pushedAt
+          }
+        }
+        """,
+        owner=owner,
+        name=name,
+    )
+    if error is not None:
+        return None, error
+    repo = _graphql_repository(data or {})
+    if repo is None:
+        return None, "GraphQL repository not found"
+    license_info = repo.get("licenseInfo")
+    license_payload = None
+    if isinstance(license_info, dict):
+        license_payload = {
+            "spdx_id": _string_or_none(license_info.get("spdxId")),
+            "name": _string_or_none(license_info.get("name")),
+        }
+    default_branch_ref = repo.get("defaultBranchRef")
+    default_branch = (
+        _string_or_none(default_branch_ref.get("name"))
+        if isinstance(default_branch_ref, dict)
+        else None
+    )
+    return {
+        "full_name": _string_or_none(repo.get("nameWithOwner")) or f"{owner}/{name}",
+        "visibility": str(repo.get("visibility", "")).lower() or None,
+        "private": bool(repo.get("isPrivate")),
+        "archived": _bool_or_none(repo.get("isArchived")),
+        "html_url": _string_or_none(repo.get("url")),
+        "default_branch": default_branch,
+        "description": _string_or_none(repo.get("description")),
+        "homepage": _string_or_none(repo.get("homepageUrl")),
+        "license": license_payload,
+        "has_issues": _bool_or_none(repo.get("hasIssuesEnabled")),
+        "has_discussions": _bool_or_none(repo.get("hasDiscussionsEnabled")),
+        "has_wiki": _bool_or_none(repo.get("hasWikiEnabled")),
+        "has_projects": _bool_or_none(repo.get("hasProjectsEnabled")),
+        "pushed_at": _string_or_none(repo.get("pushedAt")),
+    }, None
+
+
+def _graphql_branch_payload(
+    owner: str,
+    name: str,
+    branch: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    data, error = _gh_graphql(
+        """
+        query($owner:String!, $name:String!, $qualifiedName:String!) {
+          repository(owner:$owner, name:$name) {
+            ref(qualifiedName:$qualifiedName) { target { oid } }
+          }
+        }
+        """,
+        owner=owner,
+        name=name,
+        qualifiedName=branch,
+    )
+    if error is not None:
+        return None, error
+    repo = _graphql_repository(data or {})
+    ref = repo.get("ref") if isinstance(repo, dict) else None
+    target = ref.get("target") if isinstance(ref, dict) else None
+    oid = _string_or_none(target.get("oid")) if isinstance(target, dict) else None
+    if oid is None:
+        return None, "GraphQL branch ref not found"
+    return {"name": branch, "commit": {"sha": oid}}, None
+
+
+def _graphql_topics_payload(owner: str, name: str) -> tuple[dict[str, Any] | None, str | None]:
+    data, error = _gh_graphql(
+        """
+        query($owner:String!, $name:String!) {
+          repository(owner:$owner, name:$name) {
+            repositoryTopics(first:100) { nodes { topic { name } } }
+          }
+        }
+        """,
+        owner=owner,
+        name=name,
+    )
+    if error is not None:
+        return None, error
+    repo = _graphql_repository(data or {})
+    topics = repo.get("repositoryTopics") if isinstance(repo, dict) else None
+    nodes = topics.get("nodes") if isinstance(topics, dict) else None
+    names: list[str] = []
+    if isinstance(nodes, list):
+        for node in nodes:
+            topic = node.get("topic") if isinstance(node, dict) else None
+            topic_name = _string_or_none(topic.get("name")) if isinstance(topic, dict) else None
+            if topic_name:
+                names.append(topic_name)
+    return {"names": names}, None
+
+
+def _graphql_tags_payload(owner: str, name: str) -> tuple[list[dict[str, str]], str | None]:
+    data, error = _gh_graphql(
+        """
+        query($owner:String!, $name:String!) {
+          repository(owner:$owner, name:$name) {
+            refs(refPrefix:"refs/tags/", first:100, orderBy:{field:TAG_COMMIT_DATE, direction:DESC}) {
+              nodes { name }
+            }
+          }
+        }
+        """,
+        owner=owner,
+        name=name,
+    )
+    if error is not None:
+        return [], error
+    repo = _graphql_repository(data or {})
+    refs = repo.get("refs") if isinstance(repo, dict) else None
+    nodes = refs.get("nodes") if isinstance(refs, dict) else None
+    tags: list[dict[str, str]] = []
+    if isinstance(nodes, list):
+        for node in nodes:
+            tag_name = _string_or_none(node.get("name")) if isinstance(node, dict) else None
+            if tag_name:
+                tags.append({"name": tag_name})
+    return tags, None
+
+
+def _graphql_community_profile_payload(
+    owner: str,
+    name: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    data, error = _gh_graphql(
+        """
+        query($owner:String!, $name:String!) {
+          repository(owner:$owner, name:$name) {
+            description
+            object(expression:"HEAD:.github/ISSUE_TEMPLATE") {
+              ... on Tree { entries { name type } }
+            }
+          }
+        }
+        """,
+        owner=owner,
+        name=name,
+    )
+    if error is not None:
+        return None, error
+    repo = _graphql_repository(data or {})
+    issue_template = False
+    tree = repo.get("object") if isinstance(repo, dict) else None
+    entries = tree.get("entries") if isinstance(tree, dict) else None
+    if isinstance(entries, list):
+        issue_template = any(
+            isinstance(entry, dict)
+            and _string_or_none(entry.get("type")) == "blob"
+            and _string_or_none(entry.get("name")) not in {None, "config.yml"}
+            for entry in entries
+        )
+    return {
+        "health_percentage": None,
+        "description": _string_or_none(repo.get("description")) if isinstance(repo, dict) else None,
+        "files": {"issue_template": {} if issue_template else None},
+    }, None
 
 
 def _is_github_api_rate_limit(detail: str) -> bool:

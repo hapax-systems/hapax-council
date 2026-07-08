@@ -30,6 +30,66 @@ def _module() -> dict[str, Any]:
     return runpy.run_path(str(SCRIPT))
 
 
+def test_gh_json_uses_authenticated_graphql_on_repo_rest_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    module = _module()
+    subprocess_module = module["subprocess"]
+    request_module = module["request"]
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        if "graphql" in args:
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout=(
+                    '{"data":{"repository":{"nameWithOwner":"hapax-systems/hapax-council",'
+                    '"visibility":"PUBLIC","isPrivate":false,"isArchived":false,'
+                    '"url":"https://github.com/hapax-systems/hapax-council",'
+                    '"defaultBranchRef":{"name":"main","target":{"oid":"abc123"}},'
+                    '"description":"Council","homepageUrl":"https://hapax.example",'
+                    '"licenseInfo":{"spdxId":"NOASSERTION","name":"Other"},'
+                    '"hasIssuesEnabled":true,"hasDiscussionsEnabled":false,'
+                    '"hasWikiEnabled":false,"hasProjectsEnabled":false,'
+                    '"pushedAt":"2026-07-08T15:00:00Z"}}}'
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args,
+            1,
+            stdout="",
+            stderr="gh: API rate limit exceeded for user ID 418460 (HTTP 403)\n",
+        )
+
+    def fake_urlopen(*args: object, **kwargs: object) -> _Response:
+        del args, kwargs
+        raise AssertionError("public fallback should not run when GraphQL succeeds")
+
+    monkeypatch.setattr(subprocess_module, "run", fake_run)
+    monkeypatch.setattr(request_module, "urlopen", fake_urlopen)
+
+    with caplog.at_level("WARNING"):
+        payload, error = module["_gh_json"]("repos/hapax-systems/hapax-council")
+
+    assert error is None
+    assert payload["full_name"] == "hapax-systems/hapax-council"
+    assert payload["visibility"] == "public"
+    assert payload["default_branch"] == "main"
+    assert payload["license"]["spdx_id"] == "NOASSERTION"
+    assert module["PUBLIC_GITHUB_FALLBACK_ENDPOINTS"] == set()
+    assert module["AUTHENTICATED_GRAPHQL_FALLBACK_ENDPOINTS"] == {
+        "repos/hapax-systems/hapax-council"
+    }
+    assert (
+        "authenticated_graphql_fallback:gh api graphql repos/hapax-systems/hapax-council"
+        in module["_source_refs"]()
+    )
+    assert "using authenticated GraphQL fallback" in caplog.text
+
+
 def test_gh_json_falls_back_to_public_rest_on_authenticated_rate_limit(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
