@@ -26,6 +26,7 @@ from shared.publication_freshness import (
     PublicationFreshnessSnapshot,
     build_publication_freshness_snapshot,
     isoformat_z,
+    parse_iso_z,
 )
 from shared.publication_hardening.lint import LintFinding, lint_file
 
@@ -257,6 +258,28 @@ def check_publication_freshness_state(
     state_path: Path,
 ) -> list[LintFinding]:
     findings: list[LintFinding] = []
+    now = datetime.now(tz=UTC)
+    future_witnesses: list[str] = []
+    if parse_iso_z(state.generated_at) > now:
+        future_witnesses.append(f"snapshot.generated_at={state.generated_at}")
+    for envelope in state.envelopes:
+        if parse_iso_z(envelope.checked_at) > now:
+            future_witnesses.append(f"{envelope.surface_id}.checked_at={envelope.checked_at}")
+    if future_witnesses:
+        findings.append(
+            LintFinding(
+                file=str(state_path),
+                line=1,
+                level="error",
+                rule=PUBLICATION_FRESHNESS_RULE,
+                message=(
+                    "Publication freshness state contains future-dated witnesses: "
+                    f"{', '.join(future_witnesses)}. Next action: regenerate the "
+                    "publication freshness audit/live-state readback on the verifier clock "
+                    "and hold release until no witness timestamp is in the future."
+                ),
+            )
+        )
     if not state.envelopes:
         findings.append(
             LintFinding(
@@ -273,7 +296,7 @@ def check_publication_freshness_state(
         )
     reassessed = build_publication_freshness_snapshot(
         state.envelopes,
-        generated_at=isoformat_z(datetime.now(tz=UTC)),
+        generated_at=isoformat_z(now),
     )
     blockers = tuple(dict.fromkeys((*state.blockers, *reassessed.blockers)))
     if not blockers:
