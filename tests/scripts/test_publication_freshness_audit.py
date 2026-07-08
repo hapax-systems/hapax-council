@@ -146,3 +146,33 @@ def test_publication_freshness_audit_malformed_report_names_next_action(
     assert result.returncode == 1
     assert "malformed GitHub public-surface report" in result.stderr
     assert "Next action: regenerate the report" in result.stderr
+
+
+def test_publication_freshness_audit_schema_invalid_report_names_next_action(
+    tmp_path: Path,
+) -> None:
+    invalid = tmp_path / "schema-invalid-report.json"
+    invalid.write_text(json.dumps({"generated_at": GENERATED_AT}), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--github-report",
+            str(invalid),
+            "--output-events",
+            str(tmp_path / "freshness-events.jsonl"),
+            "--output-state",
+            str(tmp_path / "freshness-state.json"),
+            "--generated-at",
+            GENERATED_AT,
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "schema-invalid GitHub public-surface report" in result.stderr
+    assert "Next action: regenerate the report" in result.stderr

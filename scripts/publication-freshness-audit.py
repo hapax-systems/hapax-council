@@ -129,7 +129,14 @@ def _read_github_report(path: Path) -> GitHubPublicSurfaceReport:
             "or pass a valid --github-report, then rerun publication-freshness-audit before "
             "release."
         ) from exc
-    return GitHubPublicSurfaceReport.model_validate(payload)
+    try:
+        return GitHubPublicSurfaceReport.model_validate(payload)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"schema-invalid GitHub public-surface report: {path}: {exc}. "
+            "Next action: regenerate the report with scripts/github-public-surface-reconcile.py "
+            "or repair the report schema, then rerun publication-freshness-audit before release."
+        ) from exc
 
 
 def _validate_audit_timestamp(generated_at: str, checked_at: str) -> None:
