@@ -98,7 +98,7 @@ mkdir -p "$HOME/.cache/hapax" 2>/dev/null || true
 printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID" 2>/dev/null || true
 
 WORKDIR="${HAPAX_CLAUDE_HEADLESS_WORKDIR:-}"
-if [[ -n "$WORKDIR" && "$WORKDIR" == "~/"* ]]; then
+if [[ -n "$WORKDIR" && "$WORKDIR" == \~/* ]]; then
   WORKDIR="$HOME/${WORKDIR#"~/"}"
 fi
 if [[ -z "$WORKDIR" ]]; then
@@ -425,7 +425,7 @@ find_active_note() {
   if [[ -f "$CC_TASK_ACTIVE/$task.md" ]]; then
     note="$CC_TASK_ACTIVE/$task.md"
   else
-    note="$(ls "$CC_TASK_ACTIVE/$task-"*.md 2>/dev/null | head -n1 || true)"
+    note="$(find "$CC_TASK_ACTIVE" -maxdepth 1 -name "$task-*.md" -print -quit 2>/dev/null || true)"
   fi
   printf '%s' "$note"
 }
@@ -635,8 +635,9 @@ task_is_terminal() {
   local pr=""
   pr="$(grep -oP '^pr:\s*\K[0-9]+' "$note" 2>/dev/null | head -n1 || true)"
   if [[ -n "$pr" ]]; then
-    local state=""
-    state="$(gh pr view "$pr" --json state --jq .state 2>/dev/null || true)"
+    local state="" repo="${HAPAX_GH_REPO:-${GH_REPO:-hapax-systems/hapax-council}}"
+    state="$(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/${repo}/pulls/${pr}" \
+      --jq 'if .state == "closed" and (.merged == true or .merged_at != null) then "MERGED" elif .state == "closed" then "CLOSED" elif .state == "open" then "OPEN" else "" end' 2>/dev/null || true)"
     [[ "$state" == "MERGED" ]] && return 0
   fi
   return 1
@@ -669,6 +670,7 @@ remote_python_command() {
   local payload="$1" code="$2"
   local code_b64="" bash_script="" quoted_script="" quoted_payload="" quoted_code=""
   code_b64="$(printf '%s' "$code" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
+  # shellcheck disable=SC2016
   bash_script='export HAPAX_REMOTE_PAYLOAD="$1"; export HAPAX_REMOTE_CODE="$2"; exec python3 -c "import base64,os; exec(base64.b64decode(os.environ[\"HAPAX_REMOTE_CODE\"]))"'
   quoted_script="${bash_script//\'/\'\\\'\'}"
   quoted_payload="${payload//\'/\'\\\'\'}"

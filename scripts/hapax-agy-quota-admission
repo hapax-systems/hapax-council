@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""Write agy review-route quota admission receipts after a reviewer smoke.
+
+The command records a short-lived local observation from sanctioned agy review
+route use. It invokes only ``scripts/hapax-agy-reviewer`` with a fixed smoke
+dossier, validates the fenced YAML stdout in memory, and does not persist prompt
+or output content. Positive receipts are consumed by
+``scripts/hapax-quota-telemetry-writer`` before ``agy.review.direct`` can be
+treated as a live review family.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_REVIEWER_COMMAND = REPO_ROOT / "scripts" / "hapax-agy-reviewer"
+DEFAULT_RECEIPT_DIR = Path(
+    os.environ.get(
+        "HAPAX_RELAY_RECEIPT_DIR",
+        str(Path.home() / ".cache/hapax/relay/receipts"),
+    )
+)
+
+ADMISSION_SCHEMA = "hapax.agy_quota_admission.v1"
+PROVIDER = "google-antigravity-cli-agy"
+ROUTE_ID = "agy.review.direct"
+CAPACITY_POOL = "subscription_quota"
+SUPPORTED_TOOL = "hapax-agy-reviewer"
+MODEL = "gemini-3.1-pro-preview"
+BILLING_MODE = "operator_session_subscription"
+SECRET_SOURCE = "agy:operator-session"
+DEFAULT_STALE_AFTER_SECONDS = 900
+MAX_STALE_AFTER_SECONDS = 3600
+DEFAULT_PRINT_TIMEOUT = "3m0s"
+DEFAULT_SMOKE_TIMEOUT_SECONDS = 240
+SMOKE_COMMAND_REF = "scripts/hapax-agy-reviewer"
+VALIDATION_RECOVERY_HINT = (
+    "next action: rerun with --help to confirm bounds, use sanitized --evidence-ref and "
+    "--receipt-name values, then rerun after a sanctioned agy reviewer smoke succeeds"
+)
+
+SAFE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+SAFE_RECEIPT_NAME_RE = re.compile(r"\A[a-z0-9_.+-]+\.yaml\Z")
+SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+
+
+def _smoke_dossier(observed_at: datetime) -> str:
+    observed_ref = observed_at.strftime("%Y%m%dT%H%M%SZ").lower()
+    return "\n".join(
+        [
+            f"review_id: agy-route-admission-smoke-{observed_ref}",
+            "task: route admission smoke for agy.review.direct",
+            "lenses:",
+            "- smoke",
+            "diff --git a/agy-smoke.txt b/agy-smoke.txt",
+            "--- a/agy-smoke.txt",
+            "+++ b/agy-smoke.txt",
+            "@@ -0,0 +1 @@",
+            "+smoke",
+            "",
+        ]
+    )
+
+
+def _parse_utc(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).replace(microsecond=0)
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _now(args: argparse.Namespace) -> datetime:
+    if args.now:
+        parsed = _parse_utc(args.now)
+        if parsed is None:
+            raise ValueError("invalid --now; expected ISO-8601 UTC timestamp")
+        return parsed
+    return datetime.now(UTC).replace(microsecond=0)
+
+
+def _safe_reference(value: str, *, label: str) -> str:
+    normalized = " ".join(value.strip().split())
+    if SAFE_REF_RE.fullmatch(normalized) is None or SECRETISH_RE.search(normalized) is not None:
+        raise ValueError(f"unsafe {label}; expected a 3-240 character sanitized reference")
+    return normalized
+
+
+def _redacted_excerpt(value: str | None, *, limit: int = 500) -> str:
+    normalized = " ".join((value or "").split())
+    if not normalized:
+        return "<empty>"
+    redacted = SECRETISH_RE.sub("<redacted>", normalized)
+    if len(redacted) > limit:
+        return f"{redacted[: limit - 3]}..."
+    return redacted
+
+
+def _receipt_name(args: argparse.Namespace, *, observed_at: datetime) -> str:
+    default = f"agy-quota-admission-{observed_at.strftime('%Y%m%dT%H%M%SZ').lower()}.yaml"
+    name = args.receipt_name or default
+    if SAFE_RECEIPT_NAME_RE.fullmatch(name) is None or SECRETISH_RE.search(name) is not None:
+        raise ValueError("unsafe receipt name")
+    if "agy-quota-admission" not in name:
+        raise ValueError("receipt name must contain 'agy-quota-admission'")
+    return name
+
+
+def _reviewer_command() -> Path:
+    command = DEFAULT_REVIEWER_COMMAND.resolve()
+    if command.name != "hapax-agy-reviewer":
+        raise ValueError("sanctioned reviewer command must be named hapax-agy-reviewer")
+    if not command.exists() or not os.access(command, os.X_OK):
+        raise ValueError("sanctioned reviewer command must be executable")
+    return command
+
+
+def _smoke_stdout_valid(stdout: str) -> bool:
+    text = stdout.strip()
+    if not text.startswith("```yaml") or not text.endswith("```"):
+        return False
+    body = text.removeprefix("```yaml").removesuffix("```").strip()
+    lines = [line.rstrip() for line in body.splitlines() if line.strip()]
+    top_level = [line for line in lines if not line.startswith((" ", "\t"))]
+    allowed_top_level = {"verdict: accept", "findings: []", "checklist:", "checklist: {}"}
+    return (
+        "verdict: accept" in top_level
+        and "findings: []" in top_level
+        and ("checklist:" in top_level or "checklist: {}" in top_level)
+        and all(line in allowed_top_level for line in top_level)
+    )
+
+
+def _run_reviewer_smoke(args: argparse.Namespace, *, observed_at: datetime) -> None:
+    command = _reviewer_command()
+    cmd = [str(command), "--print-timeout", args.print_timeout]
+    env = {
+        key: value for key, value in os.environ.items() if key not in {"AGY_BIN", "HAPAX_AGY_BIN"}
+    }
+    try:
+        result = subprocess.run(
+            cmd,
+            input=_smoke_dossier(observed_at),
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=REPO_ROOT,
+            env=env,
+            timeout=args.smoke_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("sanctioned agy reviewer smoke timed out") from exc
+    except OSError as exc:
+        raise ValueError(f"sanctioned agy reviewer smoke failed to launch: {exc}") from exc
+    if result.returncode != 0:
+        raise ValueError(
+            "sanctioned agy reviewer smoke failed: "
+            f"returncode={result.returncode}; stderr_excerpt={_redacted_excerpt(result.stderr)}; "
+            "next_action=run scripts/hapax-agy-reviewer after verifying agy auth/quota/model, "
+            "then rerun scripts/hapax-agy-quota-admission"
+        )
+    if not _smoke_stdout_valid(result.stdout):
+        raise ValueError("sanctioned agy reviewer smoke produced invalid stdout")
+
+
+def _write_flat_yaml_atomic(path: Path, fields: list[tuple[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            for key, value in fields:
+                if isinstance(value, bool):
+                    rendered = "true" if value else "false"
+                else:
+                    rendered = str(value)
+                handle.write(f"{key}: {rendered}\n")
+        os.replace(tmp_name, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            Path(tmp_name).unlink()
+        except OSError:
+            # Cleanup is best-effort; preserve and re-raise the original write failure.
+            pass
+        raise
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--receipt-dir", type=Path, default=DEFAULT_RECEIPT_DIR)
+    parser.add_argument("--receipt-name")
+    parser.add_argument("--now")
+    parser.add_argument("--print-timeout", default=DEFAULT_PRINT_TIMEOUT)
+    parser.add_argument(
+        "--smoke-timeout-seconds",
+        type=int,
+        default=DEFAULT_SMOKE_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--stale-after-seconds",
+        type=int,
+        default=DEFAULT_STALE_AFTER_SECONDS,
+    )
+    parser.add_argument(
+        "--evidence-ref",
+        default=None,
+        help="Sanitized witness ref, for example agy-gemini31pro-smoke-20260707t1300z",
+    )
+    parser.add_argument("--json", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        observed_at = _now(args)
+        if not 60 <= args.stale_after_seconds <= MAX_STALE_AFTER_SECONDS:
+            raise ValueError("--stale-after-seconds must be between 60 and 3600")
+        if not 10 <= args.smoke_timeout_seconds <= 1800:
+            raise ValueError("--smoke-timeout-seconds must be between 10 and 1800")
+        default_evidence_ref = (
+            f"agy-gemini31pro-reviewer-smoke-{observed_at.strftime('%Y%m%dT%H%M%SZ').lower()}"
+        )
+        evidence_ref = _safe_reference(
+            args.evidence_ref or default_evidence_ref,
+            label="evidence-ref",
+        )
+        receipt_name = _receipt_name(args, observed_at=observed_at)
+        _run_reviewer_smoke(args, observed_at=observed_at)
+        path = args.receipt_dir / receipt_name
+        fields: list[tuple[str, object]] = [
+            ("schema", ADMISSION_SCHEMA),
+            ("status", "quota_available"),
+            ("provider", PROVIDER),
+            ("route_id", ROUTE_ID),
+            ("capacity_pool", CAPACITY_POOL),
+            ("supported_tool", SUPPORTED_TOOL),
+            ("model", MODEL),
+            ("observed_at", _iso(observed_at)),
+            ("stale_after_seconds", args.stale_after_seconds),
+            ("evidence_ref", evidence_ref),
+            ("secret_source", SECRET_SOURCE),
+            ("secret_value_persisted", False),
+            ("prompt_or_output_persisted", False),
+            ("billing_mode", BILLING_MODE),
+            ("smoke_command", SMOKE_COMMAND_REF),
+            ("smoke_returncode", 0),
+            ("smoke_stdout_validated", True),
+            ("positive_admission", True),
+        ]
+        _write_flat_yaml_atomic(path, fields)
+    except ValueError as exc:
+        print(f"hapax-agy-quota-admission: {exc}; {VALIDATION_RECOVERY_HINT}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(
+            "hapax-agy-quota-admission: failed to write receipt: "
+            f"{exc}; check receipt-dir existence/permissions or rerun with a writable "
+            "--receipt-dir under the governed relay receipts path",
+            file=sys.stderr,
+        )
+        return 1
+
+    summary = {
+        "receipt_kind": "admission",
+        "path": str(path),
+        "route_id": ROUTE_ID,
+        "supported_tool": SUPPORTED_TOOL,
+        "model": MODEL,
+        "smoke_command": SMOKE_COMMAND_REF,
+        "smoke_stdout_validated": True,
+        "observed_at": _iso(observed_at),
+        "fresh_until": _iso(
+            datetime.fromtimestamp(
+                observed_at.timestamp() + args.stale_after_seconds,
+                UTC,
+            )
+        ),
+    }
+    if args.json:
+        import json
+
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    else:
+        print(f"hapax-agy-quota-admission: wrote admission receipt -> {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

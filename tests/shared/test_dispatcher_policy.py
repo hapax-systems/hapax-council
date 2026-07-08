@@ -9,14 +9,19 @@ from pathlib import Path
 import pytest
 
 from shared.dispatcher_policy import (
+    LOCAL_DEV_PLATFORMS,
+    CandidateStatus,
     ClogRouteState,
     DispatchAction,
     DispatchRequest,
     QuotaSpendState,
     RouteCapabilityState,
+    _resource_state_refs,
     build_dispatch_request,
+    build_route_authority_receipt,
     evaluate_dispatch_policy,
     load_dispatch_policy_sources,
+    write_route_authority_receipt,
     write_route_decision_receipt,
 )
 from shared.platform_capability_registry import (
@@ -51,10 +56,14 @@ GLMCP_ADMISSION_EVIDENCE_REF = (
     "witness:supported-tool-usage-witness:"
     "supported_tool:hapax-glmcp-reviewer:"
     "endpoint:https://api.z.ai/api/coding/paas/v4:"
-    "model:glm-5:"
+    "model:glm-5.2:"
     "observed_at:2026-05-09T22:00:00Z:"
     "fresh_until:2026-05-09T23:00:00Z"
 )
+
+
+def test_antigrav_is_not_a_local_dev_platform() -> None:
+    assert "antigrav" not in LOCAL_DEV_PLATFORMS
 
 
 def _capability(**overrides: object) -> RouteCapabilityState:
@@ -103,6 +112,39 @@ def _quota(**overrides: object) -> QuotaSpendState:
     }
     payload.update(overrides)
     return QuotaSpendState.model_validate(payload)
+
+
+def test_resource_state_refs_skip_availability_receipt_for_non_resource_degradation() -> None:
+    capability = _capability(
+        freshness_ok=False,
+        freshness_errors=(
+            "capability_availability_degraded",
+            "auth_surface_not_fresh",
+            "capacity_pool_headroom_not_fresh",
+        ),
+        availability_receipt_ref="capability-availability-receipt:codex.headless.full:test",
+    )
+
+    refs = _resource_state_refs(capability, None)
+
+    assert "capability-availability-receipt:codex.headless.full:test" not in refs
+    assert "capability.resource_source:local_probe" in refs
+
+
+def test_resource_state_refs_include_availability_receipt_for_resource_degradation() -> None:
+    capability = _capability(
+        freshness_ok=False,
+        freshness_errors=(
+            "capability_availability_degraded",
+            "codex.headless.full: resource stale",
+        ),
+        availability_receipt_ref="capability-availability-receipt:codex.headless.full:test",
+    )
+
+    refs = _resource_state_refs(capability, None)
+
+    assert "capability-availability-receipt:codex.headless.full:test" in refs
+    assert "codex.headless.full: resource stale" in refs
 
 
 def _request(**overrides: object) -> DispatchRequest:
@@ -232,13 +274,16 @@ def _route_with_scores(
     payload["freshness"]["quota_checked_at"] = "2026-05-09T22:00:00Z"
     payload["freshness"]["resource_checked_at"] = "2026-05-09T22:00:00Z"
     payload["freshness"]["provider_docs_checked_at"] = "2026-05-09T22:00:00Z"
+    quota_evidence_refs = [f"test:{route_id}:quota"]
+    if payload.get("capacity_pool") == "subscription_quota":
+        quota_evidence_refs.append(f"test:{route_id}:account-live-quota:observed")
     payload["freshness"]["evidence"] = {
         "capability": {
             "evidence_refs": [f"test:{route_id}:capability"],
             "blocked_reasons": [],
         },
         "quota": {
-            "evidence_refs": [f"test:{route_id}:quota"],
+            "evidence_refs": quota_evidence_refs,
             "blocked_reasons": [],
         },
         "resource": {
@@ -2277,6 +2322,63 @@ def test_dimensional_policy_holds_lower_scoring_requested_route() -> None:
     assert decision.dimensional_receipt.selected_route_id == "claude.headless.full"
 
 
+def test_dimensional_policy_launches_substitute_for_degraded_recomposition() -> None:
+    primary = _dimensional_request(
+        "codex.headless.full",
+        score=5,
+        capability_overrides={
+            "freshness_ok": False,
+            "freshness_errors": (
+                "capability_availability_degraded",
+                "availability_receipt:availability-codex-headless-full-test",
+                "auth_surface_not_fresh",
+                "capacity_pool_headroom_not_fresh",
+            ),
+            "availability_status": "degraded",
+            "availability_receipt_ref": (
+                "capability-availability-receipt:"
+                "codex.headless.full:availability-codex-headless-full-test"
+            ),
+            "availability_reason_codes": (
+                "capability_availability_degraded",
+                "availability_receipt:availability-codex-headless-full-test",
+                "auth_surface:oauth",
+                "capacity_pool:subscription_quota",
+                "auth_surface_not_fresh",
+                "capacity_pool_headroom_not_fresh",
+                "refresh_status:deferred",
+            ),
+            "availability_refresh_status": "deferred",
+            "availability_recomposition_required": True,
+        },
+    )
+    substitute = _dimensional_request("claude.headless.full", score=4)
+
+    decision = evaluate_dispatch_policy(
+        primary,
+        candidate_requests=(substitute,),
+        now=NOW,
+    )
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.launch_allowed is True
+    assert decision.route_id == "claude.headless.full"
+    assert "policy_launch" in decision.reason_codes
+    assert "availability_recomposition_required" in decision.reason_codes
+    assert "availability_recomposed_from:codex.headless.full" in decision.reason_codes
+    assert "availability_recomposed_to:claude.headless.full" in decision.reason_codes
+    assert (
+        "capability-availability-receipt:codex.headless.full:availability-codex-headless-full-test"
+    ) in decision.reason_codes
+    assert decision.dimensional_receipt is not None
+    assert decision.dimensional_receipt.selected_route_id == "claude.headless.full"
+    candidates = {
+        candidate.route_id: candidate for candidate in decision.dimensional_receipt.candidates
+    }
+    assert candidates["codex.headless.full"].status is CandidateStatus.VETOED
+    assert candidates["claude.headless.full"].status is CandidateStatus.SELECTED
+
+
 def test_dimensional_policy_holds_ties_without_degraded_authority() -> None:
     primary = _dimensional_request("codex.headless.full", score=4)
     tied = _dimensional_request("claude.headless.full", score=4)
@@ -2430,6 +2532,58 @@ def test_policy_sources_flag_invalid_live_ledger_on_fallback(
     assert sources.quota_ledger_source == "fixtures"
     assert sources.quota_live_error is not None
     assert "invalid quota/spend ledger" in sources.quota_live_error
+
+
+def test_policy_sources_fail_soft_when_quota_fixture_resolution_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_fixture_resolution(*, live_path: Path | None = None) -> object:
+        raise RuntimeError(
+            "hapax-spine: cannot load 'quota-spend-ledger-fixtures.json' "
+            "-- set HAPAX_SPINE_CONFIG_DIR"
+        )
+
+    monkeypatch.setattr(
+        "shared.dispatcher_policy.load_quota_spend_ledger_resolved",
+        fail_fixture_resolution,
+    )
+    receipt = build_route_authority_receipt(
+        receipt_type="runtime_actuation",
+        route_id="codex.headless.full",
+        evidence_refs=["route-authority-receipt:test-feed-1e"],
+        task_ids=["cc-task-quota-fixture-failsoft-capability-plane-20260705"],
+        mutation_surfaces=["runtime"],
+        receipt_id="test-feed-1e-runtime-actuation",
+        issued_at=NOW,
+    )
+    write_route_authority_receipt(receipt, receipt_dir=tmp_path)
+
+    sources = load_dispatch_policy_sources(receipt_dir=tmp_path, now=NOW)
+
+    assert sources.registry is not None
+    assert sources.registry.routes
+    assert sources.registry_error is None
+    assert sources.route_authority_receipts == (receipt,)
+    assert sources.quota_ledger is None
+    assert sources.quota_ledger_source is None
+    assert sources.quota_error is not None
+    assert "quota-spend-ledger-fixtures.json" in sources.quota_error
+
+
+def test_policy_sources_do_not_mask_unexpected_quota_runtime_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_unexpectedly(*, live_path: Path | None = None) -> object:
+        raise RuntimeError("unexpected quota resolver bug")
+
+    monkeypatch.setattr(
+        "shared.dispatcher_policy.load_quota_spend_ledger_resolved",
+        fail_unexpectedly,
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected quota resolver bug"):
+        load_dispatch_policy_sources()
 
 
 def test_policy_sources_explicit_path_bypasses_live_resolution(

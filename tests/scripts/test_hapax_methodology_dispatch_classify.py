@@ -120,29 +120,49 @@ def test_platform_without_adapter_emits_unknown_receipt() -> None:
         mock.patch.object(_MOD, "update_worker_family_availability"),
     ):
         _MOD._classify_and_witness_terminal_failure(
-            1, task_id="t", lane="vbe-1", platform="vibe", mode="headless", profile="worker"
+            1,
+            task_id="t",
+            lane="worker-1",
+            platform="unmapped_worker",
+            mode="headless",
+            profile="worker",
         )
     assert rec.call_args.kwargs["receipt"].code is FailureCode.UNKNOWN
+    assert rec.call_args.kwargs["receipt"].platform == "unmapped_worker"
+
+
+def test_vibe_quota_text_classifies_via_registered_adapter() -> None:
+    with (
+        mock.patch.object(
+            _MOD, "_read_worker_failure_text", return_value="HTTP 429 Too Many Requests"
+        ),
+        mock.patch.object(_MOD, "append_failure_receipt_record") as rec,
+        mock.patch.object(_MOD, "update_worker_family_availability") as wit,
+    ):
+        _MOD._classify_and_witness_terminal_failure(
+            1, task_id="t", lane="vbe-1", platform="vibe", mode="headless", profile="full"
+        )
+    assert rec.call_args.kwargs["receipt"].code is FailureCode.QUOTA_EXHAUSTION
     assert rec.call_args.kwargs["receipt"].platform == "vibe"
+    assert rec.call_args.kwargs["receipt"].route_id == "vibe.headless.full"
+    assert wit.call_args.kwargs["family"] == "vibe"
 
 
-def test_antigrav_exit_code_flows_through_wrapper_to_adapter() -> None:
-    # the wrapper must pass exit_code=rc so AntigravAdapter's launcher exit-code table is LIVE
-    for rc, expected in ((4, FailureCode.ROUTE_UNAVAILABLE), (8, FailureCode.CLAIM_CONFLICT)):
-        with (
-            mock.patch.object(_MOD, "_read_worker_failure_text", return_value="agy failure"),
-            mock.patch.object(_MOD, "append_failure_receipt_record") as rec,
-            mock.patch.object(_MOD, "update_worker_family_availability"),
-        ):
-            _MOD._classify_and_witness_terminal_failure(
-                rc,
-                task_id="t",
-                lane="antigrav",
-                platform="antigrav",
-                mode="interactive",
-                profile="jr",
-            )
-        assert rec.call_args.kwargs["receipt"].code is expected
+def test_deprecated_antigrav_has_no_dispatch_failure_adapter() -> None:
+    with (
+        mock.patch.object(_MOD, "_read_worker_failure_text", return_value="agy failure"),
+        mock.patch.object(_MOD, "append_failure_receipt_record") as rec,
+        mock.patch.object(_MOD, "update_worker_family_availability"),
+    ):
+        _MOD._classify_and_witness_terminal_failure(
+            4,
+            task_id="t",
+            lane="antigrav",
+            platform="antigrav",
+            mode="interactive",
+            profile="full",
+        )
+    assert rec.call_args.kwargs["receipt"].code is FailureCode.UNKNOWN
 
 
 # --- _read_worker_failure_text ------------------------------------------------------------------

@@ -7,6 +7,7 @@ COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
 WORKTREE_ROOT="${HAPAX_VIBE_WORKTREE_ROOT:-$HOME/projects}"
 RELAY_DIR="${HAPAX_VIBE_RELAY_DIR:-$HOME/.cache/hapax/relay}"
 SPAWN_DIR="${HAPAX_VIBE_SPAWN_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hapax/vibe-spawns}"
+RELAY_POLL_SECONDS="${HAPAX_VIBE_RELAY_POLL_SECONDS:-1}"
 mkdir -p "$SPAWN_DIR"
 
 usage() {
@@ -171,6 +172,11 @@ if ! [[ "$SESSION" =~ ^vbe-[a-z0-9][a-z0-9-]*$ ]]; then
   exit 2
 fi
 
+if ! [[ "$RELAY_POLL_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "hapax-vibe: invalid HAPAX_VIBE_RELAY_POLL_SECONDS '$RELAY_POLL_SECONDS'" >&2
+  exit 2
+fi
+
 case "$TERMINAL" in
   none|tmux|foot) ;;
   *)
@@ -295,6 +301,49 @@ fi
 
 export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
 export LOGOS_BASE_URL="${LOGOS_BASE_URL:-http://localhost:8051/api}"
+
+collect_relay_inflections() {
+  local inflection_dir="$RELAY_DIR/inflections"
+  local processed_dir="$inflection_dir/processed"
+  local deadline=$((SECONDS + RELAY_POLL_SECONDS))
+  local files=()
+  local item
+
+  while :; do
+    files=()
+    if [ -d "$inflection_dir" ]; then
+      shopt -s nullglob
+      for item in "$inflection_dir"/*-to-"$SESSION".md; do
+        [ -f "$item" ] && files+=("$item")
+      done
+      shopt -u nullglob
+    fi
+
+    if [ "${#files[@]}" -gt 0 ] || [ "$RELAY_POLL_SECONDS" -eq 0 ] || [ "$SECONDS" -ge "$deadline" ]; then
+      break
+    fi
+    sleep 1
+  done
+
+  [ "${#files[@]}" -gt 0 ] || return 0
+  mkdir -p "$processed_dir"
+  for item in "${files[@]}"; do
+    [ -f "$item" ] || continue
+    local base
+    base="$(basename "$item")"
+    printf '\n### %s\n' "$base"
+    cat "$item"
+    printf '\n'
+    mv "$item" "$processed_dir/$base"
+  done
+}
+
+if [ -n "$HEADLESS_PROMPT" ]; then
+  RELAY_RECEIVED="$(collect_relay_inflections)"
+  if [ -n "$RELAY_RECEIVED" ]; then
+    HEADLESS_PROMPT="${HEADLESS_PROMPT}"$'\n\n'"## Relay Received"$'\n'"$RELAY_RECEIVED"
+  fi
+fi
 
 VIBE_ARGS=()
 if [ -n "$HEADLESS_PROMPT" ]; then

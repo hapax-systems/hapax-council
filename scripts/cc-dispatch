@@ -7,8 +7,8 @@ validate (default) or ``--launch`` the dispatch through ``hapax-methodology-disp
 
 Examples:
   cc-dispatch --list                                 # launchable capabilities -> route_ids
-  cc-dispatch agy cc-task-foo --lane agy-1           # validate routing agy -> the task (no launch)
-  cc-dispatch agy cc-task-foo --lane agy-1 --launch  # actually launch the lane
+  cc-dispatch codex cc-task-foo --lane cx-red        # validate routing codex -> the task (no launch)
+  cc-dispatch codex cc-task-foo --lane cx-red --launch  # actually launch the lane
   cc-dispatch fugu cc-task-foo --lane x              # fails CLOSED with the route-definition follow-on
   cc-dispatch --utilization                          # active-vs-latent capability scorecard
 
@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("cc_task", nargs="?", help="the cc-task id (slice) to dispatch")
     parser.add_argument(
         "--lane",
-        help="target lane/worktree to dispatch into — required to dispatch (e.g. agy-1, cx-red)",
+        help="target lane/worktree to dispatch into — required to dispatch (e.g. cx-red)",
     )
     parser.add_argument(
         "--launch", action="store_true", help="actually launch (default: validate only)"

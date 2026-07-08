@@ -1,13 +1,13 @@
 # hapax-axioms: bundled snapshot of the five constitution-published axioms.
 #
-# Canonical source: https://github.com/ryanklee/hapax-constitution
+# Canonical source: https://github.com/hapax-systems/hapax-constitution
 #   axioms/registry.yaml
 #
 # This bundle is a frozen point-in-time copy. It MUST NOT be hand-edited;
 # regenerate by re-syncing from the constitution repo. Drift detection is
 # the responsibility of the consuming project.
 schema_version: "1-0-0"
-source_repo: "https://github.com/ryanklee/hapax-constitution"
+source_repo: "https://github.com/hapax-systems/hapax-constitution"
 source_path: "axioms/registry.yaml"
 snapshot_date: "2026-04-25"
 axioms:

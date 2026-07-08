@@ -50,6 +50,7 @@ def _hold_local_capacity_span(
     child_cm.LOCAL_CAPACITY_LEASE_DIR = Path(lease_dir)
     child_cm.LOCAL_CAPACITY_CEILING = 4.0
     child_cm.reset_for_testing()
+    child_cm._ensure_metrics(CollectorRegistry())
 
     with child_llm_call_span(model="command-r", route="dmn-thinking"):
         ready.set()
@@ -188,7 +189,10 @@ class TestSpanEmitsTokensNotCost:
         )
         proc.start()
         try:
-            assert ready.wait(30)
+            # Merge-group full-suite shards can be CPU-starved before the child
+            # process reaches the span body. Keep the assertion semantic but make
+            # the readiness ceiling match the child-side release ceiling.
+            assert ready.wait(60)
             with llm_call_span(model="command-r", route="dmn-thinking"):
                 active = json.loads(path.read_text(encoding="utf-8"))
                 assert active["inflight"] == 2

@@ -106,7 +106,7 @@ def test_idle_watchdog_does_not_assign_offered_queue_work() -> None:
     assert "--print-prompt" not in text
     assert "Await governed dispatch" in text
     assert "hapax-methodology-dispatch --launch" in text
-    assert 'CODEX_SEND" --session "$lane" --require-ack' in text
+    assert "codex_send_args+=(--require-ack)" in text
     assert "do not self-select queue work" in text
     assert "claude --resume" not in text
     assert "codex --resume" not in text
@@ -151,7 +151,7 @@ def test_idle_watchdog_sends_await_dispatch_when_no_claim(tmp_path: Path) -> Non
     sent = Path(env["CODEX_SENT"]).read_text(encoding="utf-8")
     assert "Await governed dispatch" in sent
     assert "scripts/hapax-methodology-dispatch --task <id>" in sent
-    assert "--require-ack" in sent
+    assert "--require-ack" not in sent
     assert "cc-claim" not in sent
     assert not Path(env["TMUX_SENT"]).exists()
 
@@ -261,7 +261,7 @@ def test_idle_watchdog_does_not_dispatch_offered_task_from_idle_lane(tmp_path: P
     assert "Task: dispatchable-task" not in sent
     assert not dispatch_calls.exists()
     assert "Await governed dispatch" in sent
-    assert "--require-ack" in sent
+    assert "--require-ack" not in sent
     assert "cc-claim" not in sent
     assert not Path(env["TMUX_SENT"]).exists()
 
@@ -308,13 +308,67 @@ def test_idle_watchdog_does_not_raw_tmux_fallback_when_codex_ack_fails(
         exit 1
         """,
     )
+    task_dir = (
+        Path(env["HOME"]) / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+    )
+    task_dir.mkdir(parents=True)
+    (task_dir / "owned-task.md").write_text(
+        "---\nstatus: claimed\nassigned_to: cx-red\n---\n# Owned\n",
+        encoding="utf-8",
+    )
 
     result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
 
     assert result.returncode == 0, result.stderr
-    assert "--require-ack" in Path(env["CODEX_SENT"]).read_text(encoding="utf-8")
+    sent = Path(env["CODEX_SENT"]).read_text(encoding="utf-8")
+    assert "active task: owned-task" in sent
+    assert "--require-ack" in sent
     assert "FAILED to dispatch hapax-codex-cx-red" in result.stdout
+    failure_state = (
+        Path(env["HAPAX_IDLE_STATE_DIR"]) / "hapax-codex-cx-red.dispatch_failure_alerted"
+    )
+    assert failure_state.exists()
+    second = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
+
+    assert second.returncode == 0, second.stderr
+    assert "SUPPRESSED duplicate dispatch failure for hapax-codex-cx-red" in second.stdout
+    assert "FAILED to dispatch hapax-codex-cx-red" not in second.stdout
     assert not Path(env["TMUX_SENT"]).exists()
+
+    _write_executable(
+        codex_send,
+        """
+        #!/usr/bin/env bash
+        printf '%s\n' "$*" >> "${CODEX_SENT:?}"
+        """,
+    )
+    third = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
+
+    assert third.returncode == 0, third.stderr
+    assert "DISPATCHED hapax-codex-cx-red" in third.stdout
+    assert not failure_state.exists()
+
+
+def test_idle_watchdog_clears_dispatch_failure_marker_when_lane_becomes_active(
+    tmp_path: Path,
+) -> None:
+    env = _base_env(
+        tmp_path,
+        session="hapax-codex-cx-red",
+        pane="Working (12s)\ngpt-5.5 ~/projects/hapax-council",
+    )
+    state_dir = Path(env["HAPAX_IDLE_STATE_DIR"])
+    failure_state = state_dir / "hapax-codex-cx-red.dispatch_failure_alerted"
+    idle_state = state_dir / "hapax-codex-cx-red.idle_since"
+    failure_state.write_text("123", encoding="utf-8")
+    idle_state.write_text("123", encoding="utf-8")
+
+    result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert "scan: 1 lanes, 1 active" in result.stdout
+    assert not failure_state.exists()
+    assert not idle_state.exists()
 
 
 def test_rate_limit_watchdog_sends_hold_not_assignment_when_lane_has_no_task(

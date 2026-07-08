@@ -92,6 +92,11 @@ def _run_claim_audit(
     gh_stub.parent.mkdir(parents=True, exist_ok=True)
     gh_stub.write_text(
         f"#!/usr/bin/env bash\n"
+        f'if [[ "$1" == "api" ]]; then\n'
+        f"  if printf '%s\\n' \"$@\" | grep -Eq 'repos/.*/pulls/[0-9]'; then echo '{gh_state}'; exit 0; fi\n"
+        f"  if printf '%s\\n' \"$@\" | grep -Eq 'repos/.*/pulls$'; then echo ''; exit 0; fi\n"
+        f"  exit 1\n"
+        f"fi\n"
         f'if [[ "$1" == "pr" && "$2" == "view" ]]; then echo \'{gh_state}\'; exit 0; fi\n'
         f'if [[ "$1" == "pr" && "$2" == "list" ]]; then echo \'\'; exit 0; fi\n'
         f"exit 1\n",
@@ -124,6 +129,8 @@ def _run_hook(
     env = os.environ.copy()
     env["HOME"] = home
     env["HAPAX_AGENT_ROLE"] = "cx-test"
+    env.pop("HAPAX_CC_TASK_GATE_OFF", None)
+    env.pop("HAPAX_METHODOLOGY_EMERGENCY", None)
     return subprocess.run(
         ["bash", str(script)],
         input=payload,

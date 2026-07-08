@@ -1,0 +1,14 @@
+[Unit]
+Description=Hapax PR review-team dispatch cadence
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/cc-pr-review-dispatch.py
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+RandomizedDelaySec=45s
+AccuracySec=1min
+Persistent=true
+Unit=hapax-pr-review-dispatch.service
+
+[Install]
+WantedBy=timers.target

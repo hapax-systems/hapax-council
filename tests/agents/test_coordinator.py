@@ -14,6 +14,8 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
 
+import pytest
+
 from agents.coordinator.core import (
     _DISPATCH_CLAIM_GUARD_MARKERS,
     _DISPATCH_CLOSE_GUARD_MARKERS,
@@ -96,7 +98,6 @@ class TestDispatchWorktreeGuard:
             assert _dispatch_worktree("beta", "claude") == root / "hapax-council--beta"
             assert _dispatch_worktree("gamma", "gemini") == root / "hapax-council"
             assert _dispatch_worktree("vbe-1", "vibe") == root / "hapax-council--vbe-1"
-            assert _dispatch_worktree("antigravity", "antigrav") == root / "hapax-council--antigrav"
             assert _dispatch_worktree("other", "unknown") == root / "hapax-council"
 
     def test_dispatch_worktree_expands_project_root_home(self, tmp_path: Path):
@@ -120,7 +121,6 @@ class TestDispatchWorktreeGuard:
             ("beta", "claude"),
             ("gamma", "gemini"),
             ("vbe-1", "vibe"),
-            ("antigravity", "antigrav"),
             ("other", "unknown"),
         )
 
@@ -293,7 +293,27 @@ class TestDispatchWorktreeGuard:
         assert blocker is not None
         assert "unsupported dispatch platform 'antigrav'" in blocker
         assert "next_action=" in blocker
-        assert "add coordinator headless dispatch support for 'antigrav'" in blocker
+        assert "mint measured supply-leaf intake" in blocker
+
+    @pytest.mark.parametrize("platform", ["agy", "antigravity", "gemini-cli"])
+    def test_dispatch_tool_blocker_retired_aliases_keep_intake_next_action(
+        self,
+        tmp_path: Path,
+        platform: str,
+    ):
+        with (
+            patch.dict("os.environ", {"HAPAX_DISPATCH_PROJECT_ROOT": str(tmp_path / "projects")}),
+            patch(
+                "agents.coordinator.core._read_dispatch_guard",
+                side_effect=AssertionError("unsupported platform should not read guard files"),
+            ),
+        ):
+            blocker = _dispatch_tool_blocker(platform, platform)
+
+        assert blocker is not None
+        assert f"unsupported dispatch platform '{platform}'" in blocker
+        assert "mint measured supply-leaf intake" in blocker
+        assert "add coordinator headless dispatch support" not in blocker
 
 
 class TestParseTask:
@@ -755,10 +775,7 @@ current_claim: null
         assert state.dispatch_ready is False
         assert state.dispatch_blocked_reason is not None
         assert "unsupported dispatch platform 'antigrav'" in state.dispatch_blocked_reason
-        assert (
-            "add coordinator headless dispatch support for 'antigrav'"
-            in state.dispatch_blocked_reason
-        )
+        assert "mint measured supply-leaf intake" in state.dispatch_blocked_reason
 
     def test_relay_claim_beats_stale_active_claim_file(self, tmp_path: Path):
         relay_dir = tmp_path / "relay"
@@ -1133,8 +1150,76 @@ current_claim: stale-task-{index}
                 assert state.dispatchable is False
 
         assert _relay_status_is_retired("retiring") is False
-        assert _relay_status_is_retired("superseded-by-cx-blue") is False
-        assert _relay_status_is_retired("closed-by-operator") is False
+        # SUPERSEDED/CLOSED are now retired (broad-9: the launcher is the refusal
+        # surface; the coordinator previously under-refused these -> routed -> rc=6).
+        assert _relay_status_is_retired("superseded-by-cx-blue") is True
+        assert _relay_status_is_retired("closed-by-operator") is True
+
+    def test_retired_relay_multidoc_latest_document_suppresses_claim(self, tmp_path: Path):
+        role = "cx-multidoc-retired"
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / f"{role}.yaml").write_text(
+            """status: active
+current_claim: stale-task
+---
+status: retired
+current_claim: stale-task
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role=role,
+                    session=f"hapax-codex-{role}",
+                    platform="codex",
+                )
+            )
+
+        assert state.alive is True
+        assert state.claimed_task is None
+        assert state.idle is True
+        assert state.dispatchable is False
+
+    def test_retired_relay_status_union_suppresses_claim(self, tmp_path: Path):
+        role = "cx-relay-status-retired"
+        relay_dir = tmp_path / "relay"
+        relay_dir.mkdir()
+        (relay_dir / f"{role}.yaml").write_text(
+            """status: active
+relay_status: closed-by-operator
+current_claim: stale-task
+""",
+            encoding="utf-8",
+        )
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        with (
+            patch("agents.coordinator.core.RELAY_DIR", relay_dir),
+            patch("agents.coordinator.core.CACHE_DIR", cache_dir),
+            patch("pathlib.Path.home", return_value=tmp_path),
+        ):
+            state = _check_lane(
+                LaneDescriptor(
+                    role=role,
+                    session=f"hapax-codex-{role}",
+                    platform="codex",
+                )
+            )
+
+        assert state.alive is True
+        assert state.claimed_task is None
+        assert state.idle is False
+        assert state.dispatchable is False
 
     def test_active_task_file_still_beats_retired_role_status(self, tmp_path: Path):
         role = "ut-role"

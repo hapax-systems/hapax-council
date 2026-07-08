@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import ExitStack
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 
@@ -15,6 +17,23 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 MPLSTYLE_PATH = Path(__file__).resolve().parent.parent.parent / "profiles" / "gruvbox.mplstyle"
+
+SAFE_RC = {
+    "axes.labelsize": 14,
+    "axes.titlesize": 20,
+    "figure.dpi": 150,
+    "font.family": ["DejaVu Sans"],
+    "font.size": 12,
+    "legend.fontsize": 12,
+    "mathtext.fontset": "dejavusans",
+    "savefig.bbox": None,
+    "savefig.dpi": 150,
+    "savefig.pad_inches": 0.1,
+    "text.parse_math": False,
+    "text.usetex": False,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+}
 
 # Gruvbox colors for manual use
 COLORS = {
@@ -88,25 +107,19 @@ def render_chart(chart_spec: str, output_path: Path, size: tuple[int, int] = (19
     }
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    dpi = 150
+    figsize = (size[0] / dpi, size[1] / dpi)
 
     try:
         spec = json.loads(chart_spec)
     except (json.JSONDecodeError, TypeError) as e:
         log.warning("Chart spec is not valid JSON, generating fallback: %s", e)
         spec = {"title": "Data Visualization"}
-        _render_fallback(spec, output_path, (size[0] / 150, size[1] / 150), 150)
+        _render_fallback(spec, output_path, size)
         return output_path
 
     spec = _normalize_chart_spec(spec)
     chart_type = spec.get("type", "bar")
-
-    # Load Gruvbox style
-    if MPLSTYLE_PATH.exists():
-        plt.style.use(str(MPLSTYLE_PATH))
-
-    dpi = 150
-    fig_w = size[0] / dpi
-    fig_h = size[1] / dpi
 
     renderers = {
         "bar": _render_bar,
@@ -142,50 +155,82 @@ def render_chart(chart_spec: str, output_path: Path, size: tuple[int, int] = (19
         "line_chart": _render_line,
     }
 
-    try:
-        renderer = renderers.get(chart_type)
-        if not renderer:
-            # Try to extract a known base type from compound names like "service-overview"
-            base_types = ["timeline", "bar", "line", "pie", "gauge", "area", "network"]
-            for base in base_types:
-                if base in chart_type:
-                    renderer = renderers[base]
-                    log.info("Mapped unknown chart type '%s' to '%s'", chart_type, base)
-                    break
-        if renderer:
-            renderer(spec, output_path, (fig_w, fig_h), dpi)
-        else:
-            log.warning("Unknown chart type '%s', rendering as bar", chart_type)
-            # Try bar if data has labels/values, otherwise fallback
-            data = spec.get("data", {})
-            if "labels" in data and "values" in data:
-                _render_bar(spec, output_path, (fig_w, fig_h), dpi)
+    with _style_context():
+        try:
+            renderer = renderers.get(chart_type)
+            if not renderer:
+                # Try to extract a known base type from compound names like "service-overview"
+                base_types = ["timeline", "bar", "line", "pie", "gauge", "area", "network"]
+                for base in base_types:
+                    if base in chart_type:
+                        renderer = renderers[base]
+                        log.info("Mapped unknown chart type '%s' to '%s'", chart_type, base)
+                        break
+            if renderer:
+                renderer(spec, output_path, figsize, dpi)
             else:
-                _render_fallback(spec, output_path, (fig_w, fig_h), dpi)
-    except Exception as e:
-        log.warning("Chart render failed (%s), generating fallback: %s", chart_type, e)
-        _render_fallback(spec, output_path, (fig_w, fig_h), dpi)
+                log.warning("Unknown chart type '%s', rendering as bar", chart_type)
+                # Try bar if data has labels/values, otherwise fallback
+                data = spec.get("data", {})
+                if "labels" in data and "values" in data:
+                    _render_bar(spec, output_path, figsize, dpi)
+                else:
+                    _render_fallback(spec, output_path, size)
+        except Exception as e:
+            log.warning("Chart render failed (%s), generating fallback: %s", chart_type, e)
+            plt.close("all")
+            _render_fallback(spec, output_path, size)
 
     return output_path
 
 
-def _render_fallback(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None:
-    """Render a simple text-only fallback when chart spec can't be parsed."""
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    title = spec.get("title", "Data Visualization")
-    ax.text(
-        0.5,
-        0.5,
-        title,
-        ha="center",
-        va="center",
-        fontsize=32,
-        color=COLORS["fg"],
-        transform=ax.transAxes,
-    )
-    ax.set_axis_off()
-    fig.savefig(output_path)
-    plt.close(fig)
+def _style_context() -> ExitStack:
+    stack = ExitStack()
+    stack.enter_context(plt.rc_context(SAFE_RC))
+    if MPLSTYLE_PATH.exists():
+        stack.enter_context(plt.style.context(str(MPLSTYLE_PATH)))
+    return stack
+
+
+def _save_and_close(fig: Any, output_path: Path) -> None:
+    try:
+        # The gruvbox style sets savefig.bbox=tight. That can expand output
+        # dimensions wildly when Matplotlib's layout state is polluted by an
+        # earlier render failure; render_chart's size contract is fixed pixels.
+        with plt.rc_context({"savefig.bbox": None}):
+            fig.savefig(output_path)
+    finally:
+        plt.close(fig)
+
+
+def _render_fallback(spec: dict, output_path: Path, size: tuple[int, int]) -> None:
+    """Render a simple fallback without using Matplotlib's font stack."""
+    from PIL import Image, ImageDraw
+
+    title = str(spec.get("title", "Data Visualization"))
+    image = Image.new("RGB", size, COLORS["bg"])
+    draw = ImageDraw.Draw(image)
+    stripe_height = max(12, size[1] // 32)
+    palette = [
+        COLORS["orange"],
+        COLORS["yellow"],
+        COLORS["green"],
+        COLORS["blue"],
+        COLORS["purple"],
+        COLORS["aqua"],
+    ]
+    for idx, color in enumerate(palette):
+        x0 = int(idx * size[0] / len(palette))
+        x1 = int((idx + 1) * size[0] / len(palette))
+        draw.rectangle((x0, size[1] - stripe_height, x1, size[1]), fill=color)
+
+    try:
+        draw.text((size[0] // 24, size[1] // 2), title[:120], fill=COLORS["fg"])
+    except Exception:
+        log.warning(
+            "Fallback chart title drawing failed; continuing with untitled image", exc_info=True
+        )
+    image.save(output_path)
 
 
 def _render_bar(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None:
@@ -201,8 +246,7 @@ def _render_bar(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None
         ax.set_xlabel(spec["xlabel"])
     if spec.get("ylabel"):
         ax.set_ylabel(spec["ylabel"])
-    fig.savefig(output_path)
-    plt.close(fig)
+    _save_and_close(fig, output_path)
 
 
 def _render_horizontal_bar(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None:
@@ -219,8 +263,7 @@ def _render_horizontal_bar(spec: dict, output_path: Path, figsize: tuple, dpi: i
     if spec.get("ylabel"):
         ax.set_ylabel(spec["ylabel"])
     ax.invert_yaxis()  # Top-to-bottom reading order
-    fig.savefig(output_path)
-    plt.close(fig)
+    _save_and_close(fig, output_path)
 
 
 def _render_stacked_bar(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None:
@@ -263,8 +306,7 @@ def _render_stacked_bar(spec: dict, output_path: Path, figsize: tuple, dpi: int)
     if spec.get("ylabel"):
         ax.set_ylabel(spec["ylabel"])
     fig.tight_layout()
-    fig.savefig(output_path)
-    plt.close(fig)
+    _save_and_close(fig, output_path)
 
 
 def _render_line(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None:
@@ -299,8 +341,7 @@ def _render_line(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> Non
         ax.set_xlabel(spec["xlabel"])
     if spec.get("ylabel"):
         ax.set_ylabel(spec["ylabel"])
-    fig.savefig(output_path)
-    plt.close(fig)
+    _save_and_close(fig, output_path)
 
 
 def _render_area(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None:
@@ -330,8 +371,7 @@ def _render_area(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> Non
         ax.set_xlabel(spec["xlabel"])
     if spec.get("ylabel"):
         ax.set_ylabel(spec["ylabel"])
-    fig.savefig(output_path)
-    plt.close(fig)
+    _save_and_close(fig, output_path)
 
 
 def _render_pie(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None:
@@ -361,8 +401,7 @@ def _render_pie(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None
         t.set_color(COLORS["bg"])
         t.set_fontweight("bold")
     ax.set_title(spec.get("title", ""))
-    fig.savefig(output_path)
-    plt.close(fig)
+    _save_and_close(fig, output_path)
 
 
 def _render_gauge(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None:
@@ -394,8 +433,7 @@ def _render_gauge(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> No
     ax.text(0, -0.1, label, ha="center", va="center", fontsize=24, color=COLORS["fg"])
     ax.set_title(spec.get("title", ""), pad=20)
 
-    fig.savefig(output_path)
-    plt.close(fig)
+    _save_and_close(fig, output_path)
 
 
 def _render_multi_line(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None:
@@ -443,8 +481,7 @@ def _render_multi_line(spec: dict, output_path: Path, figsize: tuple, dpi: int) 
     if spec.get("ylabel"):
         ax.set_ylabel(spec["ylabel"])
     fig.tight_layout()
-    fig.savefig(output_path)
-    plt.close(fig)
+    _save_and_close(fig, output_path)
 
 
 def _render_timeline(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None:
@@ -509,8 +546,7 @@ def _render_timeline(spec: dict, output_path: Path, figsize: tuple, dpi: int) ->
     ax.set_axis_off()
     ax.set_title(spec.get("title", ""))
     fig.tight_layout()
-    fig.savefig(output_path)
-    plt.close(fig)
+    _save_and_close(fig, output_path)
 
 
 def _render_network(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> None:
@@ -615,5 +651,4 @@ def _render_network(spec: dict, output_path: Path, figsize: tuple, dpi: int) -> 
 
     ax.set_title(spec.get("title", ""))
     fig.tight_layout()
-    fig.savefig(output_path)
-    plt.close(fig)
+    _save_and_close(fig, output_path)

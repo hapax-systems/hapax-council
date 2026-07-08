@@ -40,28 +40,25 @@ from shared.platform_capability_registry import (  # noqa: E402
 )
 
 BINARY_BY_PLATFORM = {
-    "antigrav": "agy",
+    "agy": "agy",
     "api": "python3",
     "claude": "claude",
     "codex": "codex",
+    "glmcp": "scripts/hapax-glmcp-reviewer",
     "vibe": "vibe",
 }
 VERSION_ARGS_BY_PLATFORM = {
-    "antigrav": ["--version"],
+    "agy": ["--version"],
     "api": ["--version"],
     "claude": ["--version"],
     "codex": ["--version"],
+    "glmcp": ["--check"],
     "vibe": ["--version"],
 }
 CONFIG_REFS_BY_PLATFORM = {
-    "antigrav": [
-        "~/.cache/hapax/relay/onboarding-antigrav.md",
-        "~/.gemini/antigravity-cli/settings.json",
-        "~/.gemini/antigravity/global_workflows",
-        ".agents/rules",
-        ".agents/workflows",
-        ".agents/mcp_config.json",
-        ".agent",
+    "agy": [
+        "~/.gemini/antigravity-cli/builtin/skills/antigravity_guide/references/cli.md",
+        "scripts/hapax-agy-reviewer",
     ],
     "api": [
         "~/llm-stack/litellm-config.yaml",
@@ -72,6 +69,13 @@ CONFIG_REFS_BY_PLATFORM = {
     ],
     "claude": ["~/.claude/settings.json", "~/.claude.json", "CLAUDE.md"],
     "codex": ["~/.codex/config.toml", "~/.codex/AGENTS.md", "AGENTS.md"],
+    "glmcp": [
+        "scripts/hapax-glmcp-reviewer",
+        "scripts/hapax-glmcp-quota-admission",
+        "scripts/hapax-quota-telemetry-writer",
+        "config/platform-capability-registry.json",
+        "config/quota-spend-ledger-fixtures.json",
+    ],
     "vibe": [
         "~/.vibe/config.toml",
         "~/.vibe/.env",
@@ -79,6 +83,7 @@ CONFIG_REFS_BY_PLATFORM = {
     ],
 }
 SECRETISH_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|credential)([=:])(\S+)")
+RETIRED_ANTIGRAV_PLATFORMS = frozenset({"antigrav", "antigravity", "gemini-cli"})
 
 
 def parse_utc(value: str) -> datetime:
@@ -142,9 +147,7 @@ def sha256_file(path: Path) -> str | None:
 def candidate_binaries(platform: str) -> list[str]:
     override = os.environ.get(f"HAPAX_{platform.upper()}_BIN", "").strip()
     candidates = [BINARY_BY_PLATFORM[platform]]
-    if platform == "antigrav":
-        candidates.extend(["/usr/bin/agy"])
-    if override and (platform != "antigrav" or Path(override).name == "agy"):
+    if override:
         candidates.insert(0, override)
     return list(dict.fromkeys(candidates))
 
@@ -153,6 +156,9 @@ def resolve_binary(binary: str) -> str | None:
     path = Path(binary).expanduser()
     if path.is_absolute():
         return str(path) if path.is_file() and os.access(path, os.X_OK) else None
+    if "/" in binary:
+        resolved = resolve_ref(binary)
+        return str(resolved) if resolved.is_file() and os.access(resolved, os.X_OK) else None
     return shutil.which(binary)
 
 
@@ -271,22 +277,34 @@ def build_receipt(
     receipt_id = f"{platform}-{observed_at.strftime('%Y%m%dT%H%M%SZ')}"
     capability_reasons: list[str] = []
     capability_refs: list[str] = []
+    wrapper_usable = wrapper.exists and wrapper.executable and bool(wrapper.sha256)
     if cli.available:
         capability_refs.append(f"local:{platform}:cli-version:{cli.version or 'available'}")
     else:
         capability_reasons.append("cli_missing_or_unusable")
-    if wrapper.exists and wrapper.sha256:
+    if wrapper_usable:
         capability_refs.append(f"local:{wrapper.path}:sha256:{wrapper.sha256}")
+    elif wrapper.exists and wrapper.sha256 and not wrapper.executable:
+        capability_reasons.append("sanctioned_wrapper_not_executable")
     else:
         capability_reasons.append("sanctioned_wrapper_missing_or_unreadable")
     capability_status = (
         EvidenceStatus.OBSERVED if not capability_reasons else EvidenceStatus.BLOCKED
     )
-    resource_status = EvidenceStatus.OBSERVED if wrapper.exists else EvidenceStatus.MISSING
-    resource_refs = [f"local:{wrapper.path}:exists:{str(wrapper.exists).lower()}"]
-    quota_reason = (
-        "quota_telemetry_unknown" if platform == "antigrav" else "account_live_quota_receipt_absent"
-    )
+    if wrapper_usable:
+        resource_status = EvidenceStatus.OBSERVED
+        resource_reasons: list[str] = []
+    elif wrapper.exists and not wrapper.executable:
+        resource_status = EvidenceStatus.BLOCKED
+        resource_reasons = ["wrapper_not_executable"]
+    else:
+        resource_status = EvidenceStatus.MISSING
+        resource_reasons = ["wrapper_missing"]
+    resource_refs = [
+        f"local:{wrapper.path}:exists:{str(wrapper.exists).lower()}",
+        f"local:{wrapper.path}:executable:{str(wrapper.executable).lower()}",
+    ]
+    quota_reason = "account_live_quota_receipt_absent"
     quota = surface_evidence(
         status=EvidenceStatus.UNOBSERVABLE,
         source="local_receipt_probe",
@@ -323,7 +341,7 @@ def build_receipt(
             observed_at=observed_at,
             stale_after=stale_after,
             evidence_refs=resource_refs,
-            reason_codes=[] if resource_status is EvidenceStatus.OBSERVED else ["wrapper_missing"],
+            reason_codes=resource_reasons,
         ),
         quota=quota,
         provider_docs=ProviderDocsEvidence(
@@ -341,18 +359,29 @@ def build_receipt(
 
 
 def known_unknowns_for(platform: str) -> list[str]:
-    unknowns = [
-        "Receipt command records config paths and existence only; it never reads secret values.",
-    ]
+    unknowns = []
     if platform == "api":
         unknowns.insert(
             0,
             "Provider spend is authorized by the quota/spend ledger, not by this local receipt.",
         )
+        unknowns.append(
+            "Receipt command records config paths and existence only; it never reads secret values."
+        )
+    elif platform == "glmcp":
+        unknowns.extend(
+            [
+                "GLMCP quota freshness is admitted by short-lived quota-spend-ledger receipts; this local receipt only checks wrapper/config/docs/resource surfaces.",
+                "GLMCP receipt refresh may read the pass-backed secret to verify wrapper availability; it records only redacted metadata and never persists the secret value.",
+            ]
+        )
     else:
         unknowns.insert(
             0,
             "Account-live subscription quota is not exposed by the local receipt probe.",
+        )
+        unknowns.append(
+            "Receipt command records config paths and existence only; it never reads secret values."
         )
     return unknowns
 
@@ -403,10 +432,25 @@ def main(argv: list[str] | None = None) -> int:
     observed_at = parse_utc(args.now) if args.now else datetime.now(UTC).replace(microsecond=0)
     registry = load_platform_capability_registry(args.registry)
     routes_by_platform = platform_routes(registry.routes)
-    selected = sorted(routes_by_platform) if args.all or not args.platform else args.platform
+    selected = (
+        sorted(routes_by_platform)
+        if args.all or not args.platform
+        else [platform.lower() for platform in args.platform]
+    )
     unknown = sorted(set(selected) - set(routes_by_platform))
     if unknown:
-        print(f"unknown platform(s): {', '.join(unknown)}", file=sys.stderr)
+        retired = [platform for platform in unknown if platform in RETIRED_ANTIGRAV_PLATFORMS]
+        for platform in retired:
+            print(
+                f"platform '{platform}' is retired/excised; use agy.review.direct for "
+                "the live read-only review route",
+                file=sys.stderr,
+            )
+        if retired:
+            retired_set = set(retired)
+            unknown = [platform for platform in unknown if platform not in retired_set]
+        if unknown:
+            print(f"unknown platform(s): {', '.join(unknown)}", file=sys.stderr)
         return 2
 
     outputs: list[dict[str, Any]] = []
