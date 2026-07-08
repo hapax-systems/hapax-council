@@ -179,6 +179,18 @@ PUBLIC_GATE_SELF_AUTHORITY_VALUES = frozenset(
         "unknown",
     }
 )
+PUBLIC_GATE_NON_INDEPENDENT_REVIEW_FAMILIES = frozenset(
+    {
+        "local",
+        "manual",
+        "operator",
+        "oudepode",
+        "self",
+        "self-minted",
+        "test",
+        "unknown",
+    }
+)
 PUBLIC_GATE_EVIDENCE_REF_PREFIXES = (
     "acceptance-receipt:",
     "claim-review:",
@@ -788,7 +800,7 @@ def _review_dossier_evidence_allows(
         and str(reviewer.get("verdict") or "").strip().casefold()
         in {"accept", "accept-with-findings"}
     }
-    return len(accepted_families - PUBLIC_GATE_SELF_AUTHORITY_VALUES) >= 1
+    return len(accepted_families - PUBLIC_GATE_NON_INDEPENDENT_REVIEW_FAMILIES) >= 1
 
 
 def _acceptance_receipt_evidence_allows(

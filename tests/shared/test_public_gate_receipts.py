@@ -50,6 +50,9 @@ def _write_review_evidence(
     receipt_name: str,
     gate: str = GATE,
     artifact_fingerprint: str = "abc123",
+    reviewers: list[dict[str, str]] | None = None,
+    quorum_required: int = 1,
+    accept_count: int = 1,
 ) -> None:
     del root
     authority_root = public_gate_receipts._public_gate_authority_roots()[0]
@@ -59,15 +62,16 @@ def _write_review_evidence(
         "task_id": TASK_ID,
         "head_sha": "a" * 40,
         "review_team_verdict": "quorum-accept",
-        "quorum_required": 1,
-        "accept_count": 1,
+        "quorum_required": quorum_required,
+        "accept_count": accept_count,
         "gate_id": gate,
         "authorized_public_gate_receipts": [f"public-gate:{receipt_name}"],
         "artifact_slug": "demo",
         "artifact_fingerprint": artifact_fingerprint,
         "target_surfaces": ["fake"],
         "authority_issuer": "claim-verification-council",
-        "reviewers": [
+        "reviewers": reviewers
+        or [
             {
                 "id": "cvc-1",
                 "family": "cvc",
@@ -220,6 +224,28 @@ def test_rejects_unsigned_authority_evidence(tmp_path: Path) -> None:
     evidence.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
+def test_accepts_signed_review_dossier_with_codex_claude_review_families(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(
+        tmp_path,
+        receipt_name="receipt-1.yaml",
+        reviewers=[
+            {"id": "codex-1", "family": "codex", "verdict": "accept-with-findings"},
+            {"id": "claude-1", "family": "claude", "verdict": "accept"},
+        ],
+        quorum_required=2,
+        accept_count=2,
+    )
+
+    assert public_gate_receipt_value_present(
         "public-gate:receipt-1.yaml",
         expected_gate=GATE,
         roots=(tmp_path,),
