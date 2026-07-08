@@ -136,6 +136,7 @@ RELEASE_MITIGATION_CHECK_CONTEXTS = frozenset(
 # re-posts the admission proof once it is older than half this window so the
 # server-side proof never goes stale (G3 idempotent writes).
 AUTOQUEUE_ADMISSION_TTL_SECONDS = 30 * 60
+AUTOQUEUE_ADMISSION_READ_TIMEOUT_SECONDS = 15
 # Failure proofs intentionally refresh less often than success proofs: blocked
 # PRs can sit for days, and GitHub caps commit statuses per SHA+context. Still,
 # when the blocker text changes, the proof must eventually stop advertising
@@ -2171,24 +2172,77 @@ def _latest_admission_status(
     go stale: GitHub caps statuses at 1000 per SHA+context, and the old
     unconditional POST burned that cap into a 422 self-DoS that made the apply
     loop skip the queue mutation."""
-    cmd = ["gh", "api", f"repos/{repo}/commits/{head_sha}/statuses"]
-    proc = runner(cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60)
+    status, _error = _latest_admission_status_result(
+        head_sha, repo=repo, repo_root=repo_root, runner=runner
+    )
+    return status
+
+
+def _format_admission_status_read_error(kind: str, detail: str = "") -> str:
+    if detail:
+        return _status_description(f"{kind}: {detail}", limit=200)
+    return kind
+
+
+def _latest_admission_status_result(
+    head_sha: str,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> tuple[tuple[str, str, datetime | None] | None, str | None]:
+    """Read the current admission status without broadening the mutation surface.
+
+    The caller needs to distinguish "absent" from "unreadable": absent means it
+    may POST the desired proof, but unreadable must fail closed so a slow or
+    broken status read does not turn into extra status writes across every
+    blocked PR in the run.
+    """
+    cmd = [
+        "gh",
+        "api",
+        "--method",
+        "GET",
+        f"repos/{repo}/commits/{head_sha}/statuses",
+        "-f",
+        "per_page=100",
+        "-f",
+        "page=1",
+    ]
+    try:
+        proc = runner(
+            cmd,
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=AUTOQUEUE_ADMISSION_READ_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return None, _format_admission_status_read_error(
+            "timeout", f"{AUTOQUEUE_ADMISSION_READ_TIMEOUT_SECONDS}s"
+        )
+    except OSError as exc:
+        return None, _format_admission_status_read_error(type(exc).__name__, str(exc))
     if getattr(proc, "returncode", 1) != 0:
-        return None
+        output = (getattr(proc, "stderr", "") or getattr(proc, "stdout", "") or "").strip()
+        return None, _format_admission_status_read_error(
+            f"rc={getattr(proc, 'returncode', 1)}", output
+        )
     try:
         items = json.loads(proc.stdout or "[]")
-    except (json.JSONDecodeError, TypeError):
-        return None
+    except (json.JSONDecodeError, TypeError) as exc:
+        return None, _format_admission_status_read_error("invalid_json", str(exc))
     if not isinstance(items, list):
-        return None
+        return None, _format_admission_status_read_error("unexpected_json", type(items).__name__)
     for item in items:  # the statuses API returns most-recent-first
         if isinstance(item, dict) and item.get("context") == AUTOQUEUE_ADMISSION_CONTEXT:
             return (
                 str(item.get("state") or ""),
                 str(item.get("description") or ""),
                 _parse_status_created_at(item.get("created_at")),
-            )
-    return None
+            ), None
+    return None, None
 
 
 def set_autoqueue_admission_status(
@@ -2216,9 +2270,11 @@ def set_autoqueue_admission_status(
     if not decision.pr.head_sha:
         return False, "missing_head_sha"
     state, description = status
-    current = _latest_admission_status(
+    current, read_error = _latest_admission_status_result(
         decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
     )
+    if read_error is not None:
+        return False, f"admission_status_read_failed:{read_error}"
     if current is not None:
         cur_state, cur_description, cur_created = current
         if cur_state == state == "failure":

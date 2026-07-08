@@ -11,6 +11,10 @@ OnFailure=notify-failure@%n.service
 # level; the failed-merge-group trigger still catches real thrash.
 Type=oneshot
 ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/cc-pr-autoqueue.py --repo-root %h/.cache/hapax/source-activation/worktree --apply --storm-open-pr-threshold 20
+# ExecStart runs python via the `uv` wrapper. On external stop/reload, uv can
+# propagate a graceful SIGTERM as numeric 143; count that as a clean timer stop
+# so notify-failure@ only sees real autoqueue crashes.
+SuccessExitStatus=0 143 SIGTERM
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree

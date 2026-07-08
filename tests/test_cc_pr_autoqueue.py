@@ -408,6 +408,8 @@ class _FakeRunner:
         self.fail_queue_refs = False
         self.calls: list[list[str]] = []
         self.fail_status_posts = False
+        self.fail_status_reads = False
+        self.timeout_status_reads = False
         # head_sha -> existing commit statuses (most-recent-first), for the G3
         # read-before-write idempotency check in set_autoqueue_admission_status.
         self.head_statuses: dict[str, list[dict[str, Any]]] = {}
@@ -583,13 +585,21 @@ class _FakeRunner:
             return subprocess.CompletedProcess(cmd, 0, "\n".join(self.queue_refs), "")
         if cmd[:3] == ["gh", "pr", "merge"]:
             return subprocess.CompletedProcess(cmd, 0, f"merged {cmd[3]}\n", "")
+        status_read_path = None
+        if cmd[:4] == ["gh", "api", "--method", "GET"] and len(cmd) >= 5:
+            status_read_path = cmd[4]
+        elif cmd[:2] == ["gh", "api"] and len(cmd) >= 3:
+            status_read_path = cmd[2]
         if (
-            cmd[:2] == ["gh", "api"]
-            and len(cmd) == 3
-            and "/commits/" in cmd[2]
-            and cmd[2].endswith("/statuses")
+            status_read_path is not None
+            and "/commits/" in status_read_path
+            and status_read_path.endswith("/statuses")
         ):
-            sha = cmd[2].split("/commits/", 1)[1].rsplit("/statuses", 1)[0]
+            if self.timeout_status_reads:
+                raise subprocess.TimeoutExpired(cmd, timeout=timeout)
+            if self.fail_status_reads:
+                return subprocess.CompletedProcess(cmd, 1, "", "status read failed")
+            sha = status_read_path.split("/commits/", 1)[1].rsplit("/statuses", 1)[0]
             return subprocess.CompletedProcess(
                 cmd, 0, json.dumps(self.head_statuses.get(sha, [])), ""
             )
@@ -6250,6 +6260,71 @@ def test_admission_status_posts_when_no_current_status(tmp_path: Path) -> None:
     )
     assert result is not None and result[0]
     assert len(_admission_posts(runner)) == 1
+
+
+def test_admission_status_read_uses_bounded_get_first_page(tmp_path: Path) -> None:
+    decision = _admission_decision()
+    runner = _FakeRunner()
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+
+    assert result is not None and result[0]
+    read_calls = [
+        call
+        for call in runner.calls
+        if call[:5]
+        == [
+            "gh",
+            "api",
+            "--method",
+            "GET",
+            "repos/owner/repo/commits/sha-50/statuses",
+        ]
+    ]
+    assert read_calls == [
+        [
+            "gh",
+            "api",
+            "--method",
+            "GET",
+            "repos/owner/repo/commits/sha-50/statuses",
+            "-f",
+            "per_page=100",
+            "-f",
+            "page=1",
+        ]
+    ]
+
+
+def test_admission_status_read_timeout_fails_closed_without_post(tmp_path: Path) -> None:
+    decision = _admission_decision()
+    runner = _FakeRunner()
+    runner.timeout_status_reads = True
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+
+    assert result == (
+        False,
+        f"admission_status_read_failed:timeout: {autoqueue.AUTOQUEUE_ADMISSION_READ_TIMEOUT_SECONDS}s",
+    )
+    assert _admission_posts(runner) == []
+
+
+def test_admission_status_read_failure_fails_closed_without_post(tmp_path: Path) -> None:
+    decision = _admission_decision()
+    runner = _FakeRunner()
+    runner.fail_status_reads = True
+
+    result = autoqueue.set_autoqueue_admission_status(
+        decision, repo="owner/repo", repo_root=tmp_path, runner=runner
+    )
+
+    assert result == (False, "admission_status_read_failed:rc=1: status read failed")
+    assert _admission_posts(runner) == []
 
 
 def test_admission_status_idempotent_when_unchanged_and_fresh(tmp_path: Path) -> None:

@@ -32,3 +32,8 @@ def test_autoqueue_unit_runs_against_detached_deploy_tree() -> None:
     # worktree — pin that the unit's WorkingDirectory + ExecStart point there.
     text = UNIT.read_text(encoding="utf-8")
     assert "source-activation/worktree" in text
+
+
+def test_autoqueue_unit_treats_uv_sigterm_143_as_clean_stop() -> None:
+    text = UNIT.read_text(encoding="utf-8")
+    assert "SuccessExitStatus=0 143 SIGTERM" in text
