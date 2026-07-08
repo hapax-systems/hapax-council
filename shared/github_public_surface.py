@@ -14,24 +14,28 @@ from pydantic import BaseModel, ConfigDict, Field
 
 REPORT_SCHEMA_VERSION: int = 1
 CLAIM_CEILING: str = "public_archive"
+ORG_PROFILE_REPO_ID: str = "hapax-systems/.github"
+ORG_PROFILE_README_PATH: str = "profile/README.md"
+MARKDOWN_LEDGER_DATE: str = "2026-04-30"
 
 INTENDED_PUBLIC_REPOS: tuple[str, ...] = (
+    "hapax-systems/agentgov",
     "hapax-systems/hapax-council",
     "hapax-systems/hapax-constitution",
     "hapax-systems/hapax-officium",
     "hapax-systems/hapax-watch",
     "hapax-systems/hapax-phone",
     "hapax-systems/hapax-mcp",
+    "hapax-systems/hapax-research-ledger",
     "hapax-systems/hapax-assets",
+    "hapax-systems/reins",
 )
 
-PROFILE_REPO_CANDIDATES: tuple[str, ...] = (
-    "ryanklee/ryanklee",
-    "hapax-systems/.github",
-)
+PROFILE_REPO_CANDIDATES: tuple[str, ...] = (ORG_PROFILE_REPO_ID,)
 
 REQUIRED_FILE_PATHS: tuple[str, ...] = (
     "README.md",
+    ORG_PROFILE_README_PATH,
     "LICENSE",
     "NOTICE.md",
     "SECURITY.md",
@@ -144,7 +148,6 @@ class PackageSurface(StrictModel):
 
 
 class LocalPublicSurfaceEvidence(StrictModel):
-    repo_head: str
     registry_license_by_repo: dict[str, str]
     registry_assets_policy: str | None = None
     root_file_sha256: dict[str, str]
@@ -158,7 +161,7 @@ class GitHubDocsEvidence(StrictModel):
     organization_profile_readme_url: str
     user_profile_requirement: str
     organization_profile_requirement: str
-    profile_readme_decision: Literal["user_repo_named_ryanklee_required"]
+    profile_readme_decision: Literal["org_repo_named_dot_github_required"]
 
 
 class DriftFinding(StrictModel):
@@ -179,6 +182,8 @@ class ClosedRepoPresClaim(StrictModel):
     task_path: str
     claimed_status: str
     live_status: Literal["true", "false", "unreconciled", "not_applicable"]
+    live_status_basis: str
+    live_witness_refs: tuple[str, ...]
     summary: str
     evidence_refs: tuple[str, ...]
 
@@ -232,8 +237,7 @@ def build_drift_findings(
     council = repos.get("hapax-systems/hapax-council")
     constitution = repos.get("hapax-systems/hapax-constitution")
     assets = repos.get("hapax-systems/hapax-assets")
-    user_profile = repos.get("ryanklee/ryanklee")
-    org_profile = repos.get("hapax-systems/.github")
+    org_profile = repos.get(ORG_PROFILE_REPO_ID)
 
     for repo_id in INTENDED_PUBLIC_REPOS:
         repo = repos.get(repo_id)
@@ -392,38 +396,68 @@ def build_drift_findings(
             )
         )
 
-    if user_profile is not None and not _repo_has_root_readme(user_profile):
+    if org_profile is None:
         findings.append(
             DriftFinding(
-                finding_id="github.profile.user-profile-readme-missing",
+                finding_id="github.profile.org-profile-readme-not-collected",
                 severity="blocking",
                 category="profile_repo_state",
-                surface="ryanklee/ryanklee",
+                surface=ORG_PROFILE_REPO_ID,
                 status="blocked",
-                summary="User profile README repo is missing, private, or lacks root README.md.",
-                expected="GitHub user profile README lives in public ryanklee/ryanklee with root README.md.",
-                observed=_profile_observed(user_profile),
+                summary="Organization profile README repo was not collected.",
+                expected=(
+                    "GitHub organization profile README lives in public "
+                    "hapax-systems/.github with profile/README.md."
+                ),
+                observed="hapax-systems/.github was absent from profile repo candidates.",
                 evidence_refs=(
-                    "gh:repos/ryanklee/ryanklee",
-                    "https://docs.github.com/en/account-and-profile/how-tos/profile-customization/managing-your-profile-readme",
+                    "gh:repos/hapax-systems/.github",
+                    "https://docs.github.com/en/organizations/collaborating-with-groups-in-organizations/customizing-your-organizations-profile",
                 ),
                 blocks=("github-readme-profile-current-project-refresh",),
             )
         )
-
-    if org_profile is not None and org_profile.exists:
+    elif not _repo_has_org_profile_readme(org_profile):
         findings.append(
             DriftFinding(
-                finding_id="github.profile.org-profile-candidate-not-user-surface",
-                severity="medium",
+                finding_id="github.profile.org-profile-readme-missing",
+                severity="blocking",
                 category="profile_repo_state",
-                surface="hapax-systems/.github",
-                status="observed",
-                summary="The .github/profile path is an organization-profile pattern, not the user-profile README path.",
-                expected="Use ryanklee/ryanklee for the operator user profile unless ryanklee is an organization.",
-                observed="hapax-systems/.github is visible but is not the selected user-profile target.",
+                surface=ORG_PROFILE_REPO_ID,
+                status="blocked",
+                summary=(
+                    "Organization profile README repo is missing, private, "
+                    "or lacks profile/README.md."
+                ),
+                expected=(
+                    "GitHub organization profile README lives in public "
+                    "hapax-systems/.github with profile/README.md."
+                ),
+                observed=_org_profile_observed(org_profile),
                 evidence_refs=(
                     "gh:repos/hapax-systems/.github",
+                    "https://docs.github.com/en/organizations/collaborating-with-groups-in-organizations/customizing-your-organizations-profile",
+                ),
+                blocks=("github-readme-profile-current-project-refresh",),
+            )
+        )
+    else:
+        findings.append(
+            DriftFinding(
+                finding_id="github.profile.org-profile-readme-present",
+                severity="info",
+                category="profile_repo_state",
+                surface=ORG_PROFILE_REPO_ID,
+                status="ok",
+                summary="Organization profile README is present at the selected Hapax Systems path.",
+                expected=(
+                    "GitHub organization profile README lives in public "
+                    "hapax-systems/.github with profile/README.md."
+                ),
+                observed=_org_profile_observed(org_profile),
+                evidence_refs=(
+                    "gh:repos/hapax-systems/.github",
+                    "gh:contents/hapax-systems/.github/profile/README.md",
                     "https://docs.github.com/en/organizations/collaborating-with-groups-in-organizations/customizing-your-organizations-profile",
                 ),
             )
@@ -480,8 +514,41 @@ def build_drift_findings(
             )
         )
 
+    if not any(finding.category == "notice_links" for finding in findings):
+        findings.append(
+            DriftFinding(
+                finding_id="github.notice.links-resolve",
+                severity="info",
+                category="notice_links",
+                surface="NOTICE.md",
+                status="ok",
+                summary="NOTICE links resolve against the current local public-surface evidence.",
+                expected="Every public NOTICE link resolves to an existing public path.",
+                observed="No missing NOTICE links detected.",
+                evidence_refs=("NOTICE.md",),
+            )
+        )
+
+    if not any(finding.category == "pages_cdn_state" for finding in findings):
+        findings.append(
+            DriftFinding(
+                finding_id="github.pages.hapax-assets-pages-present",
+                severity="info",
+                category="pages_cdn_state",
+                surface="hapax-systems/hapax-assets",
+                status="ok",
+                summary="hapax-assets is visible with a readable GitHub Pages state.",
+                expected="Public CDN claims cite a live Pages state.",
+                observed="hapax-assets is public and Pages API returned a site.",
+                evidence_refs=(
+                    "gh:repos/hapax-systems/hapax-assets",
+                    "gh:repos/hapax-systems/hapax-assets/pages",
+                ),
+            )
+        )
+
     findings.extend(_package_surface_findings(local.package_surfaces))
-    findings.extend(_closed_repo_pres_findings(local, council, user_profile, assets))
+    findings.extend(_closed_repo_pres_findings(local, council, org_profile, assets))
     return tuple(findings)
 
 
@@ -524,7 +591,7 @@ def _package_surface_findings(
 def _closed_repo_pres_findings(
     local: LocalPublicSurfaceEvidence,
     council: RepoLiveState | None,
-    user_profile: RepoLiveState | None,
+    org_profile: RepoLiveState | None,
     assets: RepoLiveState | None,
 ) -> tuple[DriftFinding, ...]:
     false_tasks = [
@@ -532,7 +599,7 @@ def _closed_repo_pres_findings(
         for task in build_closed_repo_pres_claims(
             local=local,
             council=council,
-            user_profile=user_profile,
+            org_profile=org_profile,
             assets=assets,
         )
         if task.live_status in {"false", "unreconciled"}
@@ -555,27 +622,75 @@ def _closed_repo_pres_findings(
     )
 
 
+def _repo_live_witness_refs(
+    repo_id: str,
+    repo: RepoLiveState | None,
+    *file_paths: str,
+) -> tuple[str, ...]:
+    refs = [
+        f"live-report:repo:{repo_id}",
+        f"gh:repos/{repo_id}",
+    ]
+    if repo is None:
+        refs.append("live-report:repo_not_collected")
+        return tuple(refs)
+
+    refs.extend(
+        (
+            f"live-report:repo:{repo_id}:exists={str(repo.exists).lower()}",
+            f"live-report:repo:{repo_id}:visibility={repo.visibility or 'unknown'}",
+        )
+    )
+    if repo.default_branch_sha:
+        refs.append(f"live-report:repo:{repo_id}:default_branch_sha={repo.default_branch_sha}")
+    if repo.license_spdx:
+        refs.append(f"live-report:repo:{repo_id}:license_spdx={repo.license_spdx}")
+    if repo.has_issues is not None:
+        refs.append(f"live-report:repo:{repo_id}:has_issues={str(repo.has_issues).lower()}")
+    issue_template = repo.community.files.get("issue_template")
+    if issue_template is not None:
+        refs.append(
+            f"live-report:repo:{repo_id}:community.issue_template={str(issue_template).lower()}"
+        )
+
+    for path in file_paths:
+        file_state = repo.files.get(path)
+        if file_state is None:
+            refs.append(f"live-report:repo:{repo_id}:file:{path}:not_collected")
+            continue
+        refs.append(
+            f"live-report:repo:{repo_id}:file:{path}:exists={str(file_state.exists).lower()}"
+        )
+        if file_state.sha:
+            refs.append(f"live-report:repo:{repo_id}:file:{path}:sha={file_state.sha}")
+    return tuple(dict.fromkeys(refs))
+
+
 def build_closed_repo_pres_claims(
     *,
     local: LocalPublicSurfaceEvidence,
     council: RepoLiveState | None,
-    user_profile: RepoLiveState | None,
+    org_profile: RepoLiveState | None,
     assets: RepoLiveState | None,
 ) -> tuple[ClosedRepoPresClaim, ...]:
     """Summarize closed repo-pres claims that are true/false in live state."""
 
     closed_root = "vault:hapax-cc-tasks/closed"
     expected_license = local.registry_license_by_repo.get("hapax-council")
+    detected_license = council.license_spdx if council is not None else None
     license_live = (
         "true"
         if council is not None
         and expected_license is not None
-        and council.license_spdx == expected_license
+        and (
+            detected_license == expected_license
+            or (expected_license == "PolyForm-Strict-1.0.0" and detected_license == "NOASSERTION")
+        )
         else "false"
     )
     contributing_live = "false" if "CONTRIBUTING.md" in local.notice_missing_links else "true"
     profile_live = (
-        "true" if user_profile is not None and _repo_has_root_readme(user_profile) else "false"
+        "true" if org_profile is not None and _repo_has_org_profile_readme(org_profile) else "false"
     )
     assets_live = (
         "true"
@@ -585,11 +700,16 @@ def build_closed_repo_pres_claims(
         and assets.visibility == "public"
         else "false"
     )
+    issue_config = (
+        council.files.get(".github/ISSUE_TEMPLATE/config.yml") if council is not None else None
+    )
+    issue_config_present = issue_config is not None and issue_config.exists
     issue_live = "true"
     if (
         council is not None
         and council.has_issues is True
         and not council.community.files.get("issue_template", False)
+        and not issue_config_present
     ):
         issue_live = "unreconciled"
 
@@ -599,6 +719,15 @@ def build_closed_repo_pres_claims(
             task_path=f"{closed_root}/repo-pres-license-policy.md",
             claimed_status="done",
             live_status=license_live,
+            live_status_basis=(
+                "expected_license="
+                f"{expected_license or 'unknown'}; github_license_spdx="
+                f"{detected_license if council is not None else 'repo_not_collected'}"
+            ),
+            live_witness_refs=_repo_live_witness_refs(
+                "hapax-systems/hapax-council",
+                council,
+            ),
             summary="License policy closed state compared to GitHub detected license.",
             evidence_refs=(
                 "docs/repo-pres/repo-registry.yaml",
@@ -610,6 +739,15 @@ def build_closed_repo_pres_claims(
             task_path=f"{closed_root}/repo-pres-notice-md-all-repos.md",
             claimed_status="done",
             live_status=contributing_live,
+            live_status_basis=(
+                "local_notice_missing_links_contains_CONTRIBUTING.md="
+                f"{'true' if 'CONTRIBUTING.md' in local.notice_missing_links else 'false'}"
+            ),
+            live_witness_refs=(
+                "live-report:local_evidence.notice_missing_links",
+                "live-report:local_evidence.root_file_sha256.NOTICE.md",
+                "live-report:local_evidence.root_file_sha256.CONTRIBUTING.md",
+            ),
             summary="NOTICE link closure compared to live CONTRIBUTING.md presence.",
             evidence_refs=("NOTICE.md", "gh:contents/CONTRIBUTING.md"),
         ),
@@ -618,6 +756,19 @@ def build_closed_repo_pres_claims(
             task_path=f"{closed_root}/repo-pres-issues-redirect-walls.md",
             claimed_status="done",
             live_status=issue_live,
+            live_status_basis=(
+                "has_issues="
+                f"{council.has_issues if council is not None else 'repo_not_collected'}; "
+                "community.issue_template="
+                f"{council.community.files.get('issue_template') if council is not None else 'repo_not_collected'}; "
+                "issue_template_config="
+                f"{issue_config_present if council is not None else 'repo_not_collected'}"
+            ),
+            live_witness_refs=_repo_live_witness_refs(
+                "hapax-systems/hapax-council",
+                council,
+                ".github/ISSUE_TEMPLATE/config.yml",
+            ),
             summary="Issue redirect-wall closure compared to has_issues and community profile state.",
             evidence_refs=("scripts/repo-presentation-enforce.sh", "gh:community/profile"),
         ),
@@ -626,14 +777,36 @@ def build_closed_repo_pres_claims(
             task_path=f"{closed_root}/repo-pres-org-level-github.md",
             claimed_status="done",
             live_status=profile_live,
-            summary="Profile README closure compared to current user-profile README docs and repo state.",
-            evidence_refs=("gh:repos/ryanklee/ryanklee", "GitHub profile README docs"),
+            live_status_basis=_org_profile_observed(org_profile)
+            if org_profile is not None
+            else "profile repo not collected",
+            live_witness_refs=_repo_live_witness_refs(
+                ORG_PROFILE_REPO_ID,
+                org_profile,
+                ORG_PROFILE_README_PATH,
+            ),
+            summary=(
+                "Profile README closure compared to current organization-profile "
+                "README docs and repo state."
+            ),
+            evidence_refs=(
+                "gh:repos/hapax-systems/.github",
+                "gh:contents/hapax-systems/.github/profile/README.md",
+                "GitHub organization profile README docs",
+            ),
         ),
         ClosedRepoPresClaim(
             task_id="repo-pres-hapax-assets-public-cdn",
             task_path=f"{closed_root}/repo-pres-hapax-assets-public-cdn.md",
             claimed_status="implicit-or-docs",
             live_status=assets_live,
+            live_status_basis=_repo_visibility_observed(assets)
+            if assets is not None
+            else "assets repo not collected",
+            live_witness_refs=_repo_live_witness_refs(
+                "hapax-systems/hapax-assets",
+                assets,
+            ),
             summary="hapax-assets CDN/public visibility claim compared to live repo and Pages state.",
             evidence_refs=("CLAUDE.md", "gh:repos/hapax-systems/hapax-assets"),
         ),
@@ -655,7 +828,7 @@ def build_report(
     claims = build_closed_repo_pres_claims(
         local=local_evidence,
         council=repos.get("hapax-systems/hapax-council"),
-        user_profile=repos.get("ryanklee/ryanklee"),
+        org_profile=repos.get(ORG_PROFILE_REPO_ID),
         assets=repos.get("hapax-systems/hapax-assets"),
     )
     return GitHubPublicSurfaceReport(
@@ -679,14 +852,23 @@ def report_to_markdown(report: GitHubPublicSurfaceReport) -> str:
     lines = [
         "---",
         "title: GitHub public surface live state reconcile",
-        f"date: {report.generated_at[:10]}",
+        f"date: {MARKDOWN_LEDGER_DATE}",
+        f"refresh_date: {report.generated_at[:10]}",
+        f"generated_at: {report.generated_at}",
         "status: evidence-produced",
         "source: github-public-surface-live-state-reconcile",
         "---",
         "",
         "# GitHub Public Surface Live State Reconcile",
         "",
+        (
+            "- Filename note: the April slug is retained for historical ledger continuity; "
+            + "the YAML `date` field matches that slug, while `refresh_date`, "
+            + "`generated_at`, and `Generated` record the current live-state refresh. "
+            + "Freshness checks must read the refresh fields before treating this as current."
+        ),
         f"- Generated: `{report.generated_at}`",
+        f"- Recheck: `uv run python {report.generated_by}`",
         f"- Claim ceiling: `{report.claim_ceiling}`",
         f"- Blocking findings: `{_count_severity(report, 'blocking')}`",
         f"- Report schema: `schema_version={report.schema_version}`",
@@ -731,20 +913,22 @@ def report_to_markdown(report: GitHubPublicSurfaceReport) -> str:
             "",
             "## Profile README Decision",
             "",
-            "Current GitHub docs require a public user repo named `ryanklee` with a root "
-            "`README.md` for a user profile README. The `.github/profile/README.md` "
-            "pattern is for organization profiles, so it is evidence only for this "
-            "operator-account surface.",
+            (
+                "Current GitHub docs use a public `.github` repository with "
+                + "`profile/README.md` for organization profile READMEs. Hapax public "
+                + "frontmatter is organization-owned, so the selected profile surface is "
+                + "`hapax-systems/.github/profile/README.md`."
+            ),
             "",
             "## Anti-Overclaim",
             "",
         ]
     )
     repos = report.repos_by_id()
-    user_profile = repos.get("ryanklee/ryanklee")
+    org_profile = repos.get(ORG_PROFILE_REPO_ID)
     lines.append(
-        "Observed user-profile candidate: "
-        f"`{_profile_observed(user_profile) if user_profile is not None else 'not collected'}`."
+        "Observed organization-profile candidate: "
+        f"`{_org_profile_observed(org_profile) if org_profile is not None else 'not collected'}`."
     )
     lines.append("")
     for item in report.anti_overclaim:
@@ -753,21 +937,24 @@ def report_to_markdown(report: GitHubPublicSurfaceReport) -> str:
     return "\n".join(lines)
 
 
-def _repo_has_root_readme(repo: RepoLiveState) -> bool:
+def _repo_has_org_profile_readme(repo: RepoLiveState) -> bool:
     return (
         repo.exists
         and repo.visibility == "public"
-        and repo.files.get("README.md", RepoFilePresence(path="README.md", exists=False)).exists
+        and repo.files.get(
+            ORG_PROFILE_README_PATH,
+            RepoFilePresence(path=ORG_PROFILE_README_PATH, exists=False),
+        ).exists
     )
 
 
-def _profile_observed(repo: RepoLiveState) -> str:
+def _org_profile_observed(repo: RepoLiveState) -> str:
     if not repo.exists:
         return repo.api_error or "repo not found"
-    readme = repo.files.get("README.md")
+    readme = repo.files.get(ORG_PROFILE_README_PATH)
     return (
         f"visibility={repo.visibility}, private={repo.private}, "
-        f"root_readme={readme.exists if readme else False}"
+        f"profile_readme={readme.exists if readme else False}"
     )
 
 

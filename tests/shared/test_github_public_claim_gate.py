@@ -86,7 +86,7 @@ def test_missing_profile_repo_blocks_profile_claims() -> None:
     assert GitHubClaimClass.MATERIAL_CURRENTNESS.value in _blocked_classes(
         "Profile README for Hapax.", envelope
     )
-    assert "profile README repo" in verdict.blocked_findings[0].reason
+    assert "organization profile README repo" in verdict.blocked_findings[0].reason
 
 
 def test_missing_contributing_blocks_contribution_claims() -> None:

@@ -19,13 +19,23 @@ return-string vocabulary drifts, this test fails loudly.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from unittest import mock
 
+import yaml
 from prometheus_client import CollectorRegistry
 
 from agents.publication_bus.publisher_kit import PublisherResult
-from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY, Orchestrator
+from agents.publish_orchestrator.orchestrator import (
+    FANOUT_SURFACE_IDS,
+    PUBLICATION_BASELINE_REQUIRED_GATES,
+    PUBLICATION_FANOUT_REQUIRED_GATES,
+    SURFACE_REGISTRY,
+    Orchestrator,
+    _artifact_fingerprint,
+)
+from shared import public_gate_receipts
 from shared.preprint_artifact import PreprintArtifact
 from shared.publication_hardening.gate import (
     PublicationGateChildResult,
@@ -33,6 +43,15 @@ from shared.publication_hardening.gate import (
     PublicationGateResult,
 )
 from shared.publication_hardening.review import ReviewReport
+
+TASK_ID = "cc-task-public-gate-test"
+AUTHORITY_SECRET = "test-public-gate-authority-secret"
+PUBLIC_GATE_AUTHORITY_BLOCK = (
+    "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
+    "acceptor: claim-verification-council\n"
+    "review_profile: claim_verification_council_public_egress\n"
+    f"evidence_ref: review-dossier:{TASK_ID}\n"
+)
 
 
 def _drop_approved_artifact(
@@ -53,9 +72,94 @@ def _drop_approved_artifact(
         surfaces_targeted=surfaces,
     )
     artifact.mark_approved(by_referent="Oudepode")
+    artifact.publication_gate_context = {
+        "publication_gate_receipts": _write_public_gate_receipts(state_root, artifact)
+    }
     inbox_path = artifact.inbox_path(state_root=state_root)
     inbox_path.parent.mkdir(parents=True, exist_ok=True)
     inbox_path.write_text(artifact.model_dump_json(indent=2))
+
+
+def _write_public_gate_receipts(state_root, artifact: PreprintArtifact) -> dict[str, str]:  # type: ignore[no-untyped-def]
+    surfaces = artifact.surfaces_targeted
+    gates = (
+        PUBLICATION_FANOUT_REQUIRED_GATES
+        if set(surfaces).intersection(FANOUT_SURFACE_IDS)
+        else PUBLICATION_BASELINE_REQUIRED_GATES
+    )
+    receipt_root = state_root / "public-gate-receipts"
+    authority_root = state_root / "public-gate-authority"
+    receipt_root.mkdir(parents=True, exist_ok=True)
+    authority_root.mkdir(parents=True, exist_ok=True)
+    public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS = (authority_root,)
+    os.environ[public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV] = AUTHORITY_SECRET
+    surfaces_yaml = "\n".join(f"  - {surface}" for surface in sorted(surfaces))
+    for gate in gates:
+        (receipt_root / f"{gate}.yaml").write_text(
+            f"gate_id: {gate}\n"
+            "status: passed\n"
+            f"{PUBLIC_GATE_AUTHORITY_BLOCK}"
+            f"artifact_slug: {artifact.slug}\n"
+            f"artifact_fingerprint: {_artifact_fingerprint(artifact)}\n"
+            "target_surfaces:\n"
+            f"{surfaces_yaml}\n",
+            encoding="utf-8",
+        )
+    _write_public_gate_review_evidence(
+        receipt_root,
+        gates=tuple(gates),
+        receipt_refs=tuple(f"public-gate:{gate}.yaml" for gate in gates),
+        artifact_slug=artifact.slug,
+        artifact_fingerprint=_artifact_fingerprint(artifact),
+        target_surfaces=tuple(sorted(surfaces)),
+    )
+    return {gate: f"public-gate:{gate}.yaml" for gate in gates}
+
+
+def _write_public_gate_review_evidence(  # type: ignore[no-untyped-def]
+    receipt_root,
+    *,
+    gates: tuple[str, ...],
+    receipt_refs: tuple[str, ...],
+    artifact_slug: str,
+    artifact_fingerprint: str,
+    target_surfaces: tuple[str, ...],
+) -> None:
+    del receipt_root
+    gate_yaml = "\n".join(f"  - {gate}" for gate in gates)
+    receipt_yaml = "\n".join(f"  - {receipt_ref}" for receipt_ref in receipt_refs)
+    surface_yaml = "\n".join(f"  - {surface}" for surface in target_surfaces)
+    payload = yaml.safe_load(
+        "dossier_schema: 1\n"
+        f"task_id: {TASK_ID}\n"
+        "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "review_team_verdict: quorum-accept\n"
+        "quorum_required: 1\n"
+        "accept_count: 1\n"
+        "required_gates:\n"
+        f"{gate_yaml}\n"
+        "authorized_public_gate_receipts:\n"
+        f"{receipt_yaml}\n"
+        f"artifact_slug: {artifact_slug}\n"
+        f"artifact_fingerprint: {artifact_fingerprint}\n"
+        "target_surfaces:\n"
+        f"{surface_yaml}\n"
+        "authority_issuer: claim-verification-council\n"
+        "reviewers:\n"
+        "  - id: cvc-1\n"
+        "    family: cvc\n"
+        "    verdict: accept\n"
+    )
+    payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
+        payload,
+        AUTHORITY_SECRET,
+    )
+    (
+        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+    ).write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
 
 
 def _read_log(state_root, slug: str, surface: str) -> dict:
@@ -107,6 +211,7 @@ def _make_orchestrator(state_root) -> Orchestrator:  # type: ignore[no-untyped-d
         public_event_path=state_root / "public-events.jsonl",
         review_pass=_ApprovingReviewPass(),
         hardening_gate=_PassingHardeningGate(),
+        public_gate_expected_head_sha="a" * 40,
         registry=CollectorRegistry(),
     )
 
@@ -206,14 +311,11 @@ class TestPhase1PublishBusEndToEnd:
         assert "Hapax + Claude Code" in called_text
         assert "unsettled contribution as feature" in called_text
 
-    def test_e2e_discord_typed_artifact_lands_surface_unwired(self, tmp_path, monkeypatch):
+    def test_e2e_discord_typed_artifact_quarantines_refused_surface(self, tmp_path, monkeypatch):
         """discord-webhook was retired 2026-05-01 (cc-task
-        ``discord-public-event-activation-or-retire``). An artifact targeting
-        ``discord-webhook`` now falls through to ``surface_unwired`` because
-        REFUSED-tier surfaces are intentionally absent from the orchestrator
-        dispatch registry. This is the correct fail-mode for a refused surface
-        — no spurious ``no_credentials`` outcome that would imply Discord is
-        merely waiting for a webhook URL.
+        ``discord-public-event-activation-or-retire``). A direct inbox artifact
+        targeting ``discord-webhook`` is now rejected at the configured
+        publication-surface allowlist before registry dispatch.
         """
         monkeypatch.delenv("HAPAX_DISCORD_WEBHOOK_URL", raising=False)
 
@@ -223,10 +325,15 @@ class TestPhase1PublishBusEndToEnd:
 
         handled = orch.run_once()
         assert handled == 1
-        record = _read_log(tmp_path, "e2e-discord-refused", "discord-webhook")
-        assert record["result"] == "surface_unwired", (
-            f"REFUSED surface dispatch must yield surface_unwired, got {record['result']}"
-        )
+        assert not (
+            tmp_path / "publish" / "log" / "e2e-discord-refused.discord-webhook.json"
+        ).exists()
+        failed = list((tmp_path / "publish" / "failed").glob("invalid-artifact-*.json"))
+        assert len(failed) == 1
+        payload = json.loads(failed[0].read_text())
+        child = payload["publication_gate_result"]["child_results"][0]
+        assert child["name"] == "artifact_envelope"
+        assert any("discord-webhook" in finding for finding in child["findings"])
 
     def test_e2e_arena_ok_with_mocked_transport(self, tmp_path, monkeypatch):
         """With token + slug set + mocked Arena adapter, arena returns ``ok``."""
@@ -297,9 +404,9 @@ class TestPhase1PublishBusEndToEnd:
         assert not (tmp_path / "publish" / "published" / "e2e-partial.json").exists()
         assert (tmp_path / "publish" / "failed" / "e2e-partial.json").exists()
 
-    def test_e2e_unwired_surface_logs_surface_unwired(self, tmp_path):
+    def test_e2e_unwired_surface_quarantines_before_dispatch(self, tmp_path):
         """A typo in surfaces_targeted (not in SURFACE_REGISTRY) lands as
-        ``surface_unwired`` in the log, doesn't crash the run."""
+        an artifact-envelope quarantine before dispatch."""
         _drop_approved_artifact(
             tmp_path,
             slug="e2e-typo",
@@ -310,7 +417,11 @@ class TestPhase1PublishBusEndToEnd:
         handled = orch.run_once()
 
         assert handled == 1
-        record = _read_log(tmp_path, "e2e-typo", "bluesky-pst")
-        assert record["result"] == "surface_unwired"
+        assert not (tmp_path / "publish" / "log" / "e2e-typo.bluesky-pst.json").exists()
         assert not (tmp_path / "publish" / "published" / "e2e-typo.json").exists()
-        assert (tmp_path / "publish" / "failed" / "e2e-typo.json").exists()
+        failed = list((tmp_path / "publish" / "failed").glob("invalid-artifact-*.json"))
+        assert len(failed) == 1
+        payload = json.loads(failed[0].read_text())
+        child = payload["publication_gate_result"]["child_results"][0]
+        assert child["name"] == "artifact_envelope"
+        assert any("bluesky-pst" in finding for finding in child["findings"])

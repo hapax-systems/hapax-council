@@ -7,6 +7,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "verify-omg-lol-infrastructure.py"
 CONFIG_PATH = REPO_ROOT / "config" / "omg-lol.yaml"
+FANOUT_CONFIG_PATH = REPO_ROOT / "config" / "omg-lol-fanout.yaml"
 
 
 def _load_module() -> Any:
@@ -24,6 +25,12 @@ def test_repo_omg_lol_config_validates() -> None:
     assert module.validate_config(config) == []
 
 
+def test_fanout_omg_lol_config_validates() -> None:
+    module = _load_module()
+    config = module.load_config(FANOUT_CONFIG_PATH)
+    assert module.validate_config(config) == []
+
+
 def test_validation_requires_acceptance_sections() -> None:
     module = _load_module()
     errors = module.validate_config(
@@ -31,6 +38,15 @@ def test_validation_requires_acceptance_sections() -> None:
             "schema_version": 1,
             "service": "omg.lol",
             "address": "hapax",
+            "publication_frontmatter_policy": {
+                "status": "guarded_public_channel",
+                "publication_allowed_without_bus": False,
+                "direct_public_egress_allowed": False,
+                "review_required": "Claim Verification Council",
+                "claim_ceiling": (
+                    "source refs, rights gate, privacy gate, redaction posture, and target surfaces"
+                ),
+            },
             "configured_settings": {},
             "acceptance": {},
             "blockers": [{"id": "x", "owner": "operator", "reason": "pending"}],
@@ -56,3 +72,183 @@ def test_validation_rejects_secret_shaped_keys() -> None:
     config["configured_settings"]["api_key"] = "redacted"
     errors = module.validate_config(config)
     assert "secret-like key is not allowed in config: configured_settings.api_key" in errors
+
+
+def test_validation_requires_publication_frontmatter_policy() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config.pop("publication_frontmatter_policy")
+    errors = module.validate_config(config)
+    assert "publication_frontmatter_policy must be a mapping" in errors
+    assert (
+        "publication_frontmatter_policy next action: add a guarded publication policy "
+        "mapping before public channel use"
+    ) in errors
+    assert "publication_frontmatter_policy.review_required is required" in errors
+    assert (
+        "publication_frontmatter_policy.review_required next action: add this field "
+        "to the guarded publication policy"
+    ) in errors
+
+
+def test_validation_rejects_direct_public_egress_policy() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["direct_public_egress_allowed"] = True
+    errors = module.validate_config(config)
+    assert "publication_frontmatter_policy.direct_public_egress_allowed must be false" in errors
+
+
+def test_validation_rejects_publication_without_bus_policy() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["publication_allowed_without_bus"] = True
+    errors = module.validate_config(config)
+    assert "publication_frontmatter_policy.publication_allowed_without_bus must be false" in errors
+
+
+def test_validation_rejects_unknown_publication_policy_status() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["status"] = "guarded_publi_channel"
+    errors = module.validate_config(config)
+    assert (
+        "publication_frontmatter_policy.status must be guarded_public_channel "
+        "or guarded_public_fanout"
+    ) in errors
+
+
+def test_validation_rejects_non_council_review_policy() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["review_required"] = "informal review"
+    errors = module.validate_config(config)
+    assert (
+        "publication_frontmatter_policy.review_required must be Claim Verification Council"
+        in errors
+    )
+
+
+def test_validation_rejects_incomplete_claim_ceiling() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["claim_ceiling"] = "source refs only"
+    errors = module.validate_config(config)
+    assert "publication_frontmatter_policy.claim_ceiling missing 'rights'" in errors
+    assert "publication_frontmatter_policy.claim_ceiling missing 'target surfaces'" in errors
+
+
+def test_validation_rejects_incomplete_required_gates() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["required_gates"] = ["source_artifact_public_safe"]
+    errors = module.validate_config(config)
+    assert (
+        "publication_frontmatter_policy.required_gates missing: "
+        "claim_review_current, no_direct_public_egress, rights_privacy_redaction_pass, "
+        "source_refs_present, target_surface_allowlist_pass"
+    ) in errors
+
+
+def test_validation_rejects_missing_required_gates() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"].pop("required_gates")
+    errors = module.validate_config(config)
+    assert "publication_frontmatter_policy.required_gates is required" in errors
+    assert (
+        "publication_frontmatter_policy.required_gates next action: add this field "
+        "to the guarded publication policy"
+    ) in errors
+    assert "publication_frontmatter_policy.required_gates must be a non-empty list" in errors
+
+
+def test_validation_rejects_incomplete_target_surfaces() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["target_surfaces"] = ["omg-weblog"]
+    errors = module.validate_config(config)
+    assert "publication_frontmatter_policy.target_surfaces missing: " in "\n".join(errors)
+    assert "mastodon-post" in "\n".join(errors)
+    assert "zenodo-doi" in "\n".join(errors)
+
+
+def test_validation_publication_policy_shape_errors_include_next_actions() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["target_surfaces"] = ["omg-weblog", 7]
+    config["publication_frontmatter_policy"]["required_gates"] = [
+        "source_artifact_public_safe",
+        "source_artifact_public_safe",
+        7,
+    ]
+
+    errors = module.validate_config(config)
+
+    assert "publication_frontmatter_policy.target_surfaces must contain strings" in errors
+    assert (
+        "publication_frontmatter_policy.target_surfaces next action: replace non-string "
+        "entries with explicit surface id strings"
+    ) in errors
+    assert "publication_frontmatter_policy.target_surfaces must be unique" not in errors
+    assert "publication_frontmatter_policy.required_gates must contain strings" in errors
+    assert (
+        "publication_frontmatter_policy.required_gates next action: replace non-string "
+        "entries with explicit gate id strings"
+    ) in errors
+    assert "publication_frontmatter_policy.required_gates must be unique" in errors
+    assert (
+        "publication_frontmatter_policy.required_gates next action: remove duplicate gate ids"
+    ) in errors
+
+
+def test_validation_does_not_report_required_gate_duplicates_for_only_malformed_entries() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["required_gates"] = [
+        "source_artifact_public_safe",
+        7,
+    ]
+
+    errors = module.validate_config(config)
+
+    assert "publication_frontmatter_policy.required_gates must contain strings" in errors
+    assert "publication_frontmatter_policy.required_gates must be unique" not in errors
+
+
+def test_primary_config_pins_publication_frontmatter_policy_gates_and_targets() -> None:
+    module = _load_module()
+    policy = module.load_config(CONFIG_PATH)["publication_frontmatter_policy"]
+
+    assert policy["publication_allowed_without_bus"] is False
+    assert policy["direct_public_egress_allowed"] is False
+    assert policy["review_required"] == "Claim Verification Council"
+    assert set(policy["required_gates"]) == module.REQUIRED_PUBLICATION_FRONTMATTER_GATES
+    assert set(policy["target_surfaces"]) == module.REQUIRED_PUBLICATION_TARGET_SURFACES
+
+
+def test_fanout_config_pins_publication_frontmatter_policy_gates() -> None:
+    module = _load_module()
+
+    policy = module.load_config(FANOUT_CONFIG_PATH)["publication_frontmatter_policy"]
+    assert policy["publication_allowed_without_bus"] is False
+    assert policy["direct_public_egress_allowed"] is False
+    assert policy["review_required"] == "Claim Verification Council"
+    assert set(policy["required_gates"]) == module.REQUIRED_FANOUT_PUBLICATION_FRONTMATTER_GATES
+    assert set(policy["target_surfaces"]) == module.REQUIRED_FANOUT_PUBLICATION_TARGET_SURFACES
+    claim_ceiling = policy["claim_ceiling"].lower()
+    assert "already-approved public artifacts" in claim_ceiling
+    assert "comparative claims" in claim_ceiling
+
+
+def test_fanout_validation_rejects_missing_loop_prevention_gate() -> None:
+    module = _load_module()
+    config = module.load_config(FANOUT_CONFIG_PATH)
+    gates = config["publication_frontmatter_policy"]["required_gates"]
+    gates.remove("fanout_loop_prevention_present")
+
+    errors = module.validate_config(config)
+
+    assert (
+        "publication_frontmatter_policy.required_gates missing: fanout_loop_prevention_present"
+    ) in errors

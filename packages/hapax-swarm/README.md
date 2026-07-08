@@ -101,8 +101,8 @@ Strict permits use, study, and verification of the software but
 **reserves all modification, distribution, and commercial rights to
 the licensor.** Read the license before adopting.
 
-If you need a more permissive grant for a specific use, the licensor
-may negotiate one — open an issue on the upstream `hapax-council`
+If you need a more permissive grant for a specific use, use the
+governed license-request path named by the upstream `hapax-council`
 repository.
 
 ## Authorship

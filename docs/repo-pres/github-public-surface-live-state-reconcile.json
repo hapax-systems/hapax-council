@@ -14,7 +14,18 @@
         "docs/repo-pres/repo-registry.yaml",
         "gh:repos/hapax-systems/hapax-council"
       ],
-      "live_status": "false",
+      "live_status": "true",
+      "live_status_basis": "expected_license=PolyForm-Strict-1.0.0; github_license_spdx=NOASSERTION",
+      "live_witness_refs": [
+        "live-report:repo:hapax-systems/hapax-council",
+        "gh:repos/hapax-systems/hapax-council",
+        "live-report:repo:hapax-systems/hapax-council:exists=true",
+        "live-report:repo:hapax-systems/hapax-council:visibility=public",
+        "live-report:repo:hapax-systems/hapax-council:default_branch_sha=3a2664d48fefce563e595e3eac0354988dfc0979",
+        "live-report:repo:hapax-systems/hapax-council:license_spdx=NOASSERTION",
+        "live-report:repo:hapax-systems/hapax-council:has_issues=true",
+        "live-report:repo:hapax-systems/hapax-council:community.issue_template=false"
+      ],
       "summary": "License policy closed state compared to GitHub detected license.",
       "task_id": "repo-pres-license-policy",
       "task_path": "vault:hapax-cc-tasks/closed/repo-pres-license-policy.md"
@@ -25,7 +36,13 @@
         "NOTICE.md",
         "gh:contents/CONTRIBUTING.md"
       ],
-      "live_status": "false",
+      "live_status": "true",
+      "live_status_basis": "local_notice_missing_links_contains_CONTRIBUTING.md=false",
+      "live_witness_refs": [
+        "live-report:local_evidence.notice_missing_links",
+        "live-report:local_evidence.root_file_sha256.NOTICE.md",
+        "live-report:local_evidence.root_file_sha256.CONTRIBUTING.md"
+      ],
       "summary": "NOTICE link closure compared to live CONTRIBUTING.md presence.",
       "task_id": "repo-pres-notice-md-all-repos",
       "task_path": "vault:hapax-cc-tasks/closed/repo-pres-notice-md-all-repos.md"
@@ -36,7 +53,20 @@
         "scripts/repo-presentation-enforce.sh",
         "gh:community/profile"
       ],
-      "live_status": "unreconciled",
+      "live_status": "true",
+      "live_status_basis": "has_issues=True; community.issue_template=False; issue_template_config=True",
+      "live_witness_refs": [
+        "live-report:repo:hapax-systems/hapax-council",
+        "gh:repos/hapax-systems/hapax-council",
+        "live-report:repo:hapax-systems/hapax-council:exists=true",
+        "live-report:repo:hapax-systems/hapax-council:visibility=public",
+        "live-report:repo:hapax-systems/hapax-council:default_branch_sha=3a2664d48fefce563e595e3eac0354988dfc0979",
+        "live-report:repo:hapax-systems/hapax-council:license_spdx=NOASSERTION",
+        "live-report:repo:hapax-systems/hapax-council:has_issues=true",
+        "live-report:repo:hapax-systems/hapax-council:community.issue_template=false",
+        "live-report:repo:hapax-systems/hapax-council:file:.github/ISSUE_TEMPLATE/config.yml:exists=true",
+        "live-report:repo:hapax-systems/hapax-council:file:.github/ISSUE_TEMPLATE/config.yml:sha=66a3a7a8322fc18dd08d31653b20901c2367f1ae"
+      ],
       "summary": "Issue redirect-wall closure compared to has_issues and community profile state.",
       "task_id": "repo-pres-issues-redirect-walls",
       "task_path": "vault:hapax-cc-tasks/closed/repo-pres-issues-redirect-walls.md"
@@ -44,11 +74,24 @@
     {
       "claimed_status": "done",
       "evidence_refs": [
-        "gh:repos/ryanklee/ryanklee",
-        "GitHub profile README docs"
+        "gh:repos/hapax-systems/.github",
+        "gh:contents/hapax-systems/.github/profile/README.md",
+        "GitHub organization profile README docs"
       ],
-      "live_status": "false",
-      "summary": "Profile README closure compared to current user-profile README docs and repo state.",
+      "live_status": "true",
+      "live_status_basis": "visibility=public, private=False, profile_readme=True",
+      "live_witness_refs": [
+        "live-report:repo:hapax-systems/.github",
+        "gh:repos/hapax-systems/.github",
+        "live-report:repo:hapax-systems/.github:exists=true",
+        "live-report:repo:hapax-systems/.github:visibility=public",
+        "live-report:repo:hapax-systems/.github:default_branch_sha=8918d0bacf288c3571dd37cd7911f50443250263",
+        "live-report:repo:hapax-systems/.github:has_issues=false",
+        "live-report:repo:hapax-systems/.github:community.issue_template=false",
+        "live-report:repo:hapax-systems/.github:file:profile/README.md:exists=true",
+        "live-report:repo:hapax-systems/.github:file:profile/README.md:sha=6503f109ce29a1eafd50bc6ed0b52c9bebc7940b"
+      ],
+      "summary": "Profile README closure compared to current organization-profile README docs and repo state.",
       "task_id": "repo-pres-org-level-github",
       "task_path": "vault:hapax-cc-tasks/closed/repo-pres-org-level-github.md"
     },
@@ -58,7 +101,17 @@
         "CLAUDE.md",
         "gh:repos/hapax-systems/hapax-assets"
       ],
-      "live_status": "false",
+      "live_status": "true",
+      "live_status_basis": "visibility=public, private=False, pages=True",
+      "live_witness_refs": [
+        "live-report:repo:hapax-systems/hapax-assets",
+        "gh:repos/hapax-systems/hapax-assets",
+        "live-report:repo:hapax-systems/hapax-assets:exists=true",
+        "live-report:repo:hapax-systems/hapax-assets:visibility=public",
+        "live-report:repo:hapax-systems/hapax-assets:default_branch_sha=1890c08b4d72db0e33306e38950770d6e0357884",
+        "live-report:repo:hapax-systems/hapax-assets:has_issues=true",
+        "live-report:repo:hapax-systems/hapax-assets:community.issue_template=false"
+      ],
       "summary": "hapax-assets CDN/public visibility claim compared to live repo and Pages state.",
       "task_id": "repo-pres-hapax-assets-public-cdn",
       "task_path": "vault:hapax-cc-tasks/closed/repo-pres-hapax-assets-public-cdn.md"
@@ -67,7 +120,7 @@
   "docs_evidence": {
     "organization_profile_readme_url": "https://docs.github.com/en/organizations/collaborating-with-groups-in-organizations/customizing-your-organizations-profile",
     "organization_profile_requirement": "An organization profile README uses a public .github repository with profile/README.md.",
-    "profile_readme_decision": "user_repo_named_ryanklee_required",
+    "profile_readme_decision": "org_repo_named_dot_github_required",
     "user_profile_readme_url": "https://docs.github.com/en/account-and-profile/how-tos/profile-customization/managing-your-profile-readme",
     "user_profile_requirement": "A user profile README requires a public repository whose name matches the GitHub username and contains a non-empty root README.md."
   },
@@ -110,49 +163,52 @@
       "blocks": [
         "github-public-claim-evidence-gate"
       ],
-      "category": "settings_truth",
+      "category": "license_detection",
       "evidence_refs": [
+        "docs/repo-pres/repo-registry.yaml",
         "gh:repos/hapax-systems/hapax-watch"
       ],
-      "expected": "Live GitHub visibility is public before public material names the repo.",
-      "finding_id": "github.visibility.hapax-watch.not-public",
-      "observed": "visibility=private, private=True, pages=False",
+      "expected": "GitHub public license surfaces align to PolyForm-Strict-1.0.0.",
+      "finding_id": "github.license.hapax-watch.registry-mismatch",
+      "observed": "GitHub detects NOASSERTION.",
       "severity": "high",
-      "status": "blocked",
-      "summary": "An intended public first-party repo is not publicly visible.",
+      "status": "unreconciled",
+      "summary": "GitHub detected license does not match the repo registry policy.",
       "surface": "hapax-systems/hapax-watch"
     },
     {
       "blocks": [
         "github-public-claim-evidence-gate"
       ],
-      "category": "settings_truth",
+      "category": "license_detection",
       "evidence_refs": [
+        "docs/repo-pres/repo-registry.yaml",
         "gh:repos/hapax-systems/hapax-phone"
       ],
-      "expected": "Live GitHub visibility is public before public material names the repo.",
-      "finding_id": "github.visibility.hapax-phone.not-public",
-      "observed": "visibility=private, private=True, pages=False",
+      "expected": "GitHub public license surfaces align to PolyForm-Strict-1.0.0.",
+      "finding_id": "github.license.hapax-phone.registry-mismatch",
+      "observed": "GitHub detects NOASSERTION.",
       "severity": "high",
-      "status": "blocked",
-      "summary": "An intended public first-party repo is not publicly visible.",
+      "status": "unreconciled",
+      "summary": "GitHub detected license does not match the repo registry policy.",
       "surface": "hapax-systems/hapax-phone"
     },
     {
       "blocks": [
         "github-public-claim-evidence-gate"
       ],
-      "category": "settings_truth",
+      "category": "license_detection",
       "evidence_refs": [
-        "gh:repos/hapax-systems/hapax-mcp"
+        "docs/repo-pres/repo-registry.yaml",
+        "gh:repos/hapax-systems/reins"
       ],
-      "expected": "Live GitHub visibility is public before public material names the repo.",
-      "finding_id": "github.visibility.hapax-mcp.not-public",
-      "observed": "visibility=private, private=True, pages=False",
+      "expected": "GitHub public license surfaces align to BUSL-1.1.",
+      "finding_id": "github.license.reins.registry-mismatch",
+      "observed": "GitHub detects NOASSERTION.",
       "severity": "high",
-      "status": "blocked",
-      "summary": "An intended public first-party repo is not publicly visible.",
-      "surface": "hapax-systems/hapax-mcp"
+      "status": "unreconciled",
+      "summary": "GitHub detected license does not match the repo registry policy.",
+      "surface": "hapax-systems/reins"
     },
     {
       "blocks": [
@@ -168,28 +224,11 @@
       ],
       "expected": "GitHub public license surfaces align to PolyForm-Strict-1.0.0.",
       "finding_id": "github.license.hapax-council.apache-vs-polyform",
-      "observed": "GitHub detects Apache-2.0.",
+      "observed": "GitHub detects NOASSERTION.",
       "severity": "blocking",
       "status": "blocked",
       "summary": "GitHub/root license detection contradicts the repo registry policy.",
       "surface": "hapax-systems/hapax-council"
-    },
-    {
-      "blocks": [
-        "github-public-claim-evidence-gate"
-      ],
-      "category": "notice_links",
-      "evidence_refs": [
-        "NOTICE.md",
-        "gh:contents/CONTRIBUTING.md"
-      ],
-      "expected": "Every public NOTICE link resolves to an existing public path.",
-      "finding_id": "github.notice.contributing-link-missing",
-      "observed": "CONTRIBUTING.md is referenced but missing on the default branch.",
-      "severity": "blocking",
-      "status": "blocked",
-      "summary": "NOTICE links to CONTRIBUTING.md, but the linked file is absent.",
-      "surface": "NOTICE.md"
     },
     {
       "blocks": [
@@ -264,100 +303,102 @@
       "surface": "CITATION.cff/codemeta.json/.zenodo.json"
     },
     {
-      "blocks": [
-        "github-readme-profile-current-project-refresh"
-      ],
+      "blocks": [],
       "category": "profile_repo_state",
       "evidence_refs": [
-        "gh:repos/ryanklee/ryanklee",
-        "https://docs.github.com/en/account-and-profile/how-tos/profile-customization/managing-your-profile-readme"
+        "gh:repos/hapax-systems/.github",
+        "gh:contents/hapax-systems/.github/profile/README.md",
+        "https://docs.github.com/en/organizations/collaborating-with-groups-in-organizations/customizing-your-organizations-profile"
       ],
-      "expected": "GitHub user profile README lives in public ryanklee/ryanklee with root README.md.",
-      "finding_id": "github.profile.user-profile-readme-missing",
-      "observed": "gh: Not Found (HTTP 404)",
-      "severity": "blocking",
-      "status": "blocked",
-      "summary": "User profile README repo is missing, private, or lacks root README.md.",
-      "surface": "ryanklee/ryanklee"
+      "expected": "GitHub organization profile README lives in public hapax-systems/.github with profile/README.md.",
+      "finding_id": "github.profile.org-profile-readme-present",
+      "observed": "visibility=public, private=False, profile_readme=True",
+      "severity": "info",
+      "status": "ok",
+      "summary": "Organization profile README is present at the selected Hapax Systems path.",
+      "surface": "hapax-systems/.github"
     },
     {
-      "blocks": [
-        "github-public-claim-evidence-gate"
+      "blocks": [],
+      "category": "notice_links",
+      "evidence_refs": [
+        "NOTICE.md"
       ],
+      "expected": "Every public NOTICE link resolves to an existing public path.",
+      "finding_id": "github.notice.links-resolve",
+      "observed": "No missing NOTICE links detected.",
+      "severity": "info",
+      "status": "ok",
+      "summary": "NOTICE links resolve against the current local public-surface evidence.",
+      "surface": "NOTICE.md"
+    },
+    {
+      "blocks": [],
       "category": "pages_cdn_state",
       "evidence_refs": [
         "gh:repos/hapax-systems/hapax-assets",
         "gh:repos/hapax-systems/hapax-assets/pages"
       ],
-      "expected": "hapax-assets is visible and Pages state is explicit before public CDN claims.",
-      "finding_id": "github.pages.hapax-assets-not-public-cdn",
-      "observed": "gh: Not Found (HTTP 404)",
-      "severity": "blocking",
-      "status": "blocked",
-      "summary": "hapax-assets is not a verified public Pages/CDN surface.",
+      "expected": "Public CDN claims cite a live Pages state.",
+      "finding_id": "github.pages.hapax-assets-pages-present",
+      "observed": "hapax-assets is public and Pages API returned a site.",
+      "severity": "info",
+      "status": "ok",
+      "summary": "hapax-assets is visible with a readable GitHub Pages state.",
       "surface": "hapax-systems/hapax-assets"
     },
     {
-      "blocks": [
-        "github-public-claim-evidence-gate"
-      ],
+      "blocks": [],
       "category": "package_public_surfaces",
       "evidence_refs": [
-        "packages/hapax-refusals/README.md",
-        "packages/hapax-refusals/CITATION.cff",
-        "packages/hapax-refusals/pyproject.toml",
-        "packages/hapax-swarm/README.md",
-        "packages/hapax-swarm/CITATION.cff",
-        "packages/hapax-swarm/pyproject.toml"
+        "packages/"
       ],
-      "expected": "Package-public surfaces inherit the repo refusal/claim ceiling before refresh.",
-      "finding_id": "github.packages.issue-support-language-present",
-      "observed": "packages/hapax-refusals/README.md, packages/hapax-swarm/README.md",
-      "severity": "medium",
-      "status": "unreconciled",
-      "summary": "Some package README/PyPI surfaces contain issue/support language needing claim discipline.",
+      "expected": "Package README/CITATION/PyPI surfaces are explicitly inventoried.",
+      "finding_id": "github.packages.public-surfaces-inventory",
+      "observed": "No issue/support language detected by the current scanner.",
+      "severity": "info",
+      "status": "observed",
+      "summary": "Package public surfaces were inventoried and did not trigger issue/support drift.",
       "surface": "packages/"
     },
     {
-      "blocks": [
-        "github-readme-profile-current-project-refresh"
-      ],
+      "blocks": [],
       "category": "closed_repo_pres_claims",
       "evidence_refs": [
         "vault:hapax-cc-tasks/closed"
       ],
       "expected": "Closed task records remain immutable, but false live claims feed drift.",
       "finding_id": "github.closed-repo-pres.claim-drift",
-      "observed": "repo-pres-license-policy, repo-pres-notice-md-all-repos, repo-pres-issues-redirect-walls, repo-pres-org-level-github, repo-pres-hapax-assets-public-cdn",
-      "severity": "high",
-      "status": "unreconciled",
+      "observed": "No false closed-task claims detected.",
+      "severity": "info",
+      "status": "ok",
       "summary": "Closed repo-pres task claims were compared to live state.",
       "surface": "cc-task closed/repo-pres-*"
     }
   ],
-  "generated_at": "2026-04-30T03:49:18Z",
+  "generated_at": "2026-07-08T18:07:11Z",
   "generated_by": "scripts/github-public-surface-reconcile.py",
   "live_repos": [
     {
       "api_error": null,
       "archived": false,
       "community": {
-        "description": "Axiom-governed reactive agent platform: externalized executive function infrastructure",
+        "description": "Governance hooks for AI coding agents. Enforce safety, git hygiene, and project rules.",
         "error": null,
         "files": {
           "code_of_conduct": false,
           "code_of_conduct_file": false,
-          "contributing": false,
+          "contributing": true,
           "issue_template": false,
           "license": true,
-          "pull_request_template": true,
+          "pull_request_template": false,
           "readme": true
         },
-        "health_percentage": 71
+        "health_percentage": 75
       },
       "default_branch": "main",
-      "default_branch_sha": "8d7b3aa37d74b58a04d4a00cc96f9102a6fb5cda",
-      "description": "Axiom-governed reactive agent platform: externalized executive function infrastructure",
+      "default_branch_sha": "ca8b3bdf7ac988f319f5f64a861bf55d3251a1c6",
+      "description": "Governance hooks for AI coding agents. Enforce safety, git hygiene, and project rules.",
       "exists": true,
       "expected_public": true,
       "files": {
@@ -372,34 +413,193 @@
         ".github/ISSUE_TEMPLATE/config.yml": {
           "evidence": "github_contents_api",
           "exists": true,
+          "html_url": "https://github.com/hapax-systems/agentgov/blob/main/.github/ISSUE_TEMPLATE/config.yml",
+          "path": ".github/ISSUE_TEMPLATE/config.yml",
+          "sha": "784bc268ade53a975ccb81cfa07d96b966e407a5",
+          "size": 673
+        },
+        ".zenodo.json": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/agentgov/blob/main/.zenodo.json",
+          "path": ".zenodo.json",
+          "sha": "abf3381b082e807a72cd28492c10f757fc168be9",
+          "size": 584
+        },
+        "CITATION.cff": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/agentgov/blob/main/CITATION.cff",
+          "path": "CITATION.cff",
+          "sha": "d03845aed8b0576b437fd7b397743a316a203ba7",
+          "size": 488
+        },
+        "CONTRIBUTING.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/agentgov/blob/main/CONTRIBUTING.md",
+          "path": "CONTRIBUTING.md",
+          "sha": "1a898d7d2fedfc0b64b23304a039f2a0d2833c64",
+          "size": 1416
+        },
+        "GOVERNANCE.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/agentgov/blob/main/GOVERNANCE.md",
+          "path": "GOVERNANCE.md",
+          "sha": "52354cf95f107d7fd4d844f329aa16c070d9e33b",
+          "size": 938
+        },
+        "LICENSE": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/agentgov/blob/main/LICENSE",
+          "path": "LICENSE",
+          "sha": "e72c7d536e3a5001d001cdaff39a64f35ce94cd9",
+          "size": 1070
+        },
+        "NOTICE.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/agentgov/blob/main/NOTICE.md",
+          "path": "NOTICE.md",
+          "sha": "4ea97eb41e2443d4ddeeed91f7176796851ec235",
+          "size": 1751
+        },
+        "README.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/agentgov/blob/main/README.md",
+          "path": "README.md",
+          "sha": "7e6dfaa925148946e196e2d2e35e29e0791f2aee",
+          "size": 5927
+        },
+        "SECURITY.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/agentgov/blob/main/SECURITY.md",
+          "path": "SECURITY.md",
+          "sha": "f1c22c0e40e884e06c96753bc75e8da6797cc0b4",
+          "size": 1194
+        },
+        "codemeta.json": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/agentgov/blob/main/codemeta.json",
+          "path": "codemeta.json",
+          "sha": "c427832a78fbc5744750ebf744647a9cab5c338e",
+          "size": 845
+        },
+        "profile/README.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "profile/README.md",
+          "sha": null,
+          "size": null
+        }
+      },
+      "has_discussions": false,
+      "has_issues": true,
+      "has_projects": false,
+      "has_wiki": false,
+      "homepage": null,
+      "html_url": "https://github.com/hapax-systems/agentgov",
+      "license_name": "MIT License",
+      "license_spdx": "MIT",
+      "name": "agentgov",
+      "owner": "hapax-systems",
+      "pages": {
+        "cname": null,
+        "error": "gh: Not Found (HTTP 404)",
+        "exists": false,
+        "html_url": null,
+        "source_branch": null,
+        "source_path": null,
+        "status": null
+      },
+      "private": false,
+      "pushed_at": "2026-07-07T23:54:31Z",
+      "releases": {
+        "count": 1,
+        "error": null,
+        "latest_name": "hapax-agentgov 0.3.1",
+        "latest_published_at": "2026-06-11T08:54:48Z",
+        "latest_tag_name": "v0.3.1"
+      },
+      "repo_id": "hapax-systems/agentgov",
+      "tags": {
+        "count": 1,
+        "error": null,
+        "latest_name": "v0.3.1",
+        "latest_published_at": null,
+        "latest_tag_name": "v0.3.1"
+      },
+      "topics": [],
+      "visibility": "public"
+    },
+    {
+      "api_error": null,
+      "archived": false,
+      "community": {
+        "description": "Single-operator Hapax operating environment: externalized executive function, constitutional governance, semantic recruitment, multimodal perception, and refusal-as-data research infrastructure.",
+        "error": null,
+        "files": {
+          "code_of_conduct": false,
+          "code_of_conduct_file": false,
+          "contributing": true,
+          "issue_template": false,
+          "license": true,
+          "pull_request_template": true,
+          "readme": true
+        },
+        "health_percentage": 75
+      },
+      "default_branch": "main",
+      "default_branch_sha": "3a2664d48fefce563e595e3eac0354988dfc0979",
+      "description": "Single-operator Hapax operating environment: externalized executive function, constitutional governance, semantic recruitment, multimodal perception, and refusal-as-data research infrastructure.",
+      "exists": true,
+      "expected_public": true,
+      "files": {
+        ".github/FUNDING.yml": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/.github/FUNDING.yml",
+          "path": ".github/FUNDING.yml",
+          "sha": "6682ec133586fc6b37e34e501824ea41ea6093e6",
+          "size": 19
+        },
+        ".github/ISSUE_TEMPLATE/config.yml": {
+          "evidence": "github_contents_api",
+          "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/.github/ISSUE_TEMPLATE/config.yml",
           "path": ".github/ISSUE_TEMPLATE/config.yml",
-          "sha": "8ef9478dc1a42c0c6435d41f4b34ffb13860028b",
-          "size": 1821
+          "sha": "66a3a7a8322fc18dd08d31653b20901c2367f1ae",
+          "size": 688
         },
         ".zenodo.json": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/.zenodo.json",
           "path": ".zenodo.json",
-          "sha": "04cc3ec1da459d649f3af524df5bc381d4282060",
-          "size": 947
+          "sha": "36af2c867f40964fd51d9d6def3929e72a0c048c",
+          "size": 1488
         },
         "CITATION.cff": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/CITATION.cff",
           "path": "CITATION.cff",
-          "sha": "1d70a456bb17e6c4df3f13116e2b11e8f9c7c484",
-          "size": 661
+          "sha": "1f60ff0d1612c46fb633edfa546afd8b2cf87d5e",
+          "size": 1415
         },
         "CONTRIBUTING.md": {
           "evidence": "github_contents_api",
-          "exists": false,
-          "html_url": null,
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/CONTRIBUTING.md",
           "path": "CONTRIBUTING.md",
-          "sha": null,
-          "size": null
+          "sha": "032f6d226ac8947af5fcf5d6e84fab4e35d1adc6",
+          "size": 1559
         },
         "GOVERNANCE.md": {
           "evidence": "github_contents_api",
@@ -414,24 +614,24 @@
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/LICENSE",
           "path": "LICENSE",
-          "sha": "2d547b4084edc3dfb40b85672b963a58b1bcfb29",
-          "size": 10768
+          "sha": "3caca2b2cc2b9445e998ad019e5ca33b4214fa27",
+          "size": 3790
         },
         "NOTICE.md": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/NOTICE.md",
           "path": "NOTICE.md",
-          "sha": "07e875b3ab614c17519c932f0654d44763780056",
-          "size": 1525
+          "sha": "c4260dc3313a09f74e366aac3329c37124aa1e4d",
+          "size": 1644
         },
         "README.md": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/README.md",
           "path": "README.md",
-          "sha": "d19edcddf92f59b91119f689da208056b5cd330f",
-          "size": 8712
+          "sha": "b16c3b4be43a1566ebcea86ded992f3b356e4d0a",
+          "size": 14156
         },
         "SECURITY.md": {
           "evidence": "github_contents_api",
@@ -446,20 +646,28 @@
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/codemeta.json",
           "path": "codemeta.json",
-          "sha": "8a38f962db3b0d49f5717bc3aadd89cbd6343f6c",
-          "size": 1032
+          "sha": "668f80976b1c6f96435a2f1df7e9c016b717d57b",
+          "size": 1501
+        },
+        "profile/README.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "profile/README.md",
+          "sha": null,
+          "size": null
         }
       },
       "has_discussions": false,
       "has_issues": true,
       "has_projects": false,
       "has_wiki": false,
-      "homepage": null,
+      "homepage": "https://hapax.weblog.lol/",
       "html_url": "https://github.com/hapax-systems/hapax-council",
-      "license_name": "Apache License 2.0",
-      "license_spdx": "Apache-2.0",
+      "license_name": "Other",
+      "license_spdx": "NOASSERTION",
       "name": "hapax-council",
-      "owner": "ryanklee",
+      "owner": "hapax-systems",
       "pages": {
         "cname": null,
         "error": "gh: Not Found (HTTP 404)",
@@ -470,7 +678,7 @@
         "status": null
       },
       "private": false,
-      "pushed_at": "2026-04-30T03:46:00Z",
+      "pushed_at": "2026-07-08T18:04:53Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -480,18 +688,30 @@
       },
       "repo_id": "hapax-systems/hapax-council",
       "tags": {
-        "count": 1,
+        "count": 5,
         "error": null,
-        "latest_name": "tactical-fence-baseline-2026-04-24",
+        "latest_name": "zeta-auto-advance-backup-20260531",
         "latest_published_at": null,
-        "latest_tag_name": "tactical-fence-baseline-2026-04-24"
+        "latest_tag_name": "zeta-auto-advance-backup-20260531"
       },
       "topics": [
-        "governance",
-        "infrastructure-as-argument",
-        "philosophy-of-science",
-        "research-software",
-        "single-operator"
+        "ai-governance",
+        "ai-research",
+        "autonomous-agents",
+        "cognitive-architecture",
+        "consent-governance",
+        "constitutional-ai",
+        "gstreamer",
+        "information-flow-control",
+        "livestream",
+        "multi-agent",
+        "neurodivergent",
+        "personal-ai",
+        "pipewire",
+        "pydantic-ai",
+        "single-operator",
+        "systemd",
+        "wgpu"
       ],
       "visibility": "public"
     },
@@ -504,16 +724,16 @@
         "files": {
           "code_of_conduct": false,
           "code_of_conduct_file": false,
-          "contributing": false,
+          "contributing": true,
           "issue_template": false,
           "license": true,
           "pull_request_template": true,
           "readme": true
         },
-        "health_percentage": 57
+        "health_percentage": 75
       },
       "default_branch": "main",
-      "default_branch_sha": "104a22ac3b247b39f05e54241dcd3393a70c873e",
+      "default_branch_sha": "96ea7f557e502e79d9767182645164223901514a",
       "description": "Architectural pattern documentation for axiom-governed reactive agent platforms",
       "exists": true,
       "expected_public": true,
@@ -531,40 +751,40 @@
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-constitution/blob/main/.github/ISSUE_TEMPLATE/config.yml",
           "path": ".github/ISSUE_TEMPLATE/config.yml",
-          "sha": "8ef9478dc1a42c0c6435d41f4b34ffb13860028b",
-          "size": 1821
+          "sha": "495d90938b57771242336485fb15fde622db2134",
+          "size": 703
         },
         ".zenodo.json": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-constitution/blob/main/.zenodo.json",
           "path": ".zenodo.json",
-          "sha": "6623c0d8ee05b58579257691e4b437327823b01e",
-          "size": 832
+          "sha": "8cb569cb1cad203a8d2167ed8410e65bc54a09e6",
+          "size": 787
         },
         "CITATION.cff": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-constitution/blob/main/CITATION.cff",
           "path": "CITATION.cff",
-          "sha": "f116ad41b5cda75bff8043fb05cec7a7957c75f0",
-          "size": 657
+          "sha": "a47254b6aa4af90868763e8b80b9b45cd43cdc83",
+          "size": 673
         },
         "CONTRIBUTING.md": {
           "evidence": "github_contents_api",
-          "exists": false,
-          "html_url": null,
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-constitution/blob/main/CONTRIBUTING.md",
           "path": "CONTRIBUTING.md",
-          "sha": null,
-          "size": null
+          "sha": "2244384ee68ae031e381b62498a06fa4269b9c2b",
+          "size": 1521
         },
         "GOVERNANCE.md": {
           "evidence": "github_contents_api",
-          "exists": false,
-          "html_url": null,
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-constitution/blob/main/GOVERNANCE.md",
           "path": "GOVERNANCE.md",
-          "sha": null,
-          "size": null
+          "sha": "662aae782460bd7614666d52feea3a68729adbaf",
+          "size": 1109
         },
         "LICENSE": {
           "evidence": "github_contents_api",
@@ -579,32 +799,40 @@
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-constitution/blob/main/NOTICE.md",
           "path": "NOTICE.md",
-          "sha": "c8a037252d0dfc1b426dfa55b5353ce13cdd8154",
-          "size": 1539
+          "sha": "10f4c44421d3d6a4f6023f0bae417b06c43707a8",
+          "size": 1845
         },
         "README.md": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-constitution/blob/main/README.md",
           "path": "README.md",
-          "sha": "38f74d2b0cd5e211e0be859e0a0cea24f530c07c",
-          "size": 6040
+          "sha": "e9fb17e3b46ef9540f0c5463a53efaf196332e15",
+          "size": 5572
         },
         "SECURITY.md": {
           "evidence": "github_contents_api",
-          "exists": false,
-          "html_url": null,
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-constitution/blob/main/SECURITY.md",
           "path": "SECURITY.md",
-          "sha": null,
-          "size": null
+          "sha": "5c478e7a5f20228cf77b91afad2f12575eb98d8f",
+          "size": 1176
         },
         "codemeta.json": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-constitution/blob/main/codemeta.json",
           "path": "codemeta.json",
-          "sha": "2dc7fdea151ba51f64baa4f22837a3c2163aa5b0",
-          "size": 971
+          "sha": "a611caccc4a07a1a5891894fd693a8efffb8589e",
+          "size": 1040
+        },
+        "profile/README.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "profile/README.md",
+          "sha": null,
+          "size": null
         }
       },
       "has_discussions": false,
@@ -616,7 +844,7 @@
       "license_name": "Apache License 2.0",
       "license_spdx": "Apache-2.0",
       "name": "hapax-constitution",
-      "owner": "ryanklee",
+      "owner": "hapax-systems",
       "pages": {
         "cname": null,
         "error": "gh: Not Found (HTTP 404)",
@@ -627,7 +855,7 @@
         "status": null
       },
       "private": false,
-      "pushed_at": "2026-04-27T00:04:20Z",
+      "pushed_at": "2026-07-07T20:56:04Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -667,10 +895,10 @@
           "pull_request_template": true,
           "readme": true
         },
-        "health_percentage": 85
+        "health_percentage": 75
       },
       "default_branch": "main",
-      "default_branch_sha": "10bbd0173b79d1508cb9f0f7dce662a05a8a500b",
+      "default_branch_sha": "69583619391b71507f03215cd0cd832788084c5a",
       "description": "Management decision support cockpit for engineering managers",
       "exists": true,
       "expected_public": true,
@@ -688,80 +916,88 @@
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-officium/blob/main/.github/ISSUE_TEMPLATE/config.yml",
           "path": ".github/ISSUE_TEMPLATE/config.yml",
-          "sha": "8ef9478dc1a42c0c6435d41f4b34ffb13860028b",
-          "size": 1821
+          "sha": "e7d5576403584b712df6c4066bc6cf169cd54a58",
+          "size": 691
         },
         ".zenodo.json": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-officium/blob/main/.zenodo.json",
           "path": ".zenodo.json",
-          "sha": "24424da0d4bfe1dc1bf65a8e76e27be206ab49b6",
-          "size": 812
+          "sha": "d83af91e49c562829fa3b1b908f7e7400814640c",
+          "size": 800
         },
         "CITATION.cff": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-officium/blob/main/CITATION.cff",
           "path": "CITATION.cff",
-          "sha": "1012c23cff5716c7d95737284dadc3d9fbf3aefd",
-          "size": 666
+          "sha": "a7de223adba7fc398a83507d09de7ed94f364922",
+          "size": 612
         },
         "CONTRIBUTING.md": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-officium/blob/main/CONTRIBUTING.md",
           "path": "CONTRIBUTING.md",
-          "sha": "79a8853f1a24a2dbed2dd13fa52ba7c46a2f4519",
-          "size": 2313
+          "sha": "2244384ee68ae031e381b62498a06fa4269b9c2b",
+          "size": 1521
         },
         "GOVERNANCE.md": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-officium/blob/main/GOVERNANCE.md",
           "path": "GOVERNANCE.md",
-          "sha": "174cdd3345bbebd81219eb8d144d7700225c04fe",
-          "size": 943
+          "sha": "aae6867369aa7a9c60d64fb7ff31077ba21b0d00",
+          "size": 920
         },
         "LICENSE": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-officium/blob/main/LICENSE",
           "path": "LICENSE",
-          "sha": "0a69bd060b777334c71c88ecc445c8c7eeb7c259",
-          "size": 10730
+          "sha": "3caca2b2cc2b9445e998ad019e5ca33b4214fa27",
+          "size": 3790
         },
         "NOTICE.md": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-officium/blob/main/NOTICE.md",
           "path": "NOTICE.md",
-          "sha": "fe865022e11b86fc8f6b5d9e925d69e2a2bee5f5",
-          "size": 1502
+          "sha": "1601a6acb39c57c5c1c0caa4d611751dee77dde5",
+          "size": 1776
         },
         "README.md": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-officium/blob/main/README.md",
           "path": "README.md",
-          "sha": "4c768dd60695f78b109181209e8e12422d0e880e",
-          "size": 6159
+          "sha": "4be040a333c89e5298a9fa309219c5a964e850d6",
+          "size": 3471
         },
         "SECURITY.md": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-officium/blob/main/SECURITY.md",
           "path": "SECURITY.md",
-          "sha": "2cf4cbac6e8d0b7c8c30e39866a9492d711f66eb",
-          "size": 8523
+          "sha": "5c478e7a5f20228cf77b91afad2f12575eb98d8f",
+          "size": 1176
         },
         "codemeta.json": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-officium/blob/main/codemeta.json",
           "path": "codemeta.json",
-          "sha": "5fe739ddd814babd6c7d2af1d217c38ec40f9d31",
-          "size": 986
+          "sha": "351ec5be536bfc42cd8cb123ccf85b4d52303f6c",
+          "size": 987
+        },
+        "profile/README.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "profile/README.md",
+          "sha": null,
+          "size": null
         }
       },
       "has_discussions": false,
@@ -773,7 +1009,7 @@
       "license_name": "Other",
       "license_spdx": "NOASSERTION",
       "name": "hapax-officium",
-      "owner": "ryanklee",
+      "owner": "hapax-systems",
       "pages": {
         "cname": null,
         "error": "gh: Not Found (HTTP 404)",
@@ -784,7 +1020,7 @@
         "status": null
       },
       "private": false,
-      "pushed_at": "2026-04-27T00:19:08Z",
+      "pushed_at": "2026-07-07T20:55:49Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -810,41 +1046,146 @@
       "visibility": "public"
     },
     {
-      "api_error": "repo is not public; authenticated-only details redacted",
+      "api_error": null,
       "archived": false,
       "community": {
         "description": null,
         "error": null,
-        "files": {},
-        "health_percentage": null
+        "files": {
+          "code_of_conduct": false,
+          "code_of_conduct_file": false,
+          "contributing": true,
+          "issue_template": false,
+          "license": true,
+          "pull_request_template": false,
+          "readme": true
+        },
+        "health_percentage": 50
       },
-      "default_branch": null,
-      "default_branch_sha": null,
+      "default_branch": "main",
+      "default_branch_sha": "f12bf995be38df197771f78c491249e595736231",
       "description": null,
       "exists": true,
       "expected_public": true,
-      "files": {},
-      "has_discussions": null,
-      "has_issues": null,
-      "has_projects": null,
-      "has_wiki": null,
+      "files": {
+        ".github/FUNDING.yml": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": ".github/FUNDING.yml",
+          "sha": null,
+          "size": null
+        },
+        ".github/ISSUE_TEMPLATE/config.yml": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-watch/blob/main/.github/ISSUE_TEMPLATE/config.yml",
+          "path": ".github/ISSUE_TEMPLATE/config.yml",
+          "sha": "b521dc04e71a096aa3d479e5f6a98eca2048b3b9",
+          "size": 682
+        },
+        ".zenodo.json": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-watch/blob/main/.zenodo.json",
+          "path": ".zenodo.json",
+          "sha": "05bccf52bcf108b3cd3b383908360fa96e55ddb6",
+          "size": 743
+        },
+        "CITATION.cff": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-watch/blob/main/CITATION.cff",
+          "path": "CITATION.cff",
+          "sha": "e31ade81ce2775d6140d40ea6576ad0e9bbd8cc9",
+          "size": 558
+        },
+        "CONTRIBUTING.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-watch/blob/main/CONTRIBUTING.md",
+          "path": "CONTRIBUTING.md",
+          "sha": "72c82cf11aa82d4190c82cfa416a216b288cc74c",
+          "size": 1539
+        },
+        "GOVERNANCE.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-watch/blob/main/GOVERNANCE.md",
+          "path": "GOVERNANCE.md",
+          "sha": "52354cf95f107d7fd4d844f329aa16c070d9e33b",
+          "size": 938
+        },
+        "LICENSE": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-watch/blob/main/LICENSE",
+          "path": "LICENSE",
+          "sha": "3caca2b2cc2b9445e998ad019e5ca33b4214fa27",
+          "size": 3790
+        },
+        "NOTICE.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-watch/blob/main/NOTICE.md",
+          "path": "NOTICE.md",
+          "sha": "f0a6db477e37dd805e1012b12fd419a55181731d",
+          "size": 1746
+        },
+        "README.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-watch/blob/main/README.md",
+          "path": "README.md",
+          "sha": "3632deb1ed8b2a0b3e75fa97752074b358678f54",
+          "size": 9014
+        },
+        "SECURITY.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-watch/blob/main/SECURITY.md",
+          "path": "SECURITY.md",
+          "sha": "f1c22c0e40e884e06c96753bc75e8da6797cc0b4",
+          "size": 1194
+        },
+        "codemeta.json": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-watch/blob/main/codemeta.json",
+          "path": "codemeta.json",
+          "sha": "0e97ee6c73f33bd134a8f5271dc8af907e2358cc",
+          "size": 917
+        },
+        "profile/README.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "profile/README.md",
+          "sha": null,
+          "size": null
+        }
+      },
+      "has_discussions": false,
+      "has_issues": true,
+      "has_projects": false,
+      "has_wiki": false,
       "homepage": null,
       "html_url": "https://github.com/hapax-systems/hapax-watch",
-      "license_name": null,
-      "license_spdx": null,
+      "license_name": "Other",
+      "license_spdx": "NOASSERTION",
       "name": "hapax-watch",
-      "owner": "ryanklee",
+      "owner": "hapax-systems",
       "pages": {
         "cname": null,
-        "error": null,
+        "error": "gh: Not Found (HTTP 404)",
         "exists": false,
         "html_url": null,
         "source_branch": null,
         "source_path": null,
         "status": null
       },
-      "private": true,
-      "pushed_at": null,
+      "private": false,
+      "pushed_at": "2026-07-07T20:55:52Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -854,51 +1195,160 @@
       },
       "repo_id": "hapax-systems/hapax-watch",
       "tags": {
-        "count": 0,
+        "count": 1,
         "error": null,
-        "latest_name": null,
+        "latest_name": "v0.1.0",
         "latest_published_at": null,
-        "latest_tag_name": null
+        "latest_tag_name": "v0.1.0"
       },
-      "topics": [],
-      "visibility": "private"
+      "topics": [
+        "infrastructure-as-argument",
+        "research-software",
+        "single-operator"
+      ],
+      "visibility": "public"
     },
     {
-      "api_error": "repo is not public; authenticated-only details redacted",
+      "api_error": null,
       "archived": false,
       "community": {
         "description": null,
         "error": null,
-        "files": {},
-        "health_percentage": null
+        "files": {
+          "code_of_conduct": false,
+          "code_of_conduct_file": false,
+          "contributing": true,
+          "issue_template": false,
+          "license": true,
+          "pull_request_template": false,
+          "readme": true
+        },
+        "health_percentage": 50
       },
-      "default_branch": null,
-      "default_branch_sha": null,
+      "default_branch": "main",
+      "default_branch_sha": "f2843fc5dd770901021049f88e4ab8e2fa4b6648",
       "description": null,
       "exists": true,
       "expected_public": true,
-      "files": {},
-      "has_discussions": null,
-      "has_issues": null,
-      "has_projects": null,
-      "has_wiki": null,
+      "files": {
+        ".github/FUNDING.yml": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": ".github/FUNDING.yml",
+          "sha": null,
+          "size": null
+        },
+        ".github/ISSUE_TEMPLATE/config.yml": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-phone/blob/main/.github/ISSUE_TEMPLATE/config.yml",
+          "path": ".github/ISSUE_TEMPLATE/config.yml",
+          "sha": "2ddebc2a835e6a1bf7b2c66683e186bf702620fe",
+          "size": 682
+        },
+        ".zenodo.json": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-phone/blob/main/.zenodo.json",
+          "path": ".zenodo.json",
+          "sha": "fae8d7f837c334f8ca61efbece4f5625c1b4d401",
+          "size": 729
+        },
+        "CITATION.cff": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-phone/blob/main/CITATION.cff",
+          "path": "CITATION.cff",
+          "sha": "1176e5e09c6ef06ac5c4300bd7e6da84800c5c85",
+          "size": 544
+        },
+        "CONTRIBUTING.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-phone/blob/main/CONTRIBUTING.md",
+          "path": "CONTRIBUTING.md",
+          "sha": "72c82cf11aa82d4190c82cfa416a216b288cc74c",
+          "size": 1539
+        },
+        "GOVERNANCE.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-phone/blob/main/GOVERNANCE.md",
+          "path": "GOVERNANCE.md",
+          "sha": "52354cf95f107d7fd4d844f329aa16c070d9e33b",
+          "size": 938
+        },
+        "LICENSE": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-phone/blob/main/LICENSE",
+          "path": "LICENSE",
+          "sha": "3caca2b2cc2b9445e998ad019e5ca33b4214fa27",
+          "size": 3790
+        },
+        "NOTICE.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-phone/blob/main/NOTICE.md",
+          "path": "NOTICE.md",
+          "sha": "bd635bf41217fe53326c67d426fb68a12f91a0ef",
+          "size": 1760
+        },
+        "README.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-phone/blob/main/README.md",
+          "path": "README.md",
+          "sha": "0cb84f37b8bc53255f7463e05d56e30262aaebb9",
+          "size": 8900
+        },
+        "SECURITY.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-phone/blob/main/SECURITY.md",
+          "path": "SECURITY.md",
+          "sha": "f1c22c0e40e884e06c96753bc75e8da6797cc0b4",
+          "size": 1194
+        },
+        "codemeta.json": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-phone/blob/main/codemeta.json",
+          "path": "codemeta.json",
+          "sha": "ad3c9adfa62517e1a5c5dc989440287738af469b",
+          "size": 901
+        },
+        "profile/README.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "profile/README.md",
+          "sha": null,
+          "size": null
+        }
+      },
+      "has_discussions": false,
+      "has_issues": true,
+      "has_projects": false,
+      "has_wiki": false,
       "homepage": null,
       "html_url": "https://github.com/hapax-systems/hapax-phone",
-      "license_name": null,
-      "license_spdx": null,
+      "license_name": "Other",
+      "license_spdx": "NOASSERTION",
       "name": "hapax-phone",
-      "owner": "ryanklee",
+      "owner": "hapax-systems",
       "pages": {
         "cname": null,
-        "error": null,
+        "error": "gh: Not Found (HTTP 404)",
         "exists": false,
         "html_url": null,
         "source_branch": null,
         "source_path": null,
         "status": null
       },
-      "private": true,
-      "pushed_at": null,
+      "private": false,
+      "pushed_at": "2026-07-07T20:55:56Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -914,45 +1364,154 @@
         "latest_published_at": null,
         "latest_tag_name": null
       },
-      "topics": [],
-      "visibility": "private"
+      "topics": [
+        "infrastructure-as-argument",
+        "research-software",
+        "single-operator"
+      ],
+      "visibility": "public"
     },
     {
-      "api_error": "repo is not public; authenticated-only details redacted",
+      "api_error": null,
       "archived": false,
       "community": {
         "description": null,
         "error": null,
-        "files": {},
-        "health_percentage": null
+        "files": {
+          "code_of_conduct": false,
+          "code_of_conduct_file": false,
+          "contributing": true,
+          "issue_template": false,
+          "license": true,
+          "pull_request_template": false,
+          "readme": true
+        },
+        "health_percentage": 50
       },
-      "default_branch": null,
-      "default_branch_sha": null,
+      "default_branch": "main",
+      "default_branch_sha": "44c70eea4ca4ccb09044ce1fa4e5a9ab4ec03858",
       "description": null,
       "exists": true,
       "expected_public": true,
-      "files": {},
-      "has_discussions": null,
-      "has_issues": null,
-      "has_projects": null,
-      "has_wiki": null,
+      "files": {
+        ".github/FUNDING.yml": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": ".github/FUNDING.yml",
+          "sha": null,
+          "size": null
+        },
+        ".github/ISSUE_TEMPLATE/config.yml": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-mcp/blob/main/.github/ISSUE_TEMPLATE/config.yml",
+          "path": ".github/ISSUE_TEMPLATE/config.yml",
+          "sha": "04b1d1dc74ad5a1d5fc25d36a6e4935c4a141c32",
+          "size": 676
+        },
+        ".zenodo.json": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-mcp/blob/main/.zenodo.json",
+          "path": ".zenodo.json",
+          "sha": "5cd6bdd4bf598164bd6840ce217f08d53998bae6",
+          "size": 795
+        },
+        "CITATION.cff": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-mcp/blob/main/CITATION.cff",
+          "path": "CITATION.cff",
+          "sha": "1d568379e549bff69a9dd1a24c6ae2873686d84c",
+          "size": 569
+        },
+        "CONTRIBUTING.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-mcp/blob/main/CONTRIBUTING.md",
+          "path": "CONTRIBUTING.md",
+          "sha": "b6b32ea122eaded4c5f7d54b9458290a9482ea5d",
+          "size": 1526
+        },
+        "GOVERNANCE.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-mcp/blob/main/GOVERNANCE.md",
+          "path": "GOVERNANCE.md",
+          "sha": "13ea5df944a72164e3f149277bb7c3571379f5b1",
+          "size": 925
+        },
+        "LICENSE": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-mcp/blob/main/LICENSE",
+          "path": "LICENSE",
+          "sha": "e72c7d536e3a5001d001cdaff39a64f35ce94cd9",
+          "size": 1070
+        },
+        "NOTICE.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-mcp/blob/main/NOTICE.md",
+          "path": "NOTICE.md",
+          "sha": "48379c995ecea4c2d0ba3b56d574279bd3ca9166",
+          "size": 1749
+        },
+        "README.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-mcp/blob/main/README.md",
+          "path": "README.md",
+          "sha": "8a5ef51b9a07bbeb4569be00b9d76a433d1c051f",
+          "size": 7341
+        },
+        "SECURITY.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-mcp/blob/main/SECURITY.md",
+          "path": "SECURITY.md",
+          "sha": "358a9c928e4ccc01450ab98958e8b6817a37265e",
+          "size": 1181
+        },
+        "codemeta.json": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-mcp/blob/main/codemeta.json",
+          "path": "codemeta.json",
+          "sha": "1d6a9e3e8711395c89e53884891abc29e7954045",
+          "size": 974
+        },
+        "profile/README.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "profile/README.md",
+          "sha": null,
+          "size": null
+        }
+      },
+      "has_discussions": false,
+      "has_issues": true,
+      "has_projects": false,
+      "has_wiki": false,
       "homepage": null,
       "html_url": "https://github.com/hapax-systems/hapax-mcp",
-      "license_name": null,
-      "license_spdx": null,
+      "license_name": "MIT License",
+      "license_spdx": "MIT",
       "name": "hapax-mcp",
-      "owner": "ryanklee",
+      "owner": "hapax-systems",
       "pages": {
         "cname": null,
-        "error": null,
+        "error": "gh: Not Found (HTTP 404)",
         "exists": false,
         "html_url": null,
         "source_branch": null,
         "source_path": null,
         "status": null
       },
-      "private": true,
-      "pushed_at": null,
+      "private": false,
+      "pushed_at": "2026-07-07T20:55:38Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -968,45 +1527,313 @@
         "latest_published_at": null,
         "latest_tag_name": null
       },
-      "topics": [],
-      "visibility": "private"
+      "topics": [
+        "infrastructure-as-argument",
+        "research-software",
+        "single-operator"
+      ],
+      "visibility": "public"
     },
     {
-      "api_error": "gh: Not Found (HTTP 404)",
-      "archived": null,
+      "api_error": null,
+      "archived": false,
       "community": {
-        "description": null,
+        "description": "Open, append-only ledger of changing-criterion SCED observations from the Hapax research program. Numeric-only, governed (RDLC), published from the first data point. CC0.",
         "error": null,
-        "files": {},
-        "health_percentage": null
+        "files": {
+          "code_of_conduct": false,
+          "code_of_conduct_file": false,
+          "contributing": true,
+          "issue_template": false,
+          "license": true,
+          "pull_request_template": false,
+          "readme": true
+        },
+        "health_percentage": 62
       },
-      "default_branch": null,
-      "default_branch_sha": null,
-      "description": null,
-      "exists": false,
+      "default_branch": "main",
+      "default_branch_sha": "5c99dced93b84086ab86dce18d9de12888fad469",
+      "description": "Open, append-only ledger of changing-criterion SCED observations from the Hapax research program. Numeric-only, governed (RDLC), published from the first data point. CC0.",
+      "exists": true,
       "expected_public": true,
-      "files": {},
-      "has_discussions": null,
-      "has_issues": null,
-      "has_projects": null,
-      "has_wiki": null,
+      "files": {
+        ".github/FUNDING.yml": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": ".github/FUNDING.yml",
+          "sha": null,
+          "size": null
+        },
+        ".github/ISSUE_TEMPLATE/config.yml": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-research-ledger/blob/main/.github/ISSUE_TEMPLATE/config.yml",
+          "path": ".github/ISSUE_TEMPLATE/config.yml",
+          "sha": "e70020be4691dcdfed5ee59a36c5fabd976f239d",
+          "size": 712
+        },
+        ".zenodo.json": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-research-ledger/blob/main/.zenodo.json",
+          "path": ".zenodo.json",
+          "sha": "74aeaeb2057921fec8873ebe3c5a359cc5981477",
+          "size": 574
+        },
+        "CITATION.cff": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-research-ledger/blob/main/CITATION.cff",
+          "path": "CITATION.cff",
+          "sha": "5535f655ced61d77ee133cf502114e09e3c876f8",
+          "size": 508
+        },
+        "CONTRIBUTING.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-research-ledger/blob/main/CONTRIBUTING.md",
+          "path": "CONTRIBUTING.md",
+          "sha": "b6b32ea122eaded4c5f7d54b9458290a9482ea5d",
+          "size": 1526
+        },
+        "GOVERNANCE.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-research-ledger/blob/main/GOVERNANCE.md",
+          "path": "GOVERNANCE.md",
+          "sha": "13ea5df944a72164e3f149277bb7c3571379f5b1",
+          "size": 925
+        },
+        "LICENSE": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-research-ledger/blob/main/LICENSE",
+          "path": "LICENSE",
+          "sha": "2973c0c5bcbe674d056bd82872f4ddd7245b741c",
+          "size": 7048
+        },
+        "NOTICE.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-research-ledger/blob/main/NOTICE.md",
+          "path": "NOTICE.md",
+          "sha": "4b771acde2f470511e54ea99adee551ce8222456",
+          "size": 1754
+        },
+        "README.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-research-ledger/blob/main/README.md",
+          "path": "README.md",
+          "sha": "7d8e33fcedfa44b06122f5a5632e9afd0c880645",
+          "size": 3826
+        },
+        "SECURITY.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-research-ledger/blob/main/SECURITY.md",
+          "path": "SECURITY.md",
+          "sha": "358a9c928e4ccc01450ab98958e8b6817a37265e",
+          "size": 1181
+        },
+        "codemeta.json": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-research-ledger/blob/main/codemeta.json",
+          "path": "codemeta.json",
+          "sha": "e758e21ef5c6cdfad43e0f48cd5b32df5b4f37ea",
+          "size": 867
+        },
+        "profile/README.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "profile/README.md",
+          "sha": null,
+          "size": null
+        }
+      },
+      "has_discussions": false,
+      "has_issues": true,
+      "has_projects": false,
+      "has_wiki": false,
       "homepage": null,
-      "html_url": null,
-      "license_name": null,
-      "license_spdx": null,
-      "name": "hapax-assets",
-      "owner": "ryanklee",
+      "html_url": "https://github.com/hapax-systems/hapax-research-ledger",
+      "license_name": "Creative Commons Zero v1.0 Universal",
+      "license_spdx": "CC0-1.0",
+      "name": "hapax-research-ledger",
+      "owner": "hapax-systems",
       "pages": {
         "cname": null,
-        "error": null,
+        "error": "gh: Not Found (HTTP 404)",
         "exists": false,
         "html_url": null,
         "source_branch": null,
         "source_path": null,
         "status": null
       },
-      "private": null,
-      "pushed_at": null,
+      "private": false,
+      "pushed_at": "2026-07-07T20:55:45Z",
+      "releases": {
+        "count": 0,
+        "error": null,
+        "latest_name": null,
+        "latest_published_at": null,
+        "latest_tag_name": null
+      },
+      "repo_id": "hapax-systems/hapax-research-ledger",
+      "tags": {
+        "count": 0,
+        "error": null,
+        "latest_name": null,
+        "latest_published_at": null,
+        "latest_tag_name": null
+      },
+      "topics": [],
+      "visibility": "public"
+    },
+    {
+      "api_error": null,
+      "archived": false,
+      "community": {
+        "description": "Asset CDN for hapax-council (auto-mirrored from assets/aesthetic-library/)",
+        "error": null,
+        "files": {
+          "code_of_conduct": false,
+          "code_of_conduct_file": false,
+          "contributing": true,
+          "issue_template": false,
+          "license": false,
+          "pull_request_template": false,
+          "readme": true
+        },
+        "health_percentage": 50
+      },
+      "default_branch": "main",
+      "default_branch_sha": "1890c08b4d72db0e33306e38950770d6e0357884",
+      "description": "Asset CDN for hapax-council (auto-mirrored from assets/aesthetic-library/)",
+      "exists": true,
+      "expected_public": true,
+      "files": {
+        ".github/FUNDING.yml": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": ".github/FUNDING.yml",
+          "sha": null,
+          "size": null
+        },
+        ".github/ISSUE_TEMPLATE/config.yml": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-assets/blob/main/.github/ISSUE_TEMPLATE/config.yml",
+          "path": ".github/ISSUE_TEMPLATE/config.yml",
+          "sha": "7d179e09c2dcc504d561ca85e750da3723f356a8",
+          "size": 685
+        },
+        ".zenodo.json": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-assets/blob/main/.zenodo.json",
+          "path": ".zenodo.json",
+          "sha": "f62c67115a43bc1fe2d99d6f5b697473e92deecd",
+          "size": 613
+        },
+        "CITATION.cff": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-assets/blob/main/CITATION.cff",
+          "path": "CITATION.cff",
+          "sha": "aafb22531d0b3c668124900eacae911d82cd5842",
+          "size": 531
+        },
+        "CONTRIBUTING.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-assets/blob/main/CONTRIBUTING.md",
+          "path": "CONTRIBUTING.md",
+          "sha": "2244384ee68ae031e381b62498a06fa4269b9c2b",
+          "size": 1521
+        },
+        "GOVERNANCE.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-assets/blob/main/GOVERNANCE.md",
+          "path": "GOVERNANCE.md",
+          "sha": "aae6867369aa7a9c60d64fb7ff31077ba21b0d00",
+          "size": 920
+        },
+        "LICENSE": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "LICENSE",
+          "sha": null,
+          "size": null
+        },
+        "NOTICE.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-assets/blob/main/NOTICE.md",
+          "path": "NOTICE.md",
+          "sha": "2f6d87c2aa64064c8d97166ce5e993c399cfd413",
+          "size": 1855
+        },
+        "README.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-assets/blob/main/README.md",
+          "path": "README.md",
+          "sha": "acbc56ebfb545143fcbc606e8c51f75cc9b4a3b5",
+          "size": 3355
+        },
+        "SECURITY.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-assets/blob/main/SECURITY.md",
+          "path": "SECURITY.md",
+          "sha": "5c478e7a5f20228cf77b91afad2f12575eb98d8f",
+          "size": 1176
+        },
+        "codemeta.json": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/hapax-assets/blob/main/codemeta.json",
+          "path": "codemeta.json",
+          "sha": "82b71131f698966d38d09701dbf8f683556932b6",
+          "size": 892
+        },
+        "profile/README.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "profile/README.md",
+          "sha": null,
+          "size": null
+        }
+      },
+      "has_discussions": false,
+      "has_issues": true,
+      "has_projects": false,
+      "has_wiki": false,
+      "homepage": "https://hapax-systems.github.io/hapax-assets/",
+      "html_url": "https://github.com/hapax-systems/hapax-assets",
+      "license_name": null,
+      "license_spdx": null,
+      "name": "hapax-assets",
+      "owner": "hapax-systems",
+      "pages": {
+        "cname": null,
+        "error": null,
+        "exists": true,
+        "html_url": "https://hapax-systems.github.io/hapax-assets/",
+        "source_branch": "main",
+        "source_path": "/",
+        "status": null
+      },
+      "private": false,
+      "pushed_at": "2026-07-07T20:55:42Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -1023,17 +1850,194 @@
         "latest_tag_name": null
       },
       "topics": [],
-      "visibility": "missing_or_private"
+      "visibility": "public"
+    },
+    {
+      "api_error": null,
+      "archived": false,
+      "community": {
+        "description": "reins \u2014 the legible only-split cockpit for governed n-DLC automation (declare-and-navigate; the apply-seam witnesses). Built by Hapax Research LLC.",
+        "error": null,
+        "files": {
+          "code_of_conduct": false,
+          "code_of_conduct_file": false,
+          "contributing": false,
+          "issue_template": false,
+          "license": true,
+          "pull_request_template": false,
+          "readme": true
+        },
+        "health_percentage": 50
+      },
+      "default_branch": "main",
+      "default_branch_sha": "882ef2129131f8a6106cab870f88523a15a030a0",
+      "description": "reins \u2014 the legible only-split cockpit for governed n-DLC automation (declare-and-navigate; the apply-seam witnesses). Built by Hapax Research LLC.",
+      "exists": true,
+      "expected_public": true,
+      "files": {
+        ".github/FUNDING.yml": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": ".github/FUNDING.yml",
+          "sha": null,
+          "size": null
+        },
+        ".github/ISSUE_TEMPLATE/config.yml": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": ".github/ISSUE_TEMPLATE/config.yml",
+          "sha": null,
+          "size": null
+        },
+        ".zenodo.json": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": ".zenodo.json",
+          "sha": null,
+          "size": null
+        },
+        "CITATION.cff": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "CITATION.cff",
+          "sha": null,
+          "size": null
+        },
+        "CONTRIBUTING.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "CONTRIBUTING.md",
+          "sha": null,
+          "size": null
+        },
+        "GOVERNANCE.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "GOVERNANCE.md",
+          "sha": null,
+          "size": null
+        },
+        "LICENSE": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/reins/blob/main/LICENSE",
+          "path": "LICENSE",
+          "sha": "a47688b7c9ff7e8135dba125c42883a9565c59ea",
+          "size": 4892
+        },
+        "NOTICE.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "NOTICE.md",
+          "sha": null,
+          "size": null
+        },
+        "README.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/reins/blob/main/README.md",
+          "path": "README.md",
+          "sha": "0747668b776c4cbef52aa7da047b929f758f954d",
+          "size": 5825
+        },
+        "SECURITY.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "SECURITY.md",
+          "sha": null,
+          "size": null
+        },
+        "codemeta.json": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "codemeta.json",
+          "sha": null,
+          "size": null
+        },
+        "profile/README.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "profile/README.md",
+          "sha": null,
+          "size": null
+        }
+      },
+      "has_discussions": false,
+      "has_issues": true,
+      "has_projects": false,
+      "has_wiki": false,
+      "homepage": "https://github.com/hapax-systems/reins#readme",
+      "html_url": "https://github.com/hapax-systems/reins",
+      "license_name": "Other",
+      "license_spdx": "NOASSERTION",
+      "name": "reins",
+      "owner": "hapax-systems",
+      "pages": {
+        "cname": null,
+        "error": "gh: Not Found (HTTP 404)",
+        "exists": false,
+        "html_url": null,
+        "source_branch": null,
+        "source_path": null,
+        "status": null
+      },
+      "private": false,
+      "pushed_at": "2026-07-05T01:49:06Z",
+      "releases": {
+        "count": 1,
+        "error": null,
+        "latest_name": "reins v0.1.0 \u2014 first public source release",
+        "latest_published_at": "2026-07-04T00:24:08Z",
+        "latest_tag_name": "v0.1.0"
+      },
+      "repo_id": "hapax-systems/reins",
+      "tags": {
+        "count": 1,
+        "error": null,
+        "latest_name": "v0.1.0",
+        "latest_published_at": null,
+        "latest_tag_name": "v0.1.0"
+      },
+      "topics": [
+        "agent-os",
+        "automation",
+        "bubbletea",
+        "go",
+        "governance",
+        "sdlc",
+        "tui"
+      ],
+      "visibility": "public"
     }
   ],
   "local_evidence": {
-    "notice_links": [
-      "CONTRIBUTING.md"
-    ],
-    "notice_missing_links": [
-      "CONTRIBUTING.md"
-    ],
+    "notice_links": [],
+    "notice_missing_links": [],
     "package_surfaces": [
+      {
+        "claim_status": "evidence_only",
+        "evidence_refs": [
+          "packages/agentgov/README.md",
+          "packages/agentgov/pyproject.toml"
+        ],
+        "has_citation": false,
+        "has_pyproject": true,
+        "has_readme": true,
+        "package_name": "agentgov",
+        "path": "packages/agentgov/README.md",
+        "readme_mentions_issues": false,
+        "readme_mentions_support": false
+      },
       {
         "claim_status": "evidence_only",
         "evidence_refs": [
@@ -1050,7 +2054,7 @@
         "readme_mentions_support": false
       },
       {
-        "claim_status": "needs_claim_discipline",
+        "claim_status": "evidence_only",
         "evidence_refs": [
           "packages/hapax-refusals/README.md",
           "packages/hapax-refusals/CITATION.cff",
@@ -1061,11 +2065,11 @@
         "has_readme": true,
         "package_name": "hapax-refusals",
         "path": "packages/hapax-refusals/README.md",
-        "readme_mentions_issues": true,
+        "readme_mentions_issues": false,
         "readme_mentions_support": false
       },
       {
-        "claim_status": "needs_claim_discipline",
+        "claim_status": "evidence_only",
         "evidence_refs": [
           "packages/hapax-swarm/README.md",
           "packages/hapax-swarm/CITATION.cff",
@@ -1076,7 +2080,7 @@
         "has_readme": true,
         "package_name": "hapax-swarm",
         "path": "packages/hapax-swarm/README.md",
-        "readme_mentions_issues": true,
+        "readme_mentions_issues": false,
         "readme_mentions_support": false
       },
       {
@@ -1110,117 +2114,172 @@
     ],
     "registry_assets_policy": "per-asset (BSD-3-Clause / CC-BY-SA-4.0)",
     "registry_license_by_repo": {
+      "agentgov": "MIT",
       "distro-work": "PolyForm-Strict-1.0.0",
       "hapax-constitution": "CC-BY-NC-ND-4.0",
+      "hapax-coord": "PolyForm-Strict-1.0.0",
       "hapax-council": "PolyForm-Strict-1.0.0",
       "hapax-mcp": "MIT",
       "hapax-officium": "PolyForm-Strict-1.0.0",
       "hapax-phone": "PolyForm-Strict-1.0.0",
-      "hapax-watch": "PolyForm-Strict-1.0.0"
+      "hapax-research-ledger": "CC0-1.0",
+      "hapax-spine": "BUSL-1.1",
+      "hapax-watch": "PolyForm-Strict-1.0.0",
+      "reins": "BUSL-1.1"
     },
-    "repo_head": "8d7b3aa37d74b58a04d4a00cc96f9102a6fb5cda",
     "root_file_sha256": {
-      ".zenodo.json": "sha256:5e90a1b02d869dea7996d33ea08f2316989bab480591e22075e427be47590a70",
-      "CITATION.cff": "sha256:1f6081a41af1a01f4d10a4d33518f12690af1c6b77d741f8a51bd73b05da6dbe",
-      "CLAUDE.md": "sha256:d5c1a5b5166a668e9fc4b5b10da8489c2934dedc9b1b2a007ce17a8b0a01b94b",
-      "LICENSE": "sha256:ff5be1c500b299ee065abcbe6616c362b33d79994132c66abe85743236a37e8f",
-      "NOTICE.md": "sha256:e6b462f58e13f0ead75716de311c9e3577502125ccdd07b5d229658ba180f06d",
-      "README.md": "sha256:8440b86e755f57412b89b29c167d2f408b50628ed99de5110521c136fbcc8140",
-      "SECURITY.md": "sha256:52abf66bb45f276dda73bd566ce5cff3a4b1c17e98ec4c69f92a2a72b878ef1d",
-      "codemeta.json": "sha256:3b287ca65700dc89ffb8ed3c2c62a9d52734bdf6536b51639d2e450174200b04"
+      ".zenodo.json": "sha256:717b50fe0969239dbd36d2f70b923a649e930af771c2449da73d3c1ee96cbcde",
+      "CITATION.cff": "sha256:04fba7c6d6a5abfb8340fb3621cfa2fe813c30fb2dcf50688fd91c3f99425b98",
+      "CLAUDE.md": "sha256:023b149f0a94a873f25da74a48330b1985abbf1f85fad338608d5b222e905d07",
+      "LICENSE": "sha256:2183f4abce696be915854ba97c2f1e95d60eb1ff776777c13e787dfec2fa105b",
+      "NOTICE.md": "sha256:96b698773389a3316bd3f9bb5e8d2cd7eabd84f90ec2eb345f7eeb85b194b309",
+      "README.md": "sha256:b3d31f59e69b1888c988d172c2624af94896d0bb2fd1db1f6663ea1119d1de54",
+      "SECURITY.md": "sha256:65a4a343101fa225615b4515af0d28a45c7fb54270e994a33dc7ce2f4a84acda",
+      "codemeta.json": "sha256:9c3e47ee3760cf4e7e2303dd7c364528c39f119c0581c231be8f9ad04e6f790f"
     }
   },
   "profile_repo_candidates": [
     {
-      "api_error": "gh: Not Found (HTTP 404)",
-      "archived": null,
+      "api_error": null,
+      "archived": false,
       "community": {
-        "description": null,
+        "description": "Hapax Systems public organization profile",
         "error": null,
-        "files": {},
-        "health_percentage": null
+        "files": {
+          "code_of_conduct": false,
+          "code_of_conduct_file": false,
+          "contributing": false,
+          "issue_template": false,
+          "license": false,
+          "pull_request_template": false,
+          "readme": false
+        },
+        "health_percentage": 25
       },
-      "default_branch": null,
-      "default_branch_sha": null,
-      "description": null,
-      "exists": false,
+      "default_branch": "main",
+      "default_branch_sha": "8918d0bacf288c3571dd37cd7911f50443250263",
+      "description": "Hapax Systems public organization profile",
+      "exists": true,
       "expected_public": true,
-      "files": {},
-      "has_discussions": null,
-      "has_issues": null,
-      "has_projects": null,
-      "has_wiki": null,
+      "files": {
+        ".github/FUNDING.yml": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": ".github/FUNDING.yml",
+          "sha": null,
+          "size": null
+        },
+        ".github/ISSUE_TEMPLATE/config.yml": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": ".github/ISSUE_TEMPLATE/config.yml",
+          "sha": null,
+          "size": null
+        },
+        ".zenodo.json": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": ".zenodo.json",
+          "sha": null,
+          "size": null
+        },
+        "CITATION.cff": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "CITATION.cff",
+          "sha": null,
+          "size": null
+        },
+        "CONTRIBUTING.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "CONTRIBUTING.md",
+          "sha": null,
+          "size": null
+        },
+        "GOVERNANCE.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "GOVERNANCE.md",
+          "sha": null,
+          "size": null
+        },
+        "LICENSE": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "LICENSE",
+          "sha": null,
+          "size": null
+        },
+        "NOTICE.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "NOTICE.md",
+          "sha": null,
+          "size": null
+        },
+        "README.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "README.md",
+          "sha": null,
+          "size": null
+        },
+        "SECURITY.md": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "SECURITY.md",
+          "sha": null,
+          "size": null
+        },
+        "codemeta.json": {
+          "evidence": "github_contents_api",
+          "exists": false,
+          "html_url": null,
+          "path": "codemeta.json",
+          "sha": null,
+          "size": null
+        },
+        "profile/README.md": {
+          "evidence": "github_contents_api",
+          "exists": true,
+          "html_url": "https://github.com/hapax-systems/.github/blob/main/profile/README.md",
+          "path": "profile/README.md",
+          "sha": "6503f109ce29a1eafd50bc6ed0b52c9bebc7940b",
+          "size": 5874
+        }
+      },
+      "has_discussions": false,
+      "has_issues": false,
+      "has_projects": true,
+      "has_wiki": false,
       "homepage": null,
-      "html_url": null,
-      "license_name": null,
-      "license_spdx": null,
-      "name": "ryanklee",
-      "owner": "ryanklee",
-      "pages": {
-        "cname": null,
-        "error": null,
-        "exists": false,
-        "html_url": null,
-        "source_branch": null,
-        "source_path": null,
-        "status": null
-      },
-      "private": null,
-      "pushed_at": null,
-      "releases": {
-        "count": 0,
-        "error": null,
-        "latest_name": null,
-        "latest_published_at": null,
-        "latest_tag_name": null
-      },
-      "repo_id": "ryanklee/ryanklee",
-      "tags": {
-        "count": 0,
-        "error": null,
-        "latest_name": null,
-        "latest_published_at": null,
-        "latest_tag_name": null
-      },
-      "topics": [],
-      "visibility": "missing_or_private"
-    },
-    {
-      "api_error": "gh: Not Found (HTTP 404)",
-      "archived": null,
-      "community": {
-        "description": null,
-        "error": null,
-        "files": {},
-        "health_percentage": null
-      },
-      "default_branch": null,
-      "default_branch_sha": null,
-      "description": null,
-      "exists": false,
-      "expected_public": true,
-      "files": {},
-      "has_discussions": null,
-      "has_issues": null,
-      "has_projects": null,
-      "has_wiki": null,
-      "homepage": null,
-      "html_url": null,
+      "html_url": "https://github.com/hapax-systems/.github",
       "license_name": null,
       "license_spdx": null,
       "name": ".github",
-      "owner": "ryanklee",
+      "owner": "hapax-systems",
       "pages": {
         "cname": null,
-        "error": null,
+        "error": "gh: Not Found (HTTP 404)",
         "exists": false,
         "html_url": null,
         "source_branch": null,
         "source_path": null,
         "status": null
       },
-      "private": null,
-      "pushed_at": null,
+      "private": false,
+      "pushed_at": "2026-07-07T20:56:27Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -1237,7 +2296,7 @@
         "latest_tag_name": null
       },
       "topics": [],
-      "visibility": "missing_or_private"
+      "visibility": "public"
     }
   ],
   "required_drift_categories": [

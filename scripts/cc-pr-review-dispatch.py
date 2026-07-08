@@ -61,6 +61,7 @@ from github_pr_status import (  # noqa: E402
     list_pull_files_rest,
 )
 
+from shared import public_gate_receipts  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
     requires_acceptance_receipt,
@@ -78,11 +79,284 @@ MAX_TASK_NOTE_CHARS = 60_000
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
 MAX_REVIEW_RUNNER_STDERR_CHARS = 1_000
 REVIEWER_DIAGNOSTIC_SECRETISH_RE = re.compile(
-    r"(bearer\s+|authorization[=:]\s*|"
-    r"(?:api[_-]?key|token|secret|password|credential)[=:]\s*)[^\s]+|"
-    r"(?:sk-[a-z0-9_-]+|gh[pousr]_[a-z0-9_]+|[a-z0-9_-]{40,})",
+    r"(?P<auth_prefix>\bauthorization\b\s*[:=]\s*(?:bearer\s+)?)"
+    r"(?P<auth_value>[^\r\n]+)|"
+    r"(?P<bearer_prefix>\bbearer\s+)(?P<bearer_value>[^\s,;]+)|"
+    r"(?P<key_prefix>[\"']?\b(?:x[_-]?)?(?:api[_-]?(?:key|token)|token|secret|password|credential)\b"
+    r"[\"']?\s*[:=]\s*[\"']?)(?P<key_value>[^\"'\s,;}]+)(?P<key_suffix>[\"']?)|"
+    r"(?P<known_secret>\b(?:sk-[a-z0-9_-]+|gh[pousr]_[a-z0-9_]+|[a-z0-9_-]{40,})\b)",
     re.IGNORECASE,
 )
+PAYG_FALLBACK_MARKER = "PAYG fallback used"
+PAYG_FALLBACK_KEY_VALUE_RE = re.compile(r"\b([a-z_]+)=([^\s]+)")
+PAYG_FALLBACK_ALLOWED_FIELDS = (
+    "endpoint",
+    "model",
+    "primary_error_class",
+    "spend_gate",
+)
+PAYG_FALLBACK_REDACTED_FIELDS = (
+    "budget_id",
+    "spend_receipt",
+)
+PAYG_FALLBACK_SAFE_VALUE_RE = re.compile(r"\A[a-z0-9][a-z0-9._:/-]{0,160}\Z", re.IGNORECASE)
+PUBLIC_GATE_AUTHORITY_CONTEXT_KEYS = (
+    "public_gate_authority",
+    "publication_gate_authority",
+)
+PUBLIC_GATE_AUTHORITY_GATE_KEYS = (
+    "required_gates",
+    "required_gate_ids",
+    "public_gates",
+    "public_gate_ids",
+    "publication_gates",
+    "publication_gate_ids",
+    "gate_ids",
+    "gates",
+    "gate_id",
+    "gate",
+)
+PUBLIC_GATE_AUTHORITY_RECEIPT_KEYS = (
+    "authorized_public_gate_receipts",
+    "authorized_public_gate_receipt",
+    "public_gate_receipts",
+    "public_gate_receipt",
+    "publication_gate_receipts",
+    "publication_gate_receipt",
+    "authorized_receipts",
+    "authorized_receipt",
+    "receipt_refs",
+    "receipt_ref",
+)
+PUBLIC_GATE_AUTHORITY_ARTIFACT_SLUG_KEYS = (
+    "artifact_slug",
+    "publication_artifact_slug",
+    "slug",
+)
+PUBLIC_GATE_AUTHORITY_ARTIFACT_FINGERPRINT_KEYS = (
+    "artifact_fingerprint",
+    "publication_artifact_fingerprint",
+)
+PUBLIC_GATE_AUTHORITY_TARGET_SURFACE_KEYS = (
+    "target_surfaces",
+    "surfaces",
+    "surfaces_targeted",
+)
+PUBLIC_GATE_AUTHORITY_BINDING_CONTEXT_KEYS = (
+    "bindings",
+    "public_gate_bindings",
+    "publication_gate_bindings",
+)
+PUBLIC_GATE_AUTHORITY_BINDING_KEY_RE = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
+PUBLIC_GATE_AUTHORITY_RESERVED_BINDING_KEYS = frozenset(
+    {
+        "accept_count",
+        "acceptor",
+        "artifact",
+        "authority_issuer",
+        "authority_signature",
+        "basis",
+        "changed_file_count",
+        "changed_files",
+        "constituted_at",
+        "constitution_notes",
+        "constitution_writer_family",
+        "degraded_family_outage",
+        "degraded_family_route_blocked",
+        "dossier_schema",
+        "escalations",
+        "findings",
+        "head_sha",
+        "lenses",
+        "parse_path",
+        "post_recovery_rereview_required",
+        "post_route_receipt_rereview_required",
+        "pr",
+        "quorum_required",
+        "registry_declared_at",
+        "registry_id",
+        "required_gates",
+        "authorized_public_gate_receipts",
+        "review_team_verdict",
+        "reviewers",
+        "runner_diagnostics",
+        "runner_stderr_excerpt",
+        "status",
+        "task_id",
+        "team_class",
+        "timestamp",
+        "verdict",
+        "writer_family",
+    }
+)
+
+
+def _review_team_authority_issuer(reviewers: list[dict[str, Any]]) -> str:
+    families = sorted(
+        {
+            str(reviewer.get("family") or "").strip().casefold()
+            for reviewer in reviewers
+            if str(reviewer.get("family") or "").strip()
+        }
+    )
+    return "review-team:" + ",".join(families) if families else "review-team:unknown"
+
+
+def _public_gate_context_source(frontmatter: dict[str, Any]) -> dict[str, Any]:
+    for key in PUBLIC_GATE_AUTHORITY_CONTEXT_KEYS:
+        value = frontmatter.get(key)
+        if isinstance(value, dict):
+            return value
+    return frontmatter
+
+
+def _first_string(source: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _string_items(value: Any) -> list[str]:
+    if isinstance(value, str):
+        item = value.strip()
+        return [item] if item else []
+    if isinstance(value, dict):
+        items: list[str] = []
+        for nested in value.values():
+            items.extend(_string_items(nested))
+        return items
+    if isinstance(value, (list, tuple, set)):
+        items = []
+        for nested in value:
+            items.extend(_string_items(nested))
+        return items
+    return []
+
+
+def _first_string_list(source: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    for key in keys:
+        items = _string_items(source.get(key))
+        if items:
+            return list(dict.fromkeys(items))
+    return []
+
+
+def _first_binding_list(source: dict[str, Any], keys: tuple[str, ...]) -> list[str] | None:
+    items = _first_string_list(source, keys)
+    return items or None
+
+
+def _binding_value(value: Any) -> str | list[str] | None:
+    if isinstance(value, str):
+        item = value.strip()
+        return item or None
+    if isinstance(value, (list, tuple, set)):
+        items = list(dict.fromkeys(_string_items(value)))
+        return items or None
+    return None
+
+
+def _copy_safe_binding(
+    bindings: dict[str, Any],
+    key: str,
+    value: str | list[str] | None,
+) -> None:
+    normalized = key.strip().casefold()
+    if (
+        value is not None
+        and normalized not in PUBLIC_GATE_AUTHORITY_RESERVED_BINDING_KEYS
+        and PUBLIC_GATE_AUTHORITY_BINDING_KEY_RE.fullmatch(normalized)
+    ):
+        bindings[normalized] = value
+
+
+def _public_gate_authority_bindings(source: dict[str, Any]) -> dict[str, Any]:
+    bindings: dict[str, Any] = {}
+    _copy_safe_binding(
+        bindings,
+        "artifact_slug",
+        _first_string(source, PUBLIC_GATE_AUTHORITY_ARTIFACT_SLUG_KEYS),
+    )
+    _copy_safe_binding(
+        bindings,
+        "artifact_fingerprint",
+        _first_string(source, PUBLIC_GATE_AUTHORITY_ARTIFACT_FINGERPRINT_KEYS),
+    )
+    _copy_safe_binding(
+        bindings,
+        "target_surfaces",
+        _first_binding_list(source, PUBLIC_GATE_AUTHORITY_TARGET_SURFACE_KEYS),
+    )
+    for context_key in PUBLIC_GATE_AUTHORITY_BINDING_CONTEXT_KEYS:
+        raw_bindings = source.get(context_key)
+        if not isinstance(raw_bindings, dict):
+            continue
+        for raw_key, raw_value in raw_bindings.items():
+            if isinstance(raw_key, str):
+                _copy_safe_binding(bindings, raw_key, _binding_value(raw_value))
+    return bindings
+
+
+def _publication_gate_receipt_keys(source: dict[str, Any]) -> list[str]:
+    for key in ("publication_gate_receipts", "public_gate_receipts"):
+        value = source.get(key)
+        if isinstance(value, dict):
+            return [
+                str(gate).strip() for gate in value if isinstance(gate, str) and str(gate).strip()
+            ]
+    return []
+
+
+def _public_gate_authority_context(frontmatter: dict[str, Any]) -> dict[str, Any]:
+    source = _public_gate_context_source(frontmatter)
+    required_gates = _first_string_list(source, PUBLIC_GATE_AUTHORITY_GATE_KEYS)
+    if not required_gates:
+        required_gates = _publication_gate_receipt_keys(source)
+    receipt_refs = _first_string_list(source, PUBLIC_GATE_AUTHORITY_RECEIPT_KEYS)
+    bindings = _public_gate_authority_bindings(source)
+
+    context = {
+        "required_gates": required_gates,
+        "authorized_public_gate_receipts": receipt_refs,
+    }
+    if all(context.values()):
+        context.update(bindings)
+        return context
+    if any(context.values()):
+        missing = ", ".join(key for key, value in context.items() if not value)
+        LOG.warning("public-gate authority context incomplete; omitting fields: %s", missing)
+    return {}
+
+
+def _apply_public_gate_authority_context(
+    data: dict[str, Any],
+    frontmatter: dict[str, Any],
+) -> None:
+    context = _public_gate_authority_context(frontmatter)
+    if context:
+        data.update(context)
+
+
+def _sign_public_gate_authority_evidence(data: dict[str, Any]) -> None:
+    secret = os.environ.get(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, "").strip()
+    if not secret:
+        LOG.warning(
+            "public-gate authority evidence left unsigned; signing credential is unset; "
+            "next action: restore the public-gate authority signing credential from pass "
+            "before relying on public-gate receipts",
+        )
+        return
+    data["authority_issuer"] = _review_team_authority_issuer(
+        [reviewer for reviewer in data.get("reviewers") or [] if isinstance(reviewer, dict)]
+    )
+    data["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
+        data,
+        secret,
+    )
+
+
 _LOW_SIGNAL_DIFF_PREFIXES = (
     "docs/architecture/system-dynamics-map",
     "tests/",
@@ -98,6 +372,31 @@ _HIGH_SIGNAL_DIFF_PREFIXES = (
     "schemas/",
 )
 _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
+    "agents/publication_bus/omg_rss_fanout.py": (
+        "_effective_required_gates",
+        "_missing_gate_receipts",
+        "fanout",
+    ),
+    "agents/publish_orchestrator/orchestrator.py": (
+        "run_once",
+        "_dispatch",
+        "_with_public_gate_receipts_child",
+        "_public_gate_receipts_gate_result",
+        "_public_gate_receipts_child",
+        "_required_publication_gate_receipts",
+        "_inbox_artifact_envelope_findings",
+        "_configured_publication_surfaces",
+        "_quarantine_unloadable_inbox_artifact",
+        "_quarantine_unexpected_inbox_artifact_exception",
+        "_quarantine_invalid_inbox_artifact",
+        "_default_publication_gate_receipts",
+        "_configured_publication_gate_receipts",
+        "_configured_publication_policies",
+        "_configured_publication_policy_validation_error",
+        "_policy_required_gate_ids",
+        "_artifact_publication_gate_receipts",
+        "_publication_gate_receipt_bindings",
+    ),
     "scripts/hapax-glmcp-reviewer": (
         "load_config",
         "_valid_coding_plan_primary_base_url",
@@ -112,6 +411,11 @@ _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
         "render_reviewer_prompt",
         "dispatch_reviews",
         "review_pr",
+    ),
+    "scripts/publish_vault_artifact.py": (
+        "_build_artifact",
+        "_assert_safe_artifact_slug",
+        "main",
     ),
     "scripts/hapax-quota-telemetry-writer": (
         "_glmcp_payg_spend_gate_ledger",
@@ -129,6 +433,44 @@ _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
     "shared/platform_capability_registry.py": (
         "_apply_receipt_to_route_payload",
         "_route_specific_quota_admission_fresh",
+    ),
+    "shared/public_gate_receipts.py": (
+        "public_gate_receipt_value_present",
+        "public_gate_receipt_ref_exists",
+        "_receipt_file_maps_to_gate",
+        "_gate_receipt_object_allows",
+        "_iter_receipt_candidate_mappings",
+        "_receipt_candidate_mapping_allows",
+        "_receipt_mapping_has_required_authority",
+        "_receipt_mapping_has_required_bindings",
+        "_mapping_has_authority_case",
+        "_mapping_has_non_self_text",
+        "_mapping_has_evidence_ref",
+        "_evidence_ref_resolves",
+        "_same_resolved_path",
+        "_evidence_file_is_independent",
+        "_review_dossier_evidence_allows",
+        "_acceptance_receipt_evidence_allows",
+        "_evidence_mapping_authorizes_receipt",
+        "_public_gate_receipt_refs_for_path",
+        "_evidence_mapping_contains_receipt_ref",
+        "_iter_direct_binding_values",
+    ),
+    "tests/shared/test_public_gate_receipts.py": (
+        "test_rejects_self_minted_receipt_without_delegated_authority",
+        "test_rejects_unresolved_authority_evidence_ref",
+        "test_rejects_operator_accepted_receipt_without_independent_acceptor",
+        "test_rejects_circular_public_gate_evidence_ref",
+        "test_rejects_authority_evidence_for_different_gate",
+        "test_rejects_authority_evidence_for_different_receipt",
+        "test_rejects_authority_evidence_for_different_artifact_binding",
+        "test_rejects_review_dossier_without_current_head_binding",
+        "test_rejects_spliced_gate_and_binding_records",
+        "test_rejects_list_sibling_gate_and_binding_records",
+        "test_rejects_root_gate_with_nested_unrelated_binding_record",
+    ),
+    "tests/scripts/test_publish_vault_artifact.py": (
+        "test_unsafe_slug_refuses_publication_before_inbox_write",
     ),
 }
 SEND_SCRIPTS = {
@@ -437,6 +779,8 @@ class PRInfo:
     number: int
     title: str
     body: str
+    base_ref: str
+    base_sha: str
     head_ref: str
     head_sha: str
     changed_file_count: int | None
@@ -455,16 +799,92 @@ def _run_gh(cmd: list[str], *, repo_root: Path, runner: Any, timeout: int = 120)
     return proc.stdout
 
 
+def _files_from_pr_view(payload: dict[str, Any]) -> tuple[str, ...]:
+    files = payload.get("files")
+    if not isinstance(files, list):
+        return ()
+    paths: list[str] = []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        if path:
+            paths.append(str(path))
+    return tuple(paths)
+
+
+def _fetch_pr_via_view(
+    pr_number: int,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> PRInfo:
+    raw = _run_gh(
+        [
+            "gh",
+            "pr",
+            "view",
+            str(pr_number),
+            "--repo",
+            repo,
+            "--json",
+            (
+                "number,title,body,baseRefName,baseRefOid,headRefName,headRefOid,"
+                + "changedFiles,isDraft,files"
+            ),
+        ],
+        repo_root=repo_root,
+        runner=runner,
+    )
+    try:
+        item = json.loads(raw or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"gh pr view returned non-json for PR #{pr_number}") from exc
+    try:
+        changed_file_count = (
+            int(item["changedFiles"]) if item.get("changedFiles") is not None else None
+        )
+    except (TypeError, ValueError):
+        changed_file_count = None
+    return PRInfo(
+        number=int(item.get("number") or pr_number),
+        title=str(item.get("title") or ""),
+        body=str(item.get("body") or ""),
+        base_ref=str(item.get("baseRefName") or "main"),
+        base_sha=str(item.get("baseRefOid") or ""),
+        head_ref=str(item.get("headRefName") or ""),
+        head_sha=str(item.get("headRefOid") or ""),
+        changed_file_count=changed_file_count,
+        is_draft=bool(item.get("isDraft")),
+        files=_files_from_pr_view(item),
+    )
+
+
 def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRInfo:
     item = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if item is None:
-        raise RuntimeError(
-            f"REST pull fetch failed for PR #{pr_number}; next action: run "
-            f"`gh auth status`, then retry `gh api repos/{repo}/pulls/{pr_number}` "
-            "from the repository root and preserve stderr if auth, network, or GitHub API "
-            "access still fails."
-        )
+        try:
+            LOG.warning(
+                "REST pull fetch failed for PR #%d; falling back to `gh pr view`",
+                pr_number,
+            )
+            return _fetch_pr_via_view(
+                pr_number,
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"REST pull fetch failed for PR #{pr_number}; fallback `gh pr view` also "
+                f"failed ({exc}); next action: run `gh auth status`, then retry "
+                f"`gh api repos/{repo}/pulls/{pr_number}` and "
+                f"`gh pr view {pr_number} --repo {repo}` from the repository root and "
+                "preserve stderr if auth, network, or GitHub API access still fails."
+            ) from exc
     head = item.get("head") if isinstance(item.get("head"), dict) else {}
+    base = item.get("base") if isinstance(item.get("base"), dict) else {}
     file_items = list_pull_files_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     files = tuple(
         str(entry["filename"])
@@ -481,6 +901,8 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
         number=int(item["number"]),
         title=str(item.get("title") or ""),
         body=str(item.get("body") or ""),
+        base_ref=str(base.get("ref") or "main"),
+        base_sha=str(base.get("sha") or ""),
         head_ref=str(head.get("ref") or ""),
         head_sha=str(head.get("sha") or ""),
         changed_file_count=changed_file_count,
@@ -489,20 +911,191 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
     )
 
 
-def fetch_pr_diff(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> str:
-    return _run_gh(
-        [
-            "gh",
-            "api",
-            "--method",
-            "GET",
-            "-H",
-            "Accept: application/vnd.github.v3.diff",
-            f"repos/{repo}/pulls/{pr_number}",
-        ],
+def fetch_pr_diff(pr_info: PRInfo, *, repo: str, repo_root: Path, runner: Any) -> str:
+    pr_number = pr_info.number
+    try:
+        return _run_gh(
+            [
+                "gh",
+                "api",
+                "--method",
+                "GET",
+                "-H",
+                "Accept: application/vnd.github.v3.diff",
+                f"repos/{repo}/pulls/{pr_number}",
+            ],
+            repo_root=repo_root,
+            runner=runner,
+        )
+    except RuntimeError as exc:
+        LOG.warning(
+            "REST diff fetch failed for PR #%d; falling back to `gh pr diff`: %s",
+            pr_number,
+            exc,
+        )
+        try:
+            return _run_gh(
+                ["gh", "pr", "diff", str(pr_number), "--repo", repo],
+                repo_root=repo_root,
+                runner=runner,
+            )
+        except RuntimeError as diff_exc:
+            LOG.warning(
+                "`gh pr diff` failed for PR #%d; falling back to local git diff: %s",
+                pr_number,
+                diff_exc,
+            )
+            return fetch_pr_diff_from_local(pr_info, repo_root=repo_root, runner=runner)
+
+
+def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -> str:
+    """Build a pinned local PR diff when GitHub diff endpoints are unavailable."""
+    base_ref = pr_info.base_ref or "main"
+    remote_base = f"origin/{base_ref}"
+    if not pr_info.base_sha:
+        raise RuntimeError(
+            f"PR #{pr_info.number} base SHA is unavailable; local git diff fallback cannot "
+            "prove the current PR base. Next action: restore GitHub PR metadata access or "
+            "fetch PR metadata with baseRefOid/base.sha before review dispatch."
+        )
+    if not pr_info.head_sha:
+        raise RuntimeError(
+            f"PR #{pr_info.number} head SHA is unavailable; local git diff fallback cannot "
+            "prove the current PR head. Next action: restore GitHub PR metadata access or "
+            "fetch PR metadata with headRefOid/head.sha before review dispatch."
+        )
+    _ensure_local_ref_at_sha(
+        remote_base,
+        expected_sha=pr_info.base_sha,
+        fetch_ref=base_ref,
         repo_root=repo_root,
         runner=runner,
     )
+
+    head = pr_info.head_sha
+    _ensure_local_ref(
+        pr_info.head_sha,
+        fetch_ref=f"pull/{pr_info.number}/head",
+        repo_root=repo_root,
+        runner=runner,
+        allow_fetch_failure=True,
+    )
+    if not _local_commit_object_exists(head, repo_root=repo_root, runner=runner):
+        raise RuntimeError(
+            f"PR #{pr_info.number} head object {head[:12]} is unavailable locally after "
+            f"fetching pull/{pr_info.number}/head. Next action: restore GitHub diff "
+            f"access or fetch pull/{pr_info.number}/head before review dispatch."
+        )
+
+    merge_base = _run_gh(
+        ["git", "merge-base", pr_info.base_sha, head],
+        repo_root=repo_root,
+        runner=runner,
+    ).strip()
+    if merge_base != pr_info.base_sha:
+        raise RuntimeError(
+            f"local git diff fallback for PR #{pr_info.number} cannot prove head contains "
+            f"the current PR base {pr_info.base_sha[:12]}; merge-base was "
+            f"{merge_base[:12]}. Next action: fetch the GitHub PR diff endpoint or "
+            "update the PR branch to the current base before review dispatch."
+        )
+    diff = _run_gh(
+        ["git", "diff", "--no-ext-diff", "--find-renames", f"{merge_base}..{head}"],
+        repo_root=repo_root,
+        runner=runner,
+        timeout=180,
+    )
+    if not diff.strip():
+        raise RuntimeError(
+            f"local git diff for PR #{pr_info.number} was empty between "
+            f"{remote_base} and {head[:12]}; next action: fetch PR head/base and retry"
+        )
+    return diff
+
+
+def _resolve_local_ref(ref: str, *, repo_root: Path, runner: Any) -> str | None:
+    try:
+        return _run_gh(
+            ["git", "rev-parse", "--verify", ref], repo_root=repo_root, runner=runner
+        ).strip()
+    except RuntimeError:
+        return None
+
+
+def _local_commit_object_exists(ref: str, *, repo_root: Path, runner: Any) -> bool:
+    try:
+        _run_gh(
+            ["git", "cat-file", "-e", f"{ref}^{{commit}}"],
+            repo_root=repo_root,
+            runner=runner,
+        )
+    except RuntimeError:
+        return False
+    return True
+
+
+def _ensure_local_ref_at_sha(
+    ref: str,
+    *,
+    expected_sha: str,
+    fetch_ref: str,
+    repo_root: Path,
+    runner: Any,
+) -> None:
+    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
+    if actual_sha == expected_sha:
+        return
+
+    _run_gh(
+        ["git", "fetch", "--quiet", "origin", f"{fetch_ref}:refs/remotes/origin/{fetch_ref}"],
+        repo_root=repo_root,
+        runner=runner,
+        timeout=180,
+    )
+    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
+    if actual_sha != expected_sha:
+        actual_label = (actual_sha or "missing")[:12]
+        raise RuntimeError(
+            f"local ref {ref} resolved to {actual_label}, expected PR base "
+            f"{expected_sha[:12]}; next action: fetch the PR base ref from origin and "
+            "retry review dispatch after the local base matches the PR metadata."
+        )
+
+
+def _ensure_local_ref(
+    ref: str,
+    *,
+    fetch_ref: str,
+    repo_root: Path,
+    runner: Any,
+    allow_fetch_failure: bool = False,
+) -> None:
+    try:
+        _run_gh(["git", "rev-parse", "--verify", ref], repo_root=repo_root, runner=runner)
+        return
+    except RuntimeError:
+        pass
+
+    try:
+        _run_gh(
+            ["git", "fetch", "--quiet", "origin", fetch_ref],
+            repo_root=repo_root,
+            runner=runner,
+            timeout=180,
+        )
+    except RuntimeError as exc:
+        if not allow_fetch_failure:
+            raise
+        LOG.warning(
+            "local ref %s is unavailable locally and could not be fetched from origin/%s; "
+            "continuing to explicit object check: %s",
+            ref[:12],
+            fetch_ref,
+            exc,
+        )
+        return
+
+    _run_gh(["git", "rev-parse", "--verify", ref], repo_root=repo_root, runner=runner)
 
 
 def _diff_span_path(span: str) -> str:
@@ -706,7 +1299,7 @@ class ReviewerProcessError(RuntimeError):
 
     def __init__(self, stderr: str, *, returncode: int, stdout: str = "") -> None:
         output = (stderr or stdout).strip()
-        super().__init__(f"reviewer exited rc={returncode}: {output[:300]}")
+        super().__init__(f"reviewer exited rc={returncode}; output omitted")
         self.stdout = stdout
         self.stderr = stderr
         self.output = output
@@ -719,12 +1312,53 @@ class ReviewerRunnerResult:
     stderr: str = ""
 
 
-def sanitize_reviewer_diagnostic(text: str) -> str:
-    redacted = REVIEWER_DIAGNOSTIC_SECRETISH_RE.sub(
-        lambda match: (match.group(1) or "") + "<redacted>",
-        text.strip(),
+def _redact_reviewer_diagnostic_match(match: re.Match[str]) -> str:
+    if match.group("auth_prefix") is not None:
+        return f"{match.group('auth_prefix')}<redacted>"
+    if match.group("bearer_prefix") is not None:
+        return f"{match.group('bearer_prefix')}<redacted>"
+    if match.group("key_prefix") is not None:
+        return f"{match.group('key_prefix')}<redacted>{match.group('key_suffix') or ''}"
+    return "<redacted>"
+
+
+def sanitize_reviewer_diagnostic(text: str, *, limit: int = MAX_REVIEW_RUNNER_STDERR_CHARS) -> str:
+    redacted = REVIEWER_DIAGNOSTIC_SECRETISH_RE.sub(_redact_reviewer_diagnostic_match, text.strip())
+    return truncate_context(redacted, limit=limit).strip()
+
+
+def render_payg_fallback_excerpt(text: str) -> str | None:
+    """Return an allowlisted PAYG fallback diagnostic, never raw reviewer stderr."""
+
+    for line in text.splitlines():
+        if PAYG_FALLBACK_MARKER not in line:
+            continue
+        fields = dict(PAYG_FALLBACK_KEY_VALUE_RE.findall(line))
+        parts = ["hapax-glmcp-reviewer: PAYG fallback used"]
+        for key in PAYG_FALLBACK_ALLOWED_FIELDS:
+            value = fields.get(key)
+            if value and _payg_fallback_value_is_safe(value):
+                parts.append(f"{key}={value}")
+        for key in PAYG_FALLBACK_REDACTED_FIELDS:
+            if fields.get(key):
+                parts.append(f"{key}=<redacted>")
+        return truncate_context(" ".join(parts), limit=MAX_REVIEW_RUNNER_STDERR_CHARS).strip()
+    return None
+
+
+def _payg_fallback_value_is_safe(value: str) -> bool:
+    return bool(
+        PAYG_FALLBACK_SAFE_VALUE_RE.fullmatch(value)
+        and sanitize_reviewer_diagnostic(value, limit=MAX_REVIEW_RUNNER_STDERR_CHARS) == value
     )
-    return truncate_context(redacted, limit=MAX_REVIEW_RUNNER_STDERR_CHARS).strip()
+
+
+def reviewer_success_stderr_excerpt(text: str) -> str:
+    if not text.strip():
+        return ""
+    if payg_excerpt := render_payg_fallback_excerpt(text):
+        return payg_excerpt
+    return "reviewer emitted stderr on successful run; output omitted"
 
 
 def reviewer_diagnostic_fields(excerpt: str) -> dict[str, Any]:
@@ -755,6 +1389,7 @@ def default_reviewer_runner(
         "HAPAX_REVIEW_SEAT_ID": seat.id,
         "HAPAX_REVIEW_FAMILY": seat.family,
     }
+    env.pop(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, None)
     review_task_id = str(family_cfg.get("_review_task_id") or "").strip()
     if review_task_id:
         env["HAPAX_GLMCP_REVIEW_TASK_ID"] = review_task_id
@@ -771,11 +1406,10 @@ def default_reviewer_runner(
     )
     if proc.returncode != 0:
         LOG.warning(
-            "reviewer %s (%s) exited rc=%d: %s",
+            "reviewer %s (%s) exited rc=%d; stderr/stdout omitted from logs",
             seat.id,
             seat.family,
             proc.returncode,
-            proc.stderr.strip()[:300],
         )
         # a NONZERO exit is the CLI speaking, not the model (round-5 channel
         # trust): raise so the classifier can inspect stderr. Stdout stays
@@ -784,11 +1418,12 @@ def default_reviewer_runner(
             proc.stderr.strip(), returncode=proc.returncode, stdout=proc.stdout
         )
     if proc.stderr.strip():
+        stderr_excerpt = reviewer_success_stderr_excerpt(proc.stderr)
         LOG.warning(
             "reviewer %s (%s) emitted stderr on successful run: %s",
             seat.id,
             seat.family,
-            sanitize_reviewer_diagnostic(proc.stderr)[:300],
+            stderr_excerpt[:300],
         )
     return ReviewerRunnerResult(stdout=proc.stdout, stderr=proc.stderr)
 
@@ -801,7 +1436,7 @@ def dispatch_reviews(
     *,
     task_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Run all seats in parallel; reviewer failure becomes invalid-output, loudly."""
+    """Run all seats in parallel; reviewer failures become named non-accepts."""
 
     family_cfgs = {entry["family"]: entry for entry in review_team.review_family_entries(registry)}
 
@@ -814,6 +1449,7 @@ def dispatch_reviews(
         diagnostic_output = ""
         diagnostic_stdout = ""
         runner_stderr_excerpt = ""
+        reviewer_internal_error = False
         try:
             family_cfg = dict(family_cfgs[seat.family])
             if task_id:
@@ -821,14 +1457,21 @@ def dispatch_reviews(
             runner_result = reviewer_runner(seat, family_cfg, prompts[index])
             if isinstance(runner_result, ReviewerRunnerResult):
                 reply = runner_result.stdout
-                runner_stderr_excerpt = sanitize_reviewer_diagnostic(runner_result.stderr)
+                runner_stderr_excerpt = reviewer_success_stderr_excerpt(runner_result.stderr)
             else:
                 reply = str(runner_result)
         except ReviewerProcessError as exc:
-            LOG.warning("reviewer %s (%s) process failed: %s", seat.id, seat.family, exc)
+            LOG.warning(
+                "reviewer %s (%s) process failed rc=%d; diagnostics kept in memory "
+                "for classification only",
+                seat.id,
+                seat.family,
+                exc.returncode,
+            )
             reply = ""
             process_failed = True
-            process_output = "\n".join(part for part in (exc.stdout, exc.stderr) if part).strip()
+            process_output = f"reviewer process failed rc={exc.returncode}; output omitted"
+            runner_stderr_excerpt = process_output
             if exc.stderr.strip():
                 quota_wall_output = exc.stderr
                 quota_wall_stdout = exc.stdout
@@ -839,10 +1482,18 @@ def dispatch_reviews(
                 quota_wall_output = stdout if stdout and "\n" not in stdout else ""
                 quota_wall_stdout = "" if quota_wall_output else exc.stdout
         except Exception as exc:  # noqa: BLE001 — one dead reviewer must not kill the round
-            LOG.warning("reviewer %s (%s) failed: %s", seat.id, seat.family, exc)
+            LOG.warning(
+                "reviewer %s (%s) failed with %s; detail omitted",
+                seat.id,
+                seat.family,
+                type(exc).__name__,
+            )
             reply = ""
-            process_failed = False
-            process_output = str(exc)
+            process_failed = True
+            reviewer_internal_error = True
+            process_output = f"reviewer internal error {type(exc).__name__}; detail omitted"
+            diagnostic_output = process_output
+            runner_stderr_excerpt = process_output
         parsed = extract_review(reply or "")
         if parsed is None:
             # a provider usage wall is a FAMILY-AVAILABILITY signal, not a
@@ -852,7 +1503,10 @@ def dispatch_reviews(
             # trust (round-6): pattern matching only on process-failure
             # diagnostics. Clean-exit stdout is model-controlled, so even an
             # exact provider-looking literal remains invalid-output.
-            if process_failed:
+            walled = False
+            provider_outage = False
+            route_unavailable = False
+            if process_failed and not reviewer_internal_error:
                 walled = review_team.is_quota_wall(
                     quota_wall_output, process_failed=True, model_stdout=quota_wall_stdout
                 )
@@ -862,11 +1516,15 @@ def dispatch_reviews(
                 route_unavailable = review_team.is_reviewer_route_unavailable(
                     diagnostic_output, process_failed=True, model_stdout=diagnostic_stdout
                 )
-            else:
-                walled = False
-                provider_outage = False
-                route_unavailable = False
-            if walled:
+            if reviewer_internal_error:
+                LOG.warning(
+                    "reviewer %s (%s) hit an internal runner error -> verdict "
+                    "reviewer-internal-error",
+                    seat.id,
+                    seat.family,
+                )
+                verdict = "reviewer-internal-error"
+            elif walled:
                 LOG.warning(
                     "reviewer %s (%s) hit a provider quota wall -> verdict quota-wall",
                     seat.id,
@@ -891,9 +1549,9 @@ def dispatch_reviews(
             else:
                 LOG.warning("reviewer %s output unparseable -> verdict invalid-output", seat.id)
                 verdict = "invalid-output"
-            reply_excerpt = truncate_context(
-                (reply or process_output or ""), limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
-            ).strip()
+            reply_excerpt = sanitize_reviewer_diagnostic(
+                reply or process_output or "", limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
+            )
             return {
                 "id": seat.id,
                 "family": seat.family,
@@ -906,9 +1564,9 @@ def dispatch_reviews(
         review = {"id": seat.id, "family": seat.family, **parsed}
         review.update(reviewer_diagnostic_fields(runner_stderr_excerpt))
         if parsed.get("parse_path") != "fence":
-            review["raw_reply_excerpt"] = truncate_context(
+            review["raw_reply_excerpt"] = sanitize_reviewer_diagnostic(
                 reply or "", limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
-            ).strip()
+            )
         return review
 
     with ThreadPoolExecutor(max_workers=max(1, len(constitution.seats))) as pool:
@@ -1114,16 +1772,28 @@ def _prior_symbol_hints(finding: dict[str, Any]) -> tuple[str, ...]:
 
 def _function_excerpt_range(source_lines: list[str], symbol: str) -> tuple[int, int] | None:
     needle = f"def {symbol}("
-    start = next(
-        (index + 1 for index, line in enumerate(source_lines) if line.startswith(needle)),
-        None,
-    )
+    start = None
+    start_indent = 0
+    for index, line in enumerate(source_lines):
+        stripped = line.lstrip()
+        if not stripped.startswith(needle):
+            continue
+        start = index + 1
+        start_indent = len(line) - len(stripped)
+        break
     if start is None:
         return None
     end = min(len(source_lines), start + 90)
     for number in range(start + 1, min(len(source_lines), start + 90) + 1):
         line = source_lines[number - 1]
-        if number > start and (line.startswith("def ") or line.startswith("class ")):
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        if (
+            number > start
+            and stripped
+            and indent <= start_indent
+            and (stripped.startswith("def ") or stripped.startswith("class "))
+        ):
             end = number - 1
             break
     return start, end
@@ -1269,7 +1939,7 @@ def build_changed_file_excerpts(
     *,
     repo_root: Path,
     head_sha: str,
-    limit: int = 10,
+    limit: int = 18,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Bounded current-source excerpts for review-critical changed files.
 
@@ -1444,6 +2114,8 @@ def write_acceptance_receipt_if_due(
             for r in dossier.get("reviewers") or []
         ],
     }
+    _apply_public_gate_authority_context(receipt, frontmatter)
+    _sign_public_gate_authority_evidence(receipt)
     receipt_path.write_text(yaml.safe_dump(receipt, sort_keys=False), encoding="utf-8")
     LOG.info("acceptance receipt written: %s", receipt_path)
     return receipt_path
@@ -1626,7 +2298,7 @@ def review_pr(
         return {
             "status": "route_gate_unavailable",
             "pr": pr_number,
-            "reason": type(exc).__name__,
+            "reason": truncate_context(f"{type(exc).__name__}: {exc}", limit=500),
         }
 
     pr_info = fetch_pr(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner)
@@ -1855,7 +2527,7 @@ def review_pr(
         changed_source_excerpt_files, repo_root=repo_root, head_sha=pr_info.head_sha
     )
     reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
-    diff = truncate_diff(fetch_pr_diff(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner))
+    diff = truncate_diff(fetch_pr_diff(pr_info, repo=repo, repo_root=repo_root, runner=gh_runner))
     task_note_text = "\n\n".join(
         f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
         for path, _, _ in keyed_matches
@@ -1926,6 +2598,7 @@ def review_pr(
                     "quota-wall",
                     "provider-outage",
                     "reviewer-route-unavailable",
+                    "reviewer-internal-error",
                 )
             ]
             dossier["no_quorum_cause"] = (
@@ -1945,6 +2618,8 @@ def review_pr(
                 now_iso=now_iso,
                 outage_witness=outage_witness,
             )
+        _apply_public_gate_authority_context(dossier, target_frontmatter)
+        _sign_public_gate_authority_evidence(dossier)
         target_dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
         LOG.info(
             "dossier written: %s (verdict %s)",
