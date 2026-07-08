@@ -36,7 +36,7 @@ fi
     path.chmod(0o755)
 
 
-def _write_codex_access_token(home: Path) -> None:
+def _write_codex_access_token(home: Path, signature: str = "sig") -> None:
     header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
     payload = (
         base64.urlsafe_b64encode(json.dumps({"exp": int(time.time()) + 3600}).encode())
@@ -45,7 +45,7 @@ def _write_codex_access_token(home: Path) -> None:
     )
     target = home / ".cache" / "hapax" / "codex-oauth" / "access_token"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(f"{header}.{payload}.sig", encoding="utf-8")
+    target.write_text(f"{header}.{payload}.{signature}", encoding="utf-8")
     target.chmod(0o600)
 
 
@@ -193,3 +193,65 @@ exit 0
     assert "Codex OAuth access token" in result.stderr
     assert not ssh_log.exists()
     assert not claim_log.exists()
+
+
+def test_codex_headless_keeps_preclaim_proven_bearer_on_token_fallback(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    _write_codex_access_token(home, signature="preclaim")
+    token_path = home / ".cache" / "hapax" / "codex-oauth" / "access_token"
+    preclaim_token = token_path.read_text(encoding="utf-8")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    exec_token_file = tmp_path / "codex-exec-token.txt"
+    claim_log = tmp_path / "claim.log"
+    _write_executable(bin_dir / "ssh", "exit 255\n")
+    _write_executable(
+        bin_dir / "codex",
+        f"""printf '%s\\n' "$CODEX_ACCESS_TOKEN" > "{exec_token_file}"
+exit 0
+""",
+    )
+    _write_executable(
+        workdir / "scripts" / "cc-claim",
+        f"""printf '%s\\n' "$*" >> "{claim_log}"
+cat > "{token_path}" <<'EOF'
+rotated.after.claim.token
+EOF
+chmod 600 "{token_path}"
+mkdir -p "$HOME/.cache/hapax"
+printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
+printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_DISPATCH_HOST_FALLBACK"] = "local"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "remote token preflight failed" in result.stderr
+    assert "explicit local fallback" in result.stderr
+    assert claim_log.read_text(encoding="utf-8").strip() == "task-x"
+    assert token_path.read_text(encoding="utf-8") == "rotated.after.claim.token\n"
+    assert exec_token_file.read_text(encoding="utf-8") == preclaim_token + "\n"

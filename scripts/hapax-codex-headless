@@ -1087,7 +1087,6 @@ if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
     if [[ "${HAPAX_DISPATCH_HOST_FALLBACK:-}" == "local" ]]; then
       echo "hapax-codex-headless: dispatch_host_unready ($DISPATCH_HOST_REQUESTED) -- explicit local fallback" >&2
       DISPATCH_HOST_REQUESTED=""
-      load_local_codex_access_token
     else
       echo "  next action: ssh $DISPATCH_HOST_REQUESTED and run the codex OAuth refresher or reauth, then retry; refusing local fallback without HAPAX_DISPATCH_HOST_FALLBACK=local" >&2
       exit 75
