@@ -74,8 +74,14 @@ REQUIRED_ROUTE_IDS = frozenset(
 
 UNKNOWN_TELEMETRY_SOURCES = frozenset({"none", "unknown"})
 UNKNOWN_PRIVACY_POSTURES = frozenset({"unknown", "public_risk"})
+AGY_REVIEW_ROUTE_ID = "agy.review.direct"
+AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
 GLMCP_REVIEW_ROUTE_ID = "glmcp.review.direct"
 GLMCP_REVIEW_ADMISSION_BLOCKER = "glmcp_review_seat_receipt_admission_required"
+ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
+    AGY_REVIEW_ROUTE_ID: AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER,
+    GLMCP_REVIEW_ROUTE_ID: GLMCP_REVIEW_ADMISSION_BLOCKER,
+}
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
 
 
@@ -1365,7 +1371,12 @@ def load_platform_capability_registry(
         effective_receipt_dir = receipt_dir or _receipt_dir_from_env()
         if effective_receipt_dir is None:
             return registry
-        return apply_platform_capability_receipts(
+        registry = apply_platform_capability_receipts(
+            registry,
+            receipt_dir=effective_receipt_dir,
+            now=now,
+        )
+        return _apply_route_authority_receipts_from_dir(
             registry,
             receipt_dir=effective_receipt_dir,
             now=now,
@@ -1374,6 +1385,28 @@ def load_platform_capability_registry(
         raise PlatformCapabilityRegistryError(
             f"invalid platform capability registry at {path}: {exc}"
         ) from exc
+
+
+def _apply_route_authority_receipts_from_dir(
+    registry: PlatformCapabilityRegistry,
+    *,
+    receipt_dir: Path,
+    now: datetime | None = None,
+) -> PlatformCapabilityRegistry:
+    """Overlay signed route-authority receipts in capability projections.
+
+    The dispatcher policy owns route-authority receipt validation and mutation of
+    registry payloads. Keep the import local to avoid making the inert registry
+    module import the full dispatch policy during model definition.
+    """
+
+    from shared.dispatcher_policy import apply_route_authority_receipts
+
+    return apply_route_authority_receipts(
+        registry,
+        receipt_dir=receipt_dir,
+        now=now,
+    )
 
 
 def _receipt_dir_from_env() -> Path | None:
@@ -1515,7 +1548,14 @@ def _apply_receipt_to_route_payload(
             )
         )
     if quota_admission_fresh:
-        removable_top_blockers.add(GLMCP_REVIEW_ADMISSION_BLOCKER)
+        blocker = ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS.get(route_payload.get("route_id"))
+        if blocker:
+            route_payload.setdefault("telemetry", {})["quota_source"] = QuotaSource.LEDGER.value
+            removable_top_blockers.add(blocker)
+            quota_evidence = freshness["evidence"]["quota"]
+            quota_evidence["blocked_reasons"] = [
+                reason for reason in quota_evidence.get("blocked_reasons", []) if reason != blocker
+            ]
     top_blockers = [reason for reason in top_blockers if reason not in removable_top_blockers]
     route_payload["blocked_reasons"] = list(dict.fromkeys(top_blockers))
     route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
@@ -1526,21 +1566,20 @@ def _route_specific_quota_admission_fresh(
     *,
     now: datetime | None = None,
 ) -> tuple[bool, tuple[str, ...]]:
-    if route_payload.get("route_id") != GLMCP_REVIEW_ROUTE_ID:
+    route_id = route_payload.get("route_id")
+    if route_id not in ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS:
         return False, ()
     try:
         resolved = load_quota_spend_ledger_resolved(live_path=_quota_spend_live_path_from_env())
     except (OSError, QuotaSpendLedgerError, ValueError) as exc:
-        return False, (
-            f"quota-spend-ledger:{GLMCP_REVIEW_ROUTE_ID}:read-error:{type(exc).__name__}",
-        )
+        return False, (f"quota-spend-ledger:{route_id}:read-error:{type(exc).__name__}",)
     if resolved.source != "live":
         if resolved.live_error:
-            return False, (f"quota-spend-ledger:{GLMCP_REVIEW_ROUTE_ID}:live-ledger-invalid",)
+            return False, (f"quota-spend-ledger:{route_id}:live-ledger-invalid",)
         return False, ()
     state, evidence_refs = subscription_quota_state_for_route(
         resolved.ledger,
-        GLMCP_REVIEW_ROUTE_ID,
+        route_id,
         now=now,
     )
     return state is SubscriptionQuotaState.FRESH, evidence_refs
@@ -1642,8 +1681,8 @@ def _quota_unobservable_removable_reasons(route_payload: dict[str, Any]) -> set[
 def _quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
     if route_payload.get("route_id") == "agy.review.direct":
         # Platform receipts can prove local agy CLI/wrapper availability only.
-        # No quota blocker is removable until a future route-specific agy
-        # quota-admission validator records a sanctioned witness.
+        # Route-specific quota admission is consumed from the live quota ledger,
+        # not from a platform-capability quota receipt.
         return set()
     return {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
 

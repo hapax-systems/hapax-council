@@ -1,3 +1,4 @@
+import base64
 import importlib.machinery
 import importlib.util
 import json
@@ -72,6 +73,22 @@ def _fresh_registry(tmp_path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
+
+
+def _write_codex_access_token(tmp_path: Path) -> Path:
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
+    payload = (
+        base64.urlsafe_b64encode(
+            json.dumps({"exp": int(datetime.now(UTC).timestamp()) + 3600}).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+    target = tmp_path / "codex-oauth" / "access_token"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(f"{header}.{payload}.sig", encoding="utf-8")
+    target.chmod(0o600)
+    return target
 
 
 def _without_account_live_quota_evidence(
@@ -2485,7 +2502,13 @@ def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: P
     codex_args = tmp_path / "codex-args.txt"
     _write(
         bin_dir / "codex",
-        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {codex_args}\n",
+        f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
+  printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
+  exit 0
+fi
+printf '%s\\n' "$*" > {codex_args}
+""",
     )
     (bin_dir / "codex").chmod(0o755)
 
@@ -2558,7 +2581,13 @@ def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path)
     codex_args = tmp_path / "codex-args.txt"
     _write(
         bin_dir / "codex",
-        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {codex_args}\n",
+        f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
+  printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
+  exit 0
+fi
+printf '%s\\n' "$*" > {codex_args}
+""",
     )
     (bin_dir / "codex").chmod(0o755)
 
@@ -2579,6 +2608,7 @@ def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path)
             "HAPAX_CODEX_HEADLESS_ALLOW": "1",
             "HAPAX_CODEX_HEADLESS_WORKDIR": str(tmp_path / "worktree"),
             "HAPAX_CODEX_HEADLESS_PID_DIR": str(pid_dir),
+            "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE": str(_write_codex_access_token(tmp_path)),
             "HAPAX_DISPATCH_HOST": "local",
             "HAPAX_P0_CODEX_DRAIN_LANES": "",
             "XDG_CACHE_HOME": str(tmp_path / "cache"),

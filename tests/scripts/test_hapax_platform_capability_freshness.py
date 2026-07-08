@@ -72,14 +72,17 @@ def _write_codex_receipt(receipt_dir: Path, *, observed_at: datetime) -> Path:
             source="test",
             observed_at=observed_at,
             stale_after="24h",
-            evidence_refs=["test:codex:resource"],
+            evidence_refs=[
+                "test:codex:resource",
+                "local:current-codex-session:filesystem-shell-browser-usable:test",
+            ],
         ),
         quota=SurfaceEvidence(
             status=EvidenceStatus.UNOBSERVABLE,
             source="test",
             observed_at=observed_at,
             stale_after="15m",
-            evidence_refs=["test:codex:quota"],
+            evidence_refs=["local:codex:quota-probe:unobservable"],
             reason_codes=["account_live_quota_receipt_absent"],
         ),
         provider_docs=ProviderDocsEvidence(
@@ -226,7 +229,7 @@ def test_json_succeeds_for_fresh_route_fixture(tmp_path: Path) -> None:
     assert payload["routes"][0]["errors"] == []
 
 
-def test_json_applies_receipt_overlay_but_oauth_availability_remains_degraded(
+def test_json_applies_receipt_overlay_and_current_codex_session_availability(
     tmp_path: Path,
 ) -> None:
     receipt_dir = tmp_path / "receipts"
@@ -267,8 +270,8 @@ def test_json_applies_receipt_overlay_but_oauth_availability_remains_degraded(
         now=checked_at,
     )
 
-    assert availability.available is False
-    assert "account_live_quota_evidence_absent" in availability.reason_codes
+    assert availability.available is True
+    assert availability.reason_codes == ()
 
 
 def test_json_fails_nonzero_for_stale_provider_docs(tmp_path: Path) -> None:

@@ -30,7 +30,7 @@ import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +60,22 @@ from shared.platform_capability_registry import (  # noqa: E402
     check_registry_freshness,
     load_platform_capability_registry,
     normalize_route_id,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    GLMCP_ADMISSION_PAYG_ENDPOINT,
+    GLMCP_PAYG_BUDGET_PROFILE,
+    GLMCP_PAYG_BUDGET_PROVIDER,
+    GLMCP_PAYG_BUDGET_QUALITY_FLOOR,
+    GLMCP_PAYG_BUDGET_ROUTE_ID,
+    GLMCP_PAYG_BUDGET_TASK_CLASS,
+    GLMCP_PAYG_ESTIMATED_COST_USD,
+    CapacityPool,
+    PaidRouteRequest,
+    QuotaSpendLedgerError,
+    evaluate_paid_route_eligibility,
+    has_successful_task_scoped_glmcp_payg_review_spend,
+    load_quota_spend_ledger_resolved,
+    subscription_quota_state_for_route,
 )
 
 DEFAULT_REGISTRY_PATH = REPO_ROOT / "config" / "review-lenses" / "registry.yaml"
@@ -799,6 +815,119 @@ def _route_block_reason_notes(
         reason = parts[3].strip()
         out.setdefault(family, []).append((route_id, reason))
     return {family: tuple(reasons) for family, reasons in out.items()}, tuple(malformed)
+
+
+def _route_reason_code(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9_.:-]+", "_", value.strip().lower()).strip("_")
+    return normalized or "unknown"
+
+
+def _add_route_blocker(
+    blocked: dict[str, tuple[str, ...]],
+    family: str,
+    reasons: tuple[str, ...],
+) -> None:
+    blocked[family] = tuple(dict.fromkeys((*blocked.get(family, ()), *reasons)))
+
+
+def task_scoped_paid_review_route_blocked_families(
+    registry: Mapping[str, Any],
+    route_blocked_families: Mapping[str, Sequence[str]] | None,
+    task_ids: Sequence[str],
+    *,
+    now: datetime | str | None = None,
+) -> dict[str, tuple[str, ...]]:
+    """Add task-scoped PAYG blockers for review routes with per-task budgets.
+
+    Route freshness is route-global, while GLMCP PAYG review admission is charged
+    to a concrete task. Dossier admission must compare degraded route-block
+    reasons against that task-scoped witness, not only the global route state.
+    """
+
+    blocked = {
+        str(family): tuple(str(reason) for reason in reasons)
+        for family, reasons in (route_blocked_families or {}).items()
+    }
+    glmcp_families = [
+        family
+        for family, route_id in review_family_route_ids(registry).items()
+        if route_id == GLMCP_PAYG_BUDGET_ROUTE_ID
+    ]
+    if not glmcp_families:
+        return blocked
+
+    try:
+        resolved = load_quota_spend_ledger_resolved()
+    except (OSError, QuotaSpendLedgerError, ValueError) as exc:
+        reason = (
+            f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:"
+            f"task_scoped_paid_spend_ledger_unavailable:{type(exc).__name__}"
+        )
+        for family in glmcp_families:
+            _add_route_blocker(blocked, family, (reason,))
+        return blocked
+
+    if resolved.source != "live":
+        reason = f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_live_ledger_absent"
+        if resolved.live_error:
+            reason = f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_live_ledger_invalid"
+        for family in glmcp_families:
+            _add_route_blocker(blocked, family, (reason,))
+        return blocked
+
+    try:
+        now_dt = _coerce_datetime(now, reference=datetime.now(UTC))
+    except ValueError:
+        now_dt = datetime.now(UTC)
+    _state, evidence_refs = subscription_quota_state_for_route(
+        resolved.ledger,
+        GLMCP_PAYG_BUDGET_ROUTE_ID,
+        now=now_dt,
+    )
+    route_uses_payg = any(
+        "spend-gate-payg-receipt:" in ref or f":endpoint:{GLMCP_ADMISSION_PAYG_ENDPOINT}:" in ref
+        for ref in evidence_refs
+    )
+    if not route_uses_payg:
+        return blocked
+
+    unique_task_ids = tuple(dict.fromkeys(str(task_id).strip() for task_id in task_ids if task_id))
+    if len(unique_task_ids) != 1:
+        reason = f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_task_id_ambiguous"
+        for family in glmcp_families:
+            _add_route_blocker(blocked, family, (reason,))
+        return blocked
+    if has_successful_task_scoped_glmcp_payg_review_spend(resolved.ledger, unique_task_ids[0]):
+        return blocked
+
+    request = PaidRouteRequest.model_validate(
+        {
+            "route_id": GLMCP_PAYG_BUDGET_ROUTE_ID,
+            "task_id": unique_task_ids[0],
+            "provider": GLMCP_PAYG_BUDGET_PROVIDER,
+            "profile": GLMCP_PAYG_BUDGET_PROFILE,
+            "task_class": GLMCP_PAYG_BUDGET_TASK_CLASS,
+            "quality_floor": GLMCP_PAYG_BUDGET_QUALITY_FLOOR,
+            "estimated_cost_usd": GLMCP_PAYG_ESTIMATED_COST_USD,
+            "capacity_pool": CapacityPool.API_PAID_SPEND,
+        }
+    )
+    decision = evaluate_paid_route_eligibility(
+        resolved.ledger,
+        request,
+        now=now_dt,
+    )
+    if decision.eligible and decision.budget_id:
+        return blocked
+
+    reasons = [f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_gate:{decision.state}"]
+    reasons.extend(
+        f"{GLMCP_PAYG_BUDGET_ROUTE_ID}:task_scoped_paid_spend_blocker:{_route_reason_code(reason)}"
+        for reason in decision.blocking_reasons
+    )
+    for family in glmcp_families:
+        _add_route_blocker(blocked, family, tuple(reasons))
+    return blocked
 
 
 def constitute_team(
@@ -1648,7 +1777,12 @@ def _dossier_validity_blockers(
         live_route_blocked = (
             dict(route_blocked_families)
             if route_blocked_families is not None
-            else review_route_blocked_families(registry)
+            else task_scoped_paid_review_route_blocked_families(
+                registry,
+                review_route_blocked_families(registry),
+                (str(dossier.get("task_id") or ""),),
+                now=admission_time,
+            )
         )
     except PlatformCapabilityRegistryError as exc:
         blockers.append(f"review_dossier_route_gate_unavailable:{type(exc).__name__}")

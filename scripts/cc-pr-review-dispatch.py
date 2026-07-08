@@ -140,6 +140,31 @@ SEND_SESSION_ALIASES = {
     "codex-glmcp": "cx-glmcp",
     "glmcp": "cx-glmcp",
 }
+
+
+def _task_scoped_paid_review_route_blocked_families(
+    registry: dict[str, Any],
+    route_blocked_families: dict[str, tuple[str, ...]],
+    task_ids: list[str],
+    *,
+    now_iso: str,
+) -> dict[str, tuple[str, ...]]:
+    """Add task-scoped paid-spend blockers for review routes that use PAYG.
+
+    Registry route freshness is route-global, while GLMCP PAYG admission is
+    charged to a concrete review task through ``HAPAX_GLMCP_REVIEW_TASK_ID``.
+    A route can therefore be globally fresh but unusable for the current task
+    once its per-task budget is exhausted. Catch that before seating reviewers.
+    """
+
+    return review_team.task_scoped_paid_review_route_blocked_families(
+        registry,
+        route_blocked_families,
+        task_ids,
+        now=now_iso,
+    )
+
+
 YAML_FENCE_FULL_RE = re.compile(r"\A```ya?ml\s*\n(.*?)```\s*\Z", re.DOTALL)
 PARSEABLE_VERDICTS = {"accept", "accept-with-findings", "block"}
 
@@ -1633,6 +1658,13 @@ def review_pr(
             return {"status": "no_task", "pr": pr_number}
         keyed_matches.append((note_path, frontmatter, task_id))
     task_ids = [item[2] for item in keyed_matches]
+    if route_blocked_families is None:
+        effective_route_blocked_families = _task_scoped_paid_review_route_blocked_families(
+            registry,
+            effective_route_blocked_families,
+            task_ids,
+            now_iso=now_iso,
+        )
 
     outage_witness = load_family_outage_witness(now_iso)
     if apply:
@@ -1759,14 +1791,33 @@ def review_pr(
             "family outage active (%s) — constitution may degrade (never seals)",
             ",".join(sorted(outage_families)),
         )
-    constitution = review_team.constitute_team(
-        team_class,
-        writer_family,
-        registry,
-        pr_number=pr_number,
-        outage_families=outage_families,
-        route_blocked_families=effective_route_blocked_families,
-    )
+    try:
+        constitution = review_team.constitute_team(
+            team_class,
+            writer_family,
+            registry,
+            pr_number=pr_number,
+            outage_families=outage_families,
+            route_blocked_families=effective_route_blocked_families,
+        )
+    except ValueError as exc:
+        return {
+            "status": "constitution_blocked",
+            "plan": {
+                "pr": pr_number,
+                "task_id": task_ids[0] if len(task_ids) == 1 else task_ids,
+                "head_sha": pr_info.head_sha,
+                "team_class": team_class,
+                "writer_family": writer_family,
+                "lenses": list(lenses),
+                "outage_families": sorted(outage_families),
+                "route_blocked_families": {
+                    family: list(reasons)
+                    for family, reasons in sorted(effective_route_blocked_families.items())
+                },
+                "constitution_error": str(exc),
+            },
+        }
     plan = {
         "pr": pr_number,
         "task_id": task_ids[0] if len(task_ids) == 1 else task_ids,

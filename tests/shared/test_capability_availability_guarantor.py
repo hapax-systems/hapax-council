@@ -93,6 +93,12 @@ def _mark_account_live_quota_observed(route: dict) -> None:
     )
 
 
+def _mark_current_codex_session_usable(route: dict) -> None:
+    route["freshness"]["evidence"]["resource"]["evidence_refs"].append(
+        "local:current-codex-session:filesystem-shell-browser-usable:test"
+    )
+
+
 def test_codex_routes_are_oauth_auth_surface_with_subscription_capacity() -> None:
     registry = load_platform_capability_registry()
 
@@ -119,7 +125,35 @@ def test_fresh_route_emits_available_receipt_without_refresh() -> None:
     assert receipt.reason_codes == ()
 
 
-def test_subscription_route_degrades_when_account_live_quota_is_unobservable() -> None:
+def test_codex_oauth_subscription_route_accepts_current_session_unobservable_quota() -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    _mark_current_codex_session_usable(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    assert freshness.ok is True
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is True
+    assert receipt.status.value == "available"
+    assert receipt.predicate.account_live_quota_attested is True
+    assert receipt.reason_codes == ()
+
+
+def test_codex_oauth_subscription_route_degrades_without_current_session_evidence() -> None:
     payload = _payload()
     route_payload = _route_payload(payload, "codex.headless.full")
     _mark_fresh(route_payload)
@@ -271,6 +305,10 @@ def test_executable_codex_oauth_strategy_runs_receipt_refresher_without_bearer_d
                             "path": "/tmp/codex.json",
                             "cli_available": True,
                             "wrapper_exists": True,
+                            "capability_status": "observed",
+                            "capability_reason_codes": [],
+                            "resource_status": "observed",
+                            "resource_reason_codes": [],
                             "quota_status": "observed",
                             "quota_reason_codes": [],
                         }
@@ -316,6 +354,45 @@ def test_executable_codex_oauth_strategy_runs_receipt_refresher_without_bearer_d
     assert "CODEX_ACCESS_TOKEN" not in serialized
 
 
+def test_executable_codex_oauth_strategy_fails_when_receipt_surface_statuses_missing() -> None:
+    route, freshness = _degraded_codex_route_and_freshness()
+    runner = _FakeRefreshRunner(
+        guarantor.RefreshCommandResult(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "receipts": [
+                        {
+                            "platform": "codex",
+                            "receipt_id": "codex-legacy-surface-missing",
+                            "path": "/tmp/codex.json",
+                            "cli_available": True,
+                            "wrapper_exists": True,
+                            "quota_status": "observed",
+                            "quota_reason_codes": [],
+                        }
+                    ]
+                }
+            ),
+        )
+    )
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(
+            (guarantor.CodexOAuthRefreshStrategy(runner=runner),)
+        ),
+        now=NOW,
+    )
+
+    assert receipt.refresh_status is guarantor.RefreshStatus.FAILED
+    assert "refresh_receipt_observed_codex_unavailable" in receipt.refresh_reason_codes
+    assert "refresh_receipt_capability_status:missing" in receipt.refresh_reason_codes
+    assert "refresh_receipt_resource_status:missing" in receipt.refresh_reason_codes
+    assert "refresh_receipt_written" not in receipt.refresh_reason_codes
+
+
 def test_executable_codex_oauth_strategy_defers_when_account_live_quota_unverified() -> None:
     route, freshness = _degraded_codex_route_and_freshness()
     runner = _FakeRefreshRunner(
@@ -330,6 +407,10 @@ def test_executable_codex_oauth_strategy_defers_when_account_live_quota_unverifi
                             "path": "/tmp/codex.json",
                             "cli_available": True,
                             "wrapper_exists": True,
+                            "capability_status": "observed",
+                            "capability_reason_codes": [],
+                            "resource_status": "observed",
+                            "resource_reason_codes": [],
                             "quota_status": "unobservable",
                             "quota_reason_codes": ["account_live_quota_receipt_absent"],
                         }
@@ -356,6 +437,50 @@ def test_executable_codex_oauth_strategy_defers_when_account_live_quota_unverifi
         in receipt.refresh_reason_codes
     )
     assert "refresh_receipt_written" not in receipt.refresh_reason_codes
+
+
+def test_executable_codex_oauth_strategy_fails_when_auth_receipt_blocked() -> None:
+    route, freshness = _degraded_codex_route_and_freshness()
+    runner = _FakeRefreshRunner(
+        guarantor.RefreshCommandResult(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "receipts": [
+                        {
+                            "platform": "codex",
+                            "receipt_id": "codex-auth-blocked",
+                            "path": "/tmp/codex.json",
+                            "cli_available": True,
+                            "wrapper_exists": True,
+                            "capability_status": "blocked",
+                            "capability_reason_codes": ["codex_oauth_access_token_absent"],
+                            "resource_status": "blocked",
+                            "resource_reason_codes": ["codex_oauth_access_token_absent"],
+                            "quota_status": "unobservable",
+                            "quota_reason_codes": ["account_live_quota_receipt_absent"],
+                        }
+                    ]
+                }
+            ),
+        )
+    )
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(
+            (guarantor.CodexOAuthRefreshStrategy(runner=runner),)
+        ),
+        now=NOW,
+    )
+
+    assert receipt.refresh_status is guarantor.RefreshStatus.FAILED
+    assert "refresh_receipt_observed_codex_unavailable" in receipt.refresh_reason_codes
+    assert (
+        "refresh_receipt_capability_reason:codex_oauth_access_token_absent"
+        in receipt.refresh_reason_codes
+    )
 
 
 def test_executable_codex_oauth_strategy_reports_command_failure() -> None:
