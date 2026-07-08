@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from agents._agent_registry import get_registry
 from shared import cockpit_agent_capabilities as cockpit_caps
 from shared.cockpit_agent_capabilities import (
+    COCKPIT_ADMISSION_NOW_ENV,
     COCKPIT_PLATFORM_CAPABILITY_REGISTRY_ENV,
     COCKPIT_QUOTA_SPEND_LEDGER_ENV,
     CockpitSupplyLeaf,
@@ -187,6 +189,29 @@ def test_runtime_mutation_flag_refuses_evidence_waiver() -> None:
     assert admission.receipts == ()
     assert "non_read_only_invocation_requires_route_receipt" in admission.reason_codes
     assert "runtime_mutation_flag:--fix" in admission.reason_codes
+
+
+def test_llm_runtime_mutation_flag_refuses_before_provider_admission() -> None:
+    admission = admit_cockpit_agent_invocation(
+        "knowledge-maint",
+        flags=("--apply", "--summarize"),
+    )
+
+    assert admission.admitted is False
+    assert admission.requires_admission is True
+    assert admission.receipts == ()
+    assert "non_read_only_invocation_requires_route_receipt" in admission.reason_codes
+    assert "runtime_mutation_flag:--apply" in admission.reason_codes
+
+
+def test_llm_public_egress_flag_refuses_before_provider_admission() -> None:
+    admission = admit_cockpit_agent_invocation("demo", flags=("--format=app",))
+
+    assert admission.admitted is False
+    assert admission.requires_admission is True
+    assert admission.receipts == ()
+    assert "non_read_only_invocation_requires_route_receipt" in admission.reason_codes
+    assert "public_egress_flag:--format=app" in admission.reason_codes
 
 
 def test_runtime_public_surface_without_supply_leaves_fails_closed() -> None:
@@ -459,6 +484,127 @@ async def test_llm_flag_overlay_cockpit_run_refuses_before_subprocess(
     assert "cockpit_agent_capability_admission_refused" in detail
     assert "activity_analyzer.fast_synthesis" in detail
     run_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_runtime_mutation_flag_cockpit_run_refuses_before_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from logos.api.app import app
+    from logos.api.cache import cache
+    from logos.api.routes import agents as agent_route
+    from logos.data.agents import AgentInfo
+
+    cache.agents = [
+        AgentInfo(
+            name="health-monitor",
+            uses_llm=False,
+            description="Health monitor",
+            command="uv run python -m agents.health_monitor",
+            model_alias=None,
+            module="agents.health_monitor",
+        )
+    ]
+    monkeypatch.setattr(agent_route, "_IN_CONTAINER", False)
+    run_mock = AsyncMock()
+    monkeypatch.setattr(agent_route.agent_run_manager, "run", run_mock)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/agents/health-monitor/run",
+            json={"flags": ["--fix"]},
+        )
+
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert "cockpit_agent_capability_admission_refused" in detail
+    assert "runtime_mutation_flag:--fix" in detail
+    run_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_llm_runtime_mutation_flag_cockpit_run_refuses_before_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from logos.api.app import app
+    from logos.api.cache import cache
+    from logos.api.routes import agents as agent_route
+    from logos.data.agents import AgentInfo
+
+    cache.agents = [
+        AgentInfo(
+            name="knowledge-maint",
+            uses_llm=False,
+            description="Knowledge maintenance",
+            command="uv run python -m agents.knowledge_maint",
+            model_alias=None,
+            module="agents.knowledge_maint",
+        )
+    ]
+    monkeypatch.setattr(agent_route, "_IN_CONTAINER", False)
+    run_mock = AsyncMock()
+    monkeypatch.setattr(agent_route.agent_run_manager, "run", run_mock)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/agents/knowledge-maint/run",
+            json={"flags": ["--apply", "--summarize"]},
+        )
+
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert "cockpit_agent_capability_admission_refused" in detail
+    assert "runtime_mutation_flag:--apply" in detail
+    run_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_admitted_dict_agent_cockpit_run_reaches_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from logos.api.app import app
+    from logos.api.cache import cache
+    from logos.api.routes import agents as agent_route
+
+    async def run_agent_once(name: str, args: list[str]) -> asyncio.Queue[None]:
+        queue: asyncio.Queue[None] = asyncio.Queue()
+        await queue.put(None)
+        return queue
+
+    cache.agents = [
+        {
+            "name": "briefing",
+            "uses_llm": True,
+            "description": "Daily operational briefing",
+            "command": "uv run python -m agents.briefing",
+            "model_alias": "fast",
+            "module": "agents.briefing",
+        }
+    ]
+    monkeypatch.setattr(agent_route, "_IN_CONTAINER", False)
+    monkeypatch.setenv(COCKPIT_ADMISSION_NOW_ENV, NOW_ISO)
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(_write_fresh_ledger(tmp_path)))
+    monkeypatch.setenv(
+        COCKPIT_PLATFORM_CAPABILITY_REGISTRY_ENV, str(_write_fresh_registry(tmp_path))
+    )
+    monkeypatch.setenv(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV, "none")
+    run_mock = AsyncMock(side_effect=run_agent_once)
+    cancel_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(agent_route.agent_run_manager, "run", run_mock)
+    monkeypatch.setattr(agent_route.agent_run_manager, "cancel", cancel_mock)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/agents/briefing/run", json={"flags": []})
+
+    assert response.status_code == 200
+    run_mock.assert_awaited_once_with(
+        "briefing",
+        ["uv", "run", "python", "-m", "agents.briefing"],
+    )
+    cancel_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio

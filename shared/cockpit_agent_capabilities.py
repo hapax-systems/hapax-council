@@ -438,17 +438,21 @@ def admit_cockpit_agent_invocation(
         manifest_model=manifest_model,
         flags=flags,
     )
+    non_read_only_reasons = _non_read_only_invocation_reasons(
+        capability,
+        flags,
+        include_classification_surfaces=not capability.requires_llm_admission,
+    )
+    if non_read_only_reasons:
+        return CockpitInvocationAdmission(
+            agent_id=capability.agent_id,
+            display_name=capability.display_name,
+            requires_admission=True,
+            admitted=False,
+            reason_codes=non_read_only_reasons,
+            evidence_only_waiver=capability.evidence_only_waiver,
+        )
     if not capability.requires_llm_admission:
-        non_read_only_reasons = _non_read_only_invocation_reasons(capability, flags)
-        if non_read_only_reasons:
-            return CockpitInvocationAdmission(
-                agent_id=capability.agent_id,
-                display_name=capability.display_name,
-                requires_admission=True,
-                admitted=False,
-                reason_codes=non_read_only_reasons,
-                evidence_only_waiver=capability.evidence_only_waiver,
-            )
         return CockpitInvocationAdmission(
             agent_id=capability.agent_id,
             display_name=capability.display_name,
@@ -531,11 +535,19 @@ def _admit_leaf(leaf: CockpitSupplyLeaf, *, now: datetime) -> CockpitAdmissionRe
 def _non_read_only_invocation_reasons(
     capability: CockpitAgentCapability,
     flags: tuple[str, ...] | list[str],
+    *,
+    include_classification_surfaces: bool,
 ) -> tuple[str, ...]:
     reasons: list[str] = []
-    if CockpitCommandClass.RUNTIME_MUTATION in capability.classifications:
+    if (
+        include_classification_surfaces
+        and CockpitCommandClass.RUNTIME_MUTATION in capability.classifications
+    ):
         reasons.append("runtime_mutation_surface_requires_route_receipt")
-    if CockpitCommandClass.PUBLIC_EGRESS in capability.classifications:
+    if (
+        include_classification_surfaces
+        and CockpitCommandClass.PUBLIC_EGRESS in capability.classifications
+    ):
         reasons.append("public_egress_surface_requires_route_receipt")
     for configured_flag in capability.runtime_mutation_flags:
         if any(_flag_matches(configured_flag, flag) for flag in flags):
