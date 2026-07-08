@@ -244,9 +244,18 @@ def test_optional_llm_flag_requires_admission_and_fails_without_ledger(
 @pytest.mark.parametrize(
     ("agent", "flags", "expected_reason"),
     [
+        ("briefing", ("--save",), "runtime_mutation_flag:--save"),
+        ("briefing", ("--notify",), "public_egress_flag:--notify"),
+        ("digest", ("--save",), "runtime_mutation_flag:--save"),
+        ("digest", ("--notify",), "public_egress_flag:--notify"),
+        ("scout", ("--save",), "runtime_mutation_flag:--save"),
+        ("scout", ("--notify",), "public_egress_flag:--notify"),
         ("knowledge-maint", ("--apply", "--summarize"), "runtime_mutation_flag:--apply"),
+        ("knowledge-maint", ("--save", "--summarize"), "runtime_mutation_flag:--save"),
+        ("knowledge-maint", ("--notify", "--summarize"), "public_egress_flag:--notify"),
         ("drift-detector", ("--apply",), "runtime_mutation_flag:--apply"),
         ("demo", ("--format=app",), "public_egress_flag:--format=app"),
+        ("demo", ("--format", "app"), "public_egress_flag:--format=app"),
     ],
 )
 def test_llm_backed_non_read_only_flags_refuse_before_leaf_admission(
@@ -273,6 +282,42 @@ def test_llm_backed_non_read_only_flags_refuse_before_leaf_admission(
     assert admission.receipts == ()
     assert "non_read_only_invocation_requires_route_receipt" in admission.reason_codes
     assert expected_reason in admission.reason_codes
+
+
+@pytest.mark.parametrize(
+    ("agent", "flags", "expected_reason"),
+    [
+        ("introspect", ("--save",), "runtime_mutation_flag:--save"),
+        ("profiler", (), "runtime_mutation_surface_requires_route_receipt"),
+        ("profiler", ("--auto",), "runtime_mutation_flag:--auto"),
+        ("profiler", ("--index-profile",), "runtime_mutation_flag:--index-profile"),
+        ("profiler", ("--ingest", "profile.json"), "runtime_mutation_flag:--ingest"),
+    ],
+)
+def test_non_read_only_local_write_surfaces_refuse_before_subprocess(
+    agent: str,
+    flags: tuple[str, ...],
+    expected_reason: str,
+) -> None:
+    admission = admit_cockpit_agent_invocation(agent, flags=flags)
+
+    assert admission.admitted is False
+    assert admission.requires_admission is True
+    assert admission.receipts == ()
+    assert "non_read_only_invocation_requires_route_receipt" in admission.reason_codes
+    assert expected_reason in admission.reason_codes
+
+
+def test_code_review_model_override_accepts_space_separated_value() -> None:
+    capability = cockpit_capability_for_invocation(
+        "code-review",
+        manifest_model="balanced",
+        flags=("--model", "local-fast"),
+    )
+
+    assert len(capability.supply_leaves) == 1
+    assert capability.supply_leaves[0].model_alias == "local-fast"
+    assert capability.supply_leaves[0].model_route == "local-fast"
 
 
 def test_paid_llm_command_admits_with_fresh_gateway_and_budget(

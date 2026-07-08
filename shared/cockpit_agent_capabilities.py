@@ -256,6 +256,8 @@ COCKPIT_AGENT_CAPABILITIES: dict[str, CockpitAgentCapability] = {
         "briefing",
         CockpitCommandClass.LLM_BACKED_MODEL_USE,
         leaves=(_model_leaf("briefing", "fast", leaf_name="briefing_synthesis"),),
+        runtime_flags=("--save",),
+        public_flags=("--notify",),
     ),
     "broadcast_audio_health": _capability(
         "broadcast_audio_health",
@@ -281,6 +283,8 @@ COCKPIT_AGENT_CAPABILITIES: dict[str, CockpitAgentCapability] = {
         "digest",
         CockpitCommandClass.LLM_BACKED_MODEL_USE,
         leaves=(_model_leaf("digest", "fast", leaf_name="digest_synthesis"),),
+        runtime_flags=("--save",),
+        public_flags=("--notify",),
     ),
     "drift_detector": _capability(
         "drift_detector",
@@ -299,6 +303,7 @@ COCKPIT_AGENT_CAPABILITIES: dict[str, CockpitAgentCapability] = {
         "introspect",
         CockpitCommandClass.DETERMINISTIC_EVIDENCE,
         waiver="generates local infrastructure evidence without model/provider calls",
+        runtime_flags=("--save",),
     ),
     "knowledge_maint": _capability(
         "knowledge_maint",
@@ -306,16 +311,19 @@ COCKPIT_AGENT_CAPABILITIES: dict[str, CockpitAgentCapability] = {
         CockpitCommandClass.MIXED_ORCHESTRATING,
         waiver="dry-run maintenance is deterministic; --summarize adds an LLM supply leaf",
         llm_flags={"--summarize": _FAST_SUMMARY_LEAF_BY_AGENT["knowledge_maint"]},
-        runtime_flags=("--apply",),
+        runtime_flags=("--apply", "--save"),
+        public_flags=("--notify",),
     ),
     "profiler": _capability(
         "profiler",
         CockpitCommandClass.LLM_BACKED_MODEL_USE,
+        CockpitCommandClass.RUNTIME_MUTATION,
         CockpitCommandClass.MIXED_ORCHESTRATING,
         leaves=(
             _model_leaf("profiler", "balanced", leaf_name="profile_extraction"),
             _model_leaf("profiler", "fast", leaf_name="profile_classification"),
         ),
+        runtime_flags=("--auto", "--curate", "--digest", "--full", "--ingest", "--index-profile"),
     ),
     "research": _capability(
         "research",
@@ -361,6 +369,8 @@ COCKPIT_AGENT_CAPABILITIES: dict[str, CockpitAgentCapability] = {
                 public_egress=True,
             ),
         ),
+        runtime_flags=("--save",),
+        public_flags=("--notify",),
     ),
     "studio_compositor": _capability(
         "studio_compositor",
@@ -399,11 +409,11 @@ def cockpit_capability_for_invocation(
     leaves = list(capability.supply_leaves)
     classes = set(capability.classifications)
     overlay = capability.llm_flag_overlays or {}
+    if capability.agent_id == "code_review" and _has_flag_key(flags, "--model"):
+        leaves = [_model_leaf("code_review", _flag_value_for(flags, "--model") or "balanced")]
     for flag in flags:
         key = _flag_key(flag)
-        if capability.agent_id == "code_review" and key == "--model":
-            leaves = [_model_leaf("code_review", _flag_value(flag) or "balanced")]
-        elif key in overlay:
+        if key in overlay:
             leaves.extend(overlay[key])
     if leaves:
         classes.add(CockpitCommandClass.LLM_BACKED_MODEL_USE)
@@ -539,10 +549,7 @@ def _non_read_only_invocation_reasons(
     include_classification_surfaces: bool,
 ) -> tuple[str, ...]:
     reasons: list[str] = []
-    if (
-        include_classification_surfaces
-        and CockpitCommandClass.RUNTIME_MUTATION in capability.classifications
-    ):
+    if CockpitCommandClass.RUNTIME_MUTATION in capability.classifications:
         reasons.append("runtime_mutation_surface_requires_route_receipt")
     if (
         include_classification_surfaces
@@ -550,10 +557,10 @@ def _non_read_only_invocation_reasons(
     ):
         reasons.append("public_egress_surface_requires_route_receipt")
     for configured_flag in capability.runtime_mutation_flags:
-        if any(_flag_matches(configured_flag, flag) for flag in flags):
+        if _configured_flag_present(configured_flag, flags):
             reasons.append(f"runtime_mutation_flag:{configured_flag}")
     for configured_flag in capability.public_egress_flags:
-        if any(_flag_matches(configured_flag, flag) for flag in flags):
+        if _configured_flag_present(configured_flag, flags):
             reasons.append(f"public_egress_flag:{configured_flag}")
     if not reasons:
         return ()
@@ -836,10 +843,28 @@ def _flag_value(flag: str) -> str | None:
     return value or None
 
 
-def _flag_matches(configured: str, observed: str) -> bool:
-    if "=" in configured:
-        return observed == configured
-    return _flag_key(observed) == _flag_key(configured)
+def _has_flag_key(flags: tuple[str, ...] | list[str], key: str) -> bool:
+    return any(_flag_key(flag) == key for flag in flags)
+
+
+def _flag_value_for(flags: tuple[str, ...] | list[str], key: str) -> str | None:
+    for index, flag in enumerate(flags):
+        if _flag_key(flag) != key:
+            continue
+        value = _flag_value(flag)
+        if value:
+            return value
+        if index + 1 < len(flags) and not flags[index + 1].startswith("-"):
+            return flags[index + 1].strip() or None
+        return None
+    return None
+
+
+def _configured_flag_present(configured: str, flags: tuple[str, ...] | list[str]) -> bool:
+    if "=" not in configured:
+        return _has_flag_key(flags, _flag_key(configured))
+    key, expected_value = configured.split("=", 1)
+    return _flag_value_for(flags, key) == expected_value
 
 
 def _reason_code(value: str) -> str:
