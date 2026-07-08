@@ -435,6 +435,8 @@ def build_preprint_draft_from_vehicle_selection(
         receipt.hardening_context != expected_hardening_context
         or receipt.public_abstract != expected_abstract
         or receipt.public_body_md != expected_body
+        or receipt.vehicle_rationale != expected_spec.rationale
+        or receipt.blocked_reasons != ()
     ):
         raise RdlcPublicationVehicleError(
             "selected receipt content/hardening policy mismatch; "
@@ -500,8 +502,8 @@ def _refusal_receipt(
 
 
 def _frozen_ruler_ref(receipt: RdlcDispositionReceipt) -> str | None:
-    if receipt.frozen_ruler_ref and receipt.frozen_ruler_version:
-        return f"{receipt.frozen_ruler_ref}@{receipt.frozen_ruler_version}"
+    if _non_empty(receipt.frozen_ruler_ref) and _non_empty(receipt.frozen_ruler_version):
+        return f"{receipt.frozen_ruler_ref.strip()}@{receipt.frozen_ruler_version.strip()}"
     return None
 
 

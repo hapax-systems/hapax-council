@@ -265,6 +265,17 @@ def test_unversioned_frozen_ruler_ref_does_not_satisfy_frozen_evidence_gate() ->
     assert "missing_publication:frozen_evidence_refs" in selector.blocked_reasons
 
 
+def test_blank_frozen_ruler_fields_do_not_satisfy_frozen_evidence_gate() -> None:
+    selector = build_publication_vehicle_selector_receipt(
+        _constructed_publish_candidate(frozen_ruler_ref=" ", frozen_ruler_version=" "),
+        audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
+    )
+
+    assert selector.decision == RdlcPublicationSelectorDecision.REFUSED
+    assert selector.selector_input.frozen_evidence_refs == ()
+    assert "missing_publication:frozen_evidence_refs" in selector.blocked_reasons
+
+
 @pytest.mark.parametrize(
     ("overrides", "expected_reason"),
     [
@@ -433,6 +444,8 @@ def test_reconstructed_selected_receipt_must_match_audience_vehicle_policy() -> 
         {"hardening_context": {}},
         {"public_abstract": "tampered abstract"},
         {"public_body_md": "# Tampered body"},
+        {"vehicle_rationale": "tampered rationale"},
+        {"blocked_reasons": ("should_not_be_selected",)},
     ],
 )
 def test_reconstructed_selected_receipt_must_match_selector_content(updates) -> None:
