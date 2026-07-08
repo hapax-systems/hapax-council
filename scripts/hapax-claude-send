@@ -23,7 +23,7 @@ usage: hapax-claude-send --session ROLE [--transport auto|foot|tmux]
                           [--ack-timeout SECONDS] [--json] [--stdin]
                           [--] MESSAGE...
 
-ROLE is the greek lane name: alpha, beta, delta, epsilon. Override the
+ROLE is the greek lane name: alpha, beta, gamma, delta, epsilon, zeta, eta, theta. Override the
 allowlist via HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST="alpha beta gamma ...".
 
 Sends MESSAGE to a visible Hapax Claude Code session. The default
@@ -69,7 +69,12 @@ RTE_BYPASS=0
 MESSAGE_PARTS=()
 TMP_FILES=()
 
-ROLE_ALLOWLIST="${HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST:-alpha beta gamma delta epsilon zeta eta theta antigrav}"
+ROLE_ALLOWLIST="${HAPAX_CLAUDE_SEND_ROLE_ALLOWLIST:-alpha beta gamma delta epsilon zeta eta theta}"
+
+is_retired_send_target_role() {
+  local role="${1,,}"
+  [[ "$role" == "agy" || "$role" == agy-* || "$role" == "antigrav" || "$role" == antigrav-* || "$role" == "antigravity" || "$role" == antigravity-* || "$role" == "gemini-cli" || "$role" == gemini-cli-* ]]
+}
 
 # Default busy regex covers Claude Code's animated activity verbs and
 # the "Messages to be submitted after next tool call" queue indicator.
@@ -180,7 +185,12 @@ if [ -z "$SESSION" ]; then
   exit 2
 fi
 
-# Validate ROLE: the space-separated allowlist (fixed greek slots + antigrav,
+if is_retired_send_target_role "$SESSION"; then
+  echo "hapax-claude-send: invalid role '$SESSION' (retired/excised send targets cannot be allowlisted; use agy.review.direct through scripts/hapax-agy-reviewer only for admitted read-only review-plane work)" >&2
+  exit 2
+fi
+
+# Validate ROLE: the space-separated allowlist (fixed greek slots,
 # env-tunable) PLUS the cc-<name> pattern (relay-coordinated Claude lanes) PLUS
 # the hapax-dev interactive pool (dev, dev2..devN) — all first-class governed
 # lanes (hooks/scripts/agent-role.sh assert-identity). The dev-pool pattern keeps

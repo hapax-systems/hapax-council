@@ -15,7 +15,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.p0_incident_intake import (
+    NO_REMINT_REASONS,
     classify_notification,
+    fingerprint_for_notification,
     reap_resolved_incidents,
     record_notification,
 )
@@ -342,6 +344,14 @@ def _drain_desktop(args: argparse.Namespace) -> int:
             tags=_notification_tags(notification, default=args.tag),
         )
         if not classification.technical:
+            # Self-amplification break (p0-incident-* dispatch-refusal / stalled): the
+            # alert is intentionally not re-minted, but if its incident is ALREADY
+            # tracked in state the desktop page is consumed and should be dismissed.
+            # Identity is derived independent of the mint policy; a suppressed alert
+            # whose incident is NOT in state keeps its page (the operator was paged).
+            if classification.reason in NO_REMINT_REASONS:
+                derived = fingerprint_for_notification(summary, body)
+                return bool(derived) and derived in fingerprints
             return False
         if classification.fingerprint in fingerprints:
             return True

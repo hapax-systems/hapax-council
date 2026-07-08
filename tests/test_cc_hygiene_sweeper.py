@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -38,6 +39,7 @@ def _load_sweeper_module() -> ModuleType:
 
 from cc_hygiene import events as events_mod  # noqa: E402
 from cc_hygiene.checks import (  # noqa: E402
+    GHOST_CLAIM_GRACE_MINUTES,
     OFFERED_STALE_DAYS,
     RELAY_STALE_MIN,
     STALE_IN_PROGRESS_HOURS,
@@ -89,6 +91,14 @@ def _write_note(dirpath: Path, task_id: str, **frontmatter: Any) -> Path:
     path = dirpath / f"{task_id}-test.md"
     path.write_text("\n".join(body_lines), encoding="utf-8")
     return path
+
+
+def _age_past_ghost_grace(path: Path) -> None:
+    """Back-date a fixture note past ``GHOST_CLAIM_GRACE_MINUTES`` so the §2.2
+    ghost check sees it — freshly modified ghosts are skipped (mid-stamp claims
+    must not be reverted out from under a live lane)."""
+    ts = (_now() - timedelta(minutes=GHOST_CLAIM_GRACE_MINUTES + 1)).timestamp()
+    os.utime(path, (ts, ts))
 
 
 def _write_relay(relay_dir: Path, role: str, payload: dict[str, Any]) -> Path:
@@ -178,6 +188,41 @@ def test_ghost_claimed_legitimate_claim_does_not_fire() -> None:
     )
     events = check_ghost_claimed([note], now=_now())
     assert events == []
+
+
+def test_ghost_claimed_grace_window_skips_freshly_modified_note(tmp_path: Path) -> None:
+    """A ghost whose note file changed inside the grace window is NOT flagged —
+    reverting a mid-stamp claim killed a freshly launched live lane
+    (2026-07-01 eta/ndcvb-phase1 incident)."""
+    p = tmp_path / "fresh-ghost.md"
+    p.write_text("stub", encoding="utf-8")
+    ts = (_now() - timedelta(minutes=GHOST_CLAIM_GRACE_MINUTES - 1)).timestamp()
+    os.utime(p, (ts, ts))
+    note = TaskNote(
+        path=str(p),
+        task_id="cc-grace-1",
+        status="claimed",
+        assigned_to="unassigned",
+        claimed_at=None,
+    )
+    assert check_ghost_claimed([note], now=_now()) == []
+
+
+def test_ghost_claimed_fires_once_grace_window_passes(tmp_path: Path) -> None:
+    p = tmp_path / "old-ghost.md"
+    p.write_text("stub", encoding="utf-8")
+    ts = (_now() - timedelta(minutes=GHOST_CLAIM_GRACE_MINUTES + 1)).timestamp()
+    os.utime(p, (ts, ts))
+    note = TaskNote(
+        path=str(p),
+        task_id="cc-grace-2",
+        status="claimed",
+        assigned_to="unassigned",
+        claimed_at=None,
+    )
+    events = check_ghost_claimed([note], now=_now())
+    assert len(events) == 1
+    assert events[0].check_id == "ghost_claimed"
 
 
 # ----------------------------------------------------------------------------
@@ -272,6 +317,174 @@ def test_duplicate_claim_distinct_tasks_no_event() -> None:
     payloads = {
         "alpha": {"current_claim": {"task_id": "cc-A", "claimed_at": now.isoformat()}},
         "beta": {"current_claim": {"task_id": "cc-B", "claimed_at": now.isoformat()}},
+    }
+    assert check_duplicate_claim(payloads, now=now) == []
+
+
+def test_duplicate_claim_bare_string_no_timestamps_does_not_storm() -> None:
+    """Bare-string current_claim with no timestamp must NOT read as simultaneous.
+
+    Regression for the duplicate_claim P0 storm (incident
+    ``cc_hygiene_violation:duplicate_claim``): two relays listed the same task
+    as a bare string (``current_claim: <task-id>``) carrying no ``claimed_at``
+    and no relay ``updated``. The claims were actually 91min apart (a stale
+    collision, not a race), but collapsing the unknown timestamps to ``now``
+    made the 5min window a no-op, so the check fired a false "claimed
+    simultaneously within 5min" on every sweep and stormed 52 P0 pages.
+    With no usable timestamp on either side, the check cannot establish the
+    claims are within the window and must stay silent.
+    """
+    now = _now()
+    payloads = {
+        "cx-p0": {"current_claim": "cc-shared"},
+        "cx-crit": {"current_claim": "cc-shared"},
+    }
+    assert check_duplicate_claim(payloads, now=now) == []
+
+
+def test_duplicate_claim_bare_string_relay_updated_outside_window_suppresses() -> None:
+    """Exact incident shape: bare-string claims 91min apart via relay ``updated``.
+
+    When ``current_claim`` is a bare string the check falls back to each
+    relay's own ``updated`` timestamp. Here they are 91min apart — a stale
+    collision, not a near-simultaneous double-claim — so no event fires.
+    """
+    now = _now()
+    payloads = {
+        "cx-p0": {
+            "current_claim": "cc-shared",
+            "updated": (now - timedelta(minutes=91)).isoformat(),
+        },
+        "cx-crit": {"current_claim": "cc-shared", "updated": now.isoformat()},
+    }
+    assert check_duplicate_claim(payloads, now=now) == []
+
+
+def test_duplicate_claim_bare_string_falls_back_to_relay_updated_within_window() -> None:
+    """A genuine near-simultaneous double-claim still fires via relay ``updated``.
+
+    Both relays hold the same bare-string claim and were both ``updated``
+    within the window — a real double-dispatch race. The check must still
+    fire so genuine double-claims are not silenced by the storm fix.
+    """
+    now = _now()
+    payloads = {
+        "cx-p0": {
+            "current_claim": "cc-shared",
+            "updated": (now - timedelta(minutes=1)).isoformat(),
+        },
+        "cx-crit": {"current_claim": "cc-shared", "updated": now.isoformat()},
+    }
+    events = check_duplicate_claim(payloads, now=now)
+    assert len(events) == 1
+    assert events[0].check_id == "duplicate_claim"
+    assert events[0].severity == "violation"
+
+
+def test_duplicate_claim_stale_third_claimant_does_not_mask_fresh_pair() -> None:
+    """A stale extra claimant must not suppress a genuine within-window pair.
+
+    Review finding on PR #4427 (codex-1, major): the original span check
+    (``newest - oldest > window``) went silent whenever ANY claimant was old,
+    so a leftover stale relay masked a real near-simultaneous double-claim by
+    the other two. The check must fire for the fresh pair and name only the
+    roles chained together by within-window gaps.
+    """
+    now = _now()
+    payloads = {
+        "stale": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(minutes=120)).isoformat(),
+            }
+        },
+        "fresh-a": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(minutes=2)).isoformat(),
+            }
+        },
+        "fresh-b": {"current_claim": {"task_id": "cc-shared", "claimed_at": now.isoformat()}},
+    }
+    events = check_duplicate_claim(payloads, now=now)
+    assert len(events) == 1
+    assert events[0].metadata["sessions"] == "fresh-a,fresh-b"
+
+
+def test_duplicate_claim_chain_spanning_more_than_window_is_one_event() -> None:
+    """A chain of sub-window gaps is one cluster even when its span exceeds it.
+
+    Claimants at t-8min, t-4min, t: each gap is 4min (< window) but the total
+    span is 8min (> window). All three participated in a rolling double-claim,
+    so one event names all three — the chain must not be split or suppressed
+    by the total span.
+    """
+    now = _now()
+    payloads = {
+        "chain-a": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(minutes=8)).isoformat(),
+            }
+        },
+        "chain-b": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(minutes=4)).isoformat(),
+            }
+        },
+        "chain-c": {"current_claim": {"task_id": "cc-shared", "claimed_at": now.isoformat()}},
+    }
+    events = check_duplicate_claim(payloads, now=now)
+    assert len(events) == 1
+    assert events[0].metadata["sessions"] == "chain-a,chain-b,chain-c"
+
+
+def test_duplicate_claim_disjoint_bursts_fire_separate_events() -> None:
+    """Two fresh pairs hours apart must alert as two clusters, not one.
+
+    Review finding on PR #4428 (claude-1, minor): merging disjoint bursts into
+    a single roles list makes the alert claim near-simultaneity for sessions
+    that are hours apart. Each within-window cluster alerts on its own.
+    """
+    now = _now()
+    payloads = {
+        "early-a": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(hours=5, minutes=2)).isoformat(),
+            }
+        },
+        "early-b": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(hours=5)).isoformat(),
+            }
+        },
+        "late-a": {
+            "current_claim": {
+                "task_id": "cc-shared",
+                "claimed_at": (now - timedelta(minutes=2)).isoformat(),
+            }
+        },
+        "late-b": {"current_claim": {"task_id": "cc-shared", "claimed_at": now.isoformat()}},
+    }
+    events = check_duplicate_claim(payloads, now=now)
+    assert len(events) == 2
+    assert {e.metadata["sessions"] for e in events} == {"early-a,early-b", "late-a,late-b"}
+
+
+def test_duplicate_claim_mixed_datable_and_undatable_stays_silent() -> None:
+    """One datable + one undatable claimant cannot establish the window.
+
+    A single known timestamp has nothing to be "within 5min" of; treating the
+    undatable side as `now` is exactly the collapse that caused the P0 storm.
+    Silence is correct — staleness is `relay_yaml_stale`'s job.
+    """
+    now = _now()
+    payloads = {
+        "dated": {"current_claim": {"task_id": "cc-shared", "claimed_at": now.isoformat()}},
+        "undated": {"current_claim": "cc-shared"},
     }
     assert check_duplicate_claim(payloads, now=now) == []
 
@@ -404,6 +617,58 @@ def test_orphan_pr_too_young_suppresses(tmp_path: Path) -> None:
     with patch("cc_hygiene.checks._gh_pr_list", return_value=fake_prs):
         events = check_orphan_pr([], tmp_path, now=now)
     assert events == []
+
+
+def test_orphan_pr_bot_author_is_bot_suppresses(tmp_path: Path) -> None:
+    """Dependabot-style PRs (author.is_bot) are never cc-task-linked → not orphans.
+
+    Regression pin for P0 incident ``cc_hygiene_violation:orphan_pr:4408``.
+    """
+    now = _now()
+    fake_prs = [
+        {
+            "number": 4408,
+            "headRefName": "dependabot/npm_and_yarn/hapax-logos/hapax-logos-prod-a241cf381b",
+            "createdAt": (now - timedelta(hours=8)).isoformat(),
+            "author": {"is_bot": True, "login": "app/dependabot"},
+        }
+    ]
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=fake_prs):
+        events = check_orphan_pr([], tmp_path, now=now)
+    assert events == []
+
+
+def test_orphan_pr_bot_login_suffix_suppresses(tmp_path: Path) -> None:
+    """Bots surfaced only via the `[bot]` login suffix (no is_bot) are still skipped."""
+    now = _now()
+    fake_prs = [
+        {
+            "number": 5001,
+            "headRefName": "renovate/some-dep",
+            "createdAt": (now - timedelta(hours=8)).isoformat(),
+            "author": {"login": "renovate[bot]"},
+        }
+    ]
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=fake_prs):
+        events = check_orphan_pr([], tmp_path, now=now)
+    assert events == []
+
+
+def test_orphan_pr_human_author_still_fires(tmp_path: Path) -> None:
+    """A non-bot author with an old unlinked PR must still be flagged (no over-suppression)."""
+    now = _now()
+    fake_prs = [
+        {
+            "number": 6002,
+            "headRefName": "epsilon/some-feature",
+            "createdAt": (now - timedelta(hours=4)).isoformat(),
+            "author": {"is_bot": False, "login": "ryanklee"},
+        }
+    ]
+    with patch("cc_hygiene.checks._gh_pr_list", return_value=fake_prs):
+        events = check_orphan_pr([], tmp_path, now=now)
+    assert len(events) == 1
+    assert events[0].metadata["pr"] == "6002"
 
 
 # ----------------------------------------------------------------------------
@@ -1058,13 +1323,14 @@ def test_run_sweep_finds_ghost_claimed(tmp_path: Path) -> None:
     run_sweep = _load_sweeper_module().run_sweep
 
     vault = _build_vault(tmp_path)
-    _write_note(
+    ghost_path = _write_note(
         vault / "active",
         "cc-ghost",
         status="claimed",
         assigned_to="unassigned",
         claimed_at=None,
     )
+    _age_past_ghost_grace(ghost_path)
     relay = tmp_path / "relay"
     state = run_sweep(vault_root=vault, relay_root=relay, repo_root=tmp_path, now=_now())
     ghost_events = [e for e in state.events if e.check_id == "ghost_claimed"]
@@ -1164,6 +1430,7 @@ def test_main_auto_reverts_ghost_claimed(tmp_path: Path) -> None:
         assigned_to="epsilon",
         claimed_at=None,
     )
+    _age_past_ghost_grace(note_path)
     with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
         rc = sweeper.main(_main_args(tmp_path, vault))
     assert rc == 0
@@ -1178,13 +1445,14 @@ def test_main_ghost_claim_does_not_recur_after_heal(tmp_path: Path) -> None:
     """Storm-stop canary: sweep 1 detects + heals; sweep 2 finds NO ghost event."""
     sweeper = _load_sweeper_module()
     vault = _build_vault(tmp_path)
-    _write_note(
+    recur_ghost_path = _write_note(
         vault / "active",
         "cc-ghost",
         status="claimed",
         assigned_to="epsilon",
         claimed_at=None,
     )
+    _age_past_ghost_grace(recur_ghost_path)
     args = _main_args(tmp_path, vault)
     with patch("cc_hygiene.checks._gh_pr_list", return_value=[]):
         assert sweeper.main(args) == 0
@@ -1284,6 +1552,7 @@ def test_main_does_not_page_for_self_healed_ghost(tmp_path: Path) -> None:
         assigned_to="alpha",
         claimed_at=None,
     )
+    _age_past_ghost_grace(note_path)
     sender = MagicMock(return_value=True)
     with (
         patch("cc_hygiene.checks._gh_pr_list", return_value=[]),
@@ -1314,6 +1583,7 @@ def test_main_still_pages_unhealed_ghost_under_no_actions(tmp_path: Path) -> Non
         assigned_to="alpha",
         claimed_at=None,
     )
+    _age_past_ghost_grace(note_path)
     sender = MagicMock(return_value=True)
     with (
         patch("cc_hygiene.checks._gh_pr_list", return_value=[]),

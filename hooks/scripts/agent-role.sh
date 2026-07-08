@@ -63,10 +63,6 @@ hapax_agent_role_from_path() {
       [ -n "$color" ] && { printf 'cx-%s\n' "$color"; return 0; }
       ;;
   esac
-  # Antigrav lane: hapax-council--antigrav[-N] -> antigrav (a live interface).
-  case "$suffix" in
-    antigrav|antigrav-*) printf 'antigrav\n'; return 0 ;;
-  esac
   # Vibe lanes: hapax-council--vbe-<n>[-descriptor] -> vbe-<n>.
   case "$suffix" in
     vbe-*)
@@ -296,16 +292,16 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         exit 2
       fi
       # Validate against the known lane vocabulary so a typo cannot mint a bogus
-      # identity: greek slots, cx-<color>, vbe-<n>, cc-<name>, antigrav.
+      # identity: greek slots, cx-<color>, vbe-<n>, cc-<name>.
       # cc-<name> = relay-coordinated Claude lanes (cc-zai, cc-cns, cc-cutovr, ...),
       # first-class governed lanes per the operator decision 2026-06-17.
       case "$_ar_role" in
-        alpha | beta | gamma | delta | epsilon | zeta | eta | theta | antigrav) ;;
+        alpha | beta | gamma | delta | epsilon | zeta | eta | theta) ;;
         cx-[a-z]*) ;;
         cc-[a-z]*) ;;
         vbe-[0-9]*) ;;
         *)
-          echo "agent-role.sh: unknown role '$_ar_role' (expected a greek slot, cx-<color>, cc-<name>, vbe-<n>, or antigrav)" >&2
+          echo "agent-role.sh: unknown role '$_ar_role' (expected a greek slot, cx-<color>, cc-<name>, or vbe-<n>)" >&2
           exit 2
           ;;
       esac

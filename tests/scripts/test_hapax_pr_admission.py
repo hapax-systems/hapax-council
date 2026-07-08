@@ -134,12 +134,39 @@ class TestStatusCommand:
 
 
 class TestClassifyPR:
+    def test_query_open_prs_rollup_feeds_status_classification(self, gov_module) -> None:
+        rows = [
+            {
+                "number": 4436,
+                "headRefName": "codex/cx-ghrate",
+                "statusCheckRollup": [{"name": "test", "conclusion": "FAILURE"}],
+                "mergeStateStatus": "CLEAN",
+            }
+        ]
+        with (
+            patch.object(gov_module.shutil, "which", return_value="/usr/bin/gh"),
+            patch.object(gov_module, "list_open_pr_statuses_rest", return_value=rows) as list_open,
+        ):
+            prs = gov_module.query_open_prs()
+
+        assert prs == rows
+        assert list_open.call_args.kwargs["hydrate_pull"] is True
+        assert gov_module.classify_pr(prs[0]) == "failed"
+
     def test_failed(self, gov_module):
         pr = {"statusCheckRollup": [{"conclusion": "FAILURE"}], "mergeStateStatus": ""}
         assert gov_module.classify_pr(pr) == "failed"
 
+    def test_failed_rest_lowercase_state(self, gov_module):
+        pr = {"statusCheckRollup": [{"state": "failure"}], "mergeStateStatus": ""}
+        assert gov_module.classify_pr(pr) == "failed"
+
     def test_pending(self, gov_module):
         pr = {"statusCheckRollup": [{"status": "IN_PROGRESS"}], "mergeStateStatus": ""}
+        assert gov_module.classify_pr(pr) == "pending"
+
+    def test_pending_rest_lowercase_status(self, gov_module):
+        pr = {"statusCheckRollup": [{"status": "queued"}], "mergeStateStatus": ""}
         assert gov_module.classify_pr(pr) == "pending"
 
     def test_behind(self, gov_module):
@@ -153,6 +180,19 @@ class TestClassifyPR:
     def test_green(self, gov_module):
         pr = {"statusCheckRollup": [{"conclusion": "SUCCESS"}], "mergeStateStatus": "CLEAN"}
         assert gov_module.classify_pr(pr) == "green"
+
+    def test_indeterminate_rest_rollup_is_pending_not_green(self, gov_module):
+        pr = {
+            "statusCheckRollup": [
+                {
+                    "name": "github-rest-status-indeterminate",
+                    "status": "PENDING",
+                    "conclusion": None,
+                }
+            ],
+            "mergeStateStatus": "CLEAN",
+        }
+        assert gov_module.classify_pr(pr) == "pending"
 
 
 class TestAdmissionLibrary:

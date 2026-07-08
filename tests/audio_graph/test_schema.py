@@ -369,11 +369,12 @@ def test_role_loopback_models_voice_duck_conf() -> None:
 
 
 def test_global_tunables_models_quantum_conf() -> None:
-    """10-voice-quantum.conf decomposition (gap G-1)."""
+    """10-voice-quantum.conf / resample quality decomposition (gap G-1)."""
     g = GlobalTunables(
         default_clock_quantum=128,
         min_quantum=64,
         max_quantum=1024,
+        resample_quality=10,
         allowed_rates=[16000, 44100, 44100],
     )
     assert _roundtrip(g) == g

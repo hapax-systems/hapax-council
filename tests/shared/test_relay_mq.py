@@ -557,16 +557,38 @@ class TestRecipientExpansion(unittest.TestCase):
 
     def test_expand_broadcast_all(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            relay_dir = _make_relay_dir(Path(td), ["alpha", "beta", "gamma", "delta"])
+            relay_dir = _make_relay_dir(
+                Path(td),
+                ["alpha", "beta", "gamma", "delta", "antigrav", "agy", "gemini-cli"],
+            )
             result = expand_recipients("*:all", relay_dir)
             self.assertEqual(len(result), 4)
+            self.assertNotIn("antigrav", result)
+            self.assertNotIn("agy", result)
+            self.assertNotIn("gemini-cli", result)
+
+    def test_expand_broadcast_all_filters_mixed_case_retired_peers(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            relay_dir = _make_relay_dir(
+                Path(td),
+                ["alpha", "Antigrav", "AGY", "Gemini-CLI", "Gemini-CLI-2"],
+            )
+            result = expand_recipients("*:all", relay_dir)
+            self.assertEqual(result, ["alpha"])
 
     def test_expand_broadcast_coordinators(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            relay_dir = _make_relay_dir(Path(td), ["alpha", "beta", "rte"])
+            relay_dir = _make_relay_dir(Path(td), ["alpha", "beta", "rte", "antigravity"])
             result = expand_recipients("*:coordinators", relay_dir)
             self.assertIn("alpha", result)
             self.assertNotIn("rte", result)
+            self.assertNotIn("antigravity", result)
+
+    def test_expand_broadcast_coordinators_filters_mixed_case_retired_peers(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            relay_dir = _make_relay_dir(Path(td), ["alpha", "Antigravity", "AGY"])
+            result = expand_recipients("*:coordinators", relay_dir)
+            self.assertEqual(result, ["alpha"])
 
     def test_expand_broadcast_claude(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -590,17 +612,14 @@ class TestRecipientExpansion(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unknown broadcast group"):
                 expand_recipients("*:gemini", relay_dir)
 
-    def test_expand_broadcast_antigrav(self) -> None:
+    def test_expand_broadcast_antigrav_is_retired(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             relay_dir = _make_relay_dir(
-                Path(td), ["alpha", "antigrav", "antigrav-2", "antigravity", "cx-red"]
+                Path(td),
+                ["alpha", "agy", "agy-2", "antigrav", "antigrav-2", "antigravity", "cx-red"],
             )
-            result = expand_recipients("*:antigrav", relay_dir)
-            self.assertIn("antigrav", result)
-            self.assertIn("antigrav-2", result)
-            self.assertIn("antigravity", result)
-            self.assertNotIn("alpha", result)
-            self.assertNotIn("cx-red", result)
+            with self.assertRaisesRegex(ValueError, "agy.review.direct"):
+                expand_recipients("*:antigrav", relay_dir)
 
     def test_expand_broadcast_vibe(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -615,17 +634,42 @@ class TestRecipientExpansion(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             relay_dir = _make_relay_dir(
                 Path(td),
-                ["alpha", "cx-red", "iota", "antigrav", "vbe-1", "rte", "alpha-status"],
+                [
+                    "alpha",
+                    "cx-red",
+                    "iota",
+                    "agy",
+                    "agy-2",
+                    "antigrav",
+                    "antigravity",
+                    "gemini-cli",
+                    "vbe-1",
+                    "rte",
+                    "alpha-status",
+                ],
             )
             result = expand_recipients("*:workers", relay_dir)
             self.assertIn("alpha", result)
             self.assertIn("cx-red", result)
             self.assertNotIn("iota", result)
-            self.assertIn("antigrav", result)
+            self.assertNotIn("agy", result)
+            self.assertNotIn("antigrav", result)
+            self.assertNotIn("antigravity", result)
+            self.assertNotIn("gemini-cli", result)
             self.assertIn("vbe-1", result)
             # Coordinators-only and stray status-file stems are not worker lanes.
             self.assertNotIn("rte", result)
             self.assertNotIn("alpha-status", result)
+
+    def test_expand_direct_antigrav_is_retired(self) -> None:
+        with self.assertRaisesRegex(ValueError, "agy.review.direct"):
+            expand_recipients("alpha,antigrav")
+        with self.assertRaises(ValueError) as agy_error:
+            expand_recipients("alpha,agy")
+        self.assertIn("agy is not a relay peer", str(agy_error.exception))
+        self.assertNotIn("agy relay recipients are retired/excised", str(agy_error.exception))
+        with self.assertRaisesRegex(ValueError, "agy.review.direct"):
+            expand_recipients("alpha,gemini-cli")
 
     def test_expand_broadcast_unknown_group(self) -> None:
         with tempfile.TemporaryDirectory() as td:
