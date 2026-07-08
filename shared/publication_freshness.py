@@ -398,15 +398,31 @@ def _existing_publication_freshness_event_ids(log_path: Path) -> set[str]:
     if not log_path.exists():
         return set()
     event_ids: set[str] = set()
-    for line in log_path.read_text(encoding="utf-8").splitlines():
+    for line_number, line in enumerate(log_path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
         try:
             payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and isinstance(payload.get("event_id"), str):
-            event_ids.add(payload["event_id"])
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "publication freshness ledger is malformed at "
+                f"{log_path}:{line_number}: invalid JSON; next action: repair or quarantine "
+                "the ledger before appending freshness evidence"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ValueError(
+                "publication freshness ledger is malformed at "
+                f"{log_path}:{line_number}: expected JSON object; next action: repair or "
+                "quarantine the ledger before appending freshness evidence"
+            )
+        event_id = payload.get("event_id")
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise ValueError(
+                "publication freshness ledger is malformed at "
+                f"{log_path}:{line_number}: missing event_id; next action: repair or "
+                "quarantine the ledger before appending freshness evidence"
+            )
+        event_ids.add(event_id)
     return event_ids
 
 

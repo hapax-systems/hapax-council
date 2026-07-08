@@ -170,3 +170,18 @@ def test_freshness_event_writes_are_idempotent_by_event_id(tmp_path: Path) -> No
     assert len(first) == 1
     assert second == ()
     assert [row["event_id"] for row in rows] == [event.event_id]
+
+
+def test_freshness_event_write_fails_on_malformed_existing_ledger(tmp_path: Path) -> None:
+    snapshot = build_publication_freshness_snapshot(_github_envelopes(), generated_at=GENERATED_AT)
+    event = build_publication_freshness_event(
+        snapshot.envelopes[0],
+        event_type="publication.surface_readback",
+        generated_at=GENERATED_AT,
+        occurred_at=GENERATED_AT,
+    )
+    log_path = tmp_path / "freshness-events.jsonl"
+    log_path.write_text("{not-json}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="repair or quarantine the ledger"):
+        write_publication_freshness_events((event,), log_path=log_path)
