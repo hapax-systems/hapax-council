@@ -86,13 +86,14 @@ def _prepare_agent_command_for_chat(
 
 
 def _shell_agent_invocation(parts: list[str]) -> tuple[str, list[str]] | None:
-    """Return cockpit agent name and flags for `uv run python -m agents.*` commands."""
-    if len(parts) < 5 or parts[:4] != ["uv", "run", "python", "-m"]:
-        return None
-    module = parts[4]
-    if not module.startswith("agents."):
-        return None
-    return module.removeprefix("agents.").replace("_", "-"), parts[5:]
+    """Return cockpit agent name and flags for any `-m agents.*` command."""
+    for index, part in enumerate(parts[:-1]):
+        if part != "-m":
+            continue
+        module = parts[index + 1]
+        if module.startswith("agents."):
+            return module.removeprefix("agents.").replace("_", "-"), parts[index + 2 :]
+    return None
 
 
 # ── System prompt ────────────────────────────────────────────────────────────
@@ -407,15 +408,17 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         """
         cmd = command.strip()
 
+        try:
+            parts = shlex.split(cmd)
+        except ValueError as exc:
+            return f"Command rejected: invalid shell syntax: {exc}"
+
+        shell_agent = _shell_agent_invocation(parts)
+
         # Security: reject commands not on the allowlist
         allowed = any(
             cmd == prefix.rstrip() or cmd.startswith(prefix) for prefix in SHELL_COMMAND_ALLOWLIST
         )
-        if not allowed:
-            return (
-                f"Command rejected: not on allowlist. "
-                f"Allowed prefixes: {', '.join(p.strip() for p in SHELL_COMMAND_ALLOWLIST)}"
-            )
 
         # Security: reject shell metacharacters that could bypass the allowlist
         # Allow pipes/redirects for simple composition, but block command chaining
@@ -423,30 +426,34 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
             if dangerous in cmd:
                 return f"Command rejected: shell operator '{dangerous}' not allowed."
 
-        try:
-            parts = shlex.split(cmd)
-            shell_agent = _shell_agent_invocation(parts)
-            if shell_agent is not None:
-                from logos.data.agents import get_agent_registry
+        if shell_agent is not None:
+            from logos.data.agents import get_agent_registry
 
-                name, flag_args = shell_agent
-                registry = {a.name: a for a in get_agent_registry()}
-                agent_info = registry.get(name)
-                if not agent_info:
-                    return (
-                        f"Agent admission refused: untracked chat shell agent command: {name}; "
-                        "next_action=register cockpit capability metadata before retrying "
-                        "guarded chat shell execution"
-                    )
-                admitted_cmd, admission_error = _prepare_agent_command_for_chat(
-                    name,
-                    agent_info,
-                    " ".join(shlex.quote(arg) for arg in flag_args),
+            name, flag_args = shell_agent
+            registry = {a.name: a for a in get_agent_registry()}
+            agent_info = registry.get(name)
+            if not agent_info:
+                return (
+                    f"Agent admission refused: untracked chat shell agent command: {name}; "
+                    "next_action=register cockpit capability metadata before retrying "
+                    "guarded chat shell execution"
                 )
-                if admission_error:
-                    return admission_error
-                parts = admitted_cmd
+            admitted_cmd, admission_error = _prepare_agent_command_for_chat(
+                name,
+                agent_info,
+                " ".join(shlex.quote(arg) for arg in flag_args),
+            )
+            if admission_error:
+                return admission_error
+            parts = admitted_cmd
 
+        if not allowed:
+            return (
+                f"Command rejected: not on allowlist. "
+                f"Allowed prefixes: {', '.join(p.strip() for p in SHELL_COMMAND_ALLOWLIST)}"
+            )
+
+        try:
             proc = await asyncio.create_subprocess_exec(
                 *parts,
                 cwd=str(ctx.deps.project_dir),

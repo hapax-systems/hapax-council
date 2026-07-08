@@ -278,6 +278,7 @@ COCKPIT_AGENT_CAPABILITIES: dict[str, CockpitAgentCapability] = {
     "demo": _capability(
         "demo",
         CockpitCommandClass.LLM_BACKED_MODEL_USE,
+        CockpitCommandClass.RUNTIME_MUTATION,
         CockpitCommandClass.MIXED_ORCHESTRATING,
         leaves=(
             _model_leaf("demo", "balanced", leaf_name="content_model"),

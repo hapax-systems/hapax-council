@@ -259,6 +259,31 @@ async def test_run_shell_command_refuses_agent_module_without_cockpit_admission(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    (
+        "python -m agents.briefing",
+        "python3 -m agents.briefing",
+        "uv run --no-sync python -m agents.briefing",
+    ),
+)
+async def test_run_shell_command_refuses_alternate_agent_module_forms_before_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    agent = create_chat_agent()
+    run_shell_tool = agent._function_toolset.tools["run_shell_command"].function
+    ctx = SimpleNamespace(deps=ChatDeps(project_dir=tmp_path))
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(tmp_path / "missing-ledger.json"))
+
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as subprocess_mock:
+        result = await run_shell_tool(ctx, command)
+
+    assert "Agent admission refused:" in result
+    assert "cockpit_agent_capability_admission_refused" in result
+    subprocess_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_run_shell_command_refuses_health_monitor_dry_run_before_subprocess(
     tmp_path: Path,
 ) -> None:
@@ -272,6 +297,34 @@ async def test_run_shell_command_refuses_health_monitor_dry_run_before_subproces
     assert "Agent admission refused:" in result
     assert "runtime_mutation_flag:--dry-run" in result
     subprocess_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_shell_command_allows_admitted_agent_module_command(tmp_path: Path) -> None:
+    agent = create_chat_agent()
+    run_shell_tool = agent._function_toolset.tools["run_shell_command"].function
+    ctx = SimpleNamespace(deps=ChatDeps(project_dir=tmp_path))
+    proc = SimpleNamespace(
+        returncode=0,
+        communicate=AsyncMock(return_value=(b"health ok", b"")),
+    )
+
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as subprocess_mock:
+        subprocess_mock.return_value = proc
+        result = await run_shell_tool(ctx, "uv run python -m agents.health_monitor")
+
+    subprocess_mock.assert_awaited_once_with(
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "agents.health_monitor",
+        cwd=str(tmp_path),
+        stdout=-1,
+        stderr=-2,
+    )
+    assert "Exit code: 0" in result
+    assert "health ok" in result
 
 
 # ── format_conversation_export tests ───────────────────────────────────────

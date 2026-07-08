@@ -383,6 +383,7 @@ def test_non_read_only_local_write_surfaces_refuse_before_subprocess(
 @pytest.mark.parametrize(
     ("agent", "expected_reason"),
     [
+        ("demo", "runtime_mutation_surface_requires_route_receipt"),
         ("profiler", "runtime_mutation_surface_requires_route_receipt"),
         ("research", "public_egress_surface_requires_route_receipt"),
         ("scout", "public_egress_surface_requires_route_receipt"),
@@ -1015,6 +1016,45 @@ async def test_admitted_dict_agent_cockpit_run_reaches_subprocess(
         ["uv", "run", "python", "-m", "agents.briefing", "--json"],
     )
     cancel_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_demo_cockpit_run_refuses_default_artifact_generation_before_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from logos.api.app import app
+    from logos.api.cache import cache
+    from logos.api.routes import agents as agent_route
+    from logos.data.agents import AgentInfo
+
+    cache.agents = [
+        AgentInfo(
+            name="demo",
+            uses_llm=True,
+            description="Demo generator",
+            command="uv run python -m agents.demo",
+            model_alias="balanced",
+            module="agents.demo",
+        )
+    ]
+    monkeypatch.setattr(agent_route, "_IN_CONTAINER", False)
+    monkeypatch.setenv(COCKPIT_ADMISSION_NOW_ENV, NOW_ISO)
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(_write_fresh_ledger(tmp_path)))
+    monkeypatch.setenv(
+        COCKPIT_PLATFORM_CAPABILITY_REGISTRY_ENV, str(_write_fresh_registry(tmp_path))
+    )
+    monkeypatch.setenv(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV, "none")
+    run_mock = AsyncMock()
+    monkeypatch.setattr(agent_route.agent_run_manager, "run", run_mock)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/agents/demo/run", json={"flags": []})
+
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert "runtime_mutation_surface_requires_route_receipt" in detail
+    run_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
