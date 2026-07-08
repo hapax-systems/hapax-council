@@ -317,6 +317,19 @@ def _assert_target_surfaces_allowed(surfaces: list[str]) -> None:
             "target surfaces must be a non-empty list; next action: pass at least one "
             "publication-bus dispatchable surface"
         )
+    seen_surfaces: set[str] = set()
+    duplicate_surfaces: set[str] = set()
+    for surface in surfaces:
+        if surface in seen_surfaces:
+            duplicate_surfaces.add(surface)
+        else:
+            seen_surfaces.add(surface)
+    if duplicate_surfaces:
+        raise SurfaceAllowlistError(
+            "target surfaces contain duplicate surface ids: "
+            + ", ".join(sorted(duplicate_surfaces))
+            + "; next action: remove duplicate targets before writing a publish-bus inbox artifact"
+        )
     allowed = _configured_publication_surfaces()
     disallowed = sorted(set(surfaces) - allowed)
     if disallowed:

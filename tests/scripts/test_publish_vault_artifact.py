@@ -397,6 +397,15 @@ class TestBuildArtifact:
                 approver="Oudepode",
             )
 
+    def test_rejects_duplicate_target_surfaces(self) -> None:
+        with pytest.raises(publish_vault_artifact.SurfaceAllowlistError, match="duplicate"):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(),
+                surfaces=["omg-weblog", "omg-weblog"],
+                approver="Oudepode",
+            )
+
     def test_rejects_surfaces_without_orchestrator_dispatch(self) -> None:
         with pytest.raises(publish_vault_artifact.SurfaceAllowlistError, match="not dispatchable"):
             publish_vault_artifact._build_artifact(
@@ -716,6 +725,35 @@ def test_empty_explicit_surface_list_refuses_publication(tmp_path, capsys) -> No
             "--state-root",
             str(tmp_path),
             "--dry-run",
+        ]
+    )
+
+    assert rc == 1
+    assert capsys.readouterr().out == ""
+    assert not (tmp_path / "publish" / "inbox").exists()
+
+
+def test_duplicate_target_surfaces_refuse_publication_before_inbox_write(tmp_path, capsys) -> None:
+    draft = tmp_path / "draft.md"
+    draft.write_text(
+        (
+            "---\n"
+            "Title: Duplicate Surface\n"
+            "Slug: duplicate-surface\n"
+            "Publication-Allowed: true\n"
+            "---\n\n"
+            "# Duplicate Surface\n\nBody\n"
+        ),
+        encoding="utf-8",
+    )
+
+    rc = publish_vault_artifact.main(
+        [
+            str(draft),
+            "--surfaces",
+            "omg-weblog,omg-weblog",
+            "--state-root",
+            str(tmp_path),
         ]
     )
 
