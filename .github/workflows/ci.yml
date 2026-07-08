@@ -190,11 +190,11 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
-      - if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
-        run: uv sync --extra ci
-      - name: Public surface registry and freshness contract verify
+      - name: Public surface registry contract verify
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
-        run: uv run python scripts/check-public-surface-claims.py --check-registry-only
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: uv run --no-project --with pydantic==2.13.4 --with pyyaml==6.0.3 python scripts/check-public-surface-claims.py --check-registry-only
 
   lint:
     needs: [docs_only_filter, post_merge_duplicate_filter]
