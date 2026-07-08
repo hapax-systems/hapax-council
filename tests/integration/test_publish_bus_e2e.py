@@ -211,6 +211,7 @@ def _make_orchestrator(state_root) -> Orchestrator:  # type: ignore[no-untyped-d
         public_event_path=state_root / "public-events.jsonl",
         review_pass=_ApprovingReviewPass(),
         hardening_gate=_PassingHardeningGate(),
+        public_gate_expected_head_sha="a" * 40,
         registry=CollectorRegistry(),
     )
 

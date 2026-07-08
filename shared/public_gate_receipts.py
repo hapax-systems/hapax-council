@@ -165,6 +165,7 @@ PUBLIC_GATE_INFERRED_EXPECTED_HEAD_KEYS = (
     "current_source_commit",
     "source_commit",
 )
+PUBLIC_GATE_EXPECTED_HEAD_REQUIRED_GATES = frozenset({"claim_review_current"})
 PUBLIC_GATE_SELF_AUTHORITY_VALUES = frozenset(
     {
         "codex",
@@ -249,7 +250,9 @@ def public_gate_receipt_value_present(
 ) -> bool:
     """Return true when ``value`` contains a durable receipt for ``expected_gate``."""
     expected_head = _normalized_expected_head_sha(expected_head_sha)
-    if expected_head_sha is not None and expected_head is None:
+    if expected_head is None and (
+        expected_head_sha is not None or _expected_head_required(expected_gate)
+    ):
         return False
     if isinstance(value, str):
         return public_gate_receipt_ref_exists(
@@ -289,7 +292,9 @@ def public_gate_receipt_ref_exists(
 ) -> bool:
     """Validate that ``ref`` names an existing receipt mapped to ``expected_gate``."""
     expected_head = _normalized_expected_head_sha(expected_head_sha)
-    if expected_head_sha is not None and expected_head is None:
+    if expected_head is None and (
+        expected_head_sha is not None or _expected_head_required(expected_gate)
+    ):
         return False
     suffix = _public_gate_receipt_suffix(ref)
     if suffix is None:
@@ -328,6 +333,10 @@ def _normalized_expected_head_sha(expected_head_sha: str | None) -> str | None:
     if PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(normalized) is None:
         return None
     return normalized
+
+
+def _expected_head_required(expected_gate: str) -> bool:
+    return expected_gate.strip() in PUBLIC_GATE_EXPECTED_HEAD_REQUIRED_GATES
 
 
 def public_gate_expected_head_sha_from_mapping(

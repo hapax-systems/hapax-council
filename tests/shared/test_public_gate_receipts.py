@@ -381,6 +381,31 @@ def test_rejects_signed_review_dossier_for_unexpected_head(tmp_path: Path) -> No
     )
 
 
+def test_claim_review_current_requires_expected_head(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "receipt-1.yaml",
+        _receipt_text(gate="claim_review_current"),
+    )
+    _write_review_evidence(
+        tmp_path,
+        receipt_name="receipt-1.yaml",
+        gate="claim_review_current",
+    )
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate="claim_review_current",
+        roots=(tmp_path,),
+    )
+    assert public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate="claim_review_current",
+        roots=(tmp_path,),
+        expected_head_sha="a" * 40,
+    )
+
+
 def test_rejects_signed_acceptance_receipt_for_unexpected_head(tmp_path: Path) -> None:
     (tmp_path / "receipt-1.yaml").write_text(
         f"gate_id: {GATE}\n"

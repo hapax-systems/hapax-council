@@ -48,6 +48,7 @@ import logging
 import os
 import re
 import signal as _signal
+import subprocess
 import threading
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -68,7 +69,7 @@ from shared.preprint_artifact import (
     PreprintArtifact,
 )
 from shared.public_gate_receipts import (
-    public_gate_expected_head_sha_from_mapping,
+    PUBLIC_GATE_REVIEW_HEAD_RE,
     public_gate_receipt_value_present,
 )
 from shared.publication_artifact_public_event import (
@@ -275,6 +276,7 @@ class Orchestrator:
         hardening_gate: PublicationHardeningGate | None = None,
         egress_envelope: EgressSafetyEnvelope | None = None,
         public_gate_receipt_roots: tuple[Path, ...] | None = None,
+        public_gate_expected_head_sha: str | None = None,
         publication_allowed_surfaces: set[str] | None = None,
         registry: CollectorRegistry = REGISTRY,
         tick_s: float = DEFAULT_TICK_S,
@@ -296,6 +298,9 @@ class Orchestrator:
             tuple(public_gate_receipt_roots)
             if public_gate_receipt_roots is not None
             else (self._state_root / "public-gate-receipts", *PUBLIC_GATE_RECEIPT_ROOTS)
+        )
+        self._public_gate_expected_head_sha = (
+            public_gate_expected_head_sha or _current_repo_head_sha()
         )
         self._publication_allowed_surfaces_override = (
             frozenset(publication_allowed_surfaces)
@@ -608,7 +613,6 @@ class Orchestrator:
         )
         receipts, error = _artifact_publication_gate_receipts(artifact)
         bindings = _publication_gate_receipt_bindings(artifact)
-        expected_head_sha = _publication_gate_expected_head_sha(artifact)
         findings = (error,) if error is not None else ()
         if policy_error is not None:
             findings = (*findings, policy_error)
@@ -620,7 +624,7 @@ class Orchestrator:
                 expected_gate=gate,
                 roots=self._public_gate_receipt_roots,
                 bindings=bindings,
-                expected_head_sha=expected_head_sha,
+                expected_head_sha=self._public_gate_expected_head_sha,
             )
         )
         if missing:
@@ -1471,10 +1475,6 @@ def _publication_gate_receipt_bindings(artifact: PreprintArtifact) -> dict[str, 
     }
 
 
-def _publication_gate_expected_head_sha(artifact: PreprintArtifact) -> str | None:
-    return public_gate_expected_head_sha_from_mapping(artifact.publication_gate_context)
-
-
 def _artifact_fingerprint(artifact: PreprintArtifact) -> str:
     """Fingerprint fields that define a surface publication attempt.
 
@@ -1502,6 +1502,23 @@ def _artifact_fingerprint(artifact: PreprintArtifact) -> str:
     }
     encoded = json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode()
     return sha256(encoded).hexdigest()
+
+
+def _current_repo_head_sha(repo_root: Path = REPO_ROOT) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return None
+    head_sha = result.stdout.strip()
+    if result.returncode != 0 or PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(head_sha) is None:
+        return None
+    return head_sha
 
 
 def _load_public_event_ids(path: Path) -> set[str]:

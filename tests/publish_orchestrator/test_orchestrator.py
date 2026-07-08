@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from unittest import mock
 
+import pytest
 import yaml
 from prometheus_client import CollectorRegistry
 
@@ -36,6 +37,11 @@ PUBLIC_GATE_AUTHORITY_BLOCK = (
     "review_profile: claim_verification_council_public_egress\n"
     f"evidence_ref: review-dossier:{TASK_ID}\n"
 )
+
+
+@pytest.fixture(autouse=True)
+def stable_public_gate_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(orchestrator_module, "_current_repo_head_sha", lambda: "a" * 40)
 
 
 def _drop_artifact(
@@ -907,7 +913,6 @@ class TestSingleSurface:
         artifact.mark_approved(by_referent="Oudepode")
         artifact.publication_gate_context = {
             "publication_gate_receipts": _write_public_gate_receipts(tmp_path, artifact),
-            "expected_head_sha": "b" * 40,
         }
         inbox_path = artifact.inbox_path(state_root=tmp_path)
         inbox_path.parent.mkdir(parents=True, exist_ok=True)
@@ -920,6 +925,7 @@ class TestSingleSurface:
             publication_allowed_surfaces={"fake"},
             public_event_path=tmp_path / "public-events.jsonl",
             review_pass=review_pass,
+            public_gate_expected_head_sha="b" * 40,
             registry=CollectorRegistry(),
         )
 

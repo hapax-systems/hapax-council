@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -39,13 +40,15 @@ from shared.public_gate_receipts import (
     PUBLIC_GATE_RECEIPT_PREFIXES as _PUBLIC_GATE_RECEIPT_PREFIXES,
 )
 from shared.public_gate_receipts import (
+    PUBLIC_GATE_REVIEW_HEAD_RE,
     public_gate_expected_head_sha_from_mapping,
     public_gate_receipt_value_present,
 )
 
 log = logging.getLogger(__name__)
 
-DEFAULT_CONFIG_PATH: Path = Path(__file__).resolve().parents[2] / "config" / "omg-lol-fanout.yaml"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH: Path = REPO_ROOT / "config" / "omg-lol-fanout.yaml"
 """Repository-relative config path: ``<repo>/config/omg-lol-fanout.yaml``."""
 
 FANOUT_LOOP_HEADER_PREFIX: str = "<!-- X-Hapax-Fanout-Source:"
@@ -127,6 +130,8 @@ def load_fanout_config(*, path: Path = DEFAULT_CONFIG_PATH) -> OmgFanoutConfig:
         expected_head_sha = public_gate_expected_head_sha_from_mapping(
             raw.get("publication_frontmatter_policy")
         )
+    if expected_head_sha is None:
+        expected_head_sha = _current_repo_head_sha()
     return OmgFanoutConfig(
         addresses=addresses,
         required_gates=required_gates,
@@ -154,6 +159,23 @@ def _duplicate_values(values: Sequence[str]) -> list[str]:
         else:
             seen.add(value)
     return sorted(duplicates)
+
+
+def _current_repo_head_sha(repo_root: Path = REPO_ROOT) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return None
+    head_sha = result.stdout.strip()
+    if result.returncode != 0 or PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(head_sha) is None:
+        return None
+    return head_sha
 
 
 def _configured_addresses(values: Sequence[object]) -> tuple[list[str], str | None]:

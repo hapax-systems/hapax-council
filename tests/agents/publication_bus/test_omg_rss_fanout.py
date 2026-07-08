@@ -39,6 +39,7 @@ def durable_public_gate_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     authority_root.mkdir()
     monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_AUTHORITY_ROOTS", (authority_root,))
     monkeypatch.setenv(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, AUTHORITY_SECRET)
+    monkeypatch.setattr(omg_rss_fanout, "_current_repo_head_sha", lambda: "a" * 40)
     _write_public_gate_review_evidence(root, gates=FANOUT_REQUIRED_GATES)
     _RECEIPT_ROOT = root
     monkeypatch.setattr(omg_rss_fanout, "PUBLIC_GATE_RECEIPT_ROOTS", (root,))
@@ -191,7 +192,7 @@ def _config(
     required_gates: list[str] | None = None,
     gate_policy_error: str | None = None,
     publication_policy_verified: bool = True,
-    expected_head_sha: str | None = None,
+    expected_head_sha: str | None = "a" * 40,
 ) -> OmgFanoutConfig:
     return OmgFanoutConfig(
         addresses=addresses if addresses is not None else ["hapax", "oudepode"],

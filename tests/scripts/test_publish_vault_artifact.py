@@ -42,6 +42,7 @@ def durable_public_gate_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     authority_root.mkdir()
     monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_AUTHORITY_ROOTS", (authority_root,))
     monkeypatch.setenv(public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, AUTHORITY_SECRET)
+    monkeypatch.setattr(publish_vault_artifact, "_current_repo_head_sha", lambda: "a" * 40)
     _write_public_gate_review_evidence(
         root,
         gates=tuple(PUBLICATION_GATE_RECEIPTS),
@@ -280,7 +281,6 @@ class TestBuildArtifact:
             body_md="Body",
             frontmatter=_allowed_frontmatter(
                 publication_gate_context={
-                    "expected_head_sha": "a" * 40,
                     "numeric_expectations": {"42 hooks": 42},
                     "currentness_evidence_refs": ["receipt:hn-readiness"],
                 },
@@ -294,7 +294,6 @@ class TestBuildArtifact:
         )
 
         assert artifact.publication_gate_context == {
-            "expected_head_sha": "a" * 40,
             "numeric_expectations": {"42 hooks": 42},
             "currentness_evidence_refs": ["receipt:hn-readiness"],
             "publication_gate_receipts": PUBLICATION_GATE_RECEIPTS,
@@ -304,13 +303,15 @@ class TestBuildArtifact:
             "reason": "Reviewed receipts",
         }
 
-    def test_rejects_publication_gate_receipts_for_unexpected_head(self) -> None:
+    def test_rejects_publication_gate_receipts_for_unexpected_head(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(publish_vault_artifact, "_current_repo_head_sha", lambda: "b" * 40)
         with pytest.raises(publish_vault_artifact.PublicationGateError):
             publish_vault_artifact._build_artifact(
                 body_md="Body",
-                frontmatter=_allowed_frontmatter(
-                    publication_gate_context={"expected_head_sha": "b" * 40},
-                ),
+                frontmatter=_allowed_frontmatter(),
                 surfaces=["omg-weblog"],
                 approver="Oudepode",
             )

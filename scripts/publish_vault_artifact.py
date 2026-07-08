@@ -69,6 +69,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 from collections.abc import Iterable, Mapping
 from hashlib import sha256
@@ -85,7 +86,7 @@ from shared.public_gate_receipts import (
     PUBLIC_GATE_RECEIPT_PREFIXES as _PUBLIC_GATE_RECEIPT_PREFIXES,
 )
 from shared.public_gate_receipts import (
-    public_gate_expected_head_sha_from_mapping,
+    PUBLIC_GATE_REVIEW_HEAD_RE,
     public_gate_receipt_value_present,
 )
 
@@ -590,7 +591,7 @@ def _build_artifact(
         frontmatter,
         surfaces,
         bindings=_publication_gate_receipt_bindings(artifact),
-        expected_head_sha=_publication_gate_expected_head_sha(artifact),
+        expected_head_sha=_current_repo_head_sha(),
     )
     return artifact
 
@@ -601,10 +602,6 @@ def _publication_gate_receipt_bindings(artifact: PreprintArtifact) -> dict[str, 
         "artifact_fingerprint": _artifact_fingerprint_for_gate(artifact),
         "target_surfaces": tuple(sorted(artifact.surfaces_targeted)),
     }
-
-
-def _publication_gate_expected_head_sha(artifact: PreprintArtifact) -> str | None:
-    return public_gate_expected_head_sha_from_mapping(artifact.publication_gate_context)
 
 
 def _artifact_fingerprint_for_gate(artifact: PreprintArtifact) -> str:
@@ -628,6 +625,23 @@ def _artifact_fingerprint_for_gate(artifact: PreprintArtifact) -> str:
     }
     encoded = json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode()
     return sha256(encoded).hexdigest()
+
+
+def _current_repo_head_sha(repo_root: Path = REPO_ROOT) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return None
+    head_sha = result.stdout.strip()
+    if result.returncode != 0 or PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(head_sha) is None:
+        return None
+    return head_sha
 
 
 def _assert_safe_artifact_slug(slug: str) -> None:
