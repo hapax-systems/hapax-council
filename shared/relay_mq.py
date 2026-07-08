@@ -168,11 +168,19 @@ def _row_to_envelope(row: sqlite3.Row) -> Envelope:
 
 
 # Canonical Claude coordination-lane names (greek slots). Codex lanes are
-# ``cx-<color>``; Antigrav lanes start ``antigrav``; Vibe lanes start
-# ``vbe``/``vibe``. These predicates are the single source of truth shared by
-# the per-runtime broadcast groups and the cross-runtime ``workers`` group.
+# ``cx-<color>``; Vibe lanes start ``vbe``/``vibe``. Antigrav/Antigravity/legacy
+# Gemini relay peers are retired and filtered/refused here so stale YAML files
+# cannot remain live broadcast targets. The live agy surface is a read-only
+# review route, not a relay peer. These predicates are the single source of truth
+# shared by the per-runtime broadcast groups and the cross-runtime ``workers``
+# group.
 _CLAUDE_LANE_NAMES = frozenset(
     {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
+)
+_RETIRED_ANTIGRAV_NEXT_ACTION = (
+    "antigrav and legacy gemini-cli relay recipients are retired/excised; agy is "
+    "not a relay peer and only exists as agy.review.direct through "
+    "scripts/hapax-agy-reviewer for admitted read-only review-plane work"
 )
 
 
@@ -184,8 +192,9 @@ def _is_codex_lane(peer: str) -> bool:
     return peer.startswith("cx-")
 
 
-def _is_antigrav_lane(peer: str) -> bool:
-    return peer.startswith("antigrav")
+def _is_retired_antigrav_lane(peer: str) -> bool:
+    normalized = _normalize_role(peer)
+    return normalized == "gemini-cli" or normalized.startswith(("agy", "antigrav", "gemini-cli-"))
 
 
 def _is_vibe_lane(peer: str) -> bool:
@@ -194,12 +203,11 @@ def _is_vibe_lane(peer: str) -> bool:
 
 def _is_worker_lane(peer: str) -> bool:
     """A recognised executor lane across active runtimes."""
-    return (
-        _is_claude_lane(peer)
-        or _is_codex_lane(peer)
-        or _is_antigrav_lane(peer)
-        or _is_vibe_lane(peer)
-    )
+    return _is_claude_lane(peer) or _is_codex_lane(peer) or _is_vibe_lane(peer)
+
+
+def _live_relay_peers(peers: list[str]) -> list[str]:
+    return [p for p in peers if not _is_retired_antigrav_lane(p)]
 
 
 def expand_recipients(
@@ -217,26 +225,31 @@ def expand_recipients(
         if not peers:
             raise ValueError(f"Broadcast spec '{spec}' but no peers found in {relay_dir}")
 
+        live_peers = _live_relay_peers(peers)
+
         if group == "all":
-            return peers
+            return live_peers
         elif group == "coordinators":
-            return [p for p in peers if p != "rte" and not p.startswith("timer:")]
+            return [p for p in live_peers if p != "rte" and not p.startswith("timer:")]
         elif group == "claude":
-            return [p for p in peers if _is_claude_lane(p)]
+            return [p for p in live_peers if _is_claude_lane(p)]
         elif group == "codex":
-            return [p for p in peers if _is_codex_lane(p)]
+            return [p for p in live_peers if _is_codex_lane(p)]
         elif group == "antigrav":
-            return [p for p in peers if _is_antigrav_lane(p)]
+            raise ValueError(_RETIRED_ANTIGRAV_NEXT_ACTION)
         elif group == "vibe":
-            return [p for p in peers if _is_vibe_lane(p)]
+            return [p for p in live_peers if _is_vibe_lane(p)]
         elif group == "workers":
-            return [p for p in peers if _is_worker_lane(p)]
+            return [p for p in live_peers if _is_worker_lane(p)]
         else:
             raise ValueError(f"Unknown broadcast group: '{group}'")
 
     tokens = [_normalize_role(t) for t in spec.split(",") if t.strip()]
     if not tokens:
         raise ValueError("Empty recipients spec")
+    retired = [t for t in tokens if _is_retired_antigrav_lane(t)]
+    if retired:
+        raise ValueError(_RETIRED_ANTIGRAV_NEXT_ACTION)
     return tokens
 
 

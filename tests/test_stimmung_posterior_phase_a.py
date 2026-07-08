@@ -11,6 +11,7 @@ These tests verify:
 from __future__ import annotations
 
 from shared.stimmung import (
+    _DIMENSION_NAMES,
     DimensionReading,
     StimmungCollector,
     SystemStimmung,
@@ -128,20 +129,7 @@ class TestCollectorPhaseA:
         """Every dimension in snapshot has the sigma field."""
         c = StimmungCollector(enable_exploration=False)
         snap = c.snapshot()
-        for name in [
-            "health",
-            "resource_pressure",
-            "error_rate",
-            "processing_throughput",
-            "perception_confidence",
-            "llm_cost_pressure",
-            "grounding_quality",
-            "exploration_deficit",
-            "audience_engagement",
-            "operator_stress",
-            "operator_energy",
-            "physiological_coherence",
-        ]:
+        for name in _DIMENSION_NAMES:
             dim = getattr(snap, name)
             assert hasattr(dim, "sigma"), f"{name} missing sigma"
             assert hasattr(dim, "n"), f"{name} missing n"

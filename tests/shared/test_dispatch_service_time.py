@@ -407,6 +407,62 @@ def test_plan_respects_platform_routing() -> None:
     assert plan == []  # a codex-only task is not routable to a claude lane
 
 
+def test_plan_excludes_claude_operator_pool_lanes() -> None:
+    tasks = [_task("claude-job", 9, platforms=("claude",))]
+    plan = plan_dispatches(
+        tasks,
+        [_lane("dev"), _lane("dev2"), _lane("beta")],
+        max_dispatches=4,
+        legacy=False,
+    )
+    assert plan == [("claude-job", "beta")]
+
+
+def test_plan_legacy_excludes_claude_operator_pool_lanes() -> None:
+    tasks = [_task("claude-job", 9, platforms=("claude",))]
+    plan = plan_dispatches(
+        tasks,
+        [_lane("dev"), _lane("dev2"), _lane("beta")],
+        max_dispatches=4,
+        legacy=True,
+    )
+    assert plan == [("claude-job", "beta")]
+
+
+def test_plan_excludes_claude_operator_pool_when_no_other_lane() -> None:
+    tasks = [_task("claude-job", 9, platforms=("claude",))]
+    plan = plan_dispatches(
+        tasks,
+        [_lane("dev"), _lane("dev12")],
+        max_dispatches=4,
+        legacy=False,
+    )
+    assert plan == []
+
+
+def test_plan_legacy_excludes_claude_operator_pool_when_no_other_lane() -> None:
+    tasks = [_task("claude-job", 9, platforms=("claude",))]
+    plan = plan_dispatches(
+        tasks,
+        [_lane("dev"), _lane("dev12")],
+        max_dispatches=4,
+        legacy=True,
+    )
+    assert plan == []
+
+
+def test_plan_excludes_non_dispatchable_codex_relay_lane() -> None:
+    plan = plan_dispatches(
+        [_task("codex-job", 9, platforms=("codex",))],
+        [
+            QueueLane(role="cx-fugu-1", platform="codex", dispatchable=False),
+            QueueLane(role="cx-crit", platform="codex"),
+        ],
+        max_dispatches=4,
+    )
+    assert plan == [("codex-job", "cx-crit")]
+
+
 def test_plan_free_lane_not_blocked_by_higher_wsjf_on_busy_lineage() -> None:
     """AC4: a low-WSJF routable task reaches a free lane while a higher-WSJF
     task sits unroutable on a busy (no idle lane) pinned lineage."""

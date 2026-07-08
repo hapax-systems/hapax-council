@@ -46,6 +46,18 @@ def _read_fresh_json(
         return None
 
 
+def _numeric(data: dict[str, object], *keys: str, default: float = 0.0) -> float:
+    for key in keys:
+        value = data.get(key)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return default
+
+
 def update_stimmung_sources(agg: VisualLayerAggregator) -> None:
     """Collect stimmung readings from all available data sources."""
     # 1. Health history
@@ -84,6 +96,50 @@ def update_stimmung_sources(agg: VisualLayerAggregator) -> None:
         )
     except (OSError, json.JSONDecodeError):
         log.debug("Langfuse state read failed", exc_info=True)
+
+    # 3b. Local inference capacity pressure
+    try:
+        local_read = _read_fresh_json(_c.LOCAL_CAPACITY_FILE, max_age_s=30)
+        if local_read:
+            local_capacity, age_s = local_read
+            inflight = _numeric(
+                local_capacity,
+                "inflight",
+                "in_flight",
+                "active_requests",
+                "active",
+            )
+            ceiling = _numeric(
+                local_capacity,
+                "ceiling",
+                "capacity_ceiling",
+                "max_concurrency",
+                "concurrency_ceiling",
+            )
+            ttft_ratio = _numeric(local_capacity, "ttft_ratio", default=0.0)
+            if ttft_ratio <= 0:
+                ttft_ewma_s = _numeric(local_capacity, "ttft_ewma_s", "ttft_ewma_ms")
+                ttft_baseline_s = _numeric(
+                    local_capacity,
+                    "ttft_baseline_s",
+                    "ttft_baseline_ms",
+                )
+                if ttft_ewma_s > 0 and ttft_baseline_s > 0:
+                    ttft_ratio = ttft_ewma_s / ttft_baseline_s
+                else:
+                    ttft_ratio = 1.0
+            agg._stimmung_collector.update_local_capacity(inflight, ceiling, ttft_ratio)
+            log.debug(
+                "Local capacity: inflight=%.1f ceiling=%.1f ttft_ratio=%.2f (age %.1fs)",
+                inflight,
+                ceiling,
+                ttft_ratio,
+                age_s,
+            )
+        elif _c.LOCAL_CAPACITY_FILE.exists():
+            log.debug("Local capacity state stale or invalid")
+    except Exception:
+        log.debug("Local capacity read failed", exc_info=True)
 
     # 4. Biometrics (delegated)
     update_biometrics(agg)

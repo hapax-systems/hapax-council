@@ -101,7 +101,7 @@ class TestPollOnce:
         assert emitted == 0
         assert receiver.disabled
 
-    def test_200_emits_event(self, tmp_path, monkeypatch):
+    def test_200_emits_event(self, tmp_path, monkeypatch, _durable_chronicle):
         log_path = tmp_path / "events.jsonl"
         import agents.payment_processors.event_log as ev_log
 

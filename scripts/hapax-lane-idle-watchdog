@@ -453,6 +453,7 @@ for session in "${!LANES[@]}"; do
     else
         # Lane is active — clear idle tracking
         rm -f "$state_file" 2>/dev/null
+        rm -f "$STATE_DIR/${session}.dispatch_failure_alerted" 2>/dev/null
         active_count=$((active_count + 1))
     fi
 done
@@ -558,7 +559,11 @@ for session in "${!IDLE_LANES[@]}"; do
             ;;
         codex)
             if [ -x "$CODEX_SEND" ]; then
-                "$CODEX_SEND" --session "$lane" --require-ack -- "$dispatch_msg" 2>/dev/null && send_success=true
+                codex_send_args=(--session "$lane")
+                if [ -n "$claimed" ]; then
+                    codex_send_args+=(--require-ack)
+                fi
+                "$CODEX_SEND" "${codex_send_args[@]}" -- "$dispatch_msg" 2>/dev/null && send_success=true
             fi
             ;;
     esac
@@ -568,16 +573,24 @@ for session in "${!IDLE_LANES[@]}"; do
     if [ "$send_success" = true ]; then
         log "DISPATCHED $session ($platform/$lane): idle ${idle_s}s -> $dispatch_target"
         rm -f "$STATE_DIR/${session}.idle_since" 2>/dev/null
+        rm -f "$STATE_DIR/${session}.dispatch_failure_alerted" 2>/dev/null
         dispatched=$((dispatched + 1))
     else
-        log "FAILED to dispatch $session ($platform/$lane): idle ${idle_s}s"
-        curl -sf -d "Lane idle watchdog: failed to dispatch $lane ($platform) after ${idle_s}s idle" \
-            -H "Title: Lane dispatch failure" \
-            -H "Priority: high" \
-            -H "Tags: warning" \
-            "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
-        # Governed incident record alongside the ntfy channel.
-        "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Lane dispatch failure" "failed to dispatch $lane ($platform) after ${idle_s}s idle" --tag lane --record-only
+        failure_alerted_file="$STATE_DIR/${session}.dispatch_failure_alerted"
+        if [ -f "$failure_alerted_file" ]; then
+            first_alerted="$(cat "$failure_alerted_file" 2>/dev/null || true)"
+            log "SUPPRESSED duplicate dispatch failure for $session ($platform/$lane): idle ${idle_s}s, first_alerted=${first_alerted:-unknown}"
+        else
+            echo "$now" > "$failure_alerted_file"
+            log "FAILED to dispatch $session ($platform/$lane): idle ${idle_s}s"
+            curl -sf -d "Lane idle watchdog: failed to dispatch $lane ($platform) after ${idle_s}s idle" \
+                -H "Title: Lane dispatch failure" \
+                -H "Priority: high" \
+                -H "Tags: warning" \
+                "$NTFY_URL/$NTFY_TOPIC" >/dev/null 2>&1 || true
+            # Governed incident record alongside the ntfy channel.
+            "$(dirname "$(readlink -f "$0")")/hapax-alert" high "Lane dispatch failure" "failed to dispatch $lane ($platform) after ${idle_s}s idle" --tag lane --record-only
+        fi
     fi
 done
 fi

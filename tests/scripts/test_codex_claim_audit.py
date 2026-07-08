@@ -16,6 +16,9 @@ Also tests:
 
 from __future__ import annotations
 
+import json
+import re
+import shutil
 import subprocess
 import textwrap
 from pathlib import Path
@@ -96,6 +99,25 @@ def _gh_stub(
         textwrap.dedent(f"""\
         #!/usr/bin/env bash
         # Stub gh for testing
+        if [[ "$1" == "api" ]]; then
+            if printf '%s\n' "$@" | grep -q 'repos/.*/pulls/[0-9]'; then
+                echo '{state}'
+                exit 0
+            fi
+            if printf '%s\n' "$@" | grep -q 'repos/.*/pulls$'; then
+                head=""
+                while [[ $# -gt 0 ]]; do
+                    if [[ "$1" == "-f" && "$2" == head=* ]]; then head="${{2#head=}}"; shift; fi
+                    shift
+                done
+                head_branch="${{head#*:}}"
+                if [[ -n "{branch_match}" && "$head_branch" == "{branch_match}" ]]; then
+                    echo '{open_pr_number}'
+                fi
+                exit 0
+            fi
+            exit 1
+        fi
         if [[ "$1" == "pr" && "$2" == "view" ]]; then
             echo '{state}'
             exit 0
@@ -265,6 +287,31 @@ def _run_audit(
 
 class TestPROpenClaimProtection:
     """Failure class #5 regression: open PR = claim is LIVE, never cleared."""
+
+    def test_rest_pull_state_jq_maps_raw_payloads(self) -> None:
+        """The inline REST /pulls/{n} jq expression preserves open/closed precedence."""
+        assert shutil.which("jq"), "jq is required to verify the gh --jq expression"
+        script = SCRIPT.read_text(encoding="utf-8")
+        match = re.search(r"--jq '([^']*merged_at[^']*)'", script)
+        assert match is not None
+        expression = match.group(1)
+
+        cases = [
+            ({"state": "closed", "merged": True, "merged_at": "2026-07-05T00:00:00Z"}, "MERGED"),
+            ({"state": "closed", "merged": False, "merged_at": None}, "CLOSED"),
+            ({"state": "open", "draft": True, "merged": False, "merged_at": None}, "DRAFT"),
+            ({"state": "open", "draft": False, "merged": False, "merged_at": None}, "OPEN"),
+        ]
+
+        for payload, expected in cases:
+            result = subprocess.run(
+                ["jq", "-r", expression],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            assert result.stdout.strip() == expected
 
     def test_cache_sweep_open_pr_not_cleared(self, tmp_path: Path) -> None:
         """Cache sweep must not clear a cache whose PR is OPEN."""

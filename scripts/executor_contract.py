@@ -1,9 +1,9 @@
 """Executor adapter contract — the one capability surface every runtime conforms
 to (reform §6 P1).
 
-Each launcher (Claude, Codex, Vibe, Antigrav) speaks a common adapter CLI; their
-genuine differences (Antigrav's IDE-surface hook gap, which runtimes have a real
-headless path) are reported as machine-legible *capability flags* by
+Each admitted launcher (Claude, Codex, Vibe) speaks a common adapter CLI; their
+genuine differences (which runtimes have a real headless path, which are
+receipt-only) are reported as machine-legible *capability flags* by
 :func:`capabilities`, NOT branched in the dispatcher. The dispatcher consumes
 :func:`supports_route` to decide launchability instead of a hard
 ``(platform, mode)`` if-ladder, and ``hapax-executor-capabilities`` /
@@ -52,20 +52,35 @@ class ExecutorCapabilities(BaseModel, frozen=True):
 
 
 EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
-    "api": ExecutorCapabilities(
-        platform="api",
+    "agy": ExecutorCapabilities(
+        platform="agy",
         modes=(),
-        profiles=("api_frontier", "provider_gateway"),
+        profiles=("direct",),
         mutates=False,
         claims=False,
         hooks_wired=False,
         headless=False,
         read_only=True,
         notes=(
-            "receipt-only route metadata for both REQUIRED api routes "
-            "(api_frontier cloud-burst + provider_gateway maintenance); no direct "
-            "provider launcher is wired (modes=()), so dispatch emits receipts "
-            "without spending provider budget"
+            "receipt-only review-seat route (agy.review.direct); a read-only PR "
+            "reviewer via hapax-agy-reviewer and /usr/bin/agy, not a launchable "
+            "worker lane (modes=())."
+        ),
+    ),
+    "api": ExecutorCapabilities(
+        platform="api",
+        modes=(),
+        profiles=("api_frontier", "openrouter", "provider_gateway"),
+        mutates=False,
+        claims=False,
+        hooks_wired=False,
+        headless=False,
+        read_only=True,
+        notes=(
+            "receipt-only route metadata for REQUIRED api routes "
+            "(api_frontier cloud-burst, openrouter frontier leaf, and "
+            "provider_gateway maintenance); no direct provider launcher is wired "
+            "(modes=()), so dispatch emits receipts without spending provider budget"
         ),
     ),
     "glmcp": ExecutorCapabilities(
@@ -130,19 +145,6 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
         hooks_wired=True,
         headless=True,
         notes="bounded one-shot headless worker lane",
-    ),
-    "antigrav": ExecutorCapabilities(
-        platform="antigrav",
-        modes=("interactive",),
-        profiles=("full",),
-        mutates=True,
-        claims=True,
-        hooks_wired=True,
-        headless=False,
-        notes=(
-            "agy CLI interactive; PreToolUse gate wired via antigrav-hook-adapter "
-            "(#3802). Residual gap: the IDE Edit/Write surface is not gated."
-        ),
     ),
 }
 

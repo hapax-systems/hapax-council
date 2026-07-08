@@ -20,7 +20,6 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import sys
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -759,59 +758,18 @@ async def _generate_activity_report_impl(hours: int = 24) -> ActivityReport:
 # ── Synthesis (optional LLM call) ───────────────────────────────────────────
 
 
+def get_model_adaptive(alias: str = "balanced"):
+    """Stimmung-aware model selection — delegates to shared.config."""
+    from shared.config import get_model_adaptive as _shared_get_model_adaptive
+
+    return _shared_get_model_adaptive(alias)
+
+
 async def synthesize_report(report: ActivityReport) -> str:
     """Generate a natural language summary of the activity report."""
     from pydantic_ai import Agent
-    from pydantic_ai.models.openai import OpenAIChatModel
-    from pydantic_ai.providers.litellm import LiteLLMProvider
 
     from agents._operator import get_system_prompt_fragment
-
-    _litellm_base = os.environ.get(
-        "LITELLM_API_BASE", os.environ.get("LITELLM_BASE_URL", "http://localhost:4000")
-    )
-    _litellm_key = os.environ.get("LITELLM_API_KEY", "")
-    _models = {
-        "fast": "gemini-flash",
-        "balanced": "claude-sonnet",
-        "long-context": "gemini-flash",
-        "reasoning": "reasoning",
-        "coding": "coding",
-        "local-fast": "local-fast",
-    }
-
-    def get_model(alias_or_id: str = "balanced") -> OpenAIChatModel:
-        model_id = _models.get(alias_or_id, alias_or_id)
-        return OpenAIChatModel(
-            model_id, provider=LiteLLMProvider(api_base=_litellm_base, api_key=_litellm_key)
-        )
-
-    def get_model_adaptive(alias: str = "balanced") -> OpenAIChatModel:
-        import json
-        from pathlib import Path as _Path
-
-        try:
-            raw = json.loads(
-                _Path("/dev/shm/hapax-stimmung/state.json").read_text(encoding="utf-8")
-            )
-            stance = raw.get("overall_stance", "nominal")
-            cost = raw.get("llm_cost_pressure", {}).get("value", 0.0)
-            resource = raw.get("resource_pressure", {}).get("value", 0.0)
-
-            if stance == "critical":
-                return get_model("local-fast")
-            if resource > 0.7:
-                downgraded = {"balanced": "fast", "fast": "local-fast", "reasoning": "local-fast"}
-                if alias in downgraded:
-                    return get_model(downgraded[alias])
-            if cost > 0.6:
-                downgraded = {"balanced": "fast"}
-                if alias in downgraded:
-                    return get_model(downgraded[alias])
-        except Exception:
-            pass
-
-        return get_model(alias)
 
     agent = Agent(
         get_model_adaptive("fast"),

@@ -92,3 +92,53 @@ exit 1
     assert '"infra": 1' in result.stdout
     assert '"session_total": 3' in result.stdout
     assert '"status": "ok"' in result.stdout
+
+
+def test_relocated_infra_on_data_mount_is_not_counted(tmp_path: Path) -> None:
+    """Infra that moved off ~/.cache to /data2/data/cache + /store + source-activation
+    must NOT count as session worktrees (2026-06-27 false over-cap regression)."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_git = bin_dir / "git"
+    fake_git.write_text(
+        """#!/usr/bin/env bash
+if [ "$1" = "rev-parse" ]; then
+  exit 0
+fi
+if [ "$1" = "worktree" ] && [ "$2" = "list" ]; then
+  cat <<'EOF'
+/home/hapax/projects/hapax-council  abc123 [main]
+/home/hapax/projects/hapax-council--cx-green  abc123 [codex/cx-green]
+/data2/data/cache/hapax/rebuild/worktree  abc123 (detached HEAD)
+/data2/data/cache/hapax/scratch/eval-batch  abc123 [cc/eval-batch]
+/data2/data/cache/hapax/source-activation/releases/deadbeef  abc123 (detached HEAD)
+/var/lib/hapax/source-activation/releases/feedf00d  abc123 (detached HEAD)
+/store/llm-data/runtime/health-monitor-source  abc123 (detached HEAD)
+EOF
+  exit 0
+fi
+exit 1
+"""
+    )
+    fake_git.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--json"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(REPO_ROOT),
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    # 5 infra: rebuild, scratch, release-under-cache/hapax, AND a standalone
+    # source-activation path NOT under cache/hapax (exercises the source-activation
+    # arm independently), plus the runtime source. 2 sessions (primary + cx-green).
+    assert '"infra": 5' in result.stdout
+    assert '"session_total": 2' in result.stdout
+    assert '"unknown": 0' in result.stdout
+    assert '"status": "ok"' in result.stdout

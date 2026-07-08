@@ -1,144 +1,362 @@
 <style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
 :root {
-  --hapax-bg: #1d2021;
-  --hapax-fg: #ebdbb2;
-  --hapax-border: #3c3836;
-  --hapax-panel: #282828;
-  --hapax-muted: #928374;
-  --hapax-dim: #a89984;
-  --hapax-green: #b8bb26;
-  --hapax-yellow: #fabd2f;
-  --hapax-orange: #fe8019;
-  --hapax-blue: #83a598;
-  --hapax-blue-hover: #8ec07c;
+  --bg: #1d2021;
+  --surface: #282828;
+  --ink: #ebdbb2;
+  --muted: #a89984;
+  --line: #3c3836;
+  --soft: #32302f;
+  --link: #83a598;
+  --link-hover: #8ec07c;
+  --accent: #fe8019;
+  --yellow: #fabd2f;
+  --green: #b8bb26;
+  --red: #fb4934;
+  --purple: #d3869b;
 }
-html, body { background-color: var(--hapax-bg) !important; color: var(--hapax-fg) !important; font-family: 'JetBrains Mono', monospace !important; font-size: 14px !important; line-height: 1.6 !important; text-align: left !important; }
-main, main.h-card, .h-card { max-width: 720px !important; margin: 0 auto !important; padding: 2rem 1rem !important; text-align: left !important; background: transparent !important; }
-h1, h2, h3 { font-family: 'JetBrains Mono', monospace !important; font-weight: 700 !important; text-align: left !important; border-bottom: 1px solid var(--hapax-border) !important; padding-bottom: 0.3rem !important; }
-h1#name, h1.p-name { color: var(--hapax-green) !important; font-size: 1.8rem !important; }
-h2 { color: var(--hapax-yellow) !important; font-size: 1.2rem !important; margin-top: 2rem !important; }
-h3 { color: var(--hapax-orange) !important; font-size: 1rem !important; }
-p, li, td, th, div, span { text-align: left !important; color: var(--hapax-fg) !important; }
-a, a:visited { color: var(--hapax-blue) !important; text-decoration: none !important; border-bottom: 1px dotted var(--hapax-muted) !important; }
-a:hover { color: var(--hapax-blue-hover) !important; border-bottom-color: var(--hapax-blue-hover) !important; }
-hr { border: none !important; border-top: 1px solid var(--hapax-border) !important; margin: 1.5rem 0 !important; }
-strong, b { color: var(--hapax-orange) !important; }
-code { background: var(--hapax-panel) !important; color: var(--hapax-green) !important; padding: 0.1rem 0.3rem !important; border-radius: 0 !important; }
-table { border-collapse: collapse !important; width: 100% !important; }
-th { background: var(--hapax-panel) !important; color: var(--hapax-yellow) !important; text-align: left !important; padding: 0.4rem 0.6rem !important; border: 1px solid var(--hapax-muted) !important; }
-td { padding: 0.4rem 0.6rem !important; border: 1px solid var(--hapax-border) !important; }
-.prami, img[src*="prami"] { display: none !important; }
-#footer, footer { color: var(--hapax-dim) !important; font-size: 0.8rem !important; text-align: left !important; }
+* { box-sizing: border-box !important; }
+html,
+body {
+  margin: 0 !important;
+  background: var(--bg) !important;
+  color: var(--ink) !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+  text-align: left !important;
+}
+body > main.h-card {
+  width: min(calc(100% - 2.5rem), 72rem) !important;
+  max-width: none !important;
+  margin: 0 auto !important;
+  padding: 0 0 3rem !important;
+  background: transparent !important;
+  color: var(--ink) !important;
+  text-align: left !important;
+}
+body > main.h-card > header.h-card {
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 2rem 0 1rem !important;
+  background: transparent !important;
+  border-bottom: 1px solid var(--line) !important;
+  text-align: left !important;
+}
+body > main.h-card > header.h-card h1.p-name {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  color: var(--green) !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 1.6rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0 !important;
+  line-height: 1 !important;
+  text-align: left !important;
+}
+.subtitle,
+.site-nav {
+  max-width: 52rem !important;
+  margin: 0.75rem 0 0 !important;
+  color: var(--muted) !important;
+}
+.site-nav {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 0.5rem 0.75rem !important;
+}
+.hapax-landing-shell {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) 16rem !important;
+  gap: clamp(1.5rem, 4vw, 3rem) !important;
+  align-items: start !important;
+  padding: 1.5rem 0 3rem !important;
+}
+.hapax-landing-article {
+  min-width: 0 !important;
+  background: var(--surface) !important;
+  border: 1px solid var(--line) !important;
+  padding: clamp(1.25rem, 3.6vw, 2rem) !important;
+}
+.hapax-landing-sidebar {
+  position: sticky !important;
+  top: 1.25rem !important;
+  border-left: 1px solid var(--line) !important;
+  padding-left: 1rem !important;
+  color: var(--muted) !important;
+}
+.hapax-landing-sidebar section + section {
+  margin-top: 1.5rem !important;
+}
+h1,
+h2,
+h3 {
+  font-family: 'JetBrains Mono', monospace !important;
+  font-weight: 700 !important;
+  letter-spacing: 0 !important;
+  text-align: left !important;
+}
+h2 {
+  margin: 2rem 0 0.75rem !important;
+  padding-bottom: 0.35rem !important;
+  border-bottom: 1px solid var(--line) !important;
+  color: var(--yellow) !important;
+  font-size: 1.2rem !important;
+  line-height: 1.35 !important;
+}
+h2:first-child {
+  margin-top: 0 !important;
+}
+h3,
+.hapax-landing-sidebar h2 {
+  margin: 0 0 0.5rem !important;
+  padding: 0 !important;
+  border: 0 !important;
+  color: var(--accent) !important;
+  font-size: 0.78rem !important;
+  line-height: 1.4 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.1em !important;
+}
+p,
+li,
+dt,
+dd,
+td,
+th,
+div,
+span {
+  color: var(--ink) !important;
+  text-align: left !important;
+}
+p {
+  margin: 0 0 1rem !important;
+}
+.lede {
+  color: var(--muted) !important;
+}
+a,
+a:visited {
+  color: var(--link) !important;
+  text-decoration: none !important;
+  border-bottom: 1px dotted var(--muted) !important;
+}
+a:hover {
+  color: var(--link-hover) !important;
+  border-bottom-color: var(--link-hover) !important;
+}
+strong,
+b {
+  color: var(--accent) !important;
+}
+code {
+  background: var(--soft) !important;
+  color: var(--green) !important;
+  padding: 0.1rem 0.3rem !important;
+  border-radius: 0 !important;
+}
+ol,
+ul {
+  margin: 0 0 1rem !important;
+  padding-left: 1.25rem !important;
+}
+li + li {
+  margin-top: 0.35rem !important;
+}
+.metric-list,
+.axiom-list,
+.trust-list,
+.vocab-list {
+  margin: 1rem 0 1.5rem !important;
+}
+.metric-list {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  border-top: 1px solid var(--line) !important;
+  border-left: 1px solid var(--line) !important;
+}
+.metric-list div {
+  min-width: 0 !important;
+  padding: 0.75rem !important;
+  border-right: 1px solid var(--line) !important;
+  border-bottom: 1px solid var(--line) !important;
+  background: var(--soft) !important;
+}
+.metric-list dt,
+.axiom-list dt,
+.trust-list dt,
+.vocab-list dt {
+  margin: 0 !important;
+  color: var(--accent) !important;
+  font-weight: 700 !important;
+}
+.metric-list dd,
+.axiom-list dd,
+.trust-list dd,
+.vocab-list dd {
+  margin: 0.2rem 0 0 !important;
+  color: var(--muted) !important;
+}
+.axiom-list,
+.trust-list,
+.vocab-list {
+  display: grid !important;
+  gap: 0.7rem !important;
+}
+.hapax-landing-sidebar ul {
+  margin: 0 !important;
+  padding-left: 0 !important;
+  list-style: none !important;
+}
+.hapax-landing-sidebar li + li {
+  margin-top: 0.45rem !important;
+}
+hr {
+  display: none !important;
+}
+.prami,
+img[src*="prami"],
+#prami {
+  display: none !important;
+}
+#footer,
+footer {
+  color: var(--muted) !important;
+  font-size: 0.8rem !important;
+  text-align: left !important;
+}
+@media (max-width: 58rem) {
+  body > main.h-card {
+    width: min(calc(100% - 1.5rem), 72rem) !important;
+  }
+  .hapax-landing-shell {
+    display: block !important;
+    padding-top: 1rem !important;
+  }
+  .hapax-landing-article {
+    margin-left: -0.75rem !important;
+    margin-right: -0.75rem !important;
+    border-left: 0 !important;
+    border-right: 0 !important;
+    padding: 1.25rem 0.75rem !important;
+  }
+  .hapax-landing-sidebar {
+    position: static !important;
+    margin-top: 1.5rem !important;
+    border-left: 0 !important;
+    border-top: 1px solid var(--line) !important;
+    padding: 1rem 0 0 !important;
+  }
+  .metric-list {
+    grid-template-columns: 1fr !important;
+  }
+}
 </style>
 
 <header class="h-card">
 <h1 class="p-name">hapax</h1>
 <p class="subtitle p-note">An independent AI research lab. One operator, AI coding agents, constitutional governance.</p>
-<p><a class="u-url u-uid" href="https://hapax.omg.lol">hapax.omg.lol</a> / <a rel="me" href="https://youtube.com/@legomena-live">legomena live</a></p>
+<p class="site-nav"><a class="u-url u-uid" href="https://hapax.omg.lol">hapax.omg.lol</a> / <a rel="me" href="https://youtube.com/@legomena-live">legomena live</a> / <a href="https://hapax.weblog.lol">weblog</a></p>
 </header>
 
-Public stream: gated until YouTube/OBS readiness is green. Weblog: [hapax.weblog.lol](https://hapax.weblog.lol).
+<div class="hapax-landing-shell">
+<article class="hapax-landing-article">
+<p class="lede">Public stream: gated until YouTube/OBS readiness is green. Weblog: <a href="https://hapax.weblog.lol">hapax.weblog.lol</a>.</p>
 
----
+<section id="what-this-is">
+<h2>what this is</h2>
+<p>Hapax is a single-operator AI research lab building auditable personal AI systems. A coordinated fleet of AI coding agents is governed by five constitutional axioms, 42 tracked council shell hooks, and five portable <code>agentgov</code> checks. The tracked council paths use mechanical gates for branch creation, file writes, commits, pushes, pull requests, publication, and selected runtime actions. This is a governed-path claim, not a universal claim that no bypass exists. The system includes attribution and privacy checks designed to fail closed on those paths; broader privacy and consent claims remain scope-bound to labeled data paths and current receipts.</p>
+<p>The lab runs locally and is operated by one person. Public live egress is readiness-gated; when the YouTube/OBS gate is green, the live channel will be linked as current evidence.</p>
+</section>
 
-## what this is
+<section id="data">
+<h2>the data</h2>
+<p>Receipt-backed launch-window sample: March 12 through May 10, 2026.</p>
+<dl class="metric-list">
+<div><dt>3,041</dt><dd>pull requests opened in the sampled window</dd></div>
+<div><dt>2,871</dt><dd>pull requests merged in the sampled window</dd></div>
+<div><dt>5</dt><dd>revert-titled pull requests</dd></div>
+<div><dt>0.16%</dt><dd>revert-title rate over opened pull requests</dd></div>
+<div><dt>42</dt><dd>tracked council shell hook scripts</dd></div>
+<div><dt>5</dt><dd>portable <code>agentgov</code> checks</dd></div>
+<div><dt>47</dt><dd>markdown refusal briefs</dd></div>
+</dl>
+</section>
 
-Hapax is a single-operator AI research lab building auditable personal AI systems. A coordinated fleet of AI coding agents is governed by five constitutional axioms, 42 tracked council shell hooks, and five portable `agentgov` checks. The tracked council paths use mechanical gates for branch creation, file writes, commits, pushes, pull requests, publication, and selected runtime actions. This is a governed-path claim, not a universal claim that no bypass exists. The system includes attribution and privacy checks designed to fail closed on those paths; broader privacy and consent claims remain scope-bound to labeled data paths and current receipts.
+<section id="why-trust">
+<h2>why trust</h2>
+<p>A major anti-AI concern is distrust. Hapax treats the causes as engineering requirements and publishes evidence where mechanical gates exist.</p>
+<dl class="trust-list">
+<div><dt>Claim discipline</dt><dd>Public launch numbers are receipt-gated and corrected when receipts disagree. Unsupported hard metrics are removed rather than defended.</dd></div>
+<div><dt>Slop</dt><dd>HOMAGE aesthetic governance. CP437 typography, mIRC sixteen-colour semantics. Aesthetic standards are treated as enforceable constraints, not preferences.</dd></div>
+<div><dt>Dishonesty</dt><dd>Interpersonal transparency axiom (weight 88/100). Governed data paths reject persistent state about non-operator persons without an active consent contract, modeled as an information flow control lattice.</dd></div>
+<div><dt>Privacy</dt><dd>Consent-as-IFC. Operator consent modeled using Decentralized Label Models (DLM/LIO formalism from systems security). Within labeled consent-checking paths, violations are structurally detectable rather than only heuristically guessed.</dd></div>
+</dl>
+</section>
 
-The lab runs locally and is operated by one person. Public live egress is readiness-gated; when the YouTube/OBS gate is green, the live channel will be linked as current evidence.
+<section id="research">
+<h2>research</h2>
+<p>Targeting CHI 2027. Research contributions under development:</p>
+<ol>
+<li>Consent-as-information-flow-control (DLM/LIO applied to consent governance)</li>
+<li>Neurodivergent accommodation as constitutional invariant</li>
+<li>Stigmergic multi-agent coordination without central orchestrator</li>
+<li>Constitutional governance for personal AI with mechanical enforcement</li>
+</ol>
+<p>Current condition visible at <a href="/now">/now</a>.</p>
+</section>
 
----
+<section id="governance">
+<h2>governance</h2>
+<p>Five weighted axioms with enforcement surfaces at commit, push, pull-request, publication, and selected runtime paths:</p>
+<dl class="axiom-list">
+<div><dt>single_user (100)</dt><dd>one operator, no multi-tenant affordances</dd></div>
+<div><dt>executive_function (95)</dt><dd>cognitive scaffolding is the primary purpose</dd></div>
+<div><dt>corporate_boundary (90)</dt><dd>work data stays in employer systems</dd></div>
+<div><dt>interpersonal_transparency (88)</dt><dd>no covert state about others</dd></div>
+<div><dt>management_governance (85)</dt><dd>no feedback language about team members</dd></div>
+</dl>
+<p>Forty-two tracked council shell hooks. Five portable <code>agentgov</code> checks. Forty-seven markdown refusal briefs.</p>
+</section>
 
-## the data
+<section id="vocabulary">
+<h2>vocabulary</h2>
+<dl class="vocab-list">
+<div><dt>legomenon (pl. legomena)</dt><dd>A thing said once. The livestream treats each moment as singular.</dd></div>
+<div><dt>axiom</dt><dd>A constitutional constraint with a numeric weight. Higher weight wins conflicts.</dd></div>
+<div><dt>consent contract</dt><dd>A scoped, revocable declaration of what the system may persist or expose about a specific person.</dd></div>
+<div><dt>HOMAGE</dt><dd>The aesthetic grammar. BitchX package, CP437 typography, mIRC sixteen-colour semantics, muted punctuation, bright identity.</dd></div>
+<div><dt>HARDM</dt><dd>The anti-anthropomorphization avatar. The system's refusal of face-identity rendered as visible presence.</dd></div>
+<div><dt>GEAL</dt><dd>Grounding Expression Anchoring Layer. The Sierpinski geometry the system inhabits. Not a face.</dd></div>
+<div><dt>programme</dt><dd>A bounded span of intention. Programme types govern what the system does and why.</dd></div>
+</dl>
+</section>
 
-Receipt-backed launch-window sample: March 12 through May 10, 2026.
+<section id="support">
+<h2>support</h2>
+<p>This is independent research with no institutional backing. Support is receive-only and buys no access, requests, priority, deliverables, or control.</p>
+<p><a href="https://hapax.weblog.lol/support">Support page</a></p>
+</section>
+</article>
 
-**3,041** pull requests opened in the sampled window
-**2,871** pull requests merged in the sampled window
-**5** revert-titled pull requests
-**0.16%** revert-title rate over opened pull requests
-**42** tracked council shell hook scripts
-**5** portable `agentgov` checks
-**47** markdown refusal briefs
-
----
-
-## why trust
-
-A major anti-AI concern is distrust. Hapax treats the causes as engineering requirements and publishes evidence where mechanical gates exist.
-
-**Claim discipline** — public launch numbers are receipt-gated and corrected when receipts disagree. Unsupported hard metrics are removed rather than defended.
-
-**Slop** — HOMAGE aesthetic governance. CP437 typography, mIRC sixteen-colour semantics. Aesthetic standards are treated as enforceable constraints, not preferences.
-
-**Dishonesty** — interpersonal transparency axiom (weight 88/100). Governed data paths reject persistent state about non-operator persons without an active consent contract, modeled as an information flow control lattice.
-
-**Privacy** — consent-as-IFC. Operator consent modeled using Decentralized Label Models (DLM/LIO formalism from systems security). Within labeled consent-checking paths, violations are structurally detectable rather than only heuristically guessed.
-
----
-
-## research
-
-Targeting CHI 2027. Research contributions under development:
-
-1. Consent-as-information-flow-control (DLM/LIO applied to consent governance)
-2. Neurodivergent accommodation as constitutional invariant
-3. Stigmergic multi-agent coordination without central orchestrator
-4. Constitutional governance for personal AI with mechanical enforcement
-
-Current condition visible at [/now](/now).
-
----
-
-## governance
-
-Five weighted axioms with enforcement surfaces at commit, push, pull-request, publication, and selected runtime paths:
-
-**single_user** (100) — one operator, no multi-tenant affordances
-**executive_function** (95) — cognitive scaffolding is the primary purpose
-**corporate_boundary** (90) — work data stays in employer systems
-**interpersonal_transparency** (88) — no covert state about others
-**management_governance** (85) — no feedback language about team members
-
-Forty-two tracked council shell hooks. Five portable `agentgov` checks. Forty-seven markdown refusal briefs.
-
----
-
-## vocabulary
-
-**legomenon** (pl. **legomena**). A thing said once. The livestream treats each moment as singular.
-
-**axiom**. A constitutional constraint with a numeric weight. Higher weight wins conflicts.
-
-**consent contract**. A scoped, revocable declaration of what the system may persist or expose about a specific person.
-
-**HOMAGE**. The aesthetic grammar. BitchX package — CP437 typography, mIRC sixteen-colour semantics, muted punctuation, bright identity.
-
-**HARDM**. The anti-anthropomorphization avatar. The system's refusal of face-identity rendered as visible presence.
-
-**GEAL**. Grounding Expression Anchoring Layer. The Sierpinski geometry the system inhabits. Not a face.
-
-**programme**. A bounded span of intention. Programme types govern what the system does and why.
-
----
-
-## support
-
-This is independent research with no institutional backing. Support is receive-only and buys no access, requests, priority, deliverables, or control.
-
-[Support page](https://hapax.weblog.lol/support)
-
----
-
-## elsewhere
-
+<aside class="hapax-landing-sidebar" aria-label="Hapax links">
+<section>
+<h2>current</h2>
 <ul>
 <li>stream readiness: gated</li>
 <li>now: <a href="/now">/now</a></li>
-<li>weblog: <a href="/weblog">/weblog</a></li>
 <li>statuslog: <a href="/statuses">/statuses</a></li>
+</ul>
+</section>
+<section>
+<h2>routes</h2>
+<ul>
+<li>weblog: <a href="/weblog">/weblog</a></li>
 <li>vault: <a href="https://publish.obsidian.md/hapax">publish.obsidian.md/hapax</a></li>
 <li>code: <a href="https://github.com/hapax-systems">github.com/hapax-systems</a></li>
 <li>mail: <a href="mailto:hapax@omg.lol">hapax@omg.lol</a></li>
 </ul>
+</section>
+</aside>
+</div>

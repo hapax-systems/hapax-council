@@ -356,6 +356,7 @@ def write_uniforms(
         for dim_key in (
             "health",
             "resource_pressure",
+            "local_capacity_pressure",
             "error_rate",
             "processing_throughput",
             "perception_confidence",

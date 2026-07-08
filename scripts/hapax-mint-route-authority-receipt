@@ -79,7 +79,7 @@ def _stable_receipt_id(
     dispatch read-path scans, or stale receipts would accumulate forever.
     """
     base = f"{receipt_type}-{normalize_route_id(route_id).replace('.', '-')}"
-    if receipt_type != "runtime_actuation":
+    if receipt_type not in {"runtime_actuation", "connector_mutation"}:
         return base
     scope = json.dumps(
         {
@@ -124,7 +124,7 @@ def _fresh_enough_to_keep(
         return None
     if existing.stale_after != stale_after:
         return None
-    if existing.receipt_type == "runtime_actuation":
+    if existing.receipt_type in {"runtime_actuation", "connector_mutation"}:
         if sorted(existing.task_ids) != sorted(task_ids):
             return None
         if sorted(existing.mutation_surfaces) != sorted(mutation_surfaces):
@@ -290,16 +290,26 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Mint a signed route-authority receipt (opus model entitlement, "
-            "quality equivalence, or task-bound runtime actuation authority)."
+            "quality equivalence, task-bound runtime actuation authority, "
+            "or task-bound connector mutation authority)."
         )
     )
     parser.add_argument(
         "--receipt-type",
         required=True,
-        choices=["opus_model_entitlement", "quality_equivalence", "runtime_actuation"],
+        choices=[
+            "opus_model_entitlement",
+            "local_inference_entitlement",
+            "quality_equivalence",
+            "runtime_actuation",
+            "connector_mutation",
+        ],
         help="opus_model_entitlement raises the opus authority ceiling; "
+        "local_inference_entitlement clears a local_tool worker's admission + quota-telemetry "
+        "blockers (route-id must be a local_tool.* route); "
         "quality_equivalence records a bounded-floor equivalence for a fallback route; "
-        "runtime_actuation records task-bound authority for a runtime mutation.",
+        "runtime_actuation records task-bound authority for a runtime mutation; "
+        "connector_mutation records task-bound authority for an MCP/app connector mutation.",
     )
     parser.add_argument(
         "--route-id",
@@ -338,7 +348,8 @@ def main(argv: list[str] | None = None) -> int:
         dest="task_ids",
         default=[],
         metavar="TASK",
-        help="Task id authorized by a runtime_actuation receipt (repeatable).",
+        help="Task id authorized by a runtime_actuation or connector_mutation receipt "
+        "(repeatable).",
     )
     parser.add_argument(
         "--mutation-surface",
@@ -346,8 +357,9 @@ def main(argv: list[str] | None = None) -> int:
         dest="mutation_surfaces",
         default=[],
         metavar="SURFACE",
-        help="Mutation surface authorized by a runtime_actuation receipt (repeatable; "
-        "defaults to runtime for runtime_actuation).",
+        help="Mutation surface authorized by a runtime_actuation or connector_mutation receipt "
+        "(repeatable; defaults to runtime for runtime_actuation; required for "
+        "connector_mutation).",
     )
     parser.add_argument(
         "--receipt-id",
@@ -407,6 +419,13 @@ def main(argv: list[str] | None = None) -> int:
     mutation_surfaces = args.mutation_surfaces
     if args.receipt_type == "runtime_actuation" and not mutation_surfaces:
         mutation_surfaces = ["runtime"]
+    if args.receipt_type == "connector_mutation" and not mutation_surfaces:
+        print(
+            "refused to mint route-authority receipt: --mutation-surface is required "
+            "for connector_mutation",
+            file=sys.stderr,
+        )
+        return 2
 
     receipt_id = args.receipt_id
     now_dt = _coerce_utc(_parse_now(args.now) or now_utc())

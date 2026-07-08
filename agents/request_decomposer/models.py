@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import fnmatch
 import functools
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from shared.route_metadata_schema import RouteEnvelope
 
 _GOVERNANCE_SUFFIXES = (".rs", ".wgsl")
 
@@ -92,6 +95,170 @@ AuthorityLevelValue = Literal[
     "evidence_receipt",
     "relay_only",
 ]
+RoutingClassValue = Literal[
+    "unknown",
+    "coordination",
+    "research_support",
+    "docs_planning",
+    "source_python",
+    "source_other",
+    "source_governance",
+    "runtime_ops",
+    "public_surface",
+    "provider_spend",
+    "operator_action",
+    "verification",
+]
+CompositionToleranceValue = Literal[
+    "unknown",
+    "atomic",
+    "parallel_ok",
+    "sequential_required",
+    "decompose_required",
+]
+REQUIREMENT_VECTOR_DIMENSIONS = (
+    "quality_floor",
+    "information_scope",
+    "context_length",
+    "mutation_risk",
+    "verification_demand",
+    "ambiguity_novelty",
+    "composition_coupling",
+    "governance_sensitivity",
+)
+_REQUIREMENT_VECTOR_DIMENSION_SET = frozenset(REQUIREMENT_VECTOR_DIMENSIONS)
+_REQUIREMENT_VECTOR_NEXT_ACTION = (
+    "next action: provide one value for each taxonomy dimension: "
+    + ", ".join(REQUIREMENT_VECTOR_DIMENSIONS)
+)
+_REQUIREMENT_SCORE_NEXT_ACTION = (
+    "next action: set each requirement vector score to an integer from 0 through 5"
+)
+_VALIDITY_MASK_NEXT_ACTION = (
+    "next action: set each requirement_vector_validity_mask value to true or false"
+)
+_REQUIREMENT_VECTOR_ALIASES = {
+    "d1": "quality_floor",
+    "quality": "quality_floor",
+    "qualityfloor": "quality_floor",
+    "d2": "information_scope",
+    "scope": "information_scope",
+    "info_scope": "information_scope",
+    "information": "information_scope",
+    "d3": "context_length",
+    "context": "context_length",
+    "context_budget": "context_length",
+    "context_budget_class": "context_length",
+    "token_budget": "context_length",
+    "d4": "mutation_risk",
+    "mutation": "mutation_risk",
+    "surface_risk": "mutation_risk",
+    "d5": "verification_demand",
+    "verification": "verification_demand",
+    "verifier": "verification_demand",
+    "verification_surface": "verification_demand",
+    "d6": "ambiguity_novelty",
+    "ambiguity": "ambiguity_novelty",
+    "novelty": "ambiguity_novelty",
+    "d7": "composition_coupling",
+    "composition": "composition_coupling",
+    "coupling": "composition_coupling",
+    "d8": "governance_sensitivity",
+    "governance": "governance_sensitivity",
+    "governance_risk": "governance_sensitivity",
+}
+
+
+def _normalize_requirement_dimension(value: object) -> str:
+    key = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    return _REQUIREMENT_VECTOR_ALIASES.get(key, key)
+
+
+def _coerce_requirement_score(value: object) -> int:
+    if isinstance(value, bool):
+        raise ValueError(
+            f"requirement vector scores must be integers 0..5; {_REQUIREMENT_SCORE_NEXT_ACTION}"
+        )
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError(
+            f"requirement vector scores must be integers 0..5; {_REQUIREMENT_SCORE_NEXT_ACTION}"
+        )
+    try:
+        score = int(str(value).strip() if isinstance(value, str) else value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"requirement vector scores must be integers 0..5; {_REQUIREMENT_SCORE_NEXT_ACTION}"
+        ) from exc
+    if score < 0 or score > 5:
+        raise ValueError(
+            f"requirement vector scores must be integers 0..5; {_REQUIREMENT_SCORE_NEXT_ACTION}"
+        )
+    return score
+
+
+def _coerce_mask_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "yes", "y", "1"}:
+        return True
+    if text in {"false", "no", "n", "0"}:
+        return False
+    raise ValueError(
+        f"requirement vector validity values must be booleans; {_VALIDITY_MASK_NEXT_ACTION}"
+    )
+
+
+def _ordered_dimension_mapping(value: object, *, mask: bool) -> dict[str, int] | dict[str, bool]:
+    if value in (None, "", [], {}):
+        return {}
+    if isinstance(value, Mapping):
+        items = list(value.items())
+    elif isinstance(value, Sequence) and not isinstance(value, str):
+        if len(value) != len(REQUIREMENT_VECTOR_DIMENSIONS):
+            msg = (
+                "requirement vector sequences must have exactly 8 values; "
+                f"{_REQUIREMENT_VECTOR_NEXT_ACTION}"
+            )
+            raise ValueError(msg)
+        items = list(zip(REQUIREMENT_VECTOR_DIMENSIONS, value, strict=True))
+    else:
+        msg = (
+            "requirement vector must be an object keyed by the 8 taxonomy dimensions; "
+            f"{_REQUIREMENT_VECTOR_NEXT_ACTION}"
+        )
+        raise ValueError(msg)
+
+    out: dict[str, int] | dict[str, bool] = {}
+    seen: set[str] = set()
+    for raw_key, raw_value in items:
+        key = _normalize_requirement_dimension(raw_key)
+        if key not in _REQUIREMENT_VECTOR_DIMENSION_SET:
+            msg = (
+                f"unknown requirement vector dimension: {raw_key}; "
+                f"{_REQUIREMENT_VECTOR_NEXT_ACTION}"
+            )
+            raise ValueError(msg)
+        if key in seen:
+            msg = (
+                f"duplicate requirement vector dimension: {key}; {_REQUIREMENT_VECTOR_NEXT_ACTION}"
+            )
+            raise ValueError(msg)
+        seen.add(key)
+        out[key] = _coerce_mask_bool(raw_value) if mask else _coerce_requirement_score(raw_value)
+
+    if seen != _REQUIREMENT_VECTOR_DIMENSION_SET:
+        missing = sorted(_REQUIREMENT_VECTOR_DIMENSION_SET - seen)
+        extra = sorted(seen - _REQUIREMENT_VECTOR_DIMENSION_SET)
+        detail = f"missing={missing}"
+        if extra:
+            detail += f", extra={extra}"
+        msg = (
+            f"requirement vector must include exactly 8 dimensions ({detail}); "
+            f"{_REQUIREMENT_VECTOR_NEXT_ACTION}"
+        )
+        raise ValueError(msg)
+    return out
 
 
 class TaskSpec(BaseModel):
@@ -123,6 +290,12 @@ class TaskSpec(BaseModel):
     mutation_surface: MutationSurfaceValue = "source"
     authority_level: AuthorityLevelValue = "authoritative"
     effort_class: str = "standard"
+    routing_class: RoutingClassValue = "unknown"
+    requirement_vector: dict[str, int] = Field(default_factory=dict)
+    composition_tolerance: CompositionToleranceValue = "unknown"
+    requirement_vector_validity_mask: dict[str, bool] = Field(default_factory=dict)
+    route_envelope: RouteEnvelope | None = None
+    task_demand: dict[str, Any] = Field(default_factory=dict)
 
     intent: str = ""
     acceptance_criteria: list[str] = Field(default_factory=list)
@@ -155,6 +328,63 @@ class TaskSpec(BaseModel):
             return "frontier_required"
         return value
 
+    @field_validator("routing_class", mode="before")
+    @classmethod
+    def _normalize_routing_class(cls, value: object) -> object:
+        if value in (None, ""):
+            return "unknown"
+        text = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "docs": "docs_planning",
+            "planning": "docs_planning",
+            "research": "research_support",
+            "support": "research_support",
+            "source": "source_other",
+            "python": "source_python",
+            "source_patch": "source_other",
+            "source_mutation": "source_other",
+            "governance": "source_governance",
+            "runtime": "runtime_ops",
+            "public": "public_surface",
+            "public_claim": "public_surface",
+            "spend": "provider_spend",
+            "operator": "operator_action",
+            "verify": "verification",
+            "test": "verification",
+            "tests": "verification",
+            "relay": "coordination",
+        }
+        return aliases.get(text, text)
+
+    @field_validator("composition_tolerance", mode="before")
+    @classmethod
+    def _normalize_composition_tolerance(cls, value: object) -> object:
+        if value in (None, ""):
+            return "unknown"
+        text = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "single": "atomic",
+            "single_task": "atomic",
+            "independent": "parallel_ok",
+            "parallel": "parallel_ok",
+            "sequential": "sequential_required",
+            "depends": "sequential_required",
+            "blocked": "sequential_required",
+            "split": "decompose_required",
+            "too_large": "decompose_required",
+        }
+        return aliases.get(text, text)
+
+    @field_validator("requirement_vector", mode="before")
+    @classmethod
+    def _normalize_requirement_vector(cls, value: object) -> dict[str, int]:
+        return dict(_ordered_dimension_mapping(value, mask=False))
+
+    @field_validator("requirement_vector_validity_mask", mode="before")
+    @classmethod
+    def _normalize_requirement_vector_validity_mask(cls, value: object) -> dict[str, bool]:
+        return dict(_ordered_dimension_mapping(value, mask=True))
+
     @model_validator(mode="after")
     def _normalize_route_metadata(self) -> TaskSpec:
         if (
@@ -162,6 +392,29 @@ class TaskSpec(BaseModel):
             and self.authority_level == "authoritative"
         ):
             self.quality_floor = "frontier_required"
+        return self
+
+    @model_validator(mode="after")
+    def _taxonomy_payload_is_complete(self) -> TaskSpec:
+        has_taxonomy = (
+            self.routing_class != "unknown"
+            or bool(self.requirement_vector)
+            or self.composition_tolerance != "unknown"
+            or bool(self.requirement_vector_validity_mask)
+        )
+        if not has_taxonomy:
+            return self
+        if not self.requirement_vector:
+            raise ValueError(
+                "routing taxonomy requires requirement_vector; next action: add one "
+                "0-5 score for each taxonomy dimension or omit all taxonomy fields"
+            )
+        if not self.requirement_vector_validity_mask:
+            raise ValueError(
+                "routing taxonomy requires requirement_vector_validity_mask; next "
+                "action: add true/false validity for each taxonomy dimension or omit "
+                "all taxonomy fields"
+            )
         return self
 
     @model_validator(mode="after")

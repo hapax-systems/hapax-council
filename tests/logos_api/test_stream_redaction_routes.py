@@ -27,6 +27,7 @@ def stimmung_state(tmp_path, monkeypatch):
         "operator_stress": {"value": 0.2, "trend": "falling", "freshness_s": 1.0},
         "health": {"value": 0.95, "trend": "stable", "freshness_s": 5.0},
         "resource_pressure": {"value": 0.4, "trend": "stable", "freshness_s": 3.0},
+        "local_capacity_pressure": {"value": 0.75, "trend": "rising", "freshness_s": 2.0},
         "error_rate": {"value": 0.05, "trend": "stable", "freshness_s": 4.0},
         "processing_throughput": {"value": 0.85, "trend": "rising", "freshness_s": 2.0},
         "perception_confidence": {"value": 0.9, "trend": "stable", "freshness_s": 1.0},
@@ -41,6 +42,17 @@ def stimmung_state(tmp_path, monkeypatch):
 
 
 class TestStimmungRedaction:
+    def test_missing_local_capacity_pressure_is_not_reported_fresh(self):
+        from logos.api.routes.stimmung import _build_dimensions
+
+        dimensions = _build_dimensions(
+            {
+                "health": {"value": 0.95, "trend": "stable", "freshness_s": 5.0},
+                "resource_pressure": {"value": 0.4, "trend": "stable", "freshness_s": 3.0},
+            }
+        )
+        assert "local_capacity_pressure" not in dimensions
+
     @pytest.mark.asyncio
     async def test_private_returns_full_dimensions(self, stimmung_state, monkeypatch):
         monkeypatch.setattr("logos.api.routes.stimmung.is_publicly_visible", lambda: False)
@@ -64,6 +76,7 @@ class TestStimmungRedaction:
         result = await get_stimmung()
         assert "operator_energy" in result["dimensions"]
         assert "health" in result["dimensions"]
+        assert "local_capacity_pressure" in result["dimensions"]
         assert isinstance(result["dimensions"]["operator_energy"]["value"], float)
         assert "topology" in result
         assert "eigenform" in result
@@ -86,9 +99,10 @@ class TestStimmungRedaction:
         assert result["dimensions"]["operator_stress"]["band"] == "relaxed"  # 0.2 <= 0.33
         # numeric value field gone
         assert "value" not in result["dimensions"]["operator_energy"]
-        # other 8 dims omitted
+        # non-banded dims omitted
         assert "health" not in result["dimensions"]
         assert "resource_pressure" not in result["dimensions"]
+        assert "local_capacity_pressure" not in result["dimensions"]
         # categorical stance retained
         assert result["overall_stance"] == "nominal"
         # system-internals dropped on public stream

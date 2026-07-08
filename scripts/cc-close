@@ -272,12 +272,17 @@ if [[ -n "$role" ]]; then
     session_id="$(hapax_session_id 2>/dev/null || true)"
   fi
   cleared_claim=0
-  for claim_file in \
-    "$HOME/.cache/hapax/cc-active-task-$role" \
-    ${session_id:+"$HOME/.cache/hapax/cc-active-task-$role-$session_id"}; do
+  for claim_key in \
+    "$role" \
+    ${session_id:+"$role-$session_id"}; do
+    claim_file="$HOME/.cache/hapax/cc-active-task-$claim_key"
     if [[ -f "$claim_file" ]] &&
        [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
-      rm -f "$claim_file"
+      # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
+      # clear it with its claim file so a stale epoch can never mis-age a
+      # future claim. Explicit path construction — substring substitution on
+      # the full path would rewrite a parent-directory occurrence instead.
+      rm -f "$claim_file" "$HOME/.cache/hapax/cc-claim-epoch-$claim_key"
       echo "cc-close: cleared claim file '$claim_file' (role '$role')"
       cleared_claim=1
     fi

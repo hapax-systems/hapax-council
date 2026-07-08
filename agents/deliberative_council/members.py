@@ -11,6 +11,8 @@ from pydantic_ai.providers.litellm import LiteLLMProvider
 
 from shared.config import LITELLM_BASE, LITELLM_KEY, MODELS
 
+from .capability_admission import admit_model_alias
+from .litellm_request_policy import litellm_no_fallback_model_settings
 from .tools import FULL_TOOLS, RESTRICTED_TOOLS
 
 
@@ -106,10 +108,9 @@ def model_family(model_alias: str) -> str:
     return MODEL_FAMILIES.get(normalize_model_alias(model_alias), "unknown")
 
 
-# Substrings of SERVED model names (LiteLLM ModelResponse.model_name) -> family. Counting
-# family-diversity by the model that ACTUALLY answered (not the requested alias) is what stops a
-# gateway fail-over (e.g. balanced->gemini-pro on an Anthropic credit cap) from satisfying the
-# quorum's diversity floor with a phantom-anthropic gemini.
+# Substrings of SERVED model names (LiteLLM ModelResponse.model_name) -> family. CCTV member
+# requests disable LiteLLM fallbacks, so a mismatch is an anomaly witness; the mapper still keeps
+# family-diversity receipts honest if a nonstandard caller or gateway misconfiguration substitutes.
 _SERVED_FAMILY_SUBSTRINGS: tuple[tuple[str, str], ...] = (
     ("claude", "anthropic"),
     ("gemini", "google"),
@@ -163,15 +164,19 @@ def cache_control_ttl_for_alias(model_alias: str) -> str | None:
 
 
 def model_settings_for_alias(model_alias: str) -> dict[str, Any]:
+    settings = litellm_no_fallback_model_settings()
     if not prompt_cache_enabled():
-        return {}
+        return settings
     alias = normalize_model_alias(model_alias)
     if model_family(alias) not in OPENAI_PROMPT_CACHE_FAMILIES:
-        return {}
-    return {
-        "openai_prompt_cache_key": f"cctv-deliberative-council:{alias}",
-        "openai_prompt_cache_retention": openai_prompt_cache_retention(),
-    }
+        return settings
+    settings.update(
+        {
+            "openai_prompt_cache_key": f"cctv-deliberative-council:{alias}",
+            "openai_prompt_cache_retention": openai_prompt_cache_retention(),
+        }
+    )
+    return settings
 
 
 def cache_policy_for_alias(model_alias: str) -> dict[str, Any]:
@@ -185,7 +190,7 @@ def cache_policy_for_alias(model_alias: str) -> dict[str, Any]:
         "cache_control": bool(ttl),
         "cache_control_ttl": ttl,
         "cache_control_ttl_setting": prompt_cache_ttl() if ttl else None,
-        "openai_prompt_cache": bool(settings),
+        "openai_prompt_cache": bool(settings.get("openai_prompt_cache_key")),
         "openai_prompt_cache_retention": settings.get("openai_prompt_cache_retention"),
     }
 
@@ -194,9 +199,13 @@ def cache_policy_for_aliases(model_aliases: tuple[str, ...]) -> dict[str, dict[s
     return {alias: cache_policy_for_alias(alias) for alias in model_aliases}
 
 
-def get_cctv_model(model_alias: str) -> CCTVLiteLLMChatModel:
+def model_route_for_alias(model_alias: str) -> str:
     alias = normalize_model_alias(model_alias)
-    model_id = MODELS.get(alias, alias)
+    return MODELS.get(alias, alias)
+
+
+def get_cctv_model(model_alias: str) -> CCTVLiteLLMChatModel:
+    model_id = model_route_for_alias(model_alias)
     return CCTVLiteLLMChatModel(
         model_id,
         provider=LiteLLMProvider(api_base=LITELLM_BASE, api_key=LITELLM_KEY),
@@ -210,6 +219,8 @@ def build_member(
     system_prompt: str | None = None,
 ) -> Agent[None, str]:
     model_alias = normalize_model_alias(model_alias)
+    model_route = model_route_for_alias(model_alias)
+    capability_admission = admit_model_alias(model_alias, invoked_route_id=model_route)
     if tool_level is None:
         tool_level = MODEL_TOOL_LEVELS.get(model_alias, ToolLevel.FULL)
 
@@ -224,10 +235,14 @@ def build_member(
     # LOUD rather than silently retrying. Combined with the per-run UsageLimits in
     # engine._call_member, a member can no longer runaway-loop or degrade quietly.
     # cc-task cctv-council-perfect-health-faillloud-convergence.
-    return Agent(
+    agent = Agent(
         get_cctv_model(model_alias),
         system_prompt=system_prompt or "",
         model_settings=model_settings_for_alias(model_alias),
         tools=tools,  # type: ignore[arg-type]
         retries=0,
     )
+    agent._cctv_model_alias = model_alias
+    agent._cctv_route_id = model_route
+    agent._cctv_capability_admission = capability_admission
+    return agent

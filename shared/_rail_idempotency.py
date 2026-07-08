@@ -101,6 +101,18 @@ class IdempotencyStore:
         except sqlite3.IntegrityError:
             return False
 
+    def remove(self, event_id: str) -> None:
+        """Remove ``event_id`` from the seen-set (rollback on failure)."""
+        if not event_id or not isinstance(event_id, str):
+            raise IdempotencyError(
+                f"event_id must be a non-empty string, got {type(event_id).__name__}"
+            )
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM rail_webhook_events WHERE event_id = ?",
+                (event_id,),
+            )
+
     def has_seen(self, event_id: str) -> bool:
         """Read-only existence probe — ``True`` if the id is recorded."""
         with self._connect() as conn:

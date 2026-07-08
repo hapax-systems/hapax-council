@@ -5,12 +5,20 @@ All I/O is mocked. No real HTTP requests.
 
 from __future__ import annotations
 
+import json
+import time
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
 
-from logos.data.cost import CostSnapshot, ModelCost, collect_cost
+from logos.data.cost import (
+    CostSnapshot,
+    LocalVolumeTrend,
+    ModelCost,
+    collect_cost,
+    collect_local_volume_trend,
+)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -50,13 +58,96 @@ def test_model_cost_dataclass():
     assert m.cost == 1.23
 
 
+def test_local_volume_trend_defaults():
+    trend = LocalVolumeTrend()
+    assert trend.available is False
+    assert trend.alert_active is False
+
+
+def test_collect_local_volume_trend_from_exporter(tmp_path):
+    path = tmp_path / "hapax-local-capacity.json"
+    path.write_text(
+        json.dumps(
+            {
+                "timestamp": time.time(),
+                "inflight": 8,
+                "ceiling": 10,
+                "ttft_ratio": 1.4,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = collect_local_volume_trend(path=path)
+    assert result.available is True
+    assert result.pressure == pytest.approx(0.8)
+    assert result.inflight == 8
+    assert result.ceiling == 10
+    assert result.alert_active is True
+
+
+def test_collect_local_volume_trend_accepts_exporter_aliases(tmp_path):
+    path = tmp_path / "hapax-local-capacity.json"
+    path.write_text(
+        json.dumps(
+            {
+                "ts": time.time(),
+                "active_requests": 3,
+                "max_concurrency": 12,
+                "ttft_ewma_s": 3.0,
+                "ttft_baseline_s": 1.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = collect_local_volume_trend(path=path)
+    assert result.available is True
+    assert result.pressure == pytest.approx(1.0)
+    assert result.inflight == 3
+    assert result.ceiling == 12
+    assert result.ttft_ratio == pytest.approx(3.0)
+    assert result.alert_active is True
+
+
+def test_collect_local_volume_trend_skips_invalid_alias_values(tmp_path):
+    path = tmp_path / "hapax-local-capacity.json"
+    path.write_text(
+        json.dumps(
+            {
+                "timestamp": time.time(),
+                "active_requests": "unknown",
+                "active": 6,
+                "max_concurrency": None,
+                "concurrency_ceiling": 10,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = collect_local_volume_trend(path=path)
+    assert result.available is True
+    assert result.pressure == pytest.approx(0.6)
+    assert result.inflight == 6
+    assert result.ceiling == 10
+
+
+def test_collect_local_volume_trend_stale_fails_unavailable(tmp_path):
+    path = tmp_path / "hapax-local-capacity.json"
+    path.write_text(json.dumps({"timestamp": time.time() - 300, "inflight": 8, "ceiling": 10}))
+    result = collect_local_volume_trend(path=path, max_age_s=120)
+    assert result.available is False
+    assert result.age_s > 120
+
+
 # ── Collector tests ──────────────────────────────────────────────────────────
 
 
 @patch("logos.data.cost.LANGFUSE_PK", "")
-def test_collect_cost_no_credentials():
+@patch("logos.data.cost.collect_local_volume_trend")
+def test_collect_cost_no_credentials(mock_local):
+    mock_local.return_value = LocalVolumeTrend(pressure=0.5, available=True)
     result = collect_cost()
     assert result.available is False
+    assert result.local_capacity is not None
+    assert result.local_capacity.available is True
 
 
 @patch("logos.data.cost.LANGFUSE_PK", "pk-test")

@@ -1,4 +1,4 @@
-# repo-registry.yaml — canonical license-class source-of-truth
+# repo-registry.yaml — canonical license-class and value-partition source of truth
 #
 # Per cc-task `repo-pres-license-policy` (decision recorded
 # 2026-04-25T18:00Z): per-repo license divergence is settled here, NOT
@@ -21,26 +21,36 @@ repos:
   - name: hapax-council
     license: PolyForm-Strict-1.0.0
     license_url: https://polyformproject.org/licenses/strict/1.0.0/
+    value_partition: internal_apparatus
+    license_posture: "Source-visible strict research/runtime artifact; not open source."
     rationale: Runtime code; single-operator stance.
 
   - name: hapax-officium
     license: PolyForm-Strict-1.0.0
     license_url: https://polyformproject.org/licenses/strict/1.0.0/
+    value_partition: internal_apparatus
+    license_posture: "Strict source-visible runtime artifact pending product boundary."
     rationale: Runtime code; single-operator stance.
 
   - name: hapax-watch
     license: PolyForm-Strict-1.0.0
     license_url: https://polyformproject.org/licenses/strict/1.0.0/
+    value_partition: internal_apparatus
+    license_posture: "Single-operator device bridge; not a general biometric app."
     rationale: Runtime code (Wear OS app); single-operator stance.
 
   - name: hapax-phone
     license: PolyForm-Strict-1.0.0
     license_url: https://polyformproject.org/licenses/strict/1.0.0/
+    value_partition: internal_apparatus
+    license_posture: "Single-operator device bridge; not a general biometric app."
     rationale: Runtime code (Android app); single-operator stance.
 
   - name: hapax-mcp
     license: MIT
     license_url: https://opensource.org/licenses/MIT
+    value_partition: internal_apparatus
+    license_posture: "Permissive MCP ecosystem bridge; not a general-purpose MCP library."
     rationale: |
       MCP ecosystem norm; downstream MCP clients require permissive
       license to integrate. Ecosystem-pragmatic exception to the
@@ -49,13 +59,65 @@ repos:
   - name: hapax-constitution
     license: CC-BY-NC-ND-4.0
     license_url: https://creativecommons.org/licenses/by-nc-nd/4.0/
+    value_partition: evidence_artifact
+    license_posture: |
+      Split posture: specification text and publication metadata are
+      CC-BY-NC-ND-4.0; runnable hapax-sdlc tooling is Apache-2.0 and must
+      be described separately.
     rationale: |
       Specification / docs surface; preserves attribution + non-
       commercial + no-derivatives. Not runtime code.
 
+  - name: agentgov
+    license: MIT
+    license_url: https://opensource.org/licenses/MIT
+    value_partition: adoption_commons
+    license_posture: |
+      Permissive adoption wedge for governance hooks only. Does not license
+      Hapax council internals or create support/community obligations.
+    rationale: Standalone public hook package for AI coding agents.
+
+  - name: hapax-spine
+    license: BUSL-1.1
+    license_url: https://spdx.org/licenses/BUSL-1.1
+    value_partition: commercial_moat
+    license_posture: |
+      Source-available under BUSL-1.1; not Open Source until the change
+      license/date applies. Commercial/hosted-service rights reserved.
+    rationale: Extracted runtime mechanism and commercial product core.
+
+  - name: reins
+    license: BUSL-1.1
+    license_url: https://spdx.org/licenses/BUSL-1.1
+    value_partition: commercial_moat
+    license_posture: |
+      Source-available under BUSL-1.1; current claim ceiling is
+      read/preview/cockpit, not full mutation cockpit.
+    rationale: Public product/front-door cockpit and commercial moat.
+
+  - name: hapax-coord
+    license: PolyForm-Strict-1.0.0
+    license_url: https://polyformproject.org/licenses/strict/1.0.0/
+    value_partition: internal_apparatus
+    license_posture: |
+      Private or strict internal coordination apparatus; no public product,
+      support, or adoption claim unless a separate boundary is ratified.
+    rationale: Operator coordination surface, not a standalone public product.
+
+  - name: hapax-research-ledger
+    license: CC0-1.0
+    license_url: https://spdx.org/licenses/CC0-1.0
+    value_partition: evidence_artifact
+    license_posture: |
+      Public-domain data posture for ledger observations only; does not
+      license runtime code or Reins/council internals.
+    rationale: Public evidence/artifact output.
+
   - name: distro-work
     license: PolyForm-Strict-1.0.0
     license_url: https://polyformproject.org/licenses/strict/1.0.0/
+    value_partition: internal_apparatus
+    license_posture: "Personal/system-maintenance scripts; not a Hapax Systems public product."
     rationale: Runtime scripts; single-operator stance.
 
 upstream_clones:
@@ -76,6 +138,10 @@ assets_repos:
   # `_manifest.yaml` + `provenance.yaml` files within the repo.
   - name: hapax-assets
     license_policy: per-asset (BSD-3-Clause / CC-BY-SA-4.0)
+    value_partition: evidence_artifact
+    license_posture: |
+      Per-asset license posture; preserve upstream notices rather than
+      implying a single repo-level license.
     rationale: |
       BitchX = BSD-3-Clause (modified-or-not OK), Px437 IBM VGA =
       CC-BY-SA-4.0 (unmodified-only). See provenance.yaml siblings.

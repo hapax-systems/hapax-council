@@ -365,6 +365,32 @@ def _reasons(reading: PressureReading, state: str) -> list[str]:
 QUOTA_RECEIPTS_DIR = Path.home() / ".cache/hapax/relay/receipts"
 
 
+def _quota_wall_fields(text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        key, sep, value = raw_line.partition(":")
+        if not sep:
+            continue
+        fields[key.strip().lower()] = value.strip().strip("'\"")
+    return fields
+
+
+def _is_global_session_limit_receipt(fields: Mapping[str, str]) -> bool:
+    signal_kind = fields.get("signal_kind", "").lower()
+    if signal_kind:
+        return signal_kind == "session_limit"
+    route_scoped_keys = {
+        "billing_mode",
+        "capacity_pool",
+        "endpoint",
+        "model",
+        "provider",
+        "route_id",
+        "supported_tool",
+    }
+    return not any(fields.get(key) for key in route_scoped_keys)
+
+
 def session_limit_until(
     receipts_dir: Path | None = None, now: float | None = None
 ) -> tuple[float, str] | None:
@@ -384,6 +410,9 @@ def session_limit_until(
         try:
             text = r.read_text()
         except OSError:
+            continue
+        fields = _quota_wall_fields(text)
+        if not _is_global_session_limit_receipt(fields):
             continue
         m = re.search(r"resets_at:\s*['\"]?([0-9T:+.Zz-]+)", text)
         if not m:

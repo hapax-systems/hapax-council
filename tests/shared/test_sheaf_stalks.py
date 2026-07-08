@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from shared.sheaf_stalks import (
     STANCE_MAP,
+    STIMMUNG_LINEARIZATION_DIMENSIONS,
     TREND_MAP,
     linearize_imagination,
     linearize_perception,
@@ -36,12 +37,15 @@ class TestConstants:
 
 
 class TestLinearizeStimmung:
-    def test_empty_state_returns_31_zero_vector(self) -> None:
-        """10 dims × 3 floats + 1 stance = 31-element vector, all zero
+    def test_empty_state_returns_34_zero_vector(self) -> None:
+        """11 dims × 3 floats + 1 stance = 34-element vector, all zero
         for an empty state."""
         result = linearize_stimmung({})
-        assert len(result) == 31
+        assert len(result) == len(STIMMUNG_LINEARIZATION_DIMENSIONS) * 3 + 1
         assert all(x == 0.0 for x in result)
+
+    def test_local_capacity_pressure_dimension_is_pinned(self) -> None:
+        assert "local_capacity_pressure" in STIMMUNG_LINEARIZATION_DIMENSIONS
 
     def test_dim_value_trend_freshness_serialised(self) -> None:
         result = linearize_stimmung(

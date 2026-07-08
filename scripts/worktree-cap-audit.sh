@@ -2,9 +2,13 @@
 # worktree-cap-audit.sh — inventory git worktrees + report cap status.
 #
 # Policy (see docs/runbooks/worktree-cap-policy.md):
-#   Claude+Codex transition cap: 8 visible session worktrees.
-#   Infrastructure worktrees under ~/.cache/, .claude/worktrees/, or .codex/worktrees/
-#   (rebuild-scratch, agent scratch, etc.) are NOT counted.
+#   Visible session-worktree cap: 20 (matches the ENFORCED cap in
+#   hooks/scripts/no-stale-branches.sh — keep the two in sync). The earlier "8"
+#   here was a stale transition target that diverged from the hook and made the
+#   audit perpetually red against a ~16-slot steady-state floor.
+#   Infrastructure worktrees under ~/.cache/, /<mnt>/cache/hapax/, .claude/worktrees/,
+#   .codex/worktrees/, source-activation/ (deploy tree + release snapshots), or
+#   <mnt>/llm-data/runtime/ (rebuild-scratch, agent scratch, releases, etc.) are NOT counted.
 #
 # Classification rules:
 #   * PRIMARY    — the top-level `hapax-council/` worktree (alpha)
@@ -15,13 +19,14 @@
 #                  `hapax-council--epsilon*` (epsilon, permanent since 2026-04-24)
 #   * CODEX      — `hapax-council--cx-<color>/` first-class Codex worktree
 #   * SPONTANEOUS— any other `hapax-council--<slug>/` worktree
-#   * INFRA      — any path containing `/.cache/`, `/.claude/worktrees/`, or `/.codex/worktrees/`
+#   * INFRA      — any path containing `/.cache/`, `/cache/hapax/`, `/.claude/worktrees/`,
+#                  `/.codex/worktrees/`, `/source-activation/`, or `/llm-data/runtime/`
 #   * UNKNOWN    — anything else (report + flag as likely leak)
 #
 # Exit codes:
 #   0 — within cap, no unknowns
 #   1 — within cap but UNKNOWN / uncategorizable worktrees present
-#   2 — cap exceeded (> 5 session worktrees)
+#   2 — cap exceeded (session worktrees > cap)
 #
 # Usage:
 #   worktree-cap-audit.sh           # full report to stdout
@@ -80,7 +85,14 @@ declare -a unknown_lines=()
 for line in "${worktrees[@]}"; do
     path="${line%% *}"
     case "$path" in
-        */.cache/*|*/.claude/worktrees/*|*/.codex/worktrees/*)
+        */.cache/*|*/cache/hapax/*|*/.claude/worktrees/*|*/.codex/worktrees/*|*/source-activation/*|*/llm-data/runtime/*)
+            # Infrastructure, NOT operator-visible session worktrees. Matches both the
+            # legacy ~/.cache/hapax/ layout (*/.cache/*) AND the relocated dev substrate
+            # on the data mount: */cache/hapax/* (rebuild-scratch + agent scratch under
+            # /data2/data/cache/hapax/), */source-activation/* (deploy tree + pinned
+            # release snapshots), and */llm-data/runtime/* (e.g. health-monitor-source on
+            # /store). Before this was added these counted as session worktrees and were
+            # even flagged "UNKNOWN — likely leak", driving a false over-cap (2026-06-27).
             infra_count=$((infra_count + 1))
             infra_lines+=("$line")
             ;;
@@ -116,7 +128,8 @@ for line in "${worktrees[@]}"; do
 done
 
 session_count=$((primary_count + secondary_count + codex_count + spontaneous_count + unknown_count))
-cap=8
+# Keep in sync with session_wt_cap in hooks/scripts/no-stale-branches.sh.
+cap=20
 
 if [ "$json" = true ]; then
     printf '{'
@@ -139,7 +152,7 @@ if [ "$json" = true ]; then
 elif [ "$quiet" != true ]; then
     echo "=== Worktree cap audit ==="
     echo "Policy: Claude+Codex transition cap = $cap visible session worktrees"
-    echo "Infrastructure (~/.cache/, .claude/worktrees/, .codex/worktrees/) not counted."
+    echo "Infrastructure (~/.cache/, cache/hapax/, .claude|.codex/worktrees/, source-activation/, llm-data/runtime/) not counted."
     echo ""
     echo "PRIMARY ($primary_count):"
     for l in "${primary_lines[@]:-}"; do [ -n "$l" ] && echo "  $l"; done

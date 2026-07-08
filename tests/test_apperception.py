@@ -6,8 +6,10 @@ Pure logic, no I/O, no mocks of external systems.
 
 from __future__ import annotations
 
+import json
 import random
 import time
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +19,7 @@ from shared.apperception import (
     RUMINATION_LIMIT,
     Apperception,
     ApperceptionCascade,
+    ApperceptionStore,
     CascadeEvent,
     SelfDimension,
     SelfModel,
@@ -97,6 +100,78 @@ class TestApperceptionModel:
                 valence=0.0,
                 valence_target="accuracy",
             )
+
+
+class TestApperceptionDurableSink:
+    def _configure_durable_sink(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        import shared.durable_jsonl_sink as sink_mod
+
+        durable_root = tmp_path / "durable"
+        durable_root.mkdir()
+        monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(durable_root))
+        monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "btrfs")
+        return durable_root
+
+    def test_add_writes_minimized_durable_receipt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        durable_root = self._configure_durable_sink(tmp_path, monkeypatch)
+        store = ApperceptionStore()
+        apperception = Apperception(
+            source="correction",
+            trigger_text="operator said api key is sk-testsecret01234567890",
+            cascade_depth=5,
+            observation="I notice a private correction",
+            valence=-0.3,
+            valence_target="accuracy",
+            action="internal action text",
+            reflection="private reflection text",
+        )
+
+        store.add(apperception)
+
+        assert store.pending_count == 1
+        rows = [
+            json.loads(line)
+            for line in (durable_root / "apperception.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert len(rows) == 1
+        payload = rows[0]["payload"]
+        assert rows[0]["stream_id"] == "apperception"
+        assert rows[0]["data_class"] == "apperception_record"
+        assert payload["source"] == "correction"
+        assert payload["cascade_depth"] == 5
+        assert payload["valence"] == -0.3
+        assert "trigger_text" not in payload
+        assert "observation" not in payload
+        assert "action" not in payload
+        assert "reflection" not in payload
+        raw = json.dumps(rows[0])
+        assert "sk-testsecret" not in raw
+        assert "private correction" not in raw
+        assert "private reflection" not in raw
+
+    def test_missing_durable_root_refuses_before_pending(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shared.durable_jsonl_sink as sink_mod
+
+        monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(tmp_path / "missing"))
+        store = ApperceptionStore()
+        apperception = Apperception(
+            source="correction",
+            trigger_text="test",
+            cascade_depth=5,
+            observation="I notice",
+            valence=0.1,
+            valence_target="accuracy",
+        )
+
+        with pytest.raises(sink_mod.DurableSinkPathError):
+            store.add(apperception)
+        assert store.pending_count == 0
 
 
 class TestSelfDimension:

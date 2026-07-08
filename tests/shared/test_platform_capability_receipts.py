@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import stat
 import subprocess
 import sys
@@ -20,7 +21,11 @@ from shared.dispatcher_policy import (
     route_authority_receipt_payload_hash,
     route_decision_receipt_payload,
 )
-from shared.platform_capability_receipts import PLATFORM_CAPABILITY_RECEIPT_DIR_ENV
+from shared.platform_capability_receipts import (
+    PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
+    load_platform_capability_receipt,
+    receipt_is_fresh,
+)
 from shared.platform_capability_registry import load_platform_capability_registry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -40,6 +45,7 @@ def _run_receipts(
     env: dict[str, str] | None = None,
     now: str = NOW,
     platform: str = "codex",
+    registry: Path = REGISTRY,
 ) -> subprocess.CompletedProcess[str]:
     merged_env = {**os.environ, **(env or {})}
     return subprocess.run(
@@ -47,7 +53,7 @@ def _run_receipts(
             sys.executable,
             str(SCRIPT),
             "--registry",
-            str(REGISTRY),
+            str(registry),
             "--receipt-dir",
             str(tmp_path),
             "--platform",
@@ -125,6 +131,32 @@ def _write_route_authority_receipt(
     return target
 
 
+def _mark_platform_receipt_account_live_quota_observed(
+    receipt_dir: Path,
+    *,
+    platform: str = "codex",
+) -> None:
+    receipt_path = receipt_dir / f"{platform}.json"
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    quota = payload["quota"]
+    quota["status"] = "observed"
+    quota["reason_codes"] = []
+    quota["evidence_refs"] = list(
+        dict.fromkeys(
+            [
+                *quota.get("evidence_refs", []),
+                f"test:{platform}:account-live-quota:observed",
+            ]
+        )
+    )
+    payload["known_unknowns"] = [
+        item
+        for item in payload.get("known_unknowns", [])
+        if "Account-live subscription quota" not in item
+    ]
+    receipt_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
 def test_receipt_refresh_redacts_secret_env_and_records_missing_cli(tmp_path: Path) -> None:
     result = _run_receipts(
         tmp_path,
@@ -166,7 +198,23 @@ def test_fresh_subscription_receipt_clears_account_live_quota_blocker(
     assert route.tool_state[0].evidence_ref.startswith("platform-capability-receipt:codex:")
 
 
-def test_fresh_subscription_receipt_allows_dispatch_without_rollback(
+def test_future_platform_receipt_is_not_fresh(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir)},
+        now="2026-07-05T15:00:00Z",
+    )
+    assert result.returncode == 0, result.stderr
+    receipt = load_platform_capability_receipt(tmp_path / "codex.json")
+
+    assert receipt_is_fresh(receipt, now=NOW_DT) is False
+
+
+def test_fresh_subscription_receipt_allows_local_dispatch_without_account_live_quota_api(
     tmp_path: Path,
 ) -> None:
     bin_dir = tmp_path / "bin"
@@ -208,9 +256,12 @@ def test_fresh_subscription_receipt_allows_dispatch_without_rollback(
     assert decision.action is DispatchAction.LAUNCH
     assert decision.route_policy_green is True
     assert decision.registry_freshness_green is True
+    assert "policy_launch" in decision.reason_codes
+    assert "account_live_quota_evidence_absent" not in decision.reason_codes
+    assert "capability_availability_degraded" not in decision.reason_codes
 
 
-def test_antigrav_agy_receipt_clears_unobservable_quota_catch22(tmp_path: Path) -> None:
+def test_antigrav_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _fake_binary(bin_dir, "agy", "1.0.0")
@@ -219,24 +270,121 @@ def test_antigrav_agy_receipt_clears_unobservable_quota_catch22(tmp_path: Path) 
     wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
 
+    for platform in ("antigrav", "Antigrav", "antigravity", "gemini-cli"):
+        result = _run_receipts(
+            tmp_path,
+            env={"PATH": str(bin_dir), "HOME": str(tmp_path / "home")},
+            platform=platform,
+        )
+
+        assert result.returncode == 2
+        assert f"platform '{platform.lower()}' is retired/excised" in result.stderr
+        assert "agy.review.direct" in result.stderr
+        assert not (tmp_path / f"{platform}.json").exists()
+
+
+def test_agy_receipt_records_live_review_route_without_unblocking_quota(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    home_dir = tmp_path / "home"
+    bin_dir.mkdir()
+    bundled_cli_ref = (
+        home_dir
+        / ".gemini"
+        / "antigravity-cli"
+        / "builtin"
+        / "skills"
+        / "antigravity_guide"
+        / "references"
+        / "cli.md"
+    )
+    bundled_cli_ref.parent.mkdir(parents=True)
+    bundled_cli_ref.write_text("# agy CLI reference\n", encoding="utf-8")
+    _fake_binary(bin_dir, "agy", "1.0.10")
+
     result = _run_receipts(
         tmp_path,
-        env={"PATH": str(bin_dir), "HOME": str(tmp_path / "home")},
-        platform="antigrav",
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home_dir)},
+        platform="agy",
+        now="2026-07-05T14:51:11Z",
     )
 
     assert result.returncode == 0, result.stderr
-    receipt = json.loads((tmp_path / "antigrav.json").read_text(encoding="utf-8"))
-    assert receipt["cli"]["binary"] == "agy"
-    assert receipt["cli"]["available"] is True
-    assert "quota_telemetry_unknown" in receipt["quota"]["reason_codes"]
+    payload = json.loads(result.stdout)
+    assert payload["receipts"][0]["platform"] == "agy"
+    assert payload["receipts"][0]["cli_available"] is True
+    assert payload["receipts"][0]["wrapper_exists"] is True
+    assert payload["receipts"][0]["quota_status"] == "unobservable"
+    receipt = json.loads((tmp_path / "agy.json").read_text(encoding="utf-8"))
+    assert receipt["platform"] == "agy"
+    assert receipt["routes"] == ["agy.review.direct"]
+    assert receipt["cli"]["version"] == "1.0.10"
+    assert receipt["quota"]["reason_codes"] == ["account_live_quota_receipt_absent"]
+    config_refs = {item["path"]: item for item in receipt["config_refs"]}
+    assert (
+        config_refs["~/.gemini/antigravity-cli/builtin/skills/antigravity_guide/references/cli.md"][
+            "exists"
+        ]
+        is True
+    )
+    assert all(item["redacted"] is True for item in receipt["config_refs"])
 
-    registry = load_platform_capability_registry(REGISTRY, receipt_dir=tmp_path, now=NOW_DT)
-    route = registry.require("antigrav.interactive.full")
+    registry = load_platform_capability_registry(
+        REGISTRY,
+        receipt_dir=tmp_path,
+        now=datetime(2026, 7, 5, 14, 52, tzinfo=UTC),
+    )
+    route = registry.require("agy.review.direct")
+    assert route.route_state.value == "blocked"
+    assert "agy_review_seat_receipt_admission_required" not in route.blocked_reasons
+    assert "route_specific_quota_receipt_absent" in route.blocked_reasons
 
-    assert route.route_state.value == "active"
-    assert "quota_telemetry_unknown" not in route.blocked_reasons
-    assert "quota_telemetry_unknown" not in route.freshness.evidence.quota.blocked_reasons
+
+def test_agy_receipt_requires_executable_review_wrapper(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "agy", "1.0.10")
+    wrapper = tmp_path / "non-executable-hapax-agy-reviewer"
+    wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    wrapper.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    registry_payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    for route in registry_payload["routes"]:
+        if route["route_id"] == "agy.review.direct":
+            route["sanctioned_wrapper"] = str(wrapper)
+            break
+    else:  # pragma: no cover - fixture invariant
+        raise AssertionError("agy.review.direct route missing from registry fixture")
+    registry_dir = tmp_path / "registry"
+    registry_dir.mkdir()
+    registry = registry_dir / "platform-capability-registry.json"
+    registry.write_text(json.dumps(registry_payload), encoding="utf-8")
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(tmp_path / "home")},
+        platform="agy",
+        registry=registry,
+        now="2026-07-05T14:51:11Z",
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((tmp_path / "agy.json").read_text(encoding="utf-8"))
+    assert receipt["wrapper"]["exists"] is True
+    assert receipt["wrapper"]["executable"] is False
+    assert receipt["capability"]["status"] == "blocked"
+    assert "sanctioned_wrapper_not_executable" in receipt["capability"]["reason_codes"]
+    assert receipt["resource"]["status"] == "blocked"
+    assert receipt["resource"]["reason_codes"] == ["wrapper_not_executable"]
+
+    registry_with_receipt = load_platform_capability_registry(
+        registry,
+        receipt_dir=tmp_path,
+        now=datetime(2026, 7, 5, 14, 52, tzinfo=UTC),
+    )
+    route = registry_with_receipt.require("agy.review.direct")
+    assert route.route_state.value == "blocked"
+    assert "agy_review_seat_receipt_admission_required" in route.blocked_reasons
+    assert "sanctioned_wrapper_not_executable" in route.blocked_reasons
+    assert "wrapper_not_executable" in route.blocked_reasons
 
 
 def test_api_provider_gateway_receipt_allows_paid_gateway_dispatch(
@@ -258,18 +406,23 @@ def test_api_provider_gateway_receipt_allows_paid_gateway_dispatch(
     assert SECRET not in receipt_text
     receipt = json.loads(receipt_text)
     assert "api.headless.provider_gateway" in receipt["routes"]
+    assert "api.headless.openrouter" in receipt["routes"]
     assert receipt["quota"]["status"] == "unobservable"
     assert receipt["known_unknowns"][0].startswith("Provider spend is authorized")
 
     registry = load_platform_capability_registry(REGISTRY, receipt_dir=tmp_path, now=API_NOW_DT)
     gateway = registry.require("api.headless.provider_gateway")
     cloud = registry.require("api.headless.api_frontier")
+    openrouter = registry.require("api.headless.openrouter")
 
     assert gateway.route_state.value == "active"
     assert "provider_budget_receipt_absent" not in gateway.blocked_reasons
     assert "provider_gateway_evidence_absent" not in gateway.blocked_reasons
     assert cloud.route_state.value == "blocked"
     assert "cloud_burst_release_gate_absent" in cloud.blocked_reasons
+    assert openrouter.route_state.value == "blocked"
+    assert "capabilityio_measurement_absent" in openrouter.blocked_reasons
+    assert "openrouter_paid_budget_receipt_absent" in openrouter.blocked_reasons
 
     sources = load_dispatch_policy_sources(
         registry_path=REGISTRY,
@@ -315,6 +468,16 @@ def test_api_provider_gateway_receipt_allows_paid_gateway_dispatch(
     assert decision.action is DispatchAction.LAUNCH
     assert decision.route_policy_green is True
     assert "policy_launch" in decision.reason_codes
+
+
+def test_glmcp_known_unknowns_disclose_secret_read_without_persistence() -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+
+    unknowns = namespace["known_unknowns_for"]("glmcp")
+
+    assert any("may read the pass-backed secret" in item for item in unknowns)
+    assert any("never persists the secret value" in item for item in unknowns)
+    assert not any("never reads secret values" in item for item in unknowns)
 
 
 def test_stale_receipt_is_not_consumed(tmp_path: Path) -> None:
@@ -388,6 +551,7 @@ def test_signed_opus_entitlement_receipt_allows_dispatch_without_policy_rollback
         platform="claude",
     )
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path, platform="claude")
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="opus-entitlement-test",
@@ -456,6 +620,7 @@ def test_quality_equivalence_receipt_does_not_widen_authority_ceiling(
         platform="claude",
     )
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path, platform="claude")
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="sonnet-equivalence-test",
@@ -565,6 +730,7 @@ def test_runtime_actuation_receipt_allows_task_bound_runtime_dispatch(
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
     result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="minio-cleanup-runtime-test",
@@ -594,6 +760,7 @@ def test_runtime_actuation_receipt_wrong_task_fails_closed(tmp_path: Path) -> No
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
     result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="wrong-task-runtime-test",
@@ -619,6 +786,7 @@ def test_runtime_actuation_receipt_wrong_route_fails_closed(tmp_path: Path) -> N
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
     result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="wrong-route-runtime-test",
@@ -644,6 +812,7 @@ def test_runtime_actuation_receipt_wrong_surface_fails_closed(tmp_path: Path) ->
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
     result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="wrong-surface-runtime-test",
@@ -669,6 +838,7 @@ def test_runtime_actuation_receipt_stale_fails_closed_as_absent(tmp_path: Path) 
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
     result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="stale-runtime-test",
@@ -696,6 +866,7 @@ def test_runtime_actuation_receipt_stale_on_request_fails_closed(tmp_path: Path)
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
     result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now="2026-06-05T11:00:00Z")
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
 
     payload: dict[str, object] = {
         "route_authority_receipt_schema": 1,
@@ -738,6 +909,7 @@ def test_runtime_actuation_receipt_allows_dimensional_runtime_candidate(
     _fake_binary(bin_dir, "codex", "codex-cli 9.9.9")
     result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)}, now=_current_iso_z())
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
     _write_route_authority_receipt(
         tmp_path,
         receipt_id="minio-cleanup-runtime-dimensional-test",
@@ -803,6 +975,7 @@ def _fresh_claude_platform_receipt(tmp_path: Path) -> None:
         platform="claude",
     )
     assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path, platform="claude")
 
 
 def _opus_dispatch_request(sources):  # type: ignore[no-untyped-def]

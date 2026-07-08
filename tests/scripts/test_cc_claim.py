@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -621,3 +622,229 @@ def test_governed_build_task_allows_claim(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_claim_inserts_missing_claim_keys(tmp_path: Path) -> None:
+    """A note authored without claimed_at must still get a COMPLETE stamp.
+
+    The re.sub stamps were silent no-ops for absent keys: the claim landed as
+    `status: claimed` with claimed_at missing — exactly the cc-hygiene H1
+    ghost predicate — and H1 reverted the fresh claim out from under the live
+    lane (2026-07-01 eta/ndcvb-phase1 incident)."""
+    home = tmp_path / "home"
+    root = _task_root(home)
+    task_id = "cc-missing-keys"
+    path = root / "active" / f"{task_id}.md"
+    path.write_text(
+        textwrap.dedent(
+            f"""\
+            ---
+            type: cc-task
+            task_id: {task_id}
+            title: "{task_id}"
+            status: offered
+            assigned_to: unassigned
+            kind: build
+            authority_case: CASE-TEST-001
+            parent_spec: /tmp/isap-test.md
+            quality_floor: frontier_required
+            mutation_surface: source
+            authority_level: authoritative
+            route_metadata_schema: 1
+            depends_on: []
+            created_at: 2026-05-09T00:00:00Z
+            updated_at: 2026-05-09T00:00:00Z
+            ---
+
+            # {task_id}
+
+            ## Session log
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = _claim(home, task_id)
+
+    assert result.returncode == 0, result.stderr
+    text = path.read_text(encoding="utf-8")
+    frontmatter = text[: text.find("\n---", 4)]
+    assert "status: claimed" in frontmatter
+    assert "assigned_to: cx-test" in frontmatter
+    assert re.search(r"^claimed_at: \d{4}-\d{2}-\d{2}T", frontmatter, flags=re.MULTILINE), (
+        "claimed_at must be inserted when the authored note lacks the key:\n" + frontmatter
+    )
+
+
+def test_claim_stamp_ignores_body_decoy_lines(tmp_path: Path) -> None:
+    """A column-0 `claimed_at:` line in the note BODY must neither absorb the
+    stamp nor satisfy the verification — stamping is frontmatter-scoped."""
+    home = tmp_path / "home"
+    root = _task_root(home)
+    task_id = "cc-body-decoy"
+    path = root / "active" / f"{task_id}.md"
+    path.write_text(
+        textwrap.dedent(
+            f"""\
+            ---
+            type: cc-task
+            task_id: {task_id}
+            title: "{task_id}"
+            status: offered
+            assigned_to: unassigned
+            kind: build
+            authority_case: CASE-TEST-001
+            parent_spec: /tmp/isap-test.md
+            quality_floor: frontier_required
+            mutation_surface: source
+            authority_level: authoritative
+            route_metadata_schema: 1
+            depends_on: []
+            created_at: 2026-05-09T00:00:00Z
+            updated_at: 2026-05-09T00:00:00Z
+            ---
+
+            # {task_id}
+
+            Quoted frontmatter from an earlier incident report:
+            claimed_at: 1999-01-01T00:00:00Z
+            status: offered
+
+            ## Session log
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = _claim(home, task_id)
+
+    assert result.returncode == 0, result.stderr
+    text = path.read_text(encoding="utf-8")
+    frontmatter = text[: text.find("\n---", 4)]
+    assert re.search(r"^claimed_at: \d{4}-\d{2}-\d{2}T", frontmatter, flags=re.MULTILINE), (
+        "claimed_at must be stamped INTO the frontmatter despite the body decoy:\n" + frontmatter
+    )
+    # The body decoy line is untouched.
+    assert "claimed_at: 1999-01-01T00:00:00Z" in text
+
+
+def test_claim_writes_task_bound_epoch_sidecar(tmp_path: Path) -> None:
+    """cc-claim records `<epoch> <task_id>` in the cc-claim-epoch sidecar so
+    task_is_terminal has a heartbeat-immune, task-bound claim-age witness."""
+    home = tmp_path / "home"
+    _write_task(home, "active", "cc-sidecar")
+
+    result = _claim(home, "cc-sidecar")
+
+    assert result.returncode == 0, result.stderr
+    sidecar = home / ".cache" / "hapax" / "cc-claim-epoch-cx-test"
+    assert sidecar.exists()
+    epoch, _, task = sidecar.read_text(encoding="utf-8").strip().partition(" ")
+    assert epoch.isdigit()
+    assert task == "cc-sidecar"
+
+
+def test_claim_writes_session_keyed_epoch_sidecar(tmp_path: Path) -> None:
+    """The session-keyed sidecar is written alongside the session-keyed cache
+    with an explicitly constructed path (never substring substitution on the
+    full path, which corrupts when a parent dir contains cc-active-task)."""
+    home = tmp_path / "home"
+    _write_task(home, "active", "cc-sidecar-session")
+    sid = "0f9f9f9f-1111-2222-3333-444455556666"
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["HAPAX_AGENT_ROLE"] = "cx-test"
+    env["HAPAX_SESSION_ID"] = sid
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "cc-sidecar-session"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    cache_dir = home / ".cache" / "hapax"
+    session_cache = cache_dir / f"cc-active-task-cx-test-{sid}"
+    assert session_cache.read_text(encoding="utf-8").strip() == "cc-sidecar-session"
+    session_sidecar = cache_dir / f"cc-claim-epoch-cx-test-{sid}"
+    assert session_sidecar.exists(), sorted(p.name for p in cache_dir.iterdir())
+    epoch, _, task = session_sidecar.read_text(encoding="utf-8").strip().partition(" ")
+    assert epoch.isdigit()
+    assert task == "cc-sidecar-session"
+
+
+def test_claim_refuses_duplicate_claim_keys(tmp_path: Path) -> None:
+    """Duplicate claim keys are fail-closed: re.sub stamps only the FIRST
+    occurrence while YAML consumers treat the LAST as authoritative — the
+    combination would leave a ghost-claimable note behind a written cache."""
+    home = tmp_path / "home"
+    root = _task_root(home)
+    task_id = "cc-duplicate-keys"
+    path = root / "active" / f"{task_id}.md"
+    path.write_text(
+        textwrap.dedent(
+            f"""\
+            ---
+            type: cc-task
+            task_id: {task_id}
+            title: "{task_id}"
+            status: offered
+            assigned_to: unassigned
+            kind: build
+            authority_case: CASE-TEST-001
+            parent_spec: /tmp/isap-test.md
+            quality_floor: frontier_required
+            mutation_surface: source
+            authority_level: authoritative
+            route_metadata_schema: 1
+            depends_on: []
+            created_at: 2026-05-09T00:00:00Z
+            updated_at: 2026-05-09T00:00:00Z
+            claimed_at: null
+            claimed_at: null
+            ---
+
+            # {task_id}
+
+            ## Session log
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = _claim(home, task_id)
+
+    assert result.returncode != 0
+    assert "duplicate frontmatter keys" in result.stderr
+    cache_dir = home / ".cache" / "hapax"
+    leaked = list(cache_dir.glob("cc-active-task-*")) if cache_dir.exists() else []
+    assert leaked == [], f"claim caches must not be written for a duplicate-key note: {leaked}"
+
+
+def test_claim_refuses_note_without_closing_frontmatter(tmp_path: Path) -> None:
+    """An unstampable note must fail loudly WITHOUT writing claim caches —
+    the no-cache-on-failure guarantee is the load-bearing fail-closed
+    property (a cache over a ghost-claimable note re-opens the H1 race)."""
+    home = tmp_path / "home"
+    root = _task_root(home)
+    task_id = "cc-no-closing-delimiter"
+    path = root / "active" / f"{task_id}.md"
+    path.write_text(
+        "---\n"
+        f"task_id: {task_id}\n"
+        "status: offered\n"
+        "assigned_to: unassigned\n"
+        "# frontmatter never closes\n",
+        encoding="utf-8",
+    )
+
+    result = _claim(home, task_id)
+
+    assert result.returncode != 0
+    assert "no closing frontmatter delimiter" in result.stderr
+    assert "No claim caches were written" in result.stderr
+    cache_dir = home / ".cache" / "hapax"
+    leaked = list(cache_dir.glob("cc-active-task-*")) if cache_dir.exists() else []
+    assert leaked == [], f"claim caches must not be written on a failed stamp: {leaked}"

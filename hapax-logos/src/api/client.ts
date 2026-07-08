@@ -37,8 +37,11 @@ export const api = {
   demos: () => invoke<import("./types").Demo[]>("get_demos"),
   demo: (id: string) => invoke<import("./types").Demo>("get_demo", { id }),
 
-  // --- Tier 2: Tauri commands (Qdrant/Langfuse direct) ---
-  cost: () => invoke<import("./types").CostSnapshot>("get_cost"),
+  // --- FastAPI-backed data via proxy_get_generic ---
+  cost: () =>
+    invoke<import("./types").CostSnapshot>("proxy_get_generic", {
+      path: "/cost",
+    }),
 
   // --- Proxy commands (Rust → FastAPI at :8051) ---
 

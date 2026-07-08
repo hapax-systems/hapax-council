@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+"""hapax-worktree-register — explicit lifecycle status for git worktrees.
+
+Subcommands:
+  list                 derive + print every worktree's status (no writes)
+  protected-paths      print registered worktrees the legacy GC inference sweep must NOT reap (no writes)
+  backfill             register every current worktree with its derived status
+  register <path>      register/refresh one worktree (--role --branch --task --pr --session)
+  heartbeat <path>     stamp last_heartbeat (the "still being worked" signal)
+  reap [--apply]       remove ONLY REGISTERED done/abandoned checkouts by status (branch always kept)
+
+Cleanup is governed by the REGISTRY, not inference. Reap removes a checkout ONLY when it is REGISTERED
+(an unregistered worktree is flagged, never reaped — register it via `backfill` first) AND its status
+is `done` (merged) or `abandoned` (no live owner, no open PR, stale) AND clean (no uncommitted work)
+AND not live — never an `active`/`merging` (open-PR) lane, a dirty lane, or one with a live process
+(even if merged). It ALWAYS keeps the branch (reversible via `git worktree add`); deleting a merged
+branch is left to hapax-worktree-gc.sh, which proves content-is-in-base first. `--min-idle-hours N`
+sets the abandoned staleness threshold.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+
+def _bootstrap() -> None:
+    here = Path(__file__).resolve().parents[1]
+    cands = [here]
+    env = os.environ.get("HAPAX_WORKTREE_GC_REPO")
+    if env:
+        cands.append(Path(env))
+    cands.append(Path.home() / "projects" / "hapax-council")
+    cands.append(Path.home() / ".cache" / "hapax" / "source-activation" / "worktree")
+    for c in cands:
+        if (c / "shared" / "worktree_registry.py").exists():
+            if str(c) not in sys.path:
+                sys.path.insert(0, str(c))
+            return
+    if str(here) not in sys.path:
+        sys.path.insert(0, str(here))
+
+
+_bootstrap()
+
+from shared import worktree_registry as wr  # noqa: E402
+
+
+def _resolve_canonical(start: str) -> str:
+    """Resolve to the repo's MAIN worktree root, even if ``start`` is a linked worktree path. The GC
+    passes the canonical repo, but a future caller (or `HAPAX_WORKTREE_GC_REPO` pointed at a worktree)
+    must not make `is_infra_path` miss the real repo or run `gh` from the wrong tree. `git rev-parse
+    --git-common-dir` is shared by every linked worktree, so its parent is the main checkout. Falls
+    back to the given path if it isn't a git tree (tests monkeypatch CANONICAL anyway)."""
+    res = subprocess.run(
+        ["git", "-C", start, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    common = res.stdout.strip()
+    if res.returncode == 0 and common:
+        root = os.path.dirname(common) if os.path.basename(common) == ".git" else common
+        if root:
+            return os.path.realpath(root)
+    return os.path.realpath(start)
+
+
+CANONICAL = _resolve_canonical(
+    os.environ.get("HAPAX_WORKTREE_GC_REPO", str(Path.home() / "projects" / "hapax-council"))
+)
+SELF = os.environ.get("HAPAX_WORKTREE_SELF", "")
+
+
+def _worktrees(repo: str) -> list[dict]:
+    out = subprocess.run(
+        ["git", "-C", repo, "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    items: list[dict] = []
+    cur: dict = {}
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            if cur:
+                items.append(cur)
+            cur = {"path": line[9:], "branch": None, "head": None}
+        elif line.startswith("branch "):
+            cur["branch"] = line[7:].removeprefix("refs/heads/")
+        elif line.startswith("HEAD "):
+            cur["head"] = line[5:]
+    if cur:
+        items.append(cur)
+    return items
+
+
+def _open_pr_branches() -> set[str] | None:
+    try:
+        res = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--limit",
+                "300",
+                "--json",
+                "headRefName",
+                "-q",
+                ".[].headRefName",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=CANONICAL,  # scope the PR lookup to the canonical repo, not the caller's cwd
+        )
+    except FileNotFoundError:
+        # gh not installed -> PR signal unavailable; degrade to None (classify fails closed).
+        return None
+    if res.returncode != 0:
+        return None
+    return set(res.stdout.split())
+
+
+def _probe(wt: dict, open_prs: set[str] | None, abandoned_after_s: int) -> dict | None:
+    # Thin wrapper over the testable module path (folds heartbeat + mtime staleness, realpath keys).
+    return wr.probe_worktree(
+        path=wt["path"],
+        branch=wt["branch"],
+        canonical=CANONICAL,
+        open_pr_branches=open_prs,
+        abandoned_after_s=abandoned_after_s,
+    )
+
+
+def cmd_list(_args: argparse.Namespace) -> int:
+    open_prs = _open_pr_branches()
+    if open_prs is None:
+        print(
+            "(gh unavailable — PR signal degraded; status uses git/proc/mtime only. "
+            "Next: run `gh auth status` or set GH_TOKEN to restore the open-PR signal.)"
+        )
+    for wt in _worktrees(CANONICAL):
+        p = _probe(wt, open_prs, wr.DEFAULT_ABANDONED_AFTER_S)
+        if p is None:
+            print(f"  gone       {wt['path']}")
+            continue
+        status_disp = "corrupt" if p.get("corrupt") else p["status"]
+        print(
+            f"  {status_disp:<9} live={int(p['live'])} clean={int(p['clean'])} "
+            f"merged={int(p['merged'])} pr={int(p['has_pr'])}  {p['path']} [{p['branch'] or '-'}]"
+        )
+    return 0
+
+
+def cmd_protected_paths(_args: argparse.Namespace) -> int:
+    # Emit (one realpath per line) every REGISTERED worktree the legacy hapax-worktree-gc.sh age+clean+
+    # merged INFERENCE sweep must NOT reap: pinned, or in-use (infra/active/merging). This is what makes
+    # explicit lifecycle status AUTHORITATIVE over inference for the durable timer. Unregistered
+    # worktrees are omitted on purpose (the legacy sweep still applies inference to them, backward-
+    # compatibly); `done`/`abandoned` are omitted so the sweep can still reap merged checkouts + delete
+    # merged branches. A non-zero exit (Python import error / corrupt registry) tells the GC the registry
+    # is unavailable so it fails CLOSED rather than reverting to pure inference.
+    open_prs = _open_pr_branches()
+    for wt in _worktrees(CANONICAL):
+        p = _probe(wt, open_prs, wr.DEFAULT_ABANDONED_AFTER_S)
+        if p is None or not p["registered"]:
+            continue
+        # A corrupt record (present-but-unparseable) is protected too: we can't read its pin, so fail
+        # closed and keep the legacy sweep off it until repaired.
+        if p.get("corrupt") or wr.is_inference_protected(p["status"], pinned=p["pinned"]):
+            print(p["path"])
+    return 0
+
+
+def cmd_backfill(_args: argparse.Namespace) -> int:
+    open_prs = _open_pr_branches()
+    now = datetime.now(UTC)
+    n = corrupt_kept = 0
+    for wt in _worktrees(CANONICAL):
+        p = _probe(wt, open_prs, wr.DEFAULT_ABANDONED_AFTER_S)
+        if p is None:
+            continue
+        # A corrupt record is LEFT in place (overwriting it would drop a possibly-pinned status — the
+        # fail-open hole). The probe already keeps it protected; backfill must not heal it by guessing.
+        if p.get("corrupt"):
+            corrupt_kept += 1
+            continue
+        # Seed last_heartbeat from the worktree's REAL last activity (mtime), not now — otherwise a
+        # back-filled record would look just-heartbeated and never become reapable. But NEVER move a
+        # heartbeat BACKWARDS: an already-registered lane may carry a FRESH heartbeat (stamped by its
+        # session) with no recent file activity — clobbering it with the stale mtime would wrongly make
+        # an active lane look abandoned and get it reaped. Take the freshest of (existing hb, mtime).
+        age = wr.mtime_age_seconds(p["path"])
+        hb = now - timedelta(seconds=age) if age != float("inf") else now
+        existing = wr.load(p["path"])
+        if existing is not None and existing.last_heartbeat > hb:
+            hb = existing.last_heartbeat
+        try:
+            wr.register(p["path"], branch=p["branch"], status=p["status"], last_heartbeat=hb)
+        except wr.CorruptRecordError:
+            # Raced corruption between probe and register: still fail closed, leave the file untouched.
+            corrupt_kept += 1
+            continue
+        n += 1
+    msg = f"backfilled {n} worktree registrations -> {wr.registry_dir()}"
+    if corrupt_kept:
+        msg += f" ({corrupt_kept} corrupt record(s) left protected — repair + re-run to re-govern)"
+    print(msg)
+    return 0
+
+
+def cmd_register(args: argparse.Namespace) -> int:
+    try:
+        wr.register(
+            os.path.realpath(args.path),
+            role=args.role,
+            branch=args.branch,
+            session_id=args.session,
+            task_id=args.task,
+            pr=args.pr,
+        )
+    except wr.CorruptRecordError as exc:
+        print(f"register failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"registered {args.path}")
+    return 0
+
+
+def cmd_heartbeat(args: argparse.Namespace) -> int:
+    rp = os.path.realpath(args.path)
+    # Distinguish CORRUPT from ABSENT for a useful message (wr.heartbeat returns None for both — it does
+    # not raise, since load() returns None on corrupt — so the old code reported a corrupt record as
+    # "absent", sending the operator to re-register instead of repair).
+    _existing, corrupt = wr._read_record(rp)
+    if corrupt:
+        print(
+            f"corrupt registry record for {rp} ({wr.record_path(rp)}) — heartbeat refused (fail-closed; "
+            f"the worktree stays protected). Repair: `rm {wr.record_path(rp)}` then "
+            f"`hapax-worktree-register register {rp}` (or `backfill`).",
+            file=sys.stderr,
+        )
+        return 1
+    if wr.heartbeat(rp) is not None:
+        print("heartbeat ok")
+        return 0
+    print(
+        f"no registration for {rp} (registry record {wr.record_path(rp)} absent). "
+        f"Next: `hapax-worktree-register register {rp}` (or `backfill` to register all worktrees).",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def cmd_reap(args: argparse.Namespace) -> int:
+    # --min-idle-hours sets how long a non-live, PR-less lane must be idle (by filesystem mtime)
+    # before classify calls it `abandoned`. 0 -> the module default.
+    abandoned_after_s = (
+        int(args.min_idle_hours * 3600) if args.min_idle_hours > 0 else wr.DEFAULT_ABANDONED_AFTER_S
+    )
+    open_prs = _open_pr_branches()
+    reaped = kept = 0
+    for wt in _worktrees(CANONICAL):
+        p = _probe(wt, open_prs, abandoned_after_s)
+        if p is None:
+            continue
+        if SELF and os.path.realpath(p["path"]) == os.path.realpath(SELF):
+            kept += 1
+            print(f"KEEP self        {p['path']} [{p['status']}]")
+            continue
+        # A corrupt record fails CLOSED: its (possibly pinned) status is unreadable, so never reap it.
+        if p.get("corrupt"):
+            kept += 1
+            print(
+                f"KEEP corrupt     {p['path']} — unparseable record, fail-closed; "
+                f"repair with `rm {wr.record_path(p['path'])}` then `backfill`"
+            )
+            continue
+        # Cleanup is governed by the REGISTRY: never reap an UNREGISTERED worktree by inferred status.
+        # Registration (backfill / the creation contract) is the governance step; an unregistered tree
+        # is a contract violation to flag, not silently remove.
+        if not p["registered"]:
+            kept += 1
+            print(
+                f"KEEP unregistered {p['path']} [{p['branch'] or '-'}] — run `backfill` to govern it"
+            )
+            continue
+        # Reap ONLY by explicit status (done/abandoned) + clean + NOT live. The live gate is
+        # decisive even for a merged (done) worktree someone is still working in. active/merging kept.
+        if not wr.is_reapable(p["status"], p["clean"], live=p["live"]):
+            kept += 1
+            continue
+        if not args.apply:
+            print(f"REAP? {p['status']:<10} {p['path']} [{p['branch'] or '-'}] (branch kept)")
+            reaped += 1
+            continue
+        r = subprocess.run(
+            ["git", "-C", CANONICAL, "worktree", "remove", p["path"]],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if r.returncode != 0:
+            print(
+                f"FAIL remove      {p['path']}: {r.stderr.strip()[:90]} — "
+                f"Next: inspect with `git -C {CANONICAL} worktree list` and "
+                f"`git worktree remove --force {p['path']}` if it is truly idle.",
+                file=sys.stderr,
+            )
+            continue
+        # Remove only the checkout — ALWAYS keep the branch (commits stay in .git, recoverable via
+        # `git worktree add`). Deleting a merged branch is left to hapax-worktree-gc.sh, which proves
+        # content-is-in-base first; a bare `branch -D` here could drop a squash-merge's real commits.
+        wr.deregister(p["path"])
+        reaped += 1
+        print(f"REAP {p['status']:<10} {p['path']} [{p['branch'] or '-'}] (branch kept)")
+    print(f"--- reap{'ed' if args.apply else '?'}={reaped} kept={kept}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="hapax-worktree-register")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list").set_defaults(fn=cmd_list)
+    sub.add_parser("protected-paths").set_defaults(fn=cmd_protected_paths)
+    sub.add_parser("backfill").set_defaults(fn=cmd_backfill)
+    rp = sub.add_parser("register")
+    rp.add_argument("path")
+    rp.add_argument("--role")
+    rp.add_argument("--branch")
+    rp.add_argument("--session")
+    rp.add_argument("--task")
+    rp.add_argument("--pr", type=int)
+    rp.set_defaults(fn=cmd_register)
+    hp = sub.add_parser("heartbeat")
+    hp.add_argument("path")
+    hp.set_defaults(fn=cmd_heartbeat)
+    rep = sub.add_parser("reap")
+    rep.add_argument("--apply", action="store_true")
+    rep.add_argument(
+        "--min-idle-hours",
+        type=float,
+        default=0.0,
+        help="only reap worktrees idle >= N hours (staleness gate for automatic/timer runs)",
+    )
+    rep.set_defaults(fn=cmd_reap)
+    args = ap.parse_args(argv)
+    return int(args.fn(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

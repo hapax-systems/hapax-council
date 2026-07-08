@@ -10,7 +10,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 LAUNCHERS = [
     REPO_ROOT / "scripts" / "hapax-claude-headless",
-    REPO_ROOT / "scripts" / "hapax-antigrav",
     REPO_ROOT / "scripts" / "hapax-vibe",
 ]
 
@@ -48,16 +47,13 @@ def test_no_fail_open_task_pickup(launcher: Path) -> None:
     )
 
 
-def test_antigrav_launcher_resolves_installed_agy_binary_name() -> None:
+def test_antigrav_launcher_is_retired_stub() -> None:
     text = (REPO_ROOT / "scripts" / "hapax-antigrav").read_text()
 
-    assert "resolve_antigrav_bin()" in text
-    assert "HAPAX_ANTIGRAV_BIN" in text
-    assert "command -v agy" in text
-    assert "for candidate in /usr/bin/agy" in text
-    assert "expected agy or HAPAX_ANTIGRAV_BIN=/path/to/agy" in text
-    assert "command -v antigravity" not in text
-    assert "/usr/bin/antigravity" not in text
+    assert "retired" in text
+    assert "exit 2" in text
+    assert "--prompt-interactive" not in text
+    assert "command -v agy" not in text
 
 
 def test_claude_headless_honors_explicit_dispatch_workdir() -> None:

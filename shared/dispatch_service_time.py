@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import statistics
 import time
 from collections import defaultdict
@@ -44,6 +45,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+from shared.intake_fit_scorer import composite_rank_key, fit_score
 
 # ── tunables (all overridable; defaults grounded in the measured distribution) ─
 
@@ -366,6 +369,9 @@ class QueueTask:
     wsjf: float
     platform_suitability: tuple[str, ...]
     age_s: float = 0.0
+    # Demand-shape for the SdlcRouter shadow scorer (None = honest-DARK).
+    requirement_vector: dict[str, int] | None = None
+    routing_class: str | None = None
 
 
 @dataclass(frozen=True)
@@ -376,11 +382,30 @@ class QueueLane:
     role: str
     platform: str
     cooldown_remaining_s: float = 0.0
+    dispatchable: bool = True
+
+
+def is_claude_operator_pool_role(role: str) -> bool:
+    """True for visible Claude dev-pool sessions that are not governed lanes."""
+
+    return re.fullmatch(r"dev[0-9]*", role.strip().lower()) is not None
 
 
 def _routable(task: QueueTask, lane: QueueLane) -> bool:
+    if not is_dispatchable_lane(lane):
+        return False
     platforms = {p.lower() for p in task.platform_suitability}
     return "any" in platforms or lane.platform.lower() in platforms
+
+
+def is_dispatchable_lane(lane: QueueLane) -> bool:
+    """False for live operator-pool sessions that must never receive queue work."""
+
+    if not lane.dispatchable:
+        return False
+    if lane.platform.lower() != "claude":
+        return True
+    return not is_claude_operator_pool_role(lane.role)
 
 
 def plan_dispatches(
@@ -390,6 +415,7 @@ def plan_dispatches(
     max_dispatches: int,
     age_norm_s: float = AGE_NORM_S,
     legacy: bool = False,
+    fit_blend: float = 0.0,
 ) -> list[tuple[str, str]]:
     """Decide ``(task_id, lane_role)`` dispatches for one tick.
 
@@ -404,6 +430,13 @@ def plan_dispatches(
     WSJF-desc, first-matching lane, and a cooled first-match lane *skips the
     task* (the head-of-line bug this change fixes) — for the revert env and the
     golden diff.
+
+    ``fit_blend`` (default ``0.0``) blends the intake ``fit_score`` (demand-shape
+    magnitude) into the rank-key: the per-task key becomes ``composite_rank_key``
+    over aged WSJF + ``fit_blend * fit_score``. ``0.0`` short-circuits to pure
+    WSJF (byte-identical to the pre-blend plan — the golden guarantee); a non-zero
+    blend is the operator's dial. ``_repair_cooled_plan`` MUST receive the same
+    ``fit_blend`` so the no-spin repair never reorders relative to the plan.
     """
     if legacy:
         return _plan_legacy(tasks, lanes, max_dispatches)
@@ -417,7 +450,14 @@ def plan_dispatches(
         eligible = [t for t in remaining if _routable(t, lane)]
         if not eligible:
             continue
-        best = max(eligible, key=lambda t: wsjf_effective(t.wsjf, t.age_s, age_norm_s))
+        best = max(
+            eligible,
+            key=lambda t: composite_rank_key(
+                wsjf_effective(t.wsjf, t.age_s, age_norm_s),
+                fit_score(t.requirement_vector),
+                blend=fit_blend,
+            ),
+        )
         plan.append((best.task_id, lane.role))
         remaining.remove(best)
     return plan

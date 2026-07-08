@@ -6,7 +6,10 @@ runs in the default council pytest harness.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from shared.gate_log import (
     DEFAULT_GATE_LOG,
@@ -73,3 +76,102 @@ def test_default_path_is_persistent_not_tmpfs() -> None:
     assert "/tmp/" not in str(DEFAULT_GATE_LOG)
     assert not is_persistent("/tmp/x/gate-events.jsonl")
     assert not is_persistent("/dev/shm/gate-events.jsonl")
+
+
+def _configure_durable_sink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    import shared.durable_jsonl_sink as sink_mod
+
+    durable_root = tmp_path / "durable"
+    durable_root.mkdir()
+    monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(durable_root))
+    monkeypatch.setattr(sink_mod, "_mount_fstype_for_path", lambda _path: "btrfs")
+    return durable_root
+
+
+def test_default_gate_log_writes_durable_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    durable_root = _configure_durable_sink(tmp_path, monkeypatch)
+    default_log = tmp_path / "gate-events.jsonl"
+    monkeypatch.setattr("shared.gate_log.DEFAULT_GATE_LOG", default_log)
+
+    append_gate_event(
+        GateEvent(
+            route="coding",
+            routing_class="edit-refine-iterate:single-file",
+            task_hash="abc123",
+            gate_result="accept",
+        )
+    )
+
+    stream = durable_root / "gate-log.jsonl"
+    rows = [json.loads(line) for line in stream.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["stream_id"] == "gate-log"
+    assert rows[0]["data_class"] == "gate_event"
+    assert default_log.exists()
+
+
+def test_default_gate_log_missing_durable_root_refuses_before_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shared.durable_jsonl_sink as sink_mod
+
+    monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(tmp_path / "missing"))
+    default_log = tmp_path / "gate-events.jsonl"
+    monkeypatch.setattr("shared.gate_log.DEFAULT_GATE_LOG", default_log)
+
+    with pytest.raises(sink_mod.DurableSinkPathError):
+        append_gate_event(GateEvent(route="coding", routing_class="c"))
+    assert not default_log.exists()
+
+
+def test_default_gate_log_durable_payload_is_scrubbed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    durable_root = _configure_durable_sink(tmp_path, monkeypatch)
+    monkeypatch.setattr("shared.gate_log.DEFAULT_GATE_LOG", tmp_path / "gate-events.jsonl")
+
+    append_gate_event(
+        GateEvent(
+            route="coding",
+            routing_class="edit-refine-iterate:single-file",
+            model_resolved="secret ghp_1234567890abcdefghijklmnop",
+            task_hash="abc123",
+        )
+    )
+
+    content = (durable_root / "gate-log.jsonl").read_text(encoding="utf-8")
+    assert "ghp_" not in content
+    assert "[REDACTED:github_token]" in content
+
+
+def test_default_gate_log_durable_payload_scrubs_structured_secret_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    durable_root = _configure_durable_sink(tmp_path, monkeypatch)
+    monkeypatch.setattr("shared.gate_log.DEFAULT_GATE_LOG", tmp_path / "gate-events.jsonl")
+
+    append_gate_event(
+        GateEvent(
+            route="coding",
+            routing_class="edit-refine-iterate:single-file",
+            requirement_vector={
+                "api_key": "hunter2",
+                "nested": {
+                    "X-API-Key": "hunter3",
+                    "access-token": "hunter4",
+                    "prompt": "private routing text",
+                },
+            },
+            task_hash="abc123",
+        )
+    )
+
+    content = (durable_root / "gate-log.jsonl").read_text(encoding="utf-8")
+    assert "hunter2" not in content
+    assert "hunter3" not in content
+    assert "hunter4" not in content
+    assert "private routing text" not in content
+    assert "[REDACTED:secret_assignment]" in content
+    assert "[REDACTED:private_text]" in content

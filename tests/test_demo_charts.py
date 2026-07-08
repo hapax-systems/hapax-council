@@ -6,7 +6,16 @@ import pytest
 
 pytest.importorskip("matplotlib", reason="matplotlib not installed")
 
-from agents.demo_pipeline.charts import MPLSTYLE_PATH, _normalize_chart_spec, render_chart  # noqa: E402, I001
+import matplotlib.image as mpimg  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.figure import Figure  # noqa: E402
+
+from agents.demo_pipeline import charts  # noqa: E402
+from agents.demo_pipeline.charts import (  # noqa: E402, I001
+    MPLSTYLE_PATH,
+    _normalize_chart_spec,
+    render_chart,
+)
 
 
 class TestCharts:
@@ -49,6 +58,69 @@ class TestCharts:
 
     def test_gruvbox_style_exists(self):
         assert MPLSTYLE_PATH.exists(), f"Missing gruvbox.mplstyle at {MPLSTYLE_PATH}"
+
+    def test_render_chart_keeps_style_local_and_canvas_fixed(self, tmp_path):
+        rc_keys = ("savefig.bbox", "savefig.dpi")
+        before = {key: plt.rcParams[key] for key in rc_keys}
+        spec = json.dumps(
+            {
+                "type": "bar",
+                "title": "Fixed Canvas",
+                "data": {"labels": ["A", "B"], "values": [1, 2]},
+            }
+        )
+
+        output = tmp_path / "fixed.png"
+        result = render_chart(spec, output)
+
+        image = mpimg.imread(result)
+        assert image.shape[:2] == (1080, 1920)
+        assert {key: plt.rcParams[key] for key in rc_keys} == before
+
+    def test_failed_primary_render_closes_figures_before_fallback(self, monkeypatch, tmp_path):
+        plt.close("all")
+
+        def bad_renderer(*_args, **_kwargs):
+            plt.figure()
+            raise RuntimeError("forced render failure")
+
+        monkeypatch.setattr(charts, "_render_bar", bad_renderer)
+        spec = json.dumps(
+            {
+                "type": "bar",
+                "title": "Fallback",
+                "data": {"labels": ["A"], "values": [1]},
+            }
+        )
+
+        result = charts.render_chart(spec, tmp_path / "fallback.png")
+
+        assert result.exists()
+        assert plt.get_fignums() == []
+
+    def test_savefig_raster_overflow_uses_non_matplotlib_fallback(self, monkeypatch, tmp_path):
+        plt.close("all")
+
+        def bad_savefig(*_args, **_kwargs):
+            raise RuntimeError(
+                "FT_Render_Glyph (ft2font_wrapper.cpp line 1934) failed "
+                "with error 0x62: raster overflow"
+            )
+
+        monkeypatch.setattr(Figure, "savefig", bad_savefig)
+        spec = json.dumps(
+            {
+                "type": "bar",
+                "title": "Fallback Canvas",
+                "data": {"labels": ["A", "B"], "values": [1, 2]},
+            }
+        )
+
+        result = render_chart(spec, tmp_path / "raster-overflow.png")
+
+        image = mpimg.imread(result)
+        assert image.shape[:2] == (1080, 1920)
+        assert plt.get_fignums() == []
 
     def test_unknown_chart_type_falls_back_to_bar(self, tmp_path):
         spec = json.dumps(

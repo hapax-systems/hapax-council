@@ -423,6 +423,7 @@ def audit_runtime() -> SpecReport:
         for dim in [
             "health",
             "resource_pressure",
+            "local_capacity_pressure",
             "error_rate",
             "processing_throughput",
             "perception_confidence",

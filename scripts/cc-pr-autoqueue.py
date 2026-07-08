@@ -45,6 +45,15 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import review_team  # noqa: E402
+from github_pr_status import (  # noqa: E402
+    GRAPHQL_BACKOFF_RC,
+    REST_INDETERMINATE_CHECK_NAME,
+    fetch_status_check_rollup_rest,
+    get_pull_rest,
+    list_open_pr_statuses_rest,
+    rest_merge_state_status,
+    run_graphql_rate_aware,
+)
 
 from shared.merge_queue_lineage import (  # noqa: E402
     DEFAULT_LEDGER_PATH,
@@ -62,10 +71,14 @@ from shared.merge_queue_lineage import (  # noqa: E402
 )
 from shared.release_gate import evaluate_avsdlc_release_gate  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
+    RELEASE_MITIGATION_CHECKS,
+    REVIEW_TEAM_QUORUM_EVIDENCE,
     TASK_MERGE_READY_STATUSES,
+    ReleaseAutoArmAssessment,
     acceptance_receipt_blockers,
     apply_release_auto_arm,
     assess_release_auto_arm,
+    frontmatter_from_text,
     release_auto_arm_waivers,
     task_closure_validity,
 )
@@ -81,6 +94,10 @@ DEFAULT_ADMISSION_GOVERNOR_PATH = Path.home() / ".cache" / "hapax" / "pr-admissi
 KILLSWITCH_ENVS = ("HAPAX_CC_PR_AUTOQUEUE_OFF", "HAPAX_CC_HYGIENE_OFF")
 
 PASS_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
+# Ordinary queue admission treats skipped/neutral as non-failing, but mitigation
+# evidence must be affirmative: a sensitive release gate is satisfied by SUCCESS
+# only.
+MITIGATION_EVIDENCE_PASS_STATES = {"SUCCESS"}
 FAIL_STATES = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
 DIRTY_MERGE_STATES = {"DIRTY"}
 UNCHECKED_PR_CHECKBOX_RE = re.compile(r"^\s*[-*]\s+\[\s\]\s+(?P<text>.+?)\s*$")
@@ -88,6 +105,7 @@ NON_BLOCKING_CHECKBOX_RE = re.compile(
     r"\b(optional|non[-_\s]?blocking|informational|follow[-_\s]?up|stretch)\b",
     re.IGNORECASE,
 )
+_MERGE_QUEUE_REF_PR_RE = re.compile(r"/pr-(\d+)-")
 # Sourced from the canonical SSOT so the autoqueue and the cc-task gate agree on
 # the ready family (shared/sdlc_lifecycle.py TASK_MERGE_READY_STATUSES). The two
 # fulfilling-closed states stay admissible for closeout reconciliation.
@@ -102,9 +120,18 @@ DEFAULT_REQUIRED_CHECKS = ("lint", "test", "typecheck", "web-build", "vscode-bui
 AUTOQUEUE_ADMISSION_CONTEXT = "hapax/autoqueue-admission"
 AUTOQUEUE_IGNORED_CHECK_CONTEXTS = {
     AUTOQUEUE_ADMISSION_CONTEXT,
+    REVIEW_TEAM_QUORUM_EVIDENCE,
     "governance-gate",
+    "hkp-advisory",
     "pr-admission",
 }
+VIRTUAL_RELEASE_MITIGATION_CONTEXTS = frozenset({REVIEW_TEAM_QUORUM_EVIDENCE})
+RELEASE_MITIGATION_CHECK_CONTEXTS = frozenset(
+    check
+    for checks in RELEASE_MITIGATION_CHECKS.values()
+    for check in checks
+    if check not in VIRTUAL_RELEASE_MITIGATION_CONTEXTS
+)
 # Mirrors queue-admission-proof-check.py DEFAULT_TTL_SECONDS. The reconciler
 # re-posts the admission proof once it is older than half this window so the
 # server-side proof never goes stale (G3 idempotent writes).
@@ -172,6 +199,7 @@ class CheckSummary:
     passed: list[str] = field(default_factory=list)
     pending: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    verified_passed: list[str] = field(default_factory=list)
 
     @property
     def has_pending(self) -> bool:
@@ -229,6 +257,7 @@ class Decision:
     tasks: tuple[TaskNote, ...] = ()
     reasons: tuple[str, ...] = ()
     auto_arm: bool = False
+    auto_arm_verified_checks: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -248,6 +277,7 @@ class Decision:
             out["reasons"] = list(self.reasons)
         if self.auto_arm:
             out["auto_arm"] = True
+            out["auto_arm_verified_checks"] = list(self.auto_arm_verified_checks)
         return out
 
 
@@ -576,8 +606,6 @@ def summarize_checks(items: list[dict[str, Any]]) -> CheckSummary:
             latest_by_name["malformed-check"] = (None, index, "PENDING")
             continue
         name = _check_name(item)
-        if name in AUTOQUEUE_IGNORED_CHECK_CONTEXTS:
-            continue
         raw_state = item.get("conclusion") or item.get("state") or item.get("status")
         candidate = (_check_observed_at(item), index, str(raw_state or "").upper())
         previous = latest_by_name.get(name)
@@ -589,14 +617,32 @@ def summarize_checks(items: list[dict[str, Any]]) -> CheckSummary:
     passed: list[str] = []
     pending: list[str] = []
     failed: list[str] = []
+    verified_passed: list[str] = []
     for name, (_observed_at, _index, state) in latest_by_name.items():
+        if (
+            name not in VIRTUAL_RELEASE_MITIGATION_CONTEXTS
+            and state in MITIGATION_EVIDENCE_PASS_STATES
+            and (
+                name not in AUTOQUEUE_IGNORED_CHECK_CONTEXTS
+                or name in RELEASE_MITIGATION_CHECK_CONTEXTS
+            )
+        ):
+            verified_passed.append(name)
+    for name, (_observed_at, _index, state) in latest_by_name.items():
+        if name in AUTOQUEUE_IGNORED_CHECK_CONTEXTS:
+            continue
         if state in PASS_STATES:
             passed.append(name)
         elif state in FAIL_STATES:
             failed.append(name)
         else:
             pending.append(name)
-    return CheckSummary(passed=passed, pending=pending, failed=failed)
+    return CheckSummary(
+        passed=passed,
+        pending=pending,
+        failed=failed,
+        verified_passed=verified_passed,
+    )
 
 
 def _labels_from_payload(item: dict[str, Any]) -> tuple[str, ...]:
@@ -661,62 +707,237 @@ def fetch_open_prs(
 ) -> list[PullRequest]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
-    cmd = [
-        "gh",
-        "pr",
-        "list",
-        "--repo",
-        repo,
-        "--state",
-        "open",
-        "--limit",
-        str(limit),
-        "--json",
-        ",".join(
-            [
-                "number",
-                "id",
-                "title",
-                "body",
-                "headRefName",
-                "headRefOid",
-                "files",
-                "changedFiles",
-                "isDraft",
-                "mergeStateStatus",
-                "labels",
-                "reviewDecision",
-                "autoMergeRequest",
-                "statusCheckRollup",
-            ]
-        ),
-    ]
-    proc = runner(
-        cmd,
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
+    raw = list_open_pr_statuses_rest(
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+        limit=limit,
+        include_files=True,
+        include_review_decision=True,
     )
-    if proc.returncode != 0:
-        LOG.error("gh pr list failed (rc=%d): %s", proc.returncode, proc.stderr.strip())
-        return []
-    try:
-        raw = json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        LOG.error("gh pr list emitted non-JSON: %s", exc)
-        return []
-    if not isinstance(raw, list):
-        LOG.error("gh pr list emitted %s, expected list", type(raw).__name__)
+    if not raw:
+        LOG.warning("REST open PR scan returned no rows")
         return []
     prs: list[PullRequest] = []
     for item in raw:
         if isinstance(item, dict):
+            rest_pr = None
+            try:
+                number = int(item.get("number"))
+                rest_pr = get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner)
+            except (TypeError, ValueError):
+                rest_pr = None
+            item["mergeStateStatus"] = (
+                rest_merge_state_status(rest_pr)
+                if rest_pr is not None
+                else str(item.get("mergeStateStatus") or "UNKNOWN").upper()
+            )
+            # Preserve the shared REST snapshot when available. If it is absent, derive the
+            # rollup through REST/core check-runs and commit statuses, not another GraphQL PR
+            # view. Fail-closed: an unfetchable rollup reads as "checks unknown / not green".
+            fallback_rollup = item.get("statusCheckRollup")
+            if (
+                isinstance(fallback_rollup, list)
+                and fallback_rollup
+                and not _rollup_is_rest_indeterminate(fallback_rollup)
+            ):
+                item["statusCheckRollup"] = fallback_rollup
+            else:
+                item["statusCheckRollup"] = _fetch_status_check_rollup(
+                    item.get("number"),
+                    head_sha=item.get("headRefOid"),
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
+                )
             pr = _parse_pr(item)
             if pr is not None:
                 prs.append(pr)
     return prs
+
+
+def _fetch_status_check_rollup(
+    number: object,
+    *,
+    head_sha: object | None = None,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    use_cache: bool | None = None,
+) -> list[Any]:
+    """Fetch one PR's status rollup via REST check-runs/statuses.
+
+    Kept separate from the open-PR metadata scan because check-runs are fetched per
+    head SHA through REST/core. Returns ``[]`` fail-closed on any
+    error so an unknown-checks PR is never treated as green.
+    """
+    sha = _scalar(head_sha)
+    if not sha and isinstance(number, int):
+        payload = get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner)
+        head = payload.get("head") if isinstance(payload, dict) else None
+        if isinstance(head, dict):
+            sha = _scalar(head.get("sha"))
+    if not sha:
+        return []
+    rollup = fetch_status_check_rollup_rest(
+        sha,
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+        use_cache=use_cache,
+    )
+
+    if not rollup or _rollup_is_rest_indeterminate(rollup):
+        try:
+            pr_number = int(number)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            pr_number = None
+        if pr_number is not None:
+            ok, gql_sha, gql_rollup = _fetch_status_check_rollup_graphql(
+                pr_number,
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+            )
+            if ok and gql_rollup and (not sha or gql_sha == sha):
+                return gql_rollup
+    if not rollup:
+        LOG.warning(
+            "REST status rollup fetch returned no checks for #%s sha=%s",
+            number,
+            sha,
+        )
+    return rollup
+
+
+def _rollup_is_rest_indeterminate(rollup: list[Any]) -> bool:
+    return bool(rollup) and all(
+        isinstance(item, dict) and _check_name(item) == REST_INDETERMINATE_CHECK_NAME
+        for item in rollup
+    )
+
+
+def _fetch_status_check_rollup_graphql(
+    pr_number: int,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> tuple[bool, str, list[Any]]:
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    owner, name = repo.split("/", 1)
+    query = (
+        "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){"
+        "pullRequest(number:$number){headRefOid commits(last:1){nodes{commit{oid "
+        "statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status "
+        "conclusion completedAt startedAt} ... on StatusContext{context state createdAt}}}}}}}}}}"
+    )
+    proc = run_graphql_rate_aware(
+        [
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"repo={name}",
+            "-F",
+            f"number={pr_number}",
+        ],
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if proc.returncode != 0:
+        return False, "invalid_pr_release_evidence_payload", []
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return False, "invalid_pr_release_evidence_payload", []
+    pull = (
+        payload.get("data", {}).get("repository", {}).get("pullRequest")
+        if isinstance(payload, dict)
+        else None
+    )
+    if not isinstance(pull, dict):
+        return False, "invalid_pr_release_evidence_payload", []
+    sha = _scalar(pull.get("headRefOid"))
+    if not sha:
+        return False, "missing_head_sha", []
+    commit_nodes = (
+        pull.get("commits", {}).get("nodes", []) if isinstance(pull.get("commits"), dict) else []
+    )
+    commit = None
+    if commit_nodes and isinstance(commit_nodes[-1], dict):
+        commit = commit_nodes[-1].get("commit")
+    rollup = (
+        commit.get("statusCheckRollup", {}).get("contexts", {}).get("nodes")
+        if isinstance(commit, dict)
+        else None
+    )
+    if not isinstance(rollup, list):
+        return False, "invalid_status_check_rollup", []
+    return True, sha, rollup
+
+
+def fetch_pr_release_evidence(
+    pr_number: int,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> tuple[bool, str, set[str]]:
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    payload = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+    if not isinstance(payload, dict):
+        fallback = _fetch_pr_release_evidence_graphql(
+            pr_number,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+        )
+        return fallback if fallback[0] else (False, "invalid_pr_release_evidence_payload", set())
+    head = payload.get("head") if isinstance(payload.get("head"), dict) else {}
+    sha = _scalar(head.get("sha"))
+    if not sha:
+        fallback = _fetch_pr_release_evidence_graphql(
+            pr_number,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+        )
+        return fallback if fallback[0] else (False, "missing_head_sha", set())
+    rollup = _fetch_status_check_rollup(
+        pr_number,
+        head_sha=sha,
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+        use_cache=False,
+    )
+    if not isinstance(rollup, list):
+        return False, "invalid_status_check_rollup", set()
+    if _rollup_is_rest_indeterminate(rollup):
+        return False, "invalid_status_check_rollup", set()
+    return True, sha, set(summarize_checks(rollup).verified_passed)
+
+
+def _fetch_pr_release_evidence_graphql(
+    pr_number: int,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> tuple[bool, str, set[str]]:
+    ok, sha, rollup = _fetch_status_check_rollup_graphql(
+        pr_number,
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if not ok:
+        return False, sha, set()
+    return True, sha, set(summarize_checks(rollup).verified_passed)
 
 
 def fetch_merge_queue_pr_numbers(
@@ -724,7 +945,7 @@ def fetch_merge_queue_pr_numbers(
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
-) -> set[int]:
+) -> set[int] | None:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
     owner, name = repo.split("/", 1)
@@ -732,10 +953,7 @@ def fetch_merge_queue_pr_numbers(
         "query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){"
         "mergeQueue{entries(first:100){nodes{pullRequest{number}}}}}}"
     )
-    cmd = [
-        "gh",
-        "api",
-        "graphql",
+    graphql_args = [
         "-f",
         f"query={query}",
         "-f",
@@ -743,22 +961,25 @@ def fetch_merge_queue_pr_numbers(
         "-f",
         f"repo={name}",
     ]
-    proc = runner(
-        cmd,
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
+    proc = run_graphql_rate_aware(
+        graphql_args,
+        repo_root=repo_root,
+        runner=runner,
     )
     if proc.returncode != 0:
-        LOG.error("gh merge queue query failed (rc=%d): %s", proc.returncode, proc.stderr.strip())
-        return set()
+        level = logging.WARNING if proc.returncode == GRAPHQL_BACKOFF_RC else logging.ERROR
+        LOG.log(
+            level,
+            "gh merge queue query indeterminate (rc=%d): %s",
+            proc.returncode,
+            proc.stderr.strip(),
+        )
+        return None
     try:
         payload = json.loads(proc.stdout or "{}")
     except json.JSONDecodeError as exc:
         LOG.error("gh merge queue query emitted non-JSON: %s", exc)
-        return set()
+        return None
     nodes = (
         payload.get("data", {})
         .get("repository", {})
@@ -774,6 +995,40 @@ def fetch_merge_queue_pr_numbers(
             except (KeyError, TypeError, ValueError):
                 continue
             queued.add(number)
+    queued |= _merge_queue_ref_pr_numbers(repo=repo, repo_root=repo_root, runner=runner)
+    return queued
+
+
+def _merge_queue_ref_pr_numbers(
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> set[int]:
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    cmd = [
+        "gh",
+        "api",
+        f"repos/{repo}/git/matching-refs/heads/gh-readonly-queue",
+        "--jq",
+        ".[].ref",
+    ]
+    proc = runner(
+        cmd,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        return set()
+    refs = proc.stdout.splitlines()
+    queued: set[int] = set()
+    for ref in refs:
+        if match := _MERGE_QUEUE_REF_PR_RE.search(ref.strip()):
+            queued.add(int(match.group(1)))
     return queued
 
 
@@ -810,6 +1065,31 @@ A PR whose task note is unparseable must NOT read as merely "unlinked".
 """
 
 
+def _task_note_from_frontmatter(path: Path, folder: str, fm: dict[str, Any]) -> TaskNote | None:
+    task_id = _scalar(fm.get("task_id"))
+    if not task_id:
+        return None
+    return TaskNote(
+        task_id=task_id,
+        path=path,
+        folder=folder,
+        status=(_scalar(fm.get("status")) or "").lower(),
+        pr=_int_or_none(fm.get("pr")),
+        branch=_scalar(fm.get("branch")),
+        authority_case=_scalar(fm.get("authority_case") or fm.get("case_id")),
+        parent_spec=_scalar(fm.get("parent_spec")),
+        route_metadata_schema=_int_or_none(fm.get("route_metadata_schema")),
+        priority=(_scalar(fm.get("priority")) or "").lower() or None,
+        kind=(_scalar(fm.get("kind")) or "").lower() or None,
+        tags=tuple(tag.lower() for tag in _string_tuple(fm.get("tags"))),
+        queue_admission=((_scalar(fm.get("queue_admission")) or "").lower() or None),
+        assigned_to=_scalar(fm.get("assigned_to")),
+        lane_affinity=_scalar(fm.get("lane_affinity")),
+        epic_serialize=_scalar(fm.get("epic_serialize")),
+        frontmatter=dict(fm),
+    )
+
+
 def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
     notes: list[TaskNote] = []
     for folder in ("active", "closed"):
@@ -824,31 +1104,33 @@ def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
                 continue
             if not fm or fm.get("type") != "cc-task":
                 continue
-            task_id = _scalar(fm.get("task_id"))
-            if not task_id:
+            task = _task_note_from_frontmatter(path, folder, fm)
+            if task is None:
                 continue
-            notes.append(
-                TaskNote(
-                    task_id=task_id,
-                    path=path,
-                    folder=folder,
-                    status=(_scalar(fm.get("status")) or "").lower(),
-                    pr=_int_or_none(fm.get("pr")),
-                    branch=_scalar(fm.get("branch")),
-                    authority_case=_scalar(fm.get("authority_case") or fm.get("case_id")),
-                    parent_spec=_scalar(fm.get("parent_spec")),
-                    route_metadata_schema=_int_or_none(fm.get("route_metadata_schema")),
-                    priority=(_scalar(fm.get("priority")) or "").lower() or None,
-                    kind=(_scalar(fm.get("kind")) or "").lower() or None,
-                    tags=tuple(tag.lower() for tag in _string_tuple(fm.get("tags"))),
-                    queue_admission=((_scalar(fm.get("queue_admission")) or "").lower() or None),
-                    assigned_to=_scalar(fm.get("assigned_to")),
-                    lane_affinity=_scalar(fm.get("lane_affinity")),
-                    epic_serialize=_scalar(fm.get("epic_serialize")),
-                    frontmatter=dict(fm),
-                )
-            )
+            notes.append(task)
     return notes
+
+
+def _task_note_with_frontmatter(task: TaskNote, frontmatter: dict[str, Any]) -> TaskNote:
+    return TaskNote(
+        task_id=_scalar(frontmatter.get("task_id")) or task.task_id,
+        path=task.path,
+        folder=task.folder,
+        status=(_scalar(frontmatter.get("status")) or "").lower(),
+        pr=_int_or_none(frontmatter.get("pr")),
+        branch=_scalar(frontmatter.get("branch")),
+        authority_case=_scalar(frontmatter.get("authority_case") or frontmatter.get("case_id")),
+        parent_spec=_scalar(frontmatter.get("parent_spec")),
+        route_metadata_schema=_int_or_none(frontmatter.get("route_metadata_schema")),
+        priority=(_scalar(frontmatter.get("priority")) or "").lower() or None,
+        kind=(_scalar(frontmatter.get("kind")) or "").lower() or None,
+        tags=tuple(tag.lower() for tag in _string_tuple(frontmatter.get("tags"))),
+        queue_admission=((_scalar(frontmatter.get("queue_admission")) or "").lower() or None),
+        assigned_to=_scalar(frontmatter.get("assigned_to")),
+        lane_affinity=_scalar(frontmatter.get("lane_affinity")),
+        epic_serialize=_scalar(frontmatter.get("epic_serialize")),
+        frontmatter=dict(frontmatter),
+    )
 
 
 def _matching_tasks(pr: PullRequest, tasks: list[TaskNote]) -> list[TaskNote]:
@@ -856,6 +1138,26 @@ def _matching_tasks(pr: PullRequest, tasks: list[TaskNote]) -> list[TaskNote]:
     if by_pr:
         return by_pr
     return [task for task in tasks if task.branch == pr.head_ref]
+
+
+def _release_authorized_head_blockers(
+    frontmatter: dict[str, Any],
+    *,
+    pr_head_sha: str | None,
+) -> tuple[str, ...]:
+    assessment = assess_release_auto_arm(frontmatter)
+    if not assessment.armed:
+        return ()
+    if not pr_head_sha:
+        return ("release_authorized_head_unavailable",)
+    blocker = _release_authorized_head_stamp_blocker(
+        frontmatter,
+        expected_head_sha=pr_head_sha,
+        expected_label="current",
+    )
+    if blocker:
+        return (blocker,)
+    return ()
 
 
 def _task_blockers(
@@ -926,9 +1228,56 @@ def _task_blockers(
         if release_arm.needs_arming and not allow_release_auto_arm:
             blockers.append("release_authorized_false")
 
+    blockers.extend(_release_authorized_head_blockers(task.frontmatter, pr_head_sha=pr_head_sha))
+
     avsdlc_gate = evaluate_avsdlc_release_gate(task.frontmatter)
     blockers.extend(f"avsdlc_release_gate:{blocker}" for blocker in avsdlc_gate.blockers)
     return blockers
+
+
+def _review_team_quorum_evidence_blockers(
+    task: TaskNote,
+    frontmatter: dict[str, Any],
+    *,
+    pr_number: int | None,
+    pr_head_sha: str | None,
+    changed_files: tuple[str, ...] | None,
+    changed_file_count: int | None,
+) -> tuple[str, ...]:
+    return review_team.review_dossier_validity_blockers(
+        frontmatter,
+        task.path,
+        pr_head_sha=pr_head_sha,
+        pr_number=pr_number,
+        changed_files=changed_files or (),
+        changed_file_count=changed_file_count,
+    )
+
+
+def _release_mitigation_verified_checks(
+    checks: set[str],
+    task: TaskNote | None,
+    frontmatter: dict[str, Any],
+    *,
+    pr_number: int | None,
+    pr_head_sha: str | None,
+    changed_files: tuple[str, ...] | None,
+    changed_file_count: int | None,
+) -> set[str]:
+    verified = set(checks) - VIRTUAL_RELEASE_MITIGATION_CONTEXTS
+    if task is None:
+        return verified
+    blockers = _review_team_quorum_evidence_blockers(
+        task,
+        frontmatter,
+        pr_number=pr_number,
+        pr_head_sha=pr_head_sha,
+        changed_files=changed_files,
+        changed_file_count=changed_file_count,
+    )
+    if not blockers:
+        verified.add(REVIEW_TEAM_QUORUM_EVIDENCE)
+    return verified
 
 
 def _is_ci_repair_task(task: TaskNote) -> bool:
@@ -1085,8 +1434,13 @@ def classify_pr(
     ]
     if missing_required:
         reasons.append("missing_required_checks:" + ",".join(missing_required))
-    if pr.check_summary.failed:
-        reasons.append("failed_checks:" + ",".join(pr.check_summary.failed))
+    failed_release_checks = [
+        check
+        for check in pr.check_summary.failed
+        if not required_checks or check in required_checks
+    ]
+    if failed_release_checks:
+        reasons.append("failed_checks:" + ",".join(failed_release_checks))
 
     matches = _matching_tasks(pr, tasks)
     matched_tasks = tuple(matches)
@@ -1144,18 +1498,30 @@ def classify_pr(
     # authorized (the lane died after `gh pr create`) strands forever. Running
     # as the system (FM-20), the autoqueue may auto-arm a task once its release
     # gate is satisfied. Sensitivity is no longer a manual-arm veto (operator
-    # directive 2026-06-22): the PR's VERIFIED (passing) checks are supplied as
-    # evidence, so a sensitive class auto-arms iff its mitigation checks
-    # (RELEASE_MITIGATION_CHECKS) passed; an unmitigated class fails closed (held
-    # until its gate is defined), never released by a manual override.
+    # directive 2026-06-22): the PR's verified checks are supplied as evidence,
+    # so a sensitive class auto-arms iff its mitigation checks
+    # (RELEASE_MITIGATION_CHECKS) passed.
+    # Broad admission mirror checks remain ignored for release mitigation because
+    # they can pass vacuously on ordinary PR events. An unmitigated class fails
+    # closed (held until its gate is defined), never released by a manual
+    # override.
     auto_arm = False
+    auto_arm_verified_checks: tuple[str, ...] = ()
     if task is not None and not reasons:
-        arm = assess_release_auto_arm(
-            task.frontmatter, verified_checks=set(pr.check_summary.passed)
+        verified_checks = _release_mitigation_verified_checks(
+            set(pr.check_summary.verified_passed),
+            task,
+            task.frontmatter,
+            pr_number=pr.number,
+            pr_head_sha=pr.head_sha,
+            changed_files=pr.files,
+            changed_file_count=pr.changed_files_count,
         )
+        arm = assess_release_auto_arm(task.frontmatter, verified_checks=verified_checks)
         if arm.needs_arming:
             if arm.eligible:
                 auto_arm = True
+                auto_arm_verified_checks = tuple(sorted(verified_checks))
             else:
                 reasons.append("release_auto_arm_ineligible:" + ",".join(arm.blockers))
 
@@ -1174,6 +1540,8 @@ def classify_pr(
             tasks=matched_tasks,
             action="already_queued",
             reasons=tuple(reasons),
+            auto_arm=auto_arm,
+            auto_arm_verified_checks=auto_arm_verified_checks,
         )
     if reasons:
         if pr.auto_merge_enabled:
@@ -1197,6 +1565,8 @@ def classify_pr(
             task=task,
             tasks=matched_tasks,
             action="already_auto_merge_enabled",
+            auto_arm=auto_arm,
+            auto_arm_verified_checks=auto_arm_verified_checks,
         )
     if pr.check_summary.has_pending:
         if include_pending_auto:
@@ -1206,6 +1576,7 @@ def classify_pr(
                 tasks=matched_tasks,
                 action="enable_auto_merge",
                 auto_arm=auto_arm,
+                auto_arm_verified_checks=auto_arm_verified_checks,
             )
         return Decision(
             pr=pr,
@@ -1214,7 +1585,14 @@ def classify_pr(
             action="blocked",
             reasons=("pending_checks:" + ",".join(pr.check_summary.pending),),
         )
-    return Decision(pr=pr, task=task, tasks=matched_tasks, action="queue", auto_arm=auto_arm)
+    return Decision(
+        pr=pr,
+        task=task,
+        tasks=matched_tasks,
+        action="queue",
+        auto_arm=auto_arm,
+        auto_arm_verified_checks=auto_arm_verified_checks,
+    )
 
 
 def merge_pr(
@@ -1223,22 +1601,22 @@ def merge_pr(
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
+    require_route_metadata: bool = True,
 ) -> tuple[bool, str]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
+    graphql_args: list[str] | None = None
     if decision.action == "dequeue":
         if not decision.pr.node_id:
             return False, "missing_pull_request_node_id"
         query = "mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}"
-        cmd = [
-            "gh",
-            "api",
-            "graphql",
+        graphql_args = [
             "-f",
             f"query={query}",
             "-f",
             f"id={decision.pr.node_id}",
         ]
+        cmd = ["gh", "api", "graphql", *graphql_args]
     else:
         cmd = ["gh", "pr", "merge", str(decision.pr.number), "--repo", repo]
     if decision.action in ("enable_auto_merge", "queue"):
@@ -1250,18 +1628,37 @@ def merge_pr(
         # Re-arming an already-armed PR is a no-op; `--squash` matches the queue's
         # configured merge method.
         cmd.extend(["--auto", "--squash"])
+        if _decision_requires_head_guard(decision):
+            boundary_blocker = _release_head_boundary_blocker(
+                decision,
+                require_route_metadata=require_route_metadata,
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+            )
+            if boundary_blocker:
+                return False, boundary_blocker
+            cmd.extend(["--match-head-commit", decision.pr.head_sha])
     elif decision.action == "disable_auto_merge":
         cmd.append("--disable-auto")
     elif decision.action != "dequeue":
         return False, f"unsupported_action:{decision.action}"
-    proc = runner(
-        cmd,
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=120,
-    )
+    if graphql_args is not None:
+        proc = run_graphql_rate_aware(
+            graphql_args,
+            repo_root=repo_root,
+            runner=runner,
+            timeout=120,
+        )
+    else:
+        proc = runner(
+            cmd,
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
     output = (proc.stdout or proc.stderr or "").strip()
     if proc.returncode != 0:
         return False, output or f"gh pr merge failed rc={proc.returncode}"
@@ -1277,21 +1674,321 @@ def default_authority_case_ledger() -> Path:
     return Path(raw).expanduser() if raw else DEFAULT_AUTHORITY_CASE_LEDGER
 
 
+def _release_auto_arm_current_admission_blockers(
+    frontmatter: dict[str, Any],
+    *,
+    pr_number: int | None,
+    head_ref: str | None,
+) -> tuple[str, ...]:
+    blockers: list[str] = []
+    current_status = (_scalar(frontmatter.get("status")) or "").lower()
+    if current_status not in TASK_MERGE_READY_STATUSES:
+        blockers.append(f"current_task_status_not_ready:{current_status or 'missing'}")
+
+    current_pr = _int_or_none(frontmatter.get("pr"))
+    current_branch = _scalar(frontmatter.get("branch"))
+    expected_branch = _scalar(head_ref)
+    if pr_number is not None:
+        if current_pr is None:
+            if not (expected_branch and current_branch == expected_branch):
+                blockers.append(
+                    "current_task_identity_missing_pr:"
+                    f"expected_pr={pr_number}:"
+                    f"branch={current_branch or 'missing'}:"
+                    f"expected_branch={expected_branch or 'missing'}"
+                )
+        elif current_pr != pr_number:
+            blockers.append(f"current_task_pr_mismatch:current={current_pr}:expected={pr_number}")
+    if (
+        expected_branch is not None
+        and current_branch is not None
+        and current_branch != expected_branch
+    ):
+        blockers.append(
+            f"current_task_branch_mismatch:current={current_branch}:expected={expected_branch}"
+        )
+    return tuple(blockers)
+
+
+def _release_auto_arm_current_task_gate_blockers(
+    task: TaskNote,
+    frontmatter: dict[str, Any],
+    *,
+    require_route_metadata: bool,
+    pr_number: int | None,
+    pr_head_sha: str | None,
+    changed_files: tuple[str, ...] | None,
+    changed_file_count: int | None,
+) -> tuple[str, ...]:
+    if frontmatter.get("type") != "cc-task":
+        return ("current_task_not_cc_task",)
+    current_task_id = _scalar(frontmatter.get("task_id"))
+    if not current_task_id:
+        return ("current_task_missing_task_id",)
+    if current_task_id != task.task_id:
+        return (f"current_task_id_mismatch:current={current_task_id}:expected={task.task_id}",)
+    current_task = _task_note_with_frontmatter(task, frontmatter)
+    return tuple(
+        _task_blockers(
+            current_task,
+            require_route_metadata=require_route_metadata,
+            open_pr_number=pr_number,
+            allow_release_auto_arm=True,
+            pr_head_sha=pr_head_sha,
+            changed_files=changed_files,
+            changed_file_count=changed_file_count,
+        )
+    )
+
+
+def _release_authorized_head_stamp_blocker(
+    frontmatter: dict[str, Any],
+    *,
+    expected_head_sha: str | None,
+    expected_label: str = "expected",
+) -> str | None:
+    if expected_head_sha is None:
+        return None
+    authorized_head_sha = _scalar(frontmatter.get("release_authorized_head_sha"))
+    if not authorized_head_sha:
+        return f"release_authorized_head_missing:{expected_label}={expected_head_sha}"
+    if authorized_head_sha != expected_head_sha:
+        return (
+            f"release_authorized_head_mismatch:"
+            f"authorized={authorized_head_sha}:{expected_label}={expected_head_sha}"
+        )
+    return None
+
+
+def _release_auto_arm_current_evidence_blockers(
+    frontmatter: dict[str, Any],
+    *,
+    verified_checks: set[str],
+) -> tuple[str, ...]:
+    if "release_authorized" not in frontmatter:
+        return ()
+    probe = dict(frontmatter)
+    probe["release_authorized"] = False
+    assessment = assess_release_auto_arm(probe, verified_checks=verified_checks)
+    blockers = assessment.blockers
+    if assess_release_auto_arm(frontmatter, verified_checks=verified_checks).armed:
+        # These are auto-arm vetoes, not post-authorization vetoes. Once a task
+        # is explicitly head-locked with release_authorized: true, release-head
+        # revalidation should still replay current check/risk evidence, but it
+        # must not strand the accepted manual release solely because the
+        # authorized task is a public/current release or touches protected paths.
+        blockers = tuple(
+            blocker
+            for blocker in blockers
+            if not (
+                blocker.startswith("sensitive_path:")
+                or blocker == "mutation_surface:public"
+                or blocker == "public_current"
+            )
+        )
+    return blockers
+
+
+def _release_auto_arm_authorized_waivers(
+    frontmatter: dict[str, Any],
+    *,
+    verified_checks: set[str],
+) -> tuple[str, ...]:
+    if not assess_release_auto_arm(frontmatter, verified_checks=verified_checks).armed:
+        return ()
+    probe = dict(frontmatter)
+    probe["release_authorized"] = False
+    assessment = assess_release_auto_arm(probe, verified_checks=verified_checks)
+    waivers: list[str] = []
+    for blocker in assessment.blockers:
+        if blocker.startswith("sensitive_path:"):
+            waivers.append(
+                "sensitive_path_waived_by_release_authorization:"
+                f"{blocker.removeprefix('sensitive_path:')}"
+            )
+        elif blocker == "mutation_surface:public":
+            waivers.append(
+                "mutation_surface_waived_by_release_authorization:"
+                f"{blocker.removeprefix('mutation_surface:')}"
+            )
+        elif blocker == "public_current":
+            waivers.append("public_current_waived_by_release_authorization")
+    return tuple(waivers)
+
+
+def _decision_requires_head_guard(decision: Decision) -> bool:
+    if decision.action not in {"queue", "enable_auto_merge"}:
+        return False
+    return _decision_is_release_head_guard_subject(decision)
+
+
+def _decision_is_release_head_guard_subject(decision: Decision) -> bool:
+    if decision.auto_arm:
+        return True
+    if decision.task is None:
+        return False
+    return assess_release_auto_arm(decision.task.frontmatter).armed
+
+
+def _release_head_boundary_blocker(
+    decision: Decision,
+    *,
+    require_route_metadata: bool = True,
+    changed_files: tuple[str, ...] | None = None,
+    changed_file_count: int | None = None,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+    release_authorization_waivers: list[str] | None = None,
+) -> str | None:
+    if decision.action not in {
+        "queue",
+        "enable_auto_merge",
+        "already_queued",
+        "already_auto_merge_enabled",
+    }:
+        return None
+    if not _decision_is_release_head_guard_subject(decision):
+        return None
+    if decision.task is None:
+        return "release_authorized_task_missing"
+    try:
+        text = decision.task.path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return f"release_authorized_note_unreadable:{exc}"
+    current_frontmatter = frontmatter_from_text(text)
+    admission_blockers = _release_auto_arm_current_admission_blockers(
+        current_frontmatter,
+        pr_number=decision.pr.number,
+        head_ref=decision.pr.head_ref,
+    )
+    if admission_blockers:
+        return "current_task_not_admissible:" + ",".join(admission_blockers)
+    if not decision.pr.head_sha:
+        return "missing_head_sha_for_head_guard"
+    gate_blockers = _release_auto_arm_current_task_gate_blockers(
+        decision.task,
+        current_frontmatter,
+        require_route_metadata=require_route_metadata,
+        pr_number=decision.pr.number,
+        pr_head_sha=decision.pr.head_sha,
+        changed_files=decision.pr.files if changed_files is None else changed_files,
+        changed_file_count=(
+            decision.pr.changed_files_count if changed_file_count is None else changed_file_count
+        ),
+    )
+    if gate_blockers:
+        return "current_task_gate_blocked:" + ",".join(gate_blockers)
+    if not assess_release_auto_arm(current_frontmatter).armed:
+        return "release_authorized_not_current"
+    stamp_blocker = _release_authorized_head_stamp_blocker(
+        current_frontmatter,
+        expected_head_sha=decision.pr.head_sha,
+        expected_label="current",
+    )
+    if stamp_blocker:
+        return stamp_blocker
+    evidence_ok, current_head_sha, current_verified_checks = fetch_pr_release_evidence(
+        decision.pr.number,
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if not evidence_ok:
+        if current_head_sha in {
+            "invalid_pr_release_evidence_payload",
+            "invalid_status_check_rollup",
+        }:
+            return f"current_pr_checks_unreadable:{current_head_sha}"
+        return f"current_pr_head_unreadable:{current_head_sha}"
+    if current_head_sha != decision.pr.head_sha:
+        return (
+            f"current_pr_head_mismatch:current={current_head_sha}:expected={decision.pr.head_sha}"
+        )
+    current_verified_checks = _release_mitigation_verified_checks(
+        current_verified_checks,
+        decision.task,
+        current_frontmatter,
+        pr_number=decision.pr.number,
+        pr_head_sha=current_head_sha,
+        changed_files=decision.pr.files if changed_files is None else changed_files,
+        changed_file_count=(
+            decision.pr.changed_files_count if changed_file_count is None else changed_file_count
+        ),
+    )
+    evidence_blockers = _release_auto_arm_current_evidence_blockers(
+        current_frontmatter,
+        verified_checks=current_verified_checks,
+    )
+    if evidence_blockers:
+        return "current_release_auto_arm_blocked:" + ",".join(evidence_blockers)
+    if release_authorization_waivers is not None:
+        release_authorization_waivers.extend(
+            _release_auto_arm_authorized_waivers(
+                current_frontmatter,
+                verified_checks=current_verified_checks,
+            )
+        )
+    return None
+
+
 def _append_release_auto_arm_ledger(
-    task: TaskNote, *, ledger_path: Path, now_iso: str, role: str
+    task: TaskNote,
+    *,
+    ledger_path: Path,
+    now_iso: str,
+    role: str,
+    frontmatter: dict[str, Any] | None = None,
+    pr_head_sha: str | None = None,
+    pr_head_ref: str | None = None,
+    verified_checks: set[str] | None = None,
+    pre_arm_assessment: ReleaseAutoArmAssessment | None = None,
+    post_arm_assessment: ReleaseAutoArmAssessment | None = None,
 ) -> None:
     """Append an audit record for a system release auto-arm. Best-effort."""
-    auto_arm_waivers = release_auto_arm_waivers(task.frontmatter)
+    ledger_frontmatter = frontmatter or task.frontmatter
+    auto_arm_waivers = release_auto_arm_waivers(ledger_frontmatter)
+
+    def assessment_record(assessment: ReleaseAutoArmAssessment) -> dict[str, Any]:
+        return {
+            "subject": assessment.subject,
+            "armed": assessment.armed,
+            "needs_arming": assessment.needs_arming,
+            "eligible": assessment.eligible,
+            "blockers": list(assessment.blockers),
+        }
+
     record = {
         "ts": now_iso,
         "kind": "release_auto_arm",
         "tool": "cc-pr-autoqueue",
         "role": role,
         "task_id": task.task_id,
-        "authority_case": task.authority_case,
+        "authority_case": (
+            _scalar(ledger_frontmatter.get("authority_case") or ledger_frontmatter.get("case_id"))
+            or task.authority_case
+        ),
         "pr": task.pr,
         "note": str(task.path),
     }
+    if pr_head_sha:
+        record["pr_head_sha"] = pr_head_sha
+        record["verified_checks_head_sha"] = pr_head_sha
+        record["planned_autoqueue_admission_head_sha"] = pr_head_sha
+        record["autoqueue_admission_proof_state"] = "pending_status_write"
+    if pr_head_ref:
+        record["pr_head_ref"] = pr_head_ref
+    if verified_checks is not None:
+        record["verified_checks"] = sorted(verified_checks)
+    if pre_arm_assessment is not None:
+        record["release_auto_arm_pre_arm_assessment"] = assessment_record(pre_arm_assessment)
+    if post_arm_assessment is not None:
+        record["release_auto_arm_assessment"] = assessment_record(post_arm_assessment)
+        record["release_auto_arm_result"] = {
+            "armed": post_arm_assessment.armed,
+            "armed_at": now_iso,
+            "note_mutated": True,
+        }
     if auto_arm_waivers:
         record["auto_arm_waivers"] = list(auto_arm_waivers)
     try:
@@ -1308,12 +2005,23 @@ def arm_release_for_task(
     ledger_path: Path | None = None,
     now: datetime | None = None,
     role: str = RELEASE_AUTO_ARM_ROLE,
+    verified_checks: set[str] | None = None,
+    pr_number: int | None = None,
+    head_ref: str | None = None,
+    expected_head_sha: str | None = None,
+    require_route_metadata: bool = True,
+    changed_files: tuple[str, ...] | None = None,
+    changed_file_count: int | None = None,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
 ) -> tuple[bool, str]:
     """Authorize release for a stranded task on behalf of a dead lane (system).
 
     Writes ``release_authorized: true`` + ``stage: S7_RELEASE`` to the note and
-    appends an authority-case ledger record. Eligibility MUST already have been
-    confirmed by :func:`assess_release_auto_arm` (the caller gates on it).
+    appends an authority-case ledger record. The write boundary rereads the note
+    and revalidates both release-arm eligibility and the current PR/task identity
+    so a stale classifier decision cannot arm a repointed or no-longer-ready note.
     """
     ledger_path = ledger_path or default_authority_case_ledger()
     now = now or datetime.now(UTC)
@@ -1322,14 +2030,100 @@ def arm_release_for_task(
         text = task.path.read_text(encoding="utf-8")
     except OSError as exc:
         return False, f"note_unreadable:{exc}"
-    armed = apply_release_auto_arm(text, now_iso=now_iso, role=role)
+    current_frontmatter = frontmatter_from_text(text)
+    admission_blockers = _release_auto_arm_current_admission_blockers(
+        current_frontmatter,
+        pr_number=pr_number,
+        head_ref=head_ref,
+    )
+    if admission_blockers:
+        return False, "current_task_not_admissible:" + ",".join(admission_blockers)
+    gate_blockers = _release_auto_arm_current_task_gate_blockers(
+        task,
+        current_frontmatter,
+        require_route_metadata=require_route_metadata,
+        pr_number=pr_number,
+        pr_head_sha=expected_head_sha,
+        changed_files=changed_files,
+        changed_file_count=changed_file_count,
+    )
+    if gate_blockers:
+        return False, "current_task_gate_blocked:" + ",".join(gate_blockers)
+    if pr_number is not None and not expected_head_sha:
+        return False, "current_pr_head_unverifiable:missing_expected_head_sha"
+    if expected_head_sha and pr_number is None:
+        return False, "current_pr_head_unverifiable:missing_pr_number"
+    verified_checks = set(verified_checks or set()) - VIRTUAL_RELEASE_MITIGATION_CONTEXTS
+    if expected_head_sha:
+        evidence_ok, current_head_sha, current_verified_checks = fetch_pr_release_evidence(
+            pr_number,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+        )
+        if not evidence_ok:
+            if current_head_sha in {
+                "invalid_pr_release_evidence_payload",
+                "invalid_status_check_rollup",
+            }:
+                return False, f"current_pr_checks_unreadable:{current_head_sha}"
+            return False, f"current_pr_head_unreadable:{current_head_sha}"
+        if current_head_sha != expected_head_sha:
+            return (
+                False,
+                f"current_pr_head_mismatch:current={current_head_sha}:expected={expected_head_sha}",
+            )
+        verified_checks = _release_mitigation_verified_checks(
+            current_verified_checks,
+            task,
+            current_frontmatter,
+            pr_number=pr_number,
+            pr_head_sha=current_head_sha,
+            changed_files=changed_files,
+            changed_file_count=changed_file_count,
+        )
+    pre_arm_assessment = assess_release_auto_arm(
+        current_frontmatter, verified_checks=verified_checks
+    )
+    if not pre_arm_assessment.eligible:
+        if pre_arm_assessment.armed:
+            head_stamp_blocker = _release_authorized_head_stamp_blocker(
+                current_frontmatter,
+                expected_head_sha=expected_head_sha,
+            )
+            if head_stamp_blocker:
+                return False, head_stamp_blocker
+            return True, "note_unchanged"
+        reasons = ",".join(pre_arm_assessment.blockers or ("not_eligible",))
+        return False, f"release_auto_arm_ineligible:{reasons}"
+    armed = apply_release_auto_arm(
+        text,
+        now_iso=now_iso,
+        role=role,
+        head_sha=expected_head_sha,
+        head_ref=head_ref,
+    )
     if armed == text:
         return False, "note_unchanged"
     try:
         task.path.write_text(armed, encoding="utf-8")
     except OSError as exc:
         return False, f"note_write_failed:{exc}"
-    _append_release_auto_arm_ledger(task, ledger_path=ledger_path, now_iso=now_iso, role=role)
+    post_arm_assessment = assess_release_auto_arm(
+        frontmatter_from_text(armed), verified_checks=verified_checks
+    )
+    _append_release_auto_arm_ledger(
+        task,
+        ledger_path=ledger_path,
+        now_iso=now_iso,
+        role=role,
+        frontmatter=current_frontmatter,
+        pr_head_sha=expected_head_sha,
+        pr_head_ref=head_ref,
+        verified_checks=verified_checks,
+        pre_arm_assessment=pre_arm_assessment,
+        post_arm_assessment=post_arm_assessment,
+    )
     return True, f"release auto-armed {task.task_id}"
 
 
@@ -1404,6 +2198,7 @@ def set_autoqueue_admission_status(
     repo_root: Path | None = None,
     runner: Any = None,
     now: datetime | None = None,
+    force_fresh_success: bool = False,
 ) -> tuple[bool, str] | None:
     """Write the server-visible autoqueue admission proof for a PR head SHA.
 
@@ -1438,7 +2233,7 @@ def set_autoqueue_admission_status(
         fresh = cur_created is not None and (now - cur_created) < timedelta(
             seconds=AUTOQUEUE_ADMISSION_TTL_SECONDS / 2
         )
-        if unchanged and fresh:
+        if unchanged and fresh and not (force_fresh_success and state == "success"):
             return True, "unchanged"
     cmd = [
         "gh",
@@ -1471,6 +2266,111 @@ def _decision_is_non_ready(decision: Decision) -> bool:
     return decision.action in {"blocked", "dequeue", "disable_auto_merge"} and bool(
         decision.reasons
     )
+
+
+def _release_auto_arm_fail_closed_decision(
+    decision: Decision,
+    message: str,
+    *,
+    reason_prefix: str = "release_auto_arm_failed",
+) -> Decision | None:
+    if decision.action == "already_queued":
+        action = "dequeue"
+    elif decision.action == "already_auto_merge_enabled":
+        action = "disable_auto_merge"
+    elif decision.action in {"queue", "enable_auto_merge"}:
+        action = "blocked"
+    else:
+        return None
+    return Decision(
+        pr=decision.pr,
+        task=decision.task,
+        tasks=decision.tasks,
+        action=action,
+        reasons=(f"{reason_prefix}:{message}",),
+    )
+
+
+def _release_auto_arm_write_ok(ok: bool, message: str) -> bool:
+    return ok or message == "note_unchanged"
+
+
+def _remove_admitted_pr_for_release_auto_arm_failure(
+    decision: Decision,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> tuple[bool, str]:
+    if decision.action not in {"dequeue", "disable_auto_merge"}:
+        return False, f"unsupported_release_auto_arm_removal:{decision.action}"
+    return merge_pr(decision, repo=repo, repo_root=repo_root, runner=runner)
+
+
+def _release_auto_arm_fail_closed_mutations(
+    decision: Decision,
+    message: str,
+    *,
+    reason_prefix: str = "release_auto_arm_failed",
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    fail_decision = _release_auto_arm_fail_closed_decision(
+        decision,
+        message,
+        reason_prefix=reason_prefix,
+    )
+    if fail_decision is None:
+        return []
+
+    results: list[dict[str, Any]] = []
+    fail_status = _admission_status_for(fail_decision)
+    fail_status_result = set_autoqueue_admission_status(
+        fail_decision,
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+        now=now,
+    )
+    if fail_status_result is not None:
+        if fail_status is None:
+            results.append(
+                {
+                    **fail_decision.as_dict(),
+                    "action": "set_admission_status",
+                    "status_state": "missing",
+                    "ok": False,
+                    "message": "missing_fail_closed_admission_status",
+                }
+            )
+        else:
+            ok, status_message = fail_status_result
+            results.append(
+                {
+                    **fail_decision.as_dict(),
+                    "action": "set_admission_status",
+                    "status_state": fail_status[0],
+                    "ok": ok,
+                    "message": status_message,
+                }
+            )
+    if fail_decision.action in {"dequeue", "disable_auto_merge"}:
+        ok, merge_message = _remove_admitted_pr_for_release_auto_arm_failure(
+            fail_decision,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+        )
+        results.append(
+            {
+                **fail_decision.as_dict(),
+                "ok": ok,
+                "message": merge_message,
+            }
+        )
+    return results
 
 
 def _recent_failed_non_ready_merge_group_runs(
@@ -1585,7 +2485,24 @@ def run_reconciler(
     repo_root = repo_root or default_repo_root()
     tasks = load_task_notes(vault_root)
     active_ci_repair_task_ids = _active_ci_repair_task_ids(tasks)
-    queued_prs = fetch_merge_queue_pr_numbers(repo=repo, repo_root=repo_root, runner=runner)
+    queued_prs_snapshot = fetch_merge_queue_pr_numbers(
+        repo=repo, repo_root=repo_root, runner=runner
+    )
+    if queued_prs_snapshot is None:
+        report = {
+            "repo": repo,
+            "apply": apply,
+            "skipped": True,
+            "reason": "merge_queue_state_indeterminate",
+            "detail": "native merge-queue GraphQL probe failed or backed off; no queue mutations attempted",
+        }
+        return _finalize_reconciler_report(
+            report,
+            report_path=report_path,
+            admission_governor_path=admission_governor_path,
+            now=now,
+        )
+    queued_prs = queued_prs_snapshot
     prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
     preliminary_decisions = [
         classify_pr(
@@ -1678,8 +2595,106 @@ def run_reconciler(
     if apply:
         for decision in decisions:
             admission_status = _admission_status_for(decision)
+            release_head_subject = decision.action in {
+                "queue",
+                "enable_auto_merge",
+                "already_queued",
+                "already_auto_merge_enabled",
+            }
+            if release_head_subject:
+                if decision.auto_arm and decision.task is not None:
+                    armed_ok, armed_message = arm_release_for_task(
+                        decision.task,
+                        ledger_path=auto_arm_ledger_path,
+                        now=now,
+                        verified_checks=set(decision.auto_arm_verified_checks),
+                        pr_number=decision.pr.number,
+                        head_ref=decision.pr.head_ref,
+                        expected_head_sha=decision.pr.head_sha,
+                        require_route_metadata=require_route_metadata,
+                        changed_files=decision.pr.files,
+                        changed_file_count=decision.pr.changed_files_count,
+                        repo=repo,
+                        repo_root=repo_root,
+                        runner=runner,
+                    )
+                    auto_arm_ok = _release_auto_arm_write_ok(armed_ok, armed_message)
+                    if not auto_arm_ok:
+                        mutation_results.append(
+                            {
+                                **decision.as_dict(),
+                                "action": "release_auto_arm",
+                                "ok": False,
+                                "message": f"release auto-arm failed: {armed_message}",
+                            }
+                        )
+                        mutation_results.extend(
+                            _release_auto_arm_fail_closed_mutations(
+                                decision,
+                                armed_message,
+                                repo=repo,
+                                repo_root=repo_root,
+                                runner=runner,
+                                now=now,
+                            )
+                        )
+                        continue
+                    mutation_results.append(
+                        {
+                            **decision.as_dict(),
+                            "action": "release_auto_arm",
+                            "ok": True,
+                            "message": armed_message,
+                        }
+                    )
+                release_authorization_waivers: list[str] = []
+                head_blocker = _release_head_boundary_blocker(
+                    decision,
+                    require_route_metadata=require_route_metadata,
+                    changed_files=decision.pr.files,
+                    changed_file_count=decision.pr.changed_files_count,
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
+                    release_authorization_waivers=release_authorization_waivers,
+                )
+                if head_blocker is not None:
+                    mutation_results.append(
+                        {
+                            **decision.as_dict(),
+                            "action": "release_head_revalidation",
+                            "ok": False,
+                            "message": head_blocker,
+                        }
+                    )
+                    mutation_results.extend(
+                        _release_auto_arm_fail_closed_mutations(
+                            decision,
+                            head_blocker,
+                            reason_prefix="release_head_revalidation_failed",
+                            repo=repo,
+                            repo_root=repo_root,
+                            runner=runner,
+                            now=now,
+                        )
+                    )
+                    continue
+                if release_authorization_waivers:
+                    mutation_results.append(
+                        {
+                            **decision.as_dict(),
+                            "action": "release_authorization_waiver",
+                            "ok": True,
+                            "waivers": release_authorization_waivers,
+                        }
+                    )
             status_result = set_autoqueue_admission_status(
-                decision, repo=repo, repo_root=repo_root, runner=runner, now=now
+                decision,
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+                now=now,
+                force_fresh_success=_decision_is_release_head_guard_subject(decision),
             )
             if decision.action not in {
                 "queue",
@@ -1699,6 +2714,18 @@ def run_reconciler(
                             "message": message,
                         }
                     )
+                    if not ok:
+                        mutation_results.extend(
+                            _release_auto_arm_fail_closed_mutations(
+                                decision,
+                                message,
+                                reason_prefix="admission_status_write_failed",
+                                repo=repo,
+                                repo_root=repo_root,
+                                runner=runner,
+                                now=now,
+                            )
+                        )
                 continue
             if (
                 decision.action in {"queue", "enable_auto_merge"}
@@ -1709,6 +2736,8 @@ def run_reconciler(
                 mutation_results.append(
                     {
                         **decision.as_dict(),
+                        "action": "set_admission_status",
+                        "status_state": admission_status[0],
                         "ok": False,
                         "message": "admission status write failed; queue mutation skipped",
                         "admission_status": {
@@ -1719,20 +2748,13 @@ def run_reconciler(
                     }
                 )
                 continue
-            if decision.auto_arm and decision.task is not None:
-                armed_ok, armed_message = arm_release_for_task(
-                    decision.task, ledger_path=auto_arm_ledger_path, now=now
-                )
-                if not armed_ok:
-                    mutation_results.append(
-                        {
-                            **decision.as_dict(),
-                            "ok": False,
-                            "message": f"release auto-arm failed: {armed_message}",
-                        }
-                    )
-                    continue
-            ok, message = merge_pr(decision, repo=repo, repo_root=repo_root, runner=runner)
+            ok, message = merge_pr(
+                decision,
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+                require_route_metadata=require_route_metadata,
+            )
             result = {
                 **decision.as_dict(),
                 "ok": ok,
@@ -1747,6 +2769,23 @@ def run_reconciler(
                     "message": status_message,
                 }
             mutation_results.append(result)
+            if (
+                not ok
+                and admission_status is not None
+                and admission_status[0] == "success"
+                and status_result is not None
+            ):
+                mutation_results.extend(
+                    _release_auto_arm_fail_closed_mutations(
+                        decision,
+                        message,
+                        reason_prefix="queue_mutation_failed",
+                        repo=repo,
+                        repo_root=repo_root,
+                        runner=runner,
+                        now=now,
+                    )
+                )
 
     report = {
         "repo": repo,

@@ -25,6 +25,7 @@ import json
 import re
 import shlex
 
+from shared.mcp_connector_policy import is_side_effecting_connector_tool
 from shared.policy_decision import Decision, FailMode, Verdict
 
 # --- Irreversible-harm classifiers (executed program / edit path) -------------
@@ -110,6 +111,7 @@ _REASONS = {
     "floor:release": "release/PR-create/protected-push is irreversible and the kernel is down",
     "floor:axiom": "axiom/governance mutation is constitutional and the kernel is down",
     "floor:egress": "external egress is irreversible and the kernel is down",
+    "floor:connector": "side-effecting MCP/app connector call requires receipts and the kernel is down",
 }
 
 
@@ -334,6 +336,12 @@ def irreversible_gate(tool_name: str, *, command: str = "", file_path: str = "")
     (kernel-up mirror), so the two can never drift.
     """
     try:
+        if is_side_effecting_connector_tool(tool_name):
+            if tool_name in _MERGE_TOOLS:
+                return "floor:merge"
+            if tool_name in _RELEASE_TOOLS:
+                return "floor:release"
+            return "floor:connector"
         if tool_name in _MERGE_TOOLS:
             return "floor:merge"
         if tool_name in _RELEASE_TOOLS:

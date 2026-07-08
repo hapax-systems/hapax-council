@@ -533,7 +533,8 @@ class AudioLink(BaseModel):
 class GlobalTunables(BaseModel):
     """PipeWire ``context.properties`` tunables (gap G-1).
 
-    Models ``10-voice-quantum.conf`` / ``hapax-quantum.conf``.
+    Models ``10-voice-quantum.conf`` / ``hapax-quantum.conf`` and host-level
+    resampler quality overrides.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -541,6 +542,7 @@ class GlobalTunables(BaseModel):
     default_clock_quantum: int | None = None
     min_quantum: int | None = None
     max_quantum: int | None = None
+    resample_quality: int | None = Field(default=None, ge=0, le=14)
     allowed_rates: list[int] = Field(default_factory=list)
     extra_properties: dict[str, str | int | float | bool] = Field(default_factory=dict)
 

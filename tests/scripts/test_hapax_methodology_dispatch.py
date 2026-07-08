@@ -1,3 +1,4 @@
+import base64
 import importlib.machinery
 import importlib.util
 import json
@@ -8,8 +9,11 @@ import sys
 import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
+import pytest
+
+from shared.platform_capability_registry import PlatformCapabilityRegistry
 from shared.relay_mq import send_message
 from shared.relay_mq_envelope import Envelope
 
@@ -34,6 +38,9 @@ def _fresh_registry(tmp_path: Path) -> Path:
     payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
     checked_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     for route in payload["routes"]:
+        quota_refs = [f"test:{route['route_id']}:quota"]
+        if route.get("capacity_pool") == "subscription_quota":
+            quota_refs.append(f"test:{route['route_id']}:account-live-quota:observed")
         route["route_state"] = "active"
         route["blocked_reasons"] = []
         route["freshness"]["capability_checked_at"] = checked_at
@@ -46,7 +53,7 @@ def _fresh_registry(tmp_path: Path) -> Path:
                 "blocked_reasons": [],
             },
             "quota": {
-                "evidence_refs": [f"test:{route['route_id']}:quota"],
+                "evidence_refs": quota_refs,
                 "blocked_reasons": [],
             },
             "resource": {
@@ -66,6 +73,80 @@ def _fresh_registry(tmp_path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
+
+
+def _write_codex_access_token(tmp_path: Path) -> Path:
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
+    payload = (
+        base64.urlsafe_b64encode(
+            json.dumps({"exp": int(datetime.now(UTC).timestamp()) + 3600}).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+    target = tmp_path / "codex-oauth" / "access_token"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(f"{header}.{payload}.sig", encoding="utf-8")
+    target.chmod(0o600)
+    return target
+
+
+def _without_account_live_quota_evidence(
+    tmp_path: Path,
+    registry_path: Path,
+    route_id: str,
+) -> Path:
+    payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    for route in payload["routes"]:
+        if route["route_id"] != route_id:
+            continue
+        quota = route["freshness"]["evidence"]["quota"]
+        quota["evidence_refs"] = [
+            ref for ref in quota["evidence_refs"] if "account-live-quota" not in ref
+        ]
+    path = tmp_path / "fixtures" / "no-account-live-platform-capability-registry.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _availability_degraded_registry(tmp_path: Path, route_id: str) -> Path:
+    path = _fresh_registry(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    for route in payload["routes"]:
+        if route["route_id"] != route_id:
+            continue
+        route["freshness"]["quota_checked_at"] = "2026-01-01T00:00:00Z"
+        route["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+            f"test:{route_id}:quota:degraded"
+        ]
+    degraded_path = tmp_path / "fixtures" / "degraded-platform-capability-registry.json"
+    degraded_path.write_text(json.dumps(payload), encoding="utf-8")
+    return degraded_path
+
+
+def _registry_from_path(path: Path) -> PlatformCapabilityRegistry:
+    return PlatformCapabilityRegistry.model_validate(json.loads(path.read_text(encoding="utf-8")))
+
+
+def _availability_dispatch_request(
+    module: ModuleType,
+    registry: PlatformCapabilityRegistry,
+    route_id: str = "codex.headless.full",
+):
+    platform, mode, profile = route_id.split(".", 2)
+    route = module.route_for(platform, mode, profile)
+    return module.build_dispatch_request(
+        task_id="governed-build",
+        lane="cx-green",
+        platform=platform,
+        mode=mode,
+        profile=profile,
+        task_fields={"kind": "build", "authority_case": "CASE-TEST-001"},
+        registry=registry,
+        legacy_route_supported=route is not None,
+        legacy_route_mutable=route.mutable if route else False,
+        now=datetime.now(UTC),
+    )
 
 
 def _fake_binary(bin_dir: Path, name: str, output: str) -> None:
@@ -152,6 +233,77 @@ def _default_route_metadata(frontmatter: str) -> str:
                 """
         )
     return frontmatter
+
+
+def _governed_source_frontmatter(
+    spec: Path,
+    *,
+    extra: str = "",
+    mutation_scope_refs: str = "[]",
+) -> str:
+    return f"""
+    kind: build
+    authority_case: CASE-TEST-001
+    parent_spec: {spec}
+    {extra}
+    route_metadata_schema: 1
+    quality_floor: frontier_required
+    authority_level: authoritative
+    mutation_surface: source
+    mutation_scope_refs: {mutation_scope_refs}
+    risk_flags:
+      governance_sensitive: false
+      privacy_or_secret_sensitive: false
+      public_claim_sensitive: false
+      aesthetic_theory_sensitive: false
+      audio_or_live_egress_sensitive: false
+      provider_billing_sensitive: false
+    context_shape:
+      codebase_locality: module
+      vault_context_required: true
+      external_docs_required: false
+      currentness_required: false
+    verification_surface:
+      deterministic_tests: []
+      static_checks: []
+      runtime_observation: []
+      operator_only: false
+    route_constraints:
+      preferred_platforms: []
+      allowed_platforms: []
+      prohibited_platforms: []
+      required_mode: null
+      required_profile: null
+    review_requirement:
+      support_artifact_allowed: false
+      independent_review_required: false
+      authoritative_acceptor_profile: null
+    """
+
+
+def _operator_coupled_manifest(tmp_path: Path, *, body: str | None = None) -> Path:
+    manifest = tmp_path / "invariant-manifest.yaml"
+    manifest.write_text(
+        body
+        if body is not None
+        else textwrap.dedent(
+            """\
+            schema_version: 1
+            unknown_path_policy: flag
+            classes:
+              operator_coupled:
+                policy:
+                  dispatch_mode: interactive_only
+            invariants:
+              - id: operator-coupled-broadcast-visual
+                class: operator_coupled
+                globs:
+                  - agents/studio_compositor/**
+            """
+        ),
+        encoding="utf-8",
+    )
+    return manifest
 
 
 def _write(path: Path, content: str) -> Path:
@@ -351,6 +503,176 @@ def test_lane_active_task_lease_reads_session_keyed_claim(tmp_path: Path) -> Non
             os.environ.pop("HAPAX_CC_CLAIMS_DIR", None)
         else:
             os.environ["HAPAX_CC_CLAIMS_DIR"] = previous
+
+
+def test_operator_coupled_path_match_accepts_absolute_repo_paths(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    absolute_ref = str(REPO_ROOT / "agents" / "studio_compositor" / "programme.py")
+    previous = os.environ.get("HAPAX_INVARIANT_MANIFEST")
+    os.environ["HAPAX_INVARIANT_MANIFEST"] = str(_operator_coupled_manifest(tmp_path))
+    try:
+        matches = module.operator_coupled_path_matches({"mutation_scope_refs": [absolute_ref]})
+    finally:
+        if previous is None:
+            os.environ.pop("HAPAX_INVARIANT_MANIFEST", None)
+        else:
+            os.environ["HAPAX_INVARIANT_MANIFEST"] = previous
+
+    assert matches == ("agents/studio_compositor/programme.py#operator-coupled-broadcast-visual",)
+
+
+def test_operator_coupled_path_match_reads_nested_route_metadata(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    previous = os.environ.get("HAPAX_INVARIANT_MANIFEST")
+    os.environ["HAPAX_INVARIANT_MANIFEST"] = str(_operator_coupled_manifest(tmp_path))
+    try:
+        matches = module.operator_coupled_path_matches(
+            {
+                "route_metadata": {
+                    "route_metadata_schema": 1,
+                    "quality_floor": "frontier_required",
+                    "authority_level": "authoritative",
+                    "mutation_surface": "source",
+                    "mutation_scope_refs": ["agents/studio_compositor/programme.py"],
+                }
+            }
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("HAPAX_INVARIANT_MANIFEST", None)
+        else:
+            os.environ["HAPAX_INVARIANT_MANIFEST"] = previous
+
+    assert matches == ("agents/studio_compositor/programme.py#operator-coupled-broadcast-visual",)
+
+
+def test_operator_coupled_path_match_reports_manifest_failure_detail(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    previous = os.environ.get("HAPAX_INVARIANT_MANIFEST")
+    os.environ["HAPAX_INVARIANT_MANIFEST"] = str(_operator_coupled_manifest(tmp_path, body="[]\n"))
+    try:
+        matches = module.operator_coupled_path_matches(
+            {"mutation_scope_refs": ["agents/studio_compositor/programme.py"]}
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("HAPAX_INVARIANT_MANIFEST", None)
+        else:
+            os.environ["HAPAX_INVARIANT_MANIFEST"] = previous
+
+    assert matches == ("manifest_unavailable:RuntimeError:invariant-manifest-is-not-a-mapping",)
+
+
+def test_operator_coupled_path_match_rejects_non_string_globs(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    manifest = _operator_coupled_manifest(
+        tmp_path,
+        body=textwrap.dedent(
+            """\
+            schema_version: 1
+            unknown_path_policy: flag
+            classes:
+              operator_coupled:
+                policy:
+                  dispatch_mode: interactive_only
+            invariants:
+              - id: operator-coupled-broadcast-visual
+                class: operator_coupled
+                globs:
+                  - agents/studio_compositor/**
+                  - 123
+            """
+        ),
+    )
+    previous = os.environ.get("HAPAX_INVARIANT_MANIFEST")
+    os.environ["HAPAX_INVARIANT_MANIFEST"] = str(manifest)
+    try:
+        matches = module.operator_coupled_path_matches(
+            {"mutation_scope_refs": ["agents/studio_compositor/programme.py"]}
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("HAPAX_INVARIANT_MANIFEST", None)
+        else:
+            os.environ["HAPAX_INVARIANT_MANIFEST"] = previous
+
+    assert matches == (
+        "manifest_unavailable:RuntimeError:"
+        "operator_coupled-invariant-operator-coupled-broadcast-visual-has-non-string-glob",
+    )
+
+
+def test_operator_coupled_path_match_rejects_non_list_globs(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    manifest = _operator_coupled_manifest(
+        tmp_path,
+        body=textwrap.dedent(
+            """\
+            schema_version: 1
+            unknown_path_policy: flag
+            classes:
+              operator_coupled:
+                policy:
+                  dispatch_mode: interactive_only
+            invariants:
+              - id: operator-coupled-broadcast-visual
+                class: operator_coupled
+                globs: agents/studio_compositor/**
+            """
+        ),
+    )
+    previous = os.environ.get("HAPAX_INVARIANT_MANIFEST")
+    os.environ["HAPAX_INVARIANT_MANIFEST"] = str(manifest)
+    try:
+        matches = module.operator_coupled_path_matches(
+            {"mutation_scope_refs": ["agents/studio_compositor/programme.py"]}
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("HAPAX_INVARIANT_MANIFEST", None)
+        else:
+            os.environ["HAPAX_INVARIANT_MANIFEST"] = previous
+
+    assert matches == (
+        "manifest_unavailable:RuntimeError:"
+        "operator_coupled-invariant-operator-coupled-broadcast-visual-globs-is-not-a-list",
+    )
+
+
+def test_operator_coupled_path_match_reports_missing_manifest(tmp_path: Path) -> None:
+    module = _dispatcher_module()
+    previous = os.environ.get("HAPAX_INVARIANT_MANIFEST")
+    os.environ["HAPAX_INVARIANT_MANIFEST"] = str(tmp_path / "missing-invariant-manifest.yaml")
+    try:
+        matches = module.operator_coupled_path_matches(
+            {"mutation_scope_refs": ["agents/studio_compositor/programme.py"]}
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("HAPAX_INVARIANT_MANIFEST", None)
+        else:
+            os.environ["HAPAX_INVARIANT_MANIFEST"] = previous
+
+    assert len(matches) == 1
+    assert matches[0].startswith("manifest_unavailable:FileNotFoundError:")
+
+
+def test_operator_coupled_glob_matching_segment_semantics() -> None:
+    module = _dispatcher_module()
+
+    assert module._path_matches_glob(
+        "agents/studio_compositor/programme.py",
+        "agents/studio_compositor/**",
+    )
+    assert module._path_matches_glob(
+        "agents/studio_compositor/programme.py",
+        "agents/**/programme.py",
+    )
+    assert module._path_matches_glob("config/screwm-a.json", "config/screwm-?.json")
+    assert not module._path_matches_glob(
+        "agents/studio_compositor/nested/programme.py",
+        "agents/studio_compositor/*.py",
+    )
 
 
 def _run(
@@ -701,6 +1023,32 @@ def test_blocks_stale_worktree_cc_close_before_launch(tmp_path: Path) -> None:
     assert "stale cc-close" in result.stderr
 
 
+def test_blocks_claude_dev_operator_pool_before_worktree_probe(tmp_path: Path) -> None:
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    for lane in ("dev", "dev2", "DEV12"):
+        result = _run(tmp_path, "--task", "governed-build", "--lane", lane)
+
+        assert result.returncode == 10
+        assert "interactive Claude operator pool" in result.stderr
+        assert "not a governed dispatch lane" in result.stderr
+        assert "scripts/hapax-codex-health" in result.stderr
+        assert "--json <cx-lane>" in result.stderr
+        assert "scripts/hapax-claude-health" in result.stderr
+        assert "--json <lane>" in result.stderr
+        assert "not dev/devN" in result.stderr
+        assert "missing cc-claim" not in result.stderr
+
+
 def test_prompt_contains_worktree_local_cc_claim_path(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
@@ -789,6 +1137,468 @@ def test_receipt_contains_task_and_authority(tmp_path: Path) -> None:
     assert receipt["dimensional_selected_route_id"] == "claude.headless.full"
 
 
+def test_dispatch_admission_reuses_worker_adapter_map(monkeypatch) -> None:
+    module = _dispatcher_module()
+    request = object()
+    sentinel = object()
+    calls: list[object] = []
+
+    class SpyAdapter:
+        def admit(self, policy_request: object) -> object:
+            calls.append(policy_request)
+            return sentinel
+
+    monkeypatch.setitem(module._WORKER_FAILURE_ADAPTERS, "codex", SpyAdapter)
+
+    adapter = module._capability_adapter_for_admission("codex")
+
+    assert adapter.admit(request) is sentinel
+    assert calls == [request]
+
+
+def test_dispatch_main_uses_adapter_admit_for_route_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _dispatcher_module()
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    seen_platforms: list[str] = []
+    seen_requests: list[object] = []
+    seen_candidate_requests: list[object] = []
+
+    class HoldingAdapter:
+        def admit(self, policy_request, *, candidate_requests=None):
+            seen_requests.append(policy_request)
+            seen_candidate_requests.append(candidate_requests)
+            return module.RouteDecision(
+                decision_id="rd-adapter-fixture",
+                created_at=datetime(2026, 7, 5, tzinfo=UTC),
+                task_id=policy_request.task_id,
+                lane=policy_request.lane,
+                route_id=policy_request.route_id,
+                platform=policy_request.platform,
+                mode=policy_request.mode,
+                profile=policy_request.profile,
+                action=module.DispatchAction.HOLD,
+                policy_outcome="adapter_fixture_hold",
+                launch_allowed=False,
+                prompt_allowed=False,
+                quality_floor_satisfied=True,
+                authority_allowed=True,
+                reason_codes=("adapter_fixture_hold",),
+                message="fixture adapter admission hold",
+            )
+
+    def adapter_for_admission(platform: str) -> HoldingAdapter:
+        seen_platforms.append(platform)
+        return HoldingAdapter()
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setattr(module, "_capability_adapter_for_admission", adapter_for_admission)
+
+    rc = module.main(
+        [
+            "--task",
+            "governed-build",
+            "--lane",
+            "cx-green",
+            "--platform",
+            "codex",
+            "--mode",
+            "headless",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 10
+    assert seen_platforms == ["codex"]
+    assert len(seen_requests) == 1
+    assert seen_candidate_requests == [None]
+    assert "fixture adapter admission hold" in captured.err
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["route_decision_id"] == "rd-adapter-fixture"
+    assert receipt["route_policy_action"] == "hold"
+    assert receipt["route_policy_reason_codes"] == ["adapter_fixture_hold"]
+
+
+def test_dispatch_admission_falls_back_to_base_adapter_for_non_worker_route() -> None:
+    module = _dispatcher_module()
+
+    adapter = module._capability_adapter_for_admission("api")
+
+    assert type(adapter) is module.CapabilityAdapter
+    assert not isinstance(adapter, module.WorkerAdapter)
+
+
+def test_unsupported_selected_route_reason_fails_closed_for_launch_decision() -> None:
+    module = _dispatcher_module()
+    unsupported = module.RouteDecision(
+        decision_id="rd-unsupported-selected-route-test",
+        created_at=datetime(2026, 7, 5, tzinfo=UTC),
+        task_id="governed-build",
+        lane="cx-green",
+        route_id="external.headless.full",
+        platform="external",
+        mode="headless",
+        profile="full",
+        action=module.DispatchAction.LAUNCH,
+        policy_outcome="launch",
+        launch_allowed=True,
+        prompt_allowed=True,
+        quality_floor_satisfied=True,
+        authority_allowed=True,
+        reason_codes=("policy_launch",),
+        message="policy_launch",
+    )
+    supported = unsupported.model_copy(
+        update={
+            "route_id": "codex.headless.full",
+            "platform": "codex",
+            "mode": "headless",
+            "profile": "full",
+        }
+    )
+
+    reason = module._unsupported_selected_route_reason(unsupported)
+
+    assert reason is not None
+    assert "route policy selected unsupported route: external.headless.full" in reason
+    assert "next action: inspect dimensional_selected_route_id" in reason
+    assert module._unsupported_selected_route_reason(supported) is None
+
+
+def test_availability_recomposition_candidates_return_none_without_recomposition(
+    tmp_path: Path,
+) -> None:
+    module = _dispatcher_module()
+    registry = _registry_from_path(_fresh_registry(tmp_path))
+    primary = _availability_dispatch_request(module, registry)
+
+    candidates = module._availability_recomposition_candidate_requests(
+        primary,
+        task_fields={},
+        policy_sources=module.DispatchPolicySources(registry=registry),
+        validation=module.Validation(True, "eligible"),
+        rollback_mode=False,
+    )
+
+    assert primary.capability.availability_recomposition_required is False
+    assert candidates is None
+
+
+def test_availability_recomposition_candidates_fail_closed_when_registry_missing(
+    tmp_path: Path,
+) -> None:
+    module = _dispatcher_module()
+    registry = _registry_from_path(_availability_degraded_registry(tmp_path, "codex.headless.full"))
+    primary = _availability_dispatch_request(module, registry)
+
+    candidates = module._availability_recomposition_candidate_requests(
+        primary,
+        task_fields={},
+        policy_sources=module.DispatchPolicySources(registry=None),
+        validation=module.Validation(True, "eligible"),
+        rollback_mode=False,
+    )
+
+    assert primary.capability.availability_recomposition_required is True
+    assert candidates == ()
+
+
+def test_availability_recomposition_candidates_skip_unsupported_routes(
+    tmp_path: Path,
+) -> None:
+    module = _dispatcher_module()
+    registry = _registry_from_path(_availability_degraded_registry(tmp_path, "codex.headless.full"))
+    primary = _availability_dispatch_request(module, registry)
+
+    def descriptor(route_id: str) -> SimpleNamespace:
+        platform, mode, profile = route_id.split(".", 2)
+        return SimpleNamespace(
+            route_id=route_id,
+            platform=SimpleNamespace(value=platform),
+            mode=SimpleNamespace(value=mode),
+            profile=SimpleNamespace(value=profile),
+        )
+
+    candidate_registry = SimpleNamespace(
+        routes=(
+            descriptor("codex.headless.full"),
+            descriptor("ghost.headless.full"),
+        )
+    )
+
+    candidates = module._availability_recomposition_candidate_requests(
+        primary,
+        task_fields={},
+        policy_sources=module.DispatchPolicySources.model_construct(registry=candidate_registry),
+        validation=module.Validation(True, "eligible"),
+        rollback_mode=False,
+    )
+
+    assert primary.capability.availability_recomposition_required is True
+    assert candidates == ()
+
+
+def test_availability_recomposition_candidates_skip_supported_immutable_routes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _dispatcher_module()
+    registry = _registry_from_path(_availability_degraded_registry(tmp_path, "codex.headless.full"))
+    primary = _availability_dispatch_request(module, registry)
+
+    def descriptor(route_id: str) -> SimpleNamespace:
+        platform, mode, profile = route_id.split(".", 2)
+        return SimpleNamespace(
+            route_id=route_id,
+            platform=SimpleNamespace(value=platform),
+            mode=SimpleNamespace(value=mode),
+            profile=SimpleNamespace(value=profile),
+        )
+
+    read_only_route = module.route_for("local_tool", "local", "worker")
+    assert read_only_route is not None
+    assert read_only_route.mutable is False
+    candidate_registry = SimpleNamespace(routes=(descriptor("local_tool.local.worker"),))
+    monkeypatch.setattr(module, "supports_route", lambda _platform, _mode: True)
+
+    def forbidden_build_dispatch_request(**_kwargs):
+        raise AssertionError("immutable recomposition candidates must be skipped before build")
+
+    monkeypatch.setattr(module, "build_dispatch_request", forbidden_build_dispatch_request)
+
+    candidates = module._availability_recomposition_candidate_requests(
+        primary,
+        task_fields={},
+        policy_sources=module.DispatchPolicySources.model_construct(registry=candidate_registry),
+        validation=module.Validation(True, "eligible"),
+        rollback_mode=False,
+    )
+
+    assert primary.capability.availability_recomposition_required is True
+    assert candidates == ()
+
+
+def test_dispatch_worker_adapter_map_includes_live_worker_families() -> None:
+    module = _dispatcher_module()
+
+    assert module._WORKER_FAILURE_ADAPTERS["agy"] is module.AgyAdapter
+    assert isinstance(module._worker_adapter_for_launch("agy"), module.AgyAdapter)
+    assert module._WORKER_FAILURE_ADAPTERS["vibe"] is module.VibeAdapter
+    assert isinstance(module._worker_adapter_for_launch("vibe"), module.VibeAdapter)
+
+
+def test_dispatch_launch_requires_worker_adapter() -> None:
+    module = _dispatcher_module()
+
+    with pytest.raises(module.AuthorityViolation, match="no WorkerAdapter registered"):
+        module._worker_adapter_for_launch("api")
+
+
+def test_dispatch_launch_adapter_rejects_non_launch_decision_before_side_effect() -> None:
+    module = _dispatcher_module()
+    decision = module.RouteDecision(
+        decision_id="rd-test",
+        created_at=datetime(2026, 7, 5, tzinfo=UTC),
+        task_id="governed-build",
+        lane="cx-green",
+        route_id="codex.headless.full",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        action=module.DispatchAction.HOLD,
+        policy_outcome="held",
+        launch_allowed=False,
+        prompt_allowed=False,
+        quality_floor_satisfied=True,
+        authority_allowed=True,
+        reason_codes=("held_for_test",),
+        message="held for test",
+    )
+    launch_called = False
+
+    def launch_callable() -> int:
+        nonlocal launch_called
+        launch_called = True
+        return 0
+
+    with pytest.raises(module.AuthorityViolation, match="not authorized"):
+        module._worker_adapter_for_launch("codex").launch(
+            decision=decision,
+            request=object(),
+            launch_callable=launch_callable,
+        )
+
+    assert launch_called is False
+
+
+def test_launch_authority_violation_writes_blocked_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _dispatcher_module()
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    args = (
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+    )
+    mq_db, message_id = _maybe_write_durable_mq_binding(tmp_path, args)
+    assert message_id is not None
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_COORD_LEDGER_DB", str(tmp_path / "coord" / "ledger.db"))
+    monkeypatch.setenv("HAPAX_COORD_JSONL_MIRROR", str(tmp_path / "coord" / "ledger.jsonl"))
+    monkeypatch.setenv("HAPAX_COORD_SPOOL_DIR", str(tmp_path / "coord" / "spool"))
+    monkeypatch.setenv("HAPAX_RELAY_MQ_DB", str(mq_db))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID", message_id)
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setattr(module, "_await_sdlc_admission", lambda args: None)
+
+    class RefusingAdapter:
+        def launch(self, *, decision, request, launch_callable):
+            raise module.AuthorityViolation("fixture refusal")
+
+    monkeypatch.setattr(module, "_worker_adapter_for_launch", lambda platform: RefusingAdapter())
+
+    rc = module.main(list(args))
+
+    captured = capsys.readouterr()
+    assert rc == 10
+    assert "BLOCKED: capability adapter launch refused: fixture refusal" in captured.err
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["launched"] is False
+    assert receipt["route_policy_action"] == "launch"
+    assert receipt["durable_mq_dispatch_bound"] is True
+    assert receipt["reason"] == "capability adapter launch refused: fixture refusal"
+
+
+def test_dispatch_main_launches_through_worker_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _dispatcher_module()
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    args = (
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+    )
+    mq_db, message_id = _maybe_write_durable_mq_binding(tmp_path, args)
+    assert message_id is not None
+    launcher_args = tmp_path / "codex-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+    launch_calls: list[tuple[str, str]] = []
+
+    class SpyCodexAdapter(module.CodexAdapter):
+        def launch(self, *, decision, request, launch_callable):
+            launch_calls.append((decision.action.value, request.platform))
+            return super().launch(
+                decision=decision,
+                request=request,
+                launch_callable=launch_callable,
+            )
+
+    monkeypatch.setitem(module._WORKER_FAILURE_ADAPTERS, "codex", SpyCodexAdapter)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_COORD_LEDGER_DB", str(tmp_path / "coord" / "ledger.db"))
+    monkeypatch.setenv("HAPAX_COORD_JSONL_MIRROR", str(tmp_path / "coord" / "ledger.jsonl"))
+    monkeypatch.setenv("HAPAX_COORD_SPOOL_DIR", str(tmp_path / "coord" / "spool"))
+    monkeypatch.setenv("HAPAX_RELAY_MQ_DB", str(mq_db))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID", message_id)
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CODEX_HEADLESS", str(fake_launcher))
+    monkeypatch.setattr(module, "_await_sdlc_admission", lambda args: None)
+
+    rc = module.main(list(args))
+
+    assert rc == 0
+    assert launch_calls == [("launch", "codex")]
+    assert launcher_args.exists()
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["route_policy_action"] == "launch"
+    assert receipt["launched"] is True
+
+
 def test_policy_hold_writes_route_decision_before_prompt_or_launch(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
@@ -843,6 +1653,249 @@ printf '%s\\n' "$@" > {launcher_args}
     )
     assert dispatch_receipt["prompt"] is None
     assert dispatch_receipt["route_policy_action"] == "hold"
+
+
+def test_operator_coupled_frontmatter_refuses_headless_before_prompt_or_launch(
+    tmp_path: Path,
+) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "operator-coupled-build",
+        _governed_source_frontmatter(spec, extra="operator_coupled: true"),
+        route_metadata_defaults=False,
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "operator-coupled-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--print-prompt",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher)},
+    )
+
+    assert result.returncode == 10
+    assert result.stdout == ""
+    assert not launcher_args.exists()
+    assert "operator_coupled_interactive_only" in result.stderr
+    assert "hapax-claude --terminal tmux" in result.stderr
+    route_receipt = json.loads(
+        (tmp_path / "ledger" / "route-decisions.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert route_receipt["action"] == "refuse"
+    assert "operator_coupled_interactive_only" in route_receipt["reason_codes"]
+    assert "operator_coupled:frontmatter" in route_receipt["reason_codes"]
+    dispatch_receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert dispatch_receipt["prompt"] is None
+    assert dispatch_receipt["route_policy_action"] == "refuse"
+    assert "operator_coupled_interactive_only" in dispatch_receipt["route_policy_reason_codes"]
+
+
+def test_operator_coupled_manifest_path_refuses_headless(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    manifest = _operator_coupled_manifest(tmp_path)
+    _task(
+        tmp_path / "tasks",
+        "operator-path-build",
+        _governed_source_frontmatter(
+            spec,
+            mutation_scope_refs="[agents/studio_compositor/programme.py]",
+        ),
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "operator-path-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--print-prompt",
+        extra_env={"HAPAX_INVARIANT_MANIFEST": str(manifest)},
+    )
+
+    assert result.returncode == 10
+    assert result.stdout == ""
+    route_receipt = json.loads(
+        (tmp_path / "ledger" / "route-decisions.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert route_receipt["action"] == "refuse"
+    assert "operator_coupled_interactive_only" in route_receipt["reason_codes"]
+    assert (
+        "operator_coupled:path:agents/studio_compositor/programme.py"
+        "#operator-coupled-broadcast-visual" in route_receipt["reason_codes"]
+    )
+
+
+def test_operator_coupled_nested_route_metadata_path_refuses_headless(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    manifest = _operator_coupled_manifest(tmp_path)
+    _task(
+        tmp_path / "tasks",
+        "operator-nested-path-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        route_metadata:
+          route_metadata_schema: 1
+          quality_floor: frontier_required
+          authority_level: authoritative
+          mutation_surface: source
+          mutation_scope_refs:
+            - agents/studio_compositor/programme.py
+        """,
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "operator-nested-path-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--print-prompt",
+        extra_env={"HAPAX_INVARIANT_MANIFEST": str(manifest)},
+    )
+
+    assert result.returncode == 10
+    assert result.stdout == ""
+    route_receipt = json.loads(
+        (tmp_path / "ledger" / "route-decisions.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert route_receipt["action"] == "refuse"
+    assert "operator_coupled_interactive_only" in route_receipt["reason_codes"]
+    assert (
+        "operator_coupled:path:agents/studio_compositor/programme.py"
+        "#operator-coupled-broadcast-visual" in route_receipt["reason_codes"]
+    )
+
+
+def test_operator_coupled_malformed_manifest_refuses_headless(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    manifest = _operator_coupled_manifest(tmp_path, body="schema_version: [\n")
+    _task(
+        tmp_path / "tasks",
+        "operator-malformed-manifest-build",
+        _governed_source_frontmatter(
+            spec,
+            mutation_scope_refs="[agents/studio_compositor/programme.py]",
+        ),
+        route_metadata_defaults=False,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "operator-malformed-manifest-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--print-prompt",
+        extra_env={"HAPAX_INVARIANT_MANIFEST": str(manifest)},
+    )
+
+    assert result.returncode == 10
+    assert result.stdout == ""
+    assert "operator_coupled_interactive_only" in result.stderr
+    assert "manifest_unavailable:RuntimeError:invariant-manifest-parse-error" in result.stderr
+    route_receipt = json.loads(
+        (tmp_path / "ledger" / "route-decisions.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert route_receipt["action"] == "refuse"
+    assert "operator_coupled_interactive_only" in route_receipt["reason_codes"]
+    assert (
+        "operator_coupled:path:manifest_unavailable:RuntimeError:invariant-manifest-parse-error"
+        in route_receipt["reason_codes"]
+    )
+
+
+def test_operator_coupled_interactive_and_receipt_only_still_dispatch(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "operator-interactive-build",
+        _governed_source_frontmatter(spec, extra="operator_coupled: true"),
+        route_metadata_defaults=False,
+    )
+    _task(
+        tmp_path / "tasks",
+        "operator-receipt-build",
+        _governed_source_frontmatter(spec, extra="dispatch_mode: interactive_only"),
+        route_metadata_defaults=False,
+    )
+
+    interactive = _run(
+        tmp_path,
+        "--task",
+        "operator-interactive-build",
+        "--lane",
+        "beta",
+        "--platform",
+        "claude",
+        "--mode",
+        "interactive",
+        "--print-prompt",
+    )
+    receipt_only = _run(
+        tmp_path,
+        "--task",
+        "operator-receipt-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "receipt-only",
+        "--print-prompt",
+    )
+
+    assert interactive.returncode == 0, interactive.stderr
+    assert (
+        "eligible: operator-interactive-build -> claude/interactive/full/beta" in interactive.stdout
+    )
+    assert receipt_only.returncode == 0, receipt_only.stderr
+    assert (
+        "eligible: operator-receipt-build -> codex/receipt-only/full/cx-green"
+        in receipt_only.stdout
+    )
 
 
 def test_launch_blocks_without_durable_mq_authority_binding(tmp_path: Path) -> None:
@@ -1031,11 +2084,10 @@ printf '%s\\n' "$@" > {launcher_args}
     )
 
     assert result.returncode == 0, result.stderr
-    # hapax-codex-headless takes `--task <id> <lane> <prompt>` for ordinary
-    # launches. `--force` is reserved for the P0 incident drain-lane path.
+    # Strictly MQ-bound governed Codex launches may reactivate a clean retired
+    # relay. Local fallback remains independently restricted to P0 drain lanes.
     recorded = launcher_args.read_text(encoding="utf-8")
-    assert recorded.startswith("--task\ngoverned-build\ncx-green\n")
-    assert "\n--force\n" not in recorded
+    assert recorded.startswith("--task\ngoverned-build\n--force\ncx-green\n")
     assert "SDLC GOVERNED DISPATCH." in recorded
     assert "Task: governed-build" in recorded
     assert "AuthorityCase: CASE-TEST-001" in recorded
@@ -1062,6 +2114,597 @@ printf '%s\\n' "$@" > {launcher_args}
         "host=appendix",
         "fallback=",
     ]
+
+
+def test_degraded_codex_recomposes_to_claude_coverage_substitute(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    registry = _availability_degraded_registry(tmp_path, "codex.headless.full")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: frontier_required
+        authority_level: authoritative
+        mutation_surface: source
+        mutation_scope_refs: []
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: [claude, codex]
+          prohibited_platforms: []
+          required_mode: headless
+          required_profile: full
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
+        """,
+    )
+    launcher_args = tmp_path / "launcher-args.txt"
+    launcher_env = tmp_path / "launcher-env.txt"
+    fake_claude = tmp_path / "bin" / "hapax-claude-headless"
+    fake_claude.parent.mkdir(parents=True, exist_ok=True)
+    fake_claude.write_text(
+        f"""#!/usr/bin/env bash
+printf 'host=%s\\nmodel=%s\\n' "$HAPAX_DISPATCH_HOST" "$HAPAX_CLAUDE_MODEL" > {launcher_env}
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_claude.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "eta",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--launch",
+        extra_env={
+            "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(registry),
+            "HAPAX_METHODOLOGY_CLAUDE_HEADLESS": str(fake_claude),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    recorded = launcher_args.read_text(encoding="utf-8")
+    assert recorded.startswith("--task\ngoverned-build\neta\n")
+    assert "Platform: claude" in recorded
+    assert "Profile: full" in recorded
+    assert launcher_env.read_text(encoding="utf-8").splitlines() == [
+        "host=appendix",
+        "model=opus",
+    ]
+
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["platform"] == "claude"
+    assert receipt["mode"] == "headless"
+    assert receipt["profile"] == "full"
+    assert receipt["platform_path_summary"] == "Claude Code headless stream-json lane"
+    assert receipt["route_policy_action"] == "launch"
+    assert receipt["route_policy_launch_allowed"] is True
+    assert receipt["dimensional_selected_route_id"] == "claude.headless.full"
+    reasons = set(receipt["route_policy_reason_codes"])
+    assert "availability_recomposition_required" in reasons
+    assert "availability_recomposed_from:codex.headless.full" in reasons
+    assert "availability_recomposed_to:claude.headless.full" in reasons
+    assert any(
+        reason.startswith("capability-availability-receipt:codex.headless.full:")
+        for reason in reasons
+    )
+
+
+def test_claude_lane_recomposed_to_codex_fails_before_mq_consumption(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    registry = _availability_degraded_registry(tmp_path, "claude.headless.full")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: frontier_required
+        authority_level: authoritative
+        mutation_surface: source
+        mutation_scope_refs: []
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: [claude, codex]
+          prohibited_platforms: []
+          required_mode: headless
+          required_profile: full
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
+        """,
+    )
+    launcher_args = tmp_path / "codex-launcher-args.txt"
+    fake_codex = tmp_path / "bin" / "hapax-codex-headless"
+    fake_codex.parent.mkdir(parents=True, exist_ok=True)
+    fake_codex.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "eta",
+        "--platform",
+        "claude",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_codex),
+            "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(registry),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 10
+    assert "selected route codex.headless.full requires a Codex cx-* lane" in result.stderr
+    assert not launcher_args.exists()
+    with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
+        message_id = conn.execute("SELECT message_id FROM messages").fetchone()[0]
+    row = _recipient_row(tmp_path / "relay" / "messages.db", message_id, "eta")
+    assert row["state"] == "offered"
+    assert row["reason"] is None
+
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["launched"] is False
+    assert receipt["platform"] == "codex"
+    assert receipt["mode"] == "headless"
+    assert receipt["profile"] == "full"
+    assert receipt["dimensional_selected_route_id"] == "codex.headless.full"
+    assert "availability_recomposed_from:claude.headless.full" in set(
+        receipt["route_policy_reason_codes"]
+    )
+    assert "durable_mq_dispatch_bound" not in receipt
+
+
+def test_cx_lane_recomposed_to_codex_remains_launch_admissible(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    registry = _availability_degraded_registry(tmp_path, "claude.headless.full")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: frontier_required
+        authority_level: authoritative
+        mutation_surface: source
+        mutation_scope_refs: []
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: [claude, codex]
+          prohibited_platforms: []
+          required_mode: headless
+          required_profile: full
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
+        """,
+    )
+    launcher_args = tmp_path / "codex-launcher-args.txt"
+    fake_codex = tmp_path / "bin" / "hapax-codex-headless"
+    fake_codex.parent.mkdir(parents=True, exist_ok=True)
+    fake_codex.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "claude",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_codex),
+            "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(registry),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "cx-green" in launcher_args.read_text(encoding="utf-8").splitlines()
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is True
+    assert receipt["launched"] is True
+    assert receipt["platform"] == "codex"
+    assert receipt["lane"] == "cx-green"
+    assert receipt["dimensional_selected_route_id"] == "codex.headless.full"
+    assert receipt["durable_mq_dispatch_bound"] is True
+    assert "availability_recomposed_from:claude.headless.full" in set(
+        receipt["route_policy_reason_codes"]
+    )
+
+
+def test_claude_route_with_codex_lane_fails_before_mq_consumption(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "claude-launcher-args.txt"
+    fake_claude = tmp_path / "bin" / "hapax-claude-headless"
+    fake_claude.parent.mkdir(parents=True, exist_ok=True)
+    fake_claude.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_claude.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "claude",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_CLAUDE_HEADLESS": str(fake_claude)},
+    )
+
+    assert result.returncode == 10
+    assert "selected route claude.headless.full requires a Claude headless role" in result.stderr
+    assert not launcher_args.exists()
+    with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
+        message_id = conn.execute("SELECT message_id FROM messages").fetchone()[0]
+    row = _recipient_row(tmp_path / "relay" / "messages.db", message_id, "cx-green")
+    assert row["state"] == "offered"
+    assert row["reason"] is None
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["launched"] is False
+    assert receipt["platform"] == "claude"
+    assert "durable_mq_dispatch_bound" not in receipt
+
+
+def test_vibe_route_with_codex_lane_fails_before_mq_consumption(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: deterministic_ok
+        authority_level: support_non_authoritative
+        mutation_surface: source
+        mutation_scope_refs: []
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: []
+          prohibited_platforms: []
+          required_mode: null
+          required_profile: null
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
+        """,
+        route_metadata_defaults=False,
+    )
+    launcher_args = tmp_path / "vibe-launcher-args.txt"
+    fake_vibe = tmp_path / "bin" / "hapax-vibe"
+    fake_vibe.parent.mkdir(parents=True, exist_ok=True)
+    fake_vibe.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_vibe.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "vibe",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_VIBE_LAUNCHER": str(fake_vibe)},
+    )
+
+    assert result.returncode == 10
+    assert "selected route vibe.headless.full requires a Vibe" in result.stderr
+    assert not launcher_args.exists()
+    with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
+        message_id = conn.execute("SELECT message_id FROM messages").fetchone()[0]
+    row = _recipient_row(tmp_path / "relay" / "messages.db", message_id, "cx-green")
+    assert row["state"] == "offered"
+    assert row["reason"] is None
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["launched"] is False
+    assert receipt["platform"] == "vibe"
+    assert "durable_mq_dispatch_bound" not in receipt
+
+
+def test_codex_route_with_cx_lane_remains_launch_admissible(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    launcher_args = tmp_path / "codex-launcher-args.txt"
+    fake_codex = tmp_path / "bin" / "hapax-codex-headless"
+    fake_codex.parent.mkdir(parents=True, exist_ok=True)
+    fake_codex.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--profile",
+        "full",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_codex)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    codex_args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert codex_args[0:2] == ["--task", "governed-build"]
+    assert "cx-green" in codex_args
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is True
+    assert receipt["launched"] is True
+    assert receipt["platform"] == "codex"
+    assert receipt["lane"] == "cx-green"
+    assert receipt["durable_mq_dispatch_bound"] is True
+
+
+def test_unsupported_selected_route_writes_blocked_receipt_with_next_action(
+    tmp_path: Path,
+    monkeypatch,
+    capfd,
+) -> None:
+    module = _dispatcher_module()
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_DISPATCH_WORKTREE", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_fresh_registry(tmp_path)))
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+
+    class UnsupportedSelectionAdapter:
+        def admit(self, policy_request, *, candidate_requests=None):
+            return module.RouteDecision(
+                decision_id="rd-unsupported-selected-route-test",
+                created_at=datetime(2026, 5, 9, 22, 30, tzinfo=UTC),
+                task_id=policy_request.task_id,
+                lane=policy_request.lane,
+                route_id="external.headless.full",
+                platform="external",
+                mode="headless",
+                profile="full",
+                action=module.DispatchAction.LAUNCH,
+                policy_outcome="launch",
+                launch_allowed=True,
+                prompt_allowed=True,
+                quality_floor_satisfied=True,
+                authority_allowed=True,
+                reason_codes=("policy_launch",),
+                message="policy_launch",
+            )
+
+    monkeypatch.setattr(
+        module,
+        "_capability_adapter_for_admission",
+        lambda _platform: UnsupportedSelectionAdapter(),
+    )
+
+    rc = module.main(
+        [
+            "--task",
+            "governed-build",
+            "--lane",
+            "cx-green",
+            "--platform",
+            "codex",
+            "--mode",
+            "headless",
+        ]
+    )
+    captured = capfd.readouterr()
+
+    assert rc == 10
+    assert "route policy selected unsupported route: external.headless.full" in captured.err
+    assert "next action: inspect dimensional_selected_route_id" in captured.err
+    assert "Supported governed routes:" in captured.err
+
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["ok"] is False
+    assert receipt["launched"] is False
+    assert receipt["route_policy_action"] == "launch"
+    assert "next action" in receipt["reason"]
 
 
 def test_codex_p0_incident_drain_lane_allows_local_fallback(tmp_path: Path) -> None:
@@ -1118,6 +2761,123 @@ printf '%s\\n' "$@" > {launcher_args}
     assert recorded.startswith(f"--task\n{task_id}\n--force\ncx-p0\n")
 
 
+def test_codex_p0_incident_local_fallback_force_is_independent_of_reactivation_flag(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setenv("HAPAX_P0_CODEX_DRAIN_LANES", "cx-p0")
+    launcher_env = tmp_path / "launcher-env.txt"
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf 'host=%s\\nfallback=%s\\n' "$HAPAX_DISPATCH_HOST" "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" > {launcher_env}
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CODEX_HEADLESS", str(fake_launcher))
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "status": "claimed",
+                "priority": "p0",
+                "title": "P0 incident",
+                "kind": "recovery_triage",
+                "tags": ["incident-intake", "technical-alert"],
+            },
+        ),
+    )
+
+    reactivate_retired_relay = False
+    assert module.allow_codex_p0_local_dispatch_fallback(
+        "p0-incident-sdlc-task-stalled-test", "cx-p0", validation
+    )
+
+    result = module.launch_codex_headless(
+        "p0-incident-sdlc-task-stalled-test",
+        "cx-p0",
+        "prompt",
+        validation,
+        module.PLATFORM_PATHS[("codex", "headless", "full")],
+        reactivate_retired_relay=reactivate_retired_relay,
+    )
+
+    assert result == 0
+    assert launcher_env.read_text(encoding="utf-8").splitlines() == [
+        "host=appendix",
+        "fallback=local",
+    ]
+    recorded = launcher_args.read_text(encoding="utf-8")
+    assert recorded.startswith(
+        "--task\np0-incident-sdlc-task-stalled-test\n--force\n--no-claim\ncx-p0\n"
+    )
+
+
+def test_governed_relay_reactivation_passes_force_to_headless_launcher(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    task_id = "governed-codex-retired-relay"
+    _task(
+        tmp_path / "tasks",
+        task_id,
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+        status="claimed",
+        assigned_to="cx-fugu",
+    )
+    home = tmp_path / "home"
+    relay = home / ".cache" / "hapax" / "relay"
+    relay.mkdir(parents=True)
+    (relay / "cx-fugu.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
+    launcher_env = tmp_path / "launcher-env.txt"
+    launcher_args = tmp_path / "launcher-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-codex-headless"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf 'host=%s\\nfallback=%s\\n' "$HAPAX_DISPATCH_HOST" "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" > {launcher_env}
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        task_id,
+        "--lane",
+        "cx-fugu",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
+            "HAPAX_P0_CODEX_DRAIN_LANES": "",
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    recorded = launcher_args.read_text(encoding="utf-8")
+    assert recorded.startswith(f"--task\n{task_id}\n--force\n--no-claim\ncx-fugu\n")
+    assert launcher_env.read_text(encoding="utf-8").splitlines() == [
+        "host=appendix",
+        "fallback=",
+    ]
+
+
 def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: Path) -> None:
     worktree = _worktree(tmp_path / "worktree")
     (worktree / "scripts" / "cc-claim").chmod(0o755)
@@ -1142,7 +2902,13 @@ def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: P
     codex_args = tmp_path / "codex-args.txt"
     _write(
         bin_dir / "codex",
-        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {codex_args}\n",
+        f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
+  printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
+  exit 0
+fi
+printf '%s\\n' "$*" > {codex_args}
+""",
     )
     (bin_dir / "codex").chmod(0o755)
 
@@ -1189,16 +2955,205 @@ def test_codex_p0_incident_drain_lane_force_preserves_live_pid_guard(tmp_path: P
     assert receipt["coord_dispatch_cleanup_state"] == "deferred"
 
 
-def test_codex_headless_dispatch_propagates_retired_relay_block(tmp_path: Path) -> None:
+def test_governed_codex_dispatch_reactivates_clean_retired_relay(tmp_path: Path) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
+    task_id = "governed-codex-retired-relay"
     _task(
         tmp_path / "tasks",
-        "governed-build",
+        task_id,
         f"""
         kind: build
         authority_case: CASE-TEST-001
         parent_spec: {spec}
+        """,
+        status="claimed",
+        assigned_to="cx-fugu",
+    )
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    relay = home / ".cache" / "hapax" / "relay"
+    relay.mkdir(parents=True)
+    (relay / "cx-fugu.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
+    pid_dir = tmp_path / "pids"
+    pid_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    codex_args = tmp_path / "codex-args.txt"
+    _write(
+        bin_dir / "codex",
+        f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
+  printf '%s\\n' '{{"models":[{{"slug":"gpt-5.5"}}]}}'
+  exit 0
+fi
+printf '%s\\n' "$*" > {codex_args}
+""",
+    )
+    (bin_dir / "codex").chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        task_id,
+        "--lane",
+        "cx-fugu",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(REPO_ROOT / "scripts" / "hapax-codex-headless"),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+            "HAPAX_CODEX_HEADLESS_ALLOW": "1",
+            "HAPAX_CODEX_HEADLESS_WORKDIR": str(tmp_path / "worktree"),
+            "HAPAX_CODEX_HEADLESS_PID_DIR": str(pid_dir),
+            "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE": str(_write_codex_access_token(tmp_path)),
+            "HAPAX_DISPATCH_HOST": "local",
+            "HAPAX_P0_CODEX_DRAIN_LANES": "",
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "retired/wound-down" not in result.stderr
+    assert codex_args.exists()
+
+
+def test_governed_relay_reactivation_predicate_accepts_bound_mutable_launch(
+    tmp_path: Path,
+) -> None:
+    module = _dispatcher_module()
+    route_decision = type(
+        "RouteDecisionStub",
+        (),
+        {"action": module.DispatchAction.LAUNCH},
+    )()
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "status": "claimed",
+                "kind": "build",
+                "authority_case": "CASE-TEST-001",
+            },
+        ),
+    )
+
+    assert module.allow_codex_governed_relay_reactivation(
+        route=module.PLATFORM_PATHS[("codex", "headless", "full")],
+        route_decision=route_decision,
+        durable_binding=module.DurableDispatchBinding(
+            True,
+            False,
+            "durable_mq_dispatch_bound",
+            message_id="dispatch-message",
+        ),
+        validation=validation,
+    )
+
+
+def test_governed_relay_reactivation_rejects_advisory_or_unbound_binding(
+    tmp_path: Path, monkeypatch, capfd
+) -> None:
+    module = _dispatcher_module()
+    _worktree(tmp_path / "worktree")
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    relay = home / ".cache" / "hapax" / "relay"
+    relay.mkdir(parents=True)
+    (relay / "cx-green.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
+    pid_dir = tmp_path / "pids"
+    pid_dir.mkdir()
+    bin_dir = tmp_path / "bin"
+    codex_args = tmp_path / "codex-args.txt"
+    _write(
+        bin_dir / "codex",
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {codex_args}\n",
+    )
+    (bin_dir / "codex").chmod(0o755)
+    monkeypatch.setenv(
+        "HAPAX_METHODOLOGY_CODEX_HEADLESS",
+        str(REPO_ROOT / "scripts" / "hapax-codex-headless"),
+    )
+    monkeypatch.setenv("HAPAX_COUNCIL_DIR", str(REPO_ROOT))
+    monkeypatch.setenv("HAPAX_CODEX_HEADLESS_ALLOW", "1")
+    monkeypatch.setenv("HAPAX_CODEX_HEADLESS_WORKDIR", str(tmp_path / "worktree"))
+    monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(pid_dir))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    validation = module.Validation(
+        True,
+        "ok",
+        module.TaskNote(
+            tmp_path / "task.md",
+            {
+                "status": "claimed",
+                "kind": "build",
+                "authority_case": "CASE-TEST-001",
+            },
+        ),
+    )
+    route_decision = type(
+        "RouteDecisionStub",
+        (),
+        {"action": module.DispatchAction.LAUNCH},
+    )()
+    route = module.PLATFORM_PATHS[("codex", "headless", "full")]
+
+    for binding in (
+        module.DurableDispatchBinding(
+            True,
+            True,
+            "advisory_binding_must_not_reactivate",
+            message_id="dispatch-message",
+        ),
+        module.DurableDispatchBinding(
+            True,
+            False,
+            "message_id_required_for_reactivation",
+            message_id=None,
+        ),
+    ):
+        reactivate = module.allow_codex_governed_relay_reactivation(
+            route=route,
+            route_decision=route_decision,
+            durable_binding=binding,
+            validation=validation,
+        )
+
+        assert reactivate is False
+        result = module.launch_codex_headless(
+            "governed-codex-retired-relay",
+            "cx-green",
+            "prompt",
+            validation,
+            route,
+            reactivate_retired_relay=reactivate,
+        )
+        assert result == 6
+        captured = capfd.readouterr()
+        assert "relay 'cx-green' is retired/wound-down" in captured.err
+        assert "pass --force to reactivate" in captured.err
+        assert not codex_args.exists()
+
+
+def test_codex_headless_dispatch_propagates_retired_relay_block(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    _task(
+        tmp_path / "tasks",
+        "read-only-intake",
+        """
+        kind: intake
+        task_type: read-only
+        parent_spec: null
+        tags:
+          - intake
+          - read-only
         """,
         status="claimed",
         assigned_to="cx-green",
@@ -1219,7 +3174,65 @@ def test_codex_headless_dispatch_propagates_retired_relay_block(tmp_path: Path) 
     result = _run(
         tmp_path,
         "--task",
-        "governed-build",
+        "read-only-intake",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={
+            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(REPO_ROOT / "scripts" / "hapax-codex-headless"),
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+            "HAPAX_CODEX_HEADLESS_ALLOW": "1",
+            "HAPAX_CODEX_HEADLESS_WORKDIR": str(tmp_path / "worktree"),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        },
+        durable_mq=False,
+    )
+
+    assert result.returncode == 6
+    assert "retired/wound-down" in result.stderr
+    assert not codex_args.exists()
+
+
+def test_codex_headless_dispatch_blocks_mq_bound_read_only_exempt_retired_relay(
+    tmp_path: Path,
+) -> None:
+    _worktree(tmp_path / "worktree")
+    _task(
+        tmp_path / "tasks",
+        "mq-bound-read-only-intake",
+        """
+        kind: intake
+        task_type: read-only
+        authority_case: CASE-TEST-001
+        parent_spec: null
+        tags:
+          - intake
+          - read-only
+        """,
+        status="claimed",
+        assigned_to="cx-green",
+    )
+    home = tmp_path / "home"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    relay = home / ".cache" / "hapax" / "relay"
+    relay.mkdir(parents=True)
+    (relay / "cx-green.yaml").write_text("status: wind_down_idle\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    codex_args = tmp_path / "codex-args.txt"
+    _write(
+        bin_dir / "codex",
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {codex_args}\n",
+    )
+    (bin_dir / "codex").chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "mq-bound-read-only-intake",
         "--lane",
         "cx-green",
         "--platform",
@@ -1239,6 +3252,15 @@ def test_codex_headless_dispatch_propagates_retired_relay_block(tmp_path: Path) 
     assert result.returncode == 6
     assert "retired/wound-down" in result.stderr
     assert not codex_args.exists()
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["exempt_read_only"] is True
+    assert receipt["durable_mq_dispatch_bound"] is True
+    assert receipt["durable_mq_reason"] == "read_only_exempt"
+    assert receipt["durable_mq_message_id"] is None
 
 
 def test_split_lane_list_accepts_commas_and_whitespace() -> None:
@@ -1541,9 +3563,13 @@ def test_failed_launch_cleans_up_mq_state_and_records_failure(tmp_path: Path) ->
     assert "coord_dispatch.launch_failed" in mirror
 
 
-def test_launch_uses_subscription_receipt_without_policy_rollback(tmp_path: Path) -> None:
+def test_launch_recomposes_from_subscription_receipt_without_account_live(
+    tmp_path: Path,
+) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
+    registry = _fresh_registry(tmp_path)
+    registry = _without_account_live_quota_evidence(tmp_path, registry, "codex.headless.full")
     _task(
         tmp_path / "tasks",
         "governed-build",
@@ -1551,6 +3577,38 @@ def test_launch_uses_subscription_receipt_without_policy_rollback(tmp_path: Path
         kind: build
         authority_case: CASE-TEST-001
         parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: frontier_required
+        authority_level: authoritative
+        mutation_surface: source
+        mutation_scope_refs: []
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: [claude, codex]
+          prohibited_platforms: []
+          required_mode: headless
+          required_profile: full
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
         """,
     )
     bin_dir = tmp_path / "bin"
@@ -1562,7 +3620,7 @@ def test_launch_uses_subscription_receipt_without_policy_rollback(tmp_path: Path
             sys.executable,
             str(RECEIPT_SCRIPT),
             "--registry",
-            str(REGISTRY),
+            str(registry),
             "--receipt-dir",
             str(receipt_dir),
             "--platform",
@@ -1577,7 +3635,7 @@ def test_launch_uses_subscription_receipt_without_policy_rollback(tmp_path: Path
     assert receipt_result.returncode == 0, receipt_result.stderr
 
     launcher_args = tmp_path / "launcher-args.txt"
-    fake_launcher = tmp_path / "launcher" / "hapax-codex"
+    fake_launcher = tmp_path / "launcher" / "hapax-claude-headless"
     fake_launcher.parent.mkdir(parents=True, exist_ok=True)
     fake_launcher.write_text(
         f"""#!/usr/bin/env bash
@@ -1592,15 +3650,15 @@ printf '%s\\n' "$@" > {launcher_args}
         "--task",
         "governed-build",
         "--lane",
-        "cx-green",
+        "eta",
         "--platform",
         "codex",
         "--mode",
         "headless",
         "--launch",
         extra_env={
-            "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(fake_launcher),
-            "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(REGISTRY),
+            "HAPAX_METHODOLOGY_CLAUDE_HEADLESS": str(fake_launcher),
+            "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(registry),
             "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR": str(receipt_dir),
             "XDG_CACHE_HOME": str(tmp_path / "cache"),
         },
@@ -1614,10 +3672,65 @@ printf '%s\\n' "$@" > {launcher_args}
     )
     assert receipt["route_policy_action"] == "launch"
     assert receipt["route_policy_launch_allowed"] is True
-    assert receipt["route_policy_registry_freshness_green"] is True
-    assert receipt["route_policy_quota_freshness_green"] is True
-    assert receipt["route_policy_resource_freshness_green"] is True
+    assert receipt["platform"] == "claude"
+    assert receipt["dimensional_selected_route_id"] == "claude.headless.full"
+    reasons = set(receipt["route_policy_reason_codes"])
+    assert "availability_recomposition_required" in reasons
+    assert "account_live_quota_evidence_absent" in reasons
     assert receipt.get("route_policy_compatibility_mode") in {None, "none"}
+
+
+def test_glmcp_platform_receipt_uses_sanctioned_review_wrapper_check(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    pass_stub = bin_dir / "pass"
+    pass_stub.write_text(
+        """#!/usr/bin/env bash
+if [ "$1" = "show" ] && [ "$2" = "glmcp/api-key" ]; then
+  printf '%s\n' 'test-secret-token'
+  exit 0
+fi
+exit 1
+""",
+        encoding="utf-8",
+    )
+    pass_stub.chmod(0o755)
+    receipt_dir = tmp_path / "receipts"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(RECEIPT_SCRIPT),
+            "--registry",
+            str(REGISTRY),
+            "--receipt-dir",
+            str(receipt_dir),
+            "--platform",
+            "glmcp",
+            "--json",
+        ],
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["receipts"][0]["platform"] == "glmcp"
+    assert summary["receipts"][0]["cli_available"] is True
+    assert summary["receipts"][0]["wrapper_exists"] is True
+    receipt = json.loads((receipt_dir / "glmcp.json").read_text(encoding="utf-8"))
+    assert receipt["platform"] == "glmcp"
+    assert receipt["routes"] == ["glmcp.review.direct"]
+    assert receipt["cli"]["binary"] == "scripts/hapax-glmcp-reviewer"
+    assert "model=glm-5.2" in receipt["cli"]["version"]
+    assert "payg_fallback=enabled" in receipt["cli"]["version"]
+    receipt_text = json.dumps(receipt)
+    assert "test-secret-token" not in receipt_text
+    assert any(
+        item["path"].endswith("scripts/hapax-glmcp-reviewer") for item in receipt["config_refs"]
+    )
 
 
 def test_policy_rollback_is_retired_before_launcher(
@@ -1983,6 +4096,125 @@ printf '%s\\n' "$@" > {launcher_args}
     assert "quality_floor_not_satisfied" in result.stderr
 
 
+def test_vibe_mutable_launch_reaches_existing_launcher(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "bounded-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        route_metadata_schema: 1
+        quality_floor: deterministic_ok
+        authority_level: support_non_authoritative
+        mutation_surface: source
+        mutation_scope_refs: []
+        risk_flags:
+          governance_sensitive: false
+          privacy_or_secret_sensitive: false
+          public_claim_sensitive: false
+          aesthetic_theory_sensitive: false
+          audio_or_live_egress_sensitive: false
+          provider_billing_sensitive: false
+        context_shape:
+          codebase_locality: module
+          vault_context_required: true
+          external_docs_required: false
+          currentness_required: false
+        verification_surface:
+          deterministic_tests: []
+          static_checks: []
+          runtime_observation: []
+          operator_only: false
+        route_constraints:
+          preferred_platforms: []
+          allowed_platforms: []
+          prohibited_platforms: []
+          required_mode: null
+          required_profile: null
+        review_requirement:
+          support_artifact_allowed: false
+          independent_review_required: false
+          authoritative_acceptor_profile: null
+        """,
+        route_metadata_defaults=False,
+    )
+    launcher_args = tmp_path / "vibe-args.txt"
+    fake_launcher = tmp_path / "bin" / "hapax-vibe"
+    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
+    fake_launcher.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' "$@" > {launcher_args}
+""",
+        encoding="utf-8",
+    )
+    fake_launcher.chmod(0o755)
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "bounded-build",
+        "--lane",
+        "vbe-1",
+        "--platform",
+        "vibe",
+        "--mode",
+        "headless",
+        "--launch",
+        extra_env={"HAPAX_METHODOLOGY_VIBE_LAUNCHER": str(fake_launcher)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = launcher_args.read_text(encoding="utf-8").splitlines()
+    assert args[:6] == ["--session", "vbe-1", "--terminal", "tmux", "--task", "bounded-build"]
+    assert "--prompt" in args
+    assert "--force" in args
+
+
+def test_agy_dispatch_remains_route_gated_without_spawnable_route(tmp_path: Path) -> None:
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+
+    result = _run(
+        tmp_path,
+        "--task",
+        "governed-build",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "agy",
+        "--mode",
+        "headless",
+        "--launch",
+    )
+
+    assert result.returncode == 10
+    assert "non-launchable read-only agy.review.direct" in result.stderr
+    assert "scripts/hapax-agy-reviewer" in result.stderr
+    assert "agy/" not in result.stderr
+    receipt = json.loads(
+        (tmp_path / "ledger" / "methodology-dispatch.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert receipt["platform"] == "agy"
+    assert receipt["launched"] is False
+    assert receipt["ok"] is False
+    assert "non-launchable read-only agy.review.direct" in receipt["reason"]
+    assert receipt["route_policy_reason_codes"] == ["review_route_not_launchable"]
+
+
 def test_gemini_platform_is_not_dispatchable(tmp_path: Path) -> None:
     result = _run(
         tmp_path,
@@ -2010,81 +4242,57 @@ def test_lists_platform_profile_paths(tmp_path: Path) -> None:
     assert "claude/interactive/full" in result.stdout
     assert "claude/headless/sonnet" in result.stdout
     assert "gemini/" not in result.stdout
-    assert "antigrav/interactive/full" in result.stdout
+    assert "antigrav/" not in result.stdout
+    assert "agy/" not in result.stdout
     assert "api/headless/api_frontier" in result.stdout
+    assert "api/headless/openrouter" in result.stdout
     assert "api/headless/provider_gateway" in result.stdout
 
 
-def test_antigrav_lane_worktree_tracks_requested_lane(monkeypatch, tmp_path: Path) -> None:
+def test_normalizes_openrouter_api_profile_aliases() -> None:
     dispatcher = _dispatcher_module()
-    monkeypatch.delenv("HAPAX_DISPATCH_WORKTREE", raising=False)
-    monkeypatch.setenv("HAPAX_DISPATCH_PROJECT_ROOT", str(tmp_path))
 
-    assert dispatcher.lane_worktree("antigrav", "antigrav") == (
-        tmp_path / "hapax-council--antigrav"
-    )
-    assert dispatcher.lane_worktree("antigrav-5", "antigrav") == (
-        tmp_path / "hapax-council--antigrav-5"
-    )
-    assert dispatcher.lane_worktree("antigravity", "antigrav") == (
-        tmp_path / "hapax-council--antigrav"
-    )
+    assert dispatcher.normalize_profile("api", "or") == "openrouter"
+    assert dispatcher.normalize_profile("api", "open-router") == "openrouter"
+    assert dispatcher.normalize_profile("api", "openrouter") == "openrouter"
 
 
-def test_antigrav_launch_passes_governed_dispatch_inflection(tmp_path: Path) -> None:
-    _worktree(tmp_path / "worktree")
-    spec = _spec(tmp_path / "isap-test.md")
-    _task(
-        tmp_path / "tasks",
-        "governed-build",
-        f"""
-        kind: build
-        authority_case: CASE-TEST-001
-        parent_spec: {spec}
-        """,
-    )
-    launcher_args = tmp_path / "antigrav-args.txt"
-    fake_launcher = tmp_path / "bin" / "hapax-antigrav"
-    fake_launcher.parent.mkdir(parents=True, exist_ok=True)
-    fake_launcher.write_text(
-        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {launcher_args}\n",
-        encoding="utf-8",
-    )
-    fake_launcher.chmod(0o755)
-
+def test_agy_platform_is_review_route_not_dispatchable_worker(tmp_path: Path) -> None:
     result = _run(
         tmp_path,
         "--task",
-        "governed-build",
+        "research-only",
         "--lane",
-        "antigrav-5",
+        "agy",
         "--platform",
-        "antigrav",
+        "agy",
         "--mode",
         "interactive",
-        "--launch",
-        extra_env={
-            "HAPAX_METHODOLOGY_ANTIGRAV_LAUNCHER": str(fake_launcher),
-            "HAPAX_ANTIGRAV_SPAWN_DIR": str(tmp_path / "antigrav-spawns"),
-        },
     )
 
-    assert result.returncode == 0, result.stderr
-    args = launcher_args.read_text(encoding="utf-8").splitlines()
-    assert args[:6] == [
-        "--session",
-        "antigrav-5",
-        "--task",
-        "governed-build",
-        "--terminal",
-        "tmux",
-    ]
-    inflection = Path(args[args.index("--inflection") + 1])
-    text = inflection.read_text(encoding="utf-8")
-    assert "SDLC GOVERNED DISPATCH." in text
-    assert "Task: governed-build" in text
-    assert "AuthorityCase: CASE-TEST-001" in text
-    assert "Do not choose unrelated queue work" in text
+    assert result.returncode == 10
+    assert "platform 'agy' is the non-launchable read-only agy.review.direct" in result.stderr
+    assert "scripts/hapax-agy-reviewer" in result.stderr
+
+
+def test_antigrav_platform_is_not_dispatchable(tmp_path: Path) -> None:
+    for platform in ("antigrav", "Antigrav", "antigravity", "gemini-cli"):
+        result = _run(
+            tmp_path,
+            "--task",
+            "research-only",
+            "--lane",
+            platform,
+            "--platform",
+            platform,
+            "--mode",
+            "interactive",
+        )
+
+        assert result.returncode == 10
+        assert f"platform '{platform.lower()}' is retired/excised" in result.stderr
+        assert "Use admitted Claude, Codex, or Vibe routes" in result.stderr
+        assert "agy.review.direct" in result.stderr
 
 
 def test_codex_launch_unsupported_mode_fails_closed(tmp_path: Path) -> None:

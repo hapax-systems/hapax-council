@@ -25,6 +25,11 @@ jobs:
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
       - name: Install system deps (cairo, gobject)
         run: |
+          grep -ril 'packages.microsoft.com' /etc/apt/sources.list.d 2>/dev/null \
+            | xargs -r sudo rm -f
+          if [ -f /etc/apt/sources.list ]; then
+            sudo sed -i '/packages.microsoft.com/d' /etc/apt/sources.list
+          fi
           sudo apt-get update
           sudo apt-get install -y libcairo2-dev libgirepository-2.0-dev gobject-introspection || {
             echo "::error::HKP advisory dependencies failed to install; check apt availability for cairo and gobject packages"

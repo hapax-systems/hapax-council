@@ -17,7 +17,8 @@ def test_gemini_sender_fails_closed() -> None:
 
     assert result.returncode == 64
     assert "retired" in result.stderr
-    assert "hapax-antigrav" in result.stderr
+    assert "agy.review.direct" in result.stderr
+    assert "hapax-antigrav" not in result.stderr
 
 
 def test_gemini_smoke_sender_fails_closed() -> None:
@@ -25,4 +26,5 @@ def test_gemini_smoke_sender_fails_closed() -> None:
 
     assert result.returncode == 64
     assert "retired" in result.stderr
-    assert "agy-backed" in result.stderr
+    assert "agy.review.direct" in result.stderr
+    assert "read-only review-plane" in result.stderr

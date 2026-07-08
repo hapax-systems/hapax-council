@@ -1,0 +1,1391 @@
+---
+# Legal-Posture Registry
+# Schema version: 1.0.0
+# Authority: CASE-SDLC-REFORM-001
+# Parent request: REQ-20260628-mdlc-tax-legal-posture-registry
+# Gate contract: docs/monetization/legal-posture-registry-schema.md §5
+#
+# This file is the SSOT for g2 ("legal in venue") gate decisions.
+# Absence of a row = DARK (fail-closed).
+# Do not add rows without cited legal authority.
+# Do not upgrade DARK→LIT/PARTIAL without operator signature.
+
+schema_version: "1.0.0"
+schema_doc: docs/monetization/legal-posture-registry-schema.md
+last_updated: "2026-06-30"
+update_author: 20260628-registry-phase2-prediction-market-subtree
+
+surfaces:
+  - prediction_market
+  - bug_bounty
+  - whistleblower
+  - white_label
+  - data_exhaust
+  - receive_only_rail
+
+rows:
+  # ─────────────────────────────────────────────────────────────────────
+  # SEED ROWS — Phase 0 honest-dark initialization.
+  # Every surface starts DARK. Subtree tasks (phases 1–6) will research
+  # and upgrade rows with cited authority + operator signature.
+  # ─────────────────────────────────────────────────────────────────────
+
+  # ── Prediction Market ────────────────────────────────────────────────
+  - surface: prediction_market
+    venue: "*"
+    instrument: "*"
+    g2_verdict: DARK
+    citation: >
+      Operator state is now confirmed as Minnesota in
+      REQ-20260628-arbitrage-struck-and-blocked-register. Phase 2 has added
+      specific DARK rows for Minnesota trading, CFTC event-contract posture,
+      IRS §1256 uncertainty, OBBBA/§165(d) wagering-loss risk, platform risk,
+      and the non-trading NDCVB feed boundary. Absence of a specific LIT or
+      PARTIAL row remains DARK.
+    authority_basis: no_research
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Prediction markets have the highest legal volatility of any surface.
+      Operator residence is a dated input, not a permanent profile rewrite.
+      The current state input is Minnesota, confirmed 2026-06-28. Phase 2
+      research did not identify any operator-cleared trading route. The
+      NDCVB manipulation-detection feed is non-trading only and separately
+      held pending buyer/use analysis.
+    open_questions:
+      - "Whether any future CFTC/state preemption holding reaches Minnesota and survives appeal"
+      - "Whether the IRS issues event-contract-specific §1256 or wagering guidance"
+      - "50-state matrix of event-contract legality"
+      - "Platform ToS and market-data-license constraints on automation and feed resale"
+    blocks_surfaces:
+      - prediction_market
+    source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
+
+  # -- Operator State Phase 1 Rows -------------------------------------
+  # These rows preserve the dated Minnesota state input and the immediate
+  # Minnesota prediction-market fail-closed consequence. A future residence
+  # change must add a new dated row rather than rewriting this evidence.
+  - surface: prediction_market
+    venue: US-MN
+    instrument: operator_state_residence_confirmed_20260628
+    g2_verdict: DARK
+    citation: >
+      Internal operator source:
+      REQ-20260628-arbitrage-struck-and-blocked-register records
+      "Operator state of residence: Minnesota (confirmed 2026-06-28)" and
+      treats Minnesota prediction-market trading as RED. This is an operator
+      context fact, not legal clearance.
+    authority_basis: operator_judgment
+    review_date: "2026-06-30"
+    freshness_ttl_days: 365
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Confidence: high for current planning because the operator-authored
+      struck/blocked register records Minnesota and a confirmation date. This
+      row deliberately remains DARK because residence confirmation alone does
+      not clear any monetized prediction-market activity. Future residence
+      changes require a new dated row and dependent registry review; do not
+      rewrite this historical input.
+    open_questions:
+      - "Whether the operator's legal residence changes after 2026-06-28."
+      - "Whether any non-trading prediction-market feed can remain outside this g2 trading block."
+    blocks_surfaces:
+      - prediction_market
+      - 20260628-registry-phase2-prediction-market-subtree
+    source_task: 20260628-registry-phase1-operator-state-of-residence-confirmation
+
+  - surface: prediction_market
+    venue: US-MN
+    instrument: event_contract_or_prediction_market_wager
+    g2_verdict: DARK
+    citation: >
+      Minn. Stat. 609.755 makes making a bet a misdemeanor; Minn. Stat.
+      609.75 subd. 2 defines a bet as a bargain for gain or loss of money,
+      property, or benefit dependent on chance even when chance is accompanied
+      by skill. Minnesota House Research H.F. 4437 summary, Mar. 30, 2026,
+      describes prediction-market shares and states the bill specifies those
+      shares are not the securities/commodities exclusion from "bet" and would
+      be treated as illegal gambling.
+      https://www.revisor.mn.gov/statutes/cite/609.755;
+      https://www.revisor.mn.gov/statutes/cite/609.75;
+      https://www.house.mn.gov/hrd/bs/94/HF4437.pdf.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Minnesota is the operator state input for current planning. This row is
+      a conservative fail-closed trading block for prediction-market wagers or
+      event-contract participation by a Minnesota operator. It does not block
+      non-trading, read-only readiness or manipulation-detection feeds that do
+      not place positions, accept wagers, advertise prediction markets, or
+      receive value from a prediction-market trade.
+    open_questions:
+      - "Whether CFTC-regulated event contracts preempt any state restriction for a specific platform/instrument."
+      - "Whether a non-trading prediction-market intelligence feed has separate legal posture outside wagering."
+      - "Whether phase 2 identifies any Minnesota-safe, counsel-approved prediction-market-adjacent instrument."
+    blocks_surfaces:
+      - prediction_market
+      - prediction_market_trading
+    source_task: 20260628-registry-phase1-operator-state-of-residence-confirmation
+
+  # -- Prediction Market Phase 2 Rows ----------------------------------
+  # These rows keep all operator trading DARK, preserve the Minnesota
+  # strike, and split non-trading manipulation-detection feeds from
+  # position-taking.
+  - surface: prediction_market
+    venue: US-MN
+    instrument: operator_prediction_market_trading
+    g2_verdict: DARK
+    citation: >
+      Minnesota Laws 2026, Chapter 97, Article 8, amends Minn. Stat.
+      609.75 subd. 3 and creates Minn. Stat. 609.7615 effective
+      August 1, 2026. Section 609.7615 defines prediction markets and
+      makes specified prediction-market hosting, facilitation, data,
+      support, and advertising activity felony conduct. Minn. Stat.
+      609.755 separately makes making a bet a misdemeanor. See
+      https://www.revisor.mn.gov/laws/2026/0/Session%2BLaw/Chapter/97/,
+      https://www.revisor.mn.gov/statutes/cite/609.755, and
+      https://www.revisor.mn.gov/statutes/cite/609.75.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 60
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Standing Minnesota strike. The operator's current residence input is
+      Minnesota, confirmed 2026-06-28. No new authority in this task
+      overturns the RED/DARK posture for operator trading, automated
+      position-taking, market making, accepting wagers, settlement, pricing,
+      or value received from a prediction-market trade.
+    open_questions:
+      - "Whether federal preemption litigation eventually reaches and binds Minnesota"
+      - "Whether any counsel-approved non-wager instrument can be separated from prediction-market trading"
+      - "Whether Minnesota's August 1, 2026 effective date changes only enforcement timing or also present planning posture"
+    blocks_surfaces:
+      - prediction_market
+      - prediction_market_trading
+      - automated_prediction_market_trading
+    source_task: 20260628-registry-phase2-prediction-market-subtree
+
+  - surface: prediction_market
+    venue: US-CFTC
+    instrument: regulated_event_contract_trading
+    g2_verdict: DARK
+    citation: >
+      CFTC, Understanding Prediction Markets and Event Contracts:
+      https://www.cftc.gov/LearnandProtect/PredictionMarkets. CFTC,
+      Prediction Markets; Public Interest Determinations, 91 Fed. Reg.
+      35806 (June 12, 2026):
+      https://www.federalregister.gov/documents/2026/06/12/2026-11854/prediction-markets-public-interest-determinations.
+      CFTC Staff Advisory No. 25-36:
+      https://www.cftc.gov/csl/25-36/download.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 60
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Federal regulation does not create a Hapax g2 pass. CFTC materials
+      describe event contracts as typically swaps, DCM/SEF obligations,
+      self-certification, core-principle duties, manipulation surveillance,
+      and Special Rule review for event contracts involving gaming or
+      unlawful federal/state activity. State-preemption litigation is
+      unsettled across circuits and venues, so no operator trading row is
+      upgraded.
+    open_questions:
+      - "Whether a specific event contract is self-certified, approved, under CFTC review, or subject to a suspension request"
+      - "Whether the contract involves gaming or activity unlawful under federal or state law"
+      - "Whether state-law preemption is binding in the operator venue"
+      - "Whether the platform, broker, and contract terms support the intended activity without insider/manipulation exposure"
+    blocks_surfaces:
+      - prediction_market
+      - prediction_market_trading
+    source_task: 20260628-registry-phase2-prediction-market-subtree
+
+  - surface: prediction_market
+    venue: US-IRS
+    instrument: section_1256_event_contract_tax_position
+    g2_verdict: DARK
+    citation: >
+      26 USC §1256 requires mark-to-market treatment for covered section
+      1256 contracts and defines categories including regulated futures
+      contracts and nonequity options:
+      https://uscode.house.gov/view.xhtml?edition=prelim&num=0&req=granuleid%3AUSC-prelim-title26-section1256.
+      IRS Form 6781 is used for gains and losses on section 1256 contracts:
+      https://www.irs.gov/forms-pubs/about-form-6781.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      No affirmative row treats prediction-market event contracts as
+      section 1256 contracts for Hapax. A §1256 position would create
+      mark-to-market and 60/40 reporting consequences and may be fact,
+      platform, and contract dependent. Tax classification uncertainty is a
+      gate, not a clearance source.
+    open_questions:
+      - "Whether the IRS issues event-contract-specific guidance or reporting instructions"
+      - "Whether a concrete platform issues tax forms consistent with §1256 treatment"
+      - "Whether a CPA/counsel memo supports §1256, capital, ordinary, or wagering treatment for a concrete contract"
+      - "Whether year-end mark-to-market exposure is acceptable even if a later event resolves adversely"
+    blocks_surfaces:
+      - prediction_market
+      - prediction_market_trading
+      - tax_reporting
+    source_task: 20260628-registry-phase2-prediction-market-subtree
+
+  - surface: prediction_market
+    venue: US-IRS
+    instrument: obbba_165d_wagering_loss_cap
+    g2_verdict: DARK
+    citation: >
+      26 USC §165(d) now allows a deduction equal to 90 percent of wagering
+      losses during the taxable year and only to the extent of wagering
+      gains:
+      https://uscode.house.gov/view.xhtml?edition=prelim&num=0&req=granuleid%3AUSC-prelim-title26-section165.
+      IRS IRB 2026-19 states that OBBBA §70114(a), Pub. L. 119-21,
+      amended §165(d) to impose the 90 percent wagering-loss limit:
+      https://www.irs.gov/irb/2026-19_IRB.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      If event-contract activity is treated as wagering, OBBBA/§165(d)
+      creates tax drag and possible phantom-income exposure because only
+      90 percent of wagering losses are deductible against wagering gains
+      for taxable years beginning after 2025. The non-trading NDCVB feed
+      does not place positions and should not create wagering gains/losses;
+      that distinction is why it is represented separately.
+    open_questions:
+      - "Whether any prediction-market contract is wagering for federal tax purposes"
+      - "Whether state gambling classification affects federal tax reporting posture"
+      - "Whether gross trading volume, fees, and data costs create additional recordkeeping or deduction issues"
+      - "Whether a CPA memo is required before any taxable event-contract position"
+    blocks_surfaces:
+      - prediction_market
+      - prediction_market_trading
+      - tax_reporting
+    source_task: 20260628-registry-phase2-prediction-market-subtree
+
+  - surface: prediction_market
+    venue: polymarket_global
+    instrument: us_person_event_contract_trading
+    g2_verdict: DARK
+    citation: >
+      CFTC Order, In re Blockratize, Inc. d/b/a Polymarket.com, Docket
+      No. 22-09 (Jan. 3, 2022):
+      https://www.cftc.gov/media/6891/enfblockratizeorder010322/download.
+      The order found Polymarket offered event-based binary option markets
+      without CFTC registration/designation and required it to cease
+      noncompliant market access unless compliant with the CEA and CFTC
+      regulations.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 60
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      This row covers the offshore/global Polymarket posture for U.S.
+      persons. It does not evaluate any separate, CFTC-registered U.S.
+      venue that may share a brand or successor ownership. U.S. operator
+      access to noncompliant or geoblocked event-contract markets remains
+      DARK.
+    open_questions:
+      - "Whether a concrete Polymarket-branded U.S. venue is separately CFTC-registered and available to the operator"
+      - "Whether state-law blocks, Minnesota posture, tax treatment, and platform terms still fail g2 even on a registered U.S. venue"
+      - "Whether any data/feed use relies on nonpublic, scraped, or terms-restricted Polymarket data"
+    blocks_surfaces:
+      - prediction_market
+      - prediction_market_trading
+    source_task: 20260628-registry-phase2-prediction-market-subtree
+
+  - surface: prediction_market
+    venue: US-MN
+    instrument: ndcvb_manipulation_detection_feed_non_trading
+    g2_verdict: DARK
+    citation: >
+      Internal struck-register authority:
+      REQ-20260628-arbitrage-struck-and-blocked-register preserves only
+      the NDCVB manipulation-detection feed outside prediction-market
+      trading. Minnesota Laws 2026, Chapter 97, Article 8, §609.7615
+      prohibits direct data, information, or verification services to a
+      prediction market when known to be used to allow or settle prohibited
+      wagers. CFTC Learn & Protect materials distinguish trading event
+      contracts from market surveillance and accountability duties. See
+      https://www.revisor.mn.gov/laws/2026/0/Session%2BLaw/Chapter/97/
+      and https://www.cftc.gov/LearnandProtect/PredictionMarkets.
+    authority_basis: operator_judgment
+    review_date: "2026-06-30"
+    freshness_ttl_days: 60
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Boundary row: NDCVB manipulation detection is not a wager, not
+      automated trading, not market making, not settlement, and not position
+      management. The feed remains DARK until a concrete buyer/use case is
+      screened. It must not be sold directly to a prediction market for
+      pricing, settlement, event listing, geolocation, payment, or enabling
+      consumers to make wagers, and it must not feed a Hapax trading bot.
+    open_questions:
+      - "Who is the buyer: regulator/compliance/research user, or a prediction-market operator/trader?"
+      - "Will the feed be used to allow, price, settle, market, or facilitate wagers?"
+      - "Does the feed use only public/authorized market data and comply with platform market-data terms?"
+      - "Does the feed avoid investment-advice, market-manipulation, insider-information, and deceptive-marketing risks?"
+      - "Has the operator signed a non-trading package definition?"
+    blocks_surfaces:
+      - prediction_market
+      - REQ-ndcvb-as-a-service
+      - ndcvb_manipulation_detection_feed
+    source_task: 20260628-registry-phase2-prediction-market-subtree
+
+  # ── Bug Bounty ───────────────────────────────────────────────────────
+  - surface: bug_bounty
+    venue: "*"
+    instrument: "*"
+    g2_verdict: DARK
+    citation: >
+      No research completed. Export control (License Exception ACE,
+      deemed export), ECCN 4D004 tooling classification, DMCA §1201
+      safe harbor, and hobby-loss (IRC §183) implications unresearched.
+      See phase 3 (registry-phase3-bug-bounty-subtree).
+    authority_basis: no_research
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Bug bounty has dual exposure: (1) export control on security tooling
+      and vulnerability disclosure, (2) tax treatment of bounty income
+      (hobby-loss §183 may reclassify deductions).
+    open_questions:
+      - "License Exception ACE deemed-export applicability"
+      - "ECCN 4D004 tooling classification for AI security tools"
+      - "DMCA §1201 safe harbor for good-faith security research"
+      - "Hobby-loss (IRC §183) treatment of bounty income"
+    blocks_surfaces:
+      - bug_bounty
+    source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
+
+  # -- Bug Bounty Phase 3 Rows -----------------------------------------
+  # These rows separate direct invited lab bounty programs from brokered
+  # vulnerability resale. Every recovered row is DARK until a separate
+  # operator-signed legal upgrade changes it.
+  - surface: bug_bounty
+    venue: anthropic
+    instrument: direct_invited_model_safety_universal_jailbreak_bounty
+    g2_verdict: DARK
+    citation: >
+      Anthropic Claude Help Center, Model Safety Bug Bounty Program,
+      Mar. 16, 2026:
+      https://support.claude.com/en/articles/12119250-model-safety-bug-bounty-program.
+      The program is run through HackerOne, is application/invite gated,
+      limits the free model alias to authorized red-teaming activities,
+      requires NDA participation, and pays up to $35,000 for novel
+      universal jailbreaks meeting Anthropic's criteria.
+    authority_basis: tos_clause
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Candidate direct-lab route only. This row does not cover independent
+      public disclosure, scraping, account abuse, infrastructure testing,
+      or any activity outside the accepted participant scope. It remains
+      DARK until program acceptance, NDA compliance, scope control, and
+      operator signature are documented.
+    open_questions:
+      - "Has the operator been accepted into Anthropic's HackerOne-backed program and signed the required NDA?"
+      - "Is the planned submission limited to the authorized program scope and model alias?"
+      - "Does the repro package avoid exporting code, tooling, data, or technology outside the direct program channel?"
+      - "Has the operator signed the legal-posture row after reviewing current program terms?"
+    blocks_surfaces:
+      - bug_bounty
+      - REQ-20260628-ai-redteam-bug-bounty-play
+    source_task: 20260628-registry-phase3-bug-bounty-subtree
+
+  - surface: bug_bounty
+    venue: openai
+    instrument: direct_invited_bio_universal_jailbreak_bounty
+    g2_verdict: DARK
+    citation: >
+      OpenAI, GPT-5.5 Bio Bug Bounty, Apr. 23, 2026:
+      https://openai.com/index/gpt-5-5-bio-bug-bounty/.
+      OpenAI describes an application/invite-gated bio safety bounty for
+      GPT-5.5 in Codex Desktop, with NDA-covered prompts, completions,
+      findings, and communications, and a $25,000 reward for the first true
+      universal jailbreak clearing all five bio safety questions.
+    authority_basis: tos_clause
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Candidate direct-lab route only. As recovered from child research,
+      OpenAI's public page had a 2026-06-22 application deadline and
+      testing through 2026-07-27, so g2 depends on existing acceptance or
+      a later reopened/accepted cohort. It remains DARK until acceptance,
+      NDA compliance, scope control, and operator signature are documented.
+    open_questions:
+      - "Was the operator accepted into the GPT-5.5 Bio Bug Bounty before the June 22, 2026 application deadline, or has OpenAI reopened/extended access?"
+      - "Is testing limited to GPT-5.5 in Codex Desktop and the five-question challenge described by OpenAI?"
+      - "Does the submission remain within NDA, disclosure, and onboarding terms?"
+      - "Has the operator signed the legal-posture row after reviewing current program terms?"
+    blocks_surfaces:
+      - bug_bounty
+      - REQ-20260628-ai-redteam-bug-bounty-play
+    source_task: 20260628-registry-phase3-bug-bounty-subtree
+
+  - surface: bug_bounty
+    venue: "*"
+    instrument: brokered_vulnerability_resale
+    g2_verdict: DARK
+    citation: >
+      Internal struck-register authority:
+      REQ-20260628-arbitrage-struck-and-blocked-register.
+      The register marks the ZDI/ExploitHub-style broker lane as struck
+      because weaponizable vulnerabilities would be sold to undisclosed
+      downstream buyers with possible nation-state use; it is not a
+      sub-route of direct invited lab bounty work.
+    authority_basis: operator_judgment
+    review_date: "2026-06-30"
+    freshness_ttl_days: 365
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      This is a governance DARK row, not a request for more legal research.
+      It exists so the registry does not accidentally treat brokered resale
+      as a missing variant of direct lab programs.
+    open_questions: []
+    blocks_surfaces:
+      - bug_bounty
+      - brokered_vulnerability_resale
+    source_task: 20260628-registry-phase3-bug-bounty-subtree
+
+  - surface: bug_bounty
+    venue: US-BIS
+    instrument: ace_deemed_export_or_reexport
+    g2_verdict: DARK
+    citation: >
+      15 CFR 740.22(a), (c), License Exception ACE:
+      https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-740/section-740.22;
+      15 CFR 734.13(b), deemed exports:
+      https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-734/section-734.13;
+      15 CFR 734.15, release:
+      https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-734/section-734.15.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Direct text-only submissions to the lab through the lab's own program
+      are not treated here as tool export. Any collaboration, foreign-person
+      access, source-code sharing, technology transfer, or cross-border
+      release of cybersecurity items needs item classification, counterparty
+      screening, and ACE restriction review before g2 can pass.
+    open_questions:
+      - "Will any foreign person receive technology or source code rather than only the lab's final text prompt/report?"
+      - "Is any item a 740.22 cybersecurity item, and if so is ACE available for the destination, end user, and end use?"
+      - "Are any E:1/E:2, D-group government end-user, or unauthorized-confidentiality/integrity/availability use restrictions implicated?"
+      - "Is the submission channel only the direct lab program, with no third-party disclosure or resale?"
+    blocks_surfaces:
+      - bug_bounty
+      - REQ-20260628-ai-redteam-bug-bounty-play
+    source_task: 20260628-registry-phase3-bug-bounty-subtree
+
+  - surface: bug_bounty
+    venue: US-BIS
+    instrument: eccn_4d004_security_tool_or_agentic_harness_export
+    g2_verdict: DARK
+    citation: >
+      15 CFR 740.22(b)(1) lists ECCN 4D004 as a cybersecurity item:
+      https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-740/section-740.22;
+      15 CFR 772.1 defines intrusion software:
+      https://www.ecfr.gov/current/title-15/subtitle-B/chapter-VII/subchapter-C/part-772/section-772.1.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Text prompts and written reports are separated from software/tooling.
+      Any agentic harness, exploit generator, command-and-control helper,
+      delivery tool, or other software specially designed or modified for
+      intrusion-software generation, command and control, or delivery remains
+      DARK until classified and cleared.
+    open_questions:
+      - "Does the repro harness include software beyond ordinary text prompts, screenshots, and written steps?"
+      - "Could any code be classified under 4D004 or related 4D001.a/4E001 entries?"
+      - "Will any tool or source be exported, reexported, transferred in-country, or released to a foreign person?"
+      - "Can the direct lab submission be reduced to text-only reproduction artifacts?"
+    blocks_surfaces:
+      - bug_bounty
+      - REQ-20260628-ai-redteam-bug-bounty-play
+    source_task: 20260628-registry-phase3-bug-bounty-subtree
+
+  - surface: bug_bounty
+    venue: US-DMCA
+    instrument: dmca_1201_security_testing_direct_disclosure
+    g2_verdict: DARK
+    citation: >
+      17 USC 1201(a), (j), Circumvention of copyright protection systems:
+      https://uscode.house.gov/view.xhtml?req=%28title%3A17+section%3A1201+edition%3Aprelim%29.
+      Section 1201(j) defines security testing around good-faith testing,
+      investigation, or correction of security flaws with owner/operator
+      authorization, and considers whether information is used to promote
+      security or shared directly with the developer.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Candidate direct authorized security-testing route only. Pure
+      text-prompt model-safety testing may not involve a technological
+      protection measure, but any bypass of access controls, DRM, paywalls,
+      API limits, or infrastructure protections needs fresh review. This
+      remains DARK until authorization and scope are documented and signed.
+    open_questions:
+      - "Does the candidate require bypassing any technological measure controlling access to a copyrighted work or platform resource?"
+      - "Is the work authorized by the owner/operator and limited to good-faith testing or direct developer disclosure?"
+      - "Does the activity avoid CFAA, privacy, infringement, account-abuse, and non-DMCA violations?"
+      - "Does the repro package avoid distributing circumvention tools outside the direct authorized program?"
+    blocks_surfaces:
+      - bug_bounty
+      - REQ-20260628-ai-redteam-bug-bounty-play
+    source_task: 20260628-registry-phase3-bug-bounty-subtree
+
+  - surface: bug_bounty
+    venue: US-IRS
+    instrument: bounty_income_and_hobby_loss
+    g2_verdict: DARK
+    citation: >
+      26 USC 183, Activities not engaged in for profit:
+      https://uscode.house.gov/view.xhtml?edition=prelim&num=0&req=granuleid%3AUSC-prelim-title26-section183;
+      IRS FS-2022-38, Know the difference between a hobby and a business:
+      https://www.irs.gov/newsroom/know-the-difference-between-a-hobby-and-a-business;
+      IRS Publication 525 (2025), Taxable and Nontaxable Income:
+      https://www.irs.gov/publications/p525.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Bug-bounty rewards are income events, and Section 183 can limit loss
+      deductions if the activity is not engaged in for profit. This remains
+      DARK until payout receipt handling, books/records, expense treatment,
+      and operator tax posture are documented.
+    open_questions:
+      - "Will bounty activity be conducted with complete books, records, and businesslike methods?"
+      - "How will cash or noncash bounty awards be reported and reconciled to the durable receipt sink?"
+      - "Are expenses ordinary/necessary business expenses or limited by Section 183 hobby-loss treatment?"
+      - "Does the operator need CPA review before the first paid submission?"
+    blocks_surfaces:
+      - bug_bounty
+      - REQ-20260628-ai-redteam-bug-bounty-play
+      - 20260628-bounty-phase5-receipt-and-M-scoring-CORROBORATED
+    source_task: 20260628-registry-phase3-bug-bounty-subtree
+
+  # ── Whistleblower ────────────────────────────────────────────────────
+  - surface: whistleblower
+    venue: "*"
+    instrument: "*"
+    g2_verdict: DARK
+    citation: >
+      No research completed. SEC original-information doctrine
+      (public-source disqualification), 18 USC §873 extortion tripwire,
+      and file-to-government-first obligation unresearched. Note: Digital
+      Realty Trust v. Somers (2018) is anti-retaliation, NOT eligibility —
+      prior mis-citation to fix. See phase 4
+      (registry-phase4-whistleblower-subtree).
+    authority_basis: no_research
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Frozen rule: file-to-government-first. The prior citation of Digital
+      Realty Trust v. Somers (2018) as eligibility precedent is wrong — it
+      addresses anti-retaliation under Dodd-Frank §922, not
+      original-information eligibility under SEC Rule 21F-4(b)(3).
+    open_questions:
+      - "SEC original-information doctrine — public-source disqualification scope"
+      - "18 USC §873 extortion tripwire — boundary between tip and threat"
+      - "Dodd-Frank §922 eligibility vs anti-retaliation (fix Digital Realty mis-citation)"
+      - "File-to-government-first obligation — procedural requirements"
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
+
+  # Phase 4 whistleblower subtree rows. These rows encode researched
+  # constraints but remain DARK until counsel/operator prerequisites are met.
+  - surface: whistleblower
+    venue: US-SEC
+    instrument: sec_tip_award
+    g2_verdict: DARK
+    citation: >
+      15 U.S.C. 78u-6(b); 17 CFR 240.21F-2(b), 240.21F-3(a),
+      240.21F-4(b), 240.21F-8, and 240.21F-9. SEC award eligibility
+      requires voluntary original information submitted to the Commission
+      in the required form and manner. Public-source-only allegations
+      are not original information unless the claimant is a source or
+      contributes qualifying independent analysis.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK until counsel reviews source acquisition, privilege/confidentiality
+      risk, employment or compliance-role exclusions, Form TCR procedure,
+      and any related-action/comparable-program conflict. Governance rule:
+      no employer/counterparty outreach, threat, publication, or settlement
+      demand before counsel-approved SEC filing or equivalent government-first
+      route.
+    open_questions:
+      - "Counsel review of source acquisition, privilege, confidentiality, and eligibility exclusions."
+      - "Whether any candidate tip is original information rather than public-source synthesis."
+      - "Whether a related action or comparable award program requires waiver or separate filing."
+      - "Whether timing preserves the SEC 120-day relation-back path after internal or other-authority reporting."
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase4-whistleblower-subtree
+
+  - surface: whistleblower
+    venue: US-SEC
+    instrument: sec_anti_retaliation
+    g2_verdict: DARK
+    citation: >
+      Digital Realty Trust, Inc. v. Somers, 583 U.S. 149 (2018);
+      15 U.S.C. 78u-6(h); 17 CFR 240.21F-2(d). Digital Realty is an
+      anti-retaliation holding about Dodd-Frank whistleblower status after
+      SEC reporting; it is not a citation for award eligibility or original
+      information.
+    authority_basis: case_law
+    review_date: "2026-06-30"
+    freshness_ttl_days: 365
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Citation cleanup row. Do not use Digital Realty to justify a LIT/PARTIAL
+      eligibility verdict. It may be cited only for anti-retaliation posture,
+      and only after counsel confirms the reporting sequence and employment
+      facts. It does not clear public-source, original-information, or bounty
+      eligibility requirements.
+    open_questions:
+      - "Whether any real fact pattern involves employment retaliation rather than award eligibility."
+      - "Whether the claimant reported to the SEC before the alleged retaliation."
+      - "Whether Sarbanes-Oxley or other non-Dodd-Frank retaliation regimes are implicated."
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase4-whistleblower-subtree
+
+  - surface: whistleblower
+    venue: US-CFTC
+    instrument: cftc_tip_award
+    g2_verdict: DARK
+    citation: >
+      7 U.S.C. 26; 17 CFR 165.1, 165.2(g), 165.2(k), 165.3, 165.5,
+      165.6, and 165.7. CFTC award eligibility requires original
+      information submitted to the Commission on Form TCR; information
+      from public sources such as corporate filings, media, or the Internet
+      is not independent knowledge, and public-source-only allegations are
+      not original information unless the claimant is a source.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK until counsel reviews commodity/CEA jurisdiction, source
+      acquisition, privilege/confidentiality risk, Form TCR procedure,
+      and eligibility exclusions. Governance rule: file-to-government-first
+      through CFTC Form TCR or counsel; no target contact, publication,
+      or value demand before the government-first route is complete.
+    open_questions:
+      - "Whether the alleged conduct falls under the Commodity Exchange Act or CFTC rules."
+      - "Whether the tip materially adds to information already known to the CFTC."
+      - "Whether any internal reporting triggers the CFTC 180-day relation-back path."
+      - "Whether counsel is required for anonymity or related award application strategy."
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase4-whistleblower-subtree
+
+  - surface: whistleblower
+    venue: US-IRS
+    instrument: irs_whistleblower_claim
+    g2_verdict: DARK
+    citation: >
+      26 U.S.C. 7623; 26 CFR 301.7623-1; IRS Form 211, Application for
+      Award for Original Information; IRS IRM 25.2.2. A claim for an
+      IRS whistleblower award is made by filing Form 211 with specific,
+      timely, credible information, signed under penalty of perjury.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK until counsel reviews taxpayer-information handling, privilege,
+      taint, representative-status limits, Treasury/federal-employee
+      exclusions, and whether the IRS has already proceeded with an action.
+      Governance rule: no target contact, payment request, or publication;
+      use Form 211 or counsel-approved government-first submission only.
+    open_questions:
+      - "Whether the information is specific, timely, credible, and within laws the IRS administers."
+      - "Whether the operator has any representative, Treasury, federal-employee, contract, or legal-duty exclusion."
+      - "Whether privilege, taint, Fourth Amendment, or taxpayer-information issues require counsel filtering."
+      - "Whether the claim would be timely before the IRS proceeds with an action based on the information."
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase4-whistleblower-subtree
+
+  - surface: whistleblower
+    venue: US-DOJ
+    instrument: false_claims_act_qui_tam
+    g2_verdict: DARK
+    citation: >
+      31 U.S.C. 3730(b)(2), 3730(d), and 3730(e)(4); DOJ Justice Manual
+      4-4.110. FCA qui tam complaints are filed in camera, remain under
+      seal, are served on the Government, and are not served on the
+      defendant until the court orders. Publicly disclosed allegations or
+      transactions are barred unless the Government opposes dismissal or
+      the relator is an original source.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK until licensed qui tam counsel approves venue, seal procedure,
+      government service, original-source posture, and privilege/Rule 11
+      readiness. Governance rule: no defendant contact, no publication,
+      and no demand for payment or settlement before a counsel-controlled
+      sealed filing and government disclosure path.
+    open_questions:
+      - "Whether allegations are substantially the same as public disclosures."
+      - "Whether the operator is an original source under 31 U.S.C. 3730(e)(4)(B)."
+      - "Whether facts support Rule 9(b)/Rule 11 pleading through counsel."
+      - "Whether state FCA or federal program-specific paths create additional requirements."
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase4-whistleblower-subtree
+
+  - surface: whistleblower
+    venue: US
+    instrument: file_to_government_first
+    g2_verdict: DARK
+    citation: >
+      17 CFR 240.21F-9; 17 CFR 165.3; 26 CFR 301.7623-1; 31 U.S.C.
+      3730(b)(2). Bounty-preserving routes are direct agency/court
+      procedures or counsel-controlled submissions, not target negotiation
+      or public leverage.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Frozen governance rule. The first external action for any monetized
+      whistleblower workflow must be either counsel intake or the applicable
+      government-first procedure: SEC/CFTC Form TCR, IRS Form 211, or an
+      FCA complaint filed under seal and served on the Government. Any
+      counterparty warning, threat, publication, request for consideration,
+      or settlement demand before that route keeps the row DARK and triggers
+      the extortion-boundary review.
+    open_questions:
+      - "Which agency/court route applies to a concrete fact pattern."
+      - "Whether counsel should be mandatory before preserving anonymity, seal, privilege, or relation-back rights."
+      - "How to record filing receipts without storing secret, privileged, or target-sensitive facts in this registry."
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase4-whistleblower-subtree
+
+  - surface: whistleblower
+    venue: US
+    instrument: extortion_boundary
+    g2_verdict: DARK
+    citation: >
+      18 U.S.C. 873; 18 U.S.C. 875(d); 18 U.S.C. 1951. Demanding or
+      receiving money or another thing of value under a threat of informing,
+      or as consideration for not informing, creates a blackmail/extortion
+      tripwire outside lawful government bounty procedures.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 365
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK kill-switch for any workflow that converts a tip into leverage
+      against the target. Permitted monetization, if any, must come only
+      from a statutory award program after government/court procedures.
+      No target demand, no private bounty request, no reputation/property
+      threat, no "pay or I report/publish" communication.
+    open_questions:
+      - "Whether any proposed communication could be read as a threat or consideration for silence."
+      - "Whether counsel has approved all target, employer, press, or public communications."
+      - "Whether interstate communications, commerce, or property/reputation threats introduce additional criminal exposure."
+    blocks_surfaces:
+      - whistleblower
+    source_task: 20260628-registry-phase4-whistleblower-subtree
+
+  # ── White Label ──────────────────────────────────────────────────────
+  - surface: white_label
+    venue: "*"
+    instrument: "*"
+    g2_verdict: DARK
+    citation: >
+      No research completed. Anthropic "competing product" clause
+      (actively enforced — OpenClaw/Harness ban Apr 2026), FTC §5
+      B2B-undisclosed AI resale, and open-weight license audit
+      (Llama/Mistral/etc. commercial terms) unresearched. See phase 5
+      (registry-phase5-white-label-subtree).
+    authority_basis: no_research
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      High volatility. Anthropic actively enforcing "competing product"
+      clause as of Apr 2026 (OpenClaw, Harness bans). ToS terms shift
+      faster than statute.
+    open_questions:
+      - "Anthropic 'competing product' clause — scope and active enforcement"
+      - "FTC §5 B2B-undisclosed AI resale applicability"
+      - "Open-weight model license audit (Llama 3, Mistral, etc. commercial use terms)"
+      - "State-specific B2B disclosure requirements"
+    blocks_surfaces:
+      - white_label
+    source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
+
+  # ── White Label B2B — Phase 5 subtree rows ──────────────────────────
+  - surface: white_label
+    venue: anthropic
+    instrument: anthropic_competing_product_or_resale
+    g2_verdict: DARK
+    citation: >
+      Anthropic Commercial Terms of Service, effective June 17, 2025,
+      Section D.4 Use Restrictions:
+      https://www.anthropic.com/legal/commercial-terms. Customer may
+      not access the Services to build a competing product or service,
+      train competing AI models, or resell the Services except as
+      expressly approved by Anthropic.
+    authority_basis: tos_clause
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      This is a legal/contract DARK row, not a commercial unattractiveness
+      row. A white-label cognitive-labor plant that competes with Claude
+      Code, Claude Cowork, Claude agent products, or Anthropic model access
+      cannot use Anthropic services unless Anthropic expressly approves the
+      use case in writing.
+    open_questions:
+      - "Has Anthropic expressly approved this exact white-label service and resale/competing-product posture?"
+      - "Does the proposed service compete with Anthropic first-party agent, coding, cowork, or model-access products?"
+      - "Does any customer-facing bundle make Anthropic Services available as a pass-through or resold service?"
+    blocks_surfaces:
+      - white_label
+    source_task: 20260628-registry-phase5-white-label-subtree
+
+  - surface: white_label
+    venue: anthropic
+    instrument: anthropic_third_party_harness_subscription_credentials
+    g2_verdict: DARK
+    citation: >
+      Anthropic Claude Code Legal and Compliance:
+      https://code.claude.com/docs/en/legal-and-compliance. Third-party
+      developers may not offer Claude.ai login or route requests through
+      Free, Pro, or Max plan credentials on behalf of users; Anthropic may
+      enforce those restrictions without prior notice.
+    authority_basis: tos_clause
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Represents the OpenClaw/third-party-harness constraint as a gate row.
+      Reported OpenClaw/Harness events are enforcement evidence, but the g2
+      authority is Anthropic's current documentation. API-key or supported
+      cloud-provider access must be evaluated separately and still inherits
+      the competing-product/resale row above.
+    open_questions:
+      - "Is the proposed harness using API-key or supported cloud-provider authentication rather than Claude.ai subscription credentials?"
+      - "Is the customer the direct API customer, or is Hapax routing customer work through Hapax-owned subscription credentials?"
+      - "Has Anthropic approved any embedded third-party harness behavior in writing?"
+    blocks_surfaces:
+      - white_label
+    source_task: 20260628-registry-phase5-white-label-subtree
+
+  - surface: white_label
+    venue: US-FTC
+    instrument: undisclosed_ai_b2b_service
+    g2_verdict: DARK
+    citation: >
+      FTC Act Section 5:
+      https://www.ftc.gov/legal-library/browse/statutes/federal-trade-commission-act;
+      Air AI settlement release, March 24, 2026:
+      https://www.ftc.gov/news-events/news/press-releases/2026/03/air-ai-its-owners-will-be-banned-marketing-business-opportunities-settle-ftc-charges-company-misled;
+      Cox Media Group active-listening settlement release, May 21, 2026:
+      https://www.ftc.gov/news-events/news/press-releases/2026/05/ftc-require-cox-media-group-two-other-firms-pay-nearly-1-million-settle-charges-they-deceived.
+    authority_basis: agency_guidance
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK when the customer would reasonably understand the offering as
+      human labor, bespoke human review, or a non-AI service, or when
+      AI-powered performance, earnings, accuracy, privacy, or consent claims
+      are unsubstantiated. This is a legal deception risk, not a margin or
+      sales-quality objection.
+    open_questions:
+      - "What exact customer-facing copy describes the work and the degree of AI use?"
+      - "Are performance, earnings, accuracy, speed, or refund claims substantiated?"
+      - "Does the service touch regulated professional domains such as legal, medical, financial, employment, credit, or housing decisions?"
+    blocks_surfaces:
+      - white_label
+    source_task: 20260628-registry-phase5-white-label-subtree
+
+  - surface: white_label
+    venue: US-FTC
+    instrument: disclosed_ai_b2b_service
+    g2_verdict: DARK
+    citation: >
+      FTC Act Section 5:
+      https://www.ftc.gov/legal-library/browse/statutes/federal-trade-commission-act;
+      FTC, AI Companies: Uphold Your Privacy and Confidentiality
+      Commitments, Jan. 9, 2024:
+      https://www.ftc.gov/policy/advocacy-research/tech-at-ftc/2024/01/ai-companies-uphold-your-privacy-confidentiality-commitments;
+      Air AI settlement release, March 24, 2026:
+      https://www.ftc.gov/news-events/news/press-releases/2026/03/air-ai-its-owners-will-be-banned-marketing-business-opportunities-settle-ftc-charges-company-misled.
+    authority_basis: agency_guidance
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK candidate row. A later PARTIAL proposal requires clear disclosure
+      of material AI use, no fake-human positioning, substantiated claims, no
+      deceptive earnings/performance/refund promises, contracts that match
+      actual privacy, confidentiality, retention, and model-training behavior,
+      and operator signature on this exact tuple.
+    open_questions:
+      - "Operator signature required before this PARTIAL row can clear g2."
+      - "What disclosure text appears in proposals, SOWs, terms, invoices, and deliverables?"
+      - "What human-review commitments are promised, and are they actually performed?"
+      - "What customer-data retention, training-use, subprocessors, and deletion commitments are contractually stated?"
+    blocks_surfaces:
+      - white_label
+    source_task: 20260628-registry-phase5-white-label-subtree
+
+  - surface: white_label
+    venue: US-FTC
+    instrument: multi_tenant_without_contractual_isolation
+    g2_verdict: DARK
+    citation: >
+      FTC, AI Companies: Uphold Your Privacy and Confidentiality
+      Commitments, Jan. 9, 2024:
+      https://www.ftc.gov/policy/advocacy-research/tech-at-ftc/2024/01/ai-companies-uphold-your-privacy-confidentiality-commitments.
+      Model-as-a-service companies can face FTC liability when they fail
+      to honor privacy and confidentiality commitments to users and
+      customers.
+    authority_basis: agency_guidance
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Tenant isolation is a legal prerequisite for white-label B2B service.
+      No customer prompts, files, outputs, embeddings, logs, eval data,
+      fine-tuning corpus, support tickets, or derived artifacts may cross
+      tenants unless the customer contract and notice explicitly authorize
+      that use. Lack of isolation is DARK even if the business opportunity
+      looks attractive.
+    open_questions:
+      - "What storage, logging, embedding, eval, support, and backup boundaries enforce tenant separation?"
+      - "Do contracts prohibit cross-customer training, retrieval, or reuse unless expressly authorized?"
+      - "Are deletion, export, incident notice, and subprocessor terms documented?"
+    blocks_surfaces:
+      - white_label
+    source_task: 20260628-registry-phase5-white-label-subtree
+
+  - surface: white_label
+    venue: "*"
+    instrument: open_weight_model_stack_license_manifest
+    g2_verdict: DARK
+    citation: >
+      Meta Llama license:
+      https://ai.meta.com/llama/license/; Mistral open-model license
+      guidance:
+      https://help.mistral.ai/en/articles/347393-under-which-license-are-mistral-s-open-models-available;
+      Apache License 2.0:
+      https://www.apache.org/licenses/LICENSE-2.0.
+    authority_basis: tos_clause
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      DARK candidate row. A later PARTIAL proposal requires a concrete
+      model-stack license manifest and operator signature on this exact tuple.
+      Open-weight is not a single legal posture: Apache-2.0, Llama community
+      licenses, Mistral modified licenses, and model-specific acceptable-use
+      policies carry different commercial, redistribution, output-use, and
+      scale-threshold obligations.
+    open_questions:
+      - "Operator signature required before this PARTIAL row can clear g2."
+      - "Which exact model IDs, versions, model cards, licenses, and acceptable-use policies are in the white-label stack?"
+      - "Do any licenses restrict commercial use, revenue scale, monthly active users, redistribution, or use of outputs to improve another model?"
+      - "Are attribution, notice, source-offer, subprocessor, and downstream customer flow-down obligations satisfied?"
+    blocks_surfaces:
+      - white_label
+    source_task: 20260628-registry-phase5-white-label-subtree
+
+  # ── Data Exhaust ─────────────────────────────────────────────────────
+  - surface: data_exhaust
+    venue: "*"
+    instrument: "*"
+    g2_verdict: DARK
+    citation: >
+      No research completed. BIPA/CUBI/WA-MHMD self-sale gray zone,
+      PADFAA data-broker registration, and deidentification standard
+      (HIPAA Safe Harbor vs Expert Determination analog) unresearched.
+      See phase 6 (registry-phase6-data-exhaust-subtree).
+    authority_basis: no_research
+    review_date: "2026-06-30"
+    freshness_ttl_days: 180
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Data-exhaust monetization is the most jurisdictionally fragmented
+      surface. IL BIPA, TX CUBI, WA MHMD all have private rights of
+      action. "Self-sale" (selling data you generated about yourself) is
+      a gray zone under these statutes.
+    open_questions:
+      - "BIPA/CUBI/WA-MHMD self-sale gray zone — does operator-generated data trigger?"
+      - "PADFAA data-broker registration threshold"
+      - "Deidentification standard for AI-generated behavioral data"
+      - "State-by-state data sale notification requirements"
+    blocks_surfaces:
+      - data_exhaust
+    source_task: 20260628-registry-phase0-schema-and-honest-dark-gate
+
+  # ── Data Exhaust Phase 6 Rows ───────────────────────────────────────
+  # These rows intentionally remain DARK. They distinguish candidate
+  # non-biometric/deidentified paths from held biometric, reidentifiable,
+  # data-broker, and struck tiers, but they do not create legal clearance.
+  - surface: data_exhaust
+    venue: "*"
+    instrument: non_biometric_operational_telemetry
+    g2_verdict: DARK
+    citation: >
+      No affirmative legal clearance or operator signature for B2B
+      licensing. Candidate scope is limited to first-party, non-biometric
+      operational telemetry only; the path still requires data inventory,
+      minimization, buyer-screening, permitted-use contract terms, and a
+      later operator-signed legal/ethical ruling. See
+      docs/monetization/data-exhaust-legal-posture-research.md.
+    authority_basis: operator_judgment
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      This is the only plausible first tranche. It excludes biometrics,
+      consumer health data, precise location, private communications,
+      secret values, non-operator person data, raw samples, and anything
+      reasonably linkable to the operator or another person.
+    open_questions:
+      - "Exact telemetry inventory and field-level sensitive-data classification"
+      - "Buyer acceptance terms: permitted use, no surveillance, no reidentification, no resale"
+      - "State privacy and data-broker registration analysis for any intended buyer venue"
+      - "Operator signature on a bounded package definition"
+    blocks_surfaces:
+      - data_exhaust
+      - REQ-20260630-mondlc-data-exhaust-b2b-licensing-path
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: "*"
+    instrument: deidentified_aggregate_operational_telemetry
+    g2_verdict: DARK
+    citation: >
+      45 CFR §164.514(a)-(b) and HHS OCR de-identification guidance define
+      Expert Determination and Safe Harbor methods for HIPAA PHI, including
+      the "no reasonable basis" identifiability standard, but those are not
+      themselves commercial B2B licensing clearance for Hapax telemetry.
+      See https://www.ecfr.gov/current/title-45/subtitle-A/subchapter-C/part-164/subpart-E/section-164.514
+      and https://www.hhs.gov/hipaa/for-professionals/special-topics/de-identification/index.html.
+    authority_basis: regulation
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Deidentification is a prerequisite standard, not a g2 pass. Any later
+      PARTIAL row needs an expert-determination-style artifact, retained
+      methodology, k-anonymity/reidentification risk review, and contract
+      terms forbidding reidentification and onward sale.
+    open_questions:
+      - "Which fields survive minimization after removing direct, device, location, communication, health, biometric, and secret-value identifiers?"
+      - "What quantitative reidentification threshold is acceptable for this single-operator corpus?"
+      - "Who signs the expert-determination-style analysis and how is it renewed?"
+      - "Whether buyer-side joins can reidentify the operator despite aggregate packaging"
+    blocks_surfaces:
+      - data_exhaust
+      - REQ-20260630-mondlc-data-exhaust-b2b-licensing-path
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: "*"
+    instrument: biometric_or_biometric_derived_data
+    g2_verdict: DARK
+    citation: >
+      Held pending separate legal and ethical authority. Illinois BIPA,
+      Texas CUBI, and Washington MHMD impose notice, consent, sale,
+      disclosure, retention, and/or authorization constraints on biometric
+      or health-adjacent data; see specific US-IL, US-TX, and US-WA rows.
+    authority_basis: operator_judgment
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Includes face geometry, voiceprints, wearable biometric streams,
+      rPPG/vital-sign inferences, biometric embeddings, biometric-derived
+      model features, and any telemetry packaged because of physiological
+      signal value.
+    open_questions:
+      - "Whether operator-generated biometric data can ever be sold ethically even if a statutory path exists"
+      - "Whether any biometric-derived feature remains biometric information after transformation"
+      - "Whether consent/release can cure sale or profit prohibitions in each venue"
+    blocks_surfaces:
+      - data_exhaust
+      - REQ-20260630-mondlc-data-exhaust-b2b-licensing-path
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: US-IL
+    instrument: biometric_identifier_or_information
+    g2_verdict: DARK
+    citation: >
+      Illinois BIPA, 740 ILCS 14/10 and 14/15. Section 15 requires written
+      notice, purpose/retention disclosure, and written release before
+      collection/obtaining; Section 15(c) bars selling, leasing, trading, or
+      otherwise profiting from a person's or customer's biometric identifier
+      or biometric information. See
+      https://www.ilga.gov/documents/legislation/ilcs/documents/074000140k10.htm
+      and https://www.ilga.gov/documents/legislation/ilcs/documents/074000140K15.htm.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      BIPA is a hard DARK row for biometric sale/profit until separate
+      counsel-level authority proves a narrow route. The row covers both
+      biometric identifiers and information based on identifiers used to
+      identify an individual.
+    open_questions:
+      - "Whether any proposed feature is outside BIPA's biometric identifier/information definitions"
+      - "Whether transformed biometric-derived features remain based on identifiers used to identify"
+      - "Whether any non-sale disclosure exception applies to a specific package"
+    blocks_surfaces:
+      - data_exhaust
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: US-TX
+    instrument: biometric_identifier
+    g2_verdict: DARK
+    citation: >
+      Texas Capture or Use of Biometric Identifier Act, Tex. Bus. & Com.
+      Code §503.001. The Texas Attorney General summarizes CUBI as requiring
+      notice and consent before commercial capture, restricting sale, lease,
+      or disclosure, requiring reasonable care, and requiring destruction
+      within the statutory timeframe. See
+      https://www.texasattorneygeneral.gov/consumer-protection/file-consumer-complaint/consumer-privacy-rights/biometric-identifier-act.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      CUBI makes Texas biometric identifiers unsuitable for data-exhaust
+      licensing absent a separate, venue-specific legal opinion and
+      operator ethical approval.
+    open_questions:
+      - "Whether a proposed biometric-derived telemetry feature is a biometric identifier under §503.001"
+      - "Whether the commercial-purpose capture/disclosure posture applies to first-party operator telemetry"
+      - "Whether any exception could support a non-sale disclosure to a screened buyer"
+    blocks_surfaces:
+      - data_exhaust
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: US-WA
+    instrument: consumer_health_or_biometric_data
+    g2_verdict: DARK
+    citation: >
+      Washington My Health My Data Act, Chapter 19.373 RCW. RCW
+      19.373.030 restricts collection and sharing of consumer health data
+      without specified-purpose consent; RCW 19.373.070 makes sale or offer
+      to sell consumer health data unlawful without separate valid
+      authorization; the definition of consumer health data includes vital
+      signs, biometric data, genetic data, and precise location indicating
+      health services. See
+      https://app.leg.wa.gov/RCW/default.aspx?cite=19.373&full=true.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      WA-MHMD is broader than classical biometric statutes and can catch
+      health-adjacent telemetry, vital signs, location, inferred health
+      status, and related model features. Treat WA health/biometric data as
+      held.
+    open_questions:
+      - "Whether any operator telemetry is consumer health data under RCW 19.373.010"
+      - "Whether a buyer-facing package can avoid collection/share/sale of consumer health data"
+      - "Whether authorization and six-year retention requirements could ever be operationalized for this surface"
+    blocks_surfaces:
+      - data_exhaust
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: US
+    instrument: data_broker_sensitive_personal_data_transfer
+    g2_verdict: DARK
+    citation: >
+      Protecting Americans' Data from Foreign Adversaries Act of 2024,
+      15 USC Chapter 123. Section 9901 prohibits data brokers from making
+      personally identifiable sensitive data of a United States individual
+      available to a foreign adversary country or controlled entity, and
+      defines data broker by valuable-consideration transfer of data not
+      collected directly from individuals. See
+      https://uscode.house.gov/view.xhtml?edition=prelim&path=%2Fprelim%40title15%2Fchapter123
+      and the FTC PADFAA page at
+      https://www.ftc.gov/legal-library/browse/statutes/protecting-americans-data-foreign-adversaries-act-2024-padfaa.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      First-party operator-only data may not fit PADFAA's data-broker
+      definition if directly collected from the individual, but any
+      third-party, non-operator, purchased, aggregated, or onward-resold
+      dataset creates data-broker analysis. Buyer screening must exclude
+      foreign-adversary countries and controlled entities before any future
+      non-DARK posture.
+    open_questions:
+      - "Whether the seller is a data broker for each package and buyer path"
+      - "Whether any field is personally identifiable sensitive data under 15 USC §9901(c)(7)"
+      - "Whether buyer ownership, control, headquarters, domicile, or direction creates foreign-adversary control"
+      - "Whether DOJ data-security-program or state data-broker laws add stricter buyer restrictions"
+    blocks_surfaces:
+      - data_exhaust
+      - REQ-20260630-mondlc-data-exhaust-b2b-licensing-path
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: "*"
+    instrument: reidentifiable_or_sensitive_personal_data
+    g2_verdict: DARK
+    citation: >
+      Held pending separate legal and ethical authority. PADFAA sensitive
+      data categories include precise geolocation, biometric and genetic
+      information, private communications, login credentials, private
+      photos/audio/video, online activity over time, protected-class data,
+      minor data, and military-status data; FTC data-broker enforcement
+      also treats sale of sensitive location data as a high-risk privacy
+      practice. See 15 USC §9901(c)(7) and
+      https://www.ftc.gov/news-events/news/press-releases/2024/01/ftc-order-prohibits-data-broker-x-mode-social-outlogic-selling-sensitive-location-data.
+    authority_basis: statute
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      This row keeps raw private data, device identifiers, precise
+      location, private communications, secret values, account/security
+      material, and any reasonably linkable data out of the licensing path.
+    open_questions:
+      - "Whether any retained field is reasonably linkable alone or with buyer-held data"
+      - "Whether generated features leak private communications, location, health, biometric, or credential-derived information"
+      - "Whether contractual no-reidentification terms are sufficient for any future PARTIAL posture"
+    blocks_surfaces:
+      - data_exhaust
+      - REQ-20260630-mondlc-data-exhaust-b2b-licensing-path
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  - surface: data_exhaust
+    venue: "*"
+    instrument: struck_or_non_operator_person_data
+    g2_verdict: DARK
+    citation: >
+      No clearance. The parent data-exhaust B2B request red-lines raw
+      private data, reidentifiable personal data, and marginalized
+      extraction; PADFAA and FTC data-broker authority show heightened risk
+      for onward transfer of sensitive, linkable, or third-party data. See
+      REQ-20260630-mondlc-data-exhaust-b2b-licensing-path and
+      15 USC §9901.
+    authority_basis: operator_judgment
+    review_date: "2026-06-30"
+    freshness_ttl_days: 90
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Struck data, third-party person data, guest/person-adjacent data,
+      marginalized-party extraction data, and refusal-held data are not
+      candidates for licensing. They require separate legal/ethical
+      authority, not a package refinement.
+    open_questions:
+      - "None for current tranche; this tier is held by policy until a new authority case exists"
+    blocks_surfaces:
+      - data_exhaust
+      - REQ-20260630-mondlc-data-exhaust-b2b-licensing-path
+    source_task: 20260628-registry-phase6-data-exhaust-subtree
+
+  # ── Receive-Only Rails ───────────────────────────────────────────────
+  # The 10 wired receive-only rails (docs/monetization/rails-capability-matrix.md)
+  # have a simpler legal posture: they receive payments, not engage in
+  # regulated activity. Per-venue rows will be added by subtree research.
+  - surface: receive_only_rail
+    venue: "*"
+    instrument: "*"
+    g2_verdict: DARK
+    citation: >
+      Receive-only rails are wired (10/10 per rails-capability-matrix.md)
+      but legal entity bootstrap (Wyoming SMLLC + DBA + EIN) is incomplete.
+      Rails cannot legally accept revenue without the entity. Individual
+      per-platform ToS compliance and per-venue tax obligations
+      unresearched.
+    authority_basis: no_research
+    review_date: "2026-06-30"
+    freshness_ttl_days: 365
+    operator_signed: false
+    operator_sign_date: null
+    notes: >
+      Lower volatility than aggressive surfaces. Primary blocker is legal
+      entity bootstrap, not venue-specific bans. Per-platform ToS review
+      needed but platforms generally permit individual recipients.
+    open_questions:
+      - "Wyoming SMLLC + DBA + EIN bootstrap status"
+      - "Per-platform ToS compliance for receive-only"
+      - "Per-venue tax reporting obligations (1099-K thresholds, state nexus)"
+    blocks_surfaces:
+      - receive_only_rail
+    source_task: 20260628-registry-phase0-schema-and-honest-dark-gate

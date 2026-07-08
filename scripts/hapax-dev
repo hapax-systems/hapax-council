@@ -7,11 +7,9 @@
 #
 #   hapax-dev claude            # visible claude session, auto non-conflicting identity
 #   hapax-dev codex             # visible codex session
-#   hapax-dev agy               # visible agy (Antigravity CLI) session
-#
 # ...and all the right things happen: a FRESH unique HAPAX_SESSION_ID and a
 # free interactive identity distinct from the headless reform fleet, dispatched
-# to the existing platform spawner (hapax-claude / hapax-codex / hapax-antigrav).
+# to the existing platform spawner (hapax-claude / hapax-codex).
 # This is the ergonomic layer on top of the session-keyed identity model — a
 # session with a unique explicit identity is guaranteed non-conflicting, so the
 # operator can spin up a parallel stream (e.g. audio) that never collides with
@@ -50,14 +48,11 @@ FAKE_TMUX_ACTIVE="${HAPAX_DEV_FAKE_LIVE_TMUX+1}"
 #     auto-respawned by hapax-lane-supervisor, so the interactive pool is the
 #     non-greek `dev` namespace. A free greek role is used ONLY if named.
 #   - codex colors red (primary) and violet (protected) are reserved.
-#   - agy interactive slots are the antigrav lane names the spawner accepts.
 CLAUDE_POOL="${HAPAX_DEV_CLAUDE_POOL:-dev dev2 dev3 dev4 dev5}"
 CODEX_POOL="${HAPAX_DEV_CODEX_POOL:-cx-blue cx-green cx-cyan cx-magenta cx-amber cx-teal}"
-AGY_POOL="${HAPAX_DEV_AGY_POOL:-antigrav antigrav-2 antigrav-3}"
 
 CLAUDE_BIN="${HAPAX_DEV_CLAUDE_BIN:-hapax-claude}"
 CODEX_BIN="${HAPAX_DEV_CODEX_BIN:-hapax-codex}"
-AGY_BIN="${HAPAX_DEV_AGY_BIN:-hapax-antigrav}"
 
 PROG="hapax-dev"
 
@@ -70,7 +65,6 @@ platform_descriptor() {
   case "$1" in
     claude)          printf '%s\t%s\t%s\t%s\t%s\n' "$CLAUDE_BIN" "hapax-claude"    "--role"    "$CLAUDE_POOL" "claude-headless" ;;
     codex)           printf '%s\t%s\t%s\t%s\t%s\n' "$CODEX_BIN"  "hapax-codex"     "--session" "$CODEX_POOL"  "codex-headless" ;;
-    agy|antigrav)    printf '%s\t%s\t%s\t%s\t%s\n' "$AGY_BIN"    "hapax-antigrav"  "--session" "$AGY_POOL"    "" ;;
     *) return 1 ;;
   esac
 }
@@ -79,7 +73,6 @@ normalize_platform() {
   case "$1" in
     claude) echo claude ;;
     codex)  echo codex ;;
-    agy|antigrav) echo agy ;;
     *) return 1 ;;
   esac
 }
@@ -92,7 +85,6 @@ valid_name_for_platform() {
   case "$platform" in
     claude) [[ "$name" =~ ^dev[0-9]*$ || "$name" =~ ^(alpha|beta|gamma|delta|epsilon|zeta|eta|theta)$ ]] ;;
     codex)  [[ "$name" =~ ^cx-[a-z][a-z-]*$ ]] ;;
-    agy)    [[ "$name" =~ ^antigrav(-[a-z0-9-]+)?$ ]] ;;
     *) return 1 ;;
   esac
 }
@@ -173,7 +165,6 @@ usage:
 platforms:
   claude            interactive pool: $CLAUDE_POOL
   codex             interactive pool: $CODEX_POOL
-  agy (= antigrav)  interactive pool: $AGY_POOL
 
 flags:
   --window          open a new terminal window attached to the session
@@ -193,7 +184,7 @@ EOF
 cmd_ls() {
   printf '%-8s  %-14s  %-5s  %-26s  %s\n' "PLATFORM" "NAME" "STATE" "TMUX" "TASK"
   local platform desc bin prefix idflag pool hbsub slot seen
-  for platform in claude codex agy; do
+  for platform in claude codex; do
     desc="$(platform_descriptor "$platform")"
     IFS=$'\t' read -r bin prefix idflag pool hbsub <<<"$desc"
     seen=""
@@ -239,7 +230,6 @@ cmd_attach() {
   case "$name" in
     dev|dev[0-9]*|alpha|beta|gamma|delta|epsilon|zeta|eta|theta) platform=claude; prefix=hapax-claude ;;
     cx-*) platform=codex; prefix=hapax-codex ;;
-    antigrav|antigrav-*) platform=agy; prefix=hapax-antigrav ;;
     *) die "attach: cannot infer platform from name '$name'" 2 ;;
   esac
   local session="$prefix-$name"
@@ -254,7 +244,7 @@ cmd_attach() {
 cmd_launch() {
   local platform_kw="$1"; shift
   local platform
-  platform="$(normalize_platform "$platform_kw")" || die "unknown platform '$platform_kw' (claude|codex|agy)" 2
+  platform="$(normalize_platform "$platform_kw")" || die "unknown platform '$platform_kw' (claude|codex)" 2
 
   local name="" window=0 detach=0 workdir="$DEFAULT_WORKDIR"
   local passthrough=()
@@ -311,10 +301,10 @@ cmd_launch() {
   session_id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf 'dev-%s-%s' "$name" "$$")"
 
   # Terminal mode for the spawner. claude/codex render a window themselves via
-  # `--terminal foot`; agy has no foot path so hapax-dev opens the window.
-  local term_mode="tmux" agy_window=0
+  # `--terminal foot`.
+  local term_mode="tmux"
   if [ "$window" -eq 1 ]; then
-    if [ "$platform" = "agy" ]; then agy_window=1; else term_mode="foot"; fi
+    term_mode="foot"
   fi
 
   local spawn_cmd=("$bin" "$idflag" "$name" --terminal "$term_mode" --cd "$workdir")
@@ -347,17 +337,6 @@ cmd_launch() {
     return 0
   fi
 
-  if [ "$agy_window" -eq 1 ]; then
-    # agy spawner has no native window path — open one over the tmux session.
-    local foot_bin
-    foot_bin="$(command -v footclient || command -v foot || true)"
-    [ -n "$foot_bin" ] || die "footclient/foot not found for --window" 10
-    setsid -f "$foot_bin" --app-id "hapax-antigrav-$name" --title "$name" \
-      "$TMUX_BIN" attach -t "$tmux_session" >/dev/null 2>&1
-    echo "$PROG: opened agy '$name' in a new window."
-    return 0
-  fi
-
   if [ "$window" -eq 1 ]; then
     # claude/codex already opened the foot window via --terminal foot.
     echo "$PROG: opened $platform '$name' in a new window."
@@ -375,7 +354,9 @@ main() {
     help|-h|--help) usage ;;
     ls|list)        shift || true; cmd_ls ;;
     attach)         shift; cmd_attach "$@" ;;
-    claude|codex|agy|antigrav) cmd_launch "$@" ;;
+    claude|codex) cmd_launch "$@" ;;
+    agy) die "platform '$cmd' is not a visible-dev worker lane; use agy.review.direct via scripts/hapax-agy-reviewer for read-only review" 2 ;;
+    antigrav|antigravity) die "platform '$cmd' is retired; use claude|codex or agy.review.direct for read-only review" 2 ;;
     *) usage >&2; die "unknown command or platform '$cmd'" 2 ;;
   esac
 }

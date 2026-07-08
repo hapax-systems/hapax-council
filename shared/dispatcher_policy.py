@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -20,6 +20,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
+from shared.capability_availability_guarantor import (
+    CapabilityAvailabilityReceipt,
+    availability_dispatch_reason_codes,
+    evaluate_route_availability,
+)
+from shared.capability_surface_delta import (
+    CapabilitySurfaceDelta,
+    CapabilitySurfaceDeltaError,
+    load_capability_surface_delta_file,
+)
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -54,6 +64,7 @@ from shared.route_metadata_schema import (
     RouteMetadataAssessment,
     assess_route_metadata,
     build_demand_vector,
+    route_envelope_gate_enforced,
     stable_payload_hash,
 )
 
@@ -63,6 +74,8 @@ DIMENSIONAL_ROUTE_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION = 1
 ROUTE_AUTHORITY_RECEIPT_DIRNAME = "route-authority"
 ROUTING_MODEL_VERSION = "capacity-dimensional-v1"
+CAPABILITY_SURFACE_DELTA_PATH_ENV = "HAPAX_CAPABILITY_SURFACE_DELTA_FILE"
+GLOBAL_SURFACE_DELTA_ROUTE_KEY = "__all__"
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
 UNKNOWN_OR_RISKY_PRIVACY_POSTURES = frozenset(
     {"provider_training_unknown", "public_risk", "unknown"}
@@ -74,12 +87,12 @@ SUPPORT_CEILINGS = frozenset(
 )
 NON_MUTATING_SURFACES = frozenset({"none"})
 CLOUD_BURST_ROUTE_IDS = frozenset({"api.headless.api_frontier"})
-LOCAL_DEV_PLATFORMS = frozenset({"antigrav", "claude", "codex", "vibe"})
+LOCAL_DEV_PLATFORMS = frozenset({"claude", "codex", "vibe"})
 LOCAL_DEV_TARGET = "appendix"
-# GLMCP false-negative recovery is receipt-plane: create a fresh short-lived
-# supported-tool admission receipt and rerun quota telemetry. There is no
+# Review-seat false-negative recovery is receipt-plane: create fresh short-lived
+# route-specific quota/admission evidence and rerun telemetry. There is no
 # environment kill switch for stale/unknown subscription quota.
-ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED = frozenset({"glmcp.review.direct"})
+ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED = frozenset({"agy.review.direct", "glmcp.review.direct"})
 
 
 class DispatchAction(StrEnum):
@@ -137,8 +150,15 @@ class RouteCapabilityState(_PolicyModel):
     mutability: dict[str, bool] = Field(default_factory=dict)
     freshness_ok: bool = False
     freshness_errors: tuple[str, ...] = Field(default=())
+    surface_delta_refs: tuple[str, ...] = Field(default=())
+    surface_delta_blockers: tuple[str, ...] = Field(default=())
     telemetry_quota_source: str | None = None
     telemetry_resource_source: str | None = None
+    availability_status: str | None = None
+    availability_receipt_ref: str | None = None
+    availability_reason_codes: tuple[str, ...] = Field(default=())
+    availability_refresh_status: str | None = None
+    availability_recomposition_required: bool = False
 
 
 class QuotaSpendState(_PolicyModel):
@@ -224,7 +244,13 @@ class ReviewRequirementReceipt(_PolicyModel):
 class RouteAuthorityReceipt(_PolicyModel):
     route_authority_receipt_schema: Literal[1] = ROUTE_AUTHORITY_RECEIPT_SCHEMA_VERSION
     receipt_id: str
-    receipt_type: Literal["opus_model_entitlement", "quality_equivalence", "runtime_actuation"]
+    receipt_type: Literal[
+        "opus_model_entitlement",
+        "quality_equivalence",
+        "runtime_actuation",
+        "connector_mutation",
+        "local_inference_entitlement",
+    ]
     route_id: str
     issued_at: datetime
     stale_after: str
@@ -247,11 +273,19 @@ class RouteAuthorityReceipt(_PolicyModel):
             raise ValueError("quality_equivalence receipts require quality_floors")
         if self.receipt_type == "opus_model_entitlement" and not self.route_id.endswith(".opus"):
             raise ValueError("opus_model_entitlement receipts must target an opus route")
-        if self.receipt_type == "runtime_actuation":
+        if self.receipt_type == "local_inference_entitlement" and not self.route_id.startswith(
+            "local_tool."
+        ):
+            raise ValueError(
+                "local_inference_entitlement receipts must target a local_tool route "
+                f"(got route_id={self.route_id!r}); re-mint with --route-id local_tool.local.worker "
+                "(or the intended local_tool.* route)."
+            )
+        if self.receipt_type in {"runtime_actuation", "connector_mutation"}:
             if not self.task_ids:
-                raise ValueError("runtime_actuation receipts require task_ids")
+                raise ValueError(f"{self.receipt_type} receipts require task_ids")
             if not self.mutation_surfaces:
-                raise ValueError("runtime_actuation receipts require mutation_surfaces")
+                raise ValueError(f"{self.receipt_type} receipts require mutation_surfaces")
         return self
 
 
@@ -297,6 +331,8 @@ class DispatchRequest(_PolicyModel):
     authority_level: str | None = None
     mutation_surface: str | None = None
     mutation_scope_refs: tuple[str, ...] = Field(default=())
+    operator_coupled: bool = False
+    operator_coupled_evidence_refs: tuple[str, ...] = Field(default=())
     risk_flags: dict[str, bool] = Field(default_factory=dict)
     context_shape: dict[str, object] = Field(default_factory=dict)
     cloud_burst: dict[str, object] = Field(default_factory=dict)
@@ -366,6 +402,8 @@ class DispatchPolicySources(_PolicyModel):
     quota_ledger_source: str | None = None
     quota_live_error: str | None = None
     route_authority_receipts: tuple[RouteAuthorityReceipt, ...] = Field(default=())
+    surface_delta_refs_by_route: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    surface_delta_blockers_by_route: dict[str, tuple[str, ...]] = Field(default_factory=dict)
 
 
 def now_utc() -> datetime:
@@ -377,6 +415,7 @@ def load_dispatch_policy_sources(
     registry_path: Path | None = None,
     quota_ledger_path: Path | None = None,
     receipt_dir: Path | None = None,
+    surface_delta_path: Path | None = None,
     now: datetime | None = None,
 ) -> DispatchPolicySources:
     """Load inert policy sources, turning failures into request evidence."""
@@ -388,6 +427,8 @@ def load_dispatch_policy_sources(
     quota_ledger_source: str | None = None
     quota_live_error: str | None = None
     route_authority_receipts: tuple[RouteAuthorityReceipt, ...] = ()
+    surface_delta_refs_by_route: dict[str, tuple[str, ...]] = {}
+    surface_delta_blockers_by_route: dict[str, tuple[str, ...]] = {}
 
     try:
         effective_receipt_dir = receipt_dir or _receipt_dir_from_env()
@@ -421,9 +462,29 @@ def load_dispatch_policy_sources(
             quota_ledger = resolved.ledger
             quota_ledger_source = resolved.source
             quota_live_error = resolved.live_error
+    except RuntimeError as exc:
+        if "quota-spend-ledger-fixtures.json" not in str(exc):
+            raise
+        quota_ledger = None
+        quota_error = str(exc)
     except (IndexError, QuotaSpendLedgerError, OSError, ValueError) as exc:
         quota_ledger = None
         quota_error = str(exc)
+
+    surface_delta_file = surface_delta_path or _surface_delta_path_from_env()
+    if surface_delta_file is not None:
+        try:
+            (
+                surface_delta_refs_by_route,
+                surface_delta_blockers_by_route,
+            ) = _surface_delta_route_index(
+                surface_delta_file,
+                known_route_ids=registry.route_map().keys() if registry is not None else None,
+            )
+        except (CapabilitySurfaceDeltaError, OSError, ValueError) as exc:
+            error_ref = _surface_delta_producer_error_ref(surface_delta_file, exc)
+            surface_delta_refs_by_route = {GLOBAL_SURFACE_DELTA_ROUTE_KEY: (error_ref,)}
+            surface_delta_blockers_by_route = {GLOBAL_SURFACE_DELTA_ROUTE_KEY: (error_ref,)}
 
     return DispatchPolicySources(
         registry=registry,
@@ -433,6 +494,8 @@ def load_dispatch_policy_sources(
         quota_ledger_source=quota_ledger_source,
         quota_live_error=quota_live_error,
         route_authority_receipts=route_authority_receipts,
+        surface_delta_refs_by_route=surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=surface_delta_blockers_by_route,
     )
 
 
@@ -468,6 +531,129 @@ def _receipt_dir_from_env() -> Path | None:
     return Path(configured).expanduser()
 
 
+def _surface_delta_path_from_env() -> Path | None:
+    configured = os.environ.get(CAPABILITY_SURFACE_DELTA_PATH_ENV)
+    if configured is None:
+        return None
+    if configured.strip() in {"", "0", "none", "None", "false", "False"}:
+        return None
+    return Path(configured).expanduser()
+
+
+def _surface_delta_route_index(
+    path: Path,
+    *,
+    known_route_ids: Iterable[str] | None = None,
+) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
+    producer_file = load_capability_surface_delta_file(path)
+    known_routes = (
+        {normalize_route_id(route_id) for route_id in known_route_ids}
+        if known_route_ids is not None
+        else None
+    )
+    descriptor_keys_by_ref: dict[str, set[str]] = {}
+    for descriptor in producer_file.descriptors:
+        keys = set(_surface_delta_descriptor_route_keys(descriptor))
+        for descriptor_ref in {
+            descriptor.descriptor_ref,
+            descriptor.surface_id,
+            *descriptor.evidence_refs,
+        }:
+            descriptor_keys_by_ref.setdefault(descriptor_ref, set()).update(keys)
+    descriptor_keys_by_ref_frozen = {
+        key: tuple(sorted(values)) for key, values in descriptor_keys_by_ref.items()
+    }
+    refs: dict[str, list[str]] = {}
+    blockers: dict[str, list[str]] = {}
+    for delta in producer_file.deltas:
+        delta_ref = _surface_delta_ref(delta)
+        route_keys, dispatch_keys = _surface_delta_route_key_sets(
+            delta,
+            descriptor_keys_by_ref_frozen,
+        )
+        if (
+            known_routes is not None
+            and not delta.allows_demand_fulfillment()
+            and not (dispatch_keys & known_routes)
+        ):
+            route_keys.add(GLOBAL_SURFACE_DELTA_ROUTE_KEY)
+        if known_routes is None and not delta.allows_demand_fulfillment() and not dispatch_keys:
+            route_keys.add(GLOBAL_SURFACE_DELTA_ROUTE_KEY)
+        for key in route_keys:
+            refs.setdefault(key, []).append(delta_ref)
+            if not delta.allows_demand_fulfillment():
+                blockers.setdefault(key, []).append(delta_ref)
+    return (
+        {key: tuple(dict.fromkeys(values)) for key, values in refs.items()},
+        {key: tuple(dict.fromkeys(values)) for key, values in blockers.items()},
+    )
+
+
+def _surface_delta_producer_error_ref(path: Path, exc: Exception) -> str:
+    digest = hashlib.sha256(f"{path}:{exc}".encode()).hexdigest()[:16]
+    return (
+        f"capability_surface_delta:unknown:producer_file:{path.name}:{digest}:invalid_or_unreadable"
+    )
+
+
+def _surface_delta_ref(delta: CapabilitySurfaceDelta) -> str:
+    return (
+        f"capability_surface_delta:{delta.freshness_state.value}:"
+        f"{delta.surface_id}:{delta.delta_id}"
+    )
+
+
+def _surface_delta_descriptor_route_keys(descriptor: Any) -> tuple[str, ...]:
+    keys = set()
+    if descriptor.surface_id.startswith("route."):
+        keys.add(normalize_route_id(descriptor.surface_id.removeprefix("route.")))
+    if descriptor.route_id:
+        keys.add(normalize_route_id(descriptor.route_id))
+    return tuple(sorted(keys))
+
+
+def _surface_delta_route_key_sets(
+    delta: CapabilitySurfaceDelta,
+    descriptor_keys_by_ref: Mapping[str, Sequence[str]],
+) -> tuple[set[str], set[str]]:
+    keys = {delta.surface_id}
+    dispatch_keys: set[str] = set()
+    if delta.surface_id.startswith("route."):
+        route_key = normalize_route_id(delta.surface_id.removeprefix("route."))
+        keys.add(route_key)
+        dispatch_keys.add(route_key)
+
+    def join_ref(ref: str) -> None:
+        keys.add(ref)
+        joined_keys = tuple(descriptor_keys_by_ref.get(ref, ()))
+        keys.update(joined_keys)
+        dispatch_keys.update(_surface_delta_dispatch_lookup_keys(joined_keys))
+
+    join_ref(delta.surface_id)
+    if delta.prior_descriptor_ref:
+        join_ref(delta.prior_descriptor_ref)
+    if delta.observed_descriptor_ref:
+        join_ref(delta.observed_descriptor_ref)
+    for evidence_ref in delta.evidence_refs:
+        join_ref(evidence_ref)
+    return keys, dispatch_keys
+
+
+def _surface_delta_dispatch_lookup_keys(keys: Sequence[str]) -> set[str]:
+    return {key for key in keys if ":" not in key and not key.startswith(("route.", "surface."))}
+
+
+def _surface_delta_values_for_route(
+    mapping: Mapping[str, Sequence[str]] | None,
+    route_id: str,
+) -> tuple[str, ...]:
+    if not mapping:
+        return ()
+    route_values = tuple(mapping.get(route_id, ()))
+    global_values = tuple(mapping.get(GLOBAL_SURFACE_DELTA_ROUTE_KEY, ()))
+    return tuple(dict.fromkeys((*route_values, *global_values)))
+
+
 def build_dispatch_request(
     *,
     task_id: str,
@@ -481,6 +667,8 @@ def build_dispatch_request(
     quota_ledger: QuotaSpendLedger | None = None,
     quota_error: str | None = None,
     route_authority_receipts: Sequence[RouteAuthorityReceipt] = (),
+    surface_delta_refs_by_route: Mapping[str, Sequence[str]] | None = None,
+    surface_delta_blockers_by_route: Mapping[str, Sequence[str]] | None = None,
     rollback_mode: bool = False,
     legacy_route_supported: bool = False,
     legacy_route_mutable: bool = False,
@@ -490,13 +678,21 @@ def build_dispatch_request(
 
     route_id = _route_id(platform, mode, profile)
     metadata = assess_route_metadata(task_fields)
-    capability = _capability_state(registry, route_id, registry_error, now=now)
+    capability = _capability_state(
+        registry,
+        route_id,
+        registry_error,
+        now=now,
+        surface_delta_refs_by_route=surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=surface_delta_blockers_by_route,
+    )
     route = registry.route_map().get(normalize_route_id(route_id)) if registry is not None else None
     try:
         demand_vector = build_demand_vector(
             {**dict(task_fields), "task_id": task_id},
             note_path=_optional_string(task_fields.get("__task_note_path")),
             observed_at=now,
+            preserve_route_envelope_hold=True,
         )
     except ValueError:
         demand_vector = None
@@ -511,6 +707,12 @@ def build_dispatch_request(
         now=now,
     )
     route_metadata = metadata.metadata
+    operator_evidence_refs = _operator_coupled_evidence_refs(task_fields)
+    operator_coupled = (
+        _truthy(task_fields.get("operator_coupled"))
+        or _optional_string(task_fields.get("dispatch_mode")) == "interactive_only"
+        or bool(operator_evidence_refs)
+    )
     return DispatchRequest(
         task_id=task_id,
         lane=lane,
@@ -529,6 +731,8 @@ def build_dispatch_request(
         authority_level=route_metadata.authority_level.value if route_metadata else None,
         mutation_surface=route_metadata.mutation_surface.value if route_metadata else None,
         mutation_scope_refs=tuple(route_metadata.mutation_scope_refs) if route_metadata else (),
+        operator_coupled=operator_coupled,
+        operator_coupled_evidence_refs=operator_evidence_refs,
         risk_flags=route_metadata.risk_flags.model_dump(mode="json") if route_metadata else {},
         context_shape=route_metadata.context_shape.model_dump(mode="json")
         if route_metadata
@@ -565,13 +769,6 @@ def evaluate_dispatch_policy(
     """Return a fail-closed route decision without side effects."""
 
     checked_at = now_utc() if now is None else _coerce_utc(now)
-    if candidate_requests is not None:
-        return _evaluate_dimensional_candidate_set(
-            request,
-            candidate_requests=candidate_requests,
-            checked_at=checked_at,
-        )
-
     if request.rollback_mode:
         return _decision(
             request,
@@ -599,6 +796,38 @@ def evaluate_dispatch_policy(
             checked_at,
             quality_floor_satisfied=False,
             authority_allowed=False,
+        )
+
+    route_envelope_reasons = _route_envelope_hold_reasons(request)
+    if route_envelope_reasons and route_envelope_gate_enforced():
+        return _decision(
+            request,
+            DispatchAction.HOLD,
+            route_envelope_reasons,
+            checked_at,
+            quality_floor_satisfied=False,
+            authority_allowed=False,
+        )
+
+    if request.operator_coupled and request.mode == "headless":
+        return _decision(
+            request,
+            DispatchAction.REFUSE,
+            (
+                "operator_coupled_interactive_only",
+                "interactive_path:hapax-claude --terminal tmux",
+                *request.operator_coupled_evidence_refs,
+            ),
+            checked_at,
+            quality_floor_satisfied=False,
+            authority_allowed=False,
+        )
+
+    if candidate_requests is not None:
+        return _evaluate_dimensional_candidate_set(
+            request,
+            candidate_requests=candidate_requests,
+            checked_at=checked_at,
         )
 
     capability = request.capability
@@ -864,7 +1093,13 @@ def _default_route_authority_receipt_id(
 
 def build_route_authority_receipt(
     *,
-    receipt_type: Literal["opus_model_entitlement", "quality_equivalence", "runtime_actuation"],
+    receipt_type: Literal[
+        "opus_model_entitlement",
+        "quality_equivalence",
+        "runtime_actuation",
+        "connector_mutation",
+        "local_inference_entitlement",
+    ],
     route_id: str,
     evidence_refs: Sequence[str],
     receipt_id: str | None = None,
@@ -940,7 +1175,7 @@ def apply_route_authority_receipts(
     payload = registry.model_dump(mode="json")
     routes_by_id = {route["route_id"]: route for route in payload["routes"]}
     for receipt in authority_receipts:
-        if receipt.receipt_type == "runtime_actuation":
+        if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
             continue
         route_id = normalize_route_id(receipt.route_id)
         route_payload = routes_by_id.get(route_id)
@@ -970,7 +1205,7 @@ def _load_fresh_route_authority_receipts(
             raise ValueError(f"invalid route authority receipt at {path}: {exc}") from exc
         if not _route_authority_receipt_is_fresh(receipt, now=checked_now):
             continue
-        if receipt.receipt_type == "runtime_actuation":
+        if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
             key = (
                 normalize_route_id(receipt.route_id),
                 receipt.receipt_type,
@@ -1007,22 +1242,38 @@ def _apply_route_authority_receipt_to_route_payload(
         if reason not in removable_reasons
     ]
     freshness = route_payload["freshness"]
-    capability_evidence = freshness["evidence"]["capability"]
-    capability_evidence["blocked_reasons"] = [
-        reason
-        for reason in capability_evidence.get("blocked_reasons", [])
-        if reason not in removable_reasons
-    ]
-    capability_evidence["evidence_refs"] = list(
-        dict.fromkeys(
-            [
-                *capability_evidence.get("evidence_refs", []),
-                *receipt.evidence_refs,
-                receipt_ref,
-            ]
-        )
-    )
     issued_at = _coerce_utc(receipt.issued_at).isoformat().replace("+00:00", "Z")
+    receipt_evidence_refs = [*receipt.evidence_refs, receipt_ref]
+    # A receipt clears its removable reasons wherever they live, not only on the capability
+    # surface: the local-worker admission gate + fresh-capability blockers sit on the
+    # capability surface, but quota_telemetry_unknown sits on the quota surface. Stripping
+    # only the capability surface let the top-level re-derivation below re-sweep the quota
+    # surface and re-inject the reason, leaving the route blocked (the R1 keystone bug).
+    for surface_name, surface_payload in freshness["evidence"].items():
+        original = surface_payload.get("blocked_reasons", [])
+        if not original:
+            continue
+        remaining = [reason for reason in original if reason not in removable_reasons]
+        if remaining == original:
+            continue
+        surface_payload["blocked_reasons"] = remaining
+        # The receipt IS the evidence that cleared these reasons: record it on the surface
+        # (so the clearing is attributable AND the surface is not left empty — a freshness
+        # surface must carry evidence_refs or blocked_reasons) and stamp the surface fresh
+        # (a surface with a null checked_at must still carry blocked_reasons, so a cleared
+        # surface must be marked checked at the receipt's issue time).
+        surface_payload["evidence_refs"] = list(
+            dict.fromkeys([*surface_payload.get("evidence_refs", []), *receipt_evidence_refs])
+        )
+        freshness[f"{surface_name}_checked_at"] = issued_at
+        freshness[f"{surface_name}_stale_after"] = receipt.stale_after
+    # The receipt is fundamentally fresh CAPABILITY evidence: record it on the capability
+    # surface + stamp capability freshness unconditionally, even if that surface carried no
+    # removable blocker to clear.
+    capability_evidence = freshness["evidence"]["capability"]
+    capability_evidence["evidence_refs"] = list(
+        dict.fromkeys([*capability_evidence.get("evidence_refs", []), *receipt_evidence_refs])
+    )
     freshness["capability_checked_at"] = issued_at
     freshness["capability_stale_after"] = receipt.stale_after
 
@@ -1060,7 +1311,15 @@ def _apply_route_authority_receipt_to_route_payload(
 def _route_authority_removable_reasons(receipt: RouteAuthorityReceipt) -> set[str]:
     if receipt.receipt_type == "opus_model_entitlement":
         return {"opus_model_entitlement_receipt_absent", "fresh_capability_evidence_absent"}
-    if receipt.receipt_type == "runtime_actuation":
+    if receipt.receipt_type == "local_inference_entitlement":
+        # One operator-signed entitlement/quota receipt clears the local worker's admission
+        # gate + its capability-evidence + quota-telemetry blockers, flipping the route active.
+        return {
+            "local_inference_worker_receipt_admission_required",
+            "fresh_capability_evidence_absent",
+            "quota_telemetry_unknown",
+        }
+    if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
         return set()
     return {"quality_equivalence_record_absent", "fresh_capability_evidence_absent"}
 
@@ -1095,6 +1354,7 @@ DIMENSION_WEIGHTS: Mapping[str, int] = {
     # _aggregate_score never assumes a constant divisor, so this is harmless.
     "effort_fit": 12,
     "context_mode_fit": 12,
+    "fixed_route_overhead": 6,
 }
 
 #: The reasoning-effort ordinal ladder (none < low < ... < max), derived from the supply-side
@@ -1109,6 +1369,7 @@ def _evaluate_dimensional_candidate_set(
     checked_at: datetime,
 ) -> RouteDecision:
     candidates = _candidate_set_with_primary(request, candidate_requests)
+    candidate_request_by_route = {candidate.route_id: candidate for candidate in candidates}
     receipts: list[DimensionalCandidateReceipt] = []
     eligible: list[DimensionalCandidateReceipt] = []
     incomparable_present = False
@@ -1202,6 +1463,24 @@ def _evaluate_dimensional_candidate_set(
     winner = tied[0]
     updated = _mark_candidate_relations(receipts, selected_route_id=winner.route_id)
     if winner.route_id != request.route_id:
+        if _availability_recomposition_required(request):
+            winner_request = candidate_request_by_route[winner.route_id]
+            return _decision(
+                winner_request,
+                DispatchAction.LAUNCH,
+                (
+                    *_launch_reason_codes(winner_request, checked_at=checked_at),
+                    *_availability_recomposition_reason_codes(
+                        request,
+                        selected_route_id=winner.route_id,
+                    ),
+                ),
+                checked_at,
+                quality_floor_satisfied=True,
+                authority_allowed=True,
+                dimensional_candidates=updated,
+                selected_route_id=winner.route_id,
+            )
         return _decision(
             request,
             DispatchAction.HOLD,
@@ -1228,11 +1507,41 @@ def _evaluate_dimensional_candidate_set(
     )
 
 
+def _availability_recomposition_required(request: DispatchRequest) -> bool:
+    capability = request.capability
+    return bool(capability is not None and capability.availability_recomposition_required)
+
+
+def _availability_recomposition_reason_codes(
+    request: DispatchRequest,
+    *,
+    selected_route_id: str,
+) -> tuple[str, ...]:
+    capability = request.capability
+    if capability is None:
+        return ()
+    reasons: list[str] = [
+        "availability_recomposition_required",
+        f"availability_recomposed_from:{request.route_id}",
+        f"availability_recomposed_to:{selected_route_id}",
+    ]
+    if capability.availability_status:
+        reasons.append(f"availability_status:{capability.availability_status}")
+    if capability.availability_receipt_ref:
+        reasons.append(capability.availability_receipt_ref)
+    reasons.extend(capability.availability_reason_codes)
+    if capability.availability_refresh_status:
+        reasons.append(f"refresh_status:{capability.availability_refresh_status}")
+    return tuple(dict.fromkeys(reason for reason in reasons if reason))
+
+
 def _candidate_set_with_primary(
     request: DispatchRequest, candidates: tuple[DispatchRequest, ...]
 ) -> tuple[DispatchRequest, ...]:
-    by_route = {candidate.route_id: candidate for candidate in candidates}
-    by_route.setdefault(request.route_id, request)
+    by_route = {request.route_id: request}
+    for candidate in candidates:
+        if candidate.route_id != request.route_id:
+            by_route[candidate.route_id] = candidate
     return tuple(by_route[route_id] for route_id in sorted(by_route))
 
 
@@ -1303,6 +1612,24 @@ def _policy_vetoes(gate: RouteDecision) -> tuple[DimensionalVeto, ...]:
             message=reason,
         )
         for reason in gate.reason_codes
+    )
+
+
+def _route_envelope_hold_reasons(request: DispatchRequest) -> tuple[str, ...]:
+    demand = request.demand_vector
+    if demand is None:
+        return ("missing_demand_vector", "route_envelope_missing")
+    admission = demand.route_envelope.admission
+    action = admission.admission_action.value
+    if action == "route":
+        return ()
+    return tuple(
+        dict.fromkeys(
+            [
+                f"route_envelope_admission_{action}",
+                *admission.reason_codes,
+            ]
+        )
     )
 
 
@@ -1560,7 +1887,34 @@ def _capability_fit_scores(request: DispatchRequest) -> tuple[DimensionalScore, 
             )
         )
 
+    if task_demand.fixed_route_overhead_sensitivity > 0:
+        overhead = supply.historical_performance.fixed_route_overhead
+        fits.append(
+            DimensionalScore(
+                dimension="fixed_route_overhead",
+                demand=task_demand.fixed_route_overhead_sensitivity,
+                supply=overhead.fixed_cost_score,
+                score=_fixed_route_overhead_fit_score(
+                    overhead.fixed_cost_score,
+                    task_demand.fixed_route_overhead_sensitivity,
+                ),
+                confidence=3.0 if overhead.evidence_refs else 1.0,
+                evidence_refs=tuple(overhead.evidence_refs),
+            )
+        )
+
     return tuple(fits)
+
+
+def _fixed_route_overhead_fit_score(overhead_score: int, sensitivity: int) -> float:
+    """Bounded setup-cost penalty: fixed overhead can affect a demanded route, not dominate it."""
+
+    bounded_overhead = max(0, min(5, overhead_score))
+    bounded_sensitivity = max(0, min(5, sensitivity))
+    if bounded_sensitivity == 0:
+        return 5.0
+    penalty = min(4.0, (bounded_overhead * bounded_sensitivity) / 5.0)
+    return round(max(1.0, 5.0 - penalty), 4)
 
 
 def _effort_fit_score(effort_demand: str, reachable_efforts: tuple[str, ...]) -> float:
@@ -1863,7 +2217,9 @@ def _downstream_review_point(request: DispatchRequest, decision: RouteDecision) 
 
 def _candidate_freshness_state(request: DispatchRequest) -> str:
     capability = request.capability
-    if capability is not None and not capability.freshness_ok:
+    if capability is not None and (
+        not capability.freshness_ok or capability.surface_delta_blockers
+    ):
         return FreshnessState.STALE.value
     if request.supply_vector is None:
         return FreshnessState.MISSING.value
@@ -1894,6 +2250,8 @@ def _capability_state(
     registry_error: str | None,
     *,
     now: datetime | None,
+    surface_delta_refs_by_route: Mapping[str, Sequence[str]] | None = None,
+    surface_delta_blockers_by_route: Mapping[str, Sequence[str]] | None = None,
 ) -> RouteCapabilityState | None:
     if registry is None:
         return None
@@ -1906,13 +2264,34 @@ def _capability_state(
             freshness_errors=(f"unsupported route: {normalize_route_id(route_id)}",),
         )
     freshness = check_registry_freshness(registry, route_ids=[route_id], now=now).routes[0]
-    return _route_capability_state(route, freshness.ok, freshness.errors)
+    normalized_route_id = normalize_route_id(route_id)
+    availability = evaluate_route_availability(route, freshness, now=now)
+    return _route_capability_state(
+        route,
+        freshness.ok and availability.available,
+        tuple(
+            dict.fromkeys([*freshness.errors, *availability_dispatch_reason_codes(availability)])
+        ),
+        surface_delta_refs=_surface_delta_values_for_route(
+            surface_delta_refs_by_route,
+            normalized_route_id,
+        ),
+        surface_delta_blockers=_surface_delta_values_for_route(
+            surface_delta_blockers_by_route,
+            normalized_route_id,
+        ),
+        availability=availability,
+    )
 
 
 def _route_capability_state(
     route: PlatformCapabilityRoute,
     freshness_ok: bool,
     freshness_errors: tuple[str, ...],
+    *,
+    surface_delta_refs: tuple[str, ...] = (),
+    surface_delta_blockers: tuple[str, ...] = (),
+    availability: CapabilityAvailabilityReceipt | None = None,
 ) -> RouteCapabilityState:
     return RouteCapabilityState(
         route_id=route.route_id,
@@ -1936,8 +2315,19 @@ def _route_capability_state(
         mutability=route.mutability.model_dump(mode="json"),
         freshness_ok=freshness_ok,
         freshness_errors=freshness_errors,
+        surface_delta_refs=surface_delta_refs,
+        surface_delta_blockers=surface_delta_blockers,
         telemetry_quota_source=route.telemetry.quota_source.value,
         telemetry_resource_source=route.telemetry.resource_source.value,
+        availability_status=availability.status.value if availability is not None else None,
+        availability_receipt_ref=availability.reference if availability is not None else None,
+        availability_reason_codes=availability.reason_codes if availability is not None else (),
+        availability_refresh_status=availability.refresh_status.value
+        if availability is not None
+        else None,
+        availability_recomposition_required=availability.recomposition_required
+        if availability is not None
+        else False,
     )
 
 
@@ -1981,6 +2371,7 @@ def _quota_state(
     if capability is not None and capability.capacity_pool in PAID_CAPACITY_POOLS:
         request = PaidRouteRequest(
             route_id=capability.route_id,
+            task_id=task_id,
             provider=_paid_provider_for(capability),
             profile=capability.paid_profile or _profile_from_route_id(capability.route_id),
             task_class=_task_class_for(metadata),
@@ -2092,11 +2483,18 @@ def _clog_state(action: DispatchAction, *, compatibility_degraded: bool) -> Clog
 
 def _registry_freshness_green(request: DispatchRequest) -> bool:
     capability = request.capability
-    return bool(capability is not None and capability.supported and capability.freshness_ok)
+    return bool(
+        capability is not None
+        and capability.supported
+        and capability.freshness_ok
+        and not capability.surface_delta_blockers
+    )
 
 
 def _quota_freshness_green(request: DispatchRequest) -> bool:
     capability = request.capability
+    if capability is not None and capability.surface_delta_blockers:
+        return False
     if _requires_route_specific_subscription_quota(request.route_id):
         if (
             capability is None
@@ -2126,7 +2524,7 @@ def _quota_freshness_green(request: DispatchRequest) -> bool:
 def _resource_freshness_green(request: DispatchRequest) -> bool:
     capability = request.capability
     quota = request.quota
-    if capability is None or not capability.freshness_ok:
+    if capability is None or not capability.freshness_ok or capability.surface_delta_blockers:
         return False
     if any("resource" in error for error in capability.freshness_errors):
         return False
@@ -2353,6 +2751,29 @@ def _route_constraint_reasons(request: DispatchRequest) -> tuple[str, ...]:
     return tuple(reasons)
 
 
+def _operator_coupled_evidence_refs(task_fields: Mapping[str, object]) -> tuple[str, ...]:
+    refs: list[str] = []
+    if _truthy(task_fields.get("operator_coupled")):
+        refs.append("operator_coupled:frontmatter")
+    if _optional_string(task_fields.get("dispatch_mode")) == "interactive_only":
+        refs.append("operator_coupled:dispatch_mode")
+    for value in _operator_coupled_path_values(task_fields.get("__operator_coupled_path_matches")):
+        refs.append(f"operator_coupled:path:{value}")
+    return tuple(dict.fromkeys(refs))
+
+
+def _operator_coupled_path_values(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        text = value.strip()
+        return (text,) if text else ()
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    text = str(value).strip()
+    return (text,) if text else ()
+
+
 def _privacy_sensitive(request: DispatchRequest) -> bool:
     return bool(request.risk_flags.get("privacy_or_secret_sensitive"))
 
@@ -2535,10 +2956,12 @@ def _unsupported_route_subscription_quota_reasons(
 
 
 def _freshness_hold_reasons(capability: RouteCapabilityState) -> tuple[str, ...]:
-    if capability.freshness_ok:
+    if capability.freshness_ok and not capability.surface_delta_blockers:
         return ()
     reasons = []
     errors = capability.freshness_errors
+    if capability.surface_delta_blockers:
+        reasons.append("capability_surface_delta_pending")
     if any("resource" in error for error in errors):
         reasons.append("resource_telemetry_stale_or_unknown")
     if any("quota" in error for error in errors):
@@ -2549,6 +2972,7 @@ def _freshness_hold_reasons(capability: RouteCapabilityState) -> tuple[str, ...]
         reasons.append("provider_docs_stale_or_unknown")
     if not reasons:
         reasons.append("capability_freshness_failed")
+    reasons.extend(capability.surface_delta_blockers)
     reasons.extend(errors)
     return tuple(reasons)
 
@@ -2575,6 +2999,10 @@ def _resource_state_refs(
 ) -> tuple[str, ...]:
     refs: list[str] = []
     if capability is not None:
+        if capability.availability_receipt_ref and any(
+            "resource" in error for error in capability.freshness_errors
+        ):
+            refs.append(capability.availability_receipt_ref)
         refs.extend(error for error in capability.freshness_errors if "resource" in error)
         if capability.telemetry_resource_source:
             refs.append(f"capability.resource_source:{capability.telemetry_resource_source}")
@@ -2632,6 +3060,17 @@ def _string_set(value: object) -> set[str]:
     if isinstance(value, (list, tuple, set, frozenset)):
         return {str(item).strip() for item in value if str(item).strip()}
     return {str(value).strip()}
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "on"}
 
 
 def _slug(value: str) -> str:

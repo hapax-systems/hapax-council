@@ -93,6 +93,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Evaluate paid/API route eligibility and fail closed on refusal.",
     )
     parser.add_argument("--route-id", default=None)
+    parser.add_argument("--task-id", default=None)
     parser.add_argument("--provider", default=None)
     parser.add_argument("--profile", default=None)
     parser.add_argument("--task-class", default=None)
@@ -109,6 +110,7 @@ def _request_from_args(
         flag
         for flag, value in {
             "--route-id": args.route_id,
+            "--task-id": args.task_id,
             "--provider": args.provider,
             "--profile": args.profile,
             "--task-class": args.task_class,
@@ -119,15 +121,19 @@ def _request_from_args(
     ]
     if missing:
         parser.error("--check-paid-route requires " + ", ".join(missing))
-    return PaidRouteRequest(
-        route_id=args.route_id,
-        provider=args.provider,
-        profile=args.profile,
-        task_class=args.task_class,
-        quality_floor=args.quality_floor,
-        estimated_cost_usd=args.estimated_cost_usd,
-        capacity_pool=CapacityPool(args.capacity_pool),
-    )
+    try:
+        return PaidRouteRequest(
+            route_id=args.route_id,
+            task_id=args.task_id,
+            provider=args.provider,
+            profile=args.profile,
+            task_class=args.task_class,
+            quality_floor=args.quality_floor,
+            estimated_cost_usd=args.estimated_cost_usd,
+            capacity_pool=CapacityPool(args.capacity_pool),
+        )
+    except (ValueError, ValidationError) as exc:
+        parser.error(f"invalid paid-route request: {exc}")
 
 
 def main(argv: list[str] | None = None) -> int:

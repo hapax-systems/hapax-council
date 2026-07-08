@@ -1,0 +1,301 @@
+{
+  "schema_version": 1,
+  "effect_classes": [
+    "read_only_evidence",
+    "local_mutation",
+    "external_mutation",
+    "public_egress",
+    "money_resource_mutation",
+    "governance_mutation"
+  ],
+  "tools": [
+    {
+      "canonical_name": "context7.resolve_library_id",
+      "aliases": [
+        "mcp__context7__resolve-library-id",
+        "mcp__context7__resolve_library_id"
+      ],
+      "effect_classes": ["read_only_evidence"],
+      "description": "Resolve a documentation library identifier."
+    },
+    {
+      "canonical_name": "context7.query_docs",
+      "aliases": [
+        "mcp__context7__query-docs",
+        "mcp__context7__query_docs"
+      ],
+      "effect_classes": ["read_only_evidence"],
+      "description": "Fetch documentation snippets for evidence."
+    },
+    {
+      "canonical_name": "github.fetch_pr_comments",
+      "aliases": [
+        "mcp__codex_apps__github___fetch_pr_comments",
+        "mcp__github__fetch_pr_comments"
+      ],
+      "effect_classes": ["read_only_evidence"],
+      "description": "Read pull request comments."
+    },
+    {
+      "canonical_name": "github.create_pull_request",
+      "aliases": [
+        "mcp__github__create_pull_request",
+        "mcp__codex_apps__github___create_pull_request"
+      ],
+      "effect_classes": ["external_mutation", "public_egress", "governance_mutation"],
+      "description": "Create a GitHub pull request."
+    },
+    {
+      "canonical_name": "github.merge_pull_request",
+      "aliases": [
+        "mcp__github__merge_pull_request",
+        "mcp__codex_apps__github___merge_pull_request",
+        "mcp__codex_apps__github___enable_auto_merge"
+      ],
+      "effect_classes": ["external_mutation", "public_egress", "governance_mutation"],
+      "description": "Merge or enable auto-merge for a GitHub pull request."
+    },
+    {
+      "canonical_name": "github.create_or_update_file",
+      "aliases": [
+        "mcp__github__create_or_update_file",
+        "mcp__codex_apps__github___create_file",
+        "mcp__codex_apps__github___update_file",
+        "mcp__codex_apps__github___delete_file",
+        "mcp__github__push_files"
+      ],
+      "effect_classes": ["external_mutation", "public_egress", "governance_mutation"],
+      "description": "Write repository contents through GitHub."
+    },
+    {
+      "canonical_name": "github.update_ref",
+      "aliases": ["mcp__codex_apps__github___update_ref"],
+      "effect_classes": ["external_mutation", "public_egress", "governance_mutation"],
+      "description": "Update a Git ref through GitHub."
+    },
+    {
+      "canonical_name": "github.issue_comment",
+      "aliases": [
+        "mcp__github__add_issue_comment",
+        "mcp__github__create_issue_comment",
+        "mcp__github__update_issue_comment",
+        "mcp__codex_apps__github___update_issue_comment",
+        "mcp__codex_apps__github___reply_to_review_comment",
+        "mcp__codex_apps__github___update_review_comment",
+        "mcp__codex_apps__github___add_reaction_to_issue_comment",
+        "mcp__codex_apps__github___remove_reaction_from_issue_comment"
+      ],
+      "effect_classes": ["external_mutation", "public_egress", "governance_mutation"],
+      "description": "Create or edit a public GitHub issue, pull request, or review comment."
+    },
+    {
+      "canonical_name": "gmail.get_profile",
+      "aliases": ["mcp__codex_apps__gmail___get_profile"],
+      "effect_classes": ["read_only_evidence"],
+      "description": "Read Gmail account profile metadata."
+    },
+    {
+      "canonical_name": "gmail.read_email",
+      "aliases": [
+        "mcp__codex_apps__gmail___read_email",
+        "mcp__codex_apps__gmail___list_drafts"
+      ],
+      "effect_classes": ["read_only_evidence"],
+      "description": "Read Gmail messages or draft metadata."
+    },
+    {
+      "canonical_name": "gmail.send_draft",
+      "aliases": [
+        "mcp__codex_apps__gmail___send_draft",
+        "mcp__codex_apps__gmail___forward_emails"
+      ],
+      "effect_classes": ["external_mutation", "public_egress"],
+      "description": "Send or forward Gmail messages."
+    },
+    {
+      "canonical_name": "gmail.create_draft",
+      "aliases": ["mcp__codex_apps__gmail___create_draft"],
+      "effect_classes": ["external_mutation"],
+      "description": "Create a Gmail draft."
+    },
+    {
+      "canonical_name": "gmail.modify_mailbox",
+      "aliases": [
+        "mcp__codex_apps__gmail___bulk_label_matching_emails",
+        "mcp__codex_apps__gmail___apply_labels_to_emails",
+        "mcp__codex_apps__gmail___archive_emails",
+        "mcp__codex_apps__gmail___delete_emails",
+        "mcp__codex_apps__gmail___create_label",
+        "mcp__codex_apps__gmail___batch_modify_email"
+      ],
+      "effect_classes": ["external_mutation"],
+      "description": "Change Gmail labels, message state, or mailbox contents."
+    },
+    {
+      "canonical_name": "calendar.read_event",
+      "aliases": [
+        "mcp__codex_apps__google_calendar___batch_read_event",
+        "mcp__codex_apps__google_calendar___fetch",
+        "mcp__codex_apps__google_calendar___read_event",
+        "mcp__codex_apps__google_calendar___get_profile",
+        "mcp__codex_apps__google_calendar___get_colors",
+        "mcp__codex_apps__google_calendar___search_events"
+      ],
+      "effect_classes": ["read_only_evidence"],
+      "description": "Read Google Calendar events or metadata."
+    },
+    {
+      "canonical_name": "calendar.create_event",
+      "aliases": [
+        "mcp__codex_apps__google_calendar___create_event",
+        "mcp__codex_apps__calendar___create_event"
+      ],
+      "effect_classes": ["external_mutation", "public_egress"],
+      "description": "Create a calendar event that can notify attendees."
+    },
+    {
+      "canonical_name": "calendar.update_event",
+      "aliases": [
+        "mcp__codex_apps__google_calendar___update_event",
+        "mcp__codex_apps__google_calendar___delete_event",
+        "mcp__codex_apps__google_calendar___respond_event",
+        "mcp__codex_apps__calendar___update_event",
+        "mcp__codex_apps__calendar___delete_event",
+        "mcp__codex_apps__calendar___respond_event"
+      ],
+      "effect_classes": ["external_mutation", "public_egress"],
+      "description": "Update, delete, or respond to a calendar event."
+    },
+    {
+      "canonical_name": "drive.read_file",
+      "aliases": [
+        "mcp__codex_apps__google_drive___search_files",
+        "mcp__codex_apps__google_drive___read_file",
+        "mcp__codex_apps__google_drive___download_file",
+        "mcp__codex_apps__drive___search_files",
+        "mcp__codex_apps__drive___read_file",
+        "mcp__codex_apps__drive___download_file"
+      ],
+      "effect_classes": ["read_only_evidence"],
+      "description": "Read Google Drive file metadata or contents."
+    },
+    {
+      "canonical_name": "drive.share_file",
+      "aliases": [
+        "mcp__codex_apps__google_drive___share_file",
+        "mcp__codex_apps__drive___share_file"
+      ],
+      "effect_classes": ["external_mutation", "public_egress"],
+      "description": "Share a Google Drive file."
+    },
+    {
+      "canonical_name": "drive.write_file",
+      "aliases": [
+        "mcp__codex_apps__google_drive___create_file",
+        "mcp__codex_apps__google_drive___import_document",
+        "mcp__codex_apps__google_drive___import_spreadsheet",
+        "mcp__codex_apps__google_drive___import_presentation",
+        "mcp__codex_apps__google_drive___update_file",
+        "mcp__codex_apps__google_drive___upload_file",
+        "mcp__codex_apps__google_drive___create_presentation_0cb5796bb4da",
+        "mcp__codex_apps__drive___create_file",
+        "mcp__codex_apps__drive___import_document",
+        "mcp__codex_apps__drive___import_spreadsheet",
+        "mcp__codex_apps__drive___import_presentation",
+        "mcp__codex_apps__drive___update_file",
+        "mcp__codex_apps__drive___upload_file",
+        "mcp__codex_apps__drive___create_presentation_0cb5796bb4da"
+      ],
+      "effect_classes": ["external_mutation"],
+      "description": "Create, import, upload, copy, or update a Google Drive file."
+    },
+    {
+      "canonical_name": "drive.batch_update_document",
+      "aliases": [
+        "mcp__codex_apps__google_drive___batch_update_document",
+        "mcp__codex_apps__drive___batch_update_document"
+      ],
+      "effect_classes": ["external_mutation"],
+      "description": "Apply Google Docs batchUpdate mutations to document content."
+    },
+    {
+      "canonical_name": "drive.file_comments",
+      "aliases": [
+        "mcp__codex_apps__google_drive___bulk_update_file_comments",
+        "mcp__codex_apps__drive___bulk_update_file_comments"
+      ],
+      "effect_classes": ["external_mutation", "public_egress"],
+      "description": "Create, reply to, or resolve Google Drive file comments."
+    },
+    {
+      "canonical_name": "hapax.query",
+      "aliases": [
+        "mcp__hapax__query",
+        "mcp__hapax_mcp__query",
+        "mcp__hapax__query_refine",
+        "mcp__hapax_mcp__query_refine",
+        "mcp__hapax__status",
+        "mcp__hapax_mcp__status",
+        "mcp__hapax__manual",
+        "mcp__hapax_mcp__manual"
+      ],
+      "effect_classes": ["read_only_evidence"],
+      "description": "Read Hapax cockpit status, manual, and RAG evidence."
+    },
+    {
+      "canonical_name": "hapax.nudge_act",
+      "aliases": [
+        "mcp__hapax__nudge_act",
+        "mcp__hapax_mcp__nudge_act",
+        "mcp__hapax__nudge_dismiss",
+        "mcp__hapax_mcp__nudge_dismiss"
+      ],
+      "effect_classes": ["local_mutation", "governance_mutation"],
+      "description": "Act on or dismiss a Hapax nudge."
+    },
+    {
+      "canonical_name": "hapax.working_mode_set",
+      "aliases": [
+        "mcp__hapax__working_mode_set",
+        "mcp__hapax_mcp__working_mode_set",
+        "mcp__hapax__cycle_mode_set",
+        "mcp__hapax_mcp__cycle_mode_set"
+      ],
+      "effect_classes": ["local_mutation", "governance_mutation"],
+      "description": "Change Hapax working mode."
+    },
+    {
+      "canonical_name": "hapax.profile_write",
+      "aliases": [
+        "mcp__hapax__profile_correct",
+        "mcp__hapax_mcp__profile_correct",
+        "mcp__hapax__profile_delete",
+        "mcp__hapax_mcp__profile_delete",
+        "mcp__hapax__profile_flush",
+        "mcp__hapax_mcp__profile_flush"
+      ],
+      "effect_classes": ["local_mutation", "governance_mutation"],
+      "description": "Change or flush Hapax operator profile facts."
+    },
+    {
+      "canonical_name": "hapax.scout_decide",
+      "aliases": [
+        "mcp__hapax__scout_decide",
+        "mcp__hapax_mcp__scout_decide"
+      ],
+      "effect_classes": ["local_mutation", "governance_mutation"],
+      "description": "Record a Hapax scout decision."
+    },
+    {
+      "canonical_name": "hapax.accommodation_write",
+      "aliases": [
+        "mcp__hapax__accommodation_confirm",
+        "mcp__hapax_mcp__accommodation_confirm",
+        "mcp__hapax__accommodation_disable",
+        "mcp__hapax_mcp__accommodation_disable"
+      ],
+      "effect_classes": ["local_mutation", "governance_mutation"],
+      "description": "Confirm or disable a Hapax accommodation."
+    }
+  ]
+}

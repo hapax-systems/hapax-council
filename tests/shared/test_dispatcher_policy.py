@@ -5,17 +5,23 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+
+import pytest
 
 from shared.dispatcher_policy import (
+    LOCAL_DEV_PLATFORMS,
+    CandidateStatus,
     ClogRouteState,
     DispatchAction,
     DispatchRequest,
     QuotaSpendState,
     RouteCapabilityState,
+    _resource_state_refs,
     build_dispatch_request,
+    build_route_authority_receipt,
     evaluate_dispatch_policy,
     load_dispatch_policy_sources,
+    write_route_authority_receipt,
     write_route_decision_receipt,
 )
 from shared.platform_capability_registry import (
@@ -30,10 +36,19 @@ from shared.quota_spend_ledger import (
     QUOTA_SPEND_LEDGER_LIVE_ENV,
     QuotaSpendLedger,
 )
-from shared.route_metadata_schema import DemandVector, build_demand_vector
+from shared.route_metadata_schema import DemandVector, RouteEnvelope, build_demand_vector
 
-if TYPE_CHECKING:
-    import pytest
+
+@pytest.fixture(autouse=True)
+def _enforce_route_envelope_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin these policy units to the route-envelope gate's ENFORCE behaviour.
+
+    The gate ships in SHADOW mode by default (``HAPAX_ROUTE_ENVELOPE_GATE`` unset); these
+    units exercise its full fail-closed (enforce) logic. The SHADOW rollout default is
+    covered end-to-end in tests/scripts/test_hapax_methodology_dispatch.py.
+    """
+    monkeypatch.setenv("HAPAX_ROUTE_ENVELOPE_GATE", "enforce")
+
 
 NOW = datetime(2026, 5, 9, 22, 30, tzinfo=UTC)
 GLMCP_ADMISSION_EVIDENCE_REF = (
@@ -41,10 +56,14 @@ GLMCP_ADMISSION_EVIDENCE_REF = (
     "witness:supported-tool-usage-witness:"
     "supported_tool:hapax-glmcp-reviewer:"
     "endpoint:https://api.z.ai/api/coding/paas/v4:"
-    "model:glm-5:"
+    "model:glm-5.2:"
     "observed_at:2026-05-09T22:00:00Z:"
     "fresh_until:2026-05-09T23:00:00Z"
 )
+
+
+def test_antigrav_is_not_a_local_dev_platform() -> None:
+    assert "antigrav" not in LOCAL_DEV_PLATFORMS
 
 
 def _capability(**overrides: object) -> RouteCapabilityState:
@@ -95,6 +114,39 @@ def _quota(**overrides: object) -> QuotaSpendState:
     return QuotaSpendState.model_validate(payload)
 
 
+def test_resource_state_refs_skip_availability_receipt_for_non_resource_degradation() -> None:
+    capability = _capability(
+        freshness_ok=False,
+        freshness_errors=(
+            "capability_availability_degraded",
+            "auth_surface_not_fresh",
+            "capacity_pool_headroom_not_fresh",
+        ),
+        availability_receipt_ref="capability-availability-receipt:codex.headless.full:test",
+    )
+
+    refs = _resource_state_refs(capability, None)
+
+    assert "capability-availability-receipt:codex.headless.full:test" not in refs
+    assert "capability.resource_source:local_probe" in refs
+
+
+def test_resource_state_refs_include_availability_receipt_for_resource_degradation() -> None:
+    capability = _capability(
+        freshness_ok=False,
+        freshness_errors=(
+            "capability_availability_degraded",
+            "codex.headless.full: resource stale",
+        ),
+        availability_receipt_ref="capability-availability-receipt:codex.headless.full:test",
+    )
+
+    refs = _resource_state_refs(capability, None)
+
+    assert "capability-availability-receipt:codex.headless.full:test" in refs
+    assert "codex.headless.full: resource stale" in refs
+
+
 def _request(**overrides: object) -> DispatchRequest:
     payload = {
         "task_id": "policy-test",
@@ -133,7 +185,45 @@ def _request(**overrides: object) -> DispatchRequest:
         "legacy_route_mutable": True,
     }
     payload.update(overrides)
+    if "demand_vector" not in overrides and payload.get("route_metadata_status") == "explicit":
+        payload["demand_vector"] = _demand()
     return DispatchRequest.model_validate(payload)
+
+
+def _route_envelope(*, admission_action: str = "route") -> dict[str, object]:
+    return {
+        "classification_envelope": {
+            "label": "source_python",
+            "classifier": "test.deterministic",
+            "source_kind": "deterministic",
+            "confidence": 0.92,
+            "evidence_refs": ["test:classification-evidence"],
+            "freshness": "fresh",
+            "authority_ceiling": "authoritative",
+            "validity_mask": {
+                "label": True,
+                "source": True,
+                "confidence": True,
+                "freshness": True,
+                "authority_ceiling": True,
+            },
+            "deterministic_facts_used": ["mutation_surface:source"],
+            "consumer_floor": "frontier_required",
+        },
+        "eligibility": {
+            "authority_allowed": True,
+            "privacy_allowed": True,
+            "freshness_ok": True,
+            "quality_floor_satisfied": True,
+            "required_tools_available": True,
+            "budget_allowed": True,
+            "reason_codes": ["eligibility_witnessed"],
+        },
+        "admission": {
+            "admission_action": admission_action,
+            "reason_codes": [f"route_envelope_{admission_action}"],
+        },
+    }
 
 
 def _demand(**overrides: object) -> DemandVector:
@@ -165,6 +255,7 @@ def _demand(**overrides: object) -> DemandVector:
         },
         "route_constraints": {},
         "review_requirement": {},
+        "route_envelope": _route_envelope(),
         "task_id": "policy-test",
         "authority_case": "CASE-TEST-001",
     }
@@ -183,13 +274,16 @@ def _route_with_scores(
     payload["freshness"]["quota_checked_at"] = "2026-05-09T22:00:00Z"
     payload["freshness"]["resource_checked_at"] = "2026-05-09T22:00:00Z"
     payload["freshness"]["provider_docs_checked_at"] = "2026-05-09T22:00:00Z"
+    quota_evidence_refs = [f"test:{route_id}:quota"]
+    if payload.get("capacity_pool") == "subscription_quota":
+        quota_evidence_refs.append(f"test:{route_id}:account-live-quota:observed")
     payload["freshness"]["evidence"] = {
         "capability": {
             "evidence_refs": [f"test:{route_id}:capability"],
             "blocked_reasons": [],
         },
         "quota": {
-            "evidence_refs": [f"test:{route_id}:quota"],
+            "evidence_refs": quota_evidence_refs,
             "blocked_reasons": [],
         },
         "resource": {
@@ -276,6 +370,26 @@ def _task_fields() -> dict[str, object]:
     return payload
 
 
+def _move_route_metadata_under_nested_key(task_fields: dict[str, object]) -> None:
+    route_metadata_keys = (
+        "route_metadata_schema",
+        "route_envelope",
+        "quality_floor",
+        "authority_level",
+        "mutation_surface",
+        "mutation_scope_refs",
+        "risk_flags",
+        "context_shape",
+        "verification_surface",
+        "route_constraints",
+        "review_requirement",
+        "cloud_burst",
+    )
+    task_fields["route_metadata"] = {
+        key: task_fields.pop(key) for key in route_metadata_keys if key in task_fields
+    }
+
+
 def _review_task_fields() -> dict[str, object]:
     # A review-seat task: non-mutating, support-non-authoritative — the work a
     # read-only ReviewSeatAdapter (glmcp.review.direct) actually does. Used to
@@ -359,6 +473,325 @@ def test_malformed_route_metadata_holds_before_launch() -> None:
     assert "route_metadata_malformed" in decision.reason_codes
 
 
+def test_route_envelope_hold_blocks_dispatch_launch() -> None:
+    demand = _demand().model_copy(
+        update={
+            "route_envelope": RouteEnvelope.model_validate(
+                {
+                    "admission": {
+                        "admission_action": "hold",
+                        "reason_codes": ["route_envelope_missing"],
+                    }
+                }
+            )
+        }
+    )
+    request = _request(
+        demand_vector=demand,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_missing_demand_vector_blocks_dispatch_launch() -> None:
+    request = _request(demand_vector=None)
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "missing_demand_vector" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_build_dispatch_request_missing_route_envelope_holds_before_launch() -> None:
+    task_fields = _task_fields()
+    task_fields.pop("route_envelope", None)
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.demand_vector is None
+    assert decision.action is DispatchAction.HOLD
+    assert "missing_demand_vector" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_build_dispatch_request_preserves_explicit_route_envelope_hold_reasons() -> None:
+    task_fields = _task_fields()
+    task_fields["route_envelope"] = _route_envelope(admission_action="hold")
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.demand_vector is not None
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "route_envelope_hold" in decision.reason_codes
+    assert "missing_demand_vector" not in decision.reason_codes
+    assert "route_envelope_missing" not in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_build_dispatch_request_preserves_nested_route_envelope_hold_reasons() -> None:
+    task_fields = _task_fields()
+    task_fields["route_envelope"] = _route_envelope(admission_action="hold")
+    _move_route_metadata_under_nested_key(task_fields)
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.demand_vector is not None
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "route_envelope_hold" in decision.reason_codes
+    assert "missing_demand_vector" not in decision.reason_codes
+    assert "route_envelope_missing" not in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_build_dispatch_request_invalid_demand_vector_holds_before_launch() -> None:
+    task_fields = _task_fields()
+    task_demand = dict(task_fields["task_demand"])  # type: ignore[index]
+    task_demand["fixed_route_overhead_sensitivity"] = 999
+    task_fields["task_demand"] = task_demand
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.demand_vector is None
+    assert decision.action is DispatchAction.HOLD
+    assert "missing_demand_vector" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_operator_coupled_headless_refuses_before_capability_lookup() -> None:
+    request = _request(
+        operator_coupled=True,
+        operator_coupled_evidence_refs=("operator_coupled:frontmatter",),
+        capability=None,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert decision.launch_allowed is False
+    assert "operator_coupled_interactive_only" in decision.reason_codes
+    assert "interactive_path:hapax-claude --terminal tmux" in decision.reason_codes
+    assert "operator_coupled:frontmatter" in decision.reason_codes
+    assert "capability_registry_unavailable" not in decision.reason_codes
+
+
+def test_build_dispatch_request_refuses_path_derived_operator_coupled_headless() -> None:
+    task_fields = _task_fields()
+    task_fields["__operator_coupled_path_matches"] = [
+        "agents/studio_compositor/programme.py#operator-coupled-broadcast-visual"
+    ]
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.operator_coupled is True
+    assert request.operator_coupled_evidence_refs == (
+        "operator_coupled:path:agents/studio_compositor/programme.py"
+        "#operator-coupled-broadcast-visual",
+    )
+    assert decision.action is DispatchAction.REFUSE
+    assert "operator_coupled_interactive_only" in decision.reason_codes
+
+
+def test_build_dispatch_request_refuses_dispatch_mode_interactive_only_headless() -> None:
+    task_fields = _task_fields()
+    task_fields["dispatch_mode"] = "interactive_only"
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.operator_coupled is True
+    assert request.operator_coupled_evidence_refs == ("operator_coupled:dispatch_mode",)
+    assert decision.action is DispatchAction.REFUSE
+    assert "operator_coupled_interactive_only" in decision.reason_codes
+    assert "operator_coupled:dispatch_mode" in decision.reason_codes
+
+
+def test_build_dispatch_request_without_operator_evidence_is_not_operator_coupled() -> None:
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert request.operator_coupled is False
+    assert request.operator_coupled_evidence_refs == ()
+    assert "operator_coupled_interactive_only" not in decision.reason_codes
+    assert all(not reason.startswith("operator_coupled:path:") for reason in decision.reason_codes)
+
+
+def test_candidate_set_cannot_bypass_primary_missing_route_envelope() -> None:
+    task_fields = _task_fields()
+    task_fields.pop("route_envelope", None)
+    primary = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+    same_route_candidate = _dimensional_request("codex.headless.full", score=5)
+
+    decision = evaluate_dispatch_policy(
+        primary,
+        candidate_requests=(same_route_candidate,),
+        now=NOW,
+    )
+
+    assert primary.demand_vector is None
+    assert same_route_candidate.demand_vector is not None
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "missing_demand_vector" in decision.reason_codes
+    assert "route_envelope_missing" in decision.reason_codes
+    assert "dimensional_unique_dominant_route" not in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+
+
+def test_candidate_set_cannot_bypass_primary_route_envelope_hold() -> None:
+    # Regression guard: candidate-set evaluation used to run before the primary
+    # route-envelope hold, allowing an alternate route to bypass admission.
+    task_fields = _task_fields()
+    task_fields["route_envelope"] = _route_envelope(admission_action="hold")
+    primary = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=task_fields,
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        now=NOW,
+    )
+    alternative = _dimensional_request("claude.headless.full", score=5)
+
+    decision = evaluate_dispatch_policy(
+        primary,
+        candidate_requests=(alternative,),
+        now=NOW,
+    )
+
+    assert primary.demand_vector is not None
+    assert alternative.demand_vector is not None
+    assert decision.action is DispatchAction.HOLD
+    assert decision.launch_allowed is False
+    assert "route_envelope_admission_hold" in decision.reason_codes
+    assert "route_envelope_hold" in decision.reason_codes
+    assert "dimensional_unique_dominant_route" not in decision.reason_codes
+    assert "policy_launch" not in decision.reason_codes
+    assert decision.dimensional_receipt is not None
+    assert [candidate.route_id for candidate in decision.dimensional_receipt.candidates] == [
+        "codex.headless.full"
+    ]
+
+
+def test_candidate_set_keeps_primary_for_same_route_candidate() -> None:
+    # Regression guard: same-route candidates used to overwrite the primary
+    # request in candidate-set deduplication.
+    primary = _dimensional_request("codex.headless.full", score=3)
+    same_route_candidate = _dimensional_request("codex.headless.full", score=5)
+    primary_only = evaluate_dispatch_policy(primary, candidate_requests=(), now=NOW)
+
+    decision = evaluate_dispatch_policy(
+        primary,
+        candidate_requests=(same_route_candidate,),
+        now=NOW,
+    )
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert "dimensional_unique_dominant_route" in decision.reason_codes
+    assert decision.dimensional_receipt is not None
+    assert decision.dimensional_receipt.selected_route_id == "codex.headless.full"
+    assert len(decision.dimensional_receipt.candidates) == 1
+    receipt = decision.dimensional_receipt.candidates[0]
+    assert receipt.route_id == "codex.headless.full"
+    assert receipt.aggregate_score is not None
+    assert primary_only.dimensional_receipt is not None
+    assert receipt.aggregate_score == primary_only.dimensional_receipt.candidates[0].aggregate_score
+
+
 def test_stale_capability_data_holds() -> None:
     request = _request(
         capability=_capability(
@@ -371,6 +804,706 @@ def test_stale_capability_data_holds() -> None:
 
     assert decision.action is DispatchAction.HOLD
     assert "capability_data_stale_or_unknown" in decision.reason_codes
+
+
+def test_pending_capability_surface_delta_holds_even_with_fresh_legacy_telemetry() -> None:
+    blocker = "capability_surface_delta:delta_pending:route.codex.headless.full"
+    request = _request(
+        route_id="codex.headless.full",
+        capability=_capability(
+            route_id="codex.headless.full",
+            freshness_ok=True,
+            freshness_errors=(),
+            surface_delta_refs=("cap-surface-delta:20260701T030000Z",),
+            surface_delta_blockers=(blocker,),
+        ),
+        quota=_quota(route_subscription_quota_state="fresh"),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.HOLD
+    assert decision.registry_freshness_green is False
+    assert decision.quota_freshness_green is False
+    assert decision.resource_freshness_green is False
+    assert "capability_surface_delta_pending" in decision.reason_codes
+    assert blocker in decision.reason_codes
+
+
+def test_build_dispatch_request_populates_surface_delta_blockers_from_policy_sources(
+    tmp_path: Path,
+) -> None:
+    surface_delta_path = tmp_path / "capability-surface-deltas.json"
+    surface_delta_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "fixture_set_id": "policy-source-delta-test",
+                "schema_ref": "schemas/capability-surface-delta.schema.json",
+                "generated_from": ["unit-test"],
+                "declared_at": "2026-05-09T22:00:00Z",
+                "descriptors": [
+                    {
+                        "descriptor_schema": 1,
+                        "surface_id": "route.codex.headless.full",
+                        "descriptor_ref": "platform-capability-registry:codex.headless.full",
+                        "surface_kind": "review_seat",
+                        "authority_ceiling": "read_only",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "stale_after": "1h",
+                        "evidence_refs": ["test:descriptor"],
+                        "route_id": "codex.headless.full",
+                        "resource_pools": ["subscription_quota"],
+                    }
+                ],
+                "deltas": [
+                    {
+                        "delta_schema": 1,
+                        "delta_id": "test:pending-codex-delta",
+                        "source": "unit-test",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "detected_by": "unit-test",
+                        "surface_id": "route.codex.headless.full",
+                        "delta_kind": "stale_determination",
+                        "prior_descriptor_ref": "platform-capability-registry:codex.headless.full",
+                        "observed_descriptor_ref": "platform-capability-receipt:codex:current-expired",
+                        "evidence_refs": ["test:expired-codex-receipt"],
+                        "authority_ceiling": "read_only",
+                        "affected_resource_pools": ["subscription_quota"],
+                        "privacy_sensitive": True,
+                        "public_egress": False,
+                        "money_rail": False,
+                        "freshness_state": "stale",
+                        "required_intake_action": "refresh_receipt",
+                        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+                        "summary": "test stale codex determination",
+                    },
+                    {
+                        "delta_schema": 1,
+                        "delta_id": "test:new-openrouter",
+                        "source": "unit-test",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "detected_by": "unit-test",
+                        "surface_id": "route.openrouter.test",
+                        "delta_kind": "new_capability",
+                        "prior_descriptor_ref": None,
+                        "observed_descriptor_ref": "provider-catalog:openrouter:test",
+                        "evidence_refs": ["test:openrouter"],
+                        "authority_ceiling": "frontier_review_required",
+                        "affected_resource_pools": ["api_paid_spend"],
+                        "privacy_sensitive": True,
+                        "public_egress": False,
+                        "money_rail": True,
+                        "freshness_state": "delta_pending",
+                        "required_intake_action": "mint_intake_item",
+                        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+                        "summary": "test new capability",
+                    },
+                    {
+                        "delta_schema": 1,
+                        "delta_id": "test:authority-change-publication",
+                        "source": "unit-test",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "detected_by": "unit-test",
+                        "surface_id": "surface.publication_bus.weblog",
+                        "delta_kind": "authority_changed",
+                        "prior_descriptor_ref": "publication-bus:weblog:read-only",
+                        "observed_descriptor_ref": "publication-bus:weblog:publish-capable",
+                        "evidence_refs": ["test:publication"],
+                        "authority_ceiling": "frontier_review_required",
+                        "affected_resource_pools": ["public_egress"],
+                        "privacy_sensitive": True,
+                        "public_egress": True,
+                        "money_rail": False,
+                        "freshness_state": "delta_pending",
+                        "required_intake_action": "update_descriptor",
+                        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+                        "summary": "test authority change",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    sources = load_dispatch_policy_sources(
+        registry_path=None,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        surface_delta_path=surface_delta_path,
+        now=NOW,
+    )
+
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        quota_ledger=sources.quota_ledger,
+        surface_delta_refs_by_route=sources.surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=sources.surface_delta_blockers_by_route,
+        now=NOW,
+    )
+
+    assert request.capability is not None
+    assert request.capability.surface_delta_refs
+    assert request.capability.surface_delta_blockers
+    decision = evaluate_dispatch_policy(request, now=NOW)
+    assert decision.action is DispatchAction.HOLD
+    assert "capability_surface_delta_pending" in decision.reason_codes
+    assert any("test:pending-codex-delta" in reason for reason in decision.reason_codes)
+
+
+def test_malformed_surface_delta_policy_source_fails_closed_for_routes(
+    tmp_path: Path,
+) -> None:
+    surface_delta_path = tmp_path / "malformed-surface-deltas.json"
+    surface_delta_path.write_text("{not json", encoding="utf-8")
+
+    sources = load_dispatch_policy_sources(
+        registry_path=None,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        surface_delta_path=surface_delta_path,
+        now=NOW,
+    )
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        quota_ledger=sources.quota_ledger,
+        surface_delta_refs_by_route=sources.surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=sources.surface_delta_blockers_by_route,
+        now=NOW,
+    )
+
+    assert request.capability is not None
+    assert request.capability.surface_delta_blockers
+    decision = evaluate_dispatch_policy(request, now=NOW)
+    assert decision.action is DispatchAction.HOLD
+    assert "capability_surface_delta_pending" in decision.reason_codes
+    assert any("producer_file" in reason for reason in decision.reason_codes)
+
+
+def test_surface_delta_policy_source_indexes_descriptor_route_ids(
+    tmp_path: Path,
+) -> None:
+    surface_delta_path = tmp_path / "capability-surface-deltas.json"
+    surface_delta_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "schema_ref": "schemas/capability-surface-delta.schema.json",
+                "generated_from": ["unit-test"],
+                "declared_at": "2026-05-09T22:00:00Z",
+                "descriptors": [
+                    {
+                        "descriptor_schema": 1,
+                        "surface_id": "surface.codex.cluster",
+                        "descriptor_ref": "platform-capability-registry:codex.headless.full",
+                        "surface_kind": "model_route",
+                        "authority_ceiling": "authoritative",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "stale_after": "1h",
+                        "evidence_refs": ["platform-capability-receipt:codex:expired"],
+                        "route_id": "codex.headless.full",
+                        "resource_pools": ["subscription_quota"],
+                    }
+                ],
+                "deltas": [
+                    {
+                        "delta_schema": 1,
+                        "delta_id": "test:descriptor-route-id-stale",
+                        "source": "unit-test",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "detected_by": "unit-test",
+                        "surface_id": "surface.codex.receipt-check",
+                        "delta_kind": "stale_determination",
+                        "prior_descriptor_ref": "legacy-descriptor:codex-cluster",
+                        "observed_descriptor_ref": "platform-capability-receipt:codex:expired",
+                        "evidence_refs": ["test:expired-codex-receipt"],
+                        "authority_ceiling": "authoritative",
+                        "affected_resource_pools": ["subscription_quota"],
+                        "privacy_sensitive": True,
+                        "public_egress": False,
+                        "money_rail": False,
+                        "freshness_state": "stale",
+                        "required_intake_action": "refresh_receipt",
+                        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+                        "summary": "descriptor carries the dispatch route id",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sources = load_dispatch_policy_sources(
+        registry_path=None,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        surface_delta_path=surface_delta_path,
+        now=NOW,
+    )
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        quota_ledger=sources.quota_ledger,
+        surface_delta_refs_by_route=sources.surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=sources.surface_delta_blockers_by_route,
+        now=NOW,
+    )
+
+    assert request.capability is not None
+    assert any(
+        "test:descriptor-route-id-stale" in blocker
+        for blocker in request.capability.surface_delta_blockers
+    )
+    decision = evaluate_dispatch_policy(request, now=NOW)
+    assert decision.action is DispatchAction.HOLD
+    assert "capability_surface_delta_pending" in decision.reason_codes
+
+
+def test_unjoined_blocking_surface_delta_fails_closed_globally(
+    tmp_path: Path,
+) -> None:
+    surface_delta_path = tmp_path / "capability-surface-deltas.json"
+    surface_delta_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "schema_ref": "schemas/capability-surface-delta.schema.json",
+                "generated_from": ["unit-test"],
+                "declared_at": "2026-05-09T22:00:00Z",
+                "descriptors": [
+                    {
+                        "descriptor_schema": 1,
+                        "surface_id": "surface.unrelated.cluster",
+                        "descriptor_ref": "platform-capability-registry:unrelated",
+                        "surface_kind": "model_route",
+                        "authority_ceiling": "authoritative",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "stale_after": "1h",
+                        "evidence_refs": ["test:unrelated-descriptor"],
+                        "route_id": "unrelated.headless.full",
+                        "resource_pools": ["subscription_quota"],
+                    }
+                ],
+                "deltas": [
+                    {
+                        "delta_schema": 1,
+                        "delta_id": "test:unjoined-stale-surface",
+                        "source": "unit-test",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "detected_by": "unit-test",
+                        "surface_id": "surface.dark.receipt-check",
+                        "delta_kind": "stale_determination",
+                        "prior_descriptor_ref": "receipt:dark:previous",
+                        "observed_descriptor_ref": "receipt:dark:expired",
+                        "evidence_refs": ["receipt:dark:expired"],
+                        "authority_ceiling": "authoritative",
+                        "affected_resource_pools": ["subscription_quota"],
+                        "privacy_sensitive": True,
+                        "public_egress": False,
+                        "money_rail": False,
+                        "freshness_state": "stale",
+                        "required_intake_action": "refresh_receipt",
+                        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+                        "summary": "blocking delta cannot be joined to a route",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sources = load_dispatch_policy_sources(
+        registry_path=None,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        surface_delta_path=surface_delta_path,
+        now=NOW,
+    )
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        quota_ledger=sources.quota_ledger,
+        surface_delta_refs_by_route=sources.surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=sources.surface_delta_blockers_by_route,
+        now=NOW,
+    )
+
+    assert request.capability is not None
+    assert any(
+        "test:unjoined-stale-surface" in blocker
+        for blocker in request.capability.surface_delta_blockers
+    )
+    decision = evaluate_dispatch_policy(request, now=NOW)
+    assert decision.action is DispatchAction.HOLD
+    assert "capability_surface_delta_pending" in decision.reason_codes
+
+
+def test_plain_descriptor_ref_without_route_id_fails_closed_globally(
+    tmp_path: Path,
+) -> None:
+    surface_delta_path = tmp_path / "capability-surface-deltas.json"
+    surface_delta_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "schema_ref": "schemas/capability-surface-delta.schema.json",
+                "generated_from": ["unit-test"],
+                "declared_at": "2026-05-09T22:00:00Z",
+                "descriptors": [
+                    {
+                        "descriptor_schema": 1,
+                        "surface_id": "surface.publication_bus.weblog",
+                        "descriptor_ref": "publication-bus-weblog",
+                        "surface_kind": "publication_bus",
+                        "authority_ceiling": "frontier_review_required",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "stale_after": "1h",
+                        "evidence_refs": ["publication-bus-weblog-receipt"],
+                        "route_id": None,
+                        "resource_pools": ["public_egress"],
+                    }
+                ],
+                "deltas": [
+                    {
+                        "delta_schema": 1,
+                        "delta_id": "test:plain-ref-publication-stale",
+                        "source": "unit-test",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "detected_by": "unit-test",
+                        "surface_id": "surface.publication_bus.weblog",
+                        "delta_kind": "stale_determination",
+                        "prior_descriptor_ref": "publication-bus-weblog",
+                        "observed_descriptor_ref": "publication-bus-weblog-receipt",
+                        "evidence_refs": ["publication-bus-weblog-receipt"],
+                        "authority_ceiling": "frontier_review_required",
+                        "affected_resource_pools": ["public_egress"],
+                        "privacy_sensitive": True,
+                        "public_egress": True,
+                        "money_rail": False,
+                        "freshness_state": "stale",
+                        "required_intake_action": "refresh_receipt",
+                        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+                        "summary": "plain non-route descriptor ref cannot satisfy dispatch routing",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sources = load_dispatch_policy_sources(
+        registry_path=None,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        surface_delta_path=surface_delta_path,
+        now=NOW,
+    )
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        quota_ledger=sources.quota_ledger,
+        surface_delta_refs_by_route=sources.surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=sources.surface_delta_blockers_by_route,
+        now=NOW,
+    )
+
+    assert request.capability is not None
+    assert any(
+        "test:plain-ref-publication-stale" in blocker
+        for blocker in request.capability.surface_delta_blockers
+    )
+    decision = evaluate_dispatch_policy(request, now=NOW)
+    assert decision.action is DispatchAction.HOLD
+    assert "capability_surface_delta_pending" in decision.reason_codes
+
+
+def test_unknown_producer_route_id_fails_closed_globally(
+    tmp_path: Path,
+) -> None:
+    surface_delta_path = tmp_path / "capability-surface-deltas.json"
+    surface_delta_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "schema_ref": "schemas/capability-surface-delta.schema.json",
+                "generated_from": ["unit-test"],
+                "declared_at": "2026-05-09T22:00:00Z",
+                "descriptors": [
+                    {
+                        "descriptor_schema": 1,
+                        "surface_id": "surface.codex.cluster",
+                        "descriptor_ref": "platform-capability-registry:codex.headless.typo",
+                        "surface_kind": "model_route",
+                        "authority_ceiling": "authoritative",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "stale_after": "1h",
+                        "evidence_refs": ["receipt:codex-typo"],
+                        "route_id": "codex.headless.ful",
+                        "resource_pools": ["subscription_quota"],
+                    }
+                ],
+                "deltas": [
+                    {
+                        "delta_schema": 1,
+                        "delta_id": "test:unknown-route-stale",
+                        "source": "unit-test",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "detected_by": "unit-test",
+                        "surface_id": "surface.codex.receipt-check",
+                        "delta_kind": "stale_determination",
+                        "prior_descriptor_ref": "receipt:codex-typo:previous",
+                        "observed_descriptor_ref": "receipt:codex-typo:expired",
+                        "evidence_refs": ["receipt:codex-typo"],
+                        "authority_ceiling": "authoritative",
+                        "affected_resource_pools": ["subscription_quota"],
+                        "privacy_sensitive": True,
+                        "public_egress": False,
+                        "money_rail": False,
+                        "freshness_state": "stale",
+                        "required_intake_action": "refresh_receipt",
+                        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+                        "summary": "producer descriptor names an unknown dispatch route",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sources = load_dispatch_policy_sources(
+        registry_path=None,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        surface_delta_path=surface_delta_path,
+        now=NOW,
+    )
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        quota_ledger=sources.quota_ledger,
+        surface_delta_refs_by_route=sources.surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=sources.surface_delta_blockers_by_route,
+        now=NOW,
+    )
+
+    assert request.capability is not None
+    assert any(
+        "test:unknown-route-stale" in blocker
+        for blocker in request.capability.surface_delta_blockers
+    )
+    decision = evaluate_dispatch_policy(request, now=NOW)
+    assert decision.action is DispatchAction.HOLD
+    assert "capability_surface_delta_pending" in decision.reason_codes
+
+
+def test_unknown_producer_route_id_with_route_shaped_raw_ref_fails_closed_globally(
+    tmp_path: Path,
+) -> None:
+    surface_delta_path = tmp_path / "capability-surface-deltas.json"
+    surface_delta_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "schema_ref": "schemas/capability-surface-delta.schema.json",
+                "generated_from": ["unit-test"],
+                "declared_at": "2026-05-09T22:00:00Z",
+                "descriptors": [
+                    {
+                        "descriptor_schema": 1,
+                        "surface_id": "surface.codex.cluster",
+                        "descriptor_ref": "platform-capability-registry:codex.headless.typo",
+                        "surface_kind": "model_route",
+                        "authority_ceiling": "authoritative",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "stale_after": "1h",
+                        "evidence_refs": ["receipt:codex-typo"],
+                        "route_id": "codex.headless.ful",
+                        "resource_pools": ["subscription_quota"],
+                    }
+                ],
+                "deltas": [
+                    {
+                        "delta_schema": 1,
+                        "delta_id": "test:unknown-route-raw-known-ref-stale",
+                        "source": "unit-test",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "detected_by": "unit-test",
+                        "surface_id": "surface.codex.receipt-check",
+                        "delta_kind": "stale_determination",
+                        "prior_descriptor_ref": "codex.headless.full",
+                        "observed_descriptor_ref": "receipt:codex-typo:expired",
+                        "evidence_refs": ["codex.headless.full"],
+                        "authority_ceiling": "authoritative",
+                        "affected_resource_pools": ["subscription_quota"],
+                        "privacy_sensitive": True,
+                        "public_egress": False,
+                        "money_rail": False,
+                        "freshness_state": "stale",
+                        "required_intake_action": "refresh_receipt",
+                        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+                        "summary": "raw known-route refs must not validate unknown producer route",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sources = load_dispatch_policy_sources(
+        registry_path=None,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        surface_delta_path=surface_delta_path,
+        now=NOW,
+    )
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        quota_ledger=sources.quota_ledger,
+        surface_delta_refs_by_route=sources.surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=sources.surface_delta_blockers_by_route,
+        now=NOW,
+    )
+
+    assert request.capability is not None
+    assert any(
+        "test:unknown-route-raw-known-ref-stale" in blocker
+        for blocker in request.capability.surface_delta_blockers
+    )
+    decision = evaluate_dispatch_policy(request, now=NOW)
+    assert decision.action is DispatchAction.HOLD
+    assert "capability_surface_delta_pending" in decision.reason_codes
+
+
+def test_shared_descriptor_evidence_ref_blocks_all_joined_routes(
+    tmp_path: Path,
+) -> None:
+    surface_delta_path = tmp_path / "capability-surface-deltas.json"
+    surface_delta_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "schema_ref": "schemas/capability-surface-delta.schema.json",
+                "generated_from": ["unit-test"],
+                "declared_at": "2026-05-09T22:00:00Z",
+                "descriptors": [
+                    {
+                        "descriptor_schema": 1,
+                        "surface_id": "surface.codex.cluster",
+                        "descriptor_ref": "platform-capability-registry:codex.headless.full",
+                        "surface_kind": "model_route",
+                        "authority_ceiling": "authoritative",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "stale_after": "1h",
+                        "evidence_refs": ["receipt:shared-provider"],
+                        "route_id": "codex.headless.full",
+                        "resource_pools": ["subscription_quota"],
+                    },
+                    {
+                        "descriptor_schema": 1,
+                        "surface_id": "surface.glmcp.cluster",
+                        "descriptor_ref": "platform-capability-registry:glmcp.review.direct",
+                        "surface_kind": "model_route",
+                        "authority_ceiling": "authoritative",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "stale_after": "1h",
+                        "evidence_refs": ["receipt:shared-provider"],
+                        "route_id": "glmcp.review.direct",
+                        "resource_pools": ["subscription_quota"],
+                    },
+                ],
+                "deltas": [
+                    {
+                        "delta_schema": 1,
+                        "delta_id": "test:shared-provider-stale",
+                        "source": "unit-test",
+                        "observed_at": "2026-05-09T22:00:00Z",
+                        "detected_by": "unit-test",
+                        "surface_id": "surface.provider.receipt-check",
+                        "delta_kind": "stale_determination",
+                        "prior_descriptor_ref": "receipt:shared-provider:previous",
+                        "observed_descriptor_ref": "receipt:shared-provider:current-expired",
+                        "evidence_refs": ["receipt:shared-provider"],
+                        "authority_ceiling": "authoritative",
+                        "affected_resource_pools": ["subscription_quota"],
+                        "privacy_sensitive": True,
+                        "public_egress": False,
+                        "money_rail": False,
+                        "freshness_state": "stale",
+                        "required_intake_action": "refresh_receipt",
+                        "remediation_ref": "cc-task-capability-freshness-remediation-and-discovery-automation-20260630",
+                        "summary": "shared provider receipt is stale",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sources = load_dispatch_policy_sources(
+        registry_path=None,
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        surface_delta_path=surface_delta_path,
+        now=NOW,
+    )
+
+    for route_id in ("codex.headless.full", "glmcp.review.direct"):
+        assert any(
+            "test:shared-provider-stale" in blocker
+            for blocker in sources.surface_delta_blockers_by_route[route_id]
+        )
+
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        quota_ledger=sources.quota_ledger,
+        surface_delta_refs_by_route=sources.surface_delta_refs_by_route,
+        surface_delta_blockers_by_route=sources.surface_delta_blockers_by_route,
+        now=NOW,
+    )
+
+    assert request.capability is not None
+    assert any(
+        "test:shared-provider-stale" in blocker
+        for blocker in request.capability.surface_delta_blockers
+    )
+    decision = evaluate_dispatch_policy(request, now=NOW)
+    assert decision.action is DispatchAction.HOLD
+    assert "capability_surface_delta_pending" in decision.reason_codes
 
 
 def test_unsupported_routes_refuse() -> None:
@@ -1189,6 +2322,63 @@ def test_dimensional_policy_holds_lower_scoring_requested_route() -> None:
     assert decision.dimensional_receipt.selected_route_id == "claude.headless.full"
 
 
+def test_dimensional_policy_launches_substitute_for_degraded_recomposition() -> None:
+    primary = _dimensional_request(
+        "codex.headless.full",
+        score=5,
+        capability_overrides={
+            "freshness_ok": False,
+            "freshness_errors": (
+                "capability_availability_degraded",
+                "availability_receipt:availability-codex-headless-full-test",
+                "auth_surface_not_fresh",
+                "capacity_pool_headroom_not_fresh",
+            ),
+            "availability_status": "degraded",
+            "availability_receipt_ref": (
+                "capability-availability-receipt:"
+                "codex.headless.full:availability-codex-headless-full-test"
+            ),
+            "availability_reason_codes": (
+                "capability_availability_degraded",
+                "availability_receipt:availability-codex-headless-full-test",
+                "auth_surface:oauth",
+                "capacity_pool:subscription_quota",
+                "auth_surface_not_fresh",
+                "capacity_pool_headroom_not_fresh",
+                "refresh_status:deferred",
+            ),
+            "availability_refresh_status": "deferred",
+            "availability_recomposition_required": True,
+        },
+    )
+    substitute = _dimensional_request("claude.headless.full", score=4)
+
+    decision = evaluate_dispatch_policy(
+        primary,
+        candidate_requests=(substitute,),
+        now=NOW,
+    )
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.launch_allowed is True
+    assert decision.route_id == "claude.headless.full"
+    assert "policy_launch" in decision.reason_codes
+    assert "availability_recomposition_required" in decision.reason_codes
+    assert "availability_recomposed_from:codex.headless.full" in decision.reason_codes
+    assert "availability_recomposed_to:claude.headless.full" in decision.reason_codes
+    assert (
+        "capability-availability-receipt:codex.headless.full:availability-codex-headless-full-test"
+    ) in decision.reason_codes
+    assert decision.dimensional_receipt is not None
+    assert decision.dimensional_receipt.selected_route_id == "claude.headless.full"
+    candidates = {
+        candidate.route_id: candidate for candidate in decision.dimensional_receipt.candidates
+    }
+    assert candidates["codex.headless.full"].status is CandidateStatus.VETOED
+    assert candidates["claude.headless.full"].status is CandidateStatus.SELECTED
+
+
 def test_dimensional_policy_holds_ties_without_degraded_authority() -> None:
     primary = _dimensional_request("codex.headless.full", score=4)
     tied = _dimensional_request("claude.headless.full", score=4)
@@ -1234,6 +2424,35 @@ def test_dimensional_policy_vetoes_missing_required_tool() -> None:
     assert decision.dimensional_receipt is not None
     [candidate] = decision.dimensional_receipt.candidates
     assert any(veto.code == "required_tool_unavailable" for veto in candidate.vetoes)
+
+
+def test_dimensional_policy_scores_fixed_route_overhead_through_dispatch() -> None:
+    demand = _demand(tags=["fixed-overhead-sensitive"])
+    route_payload = _route_with_scores("codex.headless.full", score=5).model_dump(mode="json")
+    route_payload["historical_performance"]["fixed_route_overhead"] = {
+        "fixed_cost_score": 4,
+        "setup_seconds": 90,
+        "context_tokens": 3000,
+        "coordination_steps": 2,
+        "evidence_refs": ["overhead:test:codex-headless-full"],
+        "projection_ref": "overhead:test:projection",
+    }
+    supply = build_supply_vector(PlatformCapabilityRoute.model_validate(route_payload), now=NOW)
+    request = _request(demand_vector=demand, supply_vector=supply)
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.dimensional_receipt is not None
+    [candidate] = decision.dimensional_receipt.candidates
+    overhead_score = next(
+        score for score in candidate.dimensional_scores if score.dimension == "fixed_route_overhead"
+    )
+    assert overhead_score.demand == 5
+    assert overhead_score.supply == 4
+    assert overhead_score.score == 1.0
+    assert overhead_score.confidence == 3.0
+    assert overhead_score.evidence_refs == ("overhead:test:codex-headless-full",)
 
 
 def test_policy_rollback_is_retired_and_requires_signed_route_receipts() -> None:
@@ -1313,6 +2532,58 @@ def test_policy_sources_flag_invalid_live_ledger_on_fallback(
     assert sources.quota_ledger_source == "fixtures"
     assert sources.quota_live_error is not None
     assert "invalid quota/spend ledger" in sources.quota_live_error
+
+
+def test_policy_sources_fail_soft_when_quota_fixture_resolution_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_fixture_resolution(*, live_path: Path | None = None) -> object:
+        raise RuntimeError(
+            "hapax-spine: cannot load 'quota-spend-ledger-fixtures.json' "
+            "-- set HAPAX_SPINE_CONFIG_DIR"
+        )
+
+    monkeypatch.setattr(
+        "shared.dispatcher_policy.load_quota_spend_ledger_resolved",
+        fail_fixture_resolution,
+    )
+    receipt = build_route_authority_receipt(
+        receipt_type="runtime_actuation",
+        route_id="codex.headless.full",
+        evidence_refs=["route-authority-receipt:test-feed-1e"],
+        task_ids=["cc-task-quota-fixture-failsoft-capability-plane-20260705"],
+        mutation_surfaces=["runtime"],
+        receipt_id="test-feed-1e-runtime-actuation",
+        issued_at=NOW,
+    )
+    write_route_authority_receipt(receipt, receipt_dir=tmp_path)
+
+    sources = load_dispatch_policy_sources(receipt_dir=tmp_path, now=NOW)
+
+    assert sources.registry is not None
+    assert sources.registry.routes
+    assert sources.registry_error is None
+    assert sources.route_authority_receipts == (receipt,)
+    assert sources.quota_ledger is None
+    assert sources.quota_ledger_source is None
+    assert sources.quota_error is not None
+    assert "quota-spend-ledger-fixtures.json" in sources.quota_error
+
+
+def test_policy_sources_do_not_mask_unexpected_quota_runtime_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_unexpectedly(*, live_path: Path | None = None) -> object:
+        raise RuntimeError("unexpected quota resolver bug")
+
+    monkeypatch.setattr(
+        "shared.dispatcher_policy.load_quota_spend_ledger_resolved",
+        fail_unexpectedly,
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected quota resolver bug"):
+        load_dispatch_policy_sources()
 
 
 def test_policy_sources_explicit_path_bypasses_live_resolution(

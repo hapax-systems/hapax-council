@@ -44,11 +44,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ryanklee/hapax-council"
-Repository = "https://github.com/ryanklee/hapax-council"
-"Bug Tracker" = "https://github.com/ryanklee/hapax-council/issues"
+Homepage = "https://github.com/hapax-systems/hapax-council"
+Repository = "https://github.com/hapax-systems/hapax-council"
+"Bug Tracker" = "https://github.com/hapax-systems/hapax-council/issues"
 "Methodology" = "https://hapax.weblog.lol/velocity-report-2026-04-25"
-"Citation" = "https://github.com/ryanklee/hapax-council/blob/main/packages/hapax-refusals/CITATION.cff"
+"Citation" = "https://github.com/hapax-systems/hapax-council/blob/main/packages/hapax-refusals/CITATION.cff"
 
 [project.optional-dependencies]
 metrics = [
