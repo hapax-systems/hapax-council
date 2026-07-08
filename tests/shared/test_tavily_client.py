@@ -700,9 +700,12 @@ def test_usage_endpoint_uses_get_and_project_header(tmp_path: Path) -> None:
     assert not (tmp_path / "usage.jsonl").exists()
 
 
-def test_usage_endpoint_normalizes_null_numeric_fields_and_missing_objects(
+def test_usage_endpoint_normalizes_null_numeric_fields_and_warns(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level("WARNING", logger="shared.tavily_client")
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/usage"
         return httpx.Response(
@@ -741,6 +744,41 @@ def test_usage_endpoint_normalizes_null_numeric_fields_and_missing_objects(
     assert response.account.limit == 0
     assert response.account.research_usage == 0
     assert not (tmp_path / "usage.jsonl").exists()
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("field=key.usage" in message for message in messages)
+    assert any("field=key.limit" in message for message in messages)
+    assert any("field=account.research_usage" in message for message in messages)
+
+
+def test_usage_endpoint_defaults_missing_usage_objects_and_warns(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING", logger="shared.tavily_client")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/usage"
+        return httpx.Response(200, json={})
+
+    client = TavilyClient(
+        api_key="test-token",
+        config_path=_config(tmp_path / "tavily.yaml"),
+        cache_dir=tmp_path / "cache",
+        ledger_path=tmp_path / "usage.jsonl",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        now=_now,
+    )
+
+    response = client.usage()
+
+    assert response.key.usage == 0
+    assert response.key.limit == 0
+    assert response.account.usage == 0
+    assert response.account.limit == 0
+    assert not (tmp_path / "usage.jsonl").exists()
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("section=key" in message for message in messages)
+    assert any("section=account" in message for message in messages)
 
 
 def test_tavily_account_usage_rejects_non_numeric_usage_values() -> None:
