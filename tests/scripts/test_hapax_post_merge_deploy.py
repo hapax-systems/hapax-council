@@ -2269,6 +2269,7 @@ def test_canonical_gate_deploy_failure_does_not_stamp_last_deployed_sha(
 
     assert result.returncode == 23, (result.stdout, result.stderr)
     assert "canonical gate deploy failed" in result.stderr
+    assert "next: inspect hooks-doctor --deploy-canonical output" in result.stderr
     assert calls.exists(), "failing deploy should still attempt hooks-doctor"
     assert not (tmp_path / "traces" / "last-deployed-sha").exists()
     assert (canon / "cc-task-gate.sh").read_text(encoding="utf-8") == (
@@ -2284,6 +2285,65 @@ def test_canonical_gate_deploy_failure_does_not_stamp_last_deployed_sha(
     assert record["deploy_groups"]["canonical_gate_closure"] == [
         "hooks/scripts/cc-task-gate.impl.sh"
     ]
+
+
+def test_partial_gate_closure_fails_with_next_action(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "base")
+    partial = repo / "hooks" / "scripts" / "cc-task-gate.impl.sh"
+    partial.parent.mkdir(parents=True)
+    partial.write_text("#!/usr/bin/env bash\necho partial\n", encoding="utf-8")
+    partial.chmod(0o755)
+    _git(repo, "add", str(partial.relative_to(repo)))
+    _git(repo, "commit", "-m", "partial gate closure")
+    sha = _git(repo, "rev-parse", "HEAD")
+    env = _gate_reconcile_env(tmp_path, repo, tmp_path / "canon", tmp_path / "calls.txt")
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "incomplete canonical gate closure" in result.stderr
+    assert "next: ensure every GATE_CLOSURE_FILES member exists" in result.stderr
+    assert not (tmp_path / "traces" / "last-deployed-sha").exists()
+
+
+def test_enable_latch_change_counts_as_gate_closure(tmp_path: Path) -> None:
+    repo, _ = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    latch = repo / "hooks" / "scripts" / "hapax_check_enable_latch.sh"
+    latch.write_text("#!/usr/bin/env bash\necho changed-enable-latch\n", encoding="utf-8")
+    _git(repo, "add", str(latch.relative_to(repo)))
+    _git(repo, "commit", "-m", "change enable latch")
+    sha = _git(repo, "rev-parse", "HEAD")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "gate closure changed (1): redeploying canonical gate" in result.stdout
+    assert (canon / "hapax_check_enable_latch.sh").read_text(encoding="utf-8") == (
+        "#!/usr/bin/env bash\necho changed-enable-latch\n"
+    )
 
 
 def test_no_files_path_gate_deploy_failure_does_not_stamp(tmp_path: Path) -> None:
@@ -2354,6 +2414,17 @@ def test_reconcile_stages_complete_closure_for_real_hooks_doctor(tmp_path: Path)
     deployed = (canon / "cc-task-gate.sh").read_text(encoding="utf-8")
     assert "is_cognition_path" in deployed, "real hooks-doctor must accept the staged closure"
     assert (canon / "hapax_check_enable_latch.sh").exists()
+
+    second = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert second.returncode == 0, (second.stdout, second.stderr)
+    assert "canonical gate closure already matches" in second.stdout
 
 
 def test_check_symlink_drift_ignores_legacy_alias_to_nonmatching_script(

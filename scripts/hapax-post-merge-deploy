@@ -792,6 +792,7 @@ gate_closure_source_status() {
         for f in "${missing[@]}"; do
             echo "  missing $f" >&2
         done
+        echo "hapax-post-merge-deploy: next: ensure every GATE_CLOSURE_FILES member exists at $SHA or remove the partial closure, then rerun hapax-post-merge-deploy for this merge" >&2
         return 2
     fi
     return 0
@@ -803,7 +804,7 @@ stage_gate_closure() {
     mkdir -p "$stage/hooks/scripts"
     for f in "${GATE_CLOSURE_FILES[@]}"; do
         if ! git show "$SHA:$f" > "$stage/$f"; then
-            echo "hapax-post-merge-deploy: failed to materialize $f from $SHA" >&2
+            echo "hapax-post-merge-deploy: failed to materialize $f from $SHA; next: verify the source object exists and rerun hapax-post-merge-deploy for this merge" >&2
             return 2
         fi
         chmod +x "$stage/$f" 2>/dev/null || true
@@ -885,7 +886,7 @@ reconcile_canonical_gate_closure() {
     else
         rc=$?
         rm -rf "$stage" 2>/dev/null || true
-        echo "hapax-post-merge-deploy: canonical gate deploy failed (rc=$rc); refusing to stamp last-deployed-sha" >&2
+        echo "hapax-post-merge-deploy: canonical gate deploy failed (rc=$rc); refusing to stamp last-deployed-sha; next: inspect hooks-doctor --deploy-canonical output, repair the staged closure, and rerun hapax-post-merge-deploy for this merge" >&2
         return "$rc"
     fi
 }
@@ -944,7 +945,7 @@ while IFS= read -r f; do
         shared/__init__.py|shared/jsonl_append.py|shared/p0_incident_intake.py)
             RECOVERY_BUNDLE+=("$f")
             ;;
-        hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/cc-task-gate-bootstrap.py|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
+        hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/hapax_check_enable_latch.sh|hooks/scripts/cc-task-gate-bootstrap.py|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
             GATE_CLOSURE+=("$f") ;;
         assets/quake/maps/*|assets/quake/qc/*|assets/quake/csqc/*|assets/quake/models/*|assets/quake/sound/*|assets/quake/glsl/*|assets/quake/scripts/*|assets/quake/config/*|assets/quake/darkplaces/*)
             QUAKE_ASSETS+=("$f") ;;
