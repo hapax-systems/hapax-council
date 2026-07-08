@@ -4673,6 +4673,40 @@ _ = (
     _Stage0DurableJsonlSink.path_for_stream,
 )
 
+# CEI SLICE 4: the transcript execution observer + the attest_transcript close-gate CORE
+# ship in this PR (attest_transcript composes observe + verdict); its remaining consumer —
+# the cc-close wiring + the Yard Crow recomposition attestation — lands in a follow-up
+# slice. Tests exercise these now; the cc-close static call path lands next. Keep the
+# library entrypoints explicit.
+from shared.execution_attestation import (  # noqa: E402
+    attest_transcript as _attest_transcript,
+)
+from shared.execution_attestation import (  # noqa: E402
+    sanctioned_models_for_route as _sanctioned_models_for_route,
+)
+from shared.execution_observer import (  # noqa: E402
+    ExecutionInvariantVerdict as _ExecutionInvariantVerdict,
+)
+from shared.execution_observer import (  # noqa: E402
+    check_execution_invariant as _check_execution_invariant,
+)
+from shared.execution_observer import (  # noqa: E402
+    observe_claude_transcript as _observe_claude_transcript,
+)
+from shared.execution_observer import (  # noqa: E402
+    observe_codex_rollout as _observe_codex_rollout,
+)
+
+_ = (
+    _observe_claude_transcript,
+    _observe_codex_rollout,
+    _check_execution_invariant,
+    _ExecutionInvariantVerdict,
+    _ExecutionInvariantVerdict.admissible,
+    _attest_transcript,
+    _sanctioned_models_for_route,
+)
+
 # Entitlement→capability classifier: the pure core the entitlement reconciler consumes in
 # the follow-up. Tests exercise it now; the static call path lands with the reconciler.
 from shared.entitlement_capability import (
