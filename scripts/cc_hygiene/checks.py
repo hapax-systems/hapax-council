@@ -43,6 +43,11 @@ WIP_LIMIT = 3
 OFFERED_STALE_DAYS = 14
 """§2.7: offered task older than this with no claim is stale-on-arrival."""
 
+GHOST_CLAIM_GRACE_MINUTES = 10
+"""§2.2 grace window: ghost-claimed notes modified within this window are
+skipped — a mid-claim partial stamp must not be reverted out from under a
+freshly launched lane (2026-07-01 eta/ndcvb-phase1 incident)."""
+
 REFUSAL_DORMANCY_DAYS = 7
 """§2.8: zero canonical refusal notes in this window is a dormancy signal."""
 
@@ -121,7 +126,10 @@ def _git_log_count_since(repo_root: Path, branch: str, since_hours: int) -> int:
 
 
 def _gh_pr_list(repo_root: Path) -> list[dict[str, Any]]:
-    """Return open PRs as a list of dicts (number, headRefName, createdAt, updatedAt).
+    """Return open PRs as a list of dicts (number, headRefName, createdAt, updatedAt, author).
+
+    ``author`` is included so the orphan-PR predicate can exclude bot-authored
+    PRs (Dependabot/Renovate), which live outside the cc-task workflow.
 
     Returns ``[]`` on any error (gh missing, unauthenticated, network).
     """
@@ -134,7 +142,7 @@ def _gh_pr_list(repo_root: Path) -> list[dict[str, Any]]:
                 "--state",
                 "open",
                 "--json",
-                "number,headRefName,createdAt,updatedAt",
+                "number,headRefName,createdAt,updatedAt,author",
                 "--limit",
                 "100",
             ],
@@ -335,6 +343,21 @@ def check_ghost_claimed(
     """§2.2 — `status: claimed` AND (`assigned_to: unassigned` OR `claimed_at: null`).
 
     Severity: violation (definitional — `cc-claim` cannot produce this).
+
+    Grace window: a ghost whose note file changed within
+    ``GHOST_CLAIM_GRACE_MINUTES`` is skipped. A partially stamped claim
+    (target keys absent when cc-claim's substitutions ran) looks ghost for
+    the moments between the stamp and the sweep, and the H1 revert then
+    kills the freshly launched lane via the launcher's terminal check
+    (2026-07-01 eta/ndcvb-phase1 incident). A real ghost goes quiet and is
+    flagged on the first sweep after the window.
+
+    Known limitation: the window is anchored to file mtime, so a writer that
+    touches a genuinely ghost note more often than the window (vault sync,
+    hook appends) defers detection while it keeps writing. Accepted: those
+    writers are themselves sweep-visible, and anchoring to frontmatter
+    timestamps is impossible here — the ghost predicate is precisely that
+    claimed_at is missing.
     """
     now = now or _now()
     events: list[HygieneEvent] = []
@@ -343,6 +366,12 @@ def check_ghost_claimed(
             continue
         ghost = note.assigned_to in (None, "unassigned") or note.claimed_at is None
         if not ghost:
+            continue
+        try:
+            mtime = datetime.fromtimestamp(Path(note.path).stat().st_mtime, tz=UTC)
+        except OSError:
+            mtime = None
+        if mtime is not None and now - mtime < timedelta(minutes=GHOST_CLAIM_GRACE_MINUTES):
             continue
         events.append(
             HygieneEvent(
@@ -370,7 +399,10 @@ def check_duplicate_claim(
 ) -> list[HygieneEvent]:
     """§2.3 — same `task_id` in 2+ relay yamls' ``current_claim`` within 5min.
 
-    Severity: violation. Only fires when both relays are within window.
+    Severity: violation. Fires one event per *cluster* of claimants whose
+    sorted claim times are each within the window of their neighbor. A
+    chain (a→b→c with sub-window gaps) is one event even if its total span
+    exceeds the window; disjoint bursts hours apart are separate events.
     """
     now = now or _now()
     events: list[HygieneEvent] = []
@@ -378,37 +410,95 @@ def check_duplicate_claim(
     for role, payload in relay_payloads.items():
         task_id, claimed_at = _extract_current_claim(payload)
         if task_id:
-            by_task[task_id].append((role, claimed_at))
+            # A bare-string `current_claim` carries no `claimed_at`; fall back
+            # to the relay's own `updated` stamp so the window has a real time
+            # to compare. Never substitute `now` — that collapses every unknown
+            # timestamp to the same instant, defeating the window and firing a
+            # false "claimed simultaneously within 5min" on every sweep for a
+            # stale collision (the duplicate_claim P0 storm: two relays 91min
+            # apart stormed 52 pages because both timestamps read as `now`).
+            ts = claimed_at or _extract_relay_updated(payload)
+            by_task[task_id].append((role, ts))
     window = timedelta(minutes=DUPLICATE_CLAIM_WINDOW_MIN)
     for task_id, claimers in by_task.items():
         if len(claimers) < 2:
             continue
-        # if any pair is within window (or claimed_at unknown), fire
-        sortable = [(role, ts or now) for role, ts in claimers]
-        sortable.sort(key=lambda pair: pair[1])
-        oldest_ts = sortable[0][1]
-        newest_ts = sortable[-1][1]
-        if newest_ts - oldest_ts > window:
+        # Only claimants with a known timestamp can establish that the claims
+        # fall within the window. If fewer than two are datable, we cannot
+        # distinguish a genuine near-simultaneous double-claim from a stale
+        # leftover, so we stay silent (a stale relay is `relay_yaml_stale`'s
+        # job, not a false duplicate_claim).
+        datable = [(role, ts) for role, ts in claimers if ts is not None]
+        if len(datable) < 2:
             continue
-        roles = [role for role, _ in sortable]
-        events.append(
-            HygieneEvent(
-                timestamp=now,
-                check_id="duplicate_claim",
-                severity="violation",
-                task_id=task_id,
-                session=None,
-                message=(
-                    f"task '{task_id}' claimed simultaneously by sessions "
-                    f"{roles} within {DUPLICATE_CLAIM_WINDOW_MIN}min"
-                ),
-                metadata={
-                    "sessions": ",".join(roles),
-                    "window_minutes": str(DUPLICATE_CLAIM_WINDOW_MIN),
-                },
+        datable.sort(key=lambda pair: pair[1])
+        # Cluster on adjacent within-window gaps, not on the total
+        # oldest→newest span: a span check lets one stale claimant mask a
+        # genuine near-simultaneous pair among the others (three claimants,
+        # one hours old + two minutes apart, must still fire for the fresh
+        # pair). Sorted order guarantees the closest pair is adjacent. Each
+        # cluster alerts separately so one event never lumps together
+        # claimants that are hours apart.
+        clusters: list[list[str]] = []
+        cluster_roles = [datable[0][0]]
+        cluster_end = datable[0][1]
+        for role, ts in datable[1:]:
+            if ts - cluster_end <= window:
+                cluster_roles.append(role)
+            else:
+                clusters.append(cluster_roles)
+                cluster_roles = [role]
+            cluster_end = ts
+        clusters.append(cluster_roles)
+        for roles in clusters:
+            if len(roles) < 2:
+                continue
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="duplicate_claim",
+                    severity="violation",
+                    task_id=task_id,
+                    session=None,
+                    message=(
+                        f"task '{task_id}' claimed by sessions {roles} with "
+                        f"claim times chained within "
+                        f"{DUPLICATE_CLAIM_WINDOW_MIN}min of a neighbor"
+                    ),
+                    metadata={
+                        "sessions": ",".join(roles),
+                        "window_minutes": str(DUPLICATE_CLAIM_WINDOW_MIN),
+                    },
+                )
             )
-        )
     return events
+
+
+def _pr_author_is_bot(pr: dict[str, Any]) -> bool:
+    """True if the PR was opened by a bot (Dependabot, Renovate, github-actions).
+
+    Bot-authored PRs are automated dependency/maintenance updates that live
+    outside the cc-task workflow by design: they will never carry a vault
+    cc-task ``pr`` link, so the orphan-PR predicate must not treat them as
+    hygiene violations (that produced a false-positive P0, incident
+    ``cc_hygiene_violation:orphan_pr:4408`` — Dependabot bumped hapax-logos npm
+    deps and the never-linkable PR aged past the 6h ntfy threshold).
+
+    Robust to two independent GitHub signals so a single API-shape change
+    cannot silently reopen the false positive:
+
+    * the ``author.is_bot`` boolean (primary, from ``gh pr list --json author``),
+      and
+    * the login conventions ``<name>[bot]`` / ``app/<name>`` used for GitHub
+      App / bot accounts (fallback when ``is_bot`` is absent).
+    """
+    author = pr.get("author")
+    if not isinstance(author, dict):
+        return False
+    if author.get("is_bot") is True:
+        return True
+    login = str(author.get("login", ""))
+    return login.endswith("[bot]") or login.startswith("app/")
 
 
 def check_orphan_pr(
@@ -429,6 +519,10 @@ def check_orphan_pr(
     notification storm for the PR's whole open lifetime (P0 incident
     ``orphan_pr:4111``, count 215). ``closed_notes`` defaults to empty so
     callers that only have active notes keep the prior behavior.
+
+    Bot-authored PRs (Dependabot/Renovate) are excluded via
+    ``_pr_author_is_bot``: they are never cc-task-tracked, so flagging them as
+    orphans is a false positive (P0 incident ``orphan_pr:4408``).
     """
     now = now or _now()
     events: list[HygieneEvent] = []
@@ -442,6 +536,8 @@ def check_orphan_pr(
         number = pr.get("number")
         if not isinstance(number, int) or number in linked:
             continue
+        if _pr_author_is_bot(pr):
+            continue  # Dependabot/Renovate — outside the cc-task workflow
         created_raw = pr.get("createdAt")
         created = _parse_dt(created_raw) if created_raw else None
         if created and created > cutoff:

@@ -45,6 +45,15 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import review_team  # noqa: E402
+from github_pr_status import (  # noqa: E402
+    GRAPHQL_BACKOFF_RC,
+    REST_INDETERMINATE_CHECK_NAME,
+    fetch_status_check_rollup_rest,
+    get_pull_rest,
+    list_open_pr_statuses_rest,
+    rest_merge_state_status,
+    run_graphql_rate_aware,
+)
 
 from shared.merge_queue_lineage import (  # noqa: E402
     DEFAULT_LEDGER_PATH,
@@ -96,6 +105,7 @@ NON_BLOCKING_CHECKBOX_RE = re.compile(
     r"\b(optional|non[-_\s]?blocking|informational|follow[-_\s]?up|stretch)\b",
     re.IGNORECASE,
 )
+_MERGE_QUEUE_REF_PR_RE = re.compile(r"/pr-(\d+)-")
 # Sourced from the canonical SSOT so the autoqueue and the cc-task gate agree on
 # the ready family (shared/sdlc_lifecycle.py TASK_MERGE_READY_STATUSES). The two
 # fulfilling-closed states stay admissible for closeout reconciliation.
@@ -112,6 +122,7 @@ AUTOQUEUE_IGNORED_CHECK_CONTEXTS = {
     AUTOQUEUE_ADMISSION_CONTEXT,
     REVIEW_TEAM_QUORUM_EVIDENCE,
     "governance-gate",
+    "hkp-advisory",
     "pr-admission",
 }
 VIRTUAL_RELEASE_MITIGATION_CONTEXTS = frozenset({REVIEW_TEAM_QUORUM_EVIDENCE})
@@ -696,62 +707,176 @@ def fetch_open_prs(
 ) -> list[PullRequest]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
-    cmd = [
-        "gh",
-        "pr",
-        "list",
-        "--repo",
-        repo,
-        "--state",
-        "open",
-        "--limit",
-        str(limit),
-        "--json",
-        ",".join(
-            [
-                "number",
-                "id",
-                "title",
-                "body",
-                "headRefName",
-                "headRefOid",
-                "files",
-                "changedFiles",
-                "isDraft",
-                "mergeStateStatus",
-                "labels",
-                "reviewDecision",
-                "autoMergeRequest",
-                "statusCheckRollup",
-            ]
-        ),
-    ]
-    proc = runner(
-        cmd,
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
+    raw = list_open_pr_statuses_rest(
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+        limit=limit,
+        include_files=True,
+        include_review_decision=True,
     )
-    if proc.returncode != 0:
-        LOG.error("gh pr list failed (rc=%d): %s", proc.returncode, proc.stderr.strip())
-        return []
-    try:
-        raw = json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        LOG.error("gh pr list emitted non-JSON: %s", exc)
-        return []
-    if not isinstance(raw, list):
-        LOG.error("gh pr list emitted %s, expected list", type(raw).__name__)
+    if not raw:
+        LOG.warning("REST open PR scan returned no rows")
         return []
     prs: list[PullRequest] = []
     for item in raw:
         if isinstance(item, dict):
+            rest_pr = None
+            try:
+                number = int(item.get("number"))
+                rest_pr = get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner)
+            except (TypeError, ValueError):
+                rest_pr = None
+            item["mergeStateStatus"] = (
+                rest_merge_state_status(rest_pr)
+                if rest_pr is not None
+                else str(item.get("mergeStateStatus") or "UNKNOWN").upper()
+            )
+            # Preserve the shared REST snapshot when available. If it is absent, derive the
+            # rollup through REST/core check-runs and commit statuses, not another GraphQL PR
+            # view. Fail-closed: an unfetchable rollup reads as "checks unknown / not green".
+            fallback_rollup = item.get("statusCheckRollup")
+            if (
+                isinstance(fallback_rollup, list)
+                and fallback_rollup
+                and not _rollup_is_rest_indeterminate(fallback_rollup)
+            ):
+                item["statusCheckRollup"] = fallback_rollup
+            else:
+                item["statusCheckRollup"] = _fetch_status_check_rollup(
+                    item.get("number"),
+                    head_sha=item.get("headRefOid"),
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
+                )
             pr = _parse_pr(item)
             if pr is not None:
                 prs.append(pr)
     return prs
+
+
+def _fetch_status_check_rollup(
+    number: object,
+    *,
+    head_sha: object | None = None,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    use_cache: bool | None = None,
+) -> list[Any]:
+    """Fetch one PR's status rollup via REST check-runs/statuses.
+
+    Kept separate from the open-PR metadata scan because check-runs are fetched per
+    head SHA through REST/core. Returns ``[]`` fail-closed on any
+    error so an unknown-checks PR is never treated as green.
+    """
+    sha = _scalar(head_sha)
+    if not sha and isinstance(number, int):
+        payload = get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner)
+        head = payload.get("head") if isinstance(payload, dict) else None
+        if isinstance(head, dict):
+            sha = _scalar(head.get("sha"))
+    if not sha:
+        return []
+    rollup = fetch_status_check_rollup_rest(
+        sha,
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+        use_cache=use_cache,
+    )
+
+    if not rollup or _rollup_is_rest_indeterminate(rollup):
+        try:
+            pr_number = int(number)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            pr_number = None
+        if pr_number is not None:
+            ok, gql_sha, gql_rollup = _fetch_status_check_rollup_graphql(
+                pr_number,
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+            )
+            if ok and gql_rollup and (not sha or gql_sha == sha):
+                return gql_rollup
+    if not rollup:
+        LOG.warning(
+            "REST status rollup fetch returned no checks for #%s sha=%s",
+            number,
+            sha,
+        )
+    return rollup
+
+
+def _rollup_is_rest_indeterminate(rollup: list[Any]) -> bool:
+    return bool(rollup) and all(
+        isinstance(item, dict) and _check_name(item) == REST_INDETERMINATE_CHECK_NAME
+        for item in rollup
+    )
+
+
+def _fetch_status_check_rollup_graphql(
+    pr_number: int,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> tuple[bool, str, list[Any]]:
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    owner, name = repo.split("/", 1)
+    query = (
+        "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){"
+        "pullRequest(number:$number){headRefOid commits(last:1){nodes{commit{oid "
+        "statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status "
+        "conclusion completedAt startedAt} ... on StatusContext{context state createdAt}}}}}}}}}}"
+    )
+    proc = run_graphql_rate_aware(
+        [
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"repo={name}",
+            "-F",
+            f"number={pr_number}",
+        ],
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if proc.returncode != 0:
+        return False, "invalid_pr_release_evidence_payload", []
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return False, "invalid_pr_release_evidence_payload", []
+    pull = (
+        payload.get("data", {}).get("repository", {}).get("pullRequest")
+        if isinstance(payload, dict)
+        else None
+    )
+    if not isinstance(pull, dict):
+        return False, "invalid_pr_release_evidence_payload", []
+    sha = _scalar(pull.get("headRefOid"))
+    if not sha:
+        return False, "missing_head_sha", []
+    commit_nodes = (
+        pull.get("commits", {}).get("nodes", []) if isinstance(pull.get("commits"), dict) else []
+    )
+    commit = None
+    if commit_nodes and isinstance(commit_nodes[-1], dict):
+        commit = commit_nodes[-1].get("commit")
+    rollup = (
+        commit.get("statusCheckRollup", {}).get("contexts", {}).get("nodes")
+        if isinstance(commit, dict)
+        else None
+    )
+    if not isinstance(rollup, list):
+        return False, "invalid_status_check_rollup", []
+    return True, sha, rollup
 
 
 def fetch_pr_release_evidence(
@@ -763,32 +888,55 @@ def fetch_pr_release_evidence(
 ) -> tuple[bool, str, set[str]]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
-    cmd = [
-        "gh",
-        "pr",
-        "view",
-        str(pr_number),
-        "--repo",
-        repo,
-        "--json",
-        "headRefOid,statusCheckRollup",
-    ]
-    proc = runner(cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60)
-    output = (proc.stdout or proc.stderr or "").strip()
-    if proc.returncode != 0:
-        return False, output or f"gh pr view failed rc={proc.returncode}", set()
-    try:
-        payload = json.loads(output or "{}")
-    except json.JSONDecodeError:
-        return False, "invalid_pr_release_evidence_json", set()
+    payload = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if not isinstance(payload, dict):
-        return False, "invalid_pr_release_evidence_payload", set()
-    sha = _scalar(payload.get("headRefOid"))
+        fallback = _fetch_pr_release_evidence_graphql(
+            pr_number,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+        )
+        return fallback if fallback[0] else (False, "invalid_pr_release_evidence_payload", set())
+    head = payload.get("head") if isinstance(payload.get("head"), dict) else {}
+    sha = _scalar(head.get("sha"))
     if not sha:
-        return False, "missing_head_sha", set()
-    rollup = payload.get("statusCheckRollup")
+        fallback = _fetch_pr_release_evidence_graphql(
+            pr_number,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+        )
+        return fallback if fallback[0] else (False, "missing_head_sha", set())
+    rollup = _fetch_status_check_rollup(
+        pr_number,
+        head_sha=sha,
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+        use_cache=False,
+    )
     if not isinstance(rollup, list):
         return False, "invalid_status_check_rollup", set()
+    if _rollup_is_rest_indeterminate(rollup):
+        return False, "invalid_status_check_rollup", set()
+    return True, sha, set(summarize_checks(rollup).verified_passed)
+
+
+def _fetch_pr_release_evidence_graphql(
+    pr_number: int,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> tuple[bool, str, set[str]]:
+    ok, sha, rollup = _fetch_status_check_rollup_graphql(
+        pr_number,
+        repo=repo,
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if not ok:
+        return False, sha, set()
     return True, sha, set(summarize_checks(rollup).verified_passed)
 
 
@@ -797,7 +945,7 @@ def fetch_merge_queue_pr_numbers(
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
-) -> set[int]:
+) -> set[int] | None:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
     owner, name = repo.split("/", 1)
@@ -805,10 +953,7 @@ def fetch_merge_queue_pr_numbers(
         "query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){"
         "mergeQueue{entries(first:100){nodes{pullRequest{number}}}}}}"
     )
-    cmd = [
-        "gh",
-        "api",
-        "graphql",
+    graphql_args = [
         "-f",
         f"query={query}",
         "-f",
@@ -816,22 +961,25 @@ def fetch_merge_queue_pr_numbers(
         "-f",
         f"repo={name}",
     ]
-    proc = runner(
-        cmd,
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
+    proc = run_graphql_rate_aware(
+        graphql_args,
+        repo_root=repo_root,
+        runner=runner,
     )
     if proc.returncode != 0:
-        LOG.error("gh merge queue query failed (rc=%d): %s", proc.returncode, proc.stderr.strip())
-        return set()
+        level = logging.WARNING if proc.returncode == GRAPHQL_BACKOFF_RC else logging.ERROR
+        LOG.log(
+            level,
+            "gh merge queue query indeterminate (rc=%d): %s",
+            proc.returncode,
+            proc.stderr.strip(),
+        )
+        return None
     try:
         payload = json.loads(proc.stdout or "{}")
     except json.JSONDecodeError as exc:
         LOG.error("gh merge queue query emitted non-JSON: %s", exc)
-        return set()
+        return None
     nodes = (
         payload.get("data", {})
         .get("repository", {})
@@ -847,6 +995,40 @@ def fetch_merge_queue_pr_numbers(
             except (KeyError, TypeError, ValueError):
                 continue
             queued.add(number)
+    queued |= _merge_queue_ref_pr_numbers(repo=repo, repo_root=repo_root, runner=runner)
+    return queued
+
+
+def _merge_queue_ref_pr_numbers(
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> set[int]:
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    cmd = [
+        "gh",
+        "api",
+        f"repos/{repo}/git/matching-refs/heads/gh-readonly-queue",
+        "--jq",
+        ".[].ref",
+    ]
+    proc = runner(
+        cmd,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        return set()
+    refs = proc.stdout.splitlines()
+    queued: set[int] = set()
+    for ref in refs:
+        if match := _MERGE_QUEUE_REF_PR_RE.search(ref.strip()):
+            queued.add(int(match.group(1)))
     return queued
 
 
@@ -1252,8 +1434,13 @@ def classify_pr(
     ]
     if missing_required:
         reasons.append("missing_required_checks:" + ",".join(missing_required))
-    if pr.check_summary.failed:
-        reasons.append("failed_checks:" + ",".join(pr.check_summary.failed))
+    failed_release_checks = [
+        check
+        for check in pr.check_summary.failed
+        if not required_checks or check in required_checks
+    ]
+    if failed_release_checks:
+        reasons.append("failed_checks:" + ",".join(failed_release_checks))
 
     matches = _matching_tasks(pr, tasks)
     matched_tasks = tuple(matches)
@@ -1418,19 +1605,18 @@ def merge_pr(
 ) -> tuple[bool, str]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
+    graphql_args: list[str] | None = None
     if decision.action == "dequeue":
         if not decision.pr.node_id:
             return False, "missing_pull_request_node_id"
         query = "mutation($id:ID!){dequeuePullRequest(input:{id:$id}){clientMutationId}}"
-        cmd = [
-            "gh",
-            "api",
-            "graphql",
+        graphql_args = [
             "-f",
             f"query={query}",
             "-f",
             f"id={decision.pr.node_id}",
         ]
+        cmd = ["gh", "api", "graphql", *graphql_args]
     else:
         cmd = ["gh", "pr", "merge", str(decision.pr.number), "--repo", repo]
     if decision.action in ("enable_auto_merge", "queue"):
@@ -1457,14 +1643,22 @@ def merge_pr(
         cmd.append("--disable-auto")
     elif decision.action != "dequeue":
         return False, f"unsupported_action:{decision.action}"
-    proc = runner(
-        cmd,
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=120,
-    )
+    if graphql_args is not None:
+        proc = run_graphql_rate_aware(
+            graphql_args,
+            repo_root=repo_root,
+            runner=runner,
+            timeout=120,
+        )
+    else:
+        proc = runner(
+            cmd,
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
     output = (proc.stdout or proc.stderr or "").strip()
     if proc.returncode != 0:
         return False, output or f"gh pr merge failed rc={proc.returncode}"
@@ -1576,7 +1770,50 @@ def _release_auto_arm_current_evidence_blockers(
     probe = dict(frontmatter)
     probe["release_authorized"] = False
     assessment = assess_release_auto_arm(probe, verified_checks=verified_checks)
-    return assessment.blockers
+    blockers = assessment.blockers
+    if assess_release_auto_arm(frontmatter, verified_checks=verified_checks).armed:
+        # These are auto-arm vetoes, not post-authorization vetoes. Once a task
+        # is explicitly head-locked with release_authorized: true, release-head
+        # revalidation should still replay current check/risk evidence, but it
+        # must not strand the accepted manual release solely because the
+        # authorized task is a public/current release or touches protected paths.
+        blockers = tuple(
+            blocker
+            for blocker in blockers
+            if not (
+                blocker.startswith("sensitive_path:")
+                or blocker == "mutation_surface:public"
+                or blocker == "public_current"
+            )
+        )
+    return blockers
+
+
+def _release_auto_arm_authorized_waivers(
+    frontmatter: dict[str, Any],
+    *,
+    verified_checks: set[str],
+) -> tuple[str, ...]:
+    if not assess_release_auto_arm(frontmatter, verified_checks=verified_checks).armed:
+        return ()
+    probe = dict(frontmatter)
+    probe["release_authorized"] = False
+    assessment = assess_release_auto_arm(probe, verified_checks=verified_checks)
+    waivers: list[str] = []
+    for blocker in assessment.blockers:
+        if blocker.startswith("sensitive_path:"):
+            waivers.append(
+                "sensitive_path_waived_by_release_authorization:"
+                f"{blocker.removeprefix('sensitive_path:')}"
+            )
+        elif blocker == "mutation_surface:public":
+            waivers.append(
+                "mutation_surface_waived_by_release_authorization:"
+                f"{blocker.removeprefix('mutation_surface:')}"
+            )
+        elif blocker == "public_current":
+            waivers.append("public_current_waived_by_release_authorization")
+    return tuple(waivers)
 
 
 def _decision_requires_head_guard(decision: Decision) -> bool:
@@ -1602,6 +1839,7 @@ def _release_head_boundary_blocker(
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
+    release_authorization_waivers: list[str] | None = None,
 ) -> str | None:
     if decision.action not in {
         "queue",
@@ -1684,6 +1922,13 @@ def _release_head_boundary_blocker(
     )
     if evidence_blockers:
         return "current_release_auto_arm_blocked:" + ",".join(evidence_blockers)
+    if release_authorization_waivers is not None:
+        release_authorization_waivers.extend(
+            _release_auto_arm_authorized_waivers(
+                current_frontmatter,
+                verified_checks=current_verified_checks,
+            )
+        )
     return None
 
 
@@ -2240,7 +2485,24 @@ def run_reconciler(
     repo_root = repo_root or default_repo_root()
     tasks = load_task_notes(vault_root)
     active_ci_repair_task_ids = _active_ci_repair_task_ids(tasks)
-    queued_prs = fetch_merge_queue_pr_numbers(repo=repo, repo_root=repo_root, runner=runner)
+    queued_prs_snapshot = fetch_merge_queue_pr_numbers(
+        repo=repo, repo_root=repo_root, runner=runner
+    )
+    if queued_prs_snapshot is None:
+        report = {
+            "repo": repo,
+            "apply": apply,
+            "skipped": True,
+            "reason": "merge_queue_state_indeterminate",
+            "detail": "native merge-queue GraphQL probe failed or backed off; no queue mutations attempted",
+        }
+        return _finalize_reconciler_report(
+            report,
+            report_path=report_path,
+            admission_governor_path=admission_governor_path,
+            now=now,
+        )
+    queued_prs = queued_prs_snapshot
     prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
     preliminary_decisions = [
         classify_pr(
@@ -2385,6 +2647,7 @@ def run_reconciler(
                             "message": armed_message,
                         }
                     )
+                release_authorization_waivers: list[str] = []
                 head_blocker = _release_head_boundary_blocker(
                     decision,
                     require_route_metadata=require_route_metadata,
@@ -2393,6 +2656,7 @@ def run_reconciler(
                     repo=repo,
                     repo_root=repo_root,
                     runner=runner,
+                    release_authorization_waivers=release_authorization_waivers,
                 )
                 if head_blocker is not None:
                     mutation_results.append(
@@ -2415,6 +2679,15 @@ def run_reconciler(
                         )
                     )
                     continue
+                if release_authorization_waivers:
+                    mutation_results.append(
+                        {
+                            **decision.as_dict(),
+                            "action": "release_authorization_waiver",
+                            "ok": True,
+                            "waivers": release_authorization_waivers,
+                        }
+                    )
             status_result = set_autoqueue_admission_status(
                 decision,
                 repo=repo,

@@ -160,7 +160,7 @@ def _knobs_file(members: list[str], *, expected_set: int = 12, depth_cap: int = 
     return Path(tmp.name)
 
 
-_OBSERVED_MEMBERS = ["antigrav", "api", "claude", "codex", "glmcp", "local_tool", "vibe", "gemini"]
+_OBSERVED_MEMBERS = ["agy", "api", "claude", "codex", "glmcp", "local_tool", "vibe", "gemini"]
 
 # Frozen drift anchors for the opus BASE leaf at score=4/confidence=4 (leaf-specific D1 = 1 own cell):
 # specificity = mean(d1_comp=1/20=0.05, d2_comp~0.64, d5_comp=8/11) ~= 0.472 ; completeness = 8/11 ~= 0.727.
@@ -482,6 +482,7 @@ def test_knobs_absent_uses_defaults_fail_safe() -> None:
     assert isinstance(knobs, EdtKnobs)
     assert knobs.expected_platform_set == 12
     assert knobs.depth_cap == 20
+    assert len(knobs.expected_platform_members) == 8
     assert "gemini" in knobs.expected_platform_members
     assert "claude" in knobs.expected_platform_members
 
@@ -493,7 +494,7 @@ def test_d0_platform_set_is_operator_assertion() -> None:
     payload = _fresh_payload()
     measures = score_edt(_registry(payload), knobs_path=_knobs_file(_OBSERVED_MEMBERS), now=NOW)
     m = measures[0]
-    assert m.observed_platform_count == 7  # the real registry prefixes
+    assert m.observed_platform_count == 7  # the real live registry prefixes
     assert tuple(m.expected_platform_members) == tuple(
         _OBSERVED_MEMBERS
     )  # read verbatim from knobs
@@ -704,8 +705,8 @@ def test_blocked_variant_leaf_is_unavailable() -> None:
 
 
 # --------------------------------------------------------------------------------------------
-# 24. the SHIPPED config's retired phantoms (cohere/hf) surface as omitted failing measures
-#     (the shipped config declares 10 members incl cohere/hf; verify that path end-to-end)
+# 24. the SHIPPED config's retired phantoms surface as omitted failing measures
+#     (the shipped config declares active members plus retired phantoms; verify that path end-to-end)
 # --------------------------------------------------------------------------------------------
 def test_shipped_config_retired_phantoms_are_omitted() -> None:
     # load the ACTUAL shipped config/edt-platform-knobs.yaml (not a mirrored temp file) so a typo or
@@ -713,15 +714,18 @@ def test_shipped_config_retired_phantoms_are_omitted() -> None:
     shipped = Path(__file__).resolve().parents[2] / "config" / "edt-platform-knobs.yaml"
     assert shipped.is_file(), shipped
     knobs = load_edt_knobs(shipped)
-    # cohere/hf are counted in the declared members + retired_phantoms (the operator's target total)
+    # cohere/hf are counted in the declared members + retired_phantoms (the operator's target total);
+    # antigrav is retired/excised and must not remain an expected live member.
+    assert "antigrav" not in knobs.expected_platform_members
+    assert "agy" in knobs.expected_platform_members
     assert "cohere" in knobs.expected_platform_members
     assert "hf" in knobs.expected_platform_members
-    assert set(knobs.retired_phantoms) == {"cohere", "hf"}
+    assert set(knobs.retired_phantoms) == {"antigrav", "cohere", "hf"}
 
     payload = _fresh_payload()
     measures = score_edt(_registry(payload), knobs_path=shipped, now=NOW)
     # retired_phantoms are EXPLICIT EXCLUSIONS ("done"), NOT omitted — the canary must not flag them
-    for phantom in ("cohere", "hf"):
+    for phantom in ("antigrav", "cohere", "hf"):
         assert phantom not in measures[0].omitted_platforms
     # gemini IS declared, NOT retired, NOT observed -> a genuine omission (the canary's real signal)
     assert "gemini" in measures[0].omitted_platforms

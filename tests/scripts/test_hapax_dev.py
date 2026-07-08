@@ -1,7 +1,7 @@
 """Tests for scripts/hapax-dev — the unified visible-session launcher.
 
 hapax-dev is the operator's one front door for visible sessions across the
-claude / codex / agy runtimes. It does not reimplement launch logic; it picks a
+claude / codex runtimes. It does not reimplement launch logic; it picks a
 free, non-conflicting identity (distinct from the supervised headless fleet),
 refuses collisions, guarantees a fresh HAPAX_SESSION_ID, and dispatches to the
 existing per-platform spawner.
@@ -13,7 +13,7 @@ testable without launching anything:
 - ``HAPAX_DEV_FAKE_LIVE_TMUX`` (set, even empty) replaces the real tmux probe
   with an explicit live-session list — empty therefore means "nothing live".
 - ``HAPAX_DEV_CLAIM_DIR`` points the claim/heartbeat probe at a temp dir.
-- ``HAPAX_DEV_CLAUDE_POOL`` / ``_CODEX_POOL`` / ``_AGY_POOL`` override pools.
+- ``HAPAX_DEV_CLAUDE_POOL`` / ``_CODEX_POOL`` override pools.
 
 The companion ``scripts/hapax-claude`` dev-pool extension (a non-greek
 interactive role that needs no cc-task binding) is covered at the bottom with
@@ -79,7 +79,8 @@ class TestHelp:
     def test_help_lists_pools(self, tmp_path: Path) -> None:
         r = run_dev("help", claim_dir=tmp_path / "c", workdir=tmp_path)
         assert r.returncode == 0
-        assert "claude" in r.stdout and "codex" in r.stdout and "agy" in r.stdout
+        assert "claude" in r.stdout and "codex" in r.stdout
+        assert "agy" not in r.stdout and "antigrav" not in r.stdout
 
 
 # ── claude auto-selection (distinct from the headless greek fleet) ──────────
@@ -218,10 +219,10 @@ class TestExplicitNames:
         assert r.returncode == 2
 
 
-# ── codex + agy dispatch ────────────────────────────────────────────────────
+# ── codex + non-visible agy / retired Antigrav dispatch ──────────────────────
 
 
-class TestCodexAndAgy:
+class TestCodexAndRetiredAgy:
     def test_codex_auto_and_passthrough(self, tmp_path: Path) -> None:
         r = run_dev(
             "codex",
@@ -244,24 +245,26 @@ class TestCodexAndAgy:
         assert _field(r.stdout, "visibility") == "window"
         assert "--terminal foot" in _field(r.stdout, "spawn")
 
-    def test_agy_alias_and_default_slot(self, tmp_path: Path) -> None:
+    def test_agy_alias_is_not_a_visible_worker_lane(self, tmp_path: Path) -> None:
         r = run_dev("agy", "--dry-run", claim_dir=tmp_path / "c", workdir=tmp_path)
-        assert r.returncode == 0, r.stderr
-        assert _field(r.stdout, "identity") == "antigrav"
-        assert _field(r.stdout, "spawn").startswith(
-            "hapax-antigrav --session antigrav --terminal tmux"
-        )
+        assert r.returncode == 2
+        assert "platform 'agy' is not a visible-dev worker lane" in r.stderr
+        assert "agy.review.direct" in r.stderr
 
-    def test_antigrav_keyword_equivalent_to_agy(self, tmp_path: Path) -> None:
+    def test_antigrav_keyword_is_retired(self, tmp_path: Path) -> None:
         r = run_dev("antigrav", "--dry-run", claim_dir=tmp_path / "c", workdir=tmp_path)
-        assert _field(r.stdout, "identity") == "antigrav"
+        assert r.returncode == 2
+        assert "platform 'antigrav' is retired" in r.stderr
 
-    def test_agy_window_opens_own_window(self, tmp_path: Path) -> None:
-        # agy spawner has no foot path → hapax-dev opens the window itself, so
-        # the spawner is still asked for a plain tmux session.
+    def test_antigravity_keyword_is_retired(self, tmp_path: Path) -> None:
+        r = run_dev("antigravity", "--dry-run", claim_dir=tmp_path / "c", workdir=tmp_path)
+        assert r.returncode == 2
+        assert "platform 'antigravity' is retired" in r.stderr
+
+    def test_agy_window_is_not_a_hidden_launch_path(self, tmp_path: Path) -> None:
         r = run_dev("agy", "--window", "--dry-run", claim_dir=tmp_path / "c", workdir=tmp_path)
-        assert _field(r.stdout, "visibility") == "window"
-        assert "--terminal tmux" in _field(r.stdout, "spawn")
+        assert r.returncode == 2
+        assert "platform 'agy' is not a visible-dev worker lane" in r.stderr
 
 
 # ── visibility flags ────────────────────────────────────────────────────────

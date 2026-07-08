@@ -288,7 +288,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--codex-adapter", type=Path)
     parser.add_argument("--codex-launcher", type=Path)
     parser.add_argument("--codex-config", type=Path)
-    parser.add_argument("--antigravity-launcher", type=Path)
     parser.add_argument("--vibe-launcher", type=Path)
     parser.add_argument("--ci-workflow", type=Path)
     return parser
@@ -322,10 +321,7 @@ def main(argv: list[str] | None = None) -> int:
             config_path=path_from_arg(args.codex_config, "config/codex/config.toml"),
         )
     )
-    for runtime_name, arg_name in (
-        ("antigravity", "antigravity_launcher"),
-        ("vibe", "vibe_launcher"),
-    ):
+    for runtime_name, arg_name in (("vibe", "vibe_launcher"),):
         runtime = _as_mapping(runtimes.get(runtime_name), f"manifest runtimes.{runtime_name}")
         default_script = str(runtime.get("script"))
         override = getattr(args, arg_name)

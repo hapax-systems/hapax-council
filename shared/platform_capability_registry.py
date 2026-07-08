@@ -19,6 +19,9 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from shared.capability_surface_delta import (
+    CapabilitySurfaceDelta as CapabilitySurfaceDeltaSignal,
+)
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -26,6 +29,13 @@ from shared.platform_capability_receipts import (
     PlatformCapabilityReceipt,
     load_platform_capability_receipts,
     receipt_reference,
+)
+from shared.quota_spend_ledger import (
+    QUOTA_SPEND_LEDGER_LIVE_ENV,
+    QuotaSpendLedgerError,
+    SubscriptionQuotaState,
+    load_quota_spend_ledger_resolved,
+    subscription_quota_state_for_route,
 )
 from shared.route_metadata_schema import (
     BenchmarkCoverage,
@@ -45,8 +55,8 @@ CAPACITY_INVARIANT = (
 
 REQUIRED_ROUTE_IDS = frozenset(
     {
-        "antigrav.interactive.full",
         "api.headless.api_frontier",
+        "api.headless.openrouter",
         "api.headless.provider_gateway",
         "claude.headless.full",
         "claude.headless.haiku",
@@ -55,6 +65,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
+        "agy.review.direct",
         "glmcp.review.direct",
         "local_tool.local.worker",
         "vibe.headless.full",
@@ -63,6 +74,14 @@ REQUIRED_ROUTE_IDS = frozenset(
 
 UNKNOWN_TELEMETRY_SOURCES = frozenset({"none", "unknown"})
 UNKNOWN_PRIVACY_POSTURES = frozenset({"unknown", "public_risk"})
+AGY_REVIEW_ROUTE_ID = "agy.review.direct"
+AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
+GLMCP_REVIEW_ROUTE_ID = "glmcp.review.direct"
+GLMCP_REVIEW_ADMISSION_BLOCKER = "glmcp_review_seat_receipt_admission_required"
+ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
+    AGY_REVIEW_ROUTE_ID: AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER,
+    GLMCP_REVIEW_ROUTE_ID: GLMCP_REVIEW_ADMISSION_BLOCKER,
+}
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
 
 
@@ -75,6 +94,7 @@ class StrictModel(BaseModel):
 
 
 class Platform(StrEnum):
+    AGY = "agy"
     ANTIGRAV = "antigrav"
     API = "api"
     CLAUDE = "claude"
@@ -102,6 +122,7 @@ class Profile(StrEnum):
     HAIKU = "haiku"
     JR = "jr"
     LITE = "lite"
+    OPENROUTER = "openrouter"
     OPUS = "opus"
     PROVIDER_GATEWAY = "provider_gateway"
     SONNET = "sonnet"
@@ -152,15 +173,21 @@ class ModelId(StrEnum):
     receipt-only maintenance route)."""
 
     CLAUDE_OPUS_4_8 = "claude-opus-4-8"
+    CLAUDE_OPUS_4_6 = "claude-opus-4-6"
     CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
+    CLAUDE_SONNET_5 = "claude-sonnet-5"
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
     GPT_5_5 = "gpt-5.5"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
+    GPT_OSS_120B = "gpt-oss-120b"
     COMMAND_R_08_2024 = "command-r-08-2024"
+    QWEN3_5_9B = "qwen3.5-9b"
     MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
+    Z_AI_GLM_5_2 = "z_ai-glm-5.2"
     UNKNOWN = "unknown"
 
 
@@ -169,9 +196,44 @@ class RouteState(StrEnum):
     BLOCKED = "blocked"
 
 
+class CapabilityShapeClass(StrEnum):
+    MODEL_PROVIDER = "model_provider"
+    LOCAL_COMPUTE = "local_compute"
+    PUBLICATION_BUS = "publication_bus"
+    MONEY_RAIL = "money_rail"
+    MCP_CONNECTOR = "mcp_connector"
+    ORCHESTRATOR = "orchestrator"
+    SUBAGENT = "subagent"
+    COCKPIT_COMMAND = "cockpit_command"
+    CCTV_RUNNER = "cctv_runner"
+    SELF_INLINE = "self_inline"
+
+
+class CapabilityShapeState(StrEnum):
+    EVIDENCE_ONLY = "evidence_only"
+    INTAKE_REQUIRED = "intake_required"
+    MEASUREMENT_PENDING = "measurement_pending"
+    DEPRECATED = "deprecated"
+
+
+class CapabilitySurfaceDeltaAction(StrEnum):
+    KNOWN_HOLD_FOR_MEASUREMENT = "known_hold_for_measurement"
+    MINT_INTAKE = "mint_intake"
+    DEPRECATED_REFUSE = "deprecated_refuse"
+
+
+class CapabilityShapeFreshnessState(StrEnum):
+    FRESH = "fresh"
+    STALE = "stale"
+    MISSING = "missing"
+    ASSERTED_ONLY = "asserted_only"
+    CONTRADICTORY = "contradictory"
+
+
 class AuthSurface(StrEnum):
     API_KEY = "api_key"
     LOCAL = "local"
+    OAUTH = "oauth"
     OPERATOR_SESSION = "operator_session"
     SUBSCRIPTION = "subscription"
     UNKNOWN = "unknown"
@@ -323,6 +385,73 @@ class DescriptorVariant(StrictModel):
     score_delta: dict[str, int] = Field(default_factory=dict)
     scores_inherited_from: str | None = None
     blocked_reasons: list[str] = Field(default_factory=list)
+
+
+class CapabilityShapeDescriptor(StrictModel):
+    """Evidence-only descriptor for an observed but not-yet-admitted capability surface.
+
+    These records intentionally do not extend ``routes``. They let deterministic surface
+    deltas create intake/remediation work without letting carrier labels such as
+    "publication bus" or "OpenRouter" satisfy demand before measured supply leaves and
+    receipts exist.
+    """
+
+    descriptor_schema: Literal[1] = 1
+    shape_id: str
+    shape_class: CapabilityShapeClass
+    carrier_family: str
+    summary: str
+    harness_shape: str
+    authority_ceiling: AuthorityCeiling
+    shape_state: CapabilityShapeState
+    demand_eligible: bool = False
+    route_ids: list[str] = Field(default_factory=list)
+    resource_semantics: list[str] = Field(min_length=1)
+    spend_semantics: list[str] = Field(min_length=1)
+    observability: list[str] = Field(min_length=1)
+    failure_classes: list[str] = Field(min_length=1)
+    measurement_plan_refs: list[str] = Field(min_length=1)
+    remediation_refs: list[str] = Field(min_length=1)
+    surface_delta_signal: str
+    observed_at: datetime | None
+    stale_after: str
+    freshness_state: CapabilityShapeFreshnessState
+    evidence_refs: list[str] = Field(default_factory=list)
+    blocked_reasons: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _omitted_shape_is_not_supply(self) -> Self:
+        parse_duration_spec(self.stale_after)
+        if self.demand_eligible:
+            raise ValueError(
+                "omitted capability shape descriptors cannot be demand_eligible; "
+                "admit measured supply as a route leaf instead"
+            )
+        if self.route_ids:
+            raise ValueError(
+                "omitted capability shape descriptors cannot carry route_ids; link them "
+                "through remediation/measurement refs until admitted supply exists"
+            )
+        if self.shape_state is CapabilityShapeState.DEPRECATED and not any(
+            "deprecated" in reason or "retired" in reason for reason in self.blocked_reasons
+        ):
+            raise ValueError(
+                "deprecated capability shapes must declare a deprecated/retired blocker"
+            )
+        if self.observed_at is None and not self.blocked_reasons:
+            raise ValueError("unobserved capability shapes require blocked_reasons")
+        if self.observed_at is not None and not self.evidence_refs:
+            raise ValueError("observed capability shapes require evidence_refs")
+        return self
+
+
+class CapabilitySurfaceDisposition(StrictModel):
+    surface_id: str
+    action: CapabilitySurfaceDeltaAction
+    demand_eligible: Literal[False] = False
+    descriptor_id: str | None = None
+    reason_codes: tuple[str, ...]
+    remediation_refs: tuple[str, ...]
 
 
 class QualityEnvelope(StrictModel):
@@ -700,6 +829,7 @@ class PlatformCapabilityRegistry(StrictModel):
     capacity_invariant: str
     generated_from: list[str] = Field(min_length=1)
     required_route_ids: list[str] = Field(min_length=1)
+    omitted_capability_shapes: list[CapabilityShapeDescriptor] = Field(min_length=1)
     routes: list[PlatformCapabilityRoute] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -722,8 +852,29 @@ class PlatformCapabilityRegistry(StrictModel):
         if missing_routes:
             raise ValueError(f"missing required platform routes: {sorted(missing_routes)}")
 
+        extra_routes = set(route_ids) - required
+        if extra_routes:
+            raise ValueError(f"routes not declared in required_route_ids: {sorted(extra_routes)}")
+
         if self.capacity_invariant != CAPACITY_INVARIANT:
             raise ValueError("capacity invariant drifted from governed dispatch invariant")
+
+        shape_ids = [shape.shape_id for shape in self.omitted_capability_shapes]
+        duplicate_shapes = sorted(
+            {shape_id for shape_id in shape_ids if shape_ids.count(shape_id) > 1}
+        )
+        if duplicate_shapes:
+            raise ValueError(f"duplicate omitted capability shape ids: {duplicate_shapes}")
+
+        reserved_route_ids = set(route_ids)
+        route_like_shapes = sorted(
+            shape_id for shape_id in shape_ids if shape_id in reserved_route_ids
+        )
+        if route_like_shapes:
+            raise ValueError(
+                "omitted capability shape ids must not collide with admitted route ids: "
+                f"{route_like_shapes}"
+            )
 
         # descriptor variant provenance is a cross-route reference; only the registry can
         # verify it resolves (the per-route validator cannot see sibling routes).
@@ -787,6 +938,94 @@ class RegistryFreshnessCheck:
 
 def normalize_route_id(route_id: str) -> str:
     return route_id.strip().replace("/", ".")
+
+
+def _normalize_surface_token(value: str) -> str:
+    return value.strip().lower().replace("/", ".").replace(" ", "_")
+
+
+def _shape_signal_token(shape: CapabilityShapeDescriptor) -> str | None:
+    prefix = "capability_surface_delta:"
+    signal = shape.surface_delta_signal.strip().lower()
+    if not signal.startswith(prefix):
+        return None
+    return _normalize_surface_token(signal.removeprefix(prefix))
+
+
+def _surface_matches_shape(
+    delta: CapabilitySurfaceDeltaSignal,
+    shape: CapabilityShapeDescriptor,
+) -> bool:
+    surface = _normalize_surface_token(delta.surface_id)
+    shape_id = _normalize_surface_token(shape.shape_id)
+    if surface == shape_id or surface.startswith(f"{shape_id}."):
+        return True
+    signal_token = _shape_signal_token(shape)
+    if signal_token is None or shape.shape_state is CapabilityShapeState.DEPRECATED:
+        return False
+    signal_surface = f"surface.{signal_token}"
+    return surface == signal_surface or surface.startswith(f"{signal_surface}.")
+
+
+def disposition_for_capability_surface_delta(
+    registry: PlatformCapabilityRegistry,
+    delta: CapabilitySurfaceDeltaSignal,
+) -> CapabilitySurfaceDisposition:
+    """Classify a canonical SDLC capability-surface delta without admitting supply.
+
+    A known omitted shape still holds for measurement because the descriptor is evidence-only.
+    An unknown surface mints intake. Deprecated shapes refuse as live supply while preserving
+    provenance/remediation refs for Reins and operators.
+    """
+
+    matches = [
+        shape
+        for shape in registry.omitted_capability_shapes
+        if _surface_matches_shape(delta, shape)
+    ]
+    if not matches:
+        return CapabilitySurfaceDisposition(
+            surface_id=delta.surface_id,
+            action=CapabilitySurfaceDeltaAction.MINT_INTAKE,
+            descriptor_id=None,
+            reason_codes=(
+                "capability_surface_delta_unknown_shape",
+                "measured_supply_leaf_absent",
+                "route_resource_governance_receipts_absent",
+            ),
+            remediation_refs=(
+                "mint:cc-task:capability-surface-intake",
+                "require:descriptor",
+                "require:measurement_plan",
+                "require:route_resource_governance_receipts",
+            ),
+        )
+
+    shape = sorted(matches, key=lambda item: item.shape_id)[0]
+    if shape.shape_state is CapabilityShapeState.DEPRECATED:
+        return CapabilitySurfaceDisposition(
+            surface_id=delta.surface_id,
+            action=CapabilitySurfaceDeltaAction.DEPRECATED_REFUSE,
+            descriptor_id=shape.shape_id,
+            reason_codes=(
+                "capability_shape_deprecated",
+                "live_route_identity_refused",
+                "measured_supply_leaf_absent",
+            ),
+            remediation_refs=tuple(shape.remediation_refs),
+        )
+
+    return CapabilitySurfaceDisposition(
+        surface_id=delta.surface_id,
+        action=CapabilitySurfaceDeltaAction.KNOWN_HOLD_FOR_MEASUREMENT,
+        descriptor_id=shape.shape_id,
+        reason_codes=(
+            "known_omitted_capability_shape",
+            "evidence_only_not_dispatch_supply",
+            "measured_supply_leaf_absent",
+        ),
+        remediation_refs=tuple(shape.remediation_refs),
+    )
 
 
 def parse_duration_spec(spec: str) -> timedelta:
@@ -1132,7 +1371,12 @@ def load_platform_capability_registry(
         effective_receipt_dir = receipt_dir or _receipt_dir_from_env()
         if effective_receipt_dir is None:
             return registry
-        return apply_platform_capability_receipts(
+        registry = apply_platform_capability_receipts(
+            registry,
+            receipt_dir=effective_receipt_dir,
+            now=now,
+        )
+        return _apply_route_authority_receipts_from_dir(
             registry,
             receipt_dir=effective_receipt_dir,
             now=now,
@@ -1141,6 +1385,28 @@ def load_platform_capability_registry(
         raise PlatformCapabilityRegistryError(
             f"invalid platform capability registry at {path}: {exc}"
         ) from exc
+
+
+def _apply_route_authority_receipts_from_dir(
+    registry: PlatformCapabilityRegistry,
+    *,
+    receipt_dir: Path,
+    now: datetime | None = None,
+) -> PlatformCapabilityRegistry:
+    """Overlay signed route-authority receipts in capability projections.
+
+    The dispatcher policy owns route-authority receipt validation and mutation of
+    registry payloads. Keep the import local to avoid making the inert registry
+    module import the full dispatch policy during model definition.
+    """
+
+    from shared.dispatcher_policy import apply_route_authority_receipts
+
+    return apply_route_authority_receipts(
+        registry,
+        receipt_dir=receipt_dir,
+        now=now,
+    )
 
 
 def _receipt_dir_from_env() -> Path | None:
@@ -1171,13 +1437,15 @@ def apply_platform_capability_receipts(
             continue
         if route_payload["route_id"] not in receipt.routes:
             continue
-        _apply_receipt_to_route_payload(route_payload, receipt)
+        _apply_receipt_to_route_payload(route_payload, receipt, now=now)
     return PlatformCapabilityRegistry.model_validate(payload)
 
 
 def _apply_receipt_to_route_payload(
     route_payload: dict[str, Any],
     receipt: PlatformCapabilityReceipt,
+    *,
+    now: datetime | None = None,
 ) -> None:
     receipt_ref = receipt_reference(receipt)
     freshness = route_payload["freshness"]
@@ -1197,7 +1465,9 @@ def _apply_receipt_to_route_payload(
         stale_after=receipt.capability.stale_after,
         evidence_refs=[*receipt.capability.evidence_refs, receipt_ref],
         reason_codes=receipt.capability.reason_codes,
-        removable_reasons=_capability_receipt_removable_reasons(route_payload),
+        removable_reasons=_capability_receipt_removable_reasons(route_payload)
+        if receipt.capability.status is EvidenceStatus.OBSERVED
+        else set(),
     )
     _apply_surface(
         freshness,
@@ -1206,7 +1476,9 @@ def _apply_receipt_to_route_payload(
         stale_after=receipt.resource.stale_after,
         evidence_refs=[*receipt.resource.evidence_refs, receipt_ref],
         reason_codes=receipt.resource.reason_codes,
-        removable_reasons=_resource_receipt_removable_reasons(route_payload),
+        removable_reasons=_resource_receipt_removable_reasons(route_payload)
+        if receipt.resource.status is EvidenceStatus.OBSERVED
+        else set(),
     )
     quota_stale_after = (
         receipt.stale_after if quota_unobservable_nonblocking else receipt.quota.stale_after
@@ -1222,7 +1494,7 @@ def _apply_receipt_to_route_payload(
         else [],
         removable_reasons=_quota_unobservable_removable_reasons(route_payload)
         if quota_unobservable_nonblocking
-        else {"account_live_quota_receipt_absent", "quota_telemetry_unknown"},
+        else _quota_receipt_removable_reasons(route_payload),
     )
     _apply_surface(
         freshness,
@@ -1237,12 +1509,14 @@ def _apply_receipt_to_route_payload(
     for tool in route_payload.get("tool_state", []):
         tool["observed_at"] = observed_at
         tool["evidence_ref"] = receipt_ref
-    if receipt.capability.status is EvidenceStatus.OBSERVED:
+    if _receipt_measures_capability_scores(route_payload, receipt):
         for score in route_payload.get("capability_scores", {}).values():
             score["observed_at"] = observed_at
             score["evidence_refs"] = list(
                 dict.fromkeys([*score.get("evidence_refs", []), receipt_ref])
             )
+    if receipt.quota.status is EvidenceStatus.OBSERVED:
+        route_payload.setdefault("telemetry", {})["quota_source"] = QuotaSource.MANUAL.value
 
     if receipt.capability.status is not EvidenceStatus.OBSERVED:
         top_blockers.extend(receipt.capability.reason_codes)
@@ -1251,16 +1525,93 @@ def _apply_receipt_to_route_payload(
     if receipt.quota.status is not EvidenceStatus.OBSERVED and not quota_unobservable_nonblocking:
         top_blockers.extend(receipt.quota.reason_codes)
 
-    removable_top_blockers = {
-        *_capability_receipt_removable_reasons(route_payload),
-        *_resource_receipt_removable_reasons(route_payload),
-        "provider_docs_evidence_absent",
-    }
+    removable_top_blockers = {"provider_docs_evidence_absent"}
+    if receipt.capability.status is EvidenceStatus.OBSERVED:
+        removable_top_blockers.update(_capability_receipt_removable_reasons(route_payload))
+    if receipt.resource.status is EvidenceStatus.OBSERVED:
+        removable_top_blockers.update(_resource_receipt_removable_reasons(route_payload))
     if quota_unobservable_nonblocking:
         removable_top_blockers.update(_quota_unobservable_removable_reasons(route_payload))
+    elif receipt.quota.status is EvidenceStatus.OBSERVED:
+        removable_top_blockers.update(_observed_quota_receipt_removable_reasons(route_payload))
+    quota_admission_fresh, quota_admission_refs = _route_specific_quota_admission_fresh(
+        route_payload,
+        now=now,
+    )
+    if quota_admission_refs:
+        freshness["evidence"]["quota"]["evidence_refs"] = list(
+            dict.fromkeys(
+                [
+                    *freshness["evidence"]["quota"].get("evidence_refs", []),
+                    *quota_admission_refs,
+                ]
+            )
+        )
+    if quota_admission_fresh:
+        blocker = ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS.get(route_payload.get("route_id"))
+        if blocker:
+            route_payload.setdefault("telemetry", {})["quota_source"] = QuotaSource.LEDGER.value
+            removable_top_blockers.add(blocker)
+            quota_evidence = freshness["evidence"]["quota"]
+            quota_evidence["blocked_reasons"] = [
+                reason for reason in quota_evidence.get("blocked_reasons", []) if reason != blocker
+            ]
     top_blockers = [reason for reason in top_blockers if reason not in removable_top_blockers]
     route_payload["blocked_reasons"] = list(dict.fromkeys(top_blockers))
     route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
+
+
+def _route_specific_quota_admission_fresh(
+    route_payload: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> tuple[bool, tuple[str, ...]]:
+    route_id = route_payload.get("route_id")
+    if route_id not in ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS:
+        return False, ()
+    try:
+        resolved = load_quota_spend_ledger_resolved(live_path=_quota_spend_live_path_from_env())
+    except (OSError, QuotaSpendLedgerError, ValueError) as exc:
+        return False, (f"quota-spend-ledger:{route_id}:read-error:{type(exc).__name__}",)
+    if resolved.source != "live":
+        if resolved.live_error:
+            return False, (f"quota-spend-ledger:{route_id}:live-ledger-invalid",)
+        return False, ()
+    state, evidence_refs = subscription_quota_state_for_route(
+        resolved.ledger,
+        route_id,
+        now=now,
+    )
+    return state is SubscriptionQuotaState.FRESH, evidence_refs
+
+
+def _quota_spend_live_path_from_env() -> Path | None:
+    configured = os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV)
+    if not configured:
+        return None
+    if configured.strip() in {"0", "none", "None", "false", "False"}:
+        return None
+    return Path(configured).expanduser()
+
+
+def _receipt_measures_capability_scores(
+    route_payload: dict[str, Any],
+    receipt: PlatformCapabilityReceipt,
+) -> bool:
+    if receipt.capability.status is not EvidenceStatus.OBSERVED:
+        return False
+    capability_blockers = set(
+        route_payload.get("freshness", {})
+        .get("evidence", {})
+        .get("capability", {})
+        .get("blocked_reasons", [])
+    )
+    top_blockers = set(route_payload.get("blocked_reasons") or [])
+    unmeasured_score_blockers = {
+        "capability_scores_asserted_not_measured",
+        "capabilityio_measurement_absent",
+    }
+    return not (capability_blockers | top_blockers) & unmeasured_score_blockers
 
 
 def _quota_unobservable_nonblocking(
@@ -1303,6 +1654,8 @@ def _quota_unobservable_nonblocking(
 
 def _capability_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
     reasons = {"fresh_capability_evidence_absent"}
+    if route_payload.get("route_id") == "agy.review.direct":
+        reasons.add("agy_review_seat_receipt_admission_required")
     if route_payload.get("route_id") == "api.headless.provider_gateway":
         reasons.add("provider_gateway_evidence_absent")
     return reasons
@@ -1323,6 +1676,23 @@ def _quota_unobservable_removable_reasons(route_payload: dict[str, Any]) -> set[
     }:
         reasons.add("provider_budget_receipt_absent")
     return reasons
+
+
+def _quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
+    if route_payload.get("route_id") == "agy.review.direct":
+        # Platform receipts can prove local agy CLI/wrapper availability only.
+        # Route-specific quota admission is consumed from the live quota ledger,
+        # not from a platform-capability quota receipt.
+        return set()
+    return {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+
+
+def _observed_quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
+    if route_payload.get("route_id") == "agy.review.direct":
+        return set()
+    return _quota_unobservable_removable_reasons(route_payload) | _quota_receipt_removable_reasons(
+        route_payload
+    )
 
 
 def _apply_surface(
@@ -1365,13 +1735,27 @@ _SMUGGLED_EFFORT_SUFFIXES: dict[str, Effort] = {
 _MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
     "claude-code-default": ModelId.CLAUDE_OPUS_4_8,
     "claude-opus": ModelId.CLAUDE_OPUS_4_8,
+    # NOTE (2026-07-02 registry-freshness): the bare "claude-sonnet" alias still projects to the
+    # PRIOR Sonnet (4-6). Post-Sonnet-5-release the carrier's `--model sonnet` most likely serves
+    # Sonnet 5, so any route declaring the bare "claude-sonnet" may be a CapabilityExecutionInvariant
+    # DECLARE-layer drift (observed != declared). Repointing this alias is a production-routing
+    # decision deferred to the operator; the explicit "claude-sonnet-5" identity below is additive.
     "claude-sonnet": ModelId.CLAUDE_SONNET_4_6,
+    "claude-sonnet-4.6": ModelId.CLAUDE_SONNET_4_6,
+    "claude-sonnet-4-6": ModelId.CLAUDE_SONNET_4_6,
+    "claude-opus-4.6": ModelId.CLAUDE_OPUS_4_6,
+    "claude-opus-4-6": ModelId.CLAUDE_OPUS_4_6,
+    "claude-sonnet-5": ModelId.CLAUDE_SONNET_5,
     "claude-haiku": ModelId.CLAUDE_HAIKU_4_5,
     "gpt-5.5": ModelId.GPT_5_5,
     "gpt-5.3-codex-spark": ModelId.GPT_5_3_CODEX_SPARK,
+    "gpt-oss-120b": ModelId.GPT_OSS_120B,
     "mistral-vibe": ModelId.MISTRAL_MEDIUM_3_5,
     "google-antigravity-cli-agy": ModelId.GEMINI_3_1_PRO_PREVIEW,
+    "agy-universal-harness": ModelId.GEMINI_3_1_PRO_PREVIEW,
+    "gemini-3.5-flash": ModelId.GEMINI_3_5_FLASH,
     "z_ai-glm-coding-plan:glm-5": ModelId.Z_AI_GLM_5,
+    "z_ai-glm-coding-plan:glm-5.2": ModelId.Z_AI_GLM_5_2,
     "litellm.anthropic.claude-opus-4-cloud-burst": ModelId.CLAUDE_OPUS_4_8,
     "litellm.provider-gateway-maintenance": ModelId.GEMINI_3_1_PRO_PREVIEW,
 }
@@ -1446,8 +1830,10 @@ _DYNAMIC_ENTRYPOINTS = (
     SupplyFreshness._freshness_duration_is_valid,
     FreshnessSurfaceEvidence._has_evidence_or_blocker,
     Freshness._duration_specs_are_valid,
+    CapabilityShapeDescriptor._omitted_shape_is_not_supply,
     PlatformCapabilityRoute._route_contract_fails_closed,
     PlatformCapabilityRegistry._route_set_matches_contract,
+    disposition_for_capability_surface_delta,
     build_supply_vector,
     check_registry_freshness,
     load_platform_capability_registry,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent.parent
@@ -31,6 +32,7 @@ def _base_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
     env["HAPAX_VIBE_WORKTREE_ROOT"] = str(projects)
     env["HAPAX_VIBE_RELAY_DIR"] = str(relay)
     env["HAPAX_VIBE_SPAWN_DIR"] = str(spawns)
+    env["HAPAX_VIBE_RELAY_POLL_SECONDS"] = "0"
     env["MISTRAL_API_KEY"] = "test-key"
     env.pop("HAPAX_AGENT_NAME", None)
     env.pop("HAPAX_AGENT_ROLE", None)
@@ -196,6 +198,53 @@ def test_sender_routes_message_to_tmux_session(tmp_path: Path) -> None:
     assert "set-buffer -- Run dispatch validation" in tmux_text
     assert "paste-buffer -t hapax-vibe-vbe-1" in tmux_text
     assert "send-keys -t hapax-vibe-vbe-1 Enter" in tmux_text
+
+
+def test_tmux_launch_polls_relay_inflections_into_headless_prompt(tmp_path: Path) -> None:
+    env, bin_dir, spawns = _base_env(tmp_path)
+    env["HAPAX_VIBE_RELAY_POLL_SECONDS"] = "2"
+    _write_fake_vibe(bin_dir, tmp_path / "vibe.log")
+    _write_fake_tmux(bin_dir, tmp_path)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+    inflections = Path(env["HAPAX_VIBE_RELAY_DIR"]) / "inflections"
+    inflections.mkdir(parents=True)
+    relay_file = inflections / "20260619T000000Z-cx-agy-to-vbe-1.md"
+
+    timer = threading.Timer(
+        0.2,
+        lambda: relay_file.write_text("Check prior relay state before launch.\n", encoding="utf-8"),
+    )
+    timer.start()
+    try:
+        result = subprocess.run(
+            [
+                str(LAUNCHER),
+                "--session",
+                "vbe-1",
+                "--cd",
+                str(workdir),
+                "--terminal",
+                "tmux",
+                "--prompt",
+                "Audit queue",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=5,
+        )
+    finally:
+        timer.join(timeout=1)
+
+    assert result.returncode == 0, result.stderr
+    runner = next(spawns.glob("run-*vbe-1-no-task.sh"))
+    runner_text = runner.read_text(encoding="utf-8")
+    assert "Relay Received" in runner_text
+    assert "20260619T000000Z-cx-agy-to-vbe-1.md" in runner_text
+    assert "Check prior relay state before launch." in runner_text
+    assert not relay_file.exists()
+    assert (inflections / "processed" / relay_file.name).exists()
 
 
 def test_standup_generates_relay_yaml_for_vbe_lanes(tmp_path: Path) -> None:

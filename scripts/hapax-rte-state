@@ -6,9 +6,9 @@ tool reads the most recent one and emits the current status (green/yellow/red/
 ops-distress) plus a normalized JSON summary.
 
 Used by:
-  * send-scripts (hapax-claude-send, hapax-codex-send, hapax-vibe-send,
-    hapax-antigrav-send) as a pre-flight gate — refuse non-essential
-    dispatches when status is red/ops-distress
+  * admitted send-scripts (hapax-claude-send, hapax-codex-send, hapax-vibe-send)
+    as a pre-flight gate — refuse non-essential dispatches when status is
+    red/ops-distress
   * peer/codex/vibe lane sessions as a self-poll — check on every wake before
     starting substantive work
   * humans (operator, alpha) for at-a-glance status
@@ -183,8 +183,8 @@ def read_assignment() -> dict[str, Any]:
     if not ASSIGNMENT_FILE.exists():
         return {"status": "missing", "path": str(ASSIGNMENT_FILE)}
     parsed = read_tick(ASSIGNMENT_FILE)
-    rte = str(parsed.get("rte") or "").strip()
-    originator = str(parsed.get("originator") or "").strip()
+    rte = str(parsed.get("rte") or "").strip().lower()
+    originator = str(parsed.get("originator") or "").strip().lower()
     assigned_at_raw = str(parsed.get("assigned_at") or "").strip()
     expires_at_raw = str(parsed.get("expires_at") or "").strip()
     assigned_at = parse_optional_utc(assigned_at_raw)
@@ -216,10 +216,17 @@ def read_assignment() -> dict[str, Any]:
         status = "invalid"
         reasons.append("Vibe burst lane requires protocol_exception")
     if (
-        rte in {"antigrav", "gemini"} or rte.startswith("antigrav-") or rte.startswith("gemini-")
-    ) and not protocol_exception:
+        rte in {"agy", "antigrav", "antigravity", "gemini"}
+        or rte.startswith("agy-")
+        or rte.startswith("antigrav-")
+        or rte.startswith("antigravity-")
+        or rte.startswith("gemini-")
+    ):
         status = "invalid"
-        reasons.append("restricted RTE lane requires protocol_exception")
+        reasons.append(
+            "retired/excised RTE lane cannot be active; use admitted frontier lanes or "
+            "agy.review.direct through scripts/hapax-agy-reviewer for admitted read-only review-plane work"
+        )
     if expires_at is not None and expires_at <= now_dt:
         status = "expired"
         reasons.append("assignment expired")

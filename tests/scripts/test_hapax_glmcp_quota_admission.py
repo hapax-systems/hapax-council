@@ -20,7 +20,19 @@ SUCCESS_METADATA_ARGS = (
     "--endpoint",
     "https://api.z.ai/api/coding/paas/v4",
     "--model",
-    "glm-5",
+    "glm-5.2",
+)
+PAYG_SUCCESS_METADATA_ARGS = (
+    "--supported-tool",
+    "hapax-glmcp-reviewer",
+    "--endpoint",
+    "https://api.z.ai/api/paas/v4",
+    "--model",
+    "glm-5.2",
+    "--primary-error-class",
+    "quota_exhausted",
+    "--quota-wall-evidence-ref",
+    "cx-glmcp-quota-wall.yaml",
 )
 
 
@@ -84,7 +96,7 @@ def test_observe_success_writes_private_exact_positive_receipt(tmp_path: Path) -
         "capacity_pool": "subscription_quota",
         "supported_tool": "hapax-glmcp-reviewer",
         "endpoint": "https://api.z.ai/api/coding/paas/v4",
-        "model": "glm-5",
+        "model": "glm-5.2",
         "observed_at": NOW,
         "stale_after_seconds": "900",
         "evidence_ref": "sanctioned-glmcp-usage-001",
@@ -94,6 +106,48 @@ def test_observe_success_writes_private_exact_positive_receipt(tmp_path: Path) -
         "billing_mode": "coding_plan_subscription",
         "payg_fallback": "false",
     }
+
+
+def test_observe_success_writes_payg_api_credit_receipt(tmp_path: Path) -> None:
+    result, receipt_dir = _run(
+        tmp_path,
+        "observe-success",
+        "--evidence-ref",
+        "sanctioned-glmcp-payg-usage-001",
+        *PAYG_SUCCESS_METADATA_ARGS,
+    )
+
+    assert result.returncode == 0, result.stderr
+    fields = _read_flat_fields(receipt_dir / "glmcp-quota-admission.yaml")
+    assert fields["status"] == "quota_available"
+    assert fields["provider"] == "z_ai-glm-coding-plan"
+    assert fields["capacity_pool"] == "api_paid_spend"
+    assert fields["endpoint"] == "https://api.z.ai/api/paas/v4"
+    assert fields["billing_mode"] == "api_credit_payg"
+    assert fields["payg_fallback"] == "true"
+    assert fields["primary_error_class"] == "quota_exhausted"
+    assert fields["quota_wall_evidence_ref"] == "cx-glmcp-quota-wall.yaml"
+    assert fields["secret_value_persisted"] == "false"
+    assert fields["prompt_or_output_persisted"] == "false"
+
+
+def test_observe_success_rejects_payg_without_quota_wall_witness(tmp_path: Path) -> None:
+    result, receipt_dir = _run(
+        tmp_path,
+        "observe-success",
+        "--evidence-ref",
+        "sanctioned-glmcp-payg-usage-001",
+        "--supported-tool",
+        "hapax-glmcp-reviewer",
+        "--endpoint",
+        "https://api.z.ai/api/paas/v4",
+        "--model",
+        "glm-5.2",
+    )
+
+    assert result.returncode == 2
+    assert "PAYG admission requires --primary-error-class" in result.stderr
+    assert not receipt_dir.exists()
 
 
 def test_observe_success_does_not_persist_env_secret_or_prompt_content(tmp_path: Path) -> None:
@@ -158,7 +212,7 @@ def test_observe_success_rejects_unsafe_evidence_refs(
                 "--endpoint",
                 "https://api.z.ai/api/coding/paas/v4",
                 "--model",
-                "glm-5",
+                "glm-5.2",
             ),
             "--supported-tool must be hapax-glmcp-reviewer",
         ),
@@ -169,9 +223,9 @@ def test_observe_success_rejects_unsafe_evidence_refs(
                 "--endpoint",
                 "https://api.z.ai/api/anthropic",
                 "--model",
-                "glm-5",
+                "glm-5.2",
             ),
-            "--endpoint must be https://api.z.ai/api/coding/paas/v4",
+            "--endpoint must be one of https://api.z.ai/api/coding/paas/v4 or https://api.z.ai/api/paas/v4",
         ),
         (
             (
@@ -180,9 +234,20 @@ def test_observe_success_rejects_unsafe_evidence_refs(
                 "--endpoint",
                 "https://api.z.ai/api/coding/paas/v4/",
                 "--model",
+                "glm-5.2",
+            ),
+            "--endpoint must be one of https://api.z.ai/api/coding/paas/v4 or https://api.z.ai/api/paas/v4",
+        ),
+        (
+            (
+                "--supported-tool",
+                "hapax-glmcp-reviewer",
+                "--endpoint",
+                "https://api.z.ai/api/coding/paas/v4",
+                "--model",
                 "glm-5",
             ),
-            "--endpoint must be https://api.z.ai/api/coding/paas/v4",
+            "--model must be glm-5.2",
         ),
         (
             (
@@ -193,7 +258,7 @@ def test_observe_success_rejects_unsafe_evidence_refs(
                 "--model",
                 "glm-5.2[1m]",
             ),
-            "--model must be glm-5",
+            "--model must be glm-5.2",
         ),
     ],
 )

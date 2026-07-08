@@ -7,11 +7,13 @@
   "generated_from": [
     "scripts/hapax-methodology-dispatch --list-platform-paths",
     "quality-preserving-capacity-routing-authority-case-draft-2026-05-09#R2",
-    "fresh-platform-surface-research:2026-05-17T18:38Z"
+    "fresh-platform-surface-research:2026-05-17T18:38Z",
+    "cc-task-register-omitted-demand-shape-routes-20260630",
+    "cc-task-onboard-r1-openrouter-substitute-frontier-20260705"
   ],
   "required_route_ids": [
-    "antigrav.interactive.full",
     "api.headless.api_frontier",
+    "api.headless.openrouter",
     "api.headless.provider_gateway",
     "claude.headless.full",
     "claude.headless.haiku",
@@ -20,282 +22,278 @@
     "claude.interactive.full",
     "codex.headless.full",
     "codex.headless.spark",
+    "agy.review.direct",
     "glmcp.review.direct",
     "local_tool.local.worker",
     "vibe.headless.full"
   ],
-  "routes": [
+  "omitted_capability_shapes": [
     {
-      "registry_schema": 1,
-      "route_id": "antigrav.interactive.full",
-      "platform": "antigrav",
-      "mode": "interactive",
-      "profile": "full",
-      "launcher": "~/.local/bin/hapax-antigrav --session <lane> --task <task> --terminal tmux",
-      "summary": "Google Antigravity CLI lane",
-      "notes": "agy CLI audited full-worker lane; requires governed dispatch bootstrap, task claim, external gates, PR review, and sensitive-surface restrictions.",
-      "route_state": "blocked",
-      "blocked_reasons": [
-        "fresh_capability_evidence_absent",
-        "quota_telemetry_unknown"
-      ],
-      "model_or_engine": "google-antigravity-cli-agy",
-      "execution_descriptor": {
-        "model_id": "gemini-3.1-pro-preview",
-        "effort": "none",
-        "context_mode": "standard",
-        "fast_mode": "off",
-        "quantization": "none"
-      },
-      "auth_surface": "operator_session",
-      "capacity_pool": "subscription_quota",
-      "mutability": {
-        "vault_docs": true,
-        "source": true,
-        "runtime": false,
-        "public": false,
-        "provider_spend": false
-      },
-      "authority_ceiling": "authoritative",
-      "tool_access": {
-        "filesystem": "read_write",
-        "shell": "full",
-        "browser": true,
-        "mcp": []
-      },
-      "privacy_posture": "provider_training_unknown",
-      "quality_envelope": {
-        "eligible_quality_floors": [
-          "frontier_required",
-          "frontier_review_required",
-          "deterministic_ok"
-        ],
-        "explicit_equivalence_records": [],
-        "excluded_task_classes": [
-          "governance_authority_case",
-          "privacy_secret_sensitive",
-          "runtime_mutation",
-          "provider_spend"
-        ]
-      },
-      "context_limits": {
-        "max_context_class": "large"
-      },
-      "telemetry": {
-        "quota_source": "manual",
-        "cost_source": "none",
-        "resource_source": "local_probe"
-      },
-      "freshness": {
-        "capability_checked_at": null,
-        "capability_stale_after": "24h",
-        "quota_checked_at": null,
-        "quota_stale_after": "15m",
-        "resource_checked_at": "2026-05-17T08:14:11Z",
-        "resource_stale_after": "24h",
-        "provider_docs_checked_at": "2026-05-17T18:38:56Z",
-        "provider_docs_stale_after": "30d",
-        "evidence": {
-          "capability": {
-            "evidence_refs": [],
-            "blocked_reasons": [
-              "fresh_capability_evidence_absent"
-            ]
-          },
-          "quota": {
-            "evidence_refs": [],
-            "blocked_reasons": [
-              "quota_telemetry_unknown"
-            ]
-          },
-          "resource": {
-            "evidence_refs": [
-              "local:~/.local/bin/hapax-antigrav --help:available:2026-05-17T08:07Z"
-            ],
-            "blocked_reasons": []
-          },
-          "provider_docs": {
-            "evidence_refs": [
-              "official:https://codelabs.developers.google.com/getting-started-google-antigravity"
-            ],
-            "blocked_reasons": []
-          }
-        }
-      },
-      "known_unknowns": [
-        "Antigravity account-live quota is not exposed as local telemetry; fresh local receipts record this as an advisory blocker rather than a pre-launch catch-22.",
-        "Provider training/privacy posture is not equivalent to local execution; privacy/secret-sensitive tasks remain excluded by route policy.",
-        "Current Antigravity implementation is the agy terminal CLI; legacy antigravity IDE naming is compatibility only."
-      ],
-      "capability_scores": {
-        "grounding": {
-          "score": 2,
-          "confidence": 1,
-          "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:grounding"
-          ],
-          "observed_at": "2026-05-09T20:50:00Z",
-          "stale_after": "24h"
-        },
-        "governance_reasoning": {
-          "score": 2,
-          "confidence": 1,
-          "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:governance_reasoning"
-          ],
-          "observed_at": "2026-05-09T20:50:00Z",
-          "stale_after": "24h"
-        },
-        "source_editing": {
-          "score": 3,
-          "confidence": 1,
-          "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:source_editing"
-          ],
-          "observed_at": "2026-05-09T20:50:00Z",
-          "stale_after": "24h"
-        },
-        "architecture": {
-          "score": 3,
-          "confidence": 1,
-          "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:architecture"
-          ],
-          "observed_at": "2026-05-09T20:50:00Z",
-          "stale_after": "24h"
-        },
-        "ambiguity_resolution": {
-          "score": 2,
-          "confidence": 1,
-          "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:ambiguity_resolution"
-          ],
-          "observed_at": "2026-05-09T20:50:00Z",
-          "stale_after": "24h"
-        },
-        "long_context": {
-          "score": 2,
-          "confidence": 1,
-          "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:long_context"
-          ],
-          "observed_at": "2026-05-09T20:50:00Z",
-          "stale_after": "24h"
-        },
-        "current_docs_grounding": {
-          "score": 2,
-          "confidence": 1,
-          "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:current_docs_grounding"
-          ],
-          "observed_at": "2026-05-09T20:50:00Z",
-          "stale_after": "24h"
-        },
-        "multimodal_verification": {
-          "score": 2,
-          "confidence": 1,
-          "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:multimodal_verification"
-          ],
-          "observed_at": "2026-05-09T20:50:00Z",
-          "stale_after": "24h"
-        },
-        "runtime_debugging": {
-          "score": 3,
-          "confidence": 1,
-          "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:runtime_debugging"
-          ],
-          "observed_at": "2026-05-09T20:50:00Z",
-          "stale_after": "24h"
-        },
-        "test_authoring": {
-          "score": 2,
-          "confidence": 1,
-          "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:test_authoring"
-          ],
-          "observed_at": "2026-05-09T20:50:00Z",
-          "stale_after": "24h"
-        },
-        "coordination_reliability": {
-          "score": 2,
-          "confidence": 1,
-          "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:coordination_reliability"
-          ],
-          "observed_at": "2026-05-09T20:50:00Z",
-          "stale_after": "24h"
-        },
-        "privacy_safety": {
-          "score": 1,
-          "confidence": 1,
-          "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:privacy_safety"
-          ],
-          "observed_at": "2026-05-09T20:50:00Z",
-          "stale_after": "24h"
-        },
-        "public_claim_safety": {
-          "score": 2,
-          "confidence": 1,
-          "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:public_claim_safety"
-          ],
-          "observed_at": "2026-05-09T20:50:00Z",
-          "stale_after": "24h"
-        },
-        "local_calibration": {
-          "score": 2,
-          "confidence": 1,
-          "evidence_refs": [
-            "platform-capability-registry:antigrav.interactive.full:dimensional-score:local_calibration"
-          ],
-          "observed_at": "2026-05-09T20:50:00Z",
-          "stale_after": "24h"
-        }
-      },
-      "tool_state": [
-        {
-          "tool_id": "filesystem",
-          "available": true,
-          "authority_use": [
-            "read",
-            "write"
-          ],
-          "observed_at": "2026-05-17T08:14:11Z",
-          "stale_after": "24h",
-          "evidence_ref": "platform-capability-registry:antigrav.interactive.full:tool_access.filesystem"
-        },
-        {
-          "tool_id": "local_shell",
-          "available": true,
-          "authority_use": [
-            "read",
-            "execute",
-            "verify"
-          ],
-          "observed_at": "2026-05-17T08:14:11Z",
-          "stale_after": "24h",
-          "evidence_ref": "platform-capability-registry:antigrav.interactive.full:tool_access.shell"
-        },
-        {
-          "tool_id": "browser",
-          "available": true,
-          "authority_use": [
-            "read",
-            "verify"
-          ],
-          "observed_at": "2026-05-17T08:14:11Z",
-          "stale_after": "24h",
-          "evidence_ref": "platform-capability-registry:antigrav.interactive.full:tool_access.browser"
-        }
-      ],
-      "sanctioned_wrapper": "~/.local/bin/hapax-antigrav",
-      "approval_posture": "default_deny_enable_latch",
-      "capability_tier": "audited_full_worker",
-      "worker_tier": "audited_full_worker"
+      "descriptor_schema": 1,
+      "shape_id": "publication_bus.public_event_surface",
+      "shape_class": "publication_bus",
+      "carrier_family": "publication_bus",
+      "summary": "Public publication/event bus surfaces, including OMG weblog and artifact publication adapters.",
+      "harness_shape": "egress-adapter-plus-public-event-ledger",
+      "authority_ceiling": "support_only",
+      "shape_state": "measurement_pending",
+      "demand_eligible": false,
+      "route_ids": [],
+      "resource_semantics": ["public-egress", "claim-review", "surface-specific adapter"],
+      "spend_semantics": ["zero-provider-spend-by-default", "public-claim-cost-nonzero"],
+      "observability": ["public_events_jsonl", "published-artifact-metadata", "publication-hardening-gate"],
+      "failure_classes": ["live_public_event_type_absent", "public_claim_gate_missing", "adapter_receipt_absent"],
+      "measurement_plan_refs": ["cc-task-publication-bus-route-spend-gate-20260630"],
+      "remediation_refs": ["require:omg.weblog-public-event-adapter", "require:publication-hardening-gate", "require:rdlc-claim-disposition-before-public-egress"],
+      "surface_delta_signal": "capability_surface_delta:publication_bus",
+      "observed_at": "2026-07-04T01:50:00Z",
+      "stale_after": "30d",
+      "freshness_state": "asserted_only",
+      "evidence_refs": ["task:cc-task-publication-bus-route-spend-gate-20260630", "docs:published-artifacts/HOW-TO-PUBLISH.md"],
+      "blocked_reasons": ["measured_supply_leaf_absent", "omg_weblog_live_event_absent", "public_claim_disposition_required"]
     },
+    {
+      "descriptor_schema": 1,
+      "shape_id": "money_rail.resource_receipt_surface",
+      "shape_class": "money_rail",
+      "carrier_family": "money_rails",
+      "summary": "Receive-only payment/support surfaces that emit governed monetary/resource receipts.",
+      "harness_shape": "receive-only-ingress-plus-resource-receipt-ledger",
+      "authority_ceiling": "support_only",
+      "shape_state": "measurement_pending",
+      "demand_eligible": false,
+      "route_ids": [],
+      "resource_semantics": ["receipt-ledger", "idempotent-ingress", "receive-only"],
+      "spend_semantics": ["no-spend-authority", "cash-receipt-visible", "resource-cost-nonzero"],
+      "observability": ["money-rail-resource-receipts", "payment-event-log", "support-copy-readiness"],
+      "failure_classes": ["receipt_missing_fail_closed", "duplicate_delivery", "release_pr_dirty"],
+      "measurement_plan_refs": ["cc-task-money-rails-resource-receipt-ledger-20260630"],
+      "remediation_refs": ["pr:4347:resolve-merge-conflict", "require:current-head-review", "require:autoqueue-admission"],
+      "surface_delta_signal": "capability_surface_delta:money_rail",
+      "observed_at": "2026-07-04T01:50:00Z",
+      "stale_after": "30d",
+      "freshness_state": "asserted_only",
+      "evidence_refs": ["task:cc-task-money-rails-resource-receipt-ledger-20260630", "relay:2026-07-04-cx-cap-money-pr4347-merge-conflict-blocked.md"],
+      "blocked_reasons": ["measured_supply_leaf_absent", "upstream_pr_dirty"]
+    },
+    {
+      "descriptor_schema": 1,
+      "shape_id": "mcp_connector.connector_surface",
+      "shape_class": "mcp_connector",
+      "carrier_family": "mcp",
+      "summary": "MCP/app connector tools that can provide data or mutate external systems under connector-specific authority.",
+      "harness_shape": "connector-tool-contract-plus-authority-envelope",
+      "authority_ceiling": "support_only",
+      "shape_state": "intake_required",
+      "demand_eligible": false,
+      "route_ids": [],
+      "resource_semantics": ["external-api", "connector-auth", "tool-call-receipts"],
+      "spend_semantics": ["unknown-provider-quota", "external-api-cost-possible"],
+      "observability": ["tool-call-ledger", "connector-permission-surface", "egress-policy-gate"],
+      "failure_classes": ["connector_auth_absent", "permission_surface_unknown", "external_mutation_not_authorized"],
+      "measurement_plan_refs": ["capability_surface_delta:mcp_connector"],
+      "remediation_refs": ["mint:connector-capability-intake", "require:permission-and-egress-contract", "require:route-resource-receipts"],
+      "surface_delta_signal": "capability_surface_delta:mcp_connector",
+      "observed_at": "2026-06-30T18:39:00Z",
+      "stale_after": "30d",
+      "freshness_state": "asserted_only",
+      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
+      "blocked_reasons": ["descriptor_intake_required", "measured_supply_leaf_absent"]
+    },
+    {
+      "descriptor_schema": 1,
+      "shape_id": "orchestrator.multi_agent_surface",
+      "shape_class": "orchestrator",
+      "carrier_family": "orchestrators",
+      "summary": "Multi-agent and launcher orchestration surfaces that fan out work but are not themselves task capability units.",
+      "harness_shape": "orchestrator-intake-plus-child-route-receipts",
+      "authority_ceiling": "support_only",
+      "shape_state": "intake_required",
+      "demand_eligible": false,
+      "route_ids": [],
+      "resource_semantics": ["child-session-supply", "coordination-overhead", "claim-bound-worktrees"],
+      "spend_semantics": ["fanout-cost", "token-and-local-resource-amplification"],
+      "observability": ["dispatch-packets", "claim-files", "relay-status", "child-session-receipts"],
+      "failure_classes": ["orphan_claim", "child_auth_invalidated", "worktree_missing", "relay_stale"],
+      "measurement_plan_refs": ["capability_surface_delta:orchestrator"],
+      "remediation_refs": ["mint:orchestrator-surface-intake", "require:child-route-receipts", "require:worktree-and-claim-coherence"],
+      "surface_delta_signal": "capability_surface_delta:orchestrator",
+      "observed_at": "2026-07-04T01:54:00Z",
+      "stale_after": "30d",
+      "freshness_state": "asserted_only",
+      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
+      "blocked_reasons": ["measured_supply_leaf_absent", "child_receipt_contract_required"]
+    },
+    {
+      "descriptor_schema": 1,
+      "shape_id": "subagent.sandboxed_research_surface",
+      "shape_class": "subagent",
+      "carrier_family": "subagents",
+      "summary": "Sandboxed research/code-review subagents whose outputs are evidence, not autonomous dispatch capacity.",
+      "harness_shape": "bounded-subagent-run-plus-evidence-disposition",
+      "authority_ceiling": "support_only",
+      "shape_state": "intake_required",
+      "demand_eligible": false,
+      "route_ids": [],
+      "resource_semantics": ["bounded-context", "support-evidence", "no-direct-source-authority"],
+      "spend_semantics": ["token-cost", "parallelism-cost"],
+      "observability": ["subagent-prompt", "subagent-summary", "evidence-disposition"],
+      "failure_classes": ["support_only_confused_with_authority", "prompt_context_stale", "evidence_not_disposed"],
+      "measurement_plan_refs": ["capability_surface_delta:subagent"],
+      "remediation_refs": ["mint:subagent-surface-intake", "require:evidence-grade-disposition", "require:parent-route-receipt"],
+      "surface_delta_signal": "capability_surface_delta:subagent",
+      "observed_at": "2026-06-30T18:39:00Z",
+      "stale_after": "30d",
+      "freshness_state": "asserted_only",
+      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
+      "blocked_reasons": ["measured_supply_leaf_absent", "support_only_evidence"]
+    },
+    {
+      "descriptor_schema": 1,
+      "shape_id": "cockpit_command.llm_backed_agent_commands",
+      "shape_class": "cockpit_command",
+      "carrier_family": "hapax_cockpit",
+      "summary": "Cockpit LLM-backed commands such as research, briefing, and code-review, decomposed before routing.",
+      "harness_shape": "cockpit-command-envelope-plus-underlying-model-supply",
+      "authority_ceiling": "support_only",
+      "shape_state": "intake_required",
+      "demand_eligible": false,
+      "route_ids": [],
+      "resource_semantics": ["command-wrapper", "underlying-model-hidden", "tool-authority-envelope"],
+      "spend_semantics": ["underlying-model-cost-unknown", "command-overhead"],
+      "observability": ["cockpit-command-log", "route-decision-receipt", "underlying-model-receipt"],
+      "failure_classes": ["command_name_confused_with_capability", "underlying_supply_unmeasured", "authority_envelope_absent"],
+      "measurement_plan_refs": ["capability_surface_delta:cockpit_command"],
+      "remediation_refs": ["mint:cockpit-command-capability-intake", "require:underlying-model-descriptor", "require:tool-authority-envelope"],
+      "surface_delta_signal": "capability_surface_delta:cockpit_command",
+      "observed_at": "2026-06-30T18:39:00Z",
+      "stale_after": "30d",
+      "freshness_state": "asserted_only",
+      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
+      "blocked_reasons": ["measured_supply_leaf_absent", "command_not_capability_unit"]
+    },
+    {
+      "descriptor_schema": 1,
+      "shape_id": "self_inline.current_session_surface",
+      "shape_class": "self_inline",
+      "carrier_family": "self_inline",
+      "summary": "The current session's inline work and self-actions, visible as a governed supply surface only through claims and receipts.",
+      "harness_shape": "current-session-claim-plus-tool-gate",
+      "authority_ceiling": "support_only",
+      "shape_state": "measurement_pending",
+      "demand_eligible": false,
+      "route_ids": [],
+      "resource_semantics": ["session-context", "claim-file", "tool-gate"],
+      "spend_semantics": ["interactive-token-cost", "operator-attention-cost"],
+      "observability": ["claim-file", "task-note", "tool-gate-decision", "git-diff"],
+      "failure_classes": ["role_lane_mismatch", "worktree_missing", "claim_without_relay"],
+      "measurement_plan_refs": ["capability_surface_delta:self_inline"],
+      "remediation_refs": ["require:lane-worktree-claim-coherence", "require:route-receipt", "require:status-vector-projection"],
+      "surface_delta_signal": "capability_surface_delta:self_inline",
+      "observed_at": "2026-07-04T01:54:00Z",
+      "stale_after": "7d",
+      "freshness_state": "asserted_only",
+      "evidence_refs": ["claim:cc-task-register-omitted-demand-shape-routes-20260630:cx-rdlc-ext"],
+      "blocked_reasons": ["measured_supply_leaf_absent", "status_vector_required"]
+    },
+    {
+      "descriptor_schema": 1,
+      "shape_id": "cctv_runner.observation_surface",
+      "shape_class": "cctv_runner",
+      "carrier_family": "cctv",
+      "summary": "Observer/reviewer runners that can witness behavior but cannot substitute for implementation capacity.",
+      "harness_shape": "observer-route-plus-witness-receipt",
+      "authority_ceiling": "read_only",
+      "shape_state": "intake_required",
+      "demand_eligible": false,
+      "route_ids": [],
+      "resource_semantics": ["read-only-observation", "witness-receipt", "no-source-mutation"],
+      "spend_semantics": ["observer-token-cost", "local-observation-cost"],
+      "observability": ["witness-receipts", "review-dossier", "cctv-assignment"],
+      "failure_classes": ["observer_confused_with_actor", "witness_stale", "review_lens_mismatch"],
+      "measurement_plan_refs": ["capability_surface_delta:cctv_runner"],
+      "remediation_refs": ["mint:cctv-runner-intake", "require:witness-receipt-contract", "require:review-lens-fit"],
+      "surface_delta_signal": "capability_surface_delta:cctv_runner",
+      "observed_at": "2026-06-30T18:39:00Z",
+      "stale_after": "30d",
+      "freshness_state": "asserted_only",
+      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
+      "blocked_reasons": ["measured_supply_leaf_absent", "read_only_observer"]
+    },
+    {
+      "descriptor_schema": 1,
+      "shape_id": "model_provider.openrouter_gateway_surface",
+      "shape_class": "model_provider",
+      "carrier_family": "openrouter",
+      "summary": "Provider gateway model leaves that must be measured by model/profile/context/tool authority, not selected as a provider badge.",
+      "harness_shape": "provider-gateway-plus-model-leaf-descriptor",
+      "authority_ceiling": "frontier_review_required",
+      "shape_state": "intake_required",
+      "demand_eligible": false,
+      "route_ids": [],
+      "resource_semantics": ["provider-gateway", "model-leaf", "quota-and-rate-limit"],
+      "spend_semantics": ["paid-provider-usage", "gateway-markup-possible"],
+      "observability": ["provider-usage-ledger", "route-authority-receipt", "quota-spend-ledger"],
+      "failure_classes": ["provider_badge_as_capability", "quota_unknown", "model_leaf_unmeasured"],
+      "measurement_plan_refs": ["capability_surface_delta:model_provider"],
+      "remediation_refs": ["mint:provider-model-leaf-intake", "require:quota-spend-receipts", "require:quality-posterior"],
+      "surface_delta_signal": "capability_surface_delta:model_provider",
+      "observed_at": "2026-06-30T18:39:00Z",
+      "stale_after": "30d",
+      "freshness_state": "asserted_only",
+      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
+      "blocked_reasons": ["measured_supply_leaf_absent", "quota_receipt_absent"]
+    },
+    {
+      "descriptor_schema": 1,
+      "shape_id": "local_compute.ornith_fugu_sakana_surface",
+      "shape_class": "local_compute",
+      "carrier_family": "local_compute_burst",
+      "summary": "Local/burst compute families such as Ornith, Fugu, and Sakana that need measured harness/resource leaves.",
+      "harness_shape": "local-or-burst-harness-plus-resource-envelope",
+      "authority_ceiling": "support_only",
+      "shape_state": "intake_required",
+      "demand_eligible": false,
+      "route_ids": [],
+      "resource_semantics": ["local-compute", "gpu-or-cpu-envelope", "burst-worker"],
+      "spend_semantics": ["zero-cash-not-zero-resource", "thermal-and-opportunity-cost"],
+      "observability": ["resource-telemetry", "harness-self-test", "route-authority-receipt"],
+      "failure_classes": ["local_compute_silent_free", "harness_unmeasured", "resource_pressure_unknown"],
+      "measurement_plan_refs": ["capability_surface_delta:local_compute"],
+      "remediation_refs": ["mint:local-compute-leaf-intake", "require:resource-receipts", "require:harness-self-test"],
+      "surface_delta_signal": "capability_surface_delta:local_compute",
+      "observed_at": "2026-06-30T18:39:00Z",
+      "stale_after": "30d",
+      "freshness_state": "asserted_only",
+      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
+      "blocked_reasons": ["measured_supply_leaf_absent", "resource_receipt_absent"]
+    },
+    {
+      "descriptor_schema": 1,
+      "shape_id": "antigrav.interactive.full",
+      "shape_class": "orchestrator",
+      "carrier_family": "antigrav",
+      "summary": "Deprecated Antigrav interactive route surface retained only to refuse observed legacy deltas; Agy adapter family is distinct and route-gated.",
+      "harness_shape": "deprecated-route-refusal",
+      "authority_ceiling": "support_only",
+      "shape_state": "deprecated",
+      "demand_eligible": false,
+      "route_ids": [],
+      "resource_semantics": ["deprecated-route", "legacy-wrapper", "no-dispatch-supply"],
+      "spend_semantics": ["no-spend-authority", "legacy-provider-quota-not-admitted"],
+      "observability": ["task-note-correction", "capability-surface-delta"],
+      "failure_classes": ["deprecated_route_observed", "legacy_route_alias_reintroduced"],
+      "measurement_plan_refs": ["cc-task-register-omitted-demand-shape-routes-20260630"],
+      "remediation_refs": ["refuse:antigrav-live-route", "require:agy-measured-supply-leaf-before-route-admission"],
+      "surface_delta_signal": "capability_surface_delta:orchestrator",
+      "observed_at": "2026-06-30T18:12:00Z",
+      "stale_after": "30d",
+      "freshness_state": "asserted_only",
+      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
+      "blocked_reasons": ["deprecated_antigrav_route_retired", "measured_supply_leaf_absent"]
+    }
+  ],
+  "routes": [
     {
       "registry_schema": 1,
       "route_id": "api.headless.api_frontier",
@@ -571,6 +569,297 @@
       "approval_posture": "default_deny_enable_latch",
       "capability_tier": "frontier_full",
       "worker_tier": "bounded_worker"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "api.headless.openrouter",
+      "platform": "api",
+      "mode": "headless",
+      "profile": "openrouter",
+      "launcher": "receipt-only CapabilityIO/BudgetAuthorityAdapter route for LiteLLM alias gpt-5.5-or; no bespoke OpenRouter launcher",
+      "summary": "OpenRouter GPT-5.5 frontier substitute route",
+      "notes": "Concrete OpenRouter leaf for R1 substitute-frontier coverage; not openrouter/auto, not a fallback group, and not a hapax-openrouter launcher. CapabilityIO measurement and served-model evidence are required before non-degradation admission.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "capabilityio_measurement_absent",
+        "capability_scores_asserted_not_measured",
+        "openrouter_litellm_route_receipt_absent",
+        "openrouter_key_secret_receipt_absent",
+        "openrouter_key_credit_witness_absent",
+        "openrouter_paid_budget_receipt_absent",
+        "capabilityio_adapter_wiring_absent",
+        "openrouter_served_model_witness_absent"
+      ],
+      "model_or_engine": "openrouter/openai/gpt-5.5",
+      "execution_descriptor": {
+        "model_id": "gpt-5.5",
+        "effort": "none",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
+      "paid_provider": "openrouter",
+      "paid_profile": "frontier-gpt-5.5",
+      "auth_surface": "api_key",
+      "capacity_pool": "api_paid_spend",
+      "mutability": {
+        "vault_docs": true,
+        "source": true,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "frontier_review_required",
+      "tool_access": {
+        "filesystem": "read_write",
+        "shell": "full",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "provider_training_unknown",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "frontier_required",
+          "frontier_review_required",
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [
+          "route-authority:openrouter-gpt-5.5-substitute-frontier-asserted"
+        ],
+        "excluded_task_classes": [
+          "privacy_secret_sensitive",
+          "runtime_mutation_without_isap",
+          "provider_spend",
+          "public_release_without_gate"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "very_large"
+      },
+      "telemetry": {
+        "quota_source": "ledger",
+        "cost_source": "ledger",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "5m",
+        "provider_docs_checked_at": "2026-07-05T14:34:00Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "task:cc-task-onboard-r1-openrouter-substitute-frontier-20260705"
+            ],
+            "blocked_reasons": [
+              "capabilityio_measurement_absent",
+              "capability_scores_asserted_not_measured"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "openrouter_paid_budget_receipt_absent",
+              "openrouter_key_credit_witness_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:/home/hapax/llm-stack/litellm-config.yaml:gpt-5.5-or:2026-07-05"
+            ],
+            "blocked_reasons": [
+              "openrouter_litellm_route_receipt_absent",
+              "openrouter_key_secret_receipt_absent",
+              "capabilityio_adapter_wiring_absent"
+            ]
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "context7:/websites/openrouter_ai:quickstart-and-models-api:2026-07-05",
+              "official:https://openrouter.ai/docs/quickstart",
+              "official:https://openrouter.ai/docs/api-reference/list-available-models"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "OpenRouter key/credit witness is not materialized in hapax-secrets for this route; prior premeasurement found the key only in the llm-stack environment.",
+        "No completion run was performed for this task; scores are asserted-not-measured until CapabilityIO or EDT witnesses outcomes.",
+        "Served-model readback must prove the actual model remains openai/gpt-5.5 and is not router, auto, or fallback substitution."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:grounding"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:governance_reasoning"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:source_editing"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:architecture"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:ambiguity_resolution"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 5,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:long_context"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:current_docs_grounding"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:multimodal_verification"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:runtime_debugging"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:test_authoring"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:coordination_reliability"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:privacy_safety"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:public_claim_safety"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 1,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:api.headless.openrouter:dimensional-score:local_calibration"
+          ],
+          "observed_at": null,
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read",
+            "write"
+          ],
+          "observed_at": null,
+          "stale_after": "5m",
+          "evidence_ref": "platform-capability-registry:api.headless.openrouter:tool_access.filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "execute",
+            "verify"
+          ],
+          "observed_at": null,
+          "stale_after": "5m",
+          "evidence_ref": "platform-capability-registry:api.headless.openrouter:tool_access.shell"
+        },
+        {
+          "tool_id": "litellm_gateway",
+          "available": false,
+          "authority_use": [
+            "execute",
+            "verify"
+          ],
+          "observed_at": null,
+          "stale_after": "5m",
+          "evidence_ref": "platform-capability-registry:api.headless.openrouter:tool_access.litellm_gateway"
+        }
+      ],
+      "sanctioned_wrapper": "scripts/hapax-methodology-dispatch",
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "frontier_full",
+      "worker_tier": "fallback_worker"
     },
     {
       "registry_schema": 1,
@@ -2146,7 +2435,7 @@
         "fast_mode": "off",
         "quantization": "none"
       },
-      "auth_surface": "subscription",
+      "auth_surface": "oauth",
       "capacity_pool": "subscription_quota",
       "mutability": {
         "vault_docs": true,
@@ -2465,7 +2754,7 @@
         "fast_mode": "off",
         "quantization": "none"
       },
-      "auth_surface": "subscription",
+      "auth_surface": "oauth",
       "capacity_pool": "subscription_quota",
       "mutability": {
         "vault_docs": true,
@@ -2770,10 +3059,9 @@
       "profile": "full",
       "launcher": "~/.local/bin/hapax-vibe --session <lane> --terminal tmux --task <task> --prompt <governed-prompt>",
       "summary": "Mistral Vibe headless tmux one-shot lane",
-      "notes": "JR+ bounded worker path; programmatic prompt mode auto-approves tools and must stay task-scoped, PR-only, and off sensitive surfaces.",
+      "notes": "JR+ bounded worker path; programmatic prompt mode auto-approves tools and must stay task-scoped, PR-only, deterministic-floor only, and off sensitive surfaces.",
       "route_state": "blocked",
       "blocked_reasons": [
-        "quality_equivalence_record_absent",
         "fresh_capability_evidence_absent",
         "account_live_quota_receipt_absent"
       ],
@@ -2804,11 +3092,11 @@
       "privacy_posture": "provider_private",
       "quality_envelope": {
         "eligible_quality_floors": [
-          "frontier_review_required",
           "deterministic_ok"
         ],
         "explicit_equivalence_records": [],
         "excluded_task_classes": [
+          "frontier_review_required_without_equivalence_record",
           "frontier_required_without_equivalence_record",
           "governance_authority_case",
           "privacy_secret_sensitive",
@@ -2837,7 +3125,6 @@
           "capability": {
             "evidence_refs": [],
             "blocked_reasons": [
-              "quality_equivalence_record_absent",
               "fresh_capability_evidence_absent"
             ]
           },
@@ -2862,7 +3149,7 @@
         }
       },
       "known_unknowns": [
-        "JR+ bounded worker path; governance-critical task fit must be excluded by policy layer.",
+        "JR+ bounded worker path; frontier-review and governance-critical task fit are explicitly excluded until a governed quality-equivalence receipt exists.",
         "Programmatic Vibe prompt mode auto-approves tools; route only through task-scoped worktrees and narrow enabled-tool policy."
       ],
       "capability_scores": {
@@ -3036,23 +3323,355 @@
     },
     {
       "registry_schema": 1,
+      "route_id": "agy.review.direct",
+      "platform": "agy",
+      "mode": "review",
+      "profile": "direct",
+      "launcher": "scripts/hapax-agy-reviewer (review seat: blind-review prompt on stdin -> agy --print sandboxed YAML verdict on stdout)",
+      "sanctioned_wrapper": "scripts/hapax-agy-reviewer",
+      "summary": "Agy universal-harness review seat (Antigravity CLI; entitlement engines include Gemini, Claude, and GPT-OSS)",
+      "notes": "Live /usr/bin/agy CLI review harness. This is the agy reviewer family, not the retired Antigrav GUI/legacy hapax-antigrav surface and not a mutating worker lane. Gemini is an engine reachable through agy, not a capability family name. Local probe observed agy 1.0.10, eight agy models, and exact-output success with Gemini 3.1 Pro (Low); Gemini 3.5 Flash (Low) was reachable but did not obey the exact-token smoke prompt. scripts/hapax-agy-reviewer pins the review model to gemini-3.1-pro-preview and rejects ambient or explicit non-pinned model overrides so the route-backed gemini family cannot silently execute a different engine. Admission is intentionally partial and fail-closed: a fresh agy platform-capability receipt with observed CLI/wrapper evidence clears agy_review_seat_receipt_admission_required, but observed platform quota evidence and generic fresh quota snapshots do not clear route_specific_quota_receipt_absent. Route quota admission requires a fresh short-lived hapax.agy_quota_admission.v1 receipt from scripts/hapax-agy-quota-admission, which runs and validates a sanctioned scripts/hapax-agy-reviewer smoke without persisting prompt or output content, followed by scripts/hapax-quota-telemetry-writer so the live quota ledger records agy.review.direct as fresh.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "agy_review_seat_receipt_admission_required",
+        "route_specific_quota_receipt_absent"
+      ],
+      "model_or_engine": "agy-universal-harness",
+      "execution_descriptor": {
+        "model_id": "gemini-3.1-pro-preview",
+        "effort": "low",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
+      "descriptor_variants": [
+        {
+          "variant_id": "agy@gemini-3.5-flash-low",
+          "knobs_override": {
+            "model_id": "gemini-3.5-flash",
+            "effort": "low"
+          },
+          "score_delta": {},
+          "scores_inherited_from": "agy.review.direct",
+          "blocked_reasons": ["engine_exact_token_smoke_failed"]
+        },
+        {
+          "variant_id": "agy@gemini-3.5-flash-medium",
+          "knobs_override": {
+            "model_id": "gemini-3.5-flash",
+            "effort": "medium"
+          },
+          "score_delta": {},
+          "scores_inherited_from": "agy.review.direct",
+          "blocked_reasons": ["engine_exact_token_smoke_failed"]
+        },
+        {
+          "variant_id": "agy@gemini-3.5-flash-high",
+          "knobs_override": {
+            "model_id": "gemini-3.5-flash",
+            "effort": "high"
+          },
+          "score_delta": {},
+          "scores_inherited_from": "agy.review.direct",
+          "blocked_reasons": ["engine_exact_token_smoke_failed"]
+        },
+        {
+          "variant_id": "agy@gemini-3.1-pro-high",
+          "knobs_override": {
+            "effort": "high"
+          },
+          "score_delta": {},
+          "scores_inherited_from": "agy.review.direct",
+          "blocked_reasons": []
+        },
+        {
+          "variant_id": "agy@claude-sonnet-4.6-thinking",
+          "knobs_override": {
+            "model_id": "claude-sonnet-4-6",
+            "effort": "high"
+          },
+          "score_delta": {},
+          "scores_inherited_from": "agy.review.direct",
+          "blocked_reasons": []
+        },
+        {
+          "variant_id": "agy@claude-opus-4.6-thinking",
+          "knobs_override": {
+            "model_id": "claude-opus-4-6",
+            "effort": "high"
+          },
+          "score_delta": {},
+          "scores_inherited_from": "agy.review.direct",
+          "blocked_reasons": []
+        },
+        {
+          "variant_id": "agy@gpt-oss-120b-medium",
+          "knobs_override": {
+            "model_id": "gpt-oss-120b",
+            "effort": "medium"
+          },
+          "score_delta": {},
+          "scores_inherited_from": "agy.review.direct",
+          "blocked_reasons": []
+        }
+      ],
+      "auth_surface": "operator_session",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "read_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "none",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "provider_training_unknown",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "frontier_review_required"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "source_mutation",
+          "runtime_mutation",
+          "provider_spend",
+          "governance_authority_case",
+          "privacy_secret_sensitive",
+          "public_release_without_gate"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "very_large"
+      },
+      "telemetry": {
+        "quota_source": "unknown",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": "2026-07-05T14:51:11Z",
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": "2026-07-05T14:51:11Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-07-05T14:51:11Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "local:/usr/bin/agy --version:1.0.10:2026-07-05T14:51Z",
+              "local:agy models:8-entitlement-engines:2026-07-05T14:51Z",
+              "local:agy --model 'Gemini 3.1 Pro (Low)' --print:AGY_PRO_LOW_OK:2026-07-05T14:51Z"
+            ],
+            "blocked_reasons": []
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "route_specific_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:/usr/bin/agy:present:2026-07-05T14:51Z",
+              "local:scripts/hapax-agy-reviewer:wrapper-contract-reviewed:2026-07-05T14:51Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "local:/home/hapax/.gemini/antigravity-cli/builtin/skills/antigravity_guide/references/cli.md:reviewed:2026-07-05T14:51Z"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "No durable route-specific quota or spend receipt exists yet; the route remains blocked until admission plumbing records account-live quota evidence.",
+        "Only Gemini 3.1 Pro (Low) passed an exact-output smoke prompt; Gemini 3.5 Flash (Low) was reachable but answered about CLI docs instead of the exact token.",
+        "The agy harness exposes multiple provider engines; this route is a universal-harness review seat and must not be treated as a local-private execution path.",
+        "This route is not a worker lane and does not authorize source, runtime, provider-spend, public, or governance-authority mutations."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:agy.review.direct:dimensional-score:asserted-not-measured:grounding"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:agy.review.direct:dimensional-score:asserted-not-measured:governance_reasoning"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 1,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:agy.review.direct:dimensional-score:asserted-not-measured:source_editing"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:agy.review.direct:dimensional-score:asserted-not-measured:architecture"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:agy.review.direct:dimensional-score:asserted-not-measured:ambiguity_resolution"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:agy.review.direct:dimensional-score:asserted-not-measured:long_context"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:agy.review.direct:dimensional-score:asserted-not-measured:current_docs_grounding"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 1,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:agy.review.direct:dimensional-score:asserted-not-measured:multimodal_verification"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 1,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:agy.review.direct:dimensional-score:asserted-not-measured:runtime_debugging"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:agy.review.direct:dimensional-score:asserted-not-measured:test_authoring"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:agy.review.direct:dimensional-score:asserted-not-measured:coordination_reliability"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:agy.review.direct:dimensional-score:asserted-not-measured:privacy_safety"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 2,
+          "confidence": 2,
+          "evidence_refs": [
+            "platform-capability-registry:agy.review.direct:dimensional-score:asserted-not-measured:public_claim_safety"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 1,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:agy.review.direct:dimensional-score:asserted-not-measured:local_calibration"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:agy.review.direct:tool_access.filesystem"
+        },
+        {
+          "tool_id": "agy_cli",
+          "available": true,
+          "authority_use": [
+            "verify"
+          ],
+          "observed_at": "2026-07-05T14:51:11Z",
+          "stale_after": "24h",
+          "evidence_ref": "local:/usr/bin/agy --version:1.0.10:2026-07-05T14:51Z"
+        }
+      ],
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "read_only_support",
+      "worker_tier": "read_only_sidecar"
+    },
+    {
+      "registry_schema": 1,
       "route_id": "glmcp.review.direct",
       "platform": "glmcp",
       "mode": "review",
       "profile": "direct",
       "launcher": "scripts/hapax-glmcp-reviewer (review seat: blind-review prompt on stdin -> YAML verdict on stdout)",
       "sanctioned_wrapper": "scripts/hapax-glmcp-reviewer",
-      "summary": "GLMCP Z.ai Coding-Plan review seat (glm-5)",
-      "notes": "Receipt-bounded GLM-5 review seat, live in cc-pr-review-dispatch as the 'glm' reviewer family. Non-worker, read-only reviewer; NOT a coding workhorse -- the GLMCP coding/dispatch promotion is separately gated by glmcp-workhorse-bakeoff-20260618 (must emit promote_to_dispatch_shadow). Admission is receipt-bounded via quota_spend_ledger RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES + dispatcher_policy ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED.",
+      "summary": "GLMCP Z.ai GLM-5.2 review seat",
+      "notes": "Receipt-bounded GLM-5.2 review seat, live in cc-pr-review-dispatch as the 'glm' reviewer family. Non-worker, read-only reviewer; NOT a coding workhorse -- the GLMCP coding/dispatch promotion is separately gated by glmcp-workhorse-bakeoff-20260618 (must emit promote_to_dispatch_shadow). Admission is receipt-bounded via quota_spend_ledger RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES + dispatcher_policy ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED. Coding Plan endpoint is primary; HAPAX_GLMCP_REVIEW_ALLOW_BASE_URL_OVERRIDE remains Coding-Plan-path-only and cannot make PAYG primary. API-credit PAYG fallback is allowed only through hapax-glmcp-reviewer, endpoint-matched admission receipts, active spend-gate evidence in the live quota ledger, and pre-call GLMCP PAYG spend receipt reservations. Set HAPAX_GLMCP_REVIEW_PAYG_FALLBACK=0 to force subscription-only behavior; HAPAX_GLMCP_REVIEW_ALLOW_PAYG_BASE_URL_OVERRIDE only changes the fallback endpoint after the same gate. Recheck with scripts/hapax-quota-telemetry-writer --json, scripts/hapax-platform-capability-freshness --route glmcp.review.direct --json, and find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '*glmcp-payg-spend*.yaml' -print.",
       "route_state": "blocked",
       "blocked_reasons": [
         "glmcp_review_seat_receipt_admission_required",
         "fresh_capability_evidence_absent",
         "quota_telemetry_unknown"
       ],
-      "model_or_engine": "z_ai-glm-coding-plan:glm-5",
+      "model_or_engine": "z_ai-glm-coding-plan:glm-5.2",
       "execution_descriptor": {
-        "model_id": "z_ai-glm-5",
+        "model_id": "z_ai-glm-5.2",
         "effort": "none",
         "context_mode": "standard",
         "fast_mode": "off",
@@ -3094,7 +3713,7 @@
       },
       "telemetry": {
         "quota_source": "ledger",
-        "cost_source": "none",
+        "cost_source": "ledger",
         "resource_source": "local_probe"
       },
       "freshness": {
@@ -3136,7 +3755,8 @@
       "known_unknowns": [
         "Z.ai provider training/privacy posture is not equivalent to local execution; privacy/secret-sensitive review is excluded by policy.",
         "Coding/dispatch workhorse promotion is separate and bakeoff-gated (glmcp-workhorse-bakeoff-20260618); this route is the review seat only.",
-        "Subscription quota is not exposed as account-live local telemetry; admission is receipt-bounded via the spend ledger."
+        "Subscription quota is not exposed as account-live local telemetry; admission is receipt-bounded via the spend ledger.",
+        "When Coding Plan quota is exhausted, this review route may fall back to the official Z.ai PAYG API endpoint only with explicit API-credit receipt evidence and an active paid-spend budget gate; PAYG cannot be configured as the primary review URL."
       ],
       "capability_scores": {
         "grounding": {

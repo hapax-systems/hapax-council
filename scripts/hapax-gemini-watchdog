@@ -4,7 +4,8 @@ set -euo pipefail
 cat >&2 <<'EOF'
 hapax-gemini-watchdog is retired.
 
-The old Gemini CLI tmux lane is no longer a supported runtime. Use governed
-agy-backed routes through hapax-antigrav or packet wrappers instead.
+The old Gemini CLI tmux lane is no longer a supported runtime. Use packet
+wrappers now, or agy.review.direct through scripts/hapax-agy-reviewer for
+admitted read-only review-plane work.
 EOF
 exit 64

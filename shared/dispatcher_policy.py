@@ -20,6 +20,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
+from shared.capability_availability_guarantor import (
+    CapabilityAvailabilityReceipt,
+    availability_dispatch_reason_codes,
+    evaluate_route_availability,
+)
 from shared.capability_surface_delta import (
     CapabilitySurfaceDelta,
     CapabilitySurfaceDeltaError,
@@ -82,12 +87,12 @@ SUPPORT_CEILINGS = frozenset(
 )
 NON_MUTATING_SURFACES = frozenset({"none"})
 CLOUD_BURST_ROUTE_IDS = frozenset({"api.headless.api_frontier"})
-LOCAL_DEV_PLATFORMS = frozenset({"antigrav", "claude", "codex", "vibe"})
+LOCAL_DEV_PLATFORMS = frozenset({"claude", "codex", "vibe"})
 LOCAL_DEV_TARGET = "appendix"
-# GLMCP false-negative recovery is receipt-plane: create a fresh short-lived
-# supported-tool admission receipt and rerun quota telemetry. There is no
+# Review-seat false-negative recovery is receipt-plane: create fresh short-lived
+# route-specific quota/admission evidence and rerun telemetry. There is no
 # environment kill switch for stale/unknown subscription quota.
-ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED = frozenset({"glmcp.review.direct"})
+ROUTE_SPECIFIC_SUBSCRIPTION_QUOTA_REQUIRED = frozenset({"agy.review.direct", "glmcp.review.direct"})
 
 
 class DispatchAction(StrEnum):
@@ -149,6 +154,11 @@ class RouteCapabilityState(_PolicyModel):
     surface_delta_blockers: tuple[str, ...] = Field(default=())
     telemetry_quota_source: str | None = None
     telemetry_resource_source: str | None = None
+    availability_status: str | None = None
+    availability_receipt_ref: str | None = None
+    availability_reason_codes: tuple[str, ...] = Field(default=())
+    availability_refresh_status: str | None = None
+    availability_recomposition_required: bool = False
 
 
 class QuotaSpendState(_PolicyModel):
@@ -239,6 +249,7 @@ class RouteAuthorityReceipt(_PolicyModel):
         "quality_equivalence",
         "runtime_actuation",
         "connector_mutation",
+        "local_inference_entitlement",
     ]
     route_id: str
     issued_at: datetime
@@ -262,6 +273,14 @@ class RouteAuthorityReceipt(_PolicyModel):
             raise ValueError("quality_equivalence receipts require quality_floors")
         if self.receipt_type == "opus_model_entitlement" and not self.route_id.endswith(".opus"):
             raise ValueError("opus_model_entitlement receipts must target an opus route")
+        if self.receipt_type == "local_inference_entitlement" and not self.route_id.startswith(
+            "local_tool."
+        ):
+            raise ValueError(
+                "local_inference_entitlement receipts must target a local_tool route "
+                f"(got route_id={self.route_id!r}); re-mint with --route-id local_tool.local.worker "
+                "(or the intended local_tool.* route)."
+            )
         if self.receipt_type in {"runtime_actuation", "connector_mutation"}:
             if not self.task_ids:
                 raise ValueError(f"{self.receipt_type} receipts require task_ids")
@@ -443,6 +462,11 @@ def load_dispatch_policy_sources(
             quota_ledger = resolved.ledger
             quota_ledger_source = resolved.source
             quota_live_error = resolved.live_error
+    except RuntimeError as exc:
+        if "quota-spend-ledger-fixtures.json" not in str(exc):
+            raise
+        quota_ledger = None
+        quota_error = str(exc)
     except (IndexError, QuotaSpendLedgerError, OSError, ValueError) as exc:
         quota_ledger = None
         quota_error = str(exc)
@@ -1074,6 +1098,7 @@ def build_route_authority_receipt(
         "quality_equivalence",
         "runtime_actuation",
         "connector_mutation",
+        "local_inference_entitlement",
     ],
     route_id: str,
     evidence_refs: Sequence[str],
@@ -1217,22 +1242,38 @@ def _apply_route_authority_receipt_to_route_payload(
         if reason not in removable_reasons
     ]
     freshness = route_payload["freshness"]
-    capability_evidence = freshness["evidence"]["capability"]
-    capability_evidence["blocked_reasons"] = [
-        reason
-        for reason in capability_evidence.get("blocked_reasons", [])
-        if reason not in removable_reasons
-    ]
-    capability_evidence["evidence_refs"] = list(
-        dict.fromkeys(
-            [
-                *capability_evidence.get("evidence_refs", []),
-                *receipt.evidence_refs,
-                receipt_ref,
-            ]
-        )
-    )
     issued_at = _coerce_utc(receipt.issued_at).isoformat().replace("+00:00", "Z")
+    receipt_evidence_refs = [*receipt.evidence_refs, receipt_ref]
+    # A receipt clears its removable reasons wherever they live, not only on the capability
+    # surface: the local-worker admission gate + fresh-capability blockers sit on the
+    # capability surface, but quota_telemetry_unknown sits on the quota surface. Stripping
+    # only the capability surface let the top-level re-derivation below re-sweep the quota
+    # surface and re-inject the reason, leaving the route blocked (the R1 keystone bug).
+    for surface_name, surface_payload in freshness["evidence"].items():
+        original = surface_payload.get("blocked_reasons", [])
+        if not original:
+            continue
+        remaining = [reason for reason in original if reason not in removable_reasons]
+        if remaining == original:
+            continue
+        surface_payload["blocked_reasons"] = remaining
+        # The receipt IS the evidence that cleared these reasons: record it on the surface
+        # (so the clearing is attributable AND the surface is not left empty — a freshness
+        # surface must carry evidence_refs or blocked_reasons) and stamp the surface fresh
+        # (a surface with a null checked_at must still carry blocked_reasons, so a cleared
+        # surface must be marked checked at the receipt's issue time).
+        surface_payload["evidence_refs"] = list(
+            dict.fromkeys([*surface_payload.get("evidence_refs", []), *receipt_evidence_refs])
+        )
+        freshness[f"{surface_name}_checked_at"] = issued_at
+        freshness[f"{surface_name}_stale_after"] = receipt.stale_after
+    # The receipt is fundamentally fresh CAPABILITY evidence: record it on the capability
+    # surface + stamp capability freshness unconditionally, even if that surface carried no
+    # removable blocker to clear.
+    capability_evidence = freshness["evidence"]["capability"]
+    capability_evidence["evidence_refs"] = list(
+        dict.fromkeys([*capability_evidence.get("evidence_refs", []), *receipt_evidence_refs])
+    )
     freshness["capability_checked_at"] = issued_at
     freshness["capability_stale_after"] = receipt.stale_after
 
@@ -1270,6 +1311,14 @@ def _apply_route_authority_receipt_to_route_payload(
 def _route_authority_removable_reasons(receipt: RouteAuthorityReceipt) -> set[str]:
     if receipt.receipt_type == "opus_model_entitlement":
         return {"opus_model_entitlement_receipt_absent", "fresh_capability_evidence_absent"}
+    if receipt.receipt_type == "local_inference_entitlement":
+        # One operator-signed entitlement/quota receipt clears the local worker's admission
+        # gate + its capability-evidence + quota-telemetry blockers, flipping the route active.
+        return {
+            "local_inference_worker_receipt_admission_required",
+            "fresh_capability_evidence_absent",
+            "quota_telemetry_unknown",
+        }
     if receipt.receipt_type in {"runtime_actuation", "connector_mutation"}:
         return set()
     return {"quality_equivalence_record_absent", "fresh_capability_evidence_absent"}
@@ -1320,6 +1369,7 @@ def _evaluate_dimensional_candidate_set(
     checked_at: datetime,
 ) -> RouteDecision:
     candidates = _candidate_set_with_primary(request, candidate_requests)
+    candidate_request_by_route = {candidate.route_id: candidate for candidate in candidates}
     receipts: list[DimensionalCandidateReceipt] = []
     eligible: list[DimensionalCandidateReceipt] = []
     incomparable_present = False
@@ -1413,6 +1463,24 @@ def _evaluate_dimensional_candidate_set(
     winner = tied[0]
     updated = _mark_candidate_relations(receipts, selected_route_id=winner.route_id)
     if winner.route_id != request.route_id:
+        if _availability_recomposition_required(request):
+            winner_request = candidate_request_by_route[winner.route_id]
+            return _decision(
+                winner_request,
+                DispatchAction.LAUNCH,
+                (
+                    *_launch_reason_codes(winner_request, checked_at=checked_at),
+                    *_availability_recomposition_reason_codes(
+                        request,
+                        selected_route_id=winner.route_id,
+                    ),
+                ),
+                checked_at,
+                quality_floor_satisfied=True,
+                authority_allowed=True,
+                dimensional_candidates=updated,
+                selected_route_id=winner.route_id,
+            )
         return _decision(
             request,
             DispatchAction.HOLD,
@@ -1437,6 +1505,34 @@ def _evaluate_dimensional_candidate_set(
         dimensional_candidates=updated,
         selected_route_id=winner.route_id,
     )
+
+
+def _availability_recomposition_required(request: DispatchRequest) -> bool:
+    capability = request.capability
+    return bool(capability is not None and capability.availability_recomposition_required)
+
+
+def _availability_recomposition_reason_codes(
+    request: DispatchRequest,
+    *,
+    selected_route_id: str,
+) -> tuple[str, ...]:
+    capability = request.capability
+    if capability is None:
+        return ()
+    reasons: list[str] = [
+        "availability_recomposition_required",
+        f"availability_recomposed_from:{request.route_id}",
+        f"availability_recomposed_to:{selected_route_id}",
+    ]
+    if capability.availability_status:
+        reasons.append(f"availability_status:{capability.availability_status}")
+    if capability.availability_receipt_ref:
+        reasons.append(capability.availability_receipt_ref)
+    reasons.extend(capability.availability_reason_codes)
+    if capability.availability_refresh_status:
+        reasons.append(f"refresh_status:{capability.availability_refresh_status}")
+    return tuple(dict.fromkeys(reason for reason in reasons if reason))
 
 
 def _candidate_set_with_primary(
@@ -2169,10 +2265,13 @@ def _capability_state(
         )
     freshness = check_registry_freshness(registry, route_ids=[route_id], now=now).routes[0]
     normalized_route_id = normalize_route_id(route_id)
+    availability = evaluate_route_availability(route, freshness, now=now)
     return _route_capability_state(
         route,
-        freshness.ok,
-        freshness.errors,
+        freshness.ok and availability.available,
+        tuple(
+            dict.fromkeys([*freshness.errors, *availability_dispatch_reason_codes(availability)])
+        ),
         surface_delta_refs=_surface_delta_values_for_route(
             surface_delta_refs_by_route,
             normalized_route_id,
@@ -2181,6 +2280,7 @@ def _capability_state(
             surface_delta_blockers_by_route,
             normalized_route_id,
         ),
+        availability=availability,
     )
 
 
@@ -2191,6 +2291,7 @@ def _route_capability_state(
     *,
     surface_delta_refs: tuple[str, ...] = (),
     surface_delta_blockers: tuple[str, ...] = (),
+    availability: CapabilityAvailabilityReceipt | None = None,
 ) -> RouteCapabilityState:
     return RouteCapabilityState(
         route_id=route.route_id,
@@ -2218,6 +2319,15 @@ def _route_capability_state(
         surface_delta_blockers=surface_delta_blockers,
         telemetry_quota_source=route.telemetry.quota_source.value,
         telemetry_resource_source=route.telemetry.resource_source.value,
+        availability_status=availability.status.value if availability is not None else None,
+        availability_receipt_ref=availability.reference if availability is not None else None,
+        availability_reason_codes=availability.reason_codes if availability is not None else (),
+        availability_refresh_status=availability.refresh_status.value
+        if availability is not None
+        else None,
+        availability_recomposition_required=availability.recomposition_required
+        if availability is not None
+        else False,
     )
 
 
@@ -2261,6 +2371,7 @@ def _quota_state(
     if capability is not None and capability.capacity_pool in PAID_CAPACITY_POOLS:
         request = PaidRouteRequest(
             route_id=capability.route_id,
+            task_id=task_id,
             provider=_paid_provider_for(capability),
             profile=capability.paid_profile or _profile_from_route_id(capability.route_id),
             task_class=_task_class_for(metadata),
@@ -2888,6 +2999,10 @@ def _resource_state_refs(
 ) -> tuple[str, ...]:
     refs: list[str] = []
     if capability is not None:
+        if capability.availability_receipt_ref and any(
+            "resource" in error for error in capability.freshness_errors
+        ):
+            refs.append(capability.availability_receipt_ref)
         refs.extend(error for error in capability.freshness_errors if "resource" in error)
         if capability.telemetry_resource_source:
             refs.append(f"capability.resource_source:{capability.telemetry_resource_source}")

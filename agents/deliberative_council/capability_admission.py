@@ -376,8 +376,18 @@ def _admit_paid_route(
     ledger: QuotaSpendLedger,
     now: datetime,
 ) -> CapabilityAdmissionReceipt:
+    authority = _caller_authority_context()
+    if authority.task_id is None:
+        return _build_receipt(
+            descriptor,
+            action="refused",
+            reason_codes=("paid_route_task_context_missing",),
+            ledger=ledger,
+            evaluated_at=now,
+        )
     request = PaidRouteRequest(
         route_id=descriptor.route_id,
+        task_id=authority.task_id,
         provider=descriptor.provider,
         profile=descriptor.profile,
         task_class=descriptor.task_class,

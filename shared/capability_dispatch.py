@@ -52,7 +52,6 @@ LAUNCHABLE_PATHS: frozenset[tuple[str, str]] = frozenset(
         ("claude", "interactive"),
         ("codex", "headless"),
         ("vibe", "headless"),
-        ("antigrav", "interactive"),
     }
 )
 
@@ -60,8 +59,6 @@ LAUNCHABLE_PATHS: frozenset[tuple[str, str]] = frozenset(
 # in the registry's required_route_ids (resolve validates this). Ergonomic aliases
 # only; the route_id (``<platform>.<mode>.<profile>``) is the authority.
 CAPABILITY_ALIASES: dict[str, str] = {
-    "agy": "antigrav.interactive.full",
-    "gemini": "antigrav.interactive.full",
     "codex": "codex.headless.full",
     "codex-spark": "codex.headless.spark",
     "claude": "claude.headless.full",
@@ -71,8 +68,12 @@ CAPABILITY_ALIASES: dict[str, str] = {
     "claude-interactive": "claude.interactive.full",
     "api": "api.headless.provider_gateway",
     "api-frontier": "api.headless.api_frontier",
+    "openrouter": "api.headless.openrouter",
+    "openrouter-frontier": "api.headless.openrouter",
     "vibe": "vibe.headless.full",
     # valid routes, but reached via a different surface (not a spawnable lane):
+    "agy": "agy.review.direct",
+    "agy-review": "agy.review.direct",
     "glmcp-review": "glmcp.review.direct",
     "local-worker": "local_tool.local.worker",
 }
@@ -80,8 +81,13 @@ CAPABILITY_ALIASES: dict[str, str] = {
 # Capabilities the operator names that have NO governed route yet — fail CLOSED
 # with the exact follow-on that defines them (never a silent bypass).
 UNROUTED_POINTERS: dict[str, str] = {
+    "antigrav": "Antigrav is deprecated/excised; use agy-review/agy.review.direct for the live CLI review harness. Do not dispatch Antigrav.",
+    "antigravity": "Antigrav is deprecated/excised; use agy-review/agy.review.direct for the live CLI review harness. Do not dispatch Antigrav.",
+    "antigrav.interactive.full": "Antigrav is deprecated/excised; use agy-review/agy.review.direct for the live CLI review harness. Do not dispatch Antigrav.",
+    "gemini-cli": "Gemini CLI is retired/excised; use agy-review/agy.review.direct for the live agy CLI review harness.",
     "fugu": "no route yet — P2: define codex.headless.fugu (codex -p fugu / Sakana). See RESUME §P2.",
     "fugu-ultra": "no route yet — P2: define codex.headless.fugu_ultra. See RESUME §P2.",
+    "gemini": "Gemini is an engine label under the agy harness, not capability supply; use agy-review/agy.review.direct for the live review route.",
     "sakana": "= fugu (Sakana); no route yet — P2 (codex.headless.fugu) / P4 design. See RESUME.",
     "glmcp": "worker route not minted — P3: glmcp-workhorse-bakeoff must emit promote_to_dispatch_shadow first.",
     "glm": "worker route not minted — P3: glmcp-workhorse-bakeoff (review seat = 'glmcp-review').",

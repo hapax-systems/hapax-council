@@ -16,7 +16,7 @@ Authorship is indeterminate by design. This codebase is co-produced by Hapax (th
 - Manifesto: held pending a fresh public publish; do not cite the old short path
 - Refusal Brief: https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure
 - Cohort Disparity Disclosure: https://hapax.weblog.lol/2026/04/cohort-disparity-disclosure-soundcloud-first-hours-distribution
-- Constitution: https://github.com/ryanklee/hapax-constitution
+- Constitution: https://github.com/hapax-systems/hapax-constitution
 
 ## Inter-repo position
 

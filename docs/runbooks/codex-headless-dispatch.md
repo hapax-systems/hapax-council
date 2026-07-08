@@ -34,11 +34,55 @@ Remote appendix dispatch uses this order:
 
 1. validate the session name, relay state, local worktree, hook adapter, task/claim,
    and live PID guard;
-2. bootstrap the default remote session worktree if it is missing and
+2. run a remote token-only preflight before any remote worktree mutation; the
+   published Codex OAuth token must be fresh and accepted by `codex debug models`;
+3. bootstrap the default remote session worktree if it is missing and
    `HAPAX_CODEX_CREATE_WORKTREE=1` (the unset/default value is `1`);
-3. run remote preflight for required directories, hook adapter, `python3`, and
-   `codex`;
-4. execute `codex exec` on the remote host.
+4. run full remote preflight for required directories, hook adapter, `python3`,
+   `codex`, OAuth freshness, and `codex debug models` bearer actuation;
+5. after the local `cc-claim` boundary accepts the dispatch, carry the matching
+   local `cc-claim-epoch-<cx-session>` line plus matching `cc-active-task` as the
+   remote claim proof and snapshot the exact preflight-proven token into a
+   short-lived sealed remote handoff file. The handoff create is exclusive,
+   `0600`, and non-following where the dispatch host exposes `O_NOFOLLOW`; a
+   preexisting file or symlink is a hard preflight
+   failure. The file content is a one-time authenticated sealed blob, not a bearer
+   token; remote exec needs the per-launch seal key from its payload to recover
+   the token after deleting the file. The remote preflight also schedules an
+   out-of-band self-cleanup before writing sealed bytes, so a cleanup scheduling
+   failure leaves no bearer handoff behind. The default TTL is 900 seconds and may
+   be set to any positive value through `HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS`,
+   capped at 3600 seconds. Invalid, zero, negative, or out-of-range TTL values
+   fail closed before a live handoff is written;
+6. execute `codex exec` on the remote host with that handoff token, deleting the
+   handoff as it is consumed. Later rotation of the published token file must not
+   change the bearer used for this exec. A failed deletion during handoff
+   consumption is a hard launcher failure. If a parent-side cleanup attempt for an
+   abandoned preflight cannot reach the dispatch host, the launcher prints an
+   operator-visible next action while preserving the primary claim/launch failure
+   status.
+
+Local headless dispatch similarly proves the published OAuth token with
+`codex debug models` before `cc-claim` and reuses that proven bearer for the
+subsequent `codex exec`; it must not reread a mutable token file after claim.
+
+On the remote host, the launcher materializes both the legacy and session-keyed
+claim caches plus their epoch sidecars before `codex exec` starts, using the
+matched local claim epoch. Remote exec refuses task-bound dispatch if the local
+payload lacks a matching `HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH`; it must never
+invent a fresh epoch from `HAPAX_METHODOLOGY_DISPATCH_TASK` alone:
+`cc-active-task-<cx-session>`, `cc-claim-epoch-<cx-session>`,
+`cc-active-task-<cx-session>-<session_id>`, and
+`cc-claim-epoch-<cx-session>-<session_id>`. Recheck a live remote claim with:
+
+```bash
+role=cx-amber
+for f in ~/.cache/hapax/cc-active-task-"$role"*; do
+  key=${f##*/cc-active-task-}
+  printf '%s -> %s :: ' "$f" "$(head -n1 "$f")"
+  head -n1 ~/.cache/hapax/cc-claim-epoch-"$key"
+done
+```
 
 Default worktrees are constructive: if `$HOME/projects/hapax-council--<cx-session>`
 is missing on the dispatch host, the launcher may create it from the remote primary
@@ -57,6 +101,10 @@ Remote bootstrap failures print the failing branch and a next action. Check:
 - `HAPAX_CODEX_CREATE_WORKTREE` (default `1`);
 - `HAPAX_CODEX_BRANCH_PREFIX` (default `codex`);
 - `HAPAX_CODEX_WORKTREE_BASE` if a non-default base was requested.
+- `HAPAX_REMOTE_TOKEN_HANDOFF_TTL_SECONDS` for remote bearer handoff cleanup
+  timing. Valid values are integer seconds from 1 through 3600; unset defaults
+  to 900. Invalid values refuse remote dispatch before a bearer handoff is
+  written.
 
 Recheck the contract from the council repo with:
 
@@ -65,4 +113,92 @@ bash -n scripts/hapax-codex-headless
 shellcheck -S warning scripts/hapax-codex-headless
 uv run pytest tests/scripts/test_hapax_codex_headless.py -q
 uv run pytest tests/scripts/test_hapax_codex_headless.py tests/scripts/test_hapax_codex_headless_fallback.py -q
+```
+
+For the P0 dispatch-starvation exit predicate, recheck the live coordinator
+predicate and P0 intake ledger after the launcher tests. Platform receipts and
+lane health are supporting evidence; they do not replace the predicate that
+emitted the alert (`offered_tasks > 0`, `dispatches_this_tick == 0`,
+`refusal_ledger.starvation_active == true`, and
+`refusal_ledger.starvation_escalated == true`).
+
+Pre-merge source review can prove the source predicate, launcher contract, and
+regression coverage, but it cannot honestly claim that the live incident is
+closed while `hapax-coordinator.service` is still running the `origin/main`
+source-activation release. If the live predicate is still active only because
+the PR head is not deployed, record the state as
+`post_merge_runtime_activation_required`, keep the incident open, and do not
+mark the P0 exit predicate cleared until the merged or otherwise governed
+runtime activation has been restarted and rechecked.
+
+Run this on the coordinator host. If the coordinator state path is non-default,
+set `HAPAX_COORDINATOR_STATE_PATH` before running the command.
+
+```bash
+python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+state_path = Path(os.environ.get("HAPAX_COORDINATOR_STATE_PATH", "/dev/shm/hapax-coordinator/state.json"))
+if not state_path.exists():
+    raise SystemExit(
+        f"coordinator state missing at {state_path}; run on the coordinator host "
+        "or set HAPAX_COORDINATOR_STATE_PATH"
+    )
+coordinator = json.loads(state_path.read_text())
+refusal = coordinator.get("refusal_ledger", {})
+print(
+    {
+        "timestamp": coordinator.get("timestamp"),
+        "offered_tasks": coordinator.get("offered_tasks"),
+        "lanes_idle": coordinator.get("lanes_idle"),
+        "dispatches_this_tick": coordinator.get("dispatches_this_tick"),
+        "starvation_active": refusal.get("starvation_active"),
+        "starvation_escalated": refusal.get("starvation_escalated"),
+    }
+)
+PY
+python - <<'PY'
+import json
+from pathlib import Path
+
+fingerprint = "sdlc_dispatch_starvation:dispatched"
+state = json.loads(Path("~/.cache/hapax/p0-incident-intake/state.json").expanduser().read_text())
+incident = state.get("incidents", {}).get(fingerprint)
+print(
+    {
+        "fingerprint": fingerprint,
+        "count": None if incident is None else incident.get("count"),
+        "last_seen": None if incident is None else incident.get("last_seen"),
+        "recurrence_count": None if incident is None else incident.get("recurrence_count"),
+        "task_id": None if incident is None else incident.get("task_id"),
+    }
+)
+PY
+python - <<'PY'
+import json
+from pathlib import Path
+
+fingerprint = "sdlc_dispatch_starvation:dispatched"
+latest = None
+events = Path("~/.cache/hapax/p0-incident-intake/events.jsonl").expanduser()
+for line in events.read_text().splitlines():
+    if not line.strip():
+        continue
+    event = json.loads(line)
+    if event.get("fingerprint") == fingerprint:
+        latest = event
+print(
+    {
+        "fingerprint": fingerprint,
+        "latest_ts": None if latest is None else latest.get("ts"),
+        "latest_count": None if latest is None else latest.get("count"),
+        "latest_task_id": None if latest is None else latest.get("task_id"),
+    }
+)
+PY
+uv run python scripts/hapax-platform-capability-receipts --json
+scripts/hapax-codex-health --json cx-agy cx-p0 cx-ghrate
+scripts/hapax-quota-telemetry-writer --json
 ```

@@ -108,6 +108,24 @@ def test_validator_extracts_quantum_tunables(tmp_path: Path) -> None:
     assert t.allowed_rates == [16000, 44100, 44100]
 
 
+def test_validator_extracts_resample_quality_tunable(tmp_path: Path) -> None:
+    pw_dir = tmp_path / "pipewire.conf.d"
+    pw_dir.mkdir()
+    _write_conf(
+        pw_dir,
+        "10-resample-quality.conf",
+        """\
+        context.properties = {
+            resample.quality = 10
+        }
+        """,
+    )
+    v = AudioGraphValidator(pw_dir, tmp_path / "wp.conf.d-empty")
+    result = v.decompose_confs()
+    assert len(result.graph.tunables) == 1
+    assert result.graph.tunables[0].resample_quality == 10
+
+
 def test_validator_extracts_alsa_profile_pin(tmp_path: Path) -> None:
     pw_dir = tmp_path / "pipewire.conf.d"
     pw_dir.mkdir()
