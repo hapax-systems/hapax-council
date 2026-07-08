@@ -227,6 +227,10 @@ def test_missing_public_safe_or_currentness_evidence_refuses_publication() -> No
         _constructed_publish_candidate(public_safe_evidence_refs=()),
         audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
     )
+    blank_public_safe = build_publication_vehicle_selector_receipt(
+        _constructed_publish_candidate(public_safe_evidence_refs=("  ",)),
+        audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
+    )
     missing_currentness = build_publication_vehicle_selector_receipt(
         _constructed_publish_candidate(currentness_ref=None),
         audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
@@ -235,6 +239,9 @@ def test_missing_public_safe_or_currentness_evidence_refuses_publication() -> No
     assert missing_public_safe.decision == RdlcPublicationSelectorDecision.REFUSED
     assert "missing_publication:disposition:blocked" not in missing_public_safe.blocked_reasons
     assert "missing_publication:public_safe_evidence_refs" in missing_public_safe.blocked_reasons
+    assert blank_public_safe.decision == RdlcPublicationSelectorDecision.REFUSED
+    assert "missing_publication:disposition:blocked" not in blank_public_safe.blocked_reasons
+    assert "missing_publication:public_safe_evidence_refs" in blank_public_safe.blocked_reasons
     assert missing_currentness.decision == RdlcPublicationSelectorDecision.REFUSED
     assert "missing_publication:disposition:blocked" not in missing_currentness.blocked_reasons
     assert "missing_publication:currentness_ref" in missing_currentness.blocked_reasons
