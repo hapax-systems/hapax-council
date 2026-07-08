@@ -179,16 +179,13 @@ PUBLIC_GATE_SELF_AUTHORITY_VALUES = frozenset(
         "unknown",
     }
 )
-PUBLIC_GATE_NON_INDEPENDENT_REVIEW_FAMILIES = frozenset(
+PUBLIC_GATE_INDEPENDENT_REVIEW_FAMILIES = frozenset(
     {
-        "local",
-        "manual",
-        "operator",
-        "oudepode",
-        "self",
-        "self-minted",
-        "test",
-        "unknown",
+        "claude",
+        "codex",
+        "cvc",
+        "gemini",
+        "glm",
     }
 )
 PUBLIC_GATE_EVIDENCE_REF_PREFIXES = (
@@ -793,14 +790,17 @@ def _review_dossier_evidence_allows(
     reviewers = data.get("reviewers")
     if not isinstance(reviewers, list):
         return False
-    accepted_families = {
-        str(reviewer.get("family") or "").strip().casefold()
-        for reviewer in reviewers
-        if isinstance(reviewer, Mapping)
-        and str(reviewer.get("verdict") or "").strip().casefold()
-        in {"accept", "accept-with-findings"}
-    }
-    return len(accepted_families - PUBLIC_GATE_NON_INDEPENDENT_REVIEW_FAMILIES) >= 1
+    accepted_families: set[str] = set()
+    for reviewer in reviewers:
+        if not isinstance(reviewer, Mapping):
+            continue
+        verdict = str(reviewer.get("verdict") or "").strip().casefold()
+        if verdict not in {"accept", "accept-with-findings"}:
+            continue
+        family = str(reviewer.get("family") or "").strip().casefold()
+        if family in PUBLIC_GATE_INDEPENDENT_REVIEW_FAMILIES:
+            accepted_families.add(family)
+    return bool(accepted_families)
 
 
 def _acceptance_receipt_evidence_allows(

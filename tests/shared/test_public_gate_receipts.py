@@ -256,6 +256,32 @@ def test_rejects_unsigned_codex_claude_review_dossier(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "reviewer",
+    (
+        {"id": "blank-family", "family": "", "verdict": "accept"},
+        {"id": "missing-family", "verdict": "accept"},
+        {"id": "unknown-family", "family": "bespoke-reviewer", "verdict": "accept"},
+    ),
+)
+def test_rejects_signed_review_dossier_without_known_reviewer_family(
+    tmp_path: Path,
+    reviewer: dict[str, str],
+) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(
+        tmp_path,
+        receipt_name="receipt-1.yaml",
+        reviewers=[reviewer],
+    )
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
 def test_accepts_signed_review_dossier_with_codex_claude_review_families(
     tmp_path: Path,
 ) -> None:
