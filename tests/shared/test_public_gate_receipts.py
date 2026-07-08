@@ -230,6 +230,32 @@ def test_rejects_unsigned_authority_evidence(tmp_path: Path) -> None:
     )
 
 
+def test_rejects_unsigned_codex_claude_review_dossier(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(
+        tmp_path,
+        receipt_name="receipt-1.yaml",
+        reviewers=[
+            {"id": "codex-1", "family": "codex", "verdict": "accept-with-findings"},
+            {"id": "claude-1", "family": "claude", "verdict": "accept"},
+        ],
+        quorum_required=2,
+        accept_count=2,
+    )
+    evidence = (
+        public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+    )
+    payload = yaml.safe_load(evidence.read_text(encoding="utf-8"))
+    payload.pop("authority_signature")
+    evidence.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
 def test_accepts_signed_review_dossier_with_codex_claude_review_families(
     tmp_path: Path,
 ) -> None:

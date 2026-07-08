@@ -1428,6 +1428,8 @@ class TestSingleSurface:
         assert notify_calls[0][1]["technical"] is True
         surface_log = json.loads(log_path.read_text())
         assert surface_log["result"] == "corrupt_surface_log"
+        assert surface_log["failure_reason"] == "JSONDecodeError"
+        assert "Expecting property name enclosed in double quotes" in surface_log["failure_detail"]
         assert surface_log["artifact_fingerprint"] == _artifact_fingerprint(
             PreprintArtifact.model_validate_json(
                 (tmp_path / "publish/failed/corrupt-log.json").read_text()
@@ -1481,6 +1483,7 @@ class TestSingleSurface:
         assert notify_calls
         surface_log = json.loads(log_path.read_text())
         assert surface_log["result"] == "corrupt_surface_log"
+        assert surface_log["failure_reason"] == "JSONDecodeError"
         assert not (tmp_path / "publish/log/multi-corrupt-log.other.json").exists()
         assert not (tmp_path / "publish/inbox/multi-corrupt-log.json").exists()
         assert not (tmp_path / "publish/published/multi-corrupt-log.json").exists()
@@ -1533,6 +1536,8 @@ class TestSingleSurface:
         assert reason in str(notify_calls[0][0][1])
         surface_log = json.loads(log_path.read_text())
         assert surface_log["result"] == "corrupt_surface_log"
+        assert surface_log["failure_reason"] == reason
+        assert surface_log["failure_detail"]
         assert not (tmp_path / "publish/inbox/invalid-log.json").exists()
         assert not (tmp_path / "publish/published/invalid-log.json").exists()
         assert (tmp_path / "publish/failed/invalid-log.json").exists()

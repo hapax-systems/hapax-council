@@ -239,6 +239,8 @@ class SurfaceResult:
     artifact_fingerprint: str | None = None
     publication_gate_decision: str | None = None
     publication_gate_fingerprint: str | None = None
+    failure_reason: str | None = None
+    failure_detail: str | None = None
 
     def is_terminal(self) -> bool:
         return self.result in _TERMINAL_RESULTS
@@ -256,6 +258,10 @@ class SurfaceResult:
             payload["publication_gate_decision"] = self.publication_gate_decision
         if self.publication_gate_fingerprint is not None:
             payload["publication_gate_fingerprint"] = self.publication_gate_fingerprint
+        if self.failure_reason is not None:
+            payload["failure_reason"] = self.failure_reason
+        if self.failure_detail is not None:
+            payload["failure_detail"] = self.failure_detail
         return payload
 
 
@@ -683,6 +689,8 @@ class Orchestrator:
             artifact_fingerprint=artifact_fingerprint,
             publication_gate_decision=publication_gate_decision,
             publication_gate_fingerprint=publication_gate_fingerprint,
+            failure_reason=reason,
+            failure_detail=detail,
         )
         return result
 
@@ -934,6 +942,8 @@ class Orchestrator:
         artifact_fingerprint: str,
         publication_gate_decision: str | None = None,
         publication_gate_fingerprint: str | None = None,
+        failure_reason: str | None = None,
+        failure_detail: str | None = None,
     ) -> None:
         log_path = artifact.log_path(surface, state_root=self._state_root)
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -945,6 +955,8 @@ class Orchestrator:
             artifact_fingerprint=artifact_fingerprint,
             publication_gate_decision=publication_gate_decision,
             publication_gate_fingerprint=publication_gate_fingerprint,
+            failure_reason=failure_reason,
+            failure_detail=failure_detail,
         )
         log_path.write_text(json.dumps(record.to_dict()))
         self.dispatches_total.labels(surface=surface, result=result).inc()
