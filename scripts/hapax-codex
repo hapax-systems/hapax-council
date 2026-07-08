@@ -1266,7 +1266,7 @@ if [ -z "$DISPATCH_HOST" ]; then
     done
   fi
   if [ -z "$CODEX_BIN" ]; then
-    echo "hapax-codex: codex not found in PATH" >&2
+    echo "hapax-codex: codex not found in PATH; next action: install the Codex CLI, repair PATH, or set HAPAX_CODEX_BIN_PATH to the executable before retrying" >&2
     exit 4
   fi
 else

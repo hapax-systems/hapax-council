@@ -68,6 +68,18 @@ printf 'CODEX_ACCESS_TOKEN_PRESENT=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" >> {env
     return env, args_file, env_file
 
 
+def _thin_launcher_path(tmp_path: Path) -> Path:
+    bin_dir = tmp_path / "thin-path"
+    bin_dir.mkdir(exist_ok=True)
+    for tool in ("bash", "cat", "cut", "date", "dirname", "mkdir", "python3", "sed", "tr"):
+        source = shutil.which(tool)
+        assert source is not None
+        target = bin_dir / tool
+        if not target.exists():
+            target.symlink_to(source)
+    return bin_dir
+
+
 def _write_codex_access_token(home: Path, *, exp: int | None = None) -> Path:
     header = base64.urlsafe_b64encode(json.dumps({"alg": "none"}).encode()).decode().rstrip("=")
     payload = (
@@ -592,6 +604,11 @@ def test_launcher_ignores_inherited_codex_access_token_without_published_token(
 
 def test_launcher_skips_directory_codex_candidates(tmp_path: Path) -> None:
     env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+    council = tmp_path / "council"
+    hook = council / "hooks" / "scripts" / "codex-hook-adapter.sh"
+    hook.parent.mkdir(parents=True)
+    hook.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    hook.chmod(0o755)
     fallback_codex = Path(env["HOME"]) / ".npm-global" / "bin" / "codex"
     fallback_codex.parent.mkdir(parents=True)
     path_codex = Path(env["PATH"].split(":", 1)[0]) / "codex"
@@ -601,7 +618,9 @@ def test_launcher_skips_directory_codex_candidates(tmp_path: Path) -> None:
 
     env["HAPAX_CODEX_BIN_PATH"] = str(bad_candidate)
     env["NPM_CONFIG_PREFIX"] = ""
-    env["PATH"] = "/usr/bin:/bin"
+    env["PATH"] = str(_thin_launcher_path(tmp_path))
+    env["HAPAX_COUNCIL_DIR"] = str(council)
+    env["HAPAX_SESSION_ID"] = "launcher-directory-skip-session"
 
     result = subprocess.run(
         [
@@ -624,6 +643,41 @@ def test_launcher_skips_directory_codex_candidates(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "mcp list" in args_file.read_text(encoding="utf-8")
+
+
+def test_launcher_missing_codex_reports_next_action(tmp_path: Path) -> None:
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    bad_candidate = tmp_path / "not-a-codex-binary"
+    bad_candidate.mkdir()
+
+    env["HAPAX_CODEX_BIN_PATH"] = str(bad_candidate)
+    env["HAPAX_COUNCIL_DIR"] = str(tmp_path / "council")
+    env["HAPAX_SESSION_ID"] = "launcher-missing-codex-session"
+    env["NPM_CONFIG_PREFIX"] = ""
+    env["PATH"] = str(_thin_launcher_path(tmp_path))
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-red",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 4
+    assert "codex not found in PATH" in result.stderr
+    assert "next action: install the Codex CLI, repair PATH" in result.stderr
 
 
 def test_launcher_remote_exec_uses_preclaim_proven_token_handoff(tmp_path: Path) -> None:
@@ -676,6 +730,54 @@ def test_launcher_remote_exec_uses_preclaim_proven_token_handoff(tmp_path: Path)
     assert result.returncode == 0, result.stderr
     assert used_token.read_text(encoding="utf-8") == source_token.read_text(encoding="utf-8")
     assert not handoff.exists()
+
+
+def test_launcher_remote_exec_reports_missing_codex_binary(tmp_path: Path) -> None:
+    remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
+    remote_exec_py = remote_exec_py.replace(
+        ',"/usr/local/bin/codex"',
+        f',"{tmp_path / "missing-codex"}"',
+    )
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    source_token = _write_codex_access_token(tmp_path / "home", exp=int(time.time()) + 3600)
+    seal_key = "a" * 64
+    handoff = tmp_path / "hapax-codex-token-test"
+    handoff.write_text(
+        _seal_token_for_test(source_token.read_text(encoding="utf-8").strip(), seal_key),
+        encoding="utf-8",
+    )
+    handoff.chmod(0o600)
+    proof = tmp_path / "proof.json"
+    remote_path = tmp_path / "remote-bin"
+    remote_path.mkdir()
+    payload = {
+        "workdir": str(workdir),
+        "env": {"HOME": str(tmp_path / "home")},
+        "proof_file": str(proof),
+        "token_handoff_file": str(handoff),
+        "token_handoff_seal_key": seal_key,
+        "argv": ["codex"],
+    }
+    env = os.environ.copy()
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+    env["HOME"] = str(tmp_path / "home")
+    env["NPM_CONFIG_PREFIX"] = ""
+    env["PATH"] = str(remote_path)
+    env.pop("HAPAX_CODEX_BIN_PATH", None)
+
+    result = subprocess.run(
+        [sys.executable, "-c", remote_exec_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78
+    assert "remote Codex binary is unavailable: codex_binary_missing" in result.stderr
+    assert "next action: repair PATH on the dispatch host" in result.stderr
+    assert not proof.exists()
 
 
 def test_launcher_remote_exec_refuses_missing_token_handoff(tmp_path: Path) -> None:
