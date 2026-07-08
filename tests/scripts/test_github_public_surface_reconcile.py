@@ -62,6 +62,11 @@ def test_gh_json_falls_back_to_public_rest_on_authenticated_rate_limit(
     assert error is None
     assert payload == {"full_name": "hapax-systems/hapax-council", "visibility": "public"}
     assert fallback_urls == ["https://api.github.com/repos/hapax-systems/hapax-council"]
+    assert module["PUBLIC_GITHUB_FALLBACK_ENDPOINTS"] == {"repos/hapax-systems/hapax-council"}
+    assert (
+        "public_unauthenticated_fallback:gh api repos/hapax-systems/hapax-council"
+        in module["_source_refs"]()
+    )
     assert "using public unauthenticated fallback" in caplog.text
     assert "next action: refresh with authenticated gh api" in caplog.text
 

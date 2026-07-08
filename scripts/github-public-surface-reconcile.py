@@ -49,9 +49,11 @@ VAULT_MARKDOWN_PATH = (
     / "audits"
     / "2026-04-30-github-public-surface-live-state-reconcile.md"
 )
+PUBLIC_GITHUB_FALLBACK_ENDPOINTS: set[str] = set()
 
 
 def main() -> int:
+    PUBLIC_GITHUB_FALLBACK_ENDPOINTS.clear()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
     parser.add_argument("--output", type=Path, default=REPORT_PATH)
@@ -77,14 +79,7 @@ def main() -> int:
     report = build_report(
         generated_at=args.generated_at,
         generated_by="scripts/github-public-surface-reconcile.py",
-        source_refs=(
-            "gh api repos/*",
-            "gh api repos/*/contents/*",
-            "gh api repos/*/community/profile",
-            "gh api repos/*/pages",
-            "docs/repo-pres/repo-registry.yaml",
-            "CLAUDE.md",
-        ),
+        source_refs=_source_refs(),
         live_repos=live_repos,
         profile_repo_candidates=profile_repos,
         local_evidence=local,
@@ -187,6 +182,7 @@ def _gh_json(endpoint: str) -> tuple[Any | None, str | None]:
         if _is_github_api_rate_limit(detail):
             payload, fallback_error = _public_github_json(endpoint)
             if fallback_error is None:
+                PUBLIC_GITHUB_FALLBACK_ENDPOINTS.add(endpoint)
                 log.warning(
                     "authenticated GitHub API readback hit a rate limit; using public "
                     "unauthenticated fallback endpoint=%s; next action: refresh with "
@@ -201,6 +197,22 @@ def _gh_json(endpoint: str) -> tuple[Any | None, str | None]:
         return json.loads(result.stdout), None
     except json.JSONDecodeError as exc:
         return None, f"gh api {endpoint} returned malformed JSON: {exc}"
+
+
+def _source_refs() -> tuple[str, ...]:
+    base_refs = (
+        "gh api repos/*",
+        "gh api repos/*/contents/*",
+        "gh api repos/*/community/profile",
+        "gh api repos/*/pages",
+        "docs/repo-pres/repo-registry.yaml",
+        "CLAUDE.md",
+    )
+    fallback_refs = tuple(
+        f"public_unauthenticated_fallback:gh api {endpoint}"
+        for endpoint in sorted(PUBLIC_GITHUB_FALLBACK_ENDPOINTS)
+    )
+    return (*base_refs, *fallback_refs)
 
 
 def _is_github_api_rate_limit(detail: str) -> bool:

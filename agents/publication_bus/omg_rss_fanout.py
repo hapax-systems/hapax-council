@@ -472,21 +472,6 @@ def fanout(
     loops without requiring graph-topology validation.
     """
     targets = [addr for addr in config.addresses if addr != source_address]
-    if FANOUT_LOOP_HEADER_PREFIX in content:
-        log.warning(
-            "fanout skipped before public egress; loop-prevention header detected "
-            "source=%s entry_id=%s targets=%s; next action: inspect source content if "
-            "this was not an intentional replay",
-            source_address,
-            entry_id,
-            ",".join(targets) if targets else "none",
-        )
-        for target in targets:
-            omg_fanouts_total.labels(
-                source=source_address, target=target, result="loop-skipped"
-            ).inc()
-        return {target: "loop-skipped" for target in targets}
-
     required_gates, boundary_gate_policy_error = _effective_required_gates(config)
     address_policy_error = _fanout_address_policy_error(
         source_address=source_address,
@@ -508,6 +493,21 @@ def fanout(
 
     if not targets:
         return {}
+
+    if FANOUT_LOOP_HEADER_PREFIX in content:
+        log.warning(
+            "fanout skipped before public egress; loop-prevention header detected "
+            "source=%s entry_id=%s targets=%s; next action: inspect source content if "
+            "this was not an intentional replay",
+            source_address,
+            entry_id,
+            ",".join(targets) if targets else "none",
+        )
+        for target in targets:
+            omg_fanouts_total.labels(
+                source=source_address, target=target, result="loop-skipped"
+            ).inc()
+        return {target: "loop-skipped" for target in targets}
 
     receipt_bindings = _fanout_receipt_bindings(
         source_address=source_address,

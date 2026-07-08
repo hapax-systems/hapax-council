@@ -915,6 +915,29 @@ def test_public_surface_gate_blocks_live_state_drift_finding(tmp_path: Path) -> 
     assert "github.license.example.registry-mismatch" in findings[0].message
 
 
+def test_public_surface_gate_warns_on_unauthenticated_fallback_provenance(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    payload["source_refs"] = [
+        *payload["source_refs"],
+        "public_unauthenticated_fallback:gh api repos/hapax-systems/hapax-council",
+    ]
+    report = GitHubPublicSurfaceReport.model_validate(payload)
+    gate = _gate_module()
+    check_fallback_provenance = gate["check_github_public_surface_fallback_provenance"]
+
+    findings = check_fallback_provenance(
+        report,
+        report_path=tmp_path / "github-report.json",
+    )
+
+    assert len(findings) == 1
+    assert findings[0].level == "warning"
+    assert "public unauthenticated fallback" in findings[0].message
+    assert "cannot authorize release/public-current under --warnings-fail" in findings[0].message
+
+
 def test_public_surface_gate_allows_documented_polyform_license_detection(
     tmp_path: Path,
 ) -> None:

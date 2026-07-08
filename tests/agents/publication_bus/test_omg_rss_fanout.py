@@ -411,6 +411,47 @@ class TestFanout:
         assert "loop-prevention header detected" in caplog.text
         assert "next action" in caplog.text
 
+    @pytest.mark.parametrize(
+        ("source_address", "entry_id", "addresses", "expected"),
+        (
+            (
+                "../escape",
+                "entry-1",
+                ["hapax", "oudepode"],
+                {"hapax": "gate-policy-blocked", "oudepode": "gate-policy-blocked"},
+            ),
+            ("hapax", "../escape", ["hapax", "oudepode"], {"oudepode": "gate-policy-blocked"}),
+            ("hapax", "entry-1", ["hapax", "../escape"], {"../escape": "gate-policy-blocked"}),
+            (
+                "hapax",
+                "entry-1",
+                ["hapax", "oudepode", "oudepode"],
+                {"oudepode": "gate-policy-blocked"},
+            ),
+        ),
+    )
+    def test_loop_prevention_does_not_mask_fanout_policy_errors(
+        self,
+        source_address: str,
+        entry_id: str,
+        addresses: list[str],
+        expected: dict[str, str],
+    ) -> None:
+        client = _make_client()
+        config = _config(addresses=addresses)
+        body = f"{FANOUT_LOOP_HEADER_PREFIX} hapax -->\nreplayed body\n"
+
+        result = fanout(
+            source_address=source_address,
+            entry_id=entry_id,
+            content=body,
+            config=config,
+            client=client,
+        )
+
+        assert result == expected
+        client.set_entry.assert_not_called()
+
     def test_disabled_client_short_circuits(self) -> None:
         client = _make_client(enabled=False)
         config = _config()

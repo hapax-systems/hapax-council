@@ -367,6 +367,33 @@ def check_github_public_surface_drift(
     return findings
 
 
+def check_github_public_surface_fallback_provenance(
+    report: GitHubPublicSurfaceReport,
+    *,
+    report_path: Path,
+) -> list[LintFinding]:
+    fallback_refs = tuple(
+        ref for ref in report.source_refs if ref.startswith("public_unauthenticated_fallback:")
+    )
+    if not fallback_refs:
+        return []
+    return [
+        LintFinding(
+            file=str(report_path),
+            line=1,
+            level="warning",
+            rule=GITHUB_PUBLIC_CLAIM_RULE,
+            message=(
+                "GitHub public-surface reconcile used public unauthenticated fallback "
+                "readback after an authenticated GitHub API rate limit: "
+                f"{', '.join(fallback_refs)}. This is durable diagnostic evidence, but "
+                "it cannot authorize release/public-current under --warnings-fail. "
+                "Next action: rerun with authenticated gh api quota available before release."
+            ),
+        )
+    ]
+
+
 def _drift_finding_blocks_release(drift: Any) -> bool:
     return bool(getattr(drift, "blocks", ())) or getattr(drift, "severity", "") == "blocking"
 
@@ -915,6 +942,12 @@ def main(argv: list[str] | None = None) -> int:
     if github_public_surface_report is not None:
         findings.extend(
             check_github_public_surface_drift(
+                github_public_surface_report,
+                report_path=args.github_public_surface_report,
+            )
+        )
+        findings.extend(
+            check_github_public_surface_fallback_provenance(
                 github_public_surface_report,
                 report_path=args.github_public_surface_report,
             )
