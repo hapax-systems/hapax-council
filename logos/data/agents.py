@@ -57,6 +57,7 @@ class AgentCapabilityInfo:
     runtime_mutation_flags: list[str] = field(default_factory=list)
     public_egress_flags: list[str] = field(default_factory=list)
     llm_flag_overlays: list[str] = field(default_factory=list)
+    llm_flag_overlay_leaves: dict[str, list[AgentSupplyLeaf]] = field(default_factory=dict)
 
 
 @dataclass
@@ -96,6 +97,33 @@ def _capability_info(capability: CockpitAgentCapability) -> AgentCapabilityInfo:
         )
         for leaf in capability.supply_leaves
     ]
+    overlay_leaves = {
+        flag: [
+            AgentSupplyLeaf(
+                capability_id=leaf.capability_id,
+                route_id=leaf.route_id,
+                platform_route_id=leaf.platform_route_id,
+                provider=leaf.provider,
+                model_alias=leaf.model_alias,
+                model_route=leaf.model_route,
+                capacity_pool=leaf.capacity_pool,
+                profile=leaf.profile,
+                task_class=leaf.task_class,
+                quality_floor=leaf.quality_floor,
+                estimated_cost_usd=leaf.estimated_cost_usd,
+                context_window=leaf.context_window,
+                tool_refs=list(leaf.tool_refs),
+                authority_surfaces=list(leaf.authority_surfaces),
+                resource_pools=list(leaf.resource_pools),
+                quota_source=leaf.quota_source,
+                cost_source=leaf.cost_source,
+                spend_authority_required=leaf.spend_authority_required,
+                public_egress_authority_required=leaf.public_egress_authority_required,
+            )
+            for leaf in leaves_for_flag
+        ]
+        for flag, leaves_for_flag in (capability.llm_flag_overlays or {}).items()
+    }
     primary = leaves[0] if leaves else None
     return AgentCapabilityInfo(
         classifications=[item.value for item in capability.classifications],
@@ -111,6 +139,7 @@ def _capability_info(capability: CockpitAgentCapability) -> AgentCapabilityInfo:
         runtime_mutation_flags=list(capability.runtime_mutation_flags),
         public_egress_flags=list(capability.public_egress_flags),
         llm_flag_overlays=sorted((capability.llm_flag_overlays or {}).keys()),
+        llm_flag_overlay_leaves=overlay_leaves,
     )
 
 

@@ -50,12 +50,18 @@ def _mark_route_fresh(route: dict[str, object]) -> None:
         tool["stale_after"] = "24h"
 
 
-def _write_fresh_registry(tmp_path: Path) -> Path:
+def _write_fresh_registry(
+    tmp_path: Path,
+    *,
+    route_ids: tuple[str, ...] = ("api.headless.provider_gateway",),
+) -> Path:
     payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
-    gateway = next(
-        route for route in payload["routes"] if route["route_id"] == "api.headless.provider_gateway"
-    )
-    _mark_route_fresh(gateway)
+    for route_id in route_ids:
+        route = next(route for route in payload["routes"] if route["route_id"] == route_id)
+        _mark_route_fresh(route)
+        telemetry = route.get("telemetry")
+        if route_id == "local_tool.local.worker" and isinstance(telemetry, dict):
+            telemetry["quota_source"] = "manual"
     target = tmp_path / "platform-capability-registry.json"
     target.write_text(json.dumps(payload), encoding="utf-8")
     return target
@@ -78,6 +84,18 @@ def _write_fresh_ledger(tmp_path: Path) -> Path:
     return target
 
 
+def _write_exhausted_ledger(tmp_path: Path) -> Path:
+    path = _write_fresh_ledger(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    for budget in payload["transition_budgets"]:
+        if budget["budget_id"] == "tb-20260510-anthropic-api-steady-state":
+            budget["total_cap_usd"] = "0.001"
+            budget["daily_cap_usd"] = "0.001"
+            budget["per_task_cap_usd"] = "0.001"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
 def test_cockpit_inventory_covers_all_manifest_cli_agents() -> None:
     for manifest in get_registry().cli_agents():
         capability = cockpit_capability_for(manifest.id, manifest_model=manifest.model)
@@ -94,6 +112,23 @@ def test_cockpit_inventory_covers_all_manifest_cli_agents() -> None:
                 assert leaf.resource_pools
                 assert leaf.quota_source
                 assert leaf.cost_source
+
+
+def test_unknown_llm_manifest_fails_closed_instead_of_synthesizing_leaf() -> None:
+    with pytest.raises(KeyError, match="untracked cockpit agent capability"):
+        cockpit_capability_for("new-llm-agent", manifest_model="fast")
+
+
+def test_flag_overlay_projection_exposes_supply_leaf_details() -> None:
+    from logos.data.agents import _capability_info
+
+    info = _capability_info(cockpit_capability_for("activity-analyzer"))
+
+    assert "--synthesize" in info.llm_flag_overlays
+    leaves = info.llm_flag_overlay_leaves["--synthesize"]
+    assert leaves[0].capability_id == "cockpit.agent.activity_analyzer.fast_synthesis"
+    assert leaves[0].platform_route_id == "api.headless.provider_gateway"
+    assert leaves[0].resource_pools == ["api_paid_spend"]
 
 
 def test_model_alias_leaf_routes_match_agents_config() -> None:
@@ -157,6 +192,49 @@ def test_paid_llm_command_admits_with_fresh_gateway_and_budget(
     assert "platform-capability-registry:api.headless.provider_gateway" in refs
 
 
+def test_local_compute_leaf_admits_with_fresh_local_resource(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(_write_fresh_ledger(tmp_path)))
+    monkeypatch.setenv(
+        COCKPIT_PLATFORM_CAPABILITY_REGISTRY_ENV,
+        str(_write_fresh_registry(tmp_path, route_ids=("local_tool.local.worker",))),
+    )
+    monkeypatch.setenv(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV, "none")
+
+    admission = admit_cockpit_agent_invocation(
+        "code-review",
+        manifest_model="balanced",
+        flags=("--model=local-fast",),
+        now=NOW,
+    )
+
+    assert admission.admitted is True
+    assert admission.requires_admission is True
+    assert admission.receipts[0].capacity_pool == "local_compute"
+    assert "local_resource_green" in admission.receipts[0].reason_codes
+
+
+def test_paid_llm_command_refuses_when_budget_is_exhausted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(_write_exhausted_ledger(tmp_path)))
+    monkeypatch.setenv(
+        COCKPIT_PLATFORM_CAPABILITY_REGISTRY_ENV, str(_write_fresh_registry(tmp_path))
+    )
+    monkeypatch.setenv(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV, "none")
+
+    admission = admit_cockpit_agent_invocation(
+        "briefing",
+        manifest_model="fast",
+        flags=(),
+        now=NOW,
+    )
+
+    assert admission.admitted is False
+    assert any("cap_exhausted" in reason for reason in admission.reason_codes)
+
+
 def test_model_override_changes_code_review_supply_leaf() -> None:
     capability = cockpit_capability_for_invocation(
         "code-review",
@@ -199,4 +277,38 @@ async def test_llm_cockpit_run_refuses_before_subprocess(
 
     assert response.status_code == 403
     assert "cockpit_agent_capability_admission_refused" in response.json()["detail"]
+    run_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_untracked_llm_cockpit_run_refuses_with_next_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from logos.api.app import app
+    from logos.api.cache import cache
+    from logos.api.routes import agents as agent_route
+    from logos.data.agents import AgentInfo
+
+    cache.agents = [
+        AgentInfo(
+            name="new-llm-agent",
+            uses_llm=True,
+            description="Untracked LLM agent",
+            command="uv run python -m agents.new_llm_agent",
+            model_alias="fast",
+            module="agents.new_llm_agent",
+        )
+    ]
+    monkeypatch.setattr(agent_route, "_IN_CONTAINER", False)
+    run_mock = AsyncMock()
+    monkeypatch.setattr(agent_route.agent_run_manager, "run", run_mock)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/agents/new-llm-agent/run", json={"flags": []})
+
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert "untracked cockpit agent capability" in detail
+    assert "next_action=add the cockpit agent" in detail
     run_mock.assert_not_called()

@@ -380,13 +380,11 @@ def cockpit_capability_for(
     agent_id = _agent_id(agent_id_or_name)
     capability = COCKPIT_AGENT_CAPABILITIES.get(agent_id)
     if capability is None:
-        if manifest_model is not None:
-            return _capability(
-                agent_id,
-                CockpitCommandClass.LLM_BACKED_MODEL_USE,
-                leaves=(_model_leaf(agent_id, manifest_model),),
-            )
-        raise KeyError(f"untracked cockpit agent capability: {agent_id_or_name}")
+        next_action = (
+            "next_action=add the cockpit agent to COCKPIT_AGENT_CAPABILITIES "
+            "with explicit supply leaves before enabling LLM-backed execution"
+        )
+        raise KeyError(f"untracked cockpit agent capability: {agent_id_or_name}; {next_action}")
     return capability
 
 
@@ -523,6 +521,7 @@ def _admit_paid_leaf(
         ledger,
         PaidRouteRequest(
             route_id=leaf.route_id,
+            task_id=leaf.capability_id,
             provider=leaf.provider,
             profile=leaf.profile,
             task_class=leaf.task_class,
@@ -563,7 +562,14 @@ def _admit_local_leaf(
     *,
     now: datetime,
 ) -> CockpitAdmissionReceipt:
-    route_aliases = {leaf.route_id, leaf.platform_route_id, "local-fast", "appendix-fast"}
+    route_aliases = {
+        leaf.route_id,
+        leaf.platform_route_id,
+        leaf.model_route or "",
+        "local-fast",
+        "appendix-fast",
+        "litellm.local.command-r-35b",
+    }
     snapshots = tuple(
         snapshot
         for snapshot in ledger.quota_snapshots
