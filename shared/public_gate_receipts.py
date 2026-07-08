@@ -800,7 +800,7 @@ def _review_dossier_evidence_allows(
         family = str(reviewer.get("family") or "").strip().casefold()
         if family in PUBLIC_GATE_INDEPENDENT_REVIEW_FAMILIES:
             accepted_families.add(family)
-    return bool(accepted_families)
+    return len(accepted_families) >= quorum_required
 
 
 def _acceptance_receipt_evidence_allows(
