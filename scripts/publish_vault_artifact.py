@@ -114,6 +114,7 @@ PUBLICATION_FANOUT_REQUIRED_GATES = (
     *PUBLICATION_BASELINE_REQUIRED_GATES,
     "fanout_loop_prevention_present",
 )
+PUBLICATION_POLICY_ALLOWED_STATUSES = frozenset({"guarded_public_channel", "guarded_public_fanout"})
 PUBLIC_GATE_RECEIPT_PREFIXES = _PUBLIC_GATE_RECEIPT_PREFIXES
 PUBLIC_GATE_RECEIPT_ROOTS = (
     Path.home() / ".cache" / "hapax" / "relay" / "receipts",
@@ -342,6 +343,12 @@ def _policy_required_gate_ids(
     fanout_policy: bool = False,
 ) -> set[str]:
     status = policy.get("status")
+    if status not in PUBLICATION_POLICY_ALLOWED_STATUSES:
+        raise PublicationGateError(
+            "publication policy status must be guarded_public_channel or "
+            "guarded_public_fanout; next action: repair "
+            "publication_frontmatter_policy.status before publishing"
+        )
     baseline = (
         PUBLICATION_FANOUT_REQUIRED_GATES
         if status == "guarded_public_fanout" or fanout_policy

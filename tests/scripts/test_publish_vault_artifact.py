@@ -434,6 +434,27 @@ class TestBuildArtifact:
                 approver="Oudepode",
             )
 
+    def test_rejects_malformed_non_fanout_policy_status(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        policy = _write_policy(
+            tmp_path,
+            status="guarded_public_surface",
+            required_gates=publish_vault_artifact.PUBLICATION_BASELINE_REQUIRED_GATES,
+        )
+        monkeypatch.setattr(publish_vault_artifact, "PUBLICATION_POLICY_PATHS", (policy,))
+
+        with pytest.raises(
+            publish_vault_artifact.PublicationGateError,
+            match="guarded_public_channel",
+        ):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(),
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+            )
+
     def test_fanout_policy_requires_loop_prevention_gate(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

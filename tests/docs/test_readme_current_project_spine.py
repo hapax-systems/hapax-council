@@ -207,6 +207,19 @@ class TestLicenseReconciliationStatusDoc:
             'and "PolyForm Strict 1.0.0" in zenodo["notes"]'
         ) in body
 
+    def test_archive_identifier_metadata_remains_intact(self) -> None:
+        zenodo = json.loads((REPO_ROOT / ".zenodo.json").read_text(encoding="utf-8"))
+        citation = yaml.safe_load((REPO_ROOT / "CITATION.cff").read_text(encoding="utf-8"))
+
+        assert zenodo["doi"] == "10.5281/zenodo.20113515"
+        assert zenodo["conceptdoi"] == "10.5281/zenodo.20113514"
+        assert zenodo["publication_date"] == "2026-05-10"
+        assert citation["doi"] == "10.5281/zenodo.20113515"
+        assert any(
+            identifier.get("type") == "doi" and identifier.get("value") == "10.5281/zenodo.20113515"
+            for identifier in citation["identifiers"]
+        )
+
 
 class TestGithubPublicSurfaceLiveStateDoc:
     DOC = (

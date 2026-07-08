@@ -159,7 +159,7 @@ def _write_publication_policy(
     *,
     target_surfaces: tuple[str, ...],
     required_gates: tuple[str, ...],
-    status: str = "guarded_public_surface",
+    status: str = "guarded_public_channel",
 ) -> Path:
     path = state_root / "publication-policy.yaml"
     target_lines = "\n".join(f"    - {surface}" for surface in target_surfaces)
@@ -889,7 +889,7 @@ class TestSingleSurface:
             tmp_path,
             target_surfaces=("omg-lol-weblog-bearer-fanout",),
             required_gates=PUBLICATION_FANOUT_REQUIRED_GATES,
-            status="guarded_public_surface",
+            status="guarded_public_channel",
         )
         monkeypatch.setattr(
             orchestrator_module,
@@ -921,6 +921,47 @@ class TestSingleSurface:
         )
         assert gate_log["result"] == "operator_hold"
         assert any("guarded_public_fanout" in issue for issue in gate_log["flagged_issues"])
+
+    def test_malformed_non_fanout_policy_status_holds_before_surface_dispatch(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+        policy_path = _write_publication_policy(
+            tmp_path,
+            target_surfaces=("fake",),
+            required_gates=PUBLICATION_BASELINE_REQUIRED_GATES,
+            status="guarded_public_surface",
+        )
+        monkeypatch.setattr(
+            orchestrator_module,
+            "PUBLICATION_POLICY_PATHS",
+            (policy_path,),
+        )
+
+        _drop_artifact(tmp_path, slug="bad-channel-policy-status", surfaces=["fake"])
+        review_pass = _CountingReviewPass()
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=review_pass,
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        assert review_pass.calls == 0
+        fake_module.publish_artifact.assert_not_called()
+        gate_log = json.loads(
+            (
+                tmp_path / "publish/log/bad-channel-policy-status.publication-hardening-gate.json"
+            ).read_text()
+        )
+        assert gate_log["result"] == "operator_hold"
+        assert any("guarded_public_channel" in issue for issue in gate_log["flagged_issues"])
 
     def test_publication_gate_override_dispatches_with_surface_receipt(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()
