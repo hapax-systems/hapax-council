@@ -16,7 +16,7 @@ uv run python scripts/publication-freshness-audit.py --fail-on-blockers
 uv run python scripts/check-public-surface-claims.py --warnings-fail \
   --token-claim-report docs/research/evidence/2026-05-13-token-capital-claim-regate-v2.json \
   --source-reconciliation docs/research/evidence/2026-05-13-public-surface-source-of-truth-reconciliation.json \
-	  --publication-freshness-state ~/hapax-state/publication/freshness-state.json
+  --publication-freshness-state ~/hapax-state/publication/freshness-state.json
 ```
 
 For PR release authorization when the PR itself adds a required public file

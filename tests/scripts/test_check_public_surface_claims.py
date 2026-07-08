@@ -7,6 +7,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from shared.github_public_surface import GitHubPublicSurfaceReport
 from shared.publication_freshness import (
     PublicationFreshnessSnapshot,
     PublicSurfaceFreshnessEnvelope,
@@ -793,6 +794,67 @@ def test_live_expected_comparison_allows_independent_freshness_timestamp(
     assert live_findings == []
     assert len(offline_findings) == 1
     assert "checked_at expected" in offline_findings[0].message
+
+
+def test_public_surface_gate_blocks_live_state_drift_finding(tmp_path: Path) -> None:
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    payload["drift_findings"] = [
+        {
+            "finding_id": "github.license.example.registry-mismatch",
+            "severity": "blocking",
+            "category": "license_detection",
+            "surface": "hapax-systems/example",
+            "status": "blocked",
+            "summary": "GitHub detected license does not match the repo registry policy.",
+            "expected": "GitHub public license surfaces align to MIT.",
+            "observed": "GitHub detects NOASSERTION.",
+            "evidence_refs": ["fixture"],
+            "blocks": ["github-public-claim-evidence-gate"],
+        }
+    ]
+    report = GitHubPublicSurfaceReport.model_validate(payload)
+    gate = _gate_module()
+    check_github_public_surface_drift = gate["check_github_public_surface_drift"]
+
+    findings = check_github_public_surface_drift(
+        report,
+        report_path=tmp_path / "github-report.json",
+    )
+
+    assert len(findings) == 1
+    assert findings[0].level == "error"
+    assert "blocks release/public-current claims" in findings[0].message
+    assert "github.license.example.registry-mismatch" in findings[0].message
+
+
+def test_public_surface_gate_allows_documented_polyform_license_detection(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    payload["drift_findings"] = [
+        {
+            "finding_id": "github.license.hapax-council.apache-vs-polyform",
+            "severity": "blocking",
+            "category": "license_detection",
+            "surface": "hapax-systems/hapax-council",
+            "status": "blocked",
+            "summary": "GitHub/root license detection contradicts the repo registry policy.",
+            "expected": "GitHub public license surfaces align to PolyForm-Strict-1.0.0.",
+            "observed": "GitHub detects NOASSERTION.",
+            "evidence_refs": ["fixture"],
+            "blocks": ["github-readme-profile-current-project-refresh"],
+        }
+    ]
+    report = GitHubPublicSurfaceReport.model_validate(payload)
+    gate = _gate_module()
+    check_github_public_surface_drift = gate["check_github_public_surface_drift"]
+
+    findings = check_github_public_surface_drift(
+        report,
+        report_path=tmp_path / "github-report.json",
+    )
+
+    assert findings == []
 
 
 def test_public_surface_gate_rejects_redated_live_report_witness(

@@ -1,6 +1,6 @@
 # Security policy
 
-A single individual (Oudepode The Operator) operates this repository. It runs in a single-operator deployment with no external users, no auth surface, and no third-party data residency.
+A single individual (Oudepode The Operator) operates this repository. It runs in a single-operator deployment with no external users and no third-party auth surface. Governed public/archive egress may use third-party publication services, but those surfaces carry public artifacts, not private third-party user data.
 
 ## Disclosure path
 

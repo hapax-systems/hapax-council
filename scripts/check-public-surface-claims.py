@@ -321,6 +321,103 @@ def expected_freshness_envelopes_from_report(
     return github_events_to_freshness_envelopes(events, checked_at=report.generated_at)
 
 
+def check_github_public_surface_drift(
+    report: GitHubPublicSurfaceReport,
+    *,
+    report_path: Path,
+) -> list[LintFinding]:
+    findings: list[LintFinding] = []
+    for drift in report.drift_findings:
+        if not _drift_finding_blocks_release(drift):
+            continue
+        if _drift_finding_is_documented_nonrelease_drift(drift):
+            continue
+        pending_path = _pending_post_merge_drift_path(drift)
+        if pending_path is not None:
+            findings.append(
+                LintFinding(
+                    file=str(report_path),
+                    line=1,
+                    level="info",
+                    rule=GITHUB_PUBLIC_CLAIM_RULE,
+                    message=(
+                        "GitHub public-surface drift is supplied by this PR but still "
+                        f"awaiting post-merge readback for {pending_path}: "
+                        f"{drift.finding_id}. Next action: after merge, refresh the "
+                        "GitHub public-surface reconcile before claiming public_current."
+                    ),
+                )
+            )
+            continue
+        findings.append(
+            LintFinding(
+                file=str(report_path),
+                line=1,
+                level="error",
+                rule=GITHUB_PUBLIC_CLAIM_RULE,
+                message=(
+                    "GitHub public-surface drift blocks release/public-current claims: "
+                    f"{drift.finding_id} ({drift.severity}, {drift.category}, "
+                    f"{drift.surface}) blocks {', '.join(drift.blocks) or '<unspecified>'}. "
+                    f"{drift.summary} Observed: {drift.observed}. Next action: resolve the "
+                    "live-state drift or narrow the public claim before release."
+                ),
+            )
+        )
+    return findings
+
+
+def _drift_finding_blocks_release(drift: Any) -> bool:
+    return bool(getattr(drift, "blocks", ())) or getattr(drift, "severity", "") == "blocking"
+
+
+def _drift_finding_is_documented_nonrelease_drift(drift: Any) -> bool:
+    if _drift_finding_is_custom_license_detection(drift):
+        return True
+    if _drift_finding_has_issue_redirect_config(drift):
+        return True
+    return getattr(drift, "category", "") == "closed_repo_pres_claims"
+
+
+def _drift_finding_is_custom_license_detection(drift: Any) -> bool:
+    if getattr(drift, "category", "") != "license_detection":
+        return False
+    expected = str(getattr(drift, "expected", ""))
+    observed = str(getattr(drift, "observed", ""))
+    surface = str(getattr(drift, "surface", ""))
+    if "PolyForm-Strict-1.0.0" in expected and "NOASSERTION" in observed:
+        return True
+    return (
+        surface == "hapax-systems/hapax-constitution"
+        and "CC-BY-NC-ND-4.0" in expected
+        and "Apache-2.0" in observed
+    )
+
+
+def _drift_finding_has_issue_redirect_config(drift: Any) -> bool:
+    if getattr(drift, "finding_id", "") != "github.settings.issues-enabled-without-template":
+        return False
+    config = REPO_ROOT / ".github" / "ISSUE_TEMPLATE" / "config.yml"
+    try:
+        text = config.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "blank_issues_enabled: false" in text and "contact_links:" in text
+
+
+def _pending_post_merge_drift_path(drift: Any) -> str | None:
+    finding_id = str(getattr(drift, "finding_id", ""))
+    if finding_id == "github.governance.root-file-missing":
+        return "GOVERNANCE.md" if _git_path_status("GOVERNANCE.md") == "A" else None
+    if finding_id == "github.readme.current-project-spine-stale":
+        return "README.md" if _git_path_status("README.md") in {"A", "M"} else None
+    if finding_id == "github.metadata.citation-codemeta-zenodo-coherence":
+        metadata_paths = ("CITATION.cff", "codemeta.json", ".zenodo.json")
+        if any(_git_path_status(path) in {"A", "M"} for path in metadata_paths):
+            return "CITATION.cff/codemeta.json/.zenodo.json"
+    return None
+
+
 def check_github_material_claims(
     path: Path,
     envelope: GitHubMaterialEvidenceEnvelope,
@@ -760,6 +857,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         required_surface_ids = tuple(args.required_publication_freshness_surface_id)
         expected_envelopes: tuple[PublicSurfaceFreshnessEnvelope, ...] = ()
+        github_public_surface_report: GitHubPublicSurfaceReport | None = None
         if not required_surface_ids:
             github_public_surface_report = load_github_public_surface_report_for_gate(
                 args.github_public_surface_report,
@@ -774,6 +872,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     paths = args.paths or list(DEFAULT_TARGETS)
+    if github_public_surface_report is not None:
+        findings.extend(
+            check_github_public_surface_drift(
+                github_public_surface_report,
+                report_path=args.github_public_surface_report,
+            )
+        )
     findings.extend(
         check_publication_freshness_state(
             publication_freshness_state,
