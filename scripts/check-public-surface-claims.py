@@ -26,7 +26,9 @@ from shared.github_publication_log import events_from_github_public_surface_repo
 from shared.publication_freshness import (
     DEFAULT_FRESHNESS_STATE,
     PublicationFreshnessSnapshot,
+    PublicSurfaceFreshnessEnvelope,
     build_publication_freshness_snapshot,
+    github_events_to_freshness_envelopes,
     isoformat_z,
     parse_iso_z,
 )
@@ -234,14 +236,14 @@ def load_github_public_surface_report(path: Path) -> GitHubPublicSurfaceReport:
         ) from exc
 
 
-def required_freshness_surface_ids_from_report(
+def expected_freshness_envelopes_from_report(
     report: GitHubPublicSurfaceReport,
-) -> tuple[str, ...]:
+) -> tuple[PublicSurfaceFreshnessEnvelope, ...]:
     events = events_from_github_public_surface_report(
         report,
         generated_at=report.generated_at,
     )
-    return tuple(dict.fromkeys(event.surface_id for event in events))
+    return github_events_to_freshness_envelopes(events, checked_at=report.generated_at)
 
 
 def check_github_material_claims(
@@ -284,11 +286,13 @@ def check_publication_freshness_state(
     *,
     state_path: Path,
     required_surface_ids: tuple[str, ...],
+    expected_envelopes: tuple[PublicSurfaceFreshnessEnvelope, ...],
 ) -> list[LintFinding]:
     findings: list[LintFinding] = []
     now = datetime.now(tz=UTC)
     future_witnesses: list[str] = []
-    observed_surface_ids = {envelope.surface_id for envelope in state.envelopes}
+    observed_by_surface_id = {envelope.surface_id: envelope for envelope in state.envelopes}
+    observed_surface_ids = set(observed_by_surface_id)
     missing_required_surface_ids = sorted(set(required_surface_ids) - observed_surface_ids)
     if missing_required_surface_ids:
         findings.append(
@@ -305,6 +309,13 @@ def check_publication_freshness_state(
                 ),
             )
         )
+    findings.extend(
+        _check_expected_freshness_envelopes(
+            state_path=state_path,
+            observed_by_surface_id=observed_by_surface_id,
+            expected_envelopes=expected_envelopes,
+        )
+    )
     generated_at = _parse_freshness_timestamp(
         state.generated_at,
     )
@@ -375,6 +386,67 @@ def check_publication_freshness_state(
         )
     )
     return findings
+
+
+def _check_expected_freshness_envelopes(
+    *,
+    state_path: Path,
+    observed_by_surface_id: dict[str, PublicSurfaceFreshnessEnvelope],
+    expected_envelopes: tuple[PublicSurfaceFreshnessEnvelope, ...],
+) -> list[LintFinding]:
+    findings: list[LintFinding] = []
+    for expected in expected_envelopes:
+        observed = observed_by_surface_id.get(expected.surface_id)
+        if observed is None:
+            continue
+        mismatches = _expected_envelope_mismatches(expected=expected, observed=observed)
+        if not mismatches:
+            continue
+        findings.append(
+            LintFinding(
+                file=str(state_path),
+                line=1,
+                level="error",
+                rule=PUBLICATION_FRESHNESS_RULE,
+                message=(
+                    "Publication freshness witness does not match live report evidence for "
+                    f"{expected.surface_id}: {', '.join(mismatches)}. Next action: regenerate "
+                    "the publication freshness audit/live-state readback and hold release "
+                    "until every freshness witness matches the current live report."
+                ),
+            )
+        )
+    return findings
+
+
+def _expected_envelope_mismatches(
+    *,
+    expected: PublicSurfaceFreshnessEnvelope,
+    observed: PublicSurfaceFreshnessEnvelope,
+) -> list[str]:
+    fields = (
+        "freshness_result",
+        "source_hash",
+        "rendered_hash",
+        "published_hash",
+        "readback_hash",
+    )
+    mismatches: list[str] = []
+    for field in fields:
+        expected_value = getattr(expected, field)
+        observed_value = getattr(observed, field)
+        if expected_value != observed_value:
+            mismatches.append(
+                f"{field} expected {_display_value(expected_value)} observed "
+                f"{_display_value(observed_value)}"
+            )
+    return mismatches
+
+
+def _display_value(value: object) -> str:
+    if value is None:
+        return "<none>"
+    return str(value)
 
 
 def _parse_freshness_timestamp(value: str) -> datetime | None:
@@ -473,10 +545,15 @@ def main(argv: list[str] | None = None) -> int:
             args.publication_freshness_state
         )
         required_surface_ids = tuple(args.required_publication_freshness_surface_id)
+        expected_envelopes: tuple[PublicSurfaceFreshnessEnvelope, ...] = ()
         if not required_surface_ids:
-            required_surface_ids = required_freshness_surface_ids_from_report(
-                load_github_public_surface_report(args.github_public_surface_report)
+            github_public_surface_report = load_github_public_surface_report(
+                args.github_public_surface_report
             )
+            expected_envelopes = expected_freshness_envelopes_from_report(
+                github_public_surface_report
+            )
+            required_surface_ids = tuple(envelope.surface_id for envelope in expected_envelopes)
     except RequiredInputError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -487,6 +564,7 @@ def main(argv: list[str] | None = None) -> int:
             publication_freshness_state,
             state_path=args.publication_freshness_state,
             required_surface_ids=required_surface_ids,
+            expected_envelopes=expected_envelopes,
         )
     )
     for path in iter_files(paths):

@@ -8,6 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check-public-surface-claims.py"
+GITHUB_REPORT = REPO_ROOT / "docs/repo-pres/github-public-surface-live-state-reconcile.json"
 TEST_FRESHNESS_SURFACE_ID = "github.readme.hapax-systems/example.README.md"
 
 
@@ -151,6 +152,21 @@ def _write_publication_freshness_state(
         ),
         encoding="utf-8",
     )
+    return path
+
+
+def _write_profile_report_without_required_readme(path: Path) -> Path:
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    profile_repo = next(
+        repo
+        for repo in payload["profile_repo_candidates"]
+        if repo["repo_id"] == "hapax-systems/.github"
+    )
+    profile_repo["files"] = {}
+    payload["live_repos"] = []
+    payload["profile_repo_candidates"] = [profile_repo]
+    payload["local_evidence"]["package_surfaces"] = []
+    path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
 
@@ -490,6 +506,49 @@ def test_public_surface_gate_blocks_missing_required_freshness_witness(
     assert "Hapax.PublicationFreshness" in result.stdout
     assert "omits required public-surface witnesses" in result.stdout
     assert missing_required_id in result.stdout
+
+
+def test_public_surface_gate_rejects_forged_witness_against_live_report(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-forged-report.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    github_report = _write_profile_report_without_required_readme(tmp_path / "github-report.json")
+    forged_surface_id = "github.profile.hapax-systems/.github.profile/README.md"
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[
+            _freshness_envelope(
+                surface_id=forged_surface_id,
+                surface_type="github.profile",
+                source_ref="docs/repo-pres/github-public-surface-live-state-reconcile.json",
+                source_of_truth="github_public_surface_report",
+                evidence_refs=["gh:contents/hapax-systems/.github/profile/README.md"],
+                freshness_result="match",
+                rendered_hash="abc123",
+                readback_hash="abc123",
+            )
+        ],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+        "--github-public-surface-report",
+        str(github_report),
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicationFreshness" in result.stdout
+    assert "does not match live report evidence" in result.stdout
+    assert forged_surface_id in result.stdout
+    assert "freshness_result expected missing observed match" in result.stdout
 
 
 def test_public_surface_gate_blocks_future_dated_freshness_snapshot(

@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from shared.github_public_surface import (
     ORG_PROFILE_README_PATH,
     ORG_PROFILE_REPO_ID,
+    REQUIRED_FILE_PATHS,
     GitHubPublicSurfaceReport,
     PackageSurface,
     RepoFilePresence,
@@ -239,7 +240,15 @@ def events_from_github_public_surface_report(
         events.append(_repo_metadata_event(repo, generated_at=generated, source_refs=source_refs))
         if not _repo_is_public(repo):
             continue
-        for path, file_info in sorted(repo.files.items()):
+        for path in publication_file_paths_for_repo(repo):
+            file_info = repo.files.get(
+                path,
+                RepoFilePresence(
+                    path=path,
+                    exists=False,
+                    evidence="required_public_surface_absent_from_report",
+                ),
+            )
             surface = file_surface(repo, path)
             if surface is None:
                 continue
@@ -322,6 +331,14 @@ def file_surface(repo: RepoLiveState, path: str) -> GitHubPublicationSurface | N
     if path in {"NOTICE.md", "SECURITY.md", "CONTRIBUTING.md", "GOVERNANCE.md"}:
         return "security_governance"
     return None
+
+
+def publication_file_paths_for_repo(repo: RepoLiveState) -> tuple[str, ...]:
+    """Return required public-material file paths that need publication witnesses."""
+
+    if repo.repo_id == ORG_PROFILE_REPO_ID:
+        return (ORG_PROFILE_README_PATH,)
+    return tuple(path for path in REQUIRED_FILE_PATHS if file_surface(repo, path) is not None)
 
 
 def _repo_metadata_event(

@@ -110,6 +110,7 @@ def test_missing_public_required_file_projects_degraded_publication_row() -> Non
 
     events = events_from_github_public_surface_report(fixture, generated_at=GENERATED_AT)
     missing = next(event for event in events if event.surface == "readme")
+    missing_governance = next(event for event in events if event.ref == "main:GOVERNANCE.md")
 
     assert missing.publication_state == "missing_or_private"
     assert missing.publication_mode == "private"
@@ -120,6 +121,10 @@ def test_missing_public_required_file_projects_degraded_publication_row() -> Non
     assert classify_publication_log_payload(missing.model_dump(mode="json")) == (
         "degraded",
         ("github_publication_missing_or_private", ANTI_OVERCLAIM_REASON),
+    )
+    assert missing_governance.publication_state == "missing_or_private"
+    assert missing_governance.evidence_refs == (
+        "gh:contents/hapax-systems/missing-readme/GOVERNANCE.md",
     )
 
 
