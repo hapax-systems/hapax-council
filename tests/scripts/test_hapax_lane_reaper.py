@@ -397,6 +397,20 @@ def test_lane_reaper_classifier_accepts_hit_weekly_limit_wall() -> None:
     assert result.stdout.strip() == "stuck"
 
 
+def test_lane_reaper_classifier_keeps_hit_weekly_limit_taxonomy_active() -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input="hit a wall mapping weekly limit taxonomy\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "active"
+
+
 def test_lane_reaper_classifier_keeps_quota_limit_receipt_label_active() -> None:
     result = subprocess.run(
         [str(REAPER)],
@@ -415,6 +429,48 @@ def test_lane_reaper_classifier_accepts_blocked_quota_exhausted_wall() -> None:
     result = subprocess.run(
         [str(REAPER)],
         input="BLOCKED: quota exhausted\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "stuck"
+
+
+def test_lane_reaper_classifier_keeps_rate_limit_taxonomy_active() -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input="rate limit error taxonomy\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "active"
+
+
+def test_lane_reaper_classifier_keeps_rate_limited_receipt_label_active() -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input="rate-limited receipt writer idle\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "active"
+
+
+def test_lane_reaper_classifier_accepts_rate_limit_exceeded_wall() -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input="rate limit exceeded\n",
         env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
         capture_output=True,
         text=True,
