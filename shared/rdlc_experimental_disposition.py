@@ -86,6 +86,12 @@ class RdlcTaskConversion(_FrozenRdlcModel):
     acceptance_refs: tuple[str, ...] = Field(default_factory=tuple)
     rationale: str = Field(min_length=1)
 
+    def missing_minting_fields(self) -> tuple[str, ...]:
+        missing: list[str] = []
+        missing.extend(_missing_tuple(self.mutation_scope_refs, "mutation_scope_refs"))
+        missing.extend(_missing_tuple(self.acceptance_refs, "acceptance_refs"))
+        return tuple(missing)
+
 
 class RdlcDispositionReceipt(_FrozenRdlcModel):
     """RDLC disposition receipt for one candidate SDLC observation."""
@@ -118,8 +124,14 @@ class RdlcDispositionReceipt(_FrozenRdlcModel):
                     "publish_candidate requires assay/freeze inputs: " + ", ".join(missing)
                 )
 
-        if self.disposition == RdlcDispositionKind.CONVERT_TO_TASK and self.task_conversion is None:
-            raise RdlcDispositionError("convert_to_task requires task_conversion detail")
+        if self.disposition == RdlcDispositionKind.CONVERT_TO_TASK:
+            if self.task_conversion is None:
+                raise RdlcDispositionError("convert_to_task requires task_conversion detail")
+            missing = self.task_conversion.missing_minting_fields()
+            if missing:
+                raise RdlcDispositionError(
+                    "convert_to_task requires task_conversion detail: " + ", ".join(missing)
+                )
 
     def missing_publish_fields(self) -> tuple[str, ...]:
         missing: list[str] = []
@@ -188,8 +200,14 @@ def build_disposition_receipt(
         )
         reasons.extend(f"missing_publish:{field}" for field in probe.missing_publish_fields())
 
-    if kind == RdlcDispositionKind.CONVERT_TO_TASK and task_conversion is None:
-        reasons.append("missing_task_conversion")
+    if kind == RdlcDispositionKind.CONVERT_TO_TASK:
+        if task_conversion is None:
+            reasons.append("missing_task_conversion")
+        else:
+            reasons.extend(
+                f"missing_task_conversion:{field}"
+                for field in task_conversion.missing_minting_fields()
+            )
 
     if reasons:
         return RdlcDispositionReceipt(
@@ -263,6 +281,11 @@ def build_preprint_draft_from_disposition(
         approval=ApprovalState.DRAFT,
         publication_gate_context={
             "rdlc_disposition": receipt.model_dump(mode="json"),
+            "currentness_evidence_refs": [
+                ref for ref in (receipt.currentness_ref, receipt.freshness_ref) if ref
+            ],
+            "currentness_ref": receipt.currentness_ref,
+            "freshness_ref": receipt.freshness_ref,
             "publication_bus_owner": "publish_orchestrator",
             "egress_state": "draft_only_no_inbox_write",
         },

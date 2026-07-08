@@ -87,6 +87,21 @@ def test_publish_candidate_missing_freeze_inputs_blocks() -> None:
         build_preprint_draft_from_disposition(receipt, slug="x", title="X")
 
 
+def test_direct_publish_candidate_rejects_missing_freeze_inputs() -> None:
+    with pytest.raises(
+        RdlcDispositionError,
+        match="publish_candidate requires assay/freeze inputs",
+    ):
+        RdlcDispositionReceipt(
+            receipt_id="manual-publish",
+            observation=_observation(),
+            disposition=RdlcDispositionKind.PUBLISH_CANDIDATE,
+            rationale="manual bypass attempt",
+            claim_text="The SDLC event supports a recurring RDLC observation pattern.",
+            claim_ceiling="case-study candidate",
+        )
+
+
 def test_support_non_authoritative_preserves_context_without_artifact() -> None:
     receipt = build_disposition_receipt(
         _observation(),
@@ -130,6 +145,36 @@ def test_convert_to_task_requires_structured_task_detail() -> None:
     assert "measure.py" in receipt.task_conversion.mutation_scope_refs[0]
 
 
+def test_convert_to_task_rejects_incomplete_task_minting_detail() -> None:
+    incomplete = RdlcTaskConversion(
+        title="NDCVB supplied-direction held-out split",
+        rationale="prevents in-sample J-lens/DiffMean scoring",
+    )
+
+    blocked = build_disposition_receipt(
+        _observation(outcome="NDCVB supplied-direction path lacks held-out split"),
+        disposition=RdlcDispositionKind.CONVERT_TO_TASK,
+        rationale="needs governed NDCVB source work",
+        task_conversion=incomplete,
+    )
+    assert blocked.disposition == RdlcDispositionKind.BLOCKED
+    assert "missing_task_conversion:mutation_scope_refs" in blocked.blocked_reasons
+    assert "missing_task_conversion:acceptance_refs" in blocked.blocked_reasons
+
+    with pytest.raises(
+        RdlcDispositionError,
+        match="convert_to_task requires task_conversion detail: mutation_scope_refs, "
+        "acceptance_refs",
+    ):
+        RdlcDispositionReceipt(
+            receipt_id="manual-convert",
+            observation=_observation(),
+            disposition=RdlcDispositionKind.CONVERT_TO_TASK,
+            rationale="manual bypass attempt",
+            task_conversion=incomplete,
+        )
+
+
 def test_publish_candidate_creates_draft_only_preprint_artifact(tmp_path) -> None:
     receipt = build_disposition_receipt(
         _observation(),
@@ -157,5 +202,14 @@ def test_publish_candidate_creates_draft_only_preprint_artifact(tmp_path) -> Non
     assert artifact.surfaces_targeted == ["osf-preprint"]
     assert artifact.publication_gate_context is not None
     assert artifact.publication_gate_context["egress_state"] == "draft_only_no_inbox_write"
+    assert artifact.publication_gate_context["currentness_evidence_refs"] == [
+        "gh:checks:2026-07-08T02:24Z",
+        "gh:pr-4459:a35262fe",
+    ]
+    assert artifact.publication_gate_context["currentness_ref"] == "gh:checks:2026-07-08T02:24Z"
+    assert artifact.publication_gate_context["freshness_ref"] == "gh:pr-4459:a35262fe"
     assert "case-study candidate" in artifact.body_md
+    assert "AuthorityCase: CASE-RDLC-SDLC-EXPERIMENTAL-CONTEXT-20260704" in artifact.body_md
+    assert "Frozen ruler: sha256:rdlc-ruler@2026-07-08T02:40:00Z" in artifact.body_md
+    assert "- public:pr-4459-check-summary" in artifact.body_md
     assert not (tmp_path / "publish" / "inbox").exists()
