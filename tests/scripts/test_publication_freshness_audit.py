@@ -92,6 +92,47 @@ def test_publication_freshness_audit_writes_events_and_state(tmp_path: Path) -> 
     assert any(row["event_type"] == "publication.surface_readback" for row in event_rows)
 
 
+def test_publication_freshness_audit_events_match_assessed_snapshot(
+    tmp_path: Path,
+) -> None:
+    events = tmp_path / "freshness-events.jsonl"
+    state = tmp_path / "freshness-state.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--github-report",
+            str(REPORT),
+            "--output-events",
+            str(events),
+            "--output-state",
+            str(state),
+            "--generated-at",
+            GENERATED_AT,
+            "--github-ttl-s",
+            "1",
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    summary = json.loads(result.stdout)
+    event_rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+    state_payload = json.loads(state.read_text(encoding="utf-8"))
+    snapshot_by_surface = {
+        envelope["surface_id"]: envelope for envelope in state_payload["envelopes"]
+    }
+    assert summary["blockers"]
+    assert any(envelope["freshness_result"] == "stale" for envelope in snapshot_by_surface.values())
+    for event in event_rows:
+        envelope = snapshot_by_surface[event["surface_id"]]
+        assert event["result"] == envelope["freshness_result"]
+        assert event["blocks"] == envelope["blocks"]
+
+
 def test_publication_freshness_audit_rejects_run_time_before_source_report(
     tmp_path: Path,
 ) -> None:

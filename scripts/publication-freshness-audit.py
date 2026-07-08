@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
             generated_at=args.generated_at,
             occurred_at=github_checked_at,
         )
-        for envelope in envelopes
+        for envelope in snapshot.envelopes
     )
 
     if args.dry_run:
