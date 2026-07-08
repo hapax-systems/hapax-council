@@ -395,6 +395,15 @@ def cockpit_capability_for(
             "with explicit supply leaves before enabling LLM-backed execution"
         )
         raise KeyError(f"untracked cockpit agent capability: {agent_id_or_name}; {next_action}")
+    if manifest_model is not None and not capability.supply_leaves:
+        next_action = (
+            "next_action=add explicit base supply leaves for this manifest model to "
+            "COCKPIT_AGENT_CAPABILITIES before enabling LLM-backed execution"
+        )
+        raise KeyError(
+            f"manifest declares LLM model for unmetered cockpit capability: "
+            f"{agent_id_or_name}; {next_action}"
+        )
     return capability
 
 

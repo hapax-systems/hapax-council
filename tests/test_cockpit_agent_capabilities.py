@@ -147,6 +147,11 @@ def test_unknown_llm_manifest_fails_closed_instead_of_synthesizing_leaf() -> Non
         cockpit_capability_for("new-llm-agent", manifest_model="fast")
 
 
+def test_known_unmetered_manifest_model_drift_fails_closed() -> None:
+    with pytest.raises(KeyError, match="manifest declares LLM model"):
+        cockpit_capability_for("health-monitor", manifest_model="fast")
+
+
 def test_flag_overlay_projection_exposes_supply_leaf_details() -> None:
     from logos.data.agents import _capability_info
 
@@ -806,4 +811,38 @@ async def test_untracked_llm_cockpit_run_refuses_with_next_action(
     detail = response.json()["detail"]
     assert "untracked cockpit agent capability" in detail
     assert "next_action=add the cockpit agent" in detail
+    run_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_known_unmetered_manifest_model_cockpit_run_refuses_before_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from logos.api.app import app
+    from logos.api.cache import cache
+    from logos.api.routes import agents as agent_route
+    from logos.data.agents import AgentInfo
+
+    cache.agents = [
+        AgentInfo(
+            name="health-monitor",
+            uses_llm=True,
+            description="Health monitor drifted to LLM-backed",
+            command="uv run python -m agents.health_monitor",
+            model_alias="fast",
+            module="agents.health_monitor",
+        )
+    ]
+    monkeypatch.setattr(agent_route, "_IN_CONTAINER", False)
+    run_mock = AsyncMock()
+    monkeypatch.setattr(agent_route.agent_run_manager, "run", run_mock)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/agents/health-monitor/run", json={"flags": []})
+
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert "manifest declares LLM model for unmetered cockpit capability" in detail
+    assert "next_action=add explicit base supply leaves" in detail
     run_mock.assert_not_called()
