@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -25,6 +26,10 @@ from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from logos._config import LLM_STACK_DIR as _LLM_STACK_DIR
 from logos._config import LOGOS_STATE_DIR, embed, get_model, get_qdrant
 from logos._operator import get_system_prompt_fragment
+from shared.cockpit_agent_capabilities import (
+    CockpitAdmissionError,
+    require_cockpit_agent_admission,
+)
 
 log = logging.getLogger("logos.chat_agent")
 
@@ -52,6 +57,32 @@ class ChatDeps:
     project_dir: Path
     snapshot: str = ""
     conversation_summary: str = ""
+
+
+def _prepare_agent_command_for_chat(
+    name: str, agent_info: object, flags: str
+) -> tuple[list[str], str | None]:
+    """Return subprocess argv only after cockpit capability admission succeeds."""
+    flag_args = shlex.split(flags) if flags else []
+    model_alias = getattr(agent_info, "model_alias", None)
+    try:
+        require_cockpit_agent_admission(
+            name,
+            manifest_model=model_alias,
+            flags=flag_args,
+        )
+    except (CockpitAdmissionError, KeyError) as exc:
+        return [], f"Agent admission refused: {exc}"
+    except Exception as exc:
+        detail = (
+            "cockpit_agent_capability_admission_refused "
+            f"agent={name} reason_codes=cockpit_admission_unavailable:{type(exc).__name__} "
+            "next_action=inspect cockpit capability admission inputs before retrying guarded "
+            "chat agent execution"
+        )
+        return [], f"Agent admission refused: {detail}"
+
+    return shlex.split(agent_info.command) + flag_args, None
 
 
 # ── System prompt ────────────────────────────────────────────────────────────
@@ -301,9 +332,9 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
         if not agent_info:
             return f"Unknown agent '{name}'. Available: {', '.join(registry.keys())}"
 
-        cmd = agent_info.command.split()
-        if flags:
-            cmd.extend(flags.split())
+        cmd, admission_error = _prepare_agent_command_for_chat(name, agent_info, flags)
+        if admission_error:
+            return admission_error
 
         try:
             proc = await asyncio.create_subprocess_exec(

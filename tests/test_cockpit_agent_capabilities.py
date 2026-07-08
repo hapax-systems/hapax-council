@@ -354,6 +354,71 @@ def test_code_review_model_override_accepts_space_separated_value() -> None:
     assert capability.supply_leaves[0].model_route == "local-fast"
 
 
+def test_chat_agent_helper_refuses_llm_run_without_receipts() -> None:
+    from logos.chat_agent import _prepare_agent_command_for_chat
+    from logos.data.agents import AgentInfo
+
+    command, error = _prepare_agent_command_for_chat(
+        "briefing",
+        AgentInfo(
+            name="briefing",
+            uses_llm=True,
+            description="Daily operational briefing",
+            command="uv run python -m agents.briefing",
+            model_alias="fast",
+            module="agents.briefing",
+        ),
+        "",
+    )
+
+    assert command == []
+    assert error is not None
+    assert "cockpit_agent_capability_admission_refused" in error
+
+
+def test_chat_agent_helper_refuses_known_manifest_model_drift() -> None:
+    from logos.chat_agent import _prepare_agent_command_for_chat
+    from logos.data.agents import AgentInfo
+
+    command, error = _prepare_agent_command_for_chat(
+        "health-monitor",
+        AgentInfo(
+            name="health-monitor",
+            uses_llm=True,
+            description="Health monitor drifted to LLM-backed",
+            command="uv run python -m agents.health_monitor",
+            model_alias="fast",
+            module="agents.health_monitor",
+        ),
+        "",
+    )
+
+    assert command == []
+    assert error is not None
+    assert "manifest declares LLM model for unmetered cockpit capability" in error
+
+
+def test_chat_agent_helper_allows_deterministic_evidence_run() -> None:
+    from logos.chat_agent import _prepare_agent_command_for_chat
+    from logos.data.agents import AgentInfo
+
+    command, error = _prepare_agent_command_for_chat(
+        "health-monitor",
+        AgentInfo(
+            name="health-monitor",
+            uses_llm=False,
+            description="Health monitor",
+            command="uv run python -m agents.health_monitor",
+            model_alias=None,
+            module="agents.health_monitor",
+        ),
+        "",
+    )
+
+    assert error is None
+    assert command == ["uv", "run", "python", "-m", "agents.health_monitor"]
+
+
 def test_paid_llm_command_admits_with_fresh_gateway_and_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
