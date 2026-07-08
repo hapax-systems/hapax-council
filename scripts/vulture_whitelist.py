@@ -822,6 +822,12 @@ WorldSurfaceHealthFixtureSet.rows_for_fixture_case
 # while projecting model/search/MCP/publication/local routes into WCS rows.
 ProviderToolRouteHealth._validate_route_claim_authority
 
+# Tavily usage telemetry normalizers are Pydantic field validators invoked
+# dynamically when account/key usage payloads are materialized.
+from shared.tavily_client import TavilyAccountUsage as _TavilyAccountUsage  # noqa: E402
+
+_TavilyAccountUsage._normalize_nullable_numeric
+
 # Route authority receipts are Pydantic-validated when loaded from receipt
 # files; vulture cannot see model_validator invocation.
 RouteAuthorityReceipt._valid_signed_receipt

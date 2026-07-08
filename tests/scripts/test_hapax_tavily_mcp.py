@@ -8,7 +8,11 @@ import os
 import subprocess
 from pathlib import Path
 
-from shared.tavily_client import TavilySearchResponse, TavilySearchResult
+from shared.tavily_client import (
+    TavilyAccountUsage,
+    TavilySearchResponse,
+    TavilySearchResult,
+)
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 WRAPPER = REPO_ROOT / "scripts" / "hapax-tavily-mcp"
@@ -55,6 +59,28 @@ def test_tavily_mcp_server_search_uses_guarded_client(monkeypatch) -> None:
     assert payload["ok"] is True
     assert payload["results"][0]["url"] == "https://docs.tavily.com"
     assert calls[0].lane == "interactive_coding"
+
+
+def test_tavily_mcp_usage_returns_structured_validation_error(monkeypatch) -> None:
+    spec = importlib.util.spec_from_file_location("hapax_tavily_mcp_server", SERVER)
+    assert spec and spec.loader
+    server = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server)
+
+    class FakeClient:
+        def usage(self, *, project_id=None):
+            TavilyAccountUsage.model_validate({"usage": "not-a-number"})
+            raise AssertionError("validation should fail before this point")
+
+    monkeypatch.setattr(server, "TavilyClient", lambda: FakeClient())
+
+    payload = json.loads(server.tavily_usage())
+
+    assert payload["ok"] is False
+    assert payload["error_type"] == "ValidationError"
+    assert "not-a-number" in payload["error"]
+    assert payload["next_action"] == "recheck the provider /usage response shape or proxy logs"
+    assert "next action: recheck" in payload["error"]
 
 
 def test_tavily_mcp_default_proxy_execs_repo_server_without_exported_token(
