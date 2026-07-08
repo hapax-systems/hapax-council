@@ -109,14 +109,8 @@ class RdlcPublicationVehicleSelectorInput(_FrozenSelectorModel):
         audience_family: RdlcPublicationAudienceFamily | str,
         risk_posture: RdlcRiskLevel | str | None = None,
     ) -> RdlcPublicationVehicleSelectorInput:
-        frozen_refs = tuple(
-            ref
-            for ref in (
-                _frozen_ruler_ref(receipt),
-                *receipt.public_safe_evidence_refs,
-            )
-            if ref
-        )
+        frozen_ruler_ref = _frozen_ruler_ref(receipt)
+        frozen_refs = (frozen_ruler_ref,) if frozen_ruler_ref else ()
         return cls(
             disposition_receipt_id=receipt.receipt_id,
             disposition=receipt.disposition,
@@ -404,7 +398,10 @@ def build_preprint_draft_from_vehicle_selection(
             "and currentness refs before draft construction"
         )
     if receipt.recommended_vehicle is None or receipt.public_body_md is None:
-        raise RdlcPublicationVehicleError("selected receipt missing vehicle/body sketch")
+        raise RdlcPublicationVehicleError(
+            "selected receipt missing vehicle/body sketch; "
+            "next action: rebuild the selector receipt from a valid publish_candidate disposition"
+        )
 
     artifact_title = title or _title_from_vehicle(receipt.recommended_vehicle)
     context = {

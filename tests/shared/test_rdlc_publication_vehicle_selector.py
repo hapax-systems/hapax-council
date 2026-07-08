@@ -170,15 +170,24 @@ def test_missing_public_safe_or_currentness_evidence_refuses_publication() -> No
     )
 
     assert missing_public_safe.decision == RdlcPublicationSelectorDecision.REFUSED
-    assert (
-        "missing_publication:disposition:blocked" in missing_public_safe.blocked_reasons
-        or "missing_publication:public_safe_evidence_refs" in missing_public_safe.blocked_reasons
-    )
+    assert "missing_publication:disposition:blocked" in missing_public_safe.blocked_reasons
+    assert "missing_publication:public_safe_evidence_refs" in missing_public_safe.blocked_reasons
     assert missing_currentness.decision == RdlcPublicationSelectorDecision.REFUSED
-    assert (
-        "missing_publication:disposition:blocked" in missing_currentness.blocked_reasons
-        or "missing_publication:currentness_ref" in missing_currentness.blocked_reasons
+    assert "missing_publication:disposition:blocked" in missing_currentness.blocked_reasons
+    assert "missing_publication:currentness_ref" in missing_currentness.blocked_reasons
+
+
+def test_public_safe_refs_do_not_satisfy_frozen_evidence_gate() -> None:
+    selector = build_publication_vehicle_selector_receipt(
+        _publish_candidate(frozen_ruler_ref=None),
+        audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
     )
+
+    assert selector.decision == RdlcPublicationSelectorDecision.REFUSED
+    assert selector.selector_input.public_safe_evidence_refs == ("public:pr-4460-merge-summary",)
+    assert selector.selector_input.frozen_evidence_refs == ()
+    assert "missing_publication:disposition:blocked" in selector.blocked_reasons
+    assert "missing_publication:frozen_evidence_refs" in selector.blocked_reasons
 
 
 def test_selected_vehicle_builds_draft_only_preprint_artifact(monkeypatch) -> None:
@@ -224,3 +233,14 @@ def test_selected_vehicle_builds_draft_only_preprint_artifact(monkeypatch) -> No
         for item in artifact.publication_gate_context["surface_roles"]
     )
     assert write_attempts == []
+
+
+def test_malformed_selected_receipt_cannot_build_draft() -> None:
+    selector = build_publication_vehicle_selector_receipt(
+        _publish_candidate(),
+        audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
+    )
+    malformed = selector.model_copy(update={"recommended_vehicle": None})
+
+    with pytest.raises(RdlcPublicationVehicleError, match="next action: rebuild"):
+        build_preprint_draft_from_vehicle_selection(malformed, slug="malformed")
