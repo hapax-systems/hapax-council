@@ -333,12 +333,15 @@ next merge onward the chain self-hosts.
 is the read-only proof command: it checks the user unit's active
 `WorkingDirectory`/`ExecStart`, verifies the activation worktree `HEAD` equals
 both `.deployed-sha` and the source repo's local `origin/main` remote-tracking
-ref, probes `http://127.0.0.1:8765/` for the coordination boot render, and
-scans the recent `hapax-coord.service` journal for the prior CLOG
+ref, verifies the remote `origin/main` tip with a non-mutating `git ls-remote`,
+probes `http://127.0.0.1:8765/` for the coordination boot render, probes
+`ws://127.0.0.1:8765/clog` for the CLOG path challenge/reply and render marker,
+and scans the recent `hapax-coord.service` journal for the prior CLOG
 `handle-new-connection` / `unsigned-byte` overflow signature. The source repo
 defaults to `HAPAX_COORD_WITNESS_SOURCE_REPO`, then `HAPAX_COORD_DEPLOY_REPO`,
 then `/home/hapax/projects/hapax-coord`; `hapax-coord-deploy` is responsible
-for fetching that repo before activation.
+for fetching that repo before activation. Use `--skip-websocket` only for a
+deliberate degraded check where the live reactive CLOG path is out of scope.
 
 `hapax-coord-rebuild.timer` runs `scripts/hapax-coord-deploy` every 5 minutes
 from the source-activation worktree. The deploy helper fetches

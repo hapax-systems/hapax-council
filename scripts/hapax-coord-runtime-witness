@@ -29,6 +29,8 @@ OVERFLOW_SIGNATURE_RE = re.compile(r"handle-new-connection|unsigned-byte", re.IG
 COORDINATION_MARKER_RE = re.compile(r"hapax coordination", re.IGNORECASE)
 WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 WEBSOCKET_MAX_FRAME_BYTES = 4 * 1024 * 1024
+CLOG_PATH_CHALLENGE_RE = re.compile(r'ws\.send \("([^":]+):"\+eval\("')
+HTTP_MARKER_READ_BYTES = 1024 * 1024
 
 
 @dataclass
@@ -73,6 +75,21 @@ def _parse_key_values(text: str) -> dict[str, str]:
         key, value = line.split("=", 1)
         values[key] = value
     return values
+
+
+def _execstart_points_at_run_dev(exec_start: str, run_dev: Path) -> bool:
+    run_dev_s = str(run_dev)
+    path_match = re.search(r"(?:^|[;\s])path=([^;]+)", exec_start)
+    argv_match = re.search(r"(?:^|[;\s])argv\[\]=([^;]+)", exec_start)
+    if not path_match or not argv_match:
+        return False
+    if path_match.group(1).strip() != run_dev_s:
+        return False
+    try:
+        argv = shlex.split(argv_match.group(1).strip())
+    except ValueError:
+        return False
+    return bool(argv) and argv[0] == run_dev_s
 
 
 def _activation_dirty_entries(status: str) -> list[str]:
@@ -124,7 +141,7 @@ def _check_systemd(unit: str, activation: Path) -> tuple[dict[str, Any], list[st
     if values.get("WorkingDirectory") != activation_s:
         failures.append(f"unit_wrong_working_directory:{values.get('WorkingDirectory')}")
     exec_start = values.get("ExecStart", "")
-    if activation_s not in exec_start or "scripts/run-dev.sh" not in exec_start:
+    if not _execstart_points_at_run_dev(exec_start, activation / "scripts/run-dev.sh"):
         failures.append("unit_execstart_not_activation_run_dev")
     return evidence, failures
 
@@ -145,7 +162,8 @@ def _check_activation(activation: Path, source_repo: Path) -> tuple[dict[str, An
     receipt = activation / ".deployed-sha"
     if not run_dev.exists():
         failures.append(f"activation_run_dev_missing:{run_dev}")
-    if not receipt.is_file():
+    receipt_exists = receipt.is_file()
+    if not receipt_exists:
         failures.append(f"deployed_sha_receipt_missing:{receipt}")
 
     head = _git(git, activation, "rev-parse", "HEAD")
@@ -154,14 +172,14 @@ def _check_activation(activation: Path, source_repo: Path) -> tuple[dict[str, An
     else:
         failures.append(f"activation_head_unreadable:{head.stderr.strip() or head.rc}")
 
-    deployed_sha = receipt.read_text(encoding="utf-8").strip() if receipt.is_file() else ""
+    deployed_sha = receipt.read_text(encoding="utf-8").strip() if receipt_exists else ""
     evidence["deployed_sha"] = deployed_sha
-    if head.rc == 0 and deployed_sha and deployed_sha != head.stdout.strip():
+    if receipt_exists and not deployed_sha:
+        failures.append("deployed_sha_receipt_empty")
+    elif head.rc == 0 and deployed_sha != head.stdout.strip():
         failures.append("deployed_sha_mismatch")
 
-    status = _git(
-        git, activation, "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"
-    )
+    status = _git(git, activation, "status", "--porcelain=v1", "--untracked-files=all")
     if status.rc == 0:
         dirty = _activation_dirty_entries(status.stdout)
         evidence["activation_dirty_entries"] = dirty
@@ -180,6 +198,20 @@ def _check_activation(activation: Path, source_repo: Path) -> tuple[dict[str, An
             f"source_origin_main_unreadable:{source_main.stderr.strip() or source_main.rc}"
         )
 
+    remote_main = _git(git, source_repo, "ls-remote", "origin", "refs/heads/main")
+    if remote_main.rc == 0:
+        remote_line = remote_main.stdout.strip().splitlines()
+        remote_sha = remote_line[0].split()[0] if remote_line and remote_line[0].split() else ""
+        evidence["source_remote_main"] = remote_sha
+        if not remote_sha:
+            failures.append("source_remote_main_unreadable:empty")
+        elif head.rc == 0 and head.stdout.strip() != remote_sha:
+            failures.append("activation_not_at_source_remote_main")
+    else:
+        failures.append(
+            f"source_remote_main_unreadable:{remote_main.stderr.strip() or remote_main.rc}"
+        )
+
     source_status = _git(git, source_repo, "status", "--porcelain=v1", "--untracked-files=all")
     if source_status.rc == 0:
         evidence["source_repo_dirty_count"] = len(
@@ -196,12 +228,12 @@ def _check_http(url: str, timeout: float) -> tuple[dict[str, Any], list[str]]:
     failures: list[str] = []
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
-            body = response.read(16384).decode("utf-8", errors="replace")
+            body = response.read(HTTP_MARKER_READ_BYTES).decode("utf-8", errors="replace")
             evidence["status"] = response.status
             evidence["content_type"] = response.headers.get("Content-Type")
             evidence["body_prefix"] = body[:160]
     except urllib.error.HTTPError as exc:
-        body = exc.read(16384).decode("utf-8", errors="replace")
+        body = exc.read(HTTP_MARKER_READ_BYTES).decode("utf-8", errors="replace")
         evidence["status"] = exc.code
         evidence["content_type"] = exc.headers.get("Content-Type")
         evidence["body_prefix"] = body[:160]
@@ -379,6 +411,11 @@ def _check_websocket(url: str, timeout: float) -> tuple[dict[str, Any], list[str
                 return evidence, ["websocket_accept_mismatch"]
 
             saw_marker = False
+            path_challenge_seen = False
+            path_reply_sent = False
+            evidence["render_marker_seen"] = False
+            evidence["path_challenge_seen"] = False
+            evidence["path_reply_sent"] = False
             for _ in range(8):
                 try:
                     frame = _read_websocket_frame(sock, pending)
@@ -391,15 +428,28 @@ def _check_websocket(url: str, timeout: float) -> tuple[dict[str, Any], list[str
                 text = frame.pop("text")
                 evidence["frames"].append(frame)
                 if frame["opcode"] == 8:
-                    failures.append("websocket_closed_before_render_marker")
+                    if not saw_marker:
+                        failures.append("websocket_closed_before_render_marker")
+                    if not path_reply_sent:
+                        failures.append("websocket_closed_before_path_challenge")
                     break
                 if text:
                     if COORDINATION_MARKER_RE.search(text):
                         saw_marker = True
-                        break
-                    match = re.search(r'ws\.send \("([^":]+):"\+eval\("', text)
+                        evidence["render_marker_seen"] = True
+                    match = CLOG_PATH_CHALLENGE_RE.search(text)
                     if match:
+                        path_challenge_seen = True
+                        evidence["path_challenge_seen"] = True
                         _send_websocket_text(sock, f"{match.group(1)}:/")
+                        path_reply_sent = True
+                        evidence["path_reply_sent"] = True
+                    if saw_marker and path_reply_sent:
+                        break
+            if not path_challenge_seen:
+                failures.append("websocket_path_challenge_missing")
+            elif not path_reply_sent:
+                failures.append("websocket_path_reply_not_sent")
             if not saw_marker:
                 failures.append("websocket_render_missing_coordination_marker")
             try:

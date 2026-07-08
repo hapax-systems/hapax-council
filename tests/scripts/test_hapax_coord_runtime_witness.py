@@ -174,9 +174,20 @@ def _read_ws_client_text(conn: socket.socket) -> str:
 
 
 class _FakeWebSocketServer:
-    def __init__(self, *, marker: bool = True, status: int = 101) -> None:
+    def __init__(
+        self,
+        *,
+        marker: bool = True,
+        status: int = 101,
+        path_challenge: bool = True,
+        marker_before_challenge: bool = False,
+        accept_override: bytes | None = None,
+    ) -> None:
         self.marker = marker
         self.status = status
+        self.path_challenge = path_challenge
+        self.marker_before_challenge = marker_before_challenge
+        self.accept_override = accept_override
         self.request_path = ""
         self.received_messages: list[str] = []
         self._sock = socket.socket()
@@ -210,21 +221,27 @@ class _FakeWebSocketServer:
             accept = base64.b64encode(
                 hashlib.sha1(f"{key_match.group(1).strip()}{WEBSOCKET_GUID}".encode()).digest()
             )
+            accept = self.accept_override or accept
             conn.sendall(
                 b"HTTP/1.1 101 Switching Protocols\r\n"
                 b"Upgrade: websocket\r\n"
                 b"Connection: Upgrade\r\n" + b"Sec-WebSocket-Accept: " + accept + b"\r\n\r\n"
             )
+            if self.accept_override is not None:
+                return
             conn.sendall(_ws_text_frame("clog['connection_id']='test-connection'"))
-            conn.sendall(
-                _ws_text_frame(
-                    'ws.send ("7:"+eval("$(clog[\\x27location\\x27]).prop(\\x27pathname\\x27)"));'
-                )
-            )
-            self.received_messages.append(_read_ws_client_text(conn))
-            if self.marker:
+            if self.marker and self.marker_before_challenge:
                 conn.sendall(_ws_text_frame("clog['document'].title='Hapax Coordination'"))
-            else:
+            if self.path_challenge:
+                conn.sendall(
+                    _ws_text_frame(
+                        'ws.send ("7:"+eval("$(clog[\\x27location\\x27]).prop(\\x27pathname\\x27)"));'
+                    )
+                )
+                self.received_messages.append(_read_ws_client_text(conn))
+            if self.marker and not self.marker_before_challenge:
+                conn.sendall(_ws_text_frame("clog['document'].title='Hapax Coordination'"))
+            elif not self.marker:
                 conn.sendall(_ws_text_frame("clog['document'].title='Other'"))
 
     def close(self) -> None:
@@ -289,10 +306,14 @@ def test_coord_runtime_witness_accepts_activation_receipt_render_and_journal(
     assert witness["checks"]["activation"]["activation_head"] == sha
     assert witness["checks"]["activation"]["deployed_sha"] == sha
     assert witness["checks"]["activation"]["source_origin_main"] == sha
+    assert witness["checks"]["activation"]["source_remote_main"] == sha
     assert witness["checks"]["http"]["status"] == 200
     assert witness["checks"]["websocket"]["status"] == 101
     assert witness["checks"]["websocket"]["path"] == "/clog"
     assert witness["checks"]["websocket"]["frames"]
+    assert witness["checks"]["websocket"]["render_marker_seen"] is True
+    assert witness["checks"]["websocket"]["path_challenge_seen"] is True
+    assert witness["checks"]["websocket"]["path_reply_sent"] is True
     assert ws_server.received_messages == ["7:/"]
     assert witness["checks"]["journal"]["overflow_signature_matches"] == []
 
@@ -319,6 +340,38 @@ def test_coord_runtime_witness_fails_when_activation_lags_origin_main(tmp_path: 
     assert result.returncode == 1
     witness = json.loads(result.stdout)
     assert "activation_not_at_source_origin_main" in witness["failures"]
+
+
+def test_coord_runtime_witness_fails_when_remote_main_advances_without_fetch(
+    tmp_path: Path,
+) -> None:
+    source_repo, sha_a = _init_source_repo(tmp_path)
+    activation = _activation_worktree(source_repo, sha_a, tmp_path)
+    other = tmp_path / "other"
+    origin_url = _git(source_repo, "remote", "get-url", "origin")
+    _git(source_repo, "clone", origin_url, str(other))
+    _git(other, "config", "user.email", "coord-witness-test@example.test")
+    _git(other, "config", "user.name", "Coord Witness Test")
+    (other / "README.md").write_text("# Hapax Coordination\nremote\n", encoding="utf-8")
+    _git(other, "add", "README.md")
+    _git(other, "commit", "-m", "remote main")
+    _git(other, "push", "origin", "main")
+    systemctl = _fake_systemctl(tmp_path, activation)
+    journalctl = _fake_journalctl(tmp_path, "Listening on 127.0.0.1:8765.")
+
+    result = _run_witness(
+        source_repo=source_repo,
+        activation=activation,
+        systemctl=systemctl,
+        journalctl=journalctl,
+        extra_args=["--skip-http", "--skip-websocket"],
+    )
+
+    assert result.returncode == 1
+    witness = json.loads(result.stdout)
+    assert witness["checks"]["activation"]["source_origin_main"] == sha_a
+    assert witness["checks"]["activation"]["source_remote_main"] != sha_a
+    assert "activation_not_at_source_remote_main" in witness["failures"]
 
 
 def test_coord_runtime_witness_honors_coord_deploy_repo_fallback(tmp_path: Path) -> None:
@@ -428,6 +481,29 @@ def test_coord_runtime_witness_fails_when_deployed_sha_receipt_is_missing(
     )
 
 
+def test_coord_runtime_witness_fails_when_deployed_sha_receipt_is_empty(
+    tmp_path: Path,
+) -> None:
+    source_repo, sha = _init_source_repo(tmp_path)
+    activation = _activation_worktree(source_repo, sha, tmp_path)
+    (activation / ".deployed-sha").write_text("\n", encoding="utf-8")
+    systemctl = _fake_systemctl(tmp_path, activation)
+    journalctl = _fake_journalctl(tmp_path, "Listening on 127.0.0.1:8765.")
+
+    result = _run_witness(
+        source_repo=source_repo,
+        activation=activation,
+        systemctl=systemctl,
+        journalctl=journalctl,
+        extra_args=["--skip-http", "--skip-websocket"],
+    )
+
+    assert result.returncode == 1
+    witness = json.loads(result.stdout)
+    assert witness["checks"]["activation"]["deployed_sha"] == ""
+    assert "deployed_sha_receipt_empty" in witness["failures"]
+
+
 def test_coord_runtime_witness_fails_on_dirty_activation_but_ignores_receipt(
     tmp_path: Path,
 ) -> None:
@@ -451,12 +527,42 @@ def test_coord_runtime_witness_fails_on_dirty_activation_but_ignores_receipt(
     assert witness["checks"]["activation"]["activation_dirty_entries"] == ["?? untracked.txt"]
 
 
-def test_coord_runtime_witness_accepts_mixed_case_http_marker_beyond_prefix(tmp_path: Path) -> None:
+def test_coord_runtime_witness_ignores_gitignored_runtime_artifacts(
+    tmp_path: Path,
+) -> None:
+    source_repo, _sha = _init_source_repo(tmp_path)
+    (source_repo / ".gitignore").write_text("cache/\n", encoding="utf-8")
+    _git(source_repo, "add", ".gitignore")
+    _git(source_repo, "commit", "-m", "ignore runtime cache")
+    _git(source_repo, "push", "origin", "main")
+    sha = _git(source_repo, "rev-parse", "HEAD")
+    activation = _activation_worktree(source_repo, sha, tmp_path)
+    (activation / "cache").mkdir()
+    (activation / "cache/runtime.fasl").write_text("artifact\n", encoding="utf-8")
+    systemctl = _fake_systemctl(tmp_path, activation)
+    journalctl = _fake_journalctl(tmp_path, "Listening on 127.0.0.1:8765.")
+
+    result = _run_witness(
+        source_repo=source_repo,
+        activation=activation,
+        systemctl=systemctl,
+        journalctl=journalctl,
+        extra_args=["--skip-http", "--skip-websocket"],
+    )
+
+    assert result.returncode == 0, result.stderr
+    witness = json.loads(result.stdout)
+    assert witness["checks"]["activation"]["activation_dirty_entries"] == []
+
+
+def test_coord_runtime_witness_accepts_http_marker_beyond_legacy_sample(
+    tmp_path: Path,
+) -> None:
     source_repo, sha = _init_source_repo(tmp_path)
     activation = _activation_worktree(source_repo, sha, tmp_path)
     systemctl = _fake_systemctl(tmp_path, activation)
     journalctl = _fake_journalctl(tmp_path, "Listening on 127.0.0.1:8765.")
-    server, url = _serve_coord_marker(b"x" * 240 + b"Hapax Coordination")
+    server, url = _serve_coord_marker(b"x" * 20_000 + b"Hapax Coordination")
     ws_server = _FakeWebSocketServer()
 
     try:
@@ -575,6 +681,157 @@ def test_coord_runtime_witness_fails_on_websocket_missing_render_marker(tmp_path
     assert "websocket_render_missing_coordination_marker" in witness["failures"]
 
 
+def test_coord_runtime_witness_fails_on_invalid_websocket_url(tmp_path: Path) -> None:
+    source_repo, sha = _init_source_repo(tmp_path)
+    activation = _activation_worktree(source_repo, sha, tmp_path)
+    systemctl = _fake_systemctl(tmp_path, activation)
+    journalctl = _fake_journalctl(tmp_path, "Listening on 127.0.0.1:8765.")
+
+    result = _run_witness(
+        source_repo=source_repo,
+        activation=activation,
+        systemctl=systemctl,
+        journalctl=journalctl,
+        extra_args=["--skip-http", "--websocket-url", "http://127.0.0.1:8765/clog"],
+    )
+
+    assert result.returncode == 1
+    witness = json.loads(result.stdout)
+    assert "websocket_url_invalid:http://127.0.0.1:8765/clog" in witness["failures"]
+
+
+def test_coord_runtime_witness_fails_on_websocket_non_101(tmp_path: Path) -> None:
+    source_repo, sha = _init_source_repo(tmp_path)
+    activation = _activation_worktree(source_repo, sha, tmp_path)
+    systemctl = _fake_systemctl(tmp_path, activation)
+    journalctl = _fake_journalctl(tmp_path, "Listening on 127.0.0.1:8765.")
+    ws_server = _FakeWebSocketServer(status=404)
+
+    try:
+        result = _run_witness(
+            source_repo=source_repo,
+            activation=activation,
+            systemctl=systemctl,
+            journalctl=journalctl,
+            extra_args=["--skip-http", "--websocket-url", ws_server.url],
+        )
+    finally:
+        ws_server.close()
+
+    assert result.returncode == 1
+    witness = json.loads(result.stdout)
+    assert "websocket_status_not_101:404" in witness["failures"]
+
+
+def test_coord_runtime_witness_fails_on_websocket_accept_mismatch(tmp_path: Path) -> None:
+    source_repo, sha = _init_source_repo(tmp_path)
+    activation = _activation_worktree(source_repo, sha, tmp_path)
+    systemctl = _fake_systemctl(tmp_path, activation)
+    journalctl = _fake_journalctl(tmp_path, "Listening on 127.0.0.1:8765.")
+    ws_server = _FakeWebSocketServer(accept_override=b"mismatch")
+
+    try:
+        result = _run_witness(
+            source_repo=source_repo,
+            activation=activation,
+            systemctl=systemctl,
+            journalctl=journalctl,
+            extra_args=["--skip-http", "--websocket-url", ws_server.url],
+        )
+    finally:
+        ws_server.close()
+
+    assert result.returncode == 1
+    witness = json.loads(result.stdout)
+    assert "websocket_accept_mismatch" in witness["failures"]
+
+
+def test_coord_runtime_witness_fails_when_websocket_connection_is_refused(
+    tmp_path: Path,
+) -> None:
+    source_repo, sha = _init_source_repo(tmp_path)
+    activation = _activation_worktree(source_repo, sha, tmp_path)
+    systemctl = _fake_systemctl(tmp_path, activation)
+    journalctl = _fake_journalctl(tmp_path, "Listening on 127.0.0.1:8765.")
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    host, port = sock.getsockname()
+    sock.close()
+
+    result = _run_witness(
+        source_repo=source_repo,
+        activation=activation,
+        systemctl=systemctl,
+        journalctl=journalctl,
+        extra_args=["--skip-http", "--websocket-url", f"ws://{host}:{port}/clog"],
+    )
+
+    assert result.returncode == 1
+    witness = json.loads(result.stdout)
+    assert any(failure.startswith("websocket_probe_failed:") for failure in witness["failures"])
+
+
+def test_coord_runtime_witness_fails_when_websocket_skips_path_challenge(
+    tmp_path: Path,
+) -> None:
+    source_repo, sha = _init_source_repo(tmp_path)
+    activation = _activation_worktree(source_repo, sha, tmp_path)
+    systemctl = _fake_systemctl(tmp_path, activation)
+    journalctl = _fake_journalctl(tmp_path, "Listening on 127.0.0.1:8765.")
+    server, url = _serve_coord_marker()
+    ws_server = _FakeWebSocketServer(path_challenge=False)
+
+    try:
+        result = _run_witness(
+            source_repo=source_repo,
+            activation=activation,
+            systemctl=systemctl,
+            journalctl=journalctl,
+            url=url,
+            extra_args=["--websocket-url", ws_server.url],
+        )
+    finally:
+        server.shutdown()
+        ws_server.close()
+
+    assert result.returncode == 1
+    witness = json.loads(result.stdout)
+    assert witness["checks"]["websocket"]["render_marker_seen"] is True
+    assert witness["checks"]["websocket"]["path_challenge_seen"] is False
+    assert "websocket_path_challenge_missing" in witness["failures"]
+
+
+def test_coord_runtime_witness_answers_websocket_path_challenge_after_marker(
+    tmp_path: Path,
+) -> None:
+    source_repo, sha = _init_source_repo(tmp_path)
+    activation = _activation_worktree(source_repo, sha, tmp_path)
+    systemctl = _fake_systemctl(tmp_path, activation)
+    journalctl = _fake_journalctl(tmp_path, "Listening on 127.0.0.1:8765.")
+    server, url = _serve_coord_marker()
+    ws_server = _FakeWebSocketServer(marker_before_challenge=True)
+
+    try:
+        result = _run_witness(
+            source_repo=source_repo,
+            activation=activation,
+            systemctl=systemctl,
+            journalctl=journalctl,
+            url=url,
+            extra_args=["--websocket-url", ws_server.url],
+        )
+    finally:
+        server.shutdown()
+        ws_server.close()
+
+    assert result.returncode == 0, result.stderr
+    witness = json.loads(result.stdout)
+    assert witness["checks"]["websocket"]["render_marker_seen"] is True
+    assert witness["checks"]["websocket"]["path_challenge_seen"] is True
+    assert witness["checks"]["websocket"]["path_reply_sent"] is True
+    assert ws_server.received_messages == ["7:/"]
+
+
 def test_coord_runtime_witness_fails_when_systemctl_show_fails(tmp_path: Path) -> None:
     source_repo, sha = _init_source_repo(tmp_path)
     activation = _activation_worktree(source_repo, sha, tmp_path)
@@ -629,6 +886,35 @@ def test_coord_runtime_witness_fails_when_execstart_does_not_use_activation_run_
     source_repo, sha = _init_source_repo(tmp_path)
     activation = _activation_worktree(source_repo, sha, tmp_path)
     systemctl = _fake_systemctl(tmp_path, activation, exec_start="/tmp/other/run-dev.sh")
+    journalctl = _fake_journalctl(tmp_path, "Listening on 127.0.0.1:8765.")
+
+    result = _run_witness(
+        source_repo=source_repo,
+        activation=activation,
+        systemctl=systemctl,
+        journalctl=journalctl,
+        extra_args=["--skip-http", "--skip-websocket"],
+    )
+
+    assert result.returncode == 1
+    witness = json.loads(result.stdout)
+    assert "unit_execstart_not_activation_run_dev" in witness["failures"]
+
+
+def test_coord_runtime_witness_fails_when_execstart_wraps_activation_run_dev(
+    tmp_path: Path,
+) -> None:
+    source_repo, sha = _init_source_repo(tmp_path)
+    activation = _activation_worktree(source_repo, sha, tmp_path)
+    mutable_run_dev = tmp_path / "mutable-hapax-coord/scripts/run-dev.sh"
+    mutable_run_dev.parent.mkdir(parents=True)
+    mutable_run_dev.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    exec_start = (
+        f"{{ path={mutable_run_dev} ; "
+        f"argv[]={mutable_run_dev} --forward {activation}/scripts/run-dev.sh ; "
+        "ignore_errors=no }"
+    )
+    systemctl = _fake_systemctl(tmp_path, activation, exec_start=exec_start)
     journalctl = _fake_journalctl(tmp_path, "Listening on 127.0.0.1:8765.")
 
     result = _run_witness(
