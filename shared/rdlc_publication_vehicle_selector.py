@@ -397,6 +397,13 @@ def build_preprint_draft_from_vehicle_selection(
             "next action: provide a publish_candidate disposition with frozen public evidence "
             "and currentness refs before draft construction"
         )
+    missing_publication_fields = receipt.selector_input.missing_publication_fields()
+    if missing_publication_fields:
+        missing = ", ".join(missing_publication_fields)
+        raise RdlcPublicationVehicleError(
+            f"selected receipt no longer satisfies publication gates: {missing}; "
+            "next action: rebuild the selector receipt from a valid publish_candidate disposition"
+        )
     if receipt.recommended_vehicle is None or receipt.public_body_md is None:
         raise RdlcPublicationVehicleError(
             "selected receipt missing vehicle/body sketch; "

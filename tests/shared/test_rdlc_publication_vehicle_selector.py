@@ -159,6 +159,18 @@ def test_high_risk_research_methods_demotes_to_refusal_when_vehicle_mismatches_a
     )
 
 
+def test_high_risk_governance_audience_selects_restrained_vehicle() -> None:
+    selector = build_publication_vehicle_selector_receipt(
+        _publish_candidate(observation=_observation(privacy_risk=RdlcRiskLevel.HIGH)),
+        audience_family=RdlcPublicationAudienceFamily.GOVERNANCE_SAFETY,
+        risk_posture=RdlcRiskLevel.HIGH,
+    )
+
+    assert selector.decision == RdlcPublicationSelectorDecision.SELECTED
+    assert selector.recommended_vehicle == RdlcPublicationVehicle.GOVERNANCE_SAFETY_NOTE
+    assert selector.selected_surface_slugs() == ("omg-weblog", "osf-preprint", "zenodo-doi")
+
+
 def test_missing_public_safe_or_currentness_evidence_refuses_publication() -> None:
     missing_public_safe = build_publication_vehicle_selector_receipt(
         _publish_candidate(public_safe_evidence_refs=()),
@@ -188,6 +200,43 @@ def test_public_safe_refs_do_not_satisfy_frozen_evidence_gate() -> None:
     assert selector.selector_input.frozen_evidence_refs == ()
     assert "missing_publication:disposition:blocked" in selector.blocked_reasons
     assert "missing_publication:frozen_evidence_refs" in selector.blocked_reasons
+
+
+def test_unversioned_frozen_ruler_ref_is_preserved_but_still_refuses_blocked_receipt() -> None:
+    selector = build_publication_vehicle_selector_receipt(
+        _publish_candidate(frozen_ruler_version=None),
+        audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
+    )
+
+    assert selector.decision == RdlcPublicationSelectorDecision.REFUSED
+    assert selector.selector_input.frozen_evidence_refs == ("sha256:rdlc-ruler",)
+    assert "missing_publication:disposition:blocked" in selector.blocked_reasons
+    assert "missing_publication:frozen_evidence_refs" not in selector.blocked_reasons
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_reason"),
+    [
+        ({"claim_text": None}, "missing_publication:claim_text"),
+        (
+            {"observation": _observation(claim_ceiling=None), "claim_ceiling": None},
+            "missing_publication:claim_ceiling",
+        ),
+        ({"freshness_ref": None}, "missing_publication:freshness_ref"),
+    ],
+)
+def test_missing_claim_or_freshness_fields_emit_specific_selector_reasons(
+    overrides,
+    expected_reason: str,
+) -> None:
+    selector = build_publication_vehicle_selector_receipt(
+        _publish_candidate(**overrides),
+        audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
+    )
+
+    assert selector.decision == RdlcPublicationSelectorDecision.REFUSED
+    assert "missing_publication:disposition:blocked" in selector.blocked_reasons
+    assert expected_reason in selector.blocked_reasons
 
 
 def test_selected_vehicle_builds_draft_only_preprint_artifact(monkeypatch) -> None:
@@ -235,6 +284,23 @@ def test_selected_vehicle_builds_draft_only_preprint_artifact(monkeypatch) -> No
     assert write_attempts == []
 
 
+def test_dataset_card_draft_deduplicates_repeated_surface_targets() -> None:
+    selector = build_publication_vehicle_selector_receipt(
+        _publish_candidate(),
+        audience_family=RdlcPublicationAudienceFamily.DATASET_USERS,
+    )
+    raw_surfaces = tuple(surface.surface for surface in selector.selected_surfaces)
+
+    artifact = build_preprint_draft_from_vehicle_selection(
+        selector,
+        slug="rdlc-sdlc-dataset-card",
+    )
+
+    assert raw_surfaces.count("zenodo-doi") == 2
+    assert artifact.surfaces_targeted.count("zenodo-doi") == 1
+    assert artifact.surfaces_targeted == ["omg-weblog", "zenodo-doi"]
+
+
 def test_malformed_selected_receipt_cannot_build_draft() -> None:
     selector = build_publication_vehicle_selector_receipt(
         _publish_candidate(),
@@ -244,3 +310,15 @@ def test_malformed_selected_receipt_cannot_build_draft() -> None:
 
     with pytest.raises(RdlcPublicationVehicleError, match="next action: rebuild"):
         build_preprint_draft_from_vehicle_selection(malformed, slug="malformed")
+
+
+def test_reconstructed_selected_receipt_must_still_satisfy_publication_gates() -> None:
+    selector = build_publication_vehicle_selector_receipt(
+        _publish_candidate(),
+        audience_family=RdlcPublicationAudienceFamily.RESEARCH_METHODS,
+    )
+    unsafe_input = selector.selector_input.model_copy(update={"currentness_ref": None})
+    reconstructed = selector.model_copy(update={"selector_input": unsafe_input})
+
+    with pytest.raises(RdlcPublicationVehicleError, match="currentness_ref"):
+        build_preprint_draft_from_vehicle_selection(reconstructed, slug="unsafe")
