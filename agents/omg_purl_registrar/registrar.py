@@ -39,7 +39,7 @@ def build_initial_purls() -> list[PurlSpec]:
         ),
         PurlSpec(
             slug="geal",
-            target="https://github.com/ryanklee/hapax-council/blob/main/docs/superpowers/specs/2026-04-23-geal-spec.md",
+            target="https://github.com/hapax-systems/hapax-council/blob/main/docs/superpowers/specs/2026-04-23-geal-spec.md",
             description="GEAL (Gruvbox Emissive Animation Language) spec.",
         ),
         PurlSpec(

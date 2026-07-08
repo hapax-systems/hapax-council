@@ -98,10 +98,44 @@ def _write_source_reconciliation(
     return path
 
 
+def _write_public_surface_registry(
+    path: Path,
+    *,
+    target: Path | None = None,
+    source_refs: list[str] | None = None,
+) -> Path:
+    target_path = target or (path.parent / "surface.md")
+    source_values = source_refs if source_refs is not None else ["docs/source.md"]
+    path.write_text(
+        "\n".join(
+            [
+                "schema_version: 1",
+                "defaults:",
+                "  freshness_ttl_s: 1800",
+                "  stale_behavior: block_public_current",
+                "surfaces:",
+                "  - surface_id: test.surface",
+                "    surface_type: test",
+                "    path_globs:",
+                f"      - {target_path}",
+                "    claim_ceiling_ref: test.claim_ceiling",
+                "    source_refs:",
+                *[f"      - {source_ref}" for source_ref in source_values],
+                "    publication_gate_context: test_context",
+                "    freshness_ttl_s: 1800",
+                "    stale_behavior: block_public_current",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def _write_github_envelope(path: Path, **overrides: object) -> Path:
     payload = {
         "surface": "release_notes",
-        "repo": "ryanklee/hapax-council",
+        "repo": "hapax-systems/hapax-council",
         "source_commit": "abc123",
         "current_source_commit": "abc123",
         "current_source_refs": ["CLAUDE.md"],
@@ -117,7 +151,7 @@ def _write_github_envelope(path: Path, **overrides: object) -> Path:
         "has_discussions": False,
         "has_wiki": False,
         "sponsor_surface_active": False,
-        "settings_witness_refs": ["gh:repos/ryanklee/hapax-council"],
+        "settings_witness_refs": ["gh:repos/hapax-systems/hapax-council"],
         "research_status": "spec_ready",
     }
     payload.update(overrides)
@@ -550,6 +584,67 @@ def test_public_surface_claim_gate_ignores_unsupported_file_suffix(tmp_path: Pat
 
     assert result.returncode == 0
     assert result.stdout == ""
+
+
+def test_public_surface_registry_only_fails_missing_required_metadata(tmp_path: Path) -> None:
+    doc = tmp_path / "surface.md"
+    doc.write_text("Scoped public copy.\n", encoding="utf-8")
+    registry = _write_public_surface_registry(
+        tmp_path / "public-surface-registry.yaml",
+        target=doc,
+        source_refs=[],
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--check-registry-only",
+            "--public-surface-registry",
+            str(registry),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicSurfaceRegistry" in result.stdout
+    assert "source_refs must be a non-empty list" in result.stdout
+
+
+def test_public_surface_gate_uses_registry_targets_when_paths_omitted(tmp_path: Path) -> None:
+    doc = tmp_path / "registry-target.md"
+    doc.write_text("Token Capital is an existence proof.\n", encoding="utf-8")
+    registry = _write_public_surface_registry(tmp_path / "public-surface-registry.yaml", target=doc)
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = _write_publication_freshness_state(tmp_path / "freshness-state.json")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--public-surface-registry",
+            str(registry),
+            "--token-claim-report",
+            str(token_report),
+            "--source-reconciliation",
+            str(source_reconciliation),
+            "--publication-freshness-state",
+            str(freshness_state),
+            "--skip-live-github-public-surface-refresh",
+            "--required-publication-freshness-surface-id",
+            TEST_FRESHNESS_SURFACE_ID,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.TokenCapitalClaimCeiling" in result.stdout
+    assert str(doc) in result.stdout
 
 
 def test_public_surface_gate_allows_bounded_repair_case_language(tmp_path: Path) -> None:

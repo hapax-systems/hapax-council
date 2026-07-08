@@ -43,23 +43,25 @@ class TestNoCtaCopy:
 
 class TestPublicFrame:
     def test_first_screen_declares_governed_research_artifact(self) -> None:
-        head = _readme()[:2400].lower()
+        # First screen = rendered preamble + H1/badges + intro paragraph.
+        head = _readme()[:2800].lower()
         for token in (
             "single-operator",
             "governance",
             "evidence",
             "refusal",
-            "public egress",
-            "publication-bus",
+            "public-egress",
+            "publication bus",
         ):
             assert token in head
 
     def test_not_product_or_framework_or_support_surface(self) -> None:
         body = _readme().lower()
-        assert "not an adoption package" in body
-        assert "not a supported framework" in body
-        assert "not the commercial product front door" in body
+        assert "not a portable platform" in body
+        assert "adoption package" in body
+        assert "product front door" in body
         assert "no public support queue" in body
+        assert "not open source" in body
 
     def test_reader_map_points_to_value_partitioned_surfaces(self) -> None:
         body = _readme()
@@ -74,10 +76,10 @@ class TestPublicFrame:
     def test_reader_map_translates_features_to_reader_value(self) -> None:
         body = _readme().lower()
         for value_statement in (
-            "pilot a narrow, mit-licensed boundary",
-            "inspect delivery state and proposed writes",
-            "follow how claims, refusals, route authority, and public egress behave",
-            "audit numeric observations with caveats preserved",
+            "pilot the portable mit hook boundary",
+            "inspect the cockpit/read-preview layer",
+            "study agentic claim authority and correction behavior",
+            "audit where public claims and public egress fail closed",
         ):
             assert value_statement in body
 
@@ -86,20 +88,23 @@ class TestAudienceValueCopy:
     def test_start_here_covers_distinct_reader_values(self) -> None:
         body = START_HERE.read_text(encoding="utf-8").lower()
         for token in (
-            "ai-safety researchers",
+            "skeptical technical readers",
             "technical directors",
-            "harness evaluators",
+            "harness builders",
+            "security/privacy reviewers",
             "narrow-tool adopters",
-            "what hapax makes inspectable",
         ):
             assert token in body
         for value_statement in (
-            "grounding attempts with source state",
-            "authority boundaries",
-            "part of the measured surface",
-            "distinguish portable hooks",
+            "reduce agent-delivery risk",
+            "studying agentic claim authority and correction",
+            "governance and publication are part of the mechanism",
+            "does not require adopting the hapax estate",
         ):
             assert value_statement in body
+        # Internal audience-segmentation labels stay in the planning registry,
+        # not on public copy.
+        assert "hn and technical readers" not in body
 
     def test_obsidian_home_covers_public_reader_values(self) -> None:
         body = _squash_whitespace(OBSIDIAN_HOME.read_text(encoding="utf-8"))
@@ -168,8 +173,8 @@ class TestPublicationBoundary:
 
     def test_direct_public_egress_is_disclaimed(self) -> None:
         body = _readme().lower()
-        assert "direct public egress is not a reader-facing affordance" in body
-        assert "governed publication-bus surfaces" in body
+        assert "public channels are not side channels" in body
+        assert "governed publication controls" in body
 
     def test_constitution_pointer(self) -> None:
         assert "hapax-constitution" in _readme()
@@ -213,7 +218,9 @@ class TestLicenseReconciliationStatusDoc:
 
         assert zenodo["doi"] == "10.5281/zenodo.20113515"
         assert zenodo["conceptdoi"] == "10.5281/zenodo.20113514"
-        assert zenodo["publication_date"] == "2026-05-10"
+        # publication_date intentionally omitted: a hardcoded date is a
+        # freshness-rotting claim; Zenodo derives it at deposit time.
+        assert "publication_date" not in zenodo
         assert citation["doi"] == "10.5281/zenodo.20113515"
         assert any(
             identifier.get("type") == "doi" and identifier.get("value") == "10.5281/zenodo.20113515"

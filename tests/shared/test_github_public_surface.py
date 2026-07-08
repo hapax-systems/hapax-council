@@ -194,3 +194,23 @@ def test_public_claim_ceiling_and_package_surface_inventory_are_fail_closed() ->
     assert {surface.claim_status for surface in report.local_evidence.package_surfaces} == {
         "evidence_only"
     }
+
+
+def test_every_required_category_has_positive_witness_when_clean() -> None:
+    """A healthier estate must not invalidate the report.
+
+    Categories whose checks find no drift must still appear via an
+    ok-status witness, or missing_required_categories fails on
+    absent-because-clean (regression: contributing_governance vanished
+    once GOVERNANCE.md landed on the live default branch).
+    """
+    findings = build_drift_findings(repos={}, local=_minimal_local_evidence())
+    present = {finding.category for finding in findings}
+    assert set(REQUIRED_DRIFT_CATEGORIES) <= present
+
+    witnesses = [
+        finding for finding in findings if finding.finding_id.endswith(".no-drift-observed")
+    ]
+    for finding in witnesses:
+        assert finding.status == "ok"
+        assert finding.severity == "info"

@@ -6,15 +6,15 @@ This repository is part of the Hapax Systems portfolio. Public metadata, issue a
 
 ## Reader promise
 
-Primary live Hapax estate and research artifact for readers auditing how governance, perception, coordination, public egress, and refusal operate under one single-operator system.
+Inspect how AI-agent work is authorized, routed, reviewed, refused, and surfaced publicly inside the Hapax estate.
 
 ## Reader value
 
-Lets researchers and auditors follow claim authority, refusal, publication egress, and coordination from code to receipts instead of relying on demo claims.
+Lets technical leaders, researchers, and auditors evaluate concrete controls: what may run, what may write, what evidence exists, and where stale or unsupported claims fail closed.
 
 ## Claim ceiling
 
-Research/runtime apparatus only; not a reusable platform, harness, product, support surface, or open-source project.
+Source-visible research runtime and current case study only. Not a portable platform, adoption package, product front door, support surface, or open-source project.
 
 ## License and rights
 
@@ -31,7 +31,7 @@ Rendered summary: PolyForm Strict 1.0.0 - source-available, non-distribution, no
 
 ## Portfolio position
 
-Primary research/runtime artifact. Carries governance, coordination, evidence, refusal, and publication-bus surfaces. Consumes the constitution via the hapax-sdlc package.
+Primary research/runtime estate. Carries task authority, coordination, route evidence, claim and publication gates, refusal records, and public-egress controls. Consumes the constitution via the hapax-sdlc package.
 
 ---
 

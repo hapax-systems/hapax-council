@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import re
@@ -14,6 +15,8 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -47,14 +50,17 @@ DEFAULT_SOURCE_RECONCILIATION = (
 DEFAULT_GITHUB_PUBLIC_SURFACE_REPORT = (
     REPO_ROOT / "docs/repo-pres/github-public-surface-live-state-reconcile.json"
 )
+DEFAULT_PUBLIC_SURFACE_REGISTRY = REPO_ROOT / "docs/repo-pres/public-surface-registry.yaml"
 DEFAULT_TARGETS = (
     REPO_ROOT / "agents" / "omg_web_builder" / "static" / "index.html",
     REPO_ROOT / "docs" / "publication-drafts",
 )
+SCANNABLE_SUFFIXES = {".cff", ".html", ".j2", ".json", ".md", ".py", ".yaml", ".yml"}
 TOKEN_CLAIM_RULE = "Hapax.TokenCapitalClaimCeiling"
 SOURCE_DISPOSITION_RULE = "Hapax.PublicSurfaceSourceDisposition"
 GITHUB_PUBLIC_CLAIM_RULE = "Hapax.GitHubPublicClaimEvidenceGate"
 PUBLICATION_FRESHNESS_RULE = "Hapax.PublicationFreshness"
+PUBLIC_SURFACE_REGISTRY_RULE = "Hapax.PublicSurfaceRegistry"
 _GIT_HEAD_DEEPEN_ATTEMPTED = False
 
 
@@ -66,9 +72,15 @@ def iter_files(paths: list[Path]) -> list[Path]:
     files: list[Path] = []
     for path in paths:
         if path.is_dir():
-            files.extend(sorted(p for p in path.rglob("*") if p.suffix in {".html", ".md"}))
+            files.extend(
+                sorted(
+                    p
+                    for p in path.rglob("*")
+                    if p.is_file() and (p.suffix in SCANNABLE_SUFFIXES or p.suffix == "")
+                )
+            )
         elif path.exists():
-            if path.suffix in {".html", ".md"}:
+            if path.suffix in SCANNABLE_SUFFIXES or path.suffix == "":
                 files.append(path)
         else:
             raise FileNotFoundError(path)
@@ -101,6 +113,174 @@ def load_required_json(path: Path, *, label: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise RequiredInputError(f"{label} must be a JSON object: {path}")
     return payload
+
+
+def load_public_surface_registry(path: Path) -> dict[str, Any]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise RequiredInputError(f"public-surface registry not found: {path}") from exc
+    except OSError as exc:
+        raise RequiredInputError(f"public-surface registry is not readable: {path}: {exc}") from exc
+
+    try:
+        payload = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise RequiredInputError(
+            f"public-surface registry is not valid YAML: {path}: {exc}"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise RequiredInputError(f"public-surface registry must be a YAML object: {path}")
+    return payload
+
+
+def public_surface_registry_findings(
+    registry: Mapping[str, Any],
+    *,
+    registry_path: Path,
+) -> list[LintFinding]:
+    findings: list[LintFinding] = []
+    defaults = registry.get("defaults", {})
+    if not isinstance(defaults, Mapping):
+        findings.append(
+            _registry_finding(registry_path, "defaults must be a mapping with gate defaults")
+        )
+        defaults = {}
+
+    surfaces = registry.get("surfaces")
+    if not isinstance(surfaces, list) or not surfaces:
+        return [
+            _registry_finding(
+                registry_path,
+                "public-surface registry must declare at least one surface",
+            )
+        ]
+
+    seen_surface_ids: set[str] = set()
+    for index, surface in enumerate(surfaces):
+        label = f"surfaces[{index}]"
+        if not isinstance(surface, Mapping):
+            findings.append(_registry_finding(registry_path, f"{label} must be a mapping"))
+            continue
+
+        surface_id = surface.get("surface_id")
+        if not isinstance(surface_id, str) or not surface_id.strip():
+            findings.append(_registry_finding(registry_path, f"{label}.surface_id is required"))
+            surface_id = label
+        elif surface_id in seen_surface_ids:
+            findings.append(
+                _registry_finding(registry_path, f"duplicate surface_id {surface_id!r}")
+            )
+        seen_surface_ids.add(surface_id)
+
+        for field in ("surface_type", "claim_ceiling_ref", "publication_gate_context"):
+            if not isinstance(surface.get(field), str) or not str(surface.get(field)).strip():
+                findings.append(
+                    _registry_finding(registry_path, f"{surface_id}.{field} is required")
+                )
+
+        path_globs = surface.get("path_globs")
+        if not isinstance(path_globs, list) or not all(
+            isinstance(item, str) and item.strip() for item in path_globs
+        ):
+            findings.append(
+                _registry_finding(
+                    registry_path,
+                    f"{surface_id}.path_globs must be a non-empty list of strings",
+                )
+            )
+            expanded_paths: list[Path] = []
+        else:
+            expanded_paths = _expand_public_surface_globs(path_globs)
+            if not expanded_paths:
+                findings.append(
+                    _registry_finding(registry_path, f"{surface_id}.path_globs matched no files")
+                )
+
+        source_refs = surface.get("source_refs")
+        if not isinstance(source_refs, list) or not all(
+            isinstance(item, str) and item.strip() for item in source_refs
+        ):
+            findings.append(
+                _registry_finding(
+                    registry_path,
+                    f"{surface_id}.source_refs must be a non-empty list of strings",
+                )
+            )
+
+        ttl = surface.get("freshness_ttl_s", defaults.get("freshness_ttl_s"))
+        if not isinstance(ttl, int) or ttl <= 0:
+            findings.append(
+                _registry_finding(
+                    registry_path,
+                    f"{surface_id}.freshness_ttl_s must be a positive integer",
+                )
+            )
+
+        stale_behavior = surface.get("stale_behavior", defaults.get("stale_behavior"))
+        if not isinstance(stale_behavior, str) or not stale_behavior.strip():
+            findings.append(
+                _registry_finding(registry_path, f"{surface_id}.stale_behavior is required")
+            )
+
+        marker_required = bool(
+            surface.get(
+                "generated_section_required",
+                defaults.get("generated_section_required", False),
+            )
+        )
+        if marker_required:
+            marker = f"hapax-public:surface={surface_id}:begin"
+            for path in expanded_paths:
+                if marker not in path.read_text(encoding="utf-8", errors="replace"):
+                    findings.append(
+                        _registry_finding(
+                            registry_path,
+                            f"{surface_id} requires generated-section marker in {path}",
+                        )
+                    )
+
+    return findings
+
+
+def public_surface_registry_paths(registry: Mapping[str, Any]) -> list[Path]:
+    surfaces = registry.get("surfaces")
+    if not isinstance(surfaces, list):
+        return list(DEFAULT_TARGETS)
+
+    paths: list[Path] = []
+    for surface in surfaces:
+        if not isinstance(surface, Mapping):
+            continue
+        path_globs = surface.get("path_globs")
+        if not isinstance(path_globs, list):
+            continue
+        patterns = [item for item in path_globs if isinstance(item, str)]
+        paths.extend(_expand_public_surface_globs(patterns))
+    return sorted(dict.fromkeys(paths))
+
+
+def _registry_finding(registry_path: Path, message: str) -> LintFinding:
+    return LintFinding(
+        file=str(registry_path),
+        line=1,
+        level="error",
+        rule=PUBLIC_SURFACE_REGISTRY_RULE,
+        message=message,
+    )
+
+
+def _expand_public_surface_globs(patterns: list[str]) -> list[Path]:
+    paths: list[Path] = []
+    for pattern in patterns:
+        raw = Path(pattern)
+        if raw.is_absolute():
+            matches = [Path(match) for match in glob.glob(pattern, recursive=True)]
+        else:
+            matches = list(REPO_ROOT.glob(pattern))
+        paths.extend(path for path in matches if path.is_file())
+    return sorted(dict.fromkeys(paths))
 
 
 def claim_upgrade_allowed(report: Mapping[str, Any], claim_id: str) -> bool:
@@ -970,6 +1150,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("paths", nargs="*", type=Path, help="files or directories to scan")
     parser.add_argument("--json", action="store_true", help="emit JSON findings")
     parser.add_argument(
+        "--public-surface-registry",
+        type=Path,
+        default=DEFAULT_PUBLIC_SURFACE_REGISTRY,
+        help="registry used for default public-surface target discovery and registry checks",
+    )
+    parser.add_argument(
+        "--check-registry-only",
+        action="store_true",
+        help="validate the public-surface registry without requiring live freshness inputs",
+    )
+    parser.add_argument(
         "--token-claim-report",
         type=Path,
         default=DEFAULT_TOKEN_CLAIM_REPORT,
@@ -1031,6 +1222,28 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        public_surface_registry = load_public_surface_registry(args.public_surface_registry)
+        findings = public_surface_registry_findings(
+            public_surface_registry,
+            registry_path=args.public_surface_registry,
+        )
+        if args.check_registry_only:
+            if args.json:
+                print(
+                    json.dumps(
+                        [finding_to_dict(finding) for finding in findings],
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                for finding in findings:
+                    print(
+                        f"{finding.file}:{finding.line}: {finding.level}: "
+                        f"{finding.rule}: {finding.message}"
+                    )
+            return 1 if findings else 0
+
         if (
             args.required_publication_freshness_surface_id
             and not args.skip_live_github_public_surface_refresh
@@ -1051,9 +1264,11 @@ def main(argv: list[str] | None = None) -> int:
             token_claim_report,
             report_path=args.token_claim_report,
         )
-        findings = check_source_disposition(
-            source_reconciliation,
-            report_path=args.source_reconciliation,
+        findings.extend(
+            check_source_disposition(
+                source_reconciliation,
+                report_path=args.source_reconciliation,
+            )
         )
         github_material_envelope = (
             load_github_material_envelope(args.github_material_envelope)
@@ -1079,7 +1294,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    paths = args.paths or list(DEFAULT_TARGETS)
+    paths = args.paths or public_surface_registry_paths(public_surface_registry)
     if github_public_surface_report is not None:
         findings.extend(
             check_github_public_surface_drift(

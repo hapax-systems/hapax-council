@@ -1,17 +1,13 @@
-# CODEOWNERS — governance-protected surfaces request operator review.
+# CODEOWNERS - advisory internal ownership for governance-protected paths.
 #
-# Single-operator system (axiom: single_user): @ryanklee is the sole owner.
-# This file deliberately sets NO blanket `*` owner, so ordinary PRs keep
-# flowing through the autonomous autoqueue. Only the governance surfaces
-# below request explicit operator review — closing the "governance paths have
-# zero permission-layer visibility" gap from
-# REQ-20260528-claude-code-config-sdlc-conformance (P1 slice 8).
+# This file does not create public review, support, merge, contribution, or
+# governance rights. Public GitHub affordances remain redirect-only.
 #
 # Required PR review and required Code Owner review are intentionally DISABLED
 # on `main` in this single-user repository: GitHub forbids a PR author from
-# approving their own PR, and merge queue rules then turn review enforcement
-# into an unsatisfiable self-review gate. Keep this file as path
-# ownership/advisory routing unless a non-author reviewer identity exists.
+# approving their own PR, and merge queue rules can turn review enforcement
+# into an unsatisfiable self-review gate. Keep this file as advisory internal
+# path routing unless a valid non-author reviewer identity exists.
 
 /axioms/                 @ryanklee
 /shared/governance/      @ryanklee

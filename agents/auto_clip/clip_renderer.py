@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 
 OUTPUT_WIDTH = 1080
 OUTPUT_HEIGHT = 1920
-V5_BYLINE = "hapax.github.io | CC-BY-4.0"
+V5_BYLINE = "hapax.weblog.lol | CC-BY-4.0"
 
 CHANNEL_ACCENT: dict[DecoderChannel, str] = {
     DecoderChannel.VISUAL: "0xE78A4E",

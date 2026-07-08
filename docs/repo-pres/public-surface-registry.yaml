@@ -1,0 +1,135 @@
+schema_version: 1
+generated_at: "2026-07-08T00:00:00Z"
+status: active_control_seed
+description: >-
+  Registry of Hapax Council claim-bearing public surfaces. This file is a
+  control surface for discovery and freshness checks; it is not a freshness
+  witness by itself.
+defaults:
+  freshness_ttl_s: 1800
+  stale_behavior: block_public_current
+  generated_section_required: false
+required_fields:
+  - surface_id
+  - surface_type
+  - path_globs
+  - claim_ceiling_ref
+  - source_refs
+  - publication_gate_context
+  - freshness_ttl_s
+  - stale_behavior
+surfaces:
+  - surface_id: github.repo.hapax-council.readme
+    surface_type: github_readme
+    path_globs:
+      - README.md
+      - START_HERE.md
+      - NOTICE.md
+      - CONTRIBUTING.md
+      - SUPPORT.md
+      - SECURITY.md
+    claim_ceiling_ref: council.source_visible_research_runtime
+    source_refs:
+      - docs/repo-pres/2026-07-08-public-copy-rewrite-matrix-plan.md
+      - docs/repo-pres/github-public-surface-live-state-reconcile.json
+    publication_gate_context: github_public_surface_reconcile
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - surface_id: github.repo.hapax-council.metadata
+    surface_type: github_metadata
+    path_globs:
+      - CITATION.cff
+      - codemeta.json
+      - .zenodo.json
+      - .github/FUNDING.yml
+      - .github/ISSUE_TEMPLATE/config.yml
+      - .github/pull_request_template.md
+      - .github/CODEOWNERS
+    claim_ceiling_ref: council.source_visible_research_runtime
+    source_refs:
+      - docs/repo-pres/2026-07-08-public-copy-rewrite-matrix-plan.md
+      - docs/repo-pres/github-public-surface-live-state-reconcile.json
+    publication_gate_context: github_public_surface_reconcile
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - surface_id: omg.landing
+    surface_type: omg_landing
+    path_globs:
+      - agents/omg_web_builder/static/index.html
+      - config/omg-lol.yaml
+    claim_ceiling_ref: council.public_egress_control
+    source_refs:
+      - config/omg-lol.yaml
+      - docs/repo-pres/2026-07-08-public-copy-rewrite-matrix-plan.md
+    publication_gate_context: omg_legacy_guarded_surface
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - surface_id: omg.now_and_credits
+    surface_type: omg_templates
+    path_globs:
+      - agents/omg_now_sync/templates/now.md.j2
+      - agents/omg_credits_publisher/templates/credits.html.j2
+    claim_ceiling_ref: council.public_egress_control
+    source_refs:
+      - config/omg-lol.yaml
+      - docs/repo-pres/2026-07-08-public-copy-rewrite-matrix-plan.md
+    publication_gate_context: omg_legacy_guarded_surface
+    freshness_ttl_s: 1800
+    stale_behavior: degrade_or_block_live_claim
+
+  - surface_id: weblog.rss_fanout
+    surface_type: weblog_rss_fanout
+    path_globs:
+      - agents/weblog_publish_public_event_producer.py
+      - agents/publication_bus/omg_rss_fanout.py
+      - config/omg-lol-fanout.yaml
+      - agents/self_federate/rss_validator.py
+    claim_ceiling_ref: council.publication_bus_receipts_only
+    source_refs:
+      - docs/repo-pres/2026-07-08-public-copy-rewrite-matrix-plan.md
+      - config/omg-lol-fanout.yaml
+    publication_gate_context: publication_bus_fanout
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - surface_id: obsidian.publish.home
+    surface_type: obsidian_publish
+    path_globs:
+      - config/obsidian-publish/Home.md
+      - scripts/hapax-obsidian-publish-sync
+      - systemd/units/hapax-obsidian-publish-sync.timer
+    claim_ceiling_ref: council.public_egress_control
+    source_refs:
+      - config/obsidian-publish/Home.md
+      - docs/repo-pres/2026-07-08-public-copy-rewrite-matrix-plan.md
+    publication_gate_context: obsidian_publish_sync
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - surface_id: publication.drafts
+    surface_type: publication_drafts
+    path_globs:
+      - docs/publication-drafts/**/*.md
+      - docs/publication-drafts/**/*.yaml
+      - docs/publication-drafts/**/*.yml
+    claim_ceiling_ref: council.draft_not_public_current
+    source_refs:
+      - docs/repo-pres/2026-07-08-public-copy-rewrite-matrix-plan.md
+    publication_gate_context: draft_quarantine
+    freshness_ttl_s: 1800
+    stale_behavior: archive_only_or_recheck
+
+  - surface_id: repo_pres.archive_scaffolds
+    surface_type: repo_presentation_archive
+    path_globs:
+      - docs/repo-pres/dot-github-scaffold/**/*.md
+      - docs/repo-pres/wiki-axiom-registry/**/*.md
+    claim_ceiling_ref: council.archive_not_current_copy
+    source_refs:
+      - docs/repo-pres/2026-07-08-public-copy-rewrite-matrix-plan.md
+    publication_gate_context: archive_only
+    freshness_ttl_s: 1800
+    stale_behavior: archive_only_or_recheck

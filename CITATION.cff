@@ -2,9 +2,9 @@ cff-version: 1.2.0
 message: If you use this software in your research, please cite it as below.
 type: software
 title: hapax-council
-abstract: Source-visible Hapax Systems research/runtime artifact for studying governed
-  AI-agent work, public claim discipline, refusal, and publication-bus egress under
-  a single-operator system.
+abstract: 'Source-visible Hapax Systems research/runtime for evidence-bound AI-agent
+  delivery: governed dispatch, route receipts, claim review, refusal, and publication-egress
+  controls in a single-operator estate.'
 authors:
 - name: Hapax Systems
 repository-code: https://github.com/hapax-systems/hapax-council
@@ -13,9 +13,10 @@ license: PolyForm-Strict-1.0.0
 keywords:
 - research-software
 - single-operator
-- philosophy-of-science
-- governance
-- infrastructure-as-argument
+- governed-sdlc
+- claim-authority
+- publication-egress
+- refusal-systems
 doi: 10.5281/zenodo.20113515
 identifiers:
 - type: doi

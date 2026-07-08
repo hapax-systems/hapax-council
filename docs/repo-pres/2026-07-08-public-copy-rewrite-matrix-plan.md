@@ -219,6 +219,70 @@ Known license/copy blockers:
 - `hapax-coord` root has only README while metadata-owner carries PolyForm and
   generated boundaries.
 
+2026-07-08 follow-up readback:
+
+- `hapax-constitution` is the remaining true license-authority blocker: remote
+  main still has an Apache-2.0 root `LICENSE` while rendered public metadata
+  declares a split CC BY-NC-ND specification/publication posture plus
+  Apache-2.0 tooling. Do not treat downstream generated license copy as final
+  until the split-license authority is implemented, not merely described.
+- The watch, phone, and coord license/copy mismatches were confirmed in stale
+  local worktrees, while current default branches carry the generated PolyForm
+  metadata. Treat them as rebase/merge-result verification blockers rather
+  than new legal decisions unless a PR would regress those files.
+- GitHub license detection for PolyForm and BSL repos may report `NOASSERTION`;
+  public-surface gates should prove the repo authority files and set expected
+  detection behavior rather than claiming GitHub's detected license aligns.
+
+2026-07-08 landing-slice readback (multi-agent recon, workflow
+wf_49a0482f-006, 61 agents; fixes landed on this branch):
+
+- `public_surface_freshness` is now a member of the `all-green` required
+  aggregate and of `hooks/gate-manifest.yaml` ci.jobs, so the registry check
+  is merge-blocking. It still validates registry structure only; content
+  claim checks and stale predicates remain outside CI (docs-only paths can
+  change root `*.md` without a claim scan).
+- `check-public-surface-claims.py` carries a hardcoded, non-expiring waiver
+  for exactly the constitution Apache-vs-CC-BY-NC-ND drift. Delete the waiver
+  as part of the split-license implementation, not before.
+- Marker families diverge: the constitution renderer emits
+  `hapax-sdlc:preamble` markers while this plan specifies
+  `hapax-public:surface=<id>`. Converge on one family before flipping
+  `generated_section_required`.
+- The reconcile engine required every drift category to appear yet emitted
+  findings only on drift, so a healthier estate invalidated the report
+  (`contributing_governance` vanished when GOVERNANCE.md landed). Fixed:
+  every required category now carries a positive `ok` witness when clean.
+- Fresh reconcile (2026-07-08) confirms `reins` license detection is
+  `NOASSERTION` against registry `BUSL-1.1`. Needed mechanism: an
+  `expected_github_license_detection` field in `repo-registry.yaml` plus an
+  authority-file-presence check in `shared/github_public_surface.py`,
+  replacing the raw detected-vs-policy comparison.
+- Public clip egress attributed content to `hapax.github.io`, which belongs
+  to an unrelated third-party GitHub account; re-pointed to
+  `https://hapax.weblog.lol` with the sponsors/dead rails replaced by the
+  no-perk support page. `agents/citable_nexus/renderer.py` still assumes
+  `https://hapax.research` as canonical, and that domain does not resolve —
+  settle the canonical domain before publishing citable-nexus pages.
+- Live org-profile blockers confirmed: the profile asserts the constitution
+  split license (live root LICENSE is Apache-2.0) and calls private
+  `hapax-spine` source-available. Regenerate the profile after the
+  split-license landing and spine posture decision.
+- `ryanklee/ryanklee` profile README carries now-false claims (hapax-mcp,
+  watch, and phone described as private; retired Gemini-CLI coordination
+  claims). P0 remediation independent of this branch.
+- Renderer wording fixes are global but only council and spine are
+  re-rendered here; constitution main, agentgov, and the org profile still
+  serve superseded copy (including "Past advisories: None to date").
+  Schedule a re-render wave across the remaining targets after this lands.
+
+Next control increments, in dependency order: (1) enum/ref validation for
+registry `stale_behavior`/`claim_ceiling_ref` values; (2) registry↔freshness
+envelope surface-id join; (3) marker emission in the constitution renderer;
+(4) flip `generated_section_required`; (5) registry-driven stale predicates in
+the full gate; (6) gate-manifest/release/autoqueue public-copy wiring;
+(7) publication-bus frontmatter invariants plus readback receipts.
+
 ## Freshness And Accuracy Mechanics
 
 Existing pieces:
@@ -236,6 +300,9 @@ Gaps:
   `sdlc/render/repos.yaml`, and council `docs/repo-pres/repo-registry.yaml`.
 - Current GitHub and omg/weblog reports can become stale and should not support
   current/live claims without refresh.
+- The checked-in GitHub public-surface reconcile can lag default branches and
+  omit repos such as coord/spine; current/live public-copy claims require a
+  fresh reconcile that includes every intended public repo.
 - Public-copy checks can be skipped by docs-only paths.
 - `check-public-surface-claims.py` does not yet discover README/profile/package,
   release, Obsidian, and rendered constitution surfaces from a registry.

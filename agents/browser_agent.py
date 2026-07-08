@@ -6,7 +6,7 @@ module now fails closed instead of posting directives to an absent consumer.
 
 Usage:
     uv run python -m agents.browser_agent --task "check PR 145"
-    uv run python -m agents.browser_agent --url "https://github.com/ryanklee/hapax-council/pull/145"
+    uv run python -m agents.browser_agent --url "https://github.com/hapax-systems/hapax-council/pull/145"
 """
 
 from __future__ import annotations

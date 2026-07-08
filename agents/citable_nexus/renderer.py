@@ -226,7 +226,7 @@ def render_cite_page() -> PageMeta:
         <section class="cff-note">
             <h2>CITATION.cff</h2>
             <p>The canonical CITATION.cff lives in the
-                <a href="https://github.com/ryanklee/hapax-council">hapax-council</a> repo
+                <a href="https://github.com/hapax-systems/hapax-council">hapax-council</a> repo
                 root and is the authoritative source for the GitHub citation widget.</p>
         </section>
     </main>"""

@@ -158,7 +158,7 @@ class TestRenderFooter:
         today = datetime(2026, 4, 25, tzinfo=UTC)
         out = render_footer([], today=today)
         assert "docs/refusal-briefs/" in out
-        assert "github.com/ryanklee/hapax-council" in out
+        assert "github.com/hapax-systems/hapax-council" in out
 
 
 # ── inject_footer ──────────────────────────────────────────────────────
