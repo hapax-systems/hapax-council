@@ -241,6 +241,39 @@ async def test_run_agent_tool_refuses_before_subprocess_without_cockpit_admissio
     subprocess_mock.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_run_shell_command_refuses_agent_module_without_cockpit_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = create_chat_agent()
+    run_shell_tool = agent._function_toolset.tools["run_shell_command"].function
+    ctx = SimpleNamespace(deps=ChatDeps(project_dir=tmp_path))
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(tmp_path / "missing-ledger.json"))
+
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as subprocess_mock:
+        result = await run_shell_tool(ctx, "uv run python -m agents.briefing")
+
+    assert "Agent admission refused:" in result
+    assert "cockpit_agent_capability_admission_refused" in result
+    subprocess_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_shell_command_refuses_health_monitor_dry_run_before_subprocess(
+    tmp_path: Path,
+) -> None:
+    agent = create_chat_agent()
+    run_shell_tool = agent._function_toolset.tools["run_shell_command"].function
+    ctx = SimpleNamespace(deps=ChatDeps(project_dir=tmp_path))
+
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as subprocess_mock:
+        result = await run_shell_tool(ctx, "uv run python -m agents.health_monitor --dry-run")
+
+    assert "Agent admission refused:" in result
+    assert "runtime_mutation_flag:--dry-run" in result
+    subprocess_mock.assert_not_called()
+
+
 # ── format_conversation_export tests ───────────────────────────────────────
 
 

@@ -85,6 +85,16 @@ def _prepare_agent_command_for_chat(
     return shlex.split(agent_info.command) + flag_args, None
 
 
+def _shell_agent_invocation(parts: list[str]) -> tuple[str, list[str]] | None:
+    """Return cockpit agent name and flags for `uv run python -m agents.*` commands."""
+    if len(parts) < 5 or parts[:4] != ["uv", "run", "python", "-m"]:
+        return None
+    module = parts[4]
+    if not module.startswith("agents."):
+        return None
+    return module.removeprefix("agents.").replace("_", "-"), parts[5:]
+
+
 # ── System prompt ────────────────────────────────────────────────────────────
 
 BASE_SYSTEM_PROMPT = """\
@@ -415,6 +425,28 @@ def create_chat_agent(model_alias: str = "balanced") -> Agent[ChatDeps, str]:
 
         try:
             parts = shlex.split(cmd)
+            shell_agent = _shell_agent_invocation(parts)
+            if shell_agent is not None:
+                from logos.data.agents import get_agent_registry
+
+                name, flag_args = shell_agent
+                registry = {a.name: a for a in get_agent_registry()}
+                agent_info = registry.get(name)
+                if not agent_info:
+                    return (
+                        f"Agent admission refused: untracked chat shell agent command: {name}; "
+                        "next_action=register cockpit capability metadata before retrying "
+                        "guarded chat shell execution"
+                    )
+                admitted_cmd, admission_error = _prepare_agent_command_for_chat(
+                    name,
+                    agent_info,
+                    " ".join(shlex.quote(arg) for arg in flag_args),
+                )
+                if admission_error:
+                    return admission_error
+                parts = admitted_cmd
+
             proc = await asyncio.create_subprocess_exec(
                 *parts,
                 cwd=str(ctx.deps.project_dir),

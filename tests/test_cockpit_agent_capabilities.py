@@ -228,14 +228,15 @@ def test_runtime_mutation_flag_refuses_evidence_waiver() -> None:
     assert "runtime_mutation_flag:--fix" in admission.reason_codes
 
 
-def test_health_monitor_apply_refuses_evidence_waiver() -> None:
-    admission = admit_cockpit_agent_invocation("health-monitor", flags=("--apply",))
+@pytest.mark.parametrize("flag", ("--apply", "--dry-run"))
+def test_health_monitor_fix_pipeline_flags_refuse_evidence_waiver(flag: str) -> None:
+    admission = admit_cockpit_agent_invocation("health-monitor", flags=(flag,))
 
     assert admission.admitted is False
     assert admission.requires_admission is True
     assert admission.receipts == ()
     assert "non_read_only_invocation_requires_route_receipt" in admission.reason_codes
-    assert "runtime_mutation_flag:--apply" in admission.reason_codes
+    assert f"runtime_mutation_flag:{flag}" in admission.reason_codes
 
 
 def test_llm_runtime_mutation_flag_refuses_before_provider_admission() -> None:
@@ -485,7 +486,8 @@ def test_chat_agent_helper_allows_deterministic_evidence_run() -> None:
     assert command == ["uv", "run", "python", "-m", "agents.health_monitor"]
 
 
-def test_chat_agent_helper_refuses_health_monitor_apply() -> None:
+@pytest.mark.parametrize("flag", ("--apply", "--dry-run"))
+def test_chat_agent_helper_refuses_health_monitor_fix_pipeline_flags(flag: str) -> None:
     from logos.chat_agent import _prepare_agent_command_for_chat
     from logos.data.agents import AgentInfo
 
@@ -499,13 +501,13 @@ def test_chat_agent_helper_refuses_health_monitor_apply() -> None:
             model_alias=None,
             module="agents.health_monitor",
         ),
-        "--apply",
+        flag,
     )
 
     assert command == []
     assert error is not None
     assert "cockpit_agent_capability_admission_refused" in error
-    assert "runtime_mutation_flag:--apply" in error
+    assert f"runtime_mutation_flag:{flag}" in error
 
 
 def test_chat_agent_helper_generic_admission_failure_fails_closed(
@@ -891,7 +893,7 @@ async def test_llm_flag_overlay_cockpit_run_refuses_before_subprocess(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("flag", ("--fix", "--apply"))
+@pytest.mark.parametrize("flag", ("--fix", "--apply", "--dry-run"))
 async def test_runtime_mutation_flag_cockpit_run_refuses_before_subprocess(
     monkeypatch: pytest.MonkeyPatch, flag: str
 ) -> None:
