@@ -191,6 +191,7 @@ def _config(
     required_gates: list[str] | None = None,
     gate_policy_error: str | None = None,
     publication_policy_verified: bool = True,
+    expected_head_sha: str | None = None,
 ) -> OmgFanoutConfig:
     return OmgFanoutConfig(
         addresses=addresses if addresses is not None else ["hapax", "oudepode"],
@@ -199,6 +200,7 @@ def _config(
         else list(FANOUT_REQUIRED_GATES),
         gate_policy_error=gate_policy_error,
         publication_policy_verified=publication_policy_verified,
+        expected_head_sha=expected_head_sha,
     )
 
 
@@ -211,6 +213,17 @@ class TestLoadFanoutConfig:
         assert config.required_gates == list(FANOUT_REQUIRED_GATES)
         assert config.gate_policy_error is None
         assert config.publication_policy_verified is True
+
+    def test_loads_expected_head_sha(self, tmp_path: Path) -> None:
+        path = tmp_path / "fanout.yaml"
+        path.write_text(
+            _fanout_policy_yaml() + "expected_head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+            "addresses:\n"
+            "  - hapax\n"
+            "  - oudepode\n"
+        )
+        config = load_fanout_config(path=path)
+        assert config.expected_head_sha == "a" * 40
 
     def test_incomplete_gate_policy_is_fail_closed(self, tmp_path: Path) -> None:
         path = tmp_path / "fanout.yaml"
@@ -485,6 +498,20 @@ class TestFanout:
             config=config,
             client=client,
             gate_receipts=_unbound_gate_receipts(),
+        )
+        assert result == {"oudepode": "gate-blocked"}
+        client.set_entry.assert_not_called()
+
+    def test_gate_receipts_for_unexpected_head_block_before_public_egress(self) -> None:
+        client = _make_client()
+        config = _config(expected_head_sha="b" * 40)
+        result = fanout(
+            source_address="hapax",
+            entry_id="entry-1",
+            content="hello",
+            config=config,
+            client=client,
+            gate_receipts=_gate_receipts(),
         )
         assert result == {"oudepode": "gate-blocked"}
         client.set_entry.assert_not_called()

@@ -78,6 +78,34 @@ def _write_review_evidence(
     )
 
 
+def _write_acceptance_evidence(
+    *,
+    receipt_name: str,
+    gate: str = GATE,
+    head_sha: str = "a" * 40,
+) -> None:
+    authority_root = public_gate_receipts._public_gate_authority_roots()[0]
+    authority_root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "verdict": "accepted",
+        "timestamp": "2026-07-08T00:00:00Z",
+        "artifact": "public-gate-test",
+        "head_sha": head_sha,
+        "gate_id": gate,
+        "authorized_public_gate_receipts": [f"public-gate:{receipt_name}"],
+        "authority_issuer": "claim-verification-council",
+        "acceptor": "claim-verification-council",
+    }
+    payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
+        payload,
+        AUTHORITY_SECRET,
+    )
+    (authority_root / f"{TASK_ID}.acceptance.yaml").write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
 def _receipt_text(*, gate: str = GATE, status: str = "passed", extra: str = "") -> str:
     return f"gate_id: {gate}\nstatus: {status}\n{AUTHORITY_BLOCK}{extra}"
 
@@ -327,6 +355,55 @@ def test_rejects_review_dossier_without_current_head_binding(tmp_path: Path) -> 
         "public-gate:receipt-1.yaml",
         expected_gate=GATE,
         roots=(tmp_path,),
+    )
+
+
+def test_rejects_signed_review_dossier_for_unexpected_head(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+
+    assert public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+        expected_head_sha="a" * 40,
+    )
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+        expected_head_sha="b" * 40,
+    )
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+        expected_head_sha="not-a-head",
+    )
+
+
+def test_rejects_signed_acceptance_receipt_for_unexpected_head(tmp_path: Path) -> None:
+    (tmp_path / "receipt-1.yaml").write_text(
+        f"gate_id: {GATE}\n"
+        "status: passed\n"
+        "authority_case: CASE-PUBLIC-EGRESS-TEST\n"
+        "acceptor: claim-verification-council\n"
+        "review_profile: claim_verification_council_public_egress\n"
+        f"evidence_ref: acceptance-receipt:{TASK_ID}\n",
+        encoding="utf-8",
+    )
+    _write_acceptance_evidence(receipt_name="receipt-1.yaml")
+
+    assert public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+        expected_head_sha="a" * 40,
+    )
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+        expected_head_sha="b" * 40,
     )
 
 

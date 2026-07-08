@@ -38,7 +38,10 @@ from prometheus_client import Counter
 from shared.public_gate_receipts import (
     PUBLIC_GATE_RECEIPT_PREFIXES as _PUBLIC_GATE_RECEIPT_PREFIXES,
 )
-from shared.public_gate_receipts import public_gate_receipt_value_present
+from shared.public_gate_receipts import (
+    public_gate_expected_head_sha_from_mapping,
+    public_gate_receipt_value_present,
+)
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +100,7 @@ class OmgFanoutConfig:
     required_gates: list[str] = field(default_factory=lambda: list(FANOUT_REQUIRED_GATES))
     gate_policy_error: str | None = None
     publication_policy_verified: bool = False
+    expected_head_sha: str | None = None
 
 
 def load_fanout_config(*, path: Path = DEFAULT_CONFIG_PATH) -> OmgFanoutConfig:
@@ -118,11 +122,17 @@ def load_fanout_config(*, path: Path = DEFAULT_CONFIG_PATH) -> OmgFanoutConfig:
     required_gates, gate_policy_error, publication_policy_verified = _configured_required_gates(
         raw.get("publication_frontmatter_policy")
     )
+    expected_head_sha = public_gate_expected_head_sha_from_mapping(raw)
+    if expected_head_sha is None:
+        expected_head_sha = public_gate_expected_head_sha_from_mapping(
+            raw.get("publication_frontmatter_policy")
+        )
     return OmgFanoutConfig(
         addresses=addresses,
         required_gates=required_gates,
         gate_policy_error=_join_policy_errors(address_policy_error, gate_policy_error),
         publication_policy_verified=publication_policy_verified,
+        expected_head_sha=expected_head_sha,
     )
 
 
@@ -273,12 +283,14 @@ def _receipt_value_present(
     value: object,
     *,
     bindings: Mapping[str, object] | None = None,
+    expected_head_sha: str | None = None,
 ) -> bool:
     return public_gate_receipt_value_present(
         value,
         expected_gate=gate,
         roots=PUBLIC_GATE_RECEIPT_ROOTS,
         bindings=bindings,
+        expected_head_sha=expected_head_sha,
     )
 
 
@@ -287,12 +299,18 @@ def _missing_gate_receipts(
     gate_receipts: Mapping[str, object] | None,
     *,
     bindings: Mapping[str, object] | None = None,
+    expected_head_sha: str | None = None,
 ) -> list[str]:
     receipts = gate_receipts or {}
     return sorted(
         gate
         for gate in required_gates
-        if not _receipt_value_present(gate, receipts.get(gate), bindings=bindings)
+        if not _receipt_value_present(
+            gate,
+            receipts.get(gate),
+            bindings=bindings,
+            expected_head_sha=expected_head_sha,
+        )
     )
 
 
@@ -426,6 +444,7 @@ def fanout(
         required_gates,
         gate_receipts,
         bindings=receipt_bindings,
+        expected_head_sha=config.expected_head_sha,
     )
     if missing_receipts:
         missing_text = ", ".join(missing_receipts)

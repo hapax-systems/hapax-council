@@ -84,7 +84,10 @@ from shared.preprint_artifact import ApprovalState, PreprintArtifact
 from shared.public_gate_receipts import (
     PUBLIC_GATE_RECEIPT_PREFIXES as _PUBLIC_GATE_RECEIPT_PREFIXES,
 )
-from shared.public_gate_receipts import public_gate_receipt_value_present
+from shared.public_gate_receipts import (
+    public_gate_expected_head_sha_from_mapping,
+    public_gate_receipt_value_present,
+)
 
 log = logging.getLogger(__name__)
 
@@ -482,12 +485,14 @@ def _receipt_value_present(
     value: object,
     *,
     bindings: Mapping[str, object] | None = None,
+    expected_head_sha: str | None = None,
 ) -> bool:
     return public_gate_receipt_value_present(
         value,
         expected_gate=gate,
         roots=PUBLIC_GATE_RECEIPT_ROOTS,
         bindings=bindings,
+        expected_head_sha=expected_head_sha,
     )
 
 
@@ -496,13 +501,19 @@ def _assert_publication_gate_receipts(
     surfaces: list[str],
     *,
     bindings: Mapping[str, object] | None = None,
+    expected_head_sha: str | None = None,
 ) -> None:
     required = _required_publication_gate_receipts(surfaces)
     receipts = _publication_gate_receipts(frontmatter)
     missing = sorted(
         gate
         for gate in required
-        if not _receipt_value_present(gate, receipts.get(gate), bindings=bindings)
+        if not _receipt_value_present(
+            gate,
+            receipts.get(gate),
+            bindings=bindings,
+            expected_head_sha=expected_head_sha,
+        )
     )
     if missing:
         raise PublicationGateError(
@@ -579,6 +590,7 @@ def _build_artifact(
         frontmatter,
         surfaces,
         bindings=_publication_gate_receipt_bindings(artifact),
+        expected_head_sha=_publication_gate_expected_head_sha(artifact),
     )
     return artifact
 
@@ -589,6 +601,10 @@ def _publication_gate_receipt_bindings(artifact: PreprintArtifact) -> dict[str, 
         "artifact_fingerprint": _artifact_fingerprint_for_gate(artifact),
         "target_surfaces": tuple(sorted(artifact.surfaces_targeted)),
     }
+
+
+def _publication_gate_expected_head_sha(artifact: PreprintArtifact) -> str | None:
+    return public_gate_expected_head_sha_from_mapping(artifact.publication_gate_context)
 
 
 def _artifact_fingerprint_for_gate(artifact: PreprintArtifact) -> str:

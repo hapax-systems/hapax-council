@@ -280,6 +280,7 @@ class TestBuildArtifact:
             body_md="Body",
             frontmatter=_allowed_frontmatter(
                 publication_gate_context={
+                    "expected_head_sha": "a" * 40,
                     "numeric_expectations": {"42 hooks": 42},
                     "currentness_evidence_refs": ["receipt:hn-readiness"],
                 },
@@ -293,6 +294,7 @@ class TestBuildArtifact:
         )
 
         assert artifact.publication_gate_context == {
+            "expected_head_sha": "a" * 40,
             "numeric_expectations": {"42 hooks": 42},
             "currentness_evidence_refs": ["receipt:hn-readiness"],
             "publication_gate_receipts": PUBLICATION_GATE_RECEIPTS,
@@ -301,6 +303,17 @@ class TestBuildArtifact:
             "by_referent": "Oudepode",
             "reason": "Reviewed receipts",
         }
+
+    def test_rejects_publication_gate_receipts_for_unexpected_head(self) -> None:
+        with pytest.raises(publish_vault_artifact.PublicationGateError):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(
+                    publication_gate_context={"expected_head_sha": "b" * 40},
+                ),
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+            )
 
     def test_requires_explicit_publication_allowed(self) -> None:
         with pytest.raises(publish_vault_artifact.PublicationGateError):

@@ -67,7 +67,10 @@ from shared.preprint_artifact import (
     ApprovalState,
     PreprintArtifact,
 )
-from shared.public_gate_receipts import public_gate_receipt_value_present
+from shared.public_gate_receipts import (
+    public_gate_expected_head_sha_from_mapping,
+    public_gate_receipt_value_present,
+)
 from shared.publication_artifact_public_event import (
     PublicationArtifactEventStage,
     build_publication_artifact_public_event,
@@ -605,6 +608,7 @@ class Orchestrator:
         )
         receipts, error = _artifact_publication_gate_receipts(artifact)
         bindings = _publication_gate_receipt_bindings(artifact)
+        expected_head_sha = _publication_gate_expected_head_sha(artifact)
         findings = (error,) if error is not None else ()
         if policy_error is not None:
             findings = (*findings, policy_error)
@@ -616,6 +620,7 @@ class Orchestrator:
                 expected_gate=gate,
                 roots=self._public_gate_receipt_roots,
                 bindings=bindings,
+                expected_head_sha=expected_head_sha,
             )
         )
         if missing:
@@ -1464,6 +1469,10 @@ def _publication_gate_receipt_bindings(artifact: PreprintArtifact) -> dict[str, 
         "artifact_fingerprint": _artifact_fingerprint(artifact),
         "target_surfaces": tuple(sorted(artifact.surfaces_targeted)),
     }
+
+
+def _publication_gate_expected_head_sha(artifact: PreprintArtifact) -> str | None:
+    return public_gate_expected_head_sha_from_mapping(artifact.publication_gate_context)
 
 
 def _artifact_fingerprint(artifact: PreprintArtifact) -> str:

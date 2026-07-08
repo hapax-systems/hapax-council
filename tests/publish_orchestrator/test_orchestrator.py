@@ -889,6 +889,52 @@ class TestSingleSurface:
         assert gate_log["publication_gate_decision"] == "hold"
         assert any("rights_privacy_redaction_pass" in issue for issue in gate_log["flagged_issues"])
 
+    def test_public_gate_receipts_for_unexpected_head_hold_before_surface_dispatch(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+        artifact = PreprintArtifact(
+            slug="stale-head-public-receipt",
+            title="Stale Head Public Receipt",
+            abstract="Brief.",
+            body_md="Body.",
+            surfaces_targeted=["fake"],
+        )
+        artifact.mark_approved(by_referent="Oudepode")
+        artifact.publication_gate_context = {
+            "publication_gate_receipts": _write_public_gate_receipts(tmp_path, artifact),
+            "expected_head_sha": "b" * 40,
+        }
+        inbox_path = artifact.inbox_path(state_root=tmp_path)
+        inbox_path.parent.mkdir(parents=True, exist_ok=True)
+        inbox_path.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
+
+        review_pass = _CountingReviewPass()
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=review_pass,
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        assert review_pass.calls == 0
+        fake_module.publish_artifact.assert_not_called()
+        gate_log = json.loads(
+            (
+                tmp_path / "publish/log/stale-head-public-receipt.publication-hardening-gate.json"
+            ).read_text()
+        )
+        assert gate_log["result"] == "operator_hold"
+        assert gate_log["publication_gate_decision"] == "hold"
+        assert any("claim_review_current" in issue for issue in gate_log["flagged_issues"])
+
     def test_malformed_fanout_policy_status_holds_before_surface_dispatch(
         self,
         tmp_path,

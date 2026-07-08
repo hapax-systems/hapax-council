@@ -2070,6 +2070,7 @@ public_gate_authority:
             },
             authority_roots=(note.parent,),
             authority_secret=secret,
+            expected_head_sha="c" * 40,
         )
 
     def test_review_evidence_authorizes_declared_fanout_public_gate_receipt(
@@ -2147,6 +2148,7 @@ public_gate_authority:
             },
             authority_roots=(note.parent,),
             authority_secret=secret,
+            expected_head_sha="c" * 40,
         )
 
     def test_comment_failure_does_not_skip_acceptance_receipt(self, tmp_path: Path) -> None:
