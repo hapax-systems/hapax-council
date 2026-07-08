@@ -485,6 +485,29 @@ def test_chat_agent_helper_allows_deterministic_evidence_run() -> None:
     assert command == ["uv", "run", "python", "-m", "agents.health_monitor"]
 
 
+def test_chat_agent_helper_refuses_health_monitor_apply() -> None:
+    from logos.chat_agent import _prepare_agent_command_for_chat
+    from logos.data.agents import AgentInfo
+
+    command, error = _prepare_agent_command_for_chat(
+        "health-monitor",
+        AgentInfo(
+            name="health-monitor",
+            uses_llm=False,
+            description="Health monitor",
+            command="uv run python -m agents.health_monitor",
+            model_alias=None,
+            module="agents.health_monitor",
+        ),
+        "--apply",
+    )
+
+    assert command == []
+    assert error is not None
+    assert "cockpit_agent_capability_admission_refused" in error
+    assert "runtime_mutation_flag:--apply" in error
+
+
 def test_chat_agent_helper_generic_admission_failure_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -868,8 +891,9 @@ async def test_llm_flag_overlay_cockpit_run_refuses_before_subprocess(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("flag", ("--fix", "--apply"))
 async def test_runtime_mutation_flag_cockpit_run_refuses_before_subprocess(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, flag: str
 ) -> None:
     from logos.api.app import app
     from logos.api.cache import cache
@@ -894,13 +918,13 @@ async def test_runtime_mutation_flag_cockpit_run_refuses_before_subprocess(
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/api/agents/health-monitor/run",
-            json={"flags": ["--fix"]},
+            json={"flags": [flag]},
         )
 
     assert response.status_code == 403
     detail = response.json()["detail"]
     assert "cockpit_agent_capability_admission_refused" in detail
-    assert "runtime_mutation_flag:--fix" in detail
+    assert f"runtime_mutation_flag:{flag}" in detail
     run_mock.assert_not_called()
 
 
