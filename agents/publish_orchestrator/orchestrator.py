@@ -146,6 +146,14 @@ PUBLIC_EVENT_PATH = Path(
     )
 )
 
+
+def _send_operator_notification(title: str, message: str, **kwargs: object) -> bool:
+    """Best-effort operator notification wrapper, lazy-loaded for testability."""
+    from shared.notify import send_notification
+
+    return send_notification(title, message, **kwargs)
+
+
 _SUCCESS_RESULTS = frozenset({"ok"})
 """Only these results count as a real publication."""
 
@@ -280,6 +288,7 @@ class Orchestrator:
         public_gate_receipt_roots: tuple[Path, ...] | None = None,
         public_gate_expected_head_sha: str | None = None,
         publication_allowed_surfaces: set[str] | None = None,
+        operator_notify: Callable[..., object] | None = None,
         registry: CollectorRegistry = REGISTRY,
         tick_s: float = DEFAULT_TICK_S,
         max_workers: int = 8,
@@ -309,6 +318,7 @@ class Orchestrator:
             if publication_allowed_surfaces is not None
             else None
         )
+        self._operator_notify = operator_notify or _send_operator_notification
         self._source_path_roots = tuple(
             root.expanduser().resolve()
             for root in (self._state_root, *PUBLICATION_SOURCE_PATH_ROOTS)
@@ -493,6 +503,7 @@ class Orchestrator:
                         log_path,
                         type(exc).__name__,
                     )
+                    self._notify_corrupt_surface_log(artifact, surface, log_path, exc)
                     result = "corrupt_surface_log"
                     prior_results[surface] = result
                     self._record_result(
@@ -584,6 +595,37 @@ class Orchestrator:
         except Exception:  # noqa: BLE001
             log.exception("publisher %s raised for artifact %s", surface, artifact.slug)
             return "error"
+
+    def _notify_corrupt_surface_log(
+        self,
+        artifact: PreprintArtifact,
+        surface: str,
+        log_path: Path,
+        exc: Exception,
+    ) -> None:
+        message = (
+            f"artifact={artifact.slug} surface={surface} path={log_path} "
+            f"error={type(exc).__name__}. Public egress failed closed. "
+            "Inspect or remove the corrupt surface log and re-drop the artifact only "
+            "after confirming no duplicate public egress occurred."
+        )
+        try:
+            self._operator_notify(
+                "Publication surface log corrupt",
+                message,
+                priority="high",
+                tags=["warning", "publication", "egress"],
+                technical=True,
+            )
+        except Exception:  # noqa: BLE001
+            log.warning(
+                "publication corrupt-surface-log operator notification failed "
+                "artifact=%s surface=%s path=%s",
+                artifact.slug,
+                surface,
+                log_path,
+                exc_info=True,
+            )
 
     def _with_public_gate_receipts_child(
         self,

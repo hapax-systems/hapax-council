@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from unittest import mock
 
@@ -283,6 +283,7 @@ def _make_orchestrator(
     *,
     surface_registry: dict[str, str],
     publication_allowed_surfaces: set[str] | None = None,
+    operator_notify: Callable[..., object] | None = None,
 ) -> Orchestrator:
     return Orchestrator(
         state_root=state_root,
@@ -292,6 +293,7 @@ def _make_orchestrator(
         else set(surface_registry),
         public_event_path=state_root / "public-events.jsonl",
         review_pass=_ApprovingReviewPass(),
+        operator_notify=operator_notify,
         registry=CollectorRegistry(),
     )
 
@@ -1403,9 +1405,11 @@ class TestSingleSurface:
         log_path = tmp_path / "publish/log/corrupt-log.fake.json"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text("{not-json", encoding="utf-8")
+        notify_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
         orch = _make_orchestrator(
             tmp_path,
             surface_registry={"fake": "fake_publisher:publish_artifact"},
+            operator_notify=lambda *args, **kwargs: notify_calls.append((args, kwargs)),
         )
 
         with caplog.at_level("WARNING", logger=orchestrator_module.__name__):
@@ -1416,6 +1420,12 @@ class TestSingleSurface:
         assert "failing closed" in caplog.text
         assert "confirming no duplicate public egress occurred" in caplog.text
         assert str(log_path) in caplog.text
+        assert notify_calls
+        assert notify_calls[0][0][0] == "Publication surface log corrupt"
+        assert "artifact=corrupt-log" in str(notify_calls[0][0][1])
+        assert "confirming no duplicate public egress occurred" in str(notify_calls[0][0][1])
+        assert notify_calls[0][1]["priority"] == "high"
+        assert notify_calls[0][1]["technical"] is True
         surface_log = json.loads(log_path.read_text())
         assert surface_log["result"] == "corrupt_surface_log"
         assert surface_log["artifact_fingerprint"] == _artifact_fingerprint(

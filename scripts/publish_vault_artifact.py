@@ -11,11 +11,8 @@ picks it up on the next 30s tick and fans out to every surface listed in
 
 ## Frontmatter contract
 
-The vault file's YAML frontmatter MUST include:
+The publication gate requires explicit clearance and durable gate receipts:
 
-  title: str           # used as PreprintArtifact.title
-  slug:  str           # used as filename + omg.lol entry slug
-  type:  str           # informational only
   Publication-Allowed: true  # explicit Claim Verification Council clearance
   publication_gate_receipts:
     source_artifact_public_safe: public-gate:my-artifact/source-safe.yaml
@@ -24,6 +21,12 @@ The vault file's YAML frontmatter MUST include:
     target_surface_allowlist_pass: public-gate:my-artifact/target-surfaces.yaml
     claim_review_current: public-gate:my-artifact/claim-review.yaml
     no_direct_public_egress: public-gate:my-artifact/no-direct-egress.yaml
+
+Recommended descriptive fields:
+
+  title: str           # used as PreprintArtifact.title; else heading/Untitled fallback
+  slug:  str           # used as filename + omg.lol entry slug; else title-derived
+  type:  str           # informational only
 
 The ``public-gate:...`` values above are examples of durable receipt refs under
 the configured public-gate receipt roots. They are not placeholders: each ref
