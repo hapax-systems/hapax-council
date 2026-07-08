@@ -1374,7 +1374,7 @@ checklist:
             lambda *args, **kwargs: DivergedGateEvent(),
         )
 
-        with pytest.raises(ValueError, match="diverged from gate-event producer"):
+        with pytest.raises(ValueError, match="gate_event_task_hash_diverged"):
             dispatch.review_task_hash({"task_id": "task-a"})
 
     def test_review_task_hash_rejects_malformed_stable_hash(
@@ -1382,35 +1382,60 @@ checklist:
     ) -> None:
         monkeypatch.setattr(dispatch, "stable_payload_hash", lambda _payload: "not-a-hash")
 
-        with pytest.raises(ValueError, match="stable frontmatter hash"):
+        with pytest.raises(ValueError, match="stable_frontmatter_hash_malformed"):
             dispatch.review_task_hash({"task_id": "task-a"})
 
-    def test_review_pr_omits_task_hash_when_hash_source_fails(
+    def test_review_pr_blocks_when_hash_source_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        class HashRecordingReviewers(RecordingReviewers):
-            def __init__(self) -> None:
-                super().__init__()
-                self.task_hashes: list[str | None] = []
-
-            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
-                self.task_hashes.append(family_cfg.get("_review_task_hash"))
-                return super().__call__(seat, family_cfg, prompt)
-
         def fail_hash(_frontmatter: dict[str, Any]) -> str:
-            raise ValueError("fixture hash divergence")
+            raise ValueError("gate_event_task_hash_diverged:fixture")
 
         monkeypatch.setattr(dispatch, "review_task_hash", fail_hash)
-        reviewers = HashRecordingReviewers()
-        result, _, _, note = _review(tmp_path, reviewers=reviewers)
-        dossier = yaml.safe_load(
-            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        reviewers = RecordingReviewers()
+        result, _, _, _note = _review(tmp_path, reviewers=reviewers)
+
+        assert result == {
+            "status": "task_hash_unavailable",
+            "pr": 42,
+            "task_id": "task-a",
+            "reason": "gate_event_task_hash_diverged:fixture",
+        }
+        assert reviewers.invocations == []
+
+    def test_review_pr_blocks_when_primary_task_hash_source_is_missing(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(
+            vault,
+            task_id="companion-task",
+            pr=42,
+            extra_frontmatter="primary_task: missing-primary-task",
+        )
+        reviewers = RecordingReviewers()
+
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
         )
 
-        assert result["status"] == "dispatched"
-        assert set(reviewers.task_hashes) == {None}
-        assert dossier["review_task_hash_omitted_reason"].startswith("task_hash_unavailable:")
-        assert "fixture hash divergence" in dossier["review_task_hash_omitted_reason"]
+        assert result == {
+            "status": "task_hash_unavailable",
+            "pr": 42,
+            "task_id": "companion-task",
+            "reason": "primary_task_hash_source_missing:missing-primary-task",
+        }
+        assert reviewers.invocations == []
 
     def test_pr_metadata_uses_rest_not_graphql_pr_view(self, tmp_path: Path) -> None:
         gh = FakeGh()

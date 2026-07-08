@@ -1447,7 +1447,7 @@ def default_reviewer_runner(
 def review_task_hash(frontmatter: dict[str, Any]) -> str:
     stable_hash = stable_payload_hash(frontmatter)
     if not TASK_HASH_RE.fullmatch(stable_hash):
-        raise ValueError("stable frontmatter hash must match sha256:<64 lowercase hex>")
+        raise ValueError("stable_frontmatter_hash_malformed")
     gate_event = build_gate_event(
         frontmatter,
         route="review-dispatch.task-hash-witness",
@@ -1456,8 +1456,8 @@ def review_task_hash(frontmatter: dict[str, Any]) -> str:
     )
     if gate_event.task_hash != stable_hash:
         raise ValueError(
-            "review task hash diverged from gate-event producer task_hash; "
-            "repair shared task_hash canonicalization before dispatching reviewers"
+            "gate_event_task_hash_diverged:repair shared task_hash canonicalization "
+            "before dispatching reviewers"
         )
     return stable_hash
 
@@ -1478,7 +1478,7 @@ def review_task_hash_frontmatter_source(
         or primary_frontmatter.get("type") != "cc-task"
         or str(primary_frontmatter.get("task_id") or "").strip() != primary_task
     ):
-        raise ValueError(f"primary_task hash source is not a readable cc-task note: {primary_task}")
+        raise ValueError(f"primary_task_hash_source_missing:{primary_task}")
     return primary_frontmatter, primary_task, primary_path.name
 
 
@@ -2618,14 +2618,17 @@ def review_pr(
             )
             task_hash = review_task_hash(source_frontmatter)
         except ValueError as exc:
-            task_hash_source_task_id = None
-            task_hash_source_note = None
-            task_hash_omitted_reason = f"task_hash_unavailable:{exc}"
             LOG.warning(
-                "PR #%d omitting review task_hash because the source hash could not be proven: %s",
+                "PR #%d blocked review dispatch because review task_hash could not be proven: %s",
                 pr_number,
                 exc,
             )
+            return {
+                "status": "task_hash_unavailable",
+                "pr": pr_number,
+                "task_id": task_ids[0],
+                "reason": str(exc),
+            }
     elif len(keyed_matches) > 1:
         task_hash_omitted_reason = f"ambiguous_task_notes:{len(keyed_matches)}"
         LOG.warning(
