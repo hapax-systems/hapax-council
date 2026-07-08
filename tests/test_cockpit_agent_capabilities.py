@@ -228,6 +228,16 @@ def test_runtime_mutation_flag_refuses_evidence_waiver() -> None:
     assert "runtime_mutation_flag:--fix" in admission.reason_codes
 
 
+def test_health_monitor_apply_refuses_evidence_waiver() -> None:
+    admission = admit_cockpit_agent_invocation("health-monitor", flags=("--apply",))
+
+    assert admission.admitted is False
+    assert admission.requires_admission is True
+    assert admission.receipts == ()
+    assert "non_read_only_invocation_requires_route_receipt" in admission.reason_codes
+    assert "runtime_mutation_flag:--apply" in admission.reason_codes
+
+
 def test_llm_runtime_mutation_flag_refuses_before_provider_admission() -> None:
     admission = admit_cockpit_agent_invocation(
         "knowledge-maint",
@@ -473,6 +483,65 @@ def test_chat_agent_helper_allows_deterministic_evidence_run() -> None:
 
     assert error is None
     assert command == ["uv", "run", "python", "-m", "agents.health_monitor"]
+
+
+def test_chat_agent_helper_generic_admission_failure_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from logos import chat_agent
+    from logos.data.agents import AgentInfo
+
+    def fail_admission(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(chat_agent, "require_cockpit_agent_admission", fail_admission)
+
+    command, error = chat_agent._prepare_agent_command_for_chat(
+        "briefing",
+        AgentInfo(
+            name="briefing",
+            uses_llm=True,
+            description="Daily operational briefing",
+            command="uv run python -m agents.briefing",
+            model_alias="fast",
+            module="agents.briefing",
+        ),
+        "",
+    )
+
+    assert command == []
+    assert error is not None
+    assert "cockpit_admission_unavailable:RuntimeError" in error
+
+
+def test_chat_agent_helper_allows_admitted_llm_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from logos.chat_agent import _prepare_agent_command_for_chat
+    from logos.data.agents import AgentInfo
+
+    monkeypatch.setenv(COCKPIT_ADMISSION_NOW_ENV, NOW_ISO)
+    monkeypatch.setenv(COCKPIT_QUOTA_SPEND_LEDGER_ENV, str(_write_fresh_ledger(tmp_path)))
+    monkeypatch.setenv(
+        COCKPIT_PLATFORM_CAPABILITY_REGISTRY_ENV, str(_write_fresh_registry(tmp_path))
+    )
+    monkeypatch.setenv(PLATFORM_CAPABILITY_RECEIPT_DIR_ENV, "none")
+
+    command, error = _prepare_agent_command_for_chat(
+        "briefing",
+        AgentInfo(
+            name="briefing",
+            uses_llm=True,
+            description="Daily operational briefing",
+            command="uv run python -m agents.briefing",
+            model_alias="fast",
+            module="agents.briefing",
+        ),
+        "--json",
+    )
+
+    assert error is None
+    assert command == ["uv", "run", "python", "-m", "agents.briefing", "--json"]
 
 
 def test_paid_llm_command_admits_with_fresh_gateway_and_budget(

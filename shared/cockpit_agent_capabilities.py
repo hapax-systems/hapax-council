@@ -302,8 +302,8 @@ COCKPIT_AGENT_CAPABILITIES: dict[str, CockpitAgentCapability] = {
     "health_monitor": _capability(
         "health_monitor",
         CockpitCommandClass.DETERMINISTIC_EVIDENCE,
-        waiver="default invocation observes stack health; --fix is a runtime mutation surface",
-        runtime_flags=("--fix",),
+        waiver="default invocation observes stack health; --fix/--apply are runtime mutation surfaces",
+        runtime_flags=("--fix", "--apply"),
     ),
     "introspect": _capability(
         "introspect",
