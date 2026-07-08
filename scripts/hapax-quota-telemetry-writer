@@ -9,7 +9,8 @@ checked-in ``config/quota-spend-ledger-fixtures.json`` snapshot.
 Each tick does two writes:
 
 1. Refresh the per-provider platform capability receipts (quota / resource /
-   capability surfaces) via ``scripts/hapax-platform-capability-receipts --all``.
+   capability surfaces) via
+   ``scripts/hapax-platform-capability-receipts --all --codex-exec-auth-probe``.
    The registry freshness check reads these; the quota surface carries
    ``stale_after=15m``, so the paired systemd timer fires inside that window to
    keep subscription routes from HOLDing on ``quota_telemetry_stale_or_unknown``.
@@ -65,10 +66,11 @@ Each tick does two writes:
 
 The output is validated through ``QuotaSpendLedger.model_validate`` before an
 atomic replace, so a bad tick can never clobber a good live ledger with junk.
-No secrets are persisted. GLMCP capability receipt refresh invokes
-``hapax-glmcp-reviewer --check``, which reads the pass-backed secret only to
-verify availability and records redacted availability metadata; the other probes
-are local files and nvidia-smi.
+No secrets are persisted. Capability receipt refresh performs bounded live route
+probes where the route requires them: GLMCP invokes ``hapax-glmcp-reviewer
+--check`` and Codex invokes the published-token ``codex exec`` auth witness.
+Both record redacted availability metadata only; local resource probes remain
+local files and nvidia-smi.
 """
 
 from __future__ import annotations
@@ -1496,12 +1498,20 @@ def refresh_capability_receipts(*, timeout: float) -> bool:
     """Refresh per-provider capability receipts; failure degrades, not aborts."""
 
     script = REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"
+    outer_timeout = max(timeout * 3, timeout + 15)
     try:
         result = subprocess.run(
-            [sys.executable, str(script), "--all"],
+            [
+                sys.executable,
+                str(script),
+                "--all",
+                "--codex-exec-auth-probe",
+                "--timeout",
+                str(timeout),
+            ],
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=outer_timeout,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         print(
