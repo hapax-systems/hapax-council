@@ -161,6 +161,21 @@ def test_match_requires_readback_hash() -> None:
         )
 
 
+def test_expires_at_must_match_checked_at_plus_ttl() -> None:
+    with pytest.raises(ValidationError, match="expires_at must equal checked_at plus ttl_s"):
+        PublicSurfaceFreshnessEnvelope(
+            surface_id="github.readme.hapax-systems/example.README.md",
+            surface_type="github.readme",
+            source_ref="fixture-source",
+            source_of_truth="fixture",
+            evidence_refs=("fixture-readback",),
+            checked_at=GENERATED_AT,
+            ttl_s=1_800,
+            expires_at="2030-01-01T00:00:00Z",
+            freshness_result="observed",
+        )
+
+
 def test_freshness_event_and_snapshot_are_witness_only(tmp_path: Path) -> None:
     snapshot = build_publication_freshness_snapshot(_github_envelopes(), generated_at=GENERATED_AT)
     event = build_publication_freshness_event(

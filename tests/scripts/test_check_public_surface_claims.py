@@ -159,9 +159,9 @@ def _freshness_envelope(**overrides: object) -> dict[str, object]:
         "source_ref": "docs/repo-pres/example.md",
         "source_of_truth": "fixture",
         "evidence_refs": ["fixture-readback"],
-        "checked_at": "2026-05-01T00:50:00Z",
+        "checked_at": "2030-01-01T00:00:00Z",
         "ttl_s": 1800,
-        "expires_at": "2030-01-01T00:00:00Z",
+        "expires_at": "2030-01-01T00:30:00Z",
         "freshness_result": "missing",
         "blocks": [],
     }

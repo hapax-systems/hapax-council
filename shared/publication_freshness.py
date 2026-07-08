@@ -125,6 +125,9 @@ class PublicSurfaceFreshnessEnvelope(PublicationFreshnessModel):
 
     @model_validator(mode="after")
     def _hash_claims_are_coherent(self) -> PublicSurfaceFreshnessEnvelope:
+        expected_expires_at = parse_iso_z(self.checked_at) + timedelta(seconds=self.ttl_s)
+        if self.expires_datetime() != expected_expires_at:
+            raise ValueError("expires_at must equal checked_at plus ttl_s")
         if self.freshness_result == "match" and not self.readback_hash:
             raise ValueError("match freshness requires a readback_hash")
         if (

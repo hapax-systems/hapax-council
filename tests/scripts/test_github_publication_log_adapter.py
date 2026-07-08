@@ -69,5 +69,5 @@ def test_adapter_appends_rows_and_reports_witness_only_summary(tmp_path: Path) -
         "output": str(output),
         "report": str(REPORT),
     }
-    assert not any(row["publication_state"] == "missing_or_private" for row in rows)
+    assert any(row["publication_state"] == "missing_or_private" for row in rows)
     assert any(row["surface"] == "package" for row in rows)

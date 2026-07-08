@@ -241,7 +241,7 @@ def events_from_github_public_surface_report(
             continue
         for path, file_info in sorted(repo.files.items()):
             surface = file_surface(repo, path)
-            if surface is None or not file_info.exists:
+            if surface is None:
                 continue
             events.append(
                 _file_event(
@@ -313,8 +313,8 @@ def classify_publication_log_payload(payload: Any) -> tuple[str, tuple[str, ...]
 def file_surface(repo: RepoLiveState, path: str) -> GitHubPublicationSurface | None:
     """Return the publication surface represented by a GitHub file path."""
 
-    if repo.repo_id == ORG_PROFILE_REPO_ID and path == ORG_PROFILE_README_PATH:
-        return "profile"
+    if repo.repo_id == ORG_PROFILE_REPO_ID:
+        return "profile" if path == ORG_PROFILE_README_PATH else None
     if path == "README.md":
         return "readme"
     if path in {"CITATION.cff", "codemeta.json", ".zenodo.json"}:
@@ -372,19 +372,23 @@ def _file_event(
     generated_at: str,
     source_refs: tuple[str, ...],
 ) -> GitHubPublicationLogEvent:
+    exists = file_info.exists
+    state: GitHubPublicationState = "public" if exists else "missing_or_private"
+    mode: GitHubPublicationMode = "public_archive" if exists else "private"
+    ref = repo.default_branch if exists else f"{repo.default_branch or 'default'}:{file_info.path}"
     return build_github_publication_event(
         repo=repo.repo_id,
         surface=surface,
         generated_at=generated_at,
         occurred_at=repo.pushed_at or generated_at,
-        commit_sha=repo.default_branch_sha,
-        content_sha=file_info.sha,
+        commit_sha=repo.default_branch_sha if exists else None,
+        content_sha=file_info.sha if exists else None,
         source_refs=source_refs,
         evidence_refs=(f"gh:contents/{repo.repo_id}/{file_info.path}",),
-        publication_state="public",
-        publication_mode="public_archive",
-        live_url=file_info.html_url or repo.html_url,
-        ref=repo.default_branch,
+        publication_state=state,
+        publication_mode=mode,
+        live_url=(file_info.html_url or repo.html_url) if exists else None,
+        ref=ref,
         surface_id=f"github.{surface}.{repo.repo_id}.{file_info.path}",
         notes=(f"file:{file_info.path}",),
     )
