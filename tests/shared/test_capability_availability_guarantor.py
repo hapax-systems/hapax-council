@@ -838,3 +838,72 @@ def test_dispatcher_capability_state_carries_availability_receipt_ref_without_re
         in capability.freshness_errors
     )
     assert calls == []
+
+
+def test_subscription_route_uses_registered_strategy_not_absent() -> None:
+    # claude.headless.full (auth_surface=subscription) degrades → the registered subscription
+    # strategy emits a typed DEFERRED remediation, NOT the bare refresh_strategy_absent:subscription.
+    registry = load_platform_capability_registry()
+    route = registry.require("claude.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.default_refresh_strategy_registry(),
+        now=NOW,
+    )
+
+    assert route.auth_surface is AuthSurface.SUBSCRIPTION
+    assert receipt.available is False
+    assert receipt.refresh_status is guarantor.RefreshStatus.DEFERRED
+    assert receipt.refresh_strategy_id == "subscription-account-live-quota-admission"
+    assert "subscription_quota_not_programmatically_refreshable" in receipt.refresh_reason_codes
+    reasons = guarantor.availability_dispatch_reason_codes(receipt)
+    assert "refresh_strategy_absent:subscription" not in reasons
+    assert "refresh_remediation:scripts/hapax-claude-subscription-quota-admission --json" in reasons
+
+
+def test_subscription_strategy_is_non_refreshable_no_side_effect(monkeypatch) -> None:  # noqa: ANN001
+    # non-refreshable: the strategy must NEVER shell out — a forbidden runner proves the deferred path.
+    def _forbidden(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("subscription strategy must not execute a refresh side effect")
+
+    monkeypatch.setattr(guarantor, "_run_refresh_command", _forbidden)
+    registry = load_platform_capability_registry()
+    route = registry.require("claude.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.default_refresh_strategy_registry(),
+        now=NOW,
+    )
+
+    assert receipt.refresh_status is guarantor.RefreshStatus.DEFERRED
+    assert receipt.refresh_strategy_id == "subscription-account-live-quota-admission"
+
+
+def test_subscription_strategy_does_not_attest_from_lane_presence() -> None:
+    # A fresh claude route (capability/resource observed = lane present) but WITHOUT an
+    # account-live-quota:observed ref stays degraded — lane/session presence never becomes quota
+    # evidence, even with the subscription strategy registered.
+    payload = _payload()
+    route_payload = _route_payload(payload, "claude.headless.full")
+    _mark_fresh(route_payload)
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("claude.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.default_refresh_strategy_registry(),
+        now=NOW,
+    )
+
+    assert receipt.available is False
+    assert receipt.predicate.account_live_quota_attested is False
+    assert "account_live_quota_evidence_absent" in receipt.reason_codes
+    assert receipt.refresh_status is guarantor.RefreshStatus.DEFERRED

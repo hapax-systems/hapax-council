@@ -323,8 +323,63 @@ class CodexOAuthRefreshStrategy:
         )
 
 
+class SubscriptionRefreshStrategy:
+    """Explicit non-refreshable strategy for ``auth_surface=subscription`` (Claude) routes.
+
+    Subscription quota (Claude Pro/Max, and any ``auth_surface=subscription`` route) is NOT a
+    programmatically refreshable credential like an OAuth token — no call mints headroom, and
+    account-live subscription telemetry (OTel usage/cost) is not yet wired
+    (CASE-CAPACITY-ROUTING-001 R2, "use receipts and manual refresh until observable"). Account-live
+    quota is proven ONLY by a short-lived, sanitized admission receipt
+    (``scripts/hapax-claude-subscription-quota-admission`` folded into the quota-spend ledger by
+    ``scripts/hapax-quota-telemetry-writer``), NEVER inferred from a running lane's tmux/session
+    presence.
+
+    So this strategy is deliberately DEFERRED-only: it never executes a side effect and never
+    attests on its own (attestation stays with ``_account_live_quota_attested`` reading the ledger's
+    ``account-live-quota:observed`` evidence ref). Its whole job is to replace the bare
+    ``refresh_strategy_absent:subscription`` with a typed, governed remediation naming the receipt
+    path. Fail-closed: absent a fresh admission receipt the route stays degraded with these typed
+    reasons rather than a missing-strategy hole.
+    """
+
+    auth_surface = AuthSurface.SUBSCRIPTION
+    strategy_id = "subscription-account-live-quota-admission"
+
+    def refresh(
+        self,
+        route: PlatformCapabilityRoute,
+        freshness: RouteFreshnessCheck,
+        *,
+        now: datetime,
+    ) -> RefreshOutcome:
+        admission_command = "scripts/hapax-claude-subscription-quota-admission --json"
+        telemetry_command = "scripts/hapax-quota-telemetry-writer --json"
+        return RefreshOutcome(
+            status=RefreshStatus.DEFERRED,
+            strategy_id=self.strategy_id,
+            reason_codes=(
+                "subscription_quota_not_programmatically_refreshable",
+                "account_live_quota_requires_admission_receipt",
+                "account_live_subscription_quota_not_lane_presence",
+                "availability_recheck_required_after_admission_receipt",
+            ),
+            evidence_refs=tuple(
+                dict.fromkeys(
+                    [
+                        f"platform-capability-registry:{route.route_id}:auth_surface:subscription",
+                        "policy:account_live_subscription_quota_not_lane_presence",
+                        "script:scripts/hapax-claude-subscription-quota-admission --json",
+                        *freshness.evidence_refs,
+                    ]
+                )
+            ),
+            remediation_commands=(admission_command, telemetry_command),
+        )
+
+
 def default_refresh_strategy_registry() -> RefreshStrategyRegistry:
-    return RefreshStrategyRegistry((CodexOAuthRefreshStrategy(),))
+    return RefreshStrategyRegistry((CodexOAuthRefreshStrategy(), SubscriptionRefreshStrategy()))
 
 
 def evaluate_registry_availability(
@@ -703,6 +758,7 @@ __all__ = [
     "RefreshStrategy",
     "RefreshStrategyRegistry",
     "RegistryAvailabilityCheck",
+    "SubscriptionRefreshStrategy",
     "availability_dispatch_reason_codes",
     "default_refresh_strategy_registry",
     "evaluate_registry_availability",
