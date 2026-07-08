@@ -335,6 +335,41 @@ def test_idle_watchdog_does_not_raw_tmux_fallback_when_codex_ack_fails(
     assert "FAILED to dispatch hapax-codex-cx-red" not in second.stdout
     assert not Path(env["TMUX_SENT"]).exists()
 
+    _write_executable(
+        codex_send,
+        """
+        #!/usr/bin/env bash
+        printf '%s\n' "$*" >> "${CODEX_SENT:?}"
+        """,
+    )
+    third = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
+
+    assert third.returncode == 0, third.stderr
+    assert "DISPATCHED hapax-codex-cx-red" in third.stdout
+    assert not failure_state.exists()
+
+
+def test_idle_watchdog_clears_dispatch_failure_marker_when_lane_becomes_active(
+    tmp_path: Path,
+) -> None:
+    env = _base_env(
+        tmp_path,
+        session="hapax-codex-cx-red",
+        pane="Working (12s)\ngpt-5.5 ~/projects/hapax-council",
+    )
+    state_dir = Path(env["HAPAX_IDLE_STATE_DIR"])
+    failure_state = state_dir / "hapax-codex-cx-red.dispatch_failure_alerted"
+    idle_state = state_dir / "hapax-codex-cx-red.idle_since"
+    failure_state.write_text("123", encoding="utf-8")
+    idle_state.write_text("123", encoding="utf-8")
+
+    result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert "scan: 1 lanes, 1 active" in result.stdout
+    assert not failure_state.exists()
+    assert not idle_state.exists()
+
 
 def test_rate_limit_watchdog_sends_hold_not_assignment_when_lane_has_no_task(
     tmp_path: Path,
