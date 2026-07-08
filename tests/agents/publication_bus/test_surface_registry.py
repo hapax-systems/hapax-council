@@ -127,6 +127,10 @@ class TestDispatchRegistry:
     def test_dispatch_registry_comes_from_surface_registry(self) -> None:
         dispatch = dispatch_registry()
         assert dispatch["bluesky-post"] == "agents.cross_surface.bluesky_post:publish_artifact"
+        assert (
+            dispatch["omg-lol-weblog-bearer-fanout"]
+            == "agents.omg_weblog_publisher:publish_artifact"
+        )
         assert dispatch["zenodo-doi"] == "agents.zenodo_publisher:publish_artifact"
 
     def test_refused_surfaces_are_not_dispatchable(self) -> None:

@@ -1101,6 +1101,61 @@ class TestSingleSurface:
             for issue in gate_log["flagged_issues"]
         )
 
+    def test_malformed_policy_target_surfaces_holds_before_surface_dispatch(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+        policy_path = tmp_path / "publication-policy.yaml"
+        policy_path.write_text(
+            "schema_version: 1\n"
+            "publication_frontmatter_policy:\n"
+            "  status: guarded_public_channel\n"
+            "  publication_allowed_without_bus: false\n"
+            "  direct_public_egress_allowed: false\n"
+            "  review_required: Claim Verification Council\n"
+            "  target_surfaces: fake\n"
+            "  required_gates:\n"
+            "    - source_artifact_public_safe\n"
+            "    - source_refs_present\n"
+            "    - rights_privacy_redaction_pass\n"
+            "    - target_surface_allowlist_pass\n"
+            "    - claim_review_current\n"
+            "    - no_direct_public_egress\n"
+            "  claim_ceiling: source refs, rights, privacy, redaction, and target surfaces\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            orchestrator_module,
+            "PUBLICATION_POLICY_PATHS",
+            (policy_path,),
+        )
+
+        _drop_artifact(tmp_path, slug="bad-policy-targets", surfaces=["fake"])
+        review_pass = _CountingReviewPass()
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            review_pass=review_pass,
+            registry=CollectorRegistry(),
+        )
+
+        assert orch.run_once() == 1
+        assert review_pass.calls == 0
+        fake_module.publish_artifact.assert_not_called()
+        failed = list((tmp_path / "publish" / "failed").glob("invalid-artifact-*.json"))
+        assert len(failed) == 1
+        payload = json.loads(failed[0].read_text())
+        child = payload["publication_gate_result"]["child_results"][0]
+        assert child["name"] == "artifact_envelope"
+        assert any(
+            "target_surfaces must be a non-empty list" in finding for finding in child["findings"]
+        )
+
     def test_publication_gate_override_dispatches_with_surface_receipt(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()
         fake_module.publish_artifact = mock.Mock(return_value="ok")

@@ -1251,9 +1251,21 @@ def _configured_publication_gate_receipts(
 
     for path, policy in policies:
         target_surfaces = policy.get("target_surfaces")
-        if not isinstance(target_surfaces, list):
+        if not isinstance(target_surfaces, list) or not target_surfaces:
+            errors.append(
+                f"publication policy target_surfaces must be a non-empty list in {path}; "
+                "next action: repair publication_frontmatter_policy.target_surfaces before "
+                "processing public-gate receipts"
+            )
             continue
-        policy_targets = {surface for surface in target_surfaces if isinstance(surface, str)}
+        if any(not isinstance(surface, str) or not surface.strip() for surface in target_surfaces):
+            errors.append(
+                f"publication policy target_surfaces must contain non-empty strings in {path}; "
+                "next action: repair publication_frontmatter_policy.target_surfaces before "
+                "processing public-gate receipts"
+            )
+            continue
+        policy_targets = {surface.strip() for surface in target_surfaces}
         if not selected.intersection(policy_targets):
             continue
         if policy.get("status") == "guarded_public_fanout" and not selected.intersection(

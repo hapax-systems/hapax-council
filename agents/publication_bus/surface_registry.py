@@ -351,6 +351,7 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
     "omg-lol-weblog-bearer-fanout": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
+        dispatch_entry="agents.omg_weblog_publisher:publish_artifact",
         activation_path="agents.publication_bus.omg_weblog_publisher.OmgLolWeblogPublisher",
         scope_note="weblog entry bearer-token publication helper; no direct public egress authority",
     ),

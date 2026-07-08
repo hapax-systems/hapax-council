@@ -1084,11 +1084,14 @@ def _ensure_local_ref(
     except RuntimeError as exc:
         if not allow_fetch_failure:
             raise
-        raise RuntimeError(
-            f"local ref {ref[:12]} is unavailable locally and could not be fetched from "
-            f"origin/{fetch_ref}; next action: restore GitHub diff access or fetch "
-            f"{fetch_ref} before review dispatch."
-        ) from exc
+        LOG.warning(
+            "local ref %s is unavailable locally and could not be fetched from origin/%s; "
+            "continuing to explicit object check: %s",
+            ref[:12],
+            fetch_ref,
+            exc,
+        )
+        return
 
     _run_gh(["git", "rev-parse", "--verify", ref], repo_root=repo_root, runner=runner)
 
