@@ -426,6 +426,12 @@ def _expected_envelope_mismatches(
 ) -> list[str]:
     fields = (
         "freshness_result",
+        "checked_at",
+        "ttl_s",
+        "expires_at",
+        "source_ref",
+        "source_of_truth",
+        "evidence_refs",
         "source_hash",
         "rendered_hash",
         "published_hash",
