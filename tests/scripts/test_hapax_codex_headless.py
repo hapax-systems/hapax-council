@@ -2070,6 +2070,8 @@ def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
     workdir = tmp_path / "workdir"
     workdir.mkdir()
+    codex_bin = tmp_path / "bin" / "codex"
+    _write_executable(codex_bin, "exit 0\n")
     token_path = _write_codex_access_token(tmp_path / "handoff", exp=int(time.time()) + 3600)
     seal_key = "e" * 64
     token_path.write_text(
@@ -2087,6 +2089,7 @@ def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
             "HAPAX_AGENT_ROLE": "cx-amber",
             "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
             "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH": "1234567890 task-x",
+            "HAPAX_CODEX_BIN_PATH": str(codex_bin),
         },
         "proof_file": str(proof),
         "token_handoff_file": str(token_path),
@@ -2113,6 +2116,8 @@ def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: P
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
     workdir = tmp_path / "workdir"
     workdir.mkdir()
+    codex_bin = tmp_path / "bin" / "codex"
+    _write_executable(codex_bin, "exit 0\n")
     token_path = _write_codex_access_token(tmp_path / "handoff", exp=int(time.time()) + 3600)
     seal_key = "f" * 64
     token_path.write_text(
@@ -2127,6 +2132,7 @@ def test_codex_headless_remote_exec_refuses_task_without_claim_epoch(tmp_path: P
             "HAPAX_SESSION_ID": "remote-cache-session",
             "HAPAX_AGENT_ROLE": "cx-amber",
             "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
+            "HAPAX_CODEX_BIN_PATH": str(codex_bin),
         },
         "proof_file": str(proof),
         "token_handoff_file": str(token_path),
