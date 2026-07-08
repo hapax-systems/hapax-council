@@ -62,6 +62,27 @@ def test_beacon_reads_future_receipts(tmp_path):
     assert got is not None and got[1] == "zeta-quota-wall.yaml"
 
 
+def test_beacon_ignores_route_scoped_quota_exhaustion_receipts(tmp_path):
+    (tmp_path / "cx-glmcp-review-glm52-quota-wall.yaml").write_text(
+        "\n".join(
+            [
+                "schema: hapax.glmcp_quota_hold.v1",
+                "status: quota_blocked",
+                "role: cx-glmcp-review-glm52",
+                "provider: z_ai-glm-coding-plan",
+                "route_id: glmcp.review.direct",
+                "capacity_pool: subscription_quota",
+                "supported_tool: hapax-glmcp-reviewer",
+                "signal_kind: glmcp_quota_admission_error",
+                "rate_limit_type: quota_exhausted",
+                "resets_at: 2099-01-01T00:00:00Z",
+            ]
+        )
+    )
+
+    assert session_limit_until(receipts_dir=tmp_path, now=1000.0) is None
+
+
 def test_gate_closes_on_limit_beacon(tmp_path, monkeypatch):
     import shared.sdlc_pressure_gate as g
 

@@ -346,8 +346,16 @@ if [[ -z "$LANE" || -z "$PLATFORM" ]]; then
 fi
 case "$PLATFORM" in
     claude|codex|vibe) ;;
-    agy|antigrav|antigravity|gemini-cli)
-        reason="platform '$PLATFORM' is retired/excised; mint measured agy supply-leaf intake with route/resource/governance receipts before any future interactive worker path"
+    agy)
+        reason="platform 'agy' is the non-launchable read-only agy.review.direct review route, not a cross-runtime worker lane; use scripts/hapax-agy-reviewer for review-plane work"
+        if ! $DRY_RUN; then
+            write_blocked_dispatch_receipt "$reason"
+        fi
+        echo "BLOCKED: $reason" >&2
+        exit 10
+        ;;
+    antigrav|antigravity|gemini-cli)
+        reason="platform '$PLATFORM' is retired/excised; use agy.review.direct for the live read-only review route"
         if ! $DRY_RUN; then
             write_blocked_dispatch_receipt "$reason"
         fi
@@ -361,7 +369,7 @@ case "$PLATFORM" in
 esac
 
 if is_retired_antigrav_lane "$LANE"; then
-    reason="lane '$LANE' is retired/excised; mint measured agy supply-leaf intake with route/resource/governance receipts before any future interactive worker path"
+    reason="lane '$LANE' is non-launchable for cross-runtime dispatch; use agy.review.direct via scripts/hapax-agy-reviewer for review-plane work, and keep Antigrav/legacy Gemini lanes retired"
     if ! $DRY_RUN; then
         write_blocked_dispatch_receipt "$reason"
     fi

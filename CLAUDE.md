@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Single-operator externalized executive function. No auth/roles/multi-user. Shared conventions (uv, ruff, testing, git) in workspace `CLAUDE.md`. Sister: [vscode](vscode/CLAUDE.md), [hapax-mcp](https://github.com/ryanklee/hapax-mcp). Governance: `hapax-constitution` → `hapax-sdlc` package; local axioms in `axioms/registry.yaml`. Rotation policy: `docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md`.
+Single-operator externalized executive function. No auth/roles/multi-user. Shared conventions (uv, ruff, testing, git) in workspace `CLAUDE.md`. Sister: [vscode](vscode/CLAUDE.md), [hapax-mcp](https://github.com/hapax-systems/hapax-mcp). Governance: `hapax-constitution` → `hapax-sdlc` package; local axioms in `axioms/registry.yaml`. Rotation policy: `docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md`.
 
 ## Architecture
 
@@ -51,7 +51,30 @@ GStreamer pipeline: cameras → cudacompositor → GL shader chain (12 glfeedbac
 
 SSOT: `~/Documents/Personal/20-projects/hapax-cc-tasks/`. Commands: `cc-claim <id>`, `cc-close <id> [--pr N]`. Hook `cc-task-gate.sh` auto-transitions claimed→in_progress. SessionStart shows claimed task + top 5 WSJF.
 
-Multi-session stacks: Claude (`hapax-claude-<role>`, `scripts/hapax-claude`), Codex (`hapax-codex-cx-<color>`, `scripts/hapax-codex`), Vibe (`hapax-vibe-vbe-N`, `~/.local/bin/hapax-vibe`), and the Agy adapter family as route-gated worker support. Legacy Antigrav GUI surfaces (`hapax-antigrav`, `antigrav`/`antigravity` lanes, and old Antigrav interactive route family) are retired and excised; do not use them for SDLC task ownership. Legacy `hapax-gemini` lanes and `gemini-cli` are retired; Gemini-family/agy wrappers may provide packet/read-only review evidence unless a governed route admits them as live supply. The current Agy adapter is live, but a spawnable Agy dispatch route still requires measured route/resource/governance receipts before dispatch and is not listed in `--list-platform-paths` by this wiring slice. Recheck before treating an Agy route as spawnable supply: `rg -n "Agy adapter family|Legacy Antigrav GUI|antigrav.interactive.full" CLAUDE.md docs/routing-ontology-reference.md config/platform-capability-registry.json` must match this file, the routing ontology, and the legacy Antigrav registry shape; `scripts/hapax-methodology-dispatch --list-platform-paths | rg -i "antigrav|agy"` must return no rows until a governed Agy route is minted. Active interactive stacks use tmux control plane + relay YAML + `--require-ack` sends where supported. Spawn pattern: `hapax-claude --terminal tmux --role X` then `sleep 8` then `hapax-claude-send --session X -- "task"`. RTE role: 270s tick, PR drain, branch hygiene, queue health, never carries workloads. Off-limits for vbe-*: `axioms/`, `shared/governance/`, `agents/hapax_daimonion/`, `config/pipewire/`, `CODEOWNERS`, any `CLAUDE.md`; legacy Antigrav restrictions are enforced by retired-surface refusal above, not by worker off-limits scope.
+Multi-session stacks: Claude (`hapax-claude-<role>`, `scripts/hapax-claude`),
+Codex (`hapax-codex-cx-<color>`, `scripts/hapax-codex`), Vibe
+(`hapax-vibe-vbe-N`, `~/.local/bin/hapax-vibe`), and route-gated Agy adapter
+support. Antigrav/Antigravity and legacy `gemini-cli` worker surfaces are
+retired and excised as live dispatch platforms, lanes, and route families; do
+not use `hapax-antigrav`, Antigrav lanes, or legacy Gemini lanes for SDLC task
+ownership. `agy.review.direct` is the live agy CLI review route: it is
+read-only, blocked until route-specific quota/resource receipt evidence exists,
+and not a methodology-dispatch, cross-runtime, or visible-dev worker lane. A
+spawnable Agy dispatch route still requires measured route/resource/governance
+receipts and is not listed in `--list-platform-paths` by this wiring slice.
+Gemini/Claude/GPT-OSS are engines behind the agy harness, not separate Hapax
+capability-family names. Recheck before treating agy/Gemini as live worker
+supply: `rg -n "agy.review.direct|Antigrav.*retired|Gemini.*engine|antigrav.interactive.full" CLAUDE.md docs/routing-ontology-reference.md config/platform-capability-registry.json`
+must match this file, the routing ontology, and the registry; `scripts/hapax-methodology-dispatch --list-platform-paths | rg -i "antigrav|agy"`
+must return no rows because `agy.review.direct` is a review route, not a
+PLATFORM_PATHS launcher. Active interactive stacks use tmux control plane +
+relay YAML + `--require-ack` sends where supported. Spawn pattern:
+`hapax-claude --terminal tmux --role X` then `sleep 8` then
+`hapax-claude-send --session X -- "task"`. RTE role: 270s tick, PR drain,
+branch hygiene, queue health, never carries workloads. Off-limits for vbe-*:
+`axioms/`, `shared/governance/`, `agents/hapax_daimonion/`,
+`config/pipewire/`, `CODEOWNERS`, any `CLAUDE.md`; Antigrav restrictions are
+enforced by retired-surface refusal above, not by worker off-limits scope.
 
 ## Axiom Governance
 

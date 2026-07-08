@@ -140,6 +140,41 @@
       "ledger_owner": "alpha",
       "dashboard_visibility": "required",
       "lifecycle_state": "active"
+    },
+    {
+      "budget_schema": 1,
+      "budget_id": "tb-20260706-zai-glmcp-payg-review",
+      "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+      "approved_by": "operator",
+      "created_at": "2026-07-06T13:38:35Z",
+      "expires_at": "2026-07-13T13:38:35Z",
+      "capacity_pool": "api_paid_spend",
+      "providers_allowed": [
+        "z_ai"
+      ],
+      "profiles_allowed": [
+        "glmcp-review-direct"
+      ],
+      "task_classes_allowed": [
+        "independent-review"
+      ],
+      "quality_floors_allowed": [
+        "frontier_review_required"
+      ],
+      "total_cap_usd": "100.00",
+      "per_task_cap_usd": "2.00",
+      "daily_cap_usd": "20.00",
+      "auto_top_up_allowed": false,
+      "subscription_path_checked_at": "2026-07-06T13:38:35Z",
+      "reason_subscription_path_not_used": "Coding Plan endpoint returned quota_exhausted; operator authorized existing z_ai API-credit balance as bounded GLMCP review fallback",
+      "steady_state_replacement": {
+        "target_route_id": null,
+        "blocker_to_remove": null,
+        "exit_criterion": null
+      },
+      "ledger_owner": "cx-convergence-coord",
+      "dashboard_visibility": "required",
+      "lifecycle_state": "active"
     }
   ],
   "spend_receipts": [

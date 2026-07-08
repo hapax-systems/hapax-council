@@ -1,10 +1,11 @@
 [Unit]
-Description=Hapax CC-task PR-merge auto-close watcher timer (5 min)
+Description=Hapax CC-task PR-merge auto-close watcher timer
 
 [Timer]
-OnBootSec=120s
-OnUnitActiveSec=5min
-AccuracySec=10s
+OnBootSec=3min
+OnUnitActiveSec=9min
+RandomizedDelaySec=45s
+AccuracySec=30s
 
 [Install]
 WantedBy=timers.target

@@ -30,6 +30,13 @@ from shared.platform_capability_receipts import (
     load_platform_capability_receipts,
     receipt_reference,
 )
+from shared.quota_spend_ledger import (
+    QUOTA_SPEND_LEDGER_LIVE_ENV,
+    QuotaSpendLedgerError,
+    SubscriptionQuotaState,
+    load_quota_spend_ledger_resolved,
+    subscription_quota_state_for_route,
+)
 from shared.route_metadata_schema import (
     BenchmarkCoverage,
     FixedRouteOverhead,
@@ -58,6 +65,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
+        "agy.review.direct",
         "glmcp.review.direct",
         "local_tool.local.worker",
         "vibe.headless.full",
@@ -66,6 +74,14 @@ REQUIRED_ROUTE_IDS = frozenset(
 
 UNKNOWN_TELEMETRY_SOURCES = frozenset({"none", "unknown"})
 UNKNOWN_PRIVACY_POSTURES = frozenset({"unknown", "public_risk"})
+AGY_REVIEW_ROUTE_ID = "agy.review.direct"
+AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
+GLMCP_REVIEW_ROUTE_ID = "glmcp.review.direct"
+GLMCP_REVIEW_ADMISSION_BLOCKER = "glmcp_review_seat_receipt_admission_required"
+ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
+    AGY_REVIEW_ROUTE_ID: AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER,
+    GLMCP_REVIEW_ROUTE_ID: GLMCP_REVIEW_ADMISSION_BLOCKER,
+}
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
 
 
@@ -157,17 +173,21 @@ class ModelId(StrEnum):
     receipt-only maintenance route)."""
 
     CLAUDE_OPUS_4_8 = "claude-opus-4-8"
+    CLAUDE_OPUS_4_6 = "claude-opus-4-6"
     CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
     CLAUDE_SONNET_5 = "claude-sonnet-5"
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
     GPT_5_5 = "gpt-5.5"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
+    GPT_OSS_120B = "gpt-oss-120b"
     COMMAND_R_08_2024 = "command-r-08-2024"
     QWEN3_5_9B = "qwen3.5-9b"
     MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
+    Z_AI_GLM_5_2 = "z_ai-glm-5.2"
     UNKNOWN = "unknown"
 
 
@@ -213,6 +233,7 @@ class CapabilityShapeFreshnessState(StrEnum):
 class AuthSurface(StrEnum):
     API_KEY = "api_key"
     LOCAL = "local"
+    OAUTH = "oauth"
     OPERATOR_SESSION = "operator_session"
     SUBSCRIPTION = "subscription"
     UNKNOWN = "unknown"
@@ -1350,7 +1371,12 @@ def load_platform_capability_registry(
         effective_receipt_dir = receipt_dir or _receipt_dir_from_env()
         if effective_receipt_dir is None:
             return registry
-        return apply_platform_capability_receipts(
+        registry = apply_platform_capability_receipts(
+            registry,
+            receipt_dir=effective_receipt_dir,
+            now=now,
+        )
+        return _apply_route_authority_receipts_from_dir(
             registry,
             receipt_dir=effective_receipt_dir,
             now=now,
@@ -1359,6 +1385,28 @@ def load_platform_capability_registry(
         raise PlatformCapabilityRegistryError(
             f"invalid platform capability registry at {path}: {exc}"
         ) from exc
+
+
+def _apply_route_authority_receipts_from_dir(
+    registry: PlatformCapabilityRegistry,
+    *,
+    receipt_dir: Path,
+    now: datetime | None = None,
+) -> PlatformCapabilityRegistry:
+    """Overlay signed route-authority receipts in capability projections.
+
+    The dispatcher policy owns route-authority receipt validation and mutation of
+    registry payloads. Keep the import local to avoid making the inert registry
+    module import the full dispatch policy during model definition.
+    """
+
+    from shared.dispatcher_policy import apply_route_authority_receipts
+
+    return apply_route_authority_receipts(
+        registry,
+        receipt_dir=receipt_dir,
+        now=now,
+    )
 
 
 def _receipt_dir_from_env() -> Path | None:
@@ -1389,13 +1437,15 @@ def apply_platform_capability_receipts(
             continue
         if route_payload["route_id"] not in receipt.routes:
             continue
-        _apply_receipt_to_route_payload(route_payload, receipt)
+        _apply_receipt_to_route_payload(route_payload, receipt, now=now)
     return PlatformCapabilityRegistry.model_validate(payload)
 
 
 def _apply_receipt_to_route_payload(
     route_payload: dict[str, Any],
     receipt: PlatformCapabilityReceipt,
+    *,
+    now: datetime | None = None,
 ) -> None:
     receipt_ref = receipt_reference(receipt)
     freshness = route_payload["freshness"]
@@ -1415,7 +1465,9 @@ def _apply_receipt_to_route_payload(
         stale_after=receipt.capability.stale_after,
         evidence_refs=[*receipt.capability.evidence_refs, receipt_ref],
         reason_codes=receipt.capability.reason_codes,
-        removable_reasons=_capability_receipt_removable_reasons(route_payload),
+        removable_reasons=_capability_receipt_removable_reasons(route_payload)
+        if receipt.capability.status is EvidenceStatus.OBSERVED
+        else set(),
     )
     _apply_surface(
         freshness,
@@ -1424,7 +1476,9 @@ def _apply_receipt_to_route_payload(
         stale_after=receipt.resource.stale_after,
         evidence_refs=[*receipt.resource.evidence_refs, receipt_ref],
         reason_codes=receipt.resource.reason_codes,
-        removable_reasons=_resource_receipt_removable_reasons(route_payload),
+        removable_reasons=_resource_receipt_removable_reasons(route_payload)
+        if receipt.resource.status is EvidenceStatus.OBSERVED
+        else set(),
     )
     quota_stale_after = (
         receipt.stale_after if quota_unobservable_nonblocking else receipt.quota.stale_after
@@ -1440,7 +1494,7 @@ def _apply_receipt_to_route_payload(
         else [],
         removable_reasons=_quota_unobservable_removable_reasons(route_payload)
         if quota_unobservable_nonblocking
-        else {"account_live_quota_receipt_absent", "quota_telemetry_unknown"},
+        else _quota_receipt_removable_reasons(route_payload),
     )
     _apply_surface(
         freshness,
@@ -1461,6 +1515,8 @@ def _apply_receipt_to_route_payload(
             score["evidence_refs"] = list(
                 dict.fromkeys([*score.get("evidence_refs", []), receipt_ref])
             )
+    if receipt.quota.status is EvidenceStatus.OBSERVED:
+        route_payload.setdefault("telemetry", {})["quota_source"] = QuotaSource.MANUAL.value
 
     if receipt.capability.status is not EvidenceStatus.OBSERVED:
         top_blockers.extend(receipt.capability.reason_codes)
@@ -1469,16 +1525,73 @@ def _apply_receipt_to_route_payload(
     if receipt.quota.status is not EvidenceStatus.OBSERVED and not quota_unobservable_nonblocking:
         top_blockers.extend(receipt.quota.reason_codes)
 
-    removable_top_blockers = {
-        *_capability_receipt_removable_reasons(route_payload),
-        *_resource_receipt_removable_reasons(route_payload),
-        "provider_docs_evidence_absent",
-    }
+    removable_top_blockers = {"provider_docs_evidence_absent"}
+    if receipt.capability.status is EvidenceStatus.OBSERVED:
+        removable_top_blockers.update(_capability_receipt_removable_reasons(route_payload))
+    if receipt.resource.status is EvidenceStatus.OBSERVED:
+        removable_top_blockers.update(_resource_receipt_removable_reasons(route_payload))
     if quota_unobservable_nonblocking:
         removable_top_blockers.update(_quota_unobservable_removable_reasons(route_payload))
+    elif receipt.quota.status is EvidenceStatus.OBSERVED:
+        removable_top_blockers.update(_observed_quota_receipt_removable_reasons(route_payload))
+    quota_admission_fresh, quota_admission_refs = _route_specific_quota_admission_fresh(
+        route_payload,
+        now=now,
+    )
+    if quota_admission_refs:
+        freshness["evidence"]["quota"]["evidence_refs"] = list(
+            dict.fromkeys(
+                [
+                    *freshness["evidence"]["quota"].get("evidence_refs", []),
+                    *quota_admission_refs,
+                ]
+            )
+        )
+    if quota_admission_fresh:
+        blocker = ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS.get(route_payload.get("route_id"))
+        if blocker:
+            route_payload.setdefault("telemetry", {})["quota_source"] = QuotaSource.LEDGER.value
+            removable_top_blockers.add(blocker)
+            quota_evidence = freshness["evidence"]["quota"]
+            quota_evidence["blocked_reasons"] = [
+                reason for reason in quota_evidence.get("blocked_reasons", []) if reason != blocker
+            ]
     top_blockers = [reason for reason in top_blockers if reason not in removable_top_blockers]
     route_payload["blocked_reasons"] = list(dict.fromkeys(top_blockers))
     route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
+
+
+def _route_specific_quota_admission_fresh(
+    route_payload: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> tuple[bool, tuple[str, ...]]:
+    route_id = route_payload.get("route_id")
+    if route_id not in ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS:
+        return False, ()
+    try:
+        resolved = load_quota_spend_ledger_resolved(live_path=_quota_spend_live_path_from_env())
+    except (OSError, QuotaSpendLedgerError, ValueError) as exc:
+        return False, (f"quota-spend-ledger:{route_id}:read-error:{type(exc).__name__}",)
+    if resolved.source != "live":
+        if resolved.live_error:
+            return False, (f"quota-spend-ledger:{route_id}:live-ledger-invalid",)
+        return False, ()
+    state, evidence_refs = subscription_quota_state_for_route(
+        resolved.ledger,
+        route_id,
+        now=now,
+    )
+    return state is SubscriptionQuotaState.FRESH, evidence_refs
+
+
+def _quota_spend_live_path_from_env() -> Path | None:
+    configured = os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV)
+    if not configured:
+        return None
+    if configured.strip() in {"0", "none", "None", "false", "False"}:
+        return None
+    return Path(configured).expanduser()
 
 
 def _receipt_measures_capability_scores(
@@ -1541,6 +1654,8 @@ def _quota_unobservable_nonblocking(
 
 def _capability_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
     reasons = {"fresh_capability_evidence_absent"}
+    if route_payload.get("route_id") == "agy.review.direct":
+        reasons.add("agy_review_seat_receipt_admission_required")
     if route_payload.get("route_id") == "api.headless.provider_gateway":
         reasons.add("provider_gateway_evidence_absent")
     return reasons
@@ -1561,6 +1676,23 @@ def _quota_unobservable_removable_reasons(route_payload: dict[str, Any]) -> set[
     }:
         reasons.add("provider_budget_receipt_absent")
     return reasons
+
+
+def _quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
+    if route_payload.get("route_id") == "agy.review.direct":
+        # Platform receipts can prove local agy CLI/wrapper availability only.
+        # Route-specific quota admission is consumed from the live quota ledger,
+        # not from a platform-capability quota receipt.
+        return set()
+    return {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+
+
+def _observed_quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
+    if route_payload.get("route_id") == "agy.review.direct":
+        return set()
+    return _quota_unobservable_removable_reasons(route_payload) | _quota_receipt_removable_reasons(
+        route_payload
+    )
 
 
 def _apply_surface(
@@ -1609,13 +1741,21 @@ _MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
     # DECLARE-layer drift (observed != declared). Repointing this alias is a production-routing
     # decision deferred to the operator; the explicit "claude-sonnet-5" identity below is additive.
     "claude-sonnet": ModelId.CLAUDE_SONNET_4_6,
+    "claude-sonnet-4.6": ModelId.CLAUDE_SONNET_4_6,
+    "claude-sonnet-4-6": ModelId.CLAUDE_SONNET_4_6,
+    "claude-opus-4.6": ModelId.CLAUDE_OPUS_4_6,
+    "claude-opus-4-6": ModelId.CLAUDE_OPUS_4_6,
     "claude-sonnet-5": ModelId.CLAUDE_SONNET_5,
     "claude-haiku": ModelId.CLAUDE_HAIKU_4_5,
     "gpt-5.5": ModelId.GPT_5_5,
     "gpt-5.3-codex-spark": ModelId.GPT_5_3_CODEX_SPARK,
+    "gpt-oss-120b": ModelId.GPT_OSS_120B,
     "mistral-vibe": ModelId.MISTRAL_MEDIUM_3_5,
     "google-antigravity-cli-agy": ModelId.GEMINI_3_1_PRO_PREVIEW,
+    "agy-universal-harness": ModelId.GEMINI_3_1_PRO_PREVIEW,
+    "gemini-3.5-flash": ModelId.GEMINI_3_5_FLASH,
     "z_ai-glm-coding-plan:glm-5": ModelId.Z_AI_GLM_5,
+    "z_ai-glm-coding-plan:glm-5.2": ModelId.Z_AI_GLM_5_2,
     "litellm.anthropic.claude-opus-4-cloud-burst": ModelId.CLAUDE_OPUS_4_8,
     "litellm.provider-gateway-maintenance": ModelId.GEMINI_3_1_PRO_PREVIEW,
 }

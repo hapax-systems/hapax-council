@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -63,9 +64,14 @@ def _review_team_gate_off(monkeypatch: pytest.MonkeyPatch) -> None:
 
     The review-team quorum gate (review_team.review_team_verdict_blockers) is
     exercised explicitly by TestReviewTeamGate, which re-enables it per test.
+    Route-receipt behavior is covered in tests/test_review_team.py; these
+    generic autoqueue fixtures must not depend on live capability receipts.
     """
 
     monkeypatch.setenv("HAPAX_REVIEW_TEAM_GATE_OFF", "1")
+    monkeypatch.setattr(
+        autoqueue.review_team, "review_route_blocked_families", lambda *_a, **_k: {}
+    )
 
 
 def _write_review_dossier(
@@ -81,13 +87,26 @@ def _write_review_dossier(
     if reviewers is None:
         reviewers = [
             {
-                "id": f"{family}-1",
-                "family": family,
+                "id": "codex-1",
+                "family": "codex",
                 "verdict": "accept",
                 "findings": [],
                 "checklist": COMPLETE_ALWAYS_ON_CHECKLIST,
-            }
-            for family in ("codex", "gemini", "claude")
+            },
+            {
+                "id": "claude-1",
+                "family": "claude",
+                "verdict": "accept",
+                "findings": [],
+                "checklist": COMPLETE_ALWAYS_ON_CHECKLIST,
+            },
+            {
+                "id": "claude-2",
+                "family": "claude",
+                "verdict": "invalid-output",
+                "findings": [],
+                "checklist": {},
+            },
         ]
     accepts = sum(1 for r in reviewers if r["verdict"] in ("accept", "accept-with-findings"))
     dossier = {
@@ -210,8 +229,8 @@ class TestReviewTeamGate:
                     "checklist": COMPLETE_ALWAYS_ON_CHECKLIST,
                 },
                 {
-                    "id": "gemini-1",
-                    "family": "gemini",
+                    "id": "codex-2",
+                    "family": "codex",
                     "verdict": "invalid-output",
                     "findings": [],
                     "checklist": {},
@@ -385,11 +404,137 @@ class _FakeRunner:
     def __init__(self) -> None:
         self.open_prs: list[dict[str, Any]] = []
         self.queued_prs: set[int] = set()
+        self.queue_refs: list[str] = []
+        self.fail_queue_refs = False
         self.calls: list[list[str]] = []
         self.fail_status_posts = False
         # head_sha -> existing commit statuses (most-recent-first), for the G3
         # read-before-write idempotency check in set_autoqueue_admission_status.
         self.head_statuses: dict[str, list[dict[str, Any]]] = {}
+
+    @staticmethod
+    def _fields(cmd: list[str]) -> dict[str, str]:
+        out: dict[str, str] = {}
+        index = 0
+        while index < len(cmd):
+            if cmd[index] == "-f" and index + 1 < len(cmd) and "=" in cmd[index + 1]:
+                key, value = cmd[index + 1].split("=", 1)
+                out[key] = value
+                index += 2
+                continue
+            index += 1
+        return out
+
+    @staticmethod
+    def _rest_pr(pr: dict[str, Any]) -> dict[str, Any]:
+        labels = pr.get("labels") if isinstance(pr.get("labels"), list) else []
+        merge_state = str(pr.get("mergeStateStatus") or "CLEAN").lower()
+        return {
+            "number": pr.get("number"),
+            "node_id": pr.get("id"),
+            "title": pr.get("title") or "",
+            "body": pr.get("body") or "",
+            "head": {"ref": pr.get("headRefName") or "", "sha": pr.get("headRefOid") or ""},
+            "draft": bool(pr.get("isDraft")),
+            "labels": labels,
+            "auto_merge": pr.get("autoMergeRequest"),
+            "mergeable_state": merge_state,
+            "mergeable": merge_state in {"clean", "has_hooks", "unstable"},
+            "changed_files": pr.get("changedFiles"),
+            "state": "open",
+            "merged": False,
+            "merged_at": None,
+        }
+
+    @staticmethod
+    def _rest_check_run(check: dict[str, Any]) -> dict[str, Any]:
+        conclusion = check.get("conclusion")
+        status = check.get("status")
+        if status is None:
+            status = "completed" if conclusion is not None else "in_progress"
+        return {
+            "name": check.get("name") or check.get("context") or "unnamed-check",
+            "status": str(status).lower(),
+            "conclusion": str(conclusion).lower() if conclusion is not None else None,
+            "completed_at": check.get("completedAt")
+            or check.get("completed_at")
+            or "2026-07-05T00:00:00Z",
+        }
+
+    def _rest_pull_for_number(self, number: int) -> dict[str, Any] | None:
+        pr = next((item for item in self.open_prs if item.get("number") == number), None)
+        return self._rest_pr(pr) if pr is not None else None
+
+    def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+        if cmd[:5] != ["gh", "api", "--method", "GET", "-H"]:
+            return None
+        path = cmd[6]
+        fields = self._fields(cmd)
+        if path == "repos/owner/repo/pulls":
+            rows = [self._rest_pr(pr) for pr in self.open_prs]
+            head = fields.get("head")
+            if head:
+                branch = head.split(":", 1)[-1]
+                rows = [row for row in rows if (row.get("head") or {}).get("ref") == branch]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
+        pull_match = re.fullmatch(r"repos/owner/repo/pulls/(\d+)", path)
+        if pull_match:
+            payload = self._rest_pull_for_number(int(pull_match.group(1)))
+            if payload is None:
+                return subprocess.CompletedProcess(cmd, 1, "", "PR not found")
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        files_match = re.fullmatch(r"repos/owner/repo/pulls/(\d+)/files", path)
+        if files_match:
+            pr = next(
+                (item for item in self.open_prs if item.get("number") == int(files_match.group(1))),
+                None,
+            )
+            files = pr.get("files") if isinstance(pr, dict) else []
+            payload = [
+                {"filename": entry.get("path")}
+                for entry in files or []
+                if isinstance(entry, dict) and entry.get("path")
+            ]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        reviews_match = re.fullmatch(r"repos/owner/repo/pulls/(\d+)/reviews", path)
+        if reviews_match:
+            pr = next(
+                (
+                    item
+                    for item in self.open_prs
+                    if item.get("number") == int(reviews_match.group(1))
+                ),
+                None,
+            )
+            decision = pr.get("reviewDecision") if isinstance(pr, dict) else None
+            if decision is None:
+                decision = "APPROVED"
+            payload = [{"state": str(decision).lower(), "user": {"login": "reviewer"}}]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        check_match = re.fullmatch(r"repos/owner/repo/commits/(.+)/check-runs", path)
+        if check_match:
+            ref = check_match.group(1)
+            pr = next(
+                (
+                    item
+                    for item in self.open_prs
+                    if item.get("headRefOid") == ref or item.get("headRefName") == ref
+                ),
+                None,
+            )
+            checks = pr.get("statusCheckRollup") if isinstance(pr, dict) else []
+            payload = {
+                "check_runs": [
+                    self._rest_check_run(check)
+                    for check in checks or []
+                    if isinstance(check, dict) and (check.get("name") or check.get("context"))
+                ]
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        status_match = re.fullmatch(r"repos/owner/repo/commits/(.+)/status", path)
+        if status_match:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"statuses": []}), "")
+        return None
 
     def __call__(
         self,
@@ -403,22 +548,9 @@ class _FakeRunner:
         **_: Any,
     ) -> subprocess.CompletedProcess:
         self.calls.append(list(cmd))
-        if cmd[:3] == ["gh", "pr", "list"]:
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(self.open_prs), "")
-        if cmd[:3] == ["gh", "pr", "view"]:
-            pr_number = int(cmd[3])
-            pr = next((item for item in self.open_prs if item.get("number") == pr_number), None)
-            if pr is None:
-                return subprocess.CompletedProcess(cmd, 1, "", "PR not found")
-            fields = []
-            if "--json" in cmd:
-                fields = cmd[cmd.index("--json") + 1].split(",")
-            payload: dict[str, Any] = {}
-            if not fields or "headRefOid" in fields:
-                payload["headRefOid"] = pr.get("headRefOid")
-            if "statusCheckRollup" in fields:
-                payload["statusCheckRollup"] = pr.get("statusCheckRollup", [])
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        rest = self._rest_response(cmd)
+        if rest is not None:
+            return rest
         if cmd[:3] == ["gh", "api", "graphql"] and any(
             "dequeuePullRequest" in part for part in cmd
         ):
@@ -441,6 +573,14 @@ class _FakeRunner:
                 },
             }
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if (
+            cmd[:2] == ["gh", "api"]
+            and len(cmd) >= 3
+            and cmd[2].endswith("/git/matching-refs/heads/gh-readonly-queue")
+        ):
+            if self.fail_queue_refs:
+                return subprocess.CompletedProcess(cmd, 1, "", "queue refs unavailable")
+            return subprocess.CompletedProcess(cmd, 0, "\n".join(self.queue_refs), "")
         if cmd[:3] == ["gh", "pr", "merge"]:
             return subprocess.CompletedProcess(cmd, 0, f"merged {cmd[3]}\n", "")
         if (
@@ -456,6 +596,63 @@ class _FakeRunner:
         return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
 
 
+class _GraphQLRollupOnRestIndeterminateRunner(_FakeRunner):
+    def __init__(
+        self,
+        *,
+        graphql_head_sha: str | None = None,
+        graphql_rollup: list[dict[str, Any]] | None = None,
+        graphql_error: bool = False,
+    ) -> None:
+        super().__init__()
+        self.graphql_head_sha = graphql_head_sha
+        self.graphql_rollup = graphql_rollup
+        self.graphql_error = graphql_error
+
+    def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            path = cmd[6]
+            if re.fullmatch(r"repos/owner/repo/commits/(.+)/(check-runs|status)", path):
+                return subprocess.CompletedProcess(cmd, 1, "", "secondary rate limit")
+        return super()._rest_response(cmd)
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "graphql"] and any("statusCheckRollup" in part for part in cmd):
+            self.calls.append(list(cmd))
+            if self.graphql_error:
+                return subprocess.CompletedProcess(cmd, 1, "", "graphql unavailable")
+            pr = self.open_prs[0] if self.open_prs else _pr(0)
+            head_sha = self.graphql_head_sha or str(pr.get("headRefOid") or "")
+            rollup = (
+                self.graphql_rollup
+                if self.graphql_rollup is not None
+                else pr.get("statusCheckRollup") or []
+            )
+            payload = {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "headRefOid": head_sha,
+                            "commits": {
+                                "nodes": [
+                                    {
+                                        "commit": {
+                                            "oid": head_sha,
+                                            "statusCheckRollup": {
+                                                "contexts": {"nodes": rollup},
+                                            },
+                                        }
+                                    }
+                                ]
+                            },
+                        }
+                    }
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return super().__call__(cmd, **kwargs)
+
+
 def test_fetch_pr_release_evidence_rejects_non_json_success(tmp_path: Path) -> None:
     def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(cmd, 0, "not json", "")
@@ -468,8 +665,182 @@ def test_fetch_pr_release_evidence_rejects_non_json_success(tmp_path: Path) -> N
     )
 
     assert ok is False
-    assert message == "invalid_pr_release_evidence_json"
+    assert message == "invalid_pr_release_evidence_payload"
     assert checks == set()
+
+
+def test_fetch_pr_release_evidence_falls_back_to_graphql_when_rest_pull_indeterminate(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "secondary rate limit")
+        if cmd[:3] == ["gh", "api", "rate_limit"]:
+            payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            payload = {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "headRefOid": "sha-42",
+                            "commits": {
+                                "nodes": [
+                                    {
+                                        "commit": {
+                                            "oid": "sha-42",
+                                            "statusCheckRollup": {
+                                                "contexts": {
+                                                    "nodes": [
+                                                        {
+                                                            "__typename": "CheckRun",
+                                                            "name": "authority-case-check",
+                                                            "status": "COMPLETED",
+                                                            "conclusion": "SUCCESS",
+                                                        }
+                                                    ]
+                                                }
+                                            },
+                                        }
+                                    }
+                                ]
+                            },
+                        }
+                    }
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+    ok, sha, checks = autoqueue.fetch_pr_release_evidence(
+        42,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is True
+    assert sha == "sha-42"
+    assert checks == {"authority-case-check"}
+    assert any(call[:3] == ["gh", "api", "graphql"] for call in calls)
+
+
+def test_fetch_status_rollup_falls_back_to_graphql_when_rest_indeterminate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_rest_rollup(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": autoqueue.REST_INDETERMINATE_CHECK_NAME,
+                "status": "PENDING",
+                "conclusion": None,
+            }
+        ]
+
+    monkeypatch.setattr(autoqueue, "fetch_status_check_rollup_rest", fake_rest_rollup)
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:3] == ["gh", "api", "rate_limit"]:
+            payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            payload = {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "headRefOid": "sha-graph",
+                            "commits": {
+                                "nodes": [
+                                    {
+                                        "commit": {
+                                            "oid": "sha-graph",
+                                            "statusCheckRollup": {
+                                                "contexts": {
+                                                    "nodes": [
+                                                        {
+                                                            "__typename": "CheckRun",
+                                                            "name": "lint",
+                                                            "status": "COMPLETED",
+                                                            "conclusion": "SUCCESS",
+                                                            "completedAt": "2026-07-07T21:45:00Z",
+                                                        },
+                                                        {
+                                                            "__typename": "CheckRun",
+                                                            "name": "test",
+                                                            "status": "COMPLETED",
+                                                            "conclusion": "SUCCESS",
+                                                            "completedAt": "2026-07-07T21:46:00Z",
+                                                        },
+                                                    ]
+                                                }
+                                            },
+                                        }
+                                    }
+                                ]
+                            },
+                        }
+                    }
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+    rollup = autoqueue._fetch_status_check_rollup(
+        701,
+        head_sha="sha-graph",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+    summary = autoqueue.summarize_checks(rollup)
+
+    assert {"lint", "test"} <= summary.observed
+    assert autoqueue.REST_INDETERMINATE_CHECK_NAME not in summary.observed
+    assert any(call[:3] == ["gh", "api", "graphql"] for call in calls)
+
+
+def test_fetch_status_rollup_keeps_rest_indeterminate_when_graphql_head_mismatches(
+    tmp_path: Path,
+) -> None:
+    runner = _GraphQLRollupOnRestIndeterminateRunner(graphql_head_sha="sha-other")
+    runner.open_prs = [_pr(701)]
+
+    rollup = autoqueue._fetch_status_check_rollup(
+        701,
+        head_sha="sha-701",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+    summary = autoqueue.summarize_checks(rollup)
+
+    assert summary.observed == {autoqueue.REST_INDETERMINATE_CHECK_NAME}
+    assert any(call[:3] == ["gh", "api", "graphql"] for call in runner.calls)
+
+
+def test_fetch_pr_release_evidence_fails_closed_when_rest_and_graphql_unreadable(
+    tmp_path: Path,
+) -> None:
+    runner = _GraphQLRollupOnRestIndeterminateRunner(graphql_error=True)
+    runner.open_prs = [_pr(702)]
+
+    ok, message, checks = autoqueue.fetch_pr_release_evidence(
+        702,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is False
+    assert message == "invalid_status_check_rollup"
+    assert checks == set()
+    assert any(call[:3] == ["gh", "api", "graphql"] for call in runner.calls)
 
 
 def test_fetch_pr_release_evidence_rejects_missing_head_oid(tmp_path: Path) -> None:
@@ -491,6 +862,131 @@ def test_fetch_pr_release_evidence_rejects_missing_head_oid(tmp_path: Path) -> N
     assert ok is False
     assert message == "missing_head_sha"
     assert checks == set()
+
+
+def test_fetch_pr_release_evidence_bypasses_status_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42)]
+    observed: dict[str, object] = {}
+
+    def fake_rollup(
+        ref: str,
+        *,
+        repo: str,
+        repo_root: Path,
+        runner: Any,
+        use_cache: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        observed["ref"] = ref
+        observed["use_cache"] = use_cache
+        return [_check("authority-case-check")]
+
+    monkeypatch.setattr(autoqueue, "fetch_status_check_rollup_rest", fake_rollup)
+
+    ok, sha, checks = autoqueue.fetch_pr_release_evidence(
+        42,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is True
+    assert sha == "sha-42"
+    assert checks == {"authority-case-check"}
+    assert observed == {"ref": "sha-42", "use_cache": False}
+
+
+def test_fetch_open_prs_uses_rest_core_not_gh_pr_list(tmp_path: Path) -> None:
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42)]
+
+    prs = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
+
+    assert [pr.number for pr in prs] == [42]
+    assert any(
+        call[:5] == ["gh", "api", "--method", "GET", "-H"] and call[6] == "repos/owner/repo/pulls"
+        for call in runner.calls
+    )
+    assert not any(call[:3] == ["gh", "pr", "list"] for call in runner.calls)
+    assert not any(call[:3] == ["gh", "pr", "view"] for call in runner.calls)
+
+
+def test_empty_rest_reviews_do_not_synthesize_review_required(tmp_path: Path) -> None:
+    class EmptyReviewsRunner(_FakeRunner):
+        def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+                path = cmd[6]
+                if re.fullmatch(r"repos/owner/repo/pulls/\d+/reviews", path):
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps([]), "")
+            return super()._rest_response(cmd)
+
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+    runner = EmptyReviewsRunner()
+    runner.open_prs = [_pr(42)]
+
+    prs = autoqueue.fetch_open_prs(repo="owner/repo", repo_root=tmp_path, runner=runner)
+    assert prs[0].review_decision is None
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=False,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert "review_decision:REVIEW_REQUIRED" not in report["decisions"][0].get("reasons", [])
+
+
+def test_graphql_backoff_skips_autoqueue_reconciler(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+
+    class _LowGraphQLRunner(_FakeRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            if cmd[:3] == ["gh", "api", "rate_limit"]:
+                self.calls.append(list(cmd))
+                payload = {"resources": {"graphql": {"remaining": 0, "reset": 1893456000}}}
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return super().__call__(cmd, **kwargs)
+
+    runner = _LowGraphQLRunner()
+    runner.open_prs = [_pr(42)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["skipped"] is True
+    assert report["reason"] == "merge_queue_state_indeterminate"
+    assert not any(call[:3] == ["gh", "api", "graphql"] for call in runner.calls)
+
+
+def test_review_required_rest_decision_blocks_autoqueue(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42, review_decision="REVIEW_REQUIRED")]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    assert "review_decision:REVIEW_REQUIRED" in report["decisions"][0]["reasons"]
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
 def test_queue_green_governed_pr(tmp_path: Path) -> None:
@@ -516,6 +1012,44 @@ def test_queue_green_governed_pr(tmp_path: Path) -> None:
         for call in runner.calls
     )
     assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
+
+
+def test_reconciler_falls_back_to_graphql_when_rest_rollup_indeterminate(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=4455)
+    runner = _GraphQLRollupOnRestIndeterminateRunner()
+    runner.open_prs = [_pr(4455)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        required_checks=("lint", "test", "typecheck", "web-build", "vscode-build"),
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    assert report["counts"]["queue"] == 1
+    assert not any(
+        reason.startswith("missing_required_checks:") for reason in decision.get("reasons", [])
+    )
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "4455",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+    ] in runner.calls
+    assert any(
+        call[:3] == ["gh", "api", "graphql"] and any("statusCheckRollup" in part for part in call)
+        for call in runner.calls
+    )
 
 
 def test_does_not_queue_when_admission_status_write_fails(tmp_path: Path) -> None:
@@ -647,6 +1181,37 @@ def test_blocks_failed_dirty_draft_and_hold_prs(tmp_path: Path) -> None:
     assert "merge_state:DIRTY" in reasons[2]
     assert "draft" in reasons[3]
     assert "hold_labels:do-not-merge" in reasons[4]
+
+
+def test_ignores_failed_non_required_advisory_check(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=47)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(
+            47,
+            checks=[
+                _check("lint"),
+                _check("test"),
+                _check("typecheck"),
+                _check("web-build"),
+                _check("vscode-build"),
+                _check("hkp-advisory", "FAILURE"),
+            ],
+        )
+    ]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert not report["decisions"][0].get("reasons")
+    assert any(call[:4] == ["gh", "pr", "merge", "47"] for call in runner.calls)
 
 
 def test_ignores_prior_autoqueue_admission_checks_when_classifying_checks(
@@ -1061,6 +1626,56 @@ def test_skips_prs_already_in_queue_or_auto_merge_enabled(tmp_path: Path) -> Non
     assert report["counts"]["already_queued"] == 1
     assert report["counts"]["already_auto_merge_enabled"] == 1
     assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
+
+def test_gh_readonly_queue_ref_marks_pr_already_queued_when_graphql_empty(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queue-ref", pr=4296)
+    runner = _FakeRunner()
+    runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-4296-deadbeef"]
+    runner.open_prs = [_pr(4296)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["already_queued"] == 1
+    assert report["decisions"][0]["action"] == "already_queued"
+    assert any(
+        call[:2] == ["gh", "api"]
+        and len(call) >= 3
+        and call[2] == "repos/owner/repo/git/matching-refs/heads/gh-readonly-queue"
+        for call in runner.calls
+    )
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
+
+def test_merge_queue_ref_numbers_returns_empty_set_when_matching_refs_fails(
+    tmp_path: Path,
+) -> None:
+    runner = _FakeRunner()
+    runner.fail_queue_refs = True
+    runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-4296-deadbeef"]
+
+    queued = autoqueue._merge_queue_ref_pr_numbers(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert queued == set()
+    assert any(
+        call[:2] == ["gh", "api"]
+        and len(call) >= 3
+        and call[2] == "repos/owner/repo/git/matching-refs/heads/gh-readonly-queue"
+        for call in runner.calls
+    )
 
 
 def test_merge_queue_status_is_ready_for_already_queued_pr(tmp_path: Path) -> None:
@@ -1720,6 +2335,7 @@ def test_summarize_checks_keeps_admission_context_ignored_until_written_by_autoq
         [
             _check(autoqueue.AUTOQUEUE_ADMISSION_CONTEXT),
             _check("governance-gate"),
+            _check("hkp-advisory", "CANCELLED"),
             _check("pr-admission"),
             _check("review"),
             _check(autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE),
@@ -1730,9 +2346,11 @@ def test_summarize_checks_keeps_admission_context_ignored_until_written_by_autoq
     assert "review" in summary.verified_passed
     assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE not in summary.verified_passed
     assert "governance-gate" not in summary.verified_passed
+    assert "hkp-advisory" not in summary.verified_passed
     assert "pr-admission" not in summary.verified_passed
     assert autoqueue.AUTOQUEUE_ADMISSION_CONTEXT not in summary.passed
     assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE not in summary.passed
+    assert "hkp-advisory" not in summary.failed
 
 
 def test_auto_arms_release_unauthorized_pr_open_task(tmp_path: Path) -> None:
@@ -2094,6 +2712,120 @@ def test_public_claim_mitigation_does_not_auto_arm_public_mutation_surface(
     assert not any(call[:4] == ["gh", "pr", "merge", "759"] for call in runner.calls)
 
 
+def test_head_locked_public_current_release_passes_revalidation(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="already-armed-public-current-surface",
+        status="pr_open",
+        pr=769,
+        branch="feat/769",
+        mutation_surface="public",
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "public_current": True,
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-769",
+            "release_authorized_head_ref": "feat/769",
+            "stage": "S7_RELEASE",
+            "risk_flags": {
+                "public_claim_sensitive": True,
+            },
+        },
+    )
+    _write_governance_review_dossier(vault, "already-armed-public-current-surface", 769)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(
+            769,
+            branch="feat/769",
+            files=["agents/omg_web_builder/static/index.html"],
+            checks=_public_claim_mitigation_checks(),
+        )
+    ]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert not any(
+        item["pr"] == 769 and item["action"] == "release_head_revalidation"
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 769
+        and item["action"] == "release_authorization_waiver"
+        and item["ok"] is True
+        and item["waivers"]
+        == [
+            "mutation_surface_waived_by_release_authorization:public",
+            "public_current_waived_by_release_authorization",
+        ]
+        for item in report["mutations"]
+    )
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "769",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-769",
+    ] in runner.calls
+
+
+def test_head_locked_provider_spend_release_still_blocks_revalidation(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="already-armed-provider-spend-surface",
+        status="pr_open",
+        pr=770,
+        branch="feat/770",
+        mutation_surface="provider_spend",
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-770",
+            "release_authorized_head_ref": "feat/770",
+            "stage": "S7_RELEASE",
+        },
+    )
+    _write_governance_review_dossier(vault, "already-armed-provider-spend-surface", 770)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(770, branch="feat/770")]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert any(
+        item["pr"] == 770
+        and item["action"] == "release_head_revalidation"
+        and item["ok"] is False
+        and item["message"].startswith("current_release_auto_arm_blocked:")
+        and "mutation_surface:provider_spend" in item["message"]
+        for item in report["mutations"]
+    )
+    assert not any(call[:4] == ["gh", "pr", "merge", "770"] for call in runner.calls)
+
+
 def test_auto_arms_governance_sensitive_task_with_verified_mitigation_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2220,14 +2952,11 @@ def test_governance_auto_arm_refetches_live_mitigation_evidence_before_write(
     class _StaleMitigationRunner(_FakeRunner):
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
             result = super().__call__(cmd, **kwargs)
-            # The INITIAL per-PR check fetch (`gh pr view N --json statusCheckRollup`) returns the
+            # The INITIAL per-PR REST check-runs fetch returns the
             # PASSING checks (result was built before this mutation); the mutation then leaves
             # open_prs FAILING so the refetch-before-write
-            # (`gh pr view N --json headRefOid,statusCheckRollup`, fetch_pr_release_evidence)
-            # observes the fresh authority-case-check failure — the stale->fresh transition this
-            # test exercises. (statusCheckRollup was moved out of the bulk `gh pr list` to avoid a
-            # 504 on the open-PR backlog, so the injection point moved from the list to this fetch.)
-            if cmd[:3] == ["gh", "pr", "view"] and cmd[-1] == "statusCheckRollup":
+            # (`fetch_pr_release_evidence`) observes the fresh authority-case-check failure.
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/check-runs"):
                 self.open_prs[0]["statusCheckRollup"] = [
                     _check("lint"),
                     _check("test"),
@@ -2385,14 +3114,11 @@ def test_already_queued_refetches_mitigation_checks_before_success_proof(
     class _StaleMitigationRunner(_FakeRunner):
         def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
             result = super().__call__(cmd, **kwargs)
-            # The INITIAL per-PR check fetch (`gh pr view N --json statusCheckRollup`) returns the
+            # The INITIAL per-PR REST check-runs fetch returns the
             # PASSING checks (result was built before this mutation); the mutation then leaves
             # open_prs FAILING so the refetch-before-write
-            # (`gh pr view N --json headRefOid,statusCheckRollup`, fetch_pr_release_evidence)
-            # observes the fresh authority-case-check failure — the stale->fresh transition this
-            # test exercises. (statusCheckRollup was moved out of the bulk `gh pr list` to avoid a
-            # 504 on the open-PR backlog, so the injection point moved from the list to this fetch.)
-            if cmd[:3] == ["gh", "pr", "view"] and cmd[-1] == "statusCheckRollup":
+            # (`fetch_pr_release_evidence`) observes the fresh authority-case-check failure.
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"] and cmd[6].endswith("/check-runs"):
                 self.open_prs[0]["statusCheckRollup"] = [
                     _check("lint"),
                     _check("test"),
@@ -2492,25 +3218,19 @@ def test_head_locked_sensitive_path_release_passes_revalidation(
         == ["sensitive_path_waived_by_release_authorization:hapax-council/CLAUDE.md"]
         for item in report["mutations"]
     )
-    evidence_index = runner.calls.index(
-        [
-            "gh",
-            "pr",
-            "view",
-            "760",
-            "--repo",
-            "owner/repo",
-            "--json",
-            "headRefOid,statusCheckRollup",
-        ]
-    )
     success_status_index = next(
         index
         for index, call in enumerate(runner.calls)
         if call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-760"]
         and "state=success" in call
     )
-    assert evidence_index < success_status_index
+    evidence_indices = [
+        index
+        for index, call in enumerate(runner.calls)
+        if call[:5] == ["gh", "api", "--method", "GET", "-H"]
+        and call[6] == "repos/owner/repo/commits/sha-760/check-runs"
+    ]
+    assert len([index for index in evidence_indices if index < success_status_index]) >= 2
     assert any(
         call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-760"]
         and "state=success" in call
@@ -3524,6 +4244,7 @@ def test_governance_auto_arm_missing_head_sha_blocks_before_note_write(
         pr=745,
         extra_frontmatter=_eligible_arm_extra(),
     )
+    _write_governance_review_dossier(vault, "stranded-missing-head", 745)
     runner = _FakeRunner()
     pr = _pr(745, checks=_governance_mitigation_checks())
     pr["headRefOid"] = None

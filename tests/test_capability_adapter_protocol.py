@@ -121,7 +121,7 @@ def test_worker_has_launch_and_sendcapable_has_send() -> None:
     assert hasattr(CodexAdapter, "launch")
     assert hasattr(CodexAdapter, "send")
     assert hasattr(VibeAdapter, "launch")
-    assert not hasattr(VibeAdapter, "send")
+    assert hasattr(VibeAdapter, "send")
 
 
 def test_budget_authority_has_no_launch_or_send() -> None:
@@ -206,6 +206,10 @@ def test_new_worker_adapters_inherit_launch_gate(adapter_cls: type[WorkerAdapter
     spawn.assert_called_once_with(request, launch_callable)
 
 
+def test_vibe_adapter_marks_registered_send_surface() -> None:
+    assert issubclass(VibeAdapter, SendCapableAdapter)
+
+
 def test_send_asserts_authority_then_is_not_yet_wired() -> None:
     # send gates authority just like launch; the relay itself is a glue-slice concern.
     refuse = _decision(action=DispatchAction.REFUSE, launch_allowed=False)
@@ -214,6 +218,8 @@ def test_send_asserts_authority_then_is_not_yet_wired() -> None:
     allow = _decision(action=DispatchAction.LAUNCH, launch_allowed=True)
     with pytest.raises(NotImplementedError):
         ClaudeAdapter().send(allow, "hello")
+    with pytest.raises(NotImplementedError):
+        VibeAdapter().send(allow, "hello")
 
 
 # --- collect_receipts delegation ---------------------------------------------------------------
@@ -312,6 +318,10 @@ def test_agy_classify_failure_shares_the_cli_table() -> None:
 
 def test_vibe_classify_failure_shares_the_cli_table() -> None:
     adapter = VibeAdapter()
+    assert (
+        adapter.classify_failure("HTTP 429 Too Many Requests").code is FailureCode.QUOTA_EXHAUSTION
+    )
+    assert adapter.classify_failure("invalid api key").code is FailureCode.AUTH_FAILURE
     assert adapter.classify_failure("service unavailable").code is FailureCode.TRANSIENT
     assert adapter.classify_failure("nothing notable").code is FailureCode.UNKNOWN
     assert adapter.classify_failure("x").platform == Platform.VIBE.value
@@ -344,3 +354,6 @@ def test_sendcapable_is_not_a_capability_adapter_subclass() -> None:
     assert issubclass(ClaudeAdapter, CapabilityAdapter)
     assert issubclass(ClaudeAdapter, WorkerAdapter)
     assert issubclass(ClaudeAdapter, SendCapableAdapter)
+    assert issubclass(VibeAdapter, CapabilityAdapter)
+    assert issubclass(VibeAdapter, WorkerAdapter)
+    assert issubclass(VibeAdapter, SendCapableAdapter)

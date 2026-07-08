@@ -23,6 +23,7 @@ import base64
 import hashlib
 import json
 import os
+import stat
 import tempfile
 import time
 from collections.abc import Callable
@@ -31,16 +32,19 @@ from pathlib import Path
 
 DEFAULT_AUTH_JSON = Path.home() / ".codex" / "auth.json"
 DEFAULT_PUBLISH_DIR = Path.home() / ".cache" / "hapax" / "codex-oauth"
+DEFAULT_PUBLISHED_ACCESS_TOKEN = DEFAULT_PUBLISH_DIR / "access_token"
 DEFAULT_REFRESH_MARGIN_S = 300.0  # refresh this many seconds before expiry (5 min)
 
 __all__ = [
     "DEFAULT_AUTH_JSON",
     "DEFAULT_PUBLISH_DIR",
+    "DEFAULT_PUBLISHED_ACCESS_TOKEN",
     "DEFAULT_REFRESH_MARGIN_S",
     "AccessToken",
     "RefreshFn",
     "decode_access_token_exp",
     "load_access_token",
+    "load_published_access_token",
     "needs_refresh",
     "publish_access_token",
     "refresh_and_publish",
@@ -91,6 +95,46 @@ def load_access_token(auth_json: Path = DEFAULT_AUTH_JSON) -> AccessToken | None
         return None
     token = (data.get("tokens") or {}).get("access_token")
     if not isinstance(token, str) or not token:
+        return None
+    return AccessToken(raw=token, exp=decode_access_token_exp(token))
+
+
+def load_published_access_token(
+    publish_dir: Path = DEFAULT_PUBLISH_DIR,
+    *,
+    token_file: Path | None = None,
+) -> AccessToken | None:
+    """Read the single-writer published access token, if present.
+
+    This is the consumer-side path for Codex launchers. It deliberately ignores
+    ``auth.json`` and therefore never reads or exercises the refresh token.
+    """
+
+    path = token_file.expanduser() if token_file is not None else publish_dir / "access_token"
+    try:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        if info.st_uid != os.getuid():
+            return None
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            return None
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            token = handle.read().strip()
+    except OSError:
+        return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if not token:
         return None
     return AccessToken(raw=token, exp=decode_access_token_exp(token))
 

@@ -10,11 +10,13 @@ import pytest
 
 from shared.dispatcher_policy import (
     LOCAL_DEV_PLATFORMS,
+    CandidateStatus,
     ClogRouteState,
     DispatchAction,
     DispatchRequest,
     QuotaSpendState,
     RouteCapabilityState,
+    _resource_state_refs,
     build_dispatch_request,
     build_route_authority_receipt,
     evaluate_dispatch_policy,
@@ -54,7 +56,7 @@ GLMCP_ADMISSION_EVIDENCE_REF = (
     "witness:supported-tool-usage-witness:"
     "supported_tool:hapax-glmcp-reviewer:"
     "endpoint:https://api.z.ai/api/coding/paas/v4:"
-    "model:glm-5:"
+    "model:glm-5.2:"
     "observed_at:2026-05-09T22:00:00Z:"
     "fresh_until:2026-05-09T23:00:00Z"
 )
@@ -110,6 +112,39 @@ def _quota(**overrides: object) -> QuotaSpendState:
     }
     payload.update(overrides)
     return QuotaSpendState.model_validate(payload)
+
+
+def test_resource_state_refs_skip_availability_receipt_for_non_resource_degradation() -> None:
+    capability = _capability(
+        freshness_ok=False,
+        freshness_errors=(
+            "capability_availability_degraded",
+            "auth_surface_not_fresh",
+            "capacity_pool_headroom_not_fresh",
+        ),
+        availability_receipt_ref="capability-availability-receipt:codex.headless.full:test",
+    )
+
+    refs = _resource_state_refs(capability, None)
+
+    assert "capability-availability-receipt:codex.headless.full:test" not in refs
+    assert "capability.resource_source:local_probe" in refs
+
+
+def test_resource_state_refs_include_availability_receipt_for_resource_degradation() -> None:
+    capability = _capability(
+        freshness_ok=False,
+        freshness_errors=(
+            "capability_availability_degraded",
+            "codex.headless.full: resource stale",
+        ),
+        availability_receipt_ref="capability-availability-receipt:codex.headless.full:test",
+    )
+
+    refs = _resource_state_refs(capability, None)
+
+    assert "capability-availability-receipt:codex.headless.full:test" in refs
+    assert "codex.headless.full: resource stale" in refs
 
 
 def _request(**overrides: object) -> DispatchRequest:
@@ -239,13 +274,16 @@ def _route_with_scores(
     payload["freshness"]["quota_checked_at"] = "2026-05-09T22:00:00Z"
     payload["freshness"]["resource_checked_at"] = "2026-05-09T22:00:00Z"
     payload["freshness"]["provider_docs_checked_at"] = "2026-05-09T22:00:00Z"
+    quota_evidence_refs = [f"test:{route_id}:quota"]
+    if payload.get("capacity_pool") == "subscription_quota":
+        quota_evidence_refs.append(f"test:{route_id}:account-live-quota:observed")
     payload["freshness"]["evidence"] = {
         "capability": {
             "evidence_refs": [f"test:{route_id}:capability"],
             "blocked_reasons": [],
         },
         "quota": {
-            "evidence_refs": [f"test:{route_id}:quota"],
+            "evidence_refs": quota_evidence_refs,
             "blocked_reasons": [],
         },
         "resource": {
@@ -2282,6 +2320,63 @@ def test_dimensional_policy_holds_lower_scoring_requested_route() -> None:
     assert "requested_route_dominated_by_higher_scoring_candidate" in decision.reason_codes
     assert decision.dimensional_receipt is not None
     assert decision.dimensional_receipt.selected_route_id == "claude.headless.full"
+
+
+def test_dimensional_policy_launches_substitute_for_degraded_recomposition() -> None:
+    primary = _dimensional_request(
+        "codex.headless.full",
+        score=5,
+        capability_overrides={
+            "freshness_ok": False,
+            "freshness_errors": (
+                "capability_availability_degraded",
+                "availability_receipt:availability-codex-headless-full-test",
+                "auth_surface_not_fresh",
+                "capacity_pool_headroom_not_fresh",
+            ),
+            "availability_status": "degraded",
+            "availability_receipt_ref": (
+                "capability-availability-receipt:"
+                "codex.headless.full:availability-codex-headless-full-test"
+            ),
+            "availability_reason_codes": (
+                "capability_availability_degraded",
+                "availability_receipt:availability-codex-headless-full-test",
+                "auth_surface:oauth",
+                "capacity_pool:subscription_quota",
+                "auth_surface_not_fresh",
+                "capacity_pool_headroom_not_fresh",
+                "refresh_status:deferred",
+            ),
+            "availability_refresh_status": "deferred",
+            "availability_recomposition_required": True,
+        },
+    )
+    substitute = _dimensional_request("claude.headless.full", score=4)
+
+    decision = evaluate_dispatch_policy(
+        primary,
+        candidate_requests=(substitute,),
+        now=NOW,
+    )
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.launch_allowed is True
+    assert decision.route_id == "claude.headless.full"
+    assert "policy_launch" in decision.reason_codes
+    assert "availability_recomposition_required" in decision.reason_codes
+    assert "availability_recomposed_from:codex.headless.full" in decision.reason_codes
+    assert "availability_recomposed_to:claude.headless.full" in decision.reason_codes
+    assert (
+        "capability-availability-receipt:codex.headless.full:availability-codex-headless-full-test"
+    ) in decision.reason_codes
+    assert decision.dimensional_receipt is not None
+    assert decision.dimensional_receipt.selected_route_id == "claude.headless.full"
+    candidates = {
+        candidate.route_id: candidate for candidate in decision.dimensional_receipt.candidates
+    }
+    assert candidates["codex.headless.full"].status is CandidateStatus.VETOED
+    assert candidates["claude.headless.full"].status is CandidateStatus.SELECTED
 
 
 def test_dimensional_policy_holds_ties_without_degraded_authority() -> None:

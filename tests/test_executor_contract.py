@@ -19,7 +19,7 @@ if str(SCRIPTS) not in sys.path:
 
 import executor_contract as ec  # noqa: E402
 
-ALL_PLATFORMS = {"api", "glmcp", "claude", "codex", "vibe", "local_tool"}
+ALL_PLATFORMS = {"agy", "api", "glmcp", "claude", "codex", "vibe", "local_tool"}
 
 
 def test_registry_covers_all_runtimes() -> None:
@@ -47,6 +47,8 @@ def test_supports_route_for_known_routes() -> None:
 def test_supports_route_rejects_unlaunchable_routes() -> None:
     assert not ec.supports_route("gemini", "headless")
     assert not ec.supports_route("gemini", "interactive")
+    assert not ec.supports_route("agy", "review")
+    assert not ec.supports_route("agy", "headless")
     assert not ec.supports_route("antigrav", "interactive")
     assert not ec.supports_route("antigrav", "headless")
     assert not ec.supports_route("vibe", "interactive")
@@ -66,6 +68,15 @@ def test_codex_has_a_genuine_headless_path() -> None:
 
 def test_antigrav_is_excised_from_executor_registry() -> None:
     assert ec.capabilities("antigrav") is None
+
+
+def test_agy_is_read_only_review_surface_not_launcher() -> None:
+    agy = ec.capabilities("agy")
+    assert agy is not None
+    assert agy.read_only is True
+    assert agy.modes == ()
+    assert agy.profiles == ("direct",)
+    assert "hapax-agy-reviewer" in agy.notes
 
 
 def test_capabilities_unknown_is_none() -> None:

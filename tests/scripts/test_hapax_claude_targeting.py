@@ -284,7 +284,7 @@ def test_send_rejects_retired_antigrav_role_even_when_allowlisted(tmp_path: Path
         assert result.returncode == 2
         assert f"invalid role '{role}'" in result.stderr
         assert "retired/excised send targets cannot be allowlisted" in result.stderr
-        assert "mint measured agy supply-leaf intake" in result.stderr
+        assert "agy.review.direct" in result.stderr
 
 
 def test_send_rejects_dev_lookalikes_not_in_pool(tmp_path: Path) -> None:

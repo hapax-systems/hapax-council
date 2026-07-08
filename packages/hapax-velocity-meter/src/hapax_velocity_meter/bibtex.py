@@ -16,7 +16,7 @@ METHODOLOGY_BIBTEX = """\
   title        = {{hapax-velocity-meter: Measure development velocity from any git history}},
   author       = {Hapax (Oudepode) and {Claude Code}},
   year         = {2026},
-  url          = {https://github.com/ryanklee/hapax-council},
+  url          = {https://github.com/hapax-systems/hapax-council},
   license      = {PolyForm Strict 1.0.0},
   note         = {arXiv preprint, Zenodo DOI, and SWHID pending; see CITATION.cff},
 }

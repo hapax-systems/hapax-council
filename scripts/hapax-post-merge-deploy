@@ -49,8 +49,10 @@
 #                                    ~/.local/lib/hapax-recovery/council
 #   scripts/hapax-*                → ensure ~/.local/bin/ symlink
 #   hooks/scripts/{cc-task-gate.impl.sh,agent-role.sh,escape-grant.sh,
+#                  hapax_check_enable_latch.sh,cc-task-gate-bootstrap.py,
 #                  hooks-doctor.sh,cc-task-gate.sh}
-#                                  → redeploy the ONE canonical gate closure to
+#                                  → reconcile the ONE canonical gate closure
+#                                    on every run and redeploy drift to
 #                                    ~/.local/lib/hapax/hooks via hooks-doctor
 #                                    --deploy-canonical (reform FM-6: every
 #                                    worktree's cc-task-gate.sh is a shim that
@@ -246,9 +248,13 @@ fi
 # so the skew can't recur silently. Returns 1 on drift, 0 when intact.
 #
 # Only deploy-installed `scripts/hapax-*` symlinks are in scope: their target
-# is `<root>/scripts/<name>`. Symlinks to non-worktree install dirs (e.g.
-# hapax-hooks-doctor -> ~/.local/lib/hapax/hooks/...) are not deploy-tree
-# symlinks and are intentionally ignored. Env overrides isolate it for tests:
+# is `<root>/scripts/<name>` and the target basename matches the link name.
+# A link to a different managed hapax-* script is still deploy drift; legacy
+# aliases to non-hapax script names remain outside this check.
+# Symlinks to non-worktree install dirs (e.g. hapax-hooks-doctor ->
+# ~/.local/lib/hapax/hooks/...) or legacy aliases to non-hapax script names
+# (e.g. hapax-request-decompose -> scripts/request-decompose) are not
+# deploy-tree symlinks and are intentionally ignored. Env overrides isolate it for tests:
 # HAPAX_LOCAL_BIN, HAPAX_DEPLOY_SYMLINK_ROOTS, HAPAX_DRIFT_STATE_DIR,
 # HAPAX_DRIFT_NTFY (set 0 to suppress curl).
 check_symlink_drift() {
@@ -264,7 +270,7 @@ check_symlink_drift() {
     origin_main="$(git -C "$REPO" rev-parse --verify --quiet origin/main 2>/dev/null || true)"
 
     local -a dangling=() offtree=()
-    local link base target root ok r
+    local link base target target_base root ok r
     for link in "$bin"/hapax-*; do
         # A literal (no-match) glob is not a symlink, so this also covers the
         # empty-dir case without nullglob.
@@ -277,6 +283,15 @@ check_symlink_drift() {
         fi
         case "$target" in
             */scripts/*)
+                target_base="$(basename "$target")"
+                if [ "$target_base" != "$base" ]; then
+                    case "$target_base" in
+                        hapax-*)
+                            offtree+=("$base -> $target (target name mismatch)")
+                            ;;
+                    esac
+                    continue
+                fi
                 root="${target%/scripts/*}"
                 ok=0
                 for r in $roots; do
@@ -381,6 +396,7 @@ record_post_merge_trace() {
     HAPAX_TRACE_SCRIPTS="$(_trace_join "${SCRIPTS[@]}")" \
     HAPAX_TRACE_SCRIPT_PY="$(_trace_join "${SCRIPT_PY[@]}")" \
     HAPAX_TRACE_QUAKE_ASSETS="$(_trace_join "${QUAKE_ASSETS[@]}")" \
+    HAPAX_TRACE_CANONICAL_GATE="$(_trace_join "${CANONICAL_GATE[@]}")" \
     HAPAX_TRACE_AUDIO_SAFE_RESTARTS="$(_trace_join "${AUDIO_SAFE_RESTARTS[@]}")" \
     HAPAX_TRACE_SYSTEMD_UNCLASSIFIED="$(_trace_join "${SYSTEMD_UNCLASSIFIED[@]}")" \
     python3 - "$TRACE_PATH" "$TRACE_MAX_RECORDS" "$SHA" "$DRY_RUN" "$status" "$exit_code" \
@@ -424,6 +440,7 @@ deploy_groups = {
     "hapax_scripts": lines("HAPAX_TRACE_SCRIPTS"),
     "unit_backing_scripts": lines("HAPAX_TRACE_SCRIPT_PY"),
     "quake_assets": lines("HAPAX_TRACE_QUAKE_ASSETS"),
+    "canonical_gate_closure": lines("HAPAX_TRACE_CANONICAL_GATE"),
 }
 runtime_media_groups = [
     name
@@ -440,6 +457,7 @@ runtime_media_groups = [
         "hapax_scripts",
         "unit_backing_scripts",
         "quake_assets",
+        "canonical_gate_closure",
     )
     if deploy_groups[name]
 ]
@@ -534,8 +552,21 @@ else
     FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
 fi
 
-PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=()
+PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=()
 GATE_CLOSURE=()
+# Must stay a superset of hooks-doctor's CLOSURE_SIBLINGS (+ the impl):
+# deploy_canonical REFUSES an incomplete staged closure, so a missing sibling
+# here would make every drift redeploy fail (and, under set -e, kill the
+# whole post-merge deploy) until the drift resolved itself.
+GATE_CLOSURE_FILES=(
+    hooks/scripts/cc-task-gate.impl.sh
+    hooks/scripts/agent-role.sh
+    hooks/scripts/escape-grant.sh
+    hooks/scripts/hapax_check_enable_latch.sh
+    hooks/scripts/cc-task-gate-bootstrap.py
+    hooks/scripts/hooks-doctor.sh
+)
+CANONICAL_HOOKS_DIR="${HAPAX_CANONICAL_HOOKS:-$HOME/.local/lib/hapax/hooks}"
 SYSTEMD_UNCLASSIFIED=()
 AUDIO_SAFE_RESTARTS=()
 RECOVERY_BUNDLE_SELF_HEAL=0
@@ -745,24 +776,130 @@ stage_coord_activation_before_restart() {
     HAPAX_COORD_DEPLOY_RESTART_IF_UP_TO_DATE=1 "$deploy_bin"
 }
 
+gate_closure_source_status() {
+    local present=0
+    local -a missing=()
+    local f
+    for f in "${GATE_CLOSURE_FILES[@]}"; do
+        if git cat-file -e "$SHA:$f" 2>/dev/null; then
+            present=$((present + 1))
+        else
+            missing+=("$f")
+        fi
+    done
+    if [ "$present" -eq 0 ]; then
+        return 1
+    fi
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "hapax-post-merge-deploy: incomplete canonical gate closure at $SHA:" >&2
+        for f in "${missing[@]}"; do
+            echo "  missing $f" >&2
+        done
+        echo "hapax-post-merge-deploy: next: ensure every GATE_CLOSURE_FILES member exists at $SHA or remove the partial closure, then rerun hapax-post-merge-deploy for this merge" >&2
+        return 2
+    fi
+    return 0
+}
+
+stage_gate_closure() {
+    local stage="$1"
+    local f
+    mkdir -p "$stage/hooks/scripts"
+    for f in "${GATE_CLOSURE_FILES[@]}"; do
+        if ! git show "$SHA:$f" > "$stage/$f"; then
+            echo "hapax-post-merge-deploy: failed to materialize $f from $SHA; next: verify the source object exists and rerun hapax-post-merge-deploy for this merge" >&2
+            return 2
+        fi
+        chmod +x "$stage/$f" 2>/dev/null || true
+    done
+}
+
+canonical_gate_dest_for_source() {
+    local f="$1"
+    case "$f" in
+        hooks/scripts/cc-task-gate.impl.sh)
+            printf '%s\n' "$CANONICAL_HOOKS_DIR/cc-task-gate.sh"
+            ;;
+        *)
+            printf '%s/%s\n' "$CANONICAL_HOOKS_DIR" "$(basename "$f")"
+            ;;
+    esac
+}
+
+canonical_gate_closure_in_sync() {
+    local stage="$1"
+    local f src dest
+    for f in "${GATE_CLOSURE_FILES[@]}"; do
+        src="$stage/$f"
+        dest="$(canonical_gate_dest_for_source "$f")"
+        [ -r "$dest" ] || return 1
+        cmp -s "$src" "$dest" || return 1
+    done
+    return 0
+}
+
+reconcile_canonical_gate_closure() {
+    local source_status=0
+    local stage rc
+
+    gate_closure_source_status || source_status=$?
+    case "$source_status" in
+        0) ;;
+        1)
+            # Backward-compatible for old/synthetic repos used by tests; the
+            # production council tree always carries the hook closure.
+            return 0
+            ;;
+        *)
+            return "$source_status"
+            ;;
+    esac
+
+    stage="$(mktemp -d)"
+    if stage_gate_closure "$stage"; then
+        :
+    else
+        rc=$?
+        rm -rf "$stage" 2>/dev/null || true
+        return "$rc"
+    fi
+
+    if canonical_gate_closure_in_sync "$stage"; then
+        echo "canonical gate closure already matches $SHA"
+        rm -rf "$stage" 2>/dev/null || true
+        return 0
+    fi
+
+    CANONICAL_GATE+=("hooks/scripts/cc-task-gate.impl.sh")
+    if [ "$DRY_RUN" = "1" ]; then
+        echo "dry-run: canonical gate drift detected; would redeploy via hooks-doctor --deploy-canonical"
+        rm -rf "$stage" 2>/dev/null || true
+        return 0
+    fi
+
+    if [ "${#GATE_CLOSURE[@]}" -gt 0 ]; then
+        echo "gate closure changed (${#GATE_CLOSURE[@]}): redeploying canonical gate"
+    else
+        echo "canonical gate drift detected: redeploying canonical gate"
+    fi
+    if bash "$stage/hooks/scripts/hooks-doctor.sh" --deploy-canonical --from "$stage"; then
+        DID_ANYTHING=1
+        rm -rf "$stage" 2>/dev/null || true
+        return 0
+    else
+        rc=$?
+        rm -rf "$stage" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: canonical gate deploy failed (rc=$rc); refusing to stamp last-deployed-sha; next: inspect hooks-doctor --deploy-canonical output, repair the staged closure, and rerun hapax-post-merge-deploy for this merge" >&2
+        return "$rc"
+    fi
+}
+
 # Per-file deploy uses `git cat-file -e $SHA:$path` + `git show $SHA:$path`
 # to read commit-time content, decoupling the deploy decision from local
 # working-tree state. Prior revision used [ -f $REPO/$f ] which raced the
 # working-tree pull: when the deploy fired BEFORE the main branch had been
 # pulled locally, a deletion commit's [ -f ] returned true (old file still
 # present) and the script mistakenly cp-re-deployed the pre-deletion version.
-if [ -z "$FILES" ]; then
-    if [ "$REPORT_COVERAGE" != "1" ]; then
-        TRACE_READY=1
-        if record_post_merge_trace "no_changes" "0"; then
-            TRACE_WRITTEN=1
-        fi
-        record_last_deployed_sha
-    fi
-    echo "no files changed in $SHA"
-    exit 0
-fi
-
 # Classify the file list. SYSTEMD_UNCLASSIFIED captures systemd/** paths
 # that DON'T match the case-globs below — used by --report-coverage to
 # catch the absence-class deploy bug where a new unit lands at a path
@@ -811,7 +948,7 @@ while IFS= read -r f; do
         shared/__init__.py|shared/jsonl_append.py|shared/p0_incident_intake.py)
             RECOVERY_BUNDLE+=("$f")
             ;;
-        hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/cc-task-gate-bootstrap.py|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
+        hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/hapax_check_enable_latch.sh|hooks/scripts/cc-task-gate-bootstrap.py|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
             GATE_CLOSURE+=("$f") ;;
         assets/quake/maps/*|assets/quake/qc/*|assets/quake/csqc/*|assets/quake/models/*|assets/quake/sound/*|assets/quake/glsl/*|assets/quake/scripts/*|assets/quake/config/*|assets/quake/darkplaces/*)
             QUAKE_ASSETS+=("$f") ;;
@@ -843,7 +980,22 @@ if [ "$REPORT_COVERAGE" = "1" ]; then
 fi
 
 TRACE_READY=1
+if [ -z "$FILES" ]; then
+    reconcile_canonical_gate_closure
+    trace_status="no_changes"
+    if [ "$DID_ANYTHING" -ne 0 ]; then
+        trace_status="completed"
+    fi
+    if record_post_merge_trace "$trace_status" "0"; then
+        TRACE_WRITTEN=1
+    fi
+    record_last_deployed_sha
+    echo "no files changed in $SHA"
+    exit 0
+fi
+
 if [ "$DRY_RUN" = "1" ]; then
+    reconcile_canonical_gate_closure
     record_post_merge_trace "dry_run" "0"
     TRACE_WRITTEN=1
     echo "dry-run: post-merge deploy trace written to $TRACE_PATH"
@@ -1358,37 +1510,11 @@ if [ "${#QUAKE_ASSETS[@]}" -gt 0 ]; then
 fi
 
 # --- canonical gate closure (reform FM-6 shim collapse) ---
-# When the gate impl or its sourced siblings change, redeploy the ONE canonical
-# copy that every worktree's cc-task-gate.sh shim resolves to. Materialize the
-# closure from $SHA (commit-time content, decoupled from the working tree like
-# every other deploy here), then hand it to hooks-doctor --deploy-canonical, which
-# renames the impl to cc-task-gate.sh, writes a sha256 MANIFEST, symlinks
-# ~/.local/bin/hapax-hooks-doctor, and REFUSES any impl missing the INV-5
-# is_cognition_path carve-out (so a bad gate never lands fleet-wide).
-if [ "${#GATE_CLOSURE[@]}" -gt 0 ]; then
-    echo "gate closure changed (${#GATE_CLOSURE[@]}): redeploying canonical gate"
-    GATE_STAGE="$(mktemp -d)"
-    mkdir -p "$GATE_STAGE/hooks/scripts"
-    # The full closure the impl needs at runtime: the impl, the files it sources
-    # (agent-role, escape-grant) AND invokes (cc-task-gate-bootstrap.py, §3b), plus
-    # the doctor. Omitting any makes the deployed gate exit 2 on every mutation.
-    for f in hooks/scripts/cc-task-gate.impl.sh hooks/scripts/agent-role.sh \
-             hooks/scripts/escape-grant.sh hooks/scripts/cc-task-gate-bootstrap.py \
-             hooks/scripts/hooks-doctor.sh; do
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            git show "$SHA:$f" > "$GATE_STAGE/$f"
-            chmod +x "$GATE_STAGE/$f" 2>/dev/null || true
-        fi
-    done
-    if [ -x "$GATE_STAGE/hooks/scripts/hooks-doctor.sh" ]; then
-        bash "$GATE_STAGE/hooks/scripts/hooks-doctor.sh" --deploy-canonical --from "$GATE_STAGE" \
-            || echo "warning: canonical gate deploy failed" >&2
-    else
-        echo "warning: hooks-doctor.sh absent at $SHA; skipping canonical gate deploy" >&2
-    fi
-    rm -rf "$GATE_STAGE" 2>/dev/null || true
-    DID_ANYTHING=1
-fi
+# Every real deploy invocation reconciles the canonical hook closure, even when
+# the current diff did not touch gate files. This closes the pre-existing-drift
+# gap where a missed/failed deploy left ~/.local/lib/hapax/hooks stale forever
+# while later merges stamped last-deployed-sha as healthy.
+reconcile_canonical_gate_closure
 
 if [ "$DID_ANYTHING" -eq 0 ]; then
     echo "merge $SHA: no manual deploys needed (only auto-rebuild paths changed)"

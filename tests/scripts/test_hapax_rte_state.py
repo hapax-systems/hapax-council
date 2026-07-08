@@ -434,7 +434,7 @@ def test_assign_rte_refuses_retired_explicit_lane_without_exception(tmp_path: Pa
 
     assert result.returncode == 4
     assert "retired/excised" in result.stderr
-    assert "measured agy supply-leaf intake" in result.stderr
+    assert "agy.review.direct" in result.stderr
     assert not (tmp_path / "relay" / "rte-assignment.yaml").exists()
 
 

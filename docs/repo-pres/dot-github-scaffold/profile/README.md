@@ -11,7 +11,7 @@ This is research infrastructure, not a product or community project. It is not s
 | What | Single-operator operating environment: perception, reasoning, action, and self-governance running as one integrated system |
 | Scale | 180+ agent modules, 330+ systemd unit files, 13 Docker containers, 5 Raspberry Pis, 60 WGSL shader nodes |
 | Governance | 5 constitutional axioms with algebraic verification: consent labels, provenance semiring, deny-wins composition |
-| Coordination | Multi-lane AI work through Claude Code, Codex, Vibe, and route-gated Agy adapter wiring using relay files, task claims, and PR gates; retired Antigravity worker surfaces remain excised |
+| Coordination | Multi-lane AI work through Claude Code, Codex, Vibe, and route-gated Agy adapter wiring using relay files, task claims, and PR gates; retired Antigravity worker surfaces stay non-dispatchable, while `agy.review.direct` is a read-only review route gated by route-specific receipts |
 | Perception | Voice daemon, USB-camera compositor, IR fleet, wearable biometrics, phone context, visual expression engine |
 | Research | Grounding attempts, claim authority, refusal/correction behavior, privacy-preserving public egress, and agentic oversight |
 
@@ -21,9 +21,9 @@ This is research infrastructure, not a product or community project. It is not s
 |---|---|
 | [hapax-council](https://github.com/hapax-systems/hapax-council) | Primary runtime and research artifact |
 | [agentgov](https://github.com/hapax-systems/agentgov) | Extracted governance hooks/package for AI coding agents |
-| [hapax-constitution](https://github.com/ryanklee/hapax-constitution) | Governance specification: axioms, implications, canons; publishes `hapax-sdlc` |
-| [hapax-officium](https://github.com/ryanklee/hapax-officium) | Management decision support cockpit |
-| [hapax-assets](https://github.com/ryanklee/hapax-assets) | SHA-pinned aesthetic-library CDN |
+| [hapax-constitution](https://github.com/hapax-systems/hapax-constitution) | Governance specification: axioms, implications, canons; publishes `hapax-sdlc` |
+| [hapax-officium](https://github.com/hapax-systems/hapax-officium) | Management decision support cockpit |
+| [hapax-assets](https://github.com/hapax-systems/hapax-assets) | SHA-pinned aesthetic-library CDN |
 
 Not public as of 2026-05-11: `hapax-mcp`, `hapax-watch`, and `hapax-phone` are private surfaces. They are not listed here as live public repos.
 
@@ -31,7 +31,7 @@ Not public as of 2026-05-11: `hapax-mcp`, `hapax-watch`, and `hapax-phone` are p
 
 - [Start here](https://github.com/hapax-systems/hapax-council/blob/main/START_HERE.md): short dossier for reviewers and researchers.
 - [Primary runtime](https://github.com/hapax-systems/hapax-council): the Hapax operating environment.
-- [Governance spec](https://github.com/ryanklee/hapax-constitution): axioms, implications, canons.
+- [Governance spec](https://github.com/hapax-systems/hapax-constitution): axioms, implications, canons.
 - [Refusal brief](https://hapax.weblog.lol/2026/04/refusal-brief-an-automation-tractability-disclosure): refusal-as-data public artifact.
 - Manifesto: public short path held pending fresh publication; do not cite the old short URL.
 
