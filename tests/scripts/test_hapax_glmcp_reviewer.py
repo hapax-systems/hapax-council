@@ -18,6 +18,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-glmcp-reviewer"
+GLMCP_PAYG_BUDGET_ID = "tb-20260706-zai-glmcp-payg-review"
 
 ENV_KEYS = (
     "HAPAX_GLMCP_REVIEW_SECRET_ENTRY",
@@ -97,7 +98,7 @@ def _payg_reservation(module: ModuleType, path: str = "glmcp-payg-spend-test.yam
                 "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
                 "route_id": "glmcp.review.direct",
                 "capacity_pool": "api_paid_spend",
-                "budget_id": "tb-20260706-zai-glmcp-payg-review",
+                "budget_id": GLMCP_PAYG_BUDGET_ID,
                 "provider": "z_ai",
                 "model_or_engine": "glm-5.2",
                 "model_id": "z_ai-glm-5.2",
@@ -522,7 +523,7 @@ def test_call_glm_failed_live_ledger_reservation_leaves_no_spend_receipt(
     )
     payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
     for budget in payload["transition_budgets"]:
-        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+        if budget["budget_id"] == GLMCP_PAYG_BUDGET_ID:
             budget["created_at"] = (
                 (now - module.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
             )
@@ -689,7 +690,7 @@ def test_call_glm_real_reservation_blocks_second_payg_when_daily_cap_used(
     )
     payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
     for budget in payload["transition_budgets"]:
-        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+        if budget["budget_id"] == GLMCP_PAYG_BUDGET_ID:
             budget["created_at"] = (
                 (now - module.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
             )
@@ -746,8 +747,7 @@ def test_call_glm_real_reservation_blocks_second_payg_when_daily_cap_used(
     )
     loaded = module.load_quota_spend_ledger(ledger_path)
     assert any(
-        receipt.route_id == "glmcp.review.direct"
-        and receipt.budget_id == "tb-20260706-zai-glmcp-payg-review"
+        receipt.route_id == "glmcp.review.direct" and receipt.budget_id == GLMCP_PAYG_BUDGET_ID
         for receipt in loaded.spend_receipts
     )
     assert seen_urls == [
@@ -778,7 +778,7 @@ def test_call_glm_real_gate_blocks_second_payg_when_per_task_cap_used(
     )
     payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
     for budget in payload["transition_budgets"]:
-        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+        if budget["budget_id"] == GLMCP_PAYG_BUDGET_ID:
             budget["created_at"] = (
                 (now - module.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
             )
@@ -865,7 +865,7 @@ def test_require_payg_spend_gate_reloads_live_ledger_and_rejects_existing_task_s
     )
     payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
     for budget in payload["transition_budgets"]:
-        if budget["budget_id"] == "tb-20260706-zai-glmcp-payg-review":
+        if budget["budget_id"] == GLMCP_PAYG_BUDGET_ID:
             budget["created_at"] = (
                 (now - module.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
             )

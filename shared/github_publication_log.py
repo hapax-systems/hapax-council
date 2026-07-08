@@ -22,6 +22,9 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.github_public_surface import (
+    ORG_PROFILE_README_PATH,
+    ORG_PROFILE_REPO_ID,
+    REQUIRED_FILE_PATHS,
     GitHubPublicSurfaceReport,
     PackageSurface,
     RepoFilePresence,
@@ -237,9 +240,17 @@ def events_from_github_public_surface_report(
         events.append(_repo_metadata_event(repo, generated_at=generated, source_refs=source_refs))
         if not _repo_is_public(repo):
             continue
-        for path, file_info in sorted(repo.files.items()):
+        for path in publication_file_paths_for_repo(repo):
+            file_info = repo.files.get(
+                path,
+                RepoFilePresence(
+                    path=path,
+                    exists=False,
+                    evidence="required_public_surface_absent_from_report",
+                ),
+            )
             surface = file_surface(repo, path)
-            if surface is None or not file_info.exists:
+            if surface is None:
                 continue
             events.append(
                 _file_event(
@@ -255,16 +266,22 @@ def events_from_github_public_surface_report(
         if repo.pages.exists and repo.pages.html_url:
             events.append(_pages_event(repo, generated_at=generated, source_refs=source_refs))
 
+    council_repo = report.repos_by_id().get("hapax-systems/hapax-council")
+    package_commit_sha = council_repo.default_branch_sha if council_repo is not None else None
+    package_ref = council_repo.default_branch if council_repo is not None else None
     for package_surface in report.local_evidence.package_surfaces:
         if (
             package_surface.has_readme
             or package_surface.has_citation
             or package_surface.has_pyproject
         ):
+            if not package_commit_sha:
+                continue
             events.append(
                 _package_event(
                     package_surface,
-                    repo_head=report.local_evidence.repo_head,
+                    repo_ref=package_ref or "main",
+                    commit_sha=package_commit_sha,
                     generated_at=generated,
                     source_refs=source_refs,
                 )
@@ -311,13 +328,23 @@ def classify_publication_log_payload(payload: Any) -> tuple[str, tuple[str, ...]
 def file_surface(repo: RepoLiveState, path: str) -> GitHubPublicationSurface | None:
     """Return the publication surface represented by a GitHub file path."""
 
+    if repo.repo_id == ORG_PROFILE_REPO_ID:
+        return "profile" if path == ORG_PROFILE_README_PATH else None
     if path == "README.md":
-        return "profile" if repo.repo_id == "ryanklee/ryanklee" else "readme"
+        return "readme"
     if path in {"CITATION.cff", "codemeta.json", ".zenodo.json"}:
         return "citation_metadata"
     if path in {"NOTICE.md", "SECURITY.md", "CONTRIBUTING.md", "GOVERNANCE.md"}:
         return "security_governance"
     return None
+
+
+def publication_file_paths_for_repo(repo: RepoLiveState) -> tuple[str, ...]:
+    """Return required public-material file paths that need publication witnesses."""
+
+    if repo.repo_id == ORG_PROFILE_REPO_ID:
+        return (ORG_PROFILE_README_PATH,)
+    return tuple(path for path in REQUIRED_FILE_PATHS if file_surface(repo, path) is not None)
 
 
 def _repo_metadata_event(
@@ -334,6 +361,7 @@ def _repo_metadata_event(
             "repo_id": repo.repo_id,
             "visibility": repo.visibility,
             "description": repo.description,
+            "homepage": repo.homepage,
             "topics": repo.topics,
             "default_branch_sha": repo.default_branch_sha,
             "license_spdx": repo.license_spdx,
@@ -368,19 +396,23 @@ def _file_event(
     generated_at: str,
     source_refs: tuple[str, ...],
 ) -> GitHubPublicationLogEvent:
+    exists = file_info.exists
+    state: GitHubPublicationState = "public" if exists else "missing_or_private"
+    mode: GitHubPublicationMode = "public_archive" if exists else "private"
+    ref = repo.default_branch if exists else f"{repo.default_branch or 'default'}:{file_info.path}"
     return build_github_publication_event(
         repo=repo.repo_id,
         surface=surface,
         generated_at=generated_at,
         occurred_at=repo.pushed_at or generated_at,
-        commit_sha=repo.default_branch_sha,
-        content_sha=file_info.sha,
+        commit_sha=repo.default_branch_sha if exists else None,
+        content_sha=file_info.sha if exists else None,
         source_refs=source_refs,
         evidence_refs=(f"gh:contents/{repo.repo_id}/{file_info.path}",),
-        publication_state="public",
-        publication_mode="public_archive",
-        live_url=file_info.html_url or repo.html_url,
-        ref=repo.default_branch,
+        publication_state=state,
+        publication_mode=mode,
+        live_url=(file_info.html_url or repo.html_url) if exists else None,
+        ref=ref,
         surface_id=f"github.{surface}.{repo.repo_id}.{file_info.path}",
         notes=(f"file:{file_info.path}",),
     )
@@ -438,7 +470,8 @@ def _pages_event(
 def _package_event(
     package_surface: PackageSurface,
     *,
-    repo_head: str,
+    repo_ref: str,
+    commit_sha: str,
     generated_at: str,
     source_refs: tuple[str, ...],
 ) -> GitHubPublicationLogEvent:
@@ -449,14 +482,14 @@ def _package_event(
         surface="package",
         generated_at=generated_at,
         occurred_at=generated_at,
-        commit_sha=repo_head if re.fullmatch(r"[0-9a-f]{40}", repo_head) else None,
+        commit_sha=commit_sha,
         content_sha=digest_json(payload),
         source_refs=source_refs,
         evidence_refs=tuple(package_surface.evidence_refs),
         publication_state="public",
         publication_mode="public_archive",
-        live_url=f"https://github.com/hapax-systems/hapax-council/tree/{repo_head}/{path}",
-        ref=repo_head,
+        live_url=f"https://github.com/hapax-systems/hapax-council/tree/{commit_sha}/{path}",
+        ref=repo_ref,
         surface_id=f"github.package.hapax-systems/hapax-council.{path}",
         notes=(f"package_claim_status:{package_surface.claim_status}",),
     )

@@ -11,9 +11,15 @@ import jsonschema
 from shared.github_public_surface import (
     CLAIM_CEILING,
     INTENDED_PUBLIC_REPOS,
+    ORG_PROFILE_README_PATH,
+    ORG_PROFILE_REPO_ID,
     PROFILE_REPO_CANDIDATES,
     REQUIRED_DRIFT_CATEGORIES,
     GitHubPublicSurfaceReport,
+    LocalPublicSurfaceEvidence,
+    RepoFilePresence,
+    RepoLiveState,
+    build_drift_findings,
     missing_required_categories,
 )
 
@@ -28,6 +34,16 @@ def _payload() -> dict[str, Any]:
 
 def _report() -> GitHubPublicSurfaceReport:
     return GitHubPublicSurfaceReport.model_validate(_payload())
+
+
+def _minimal_local_evidence() -> LocalPublicSurfaceEvidence:
+    return LocalPublicSurfaceEvidence(
+        registry_license_by_repo={},
+        root_file_sha256={},
+        notice_links=(),
+        notice_missing_links=(),
+        package_surfaces=(),
+    )
 
 
 def test_report_schema_validates_committed_live_state_report() -> None:
@@ -77,32 +93,90 @@ def test_hard_blockers_are_explicit_and_feed_downstream_tasks() -> None:
     assert license_finding.category == "license_detection"
     assert "github-readme-profile-current-project-refresh" in license_finding.blocks
 
-    assert findings["github.notice.contributing-link-missing"].severity == "blocking"
-    assert findings["github.profile.user-profile-readme-missing"].severity == "blocking"
-    assert findings["github.pages.hapax-assets-not-public-cdn"].severity == "blocking"
+    assert findings["github.notice.links-resolve"].status == "ok"
+    assert findings["github.profile.org-profile-readme-present"].severity == "info"
+    assert findings["github.profile.org-profile-readme-present"].status == "ok"
+    assert "github.profile.user-profile-readme-missing" not in findings
+    assert "github.profile.org-profile-candidate-not-user-surface" not in findings
+    assert findings["github.pages.hapax-assets-pages-present"].status == "ok"
 
 
-def test_profile_readme_decision_uses_user_repo_not_org_profile_pattern() -> None:
+def test_profile_readme_decision_uses_org_dot_github_profile_pattern() -> None:
     report = _report()
 
-    assert report.docs_evidence.profile_readme_decision == "user_repo_named_ryanklee_required"
-    assert "ryanklee/ryanklee" in report.repos_by_id()
-    assert report.repos_by_id()["ryanklee/ryanklee"].exists is False
+    assert report.docs_evidence.profile_readme_decision == "org_repo_named_dot_github_required"
+    assert "hapax-systems/.github" in report.repos_by_id()
+    org_profile = report.repos_by_id()["hapax-systems/.github"]
+    assert org_profile.exists is True
+    assert org_profile.files["profile/README.md"].exists is True
     assert report.docs_evidence.user_profile_readme_url.startswith("https://docs.github.com/")
     assert report.docs_evidence.organization_profile_readme_url.startswith(
         "https://docs.github.com/"
     )
 
 
-def test_closed_repo_pres_false_claims_are_reported_without_deleting_records() -> None:
+def test_closed_repo_pres_claims_are_compared_without_deleting_records() -> None:
     report = _report()
     claims = {claim.task_id: claim for claim in report.closed_repo_pres_claims}
 
-    assert claims["repo-pres-license-policy"].live_status == "false"
-    assert claims["repo-pres-notice-md-all-repos"].live_status == "false"
-    assert claims["repo-pres-issues-redirect-walls"].live_status == "unreconciled"
-    assert claims["repo-pres-org-level-github"].live_status == "false"
+    assert claims["repo-pres-license-policy"].live_status == "true"
+    assert claims["repo-pres-notice-md-all-repos"].live_status == "true"
+    assert claims["repo-pres-issues-redirect-walls"].live_status == "true"
+    assert claims["repo-pres-org-level-github"].live_status == "true"
+    assert "github_license_spdx=NOASSERTION" in claims["repo-pres-license-policy"].live_status_basis
+    assert (
+        "issue_template_config=True" in claims["repo-pres-issues-redirect-walls"].live_status_basis
+    )
+    profile_claim = claims["repo-pres-org-level-github"]
+    assert "profile_readme=True" in profile_claim.live_status_basis
+    assert any(
+        ref.startswith("live-report:repo:hapax-systems/.github:file:profile/README.md:sha=")
+        for ref in profile_claim.live_witness_refs
+    )
+    assert all(claim.live_status_basis for claim in claims.values())
+    assert all(claim.live_witness_refs for claim in claims.values())
     assert all(claim.task_path.startswith("vault:hapax-cc-tasks/") for claim in claims.values())
+
+
+def test_org_profile_not_collected_blocks_profile_state() -> None:
+    findings = {
+        finding.finding_id: finding
+        for finding in build_drift_findings(repos={}, local=_minimal_local_evidence())
+    }
+
+    finding = findings["github.profile.org-profile-readme-not-collected"]
+    assert finding.severity == "blocking"
+    assert finding.surface == ORG_PROFILE_REPO_ID
+    assert "github-readme-profile-current-project-refresh" in finding.blocks
+
+
+def test_org_profile_without_profile_readme_blocks_profile_state() -> None:
+    repo = RepoLiveState(
+        repo_id=ORG_PROFILE_REPO_ID,
+        owner="hapax-systems",
+        name=".github",
+        exists=True,
+        private=False,
+        visibility="public",
+        files={
+            ORG_PROFILE_README_PATH: RepoFilePresence(
+                path=ORG_PROFILE_README_PATH,
+                exists=False,
+            )
+        },
+    )
+    findings = {
+        finding.finding_id: finding
+        for finding in build_drift_findings(
+            repos={ORG_PROFILE_REPO_ID: repo},
+            local=_minimal_local_evidence(),
+        )
+    }
+
+    finding = findings["github.profile.org-profile-readme-missing"]
+    assert finding.severity == "blocking"
+    assert finding.observed == "visibility=public, private=False, profile_readme=False"
+    assert "github-readme-profile-current-project-refresh" in finding.blocks
 
 
 def test_public_claim_ceiling_and_package_surface_inventory_are_fail_closed() -> None:
@@ -116,7 +190,7 @@ def test_public_claim_ceiling_and_package_surface_inventory_are_fail_closed() ->
     assert report.claim_ceiling == "public_archive"
     assert package_findings
     assert "monetization readiness" in " ".join(report.anti_overclaim)
-    assert any(
-        surface.claim_status == "needs_claim_discipline"
-        for surface in report.local_evidence.package_surfaces
-    )
+    assert package_findings[0].status == "observed"
+    assert {surface.claim_status for surface in report.local_evidence.package_surfaces} == {
+        "evidence_only"
+    }

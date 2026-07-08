@@ -55,7 +55,9 @@ class SurfaceSpec:
     Carries the surface's automation status, API style, and (when
     refused) a link to the Refusal Brief docs entry documenting
     why. ``api`` is informational; the actual transport is owned by
-    the surface's Publisher subclass.
+    the surface's Publisher subclass. Freshness fields are optional
+    contract metadata for independent readback/audit paths; they do not
+    grant dispatch authority by themselves.
     """
 
     automation_status: AutomationStatus
@@ -64,6 +66,13 @@ class SurfaceSpec:
     activation_path: str | None = None
     refusal_link: str | None = None
     scope_note: str | None = None
+    readback_adapter: str | None = None
+    freshness_slo_s: int | None = None
+    durable_target_required: bool = False
+    content_hash_strategy: str | None = None
+    surface_owner: str = "publication_bus"
+    correction_policy: str | None = None
+    blocks_release_when_stale: bool = False
 
 
 SurfaceContractType = Literal[
@@ -157,7 +166,7 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "agents.publication_bus.bluesky_publisher.BlueskyPostPublisher "
             "+ systemd/units/hapax-bluesky-post.service"
         ),
-        scope_note="public-event Bluesky fanout routed through publication bus",
+        scope_note="public-event Bluesky fanout routed through publication bus; repeats reviewed artifacts only",
     ),
     "bridgy-webmention-publish": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
@@ -321,7 +330,7 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "agents.publication_bus.arena_publisher.ArenaPublisher "
             "+ systemd/units/hapax-arena-post.service"
         ),
-        scope_note="public-event Are.na fanout routed through publication bus",
+        scope_note="public-event Are.na fanout routed through publication bus; repeats reviewed artifacts only",
     ),
     "mastodon-post": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
@@ -331,19 +340,20 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "agents.publication_bus.mastodon_publisher.MastodonPublisher "
             "+ systemd/units/hapax-mastodon-post.service"
         ),
-        scope_note="public-event Mastodon fanout routed through publication bus",
+        scope_note="public-event Mastodon fanout routed through publication bus; repeats reviewed artifacts only",
     ),
     "omg-weblog": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
         dispatch_entry="agents.omg_weblog_publisher:publish_artifact",
-        scope_note="operator-owned hapax omg.lol weblog identity",
+        scope_note="operator-owned hapax omg.lol weblog identity; claim ceilings in config/omg-lol.yaml",
     ),
     "omg-lol-weblog-bearer-fanout": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
+        dispatch_entry="agents.omg_weblog_publisher:publish_artifact",
         activation_path="agents.publication_bus.omg_weblog_publisher.OmgLolWeblogPublisher",
-        scope_note="weblog entry bearer-token publication helper",
+        scope_note="weblog entry bearer-token publication helper; no direct public egress authority",
     ),
     "omg-lol-statuslog": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
@@ -352,7 +362,7 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "agents.publication_bus.omg_statuslog_publisher.OmgLolStatuslogPublisher "
             "+ systemd/units/hapax-omg-lol-fanout.timer"
         ),
-        scope_note="live awareness statuslog fanout routed through publication bus",
+        scope_note="live awareness statuslog fanout routed through publication bus; repeats reviewed artifacts only",
     ),
     "omg-lol-web": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
@@ -361,7 +371,7 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "agents.publication_bus.omg_web_publisher.OmgLolWebPublisher "
             "+ agents.omg_web_builder.publisher"
         ),
-        scope_note="operator-owned hapax.omg.lol landing page routed through publication bus",
+        scope_note="operator-owned hapax.omg.lol landing page routed through publication bus; claim ceilings in config/omg-lol.yaml",
     ),
     "omg-lol-now": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
@@ -369,7 +379,7 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         activation_path=(
             "agents.publication_bus.omg_now_publisher.OmgLolNowPublisher + agents.omg_now_sync"
         ),
-        scope_note="operator-owned omg.lol /now page routed through publication bus",
+        scope_note="operator-owned omg.lol /now page routed through publication bus; claim ceilings in config/omg-lol.yaml",
     ),
     "omg-lol-pastebin": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
@@ -378,7 +388,7 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "agents.publication_bus.omg_pastebin_publisher.OmgLolPastebinPublisher "
             "+ agents.omg_pastebin_publisher/agents.omg_credits_publisher"
         ),
-        scope_note="operator-owned omg.lol pastebin artifacts routed through publication bus",
+        scope_note="operator-owned omg.lol pastebin artifacts routed through publication bus; repeats reviewed artifacts only",
     ),
     "omg-lol-purl": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
@@ -387,7 +397,7 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "agents.publication_bus.omg_purl_publisher.OmgLolPurlPublisher "
             "+ agents.omg_purl_registrar"
         ),
-        scope_note="operator-owned omg.lol PURL registrations routed through publication bus",
+        scope_note="operator-owned omg.lol PURL registrations routed through publication bus; repeats reviewed artifacts only",
     ),
     "omg-lol-email-forward": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
@@ -405,7 +415,7 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
             "agents.publication_bus.omg_weblog_delete_publisher.OmgLolWeblogDeletePublisher "
             "+ scripts/verify-weblog-producer-deploy.py --cleanup-live"
         ),
-        scope_note="tightly allowlisted weblog cleanup egress routed through publication bus",
+        scope_note="tightly allowlisted weblog cleanup egress routed through publication bus; cleanup does not authorize new claims",
     ),
     "orcid-auto-update": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,
@@ -428,7 +438,7 @@ SURFACE_REGISTRY: Final[dict[str, SurfaceSpec]] = {
         automation_status=AutomationStatus.FULL_AUTO,
         api="REST",
         dispatch_entry="agents.omg_weblog_publisher:publish_artifact_oudepode",
-        scope_note="music-side omg.lol weblog identity",
+        scope_note="music-side omg.lol weblog identity; claim ceilings in config/omg-lol.yaml",
     ),
     "zenodo-deposit": SurfaceSpec(
         automation_status=AutomationStatus.FULL_AUTO,

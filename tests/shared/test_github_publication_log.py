@@ -7,7 +7,7 @@ import jsonschema
 import pytest
 from pydantic import ValidationError
 
-from shared.github_public_surface import GitHubPublicSurfaceReport
+from shared.github_public_surface import GitHubPublicSurfaceReport, RepoFilePresence, RepoLiveState
 from shared.github_publication_log import (
     ANTI_OVERCLAIM_REASON,
     GitHubPublicationLogEvent,
@@ -42,7 +42,7 @@ def test_github_public_surface_report_projects_schema_valid_publication_rows() -
 
     assert events
     assert all(event.event_type.startswith("publication.github.") for event in events)
-    assert {event.surface for event in events} >= {"repo_metadata", "readme", "package"}
+    assert {event.surface for event in events} >= {"repo_metadata", "readme", "profile", "package"}
     assert all(event.claim_ceiling == "publication_witness_rows" for event in events)
 
 
@@ -60,9 +60,70 @@ def test_github_publication_rows_are_witness_only_and_anti_overclaim() -> None:
     assert ANTI_OVERCLAIM_REASON in public_event.notes
 
 
+def test_repo_metadata_witness_hash_includes_homepage() -> None:
+    report = _report()
+    repo = RepoLiveState(
+        repo_id="hapax-systems/homepage-example",
+        owner="hapax-systems",
+        name="homepage-example",
+        exists=True,
+        private=False,
+        visibility="public",
+        default_branch="main",
+        default_branch_sha="a" * 40,
+        description="Example repo",
+        homepage="https://example.com/a",
+        topics=("hapax",),
+        license_spdx="NOASSERTION",
+        has_issues=True,
+        has_discussions=False,
+        has_wiki=False,
+        has_projects=False,
+        pushed_at=GENERATED_AT,
+        html_url="https://github.com/hapax-systems/homepage-example",
+        files={},
+    )
+    fixture = report.model_copy(
+        update={
+            "live_repos": (repo,),
+            "profile_repo_candidates": (),
+            "local_evidence": report.local_evidence.model_copy(update={"package_surfaces": ()}),
+        }
+    )
+    changed = fixture.model_copy(
+        update={"live_repos": (repo.model_copy(update={"homepage": "https://example.com/b"}),)}
+    )
+
+    first_event = next(
+        event
+        for event in events_from_github_public_surface_report(fixture, generated_at=GENERATED_AT)
+        if event.surface == "repo_metadata"
+    )
+    second_event = next(
+        event
+        for event in events_from_github_public_surface_report(changed, generated_at=GENERATED_AT)
+        if event.surface == "repo_metadata"
+    )
+
+    assert first_event.content_sha is not None
+    assert second_event.content_sha is not None
+    assert first_event.content_sha != second_event.content_sha
+
+
 def test_missing_or_private_rows_do_not_carry_live_urls_or_public_mode() -> None:
-    private_event = next(
-        event for event in _events() if event.publication_state == "missing_or_private"
+    private_event = build_github_publication_event(
+        repo="hapax-systems/private-example",
+        surface="repo_metadata",
+        generated_at=GENERATED_AT,
+        occurred_at=GENERATED_AT,
+        source_refs=("fixture-report",),
+        evidence_refs=("gh:repos/hapax-systems/private-example",),
+        publication_state="missing_or_private",
+        publication_mode="private",
+        live_url=None,
+        commit_sha=None,
+        content_sha=None,
+        ref="main",
     )
 
     assert private_event.publication_mode == "private"
@@ -75,18 +136,97 @@ def test_missing_or_private_rows_do_not_carry_live_urls_or_public_mode() -> None
     )
 
 
+def test_missing_public_required_file_projects_degraded_publication_row() -> None:
+    report = _report()
+    repo = RepoLiveState(
+        repo_id="hapax-systems/missing-readme",
+        owner="hapax-systems",
+        name="missing-readme",
+        exists=True,
+        private=False,
+        visibility="public",
+        default_branch="main",
+        default_branch_sha="a" * 40,
+        html_url="https://github.com/hapax-systems/missing-readme",
+        files={"README.md": RepoFilePresence(path="README.md", exists=False)},
+    )
+    fixture = report.model_copy(
+        update={
+            "live_repos": (repo,),
+            "profile_repo_candidates": (),
+            "local_evidence": report.local_evidence.model_copy(update={"package_surfaces": ()}),
+        }
+    )
+
+    events = events_from_github_public_surface_report(fixture, generated_at=GENERATED_AT)
+    missing = next(event for event in events if event.surface == "readme")
+    missing_governance = next(event for event in events if event.ref == "main:GOVERNANCE.md")
+
+    assert missing.publication_state == "missing_or_private"
+    assert missing.publication_mode == "private"
+    assert missing.live_url is None
+    assert missing.commit_sha is None
+    assert missing.content_sha is None
+    assert missing.surface_id.endswith("README.md")
+    assert classify_publication_log_payload(missing.model_dump(mode="json")) == (
+        "degraded",
+        ("github_publication_missing_or_private", ANTI_OVERCLAIM_REASON),
+    )
+    assert missing_governance.publication_state == "missing_or_private"
+    assert missing_governance.evidence_refs == (
+        "gh:contents/hapax-systems/missing-readme/GOVERNANCE.md",
+    )
+
+
+def test_org_profile_repo_only_projects_profile_readme_file_surface() -> None:
+    report = _report()
+    org_profile = RepoLiveState(
+        repo_id="hapax-systems/.github",
+        owner="hapax-systems",
+        name=".github",
+        exists=True,
+        private=False,
+        visibility="public",
+        default_branch="main",
+        default_branch_sha="a" * 40,
+        html_url="https://github.com/hapax-systems/.github",
+        files={
+            "README.md": RepoFilePresence(path="README.md", exists=False),
+            "profile/README.md": RepoFilePresence(
+                path="profile/README.md",
+                exists=True,
+                sha="b" * 40,
+                html_url="https://github.com/hapax-systems/.github/blob/main/profile/README.md",
+            ),
+        },
+    )
+    fixture = report.model_copy(
+        update={
+            "live_repos": (),
+            "profile_repo_candidates": (org_profile,),
+            "local_evidence": report.local_evidence.model_copy(update={"package_surfaces": ()}),
+        }
+    )
+
+    events = events_from_github_public_surface_report(fixture, generated_at=GENERATED_AT)
+
+    assert any(event.surface == "profile" for event in events)
+    assert not any(event.surface == "readme" for event in events)
+    assert not any(event.publication_state == "missing_or_private" for event in events)
+
+
 def test_public_rows_require_direct_public_evidence() -> None:
     with pytest.raises(ValidationError, match="public GitHub rows need a commit_sha"):
         build_github_publication_event(
-            repo="ryanklee/hapax-council",
+            repo="hapax-systems/hapax-council",
             surface="readme",
             generated_at=GENERATED_AT,
             occurred_at=GENERATED_AT,
             source_refs=("fixture-report",),
-            evidence_refs=("gh:contents/ryanklee/hapax-council/README.md",),
+            evidence_refs=("gh:contents/hapax-systems/hapax-council/README.md",),
             publication_state="public",
             publication_mode="public_archive",
-            live_url="https://github.com/ryanklee/hapax-council/blob/main/README.md",
+            live_url="https://github.com/hapax-systems/hapax-council/blob/main/README.md",
             commit_sha=None,
             content_sha="d19edcddf92f59b91119f689da208056b5cd330f",
             ref="main",

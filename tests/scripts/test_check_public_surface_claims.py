@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import json
+import os
+import runpy
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+from shared.github_public_surface import GitHubPublicSurfaceReport
+from shared.publication_freshness import (
+    PublicationFreshnessSnapshot,
+    PublicSurfaceFreshnessEnvelope,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check-public-surface-claims.py"
+GITHUB_REPORT = REPO_ROOT / "docs/repo-pres/github-public-surface-live-state-reconcile.json"
+TEST_FRESHNESS_SURFACE_ID = "github.readme.hapax-systems/example.README.md"
 
 
 def _write_token_report(
@@ -114,12 +125,141 @@ def _write_github_envelope(path: Path, **overrides: object) -> Path:
     return path
 
 
+def _write_publication_freshness_state(
+    path: Path,
+    *,
+    generated_at: str = "2026-05-01T00:50:00Z",
+    blockers: list[str] | None = None,
+    envelopes: list[dict[str, object]] | None = None,
+) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": generated_at,
+                "producer": "shared.publication_freshness",
+                "claim_ceiling": "freshness_witness_only",
+                "envelopes": envelopes
+                if envelopes is not None
+                else [
+                    _freshness_envelope(
+                        freshness_result="match",
+                        rendered_hash="abc123",
+                        readback_hash="abc123",
+                    )
+                ],
+                "blockers": blockers or [],
+                "warnings": [],
+                "anti_overclaim": [
+                    (
+                        "freshness_witness_does_not_grant_truth_rights_privacy_egress_"
+                        "support_monetization_or_research_validity"
+                    )
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_profile_report_without_required_readme(path: Path) -> Path:
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    profile_repo = next(
+        repo
+        for repo in payload["profile_repo_candidates"]
+        if repo["repo_id"] == "hapax-systems/.github"
+    )
+    profile_repo["files"] = {}
+    payload["live_repos"] = []
+    payload["profile_repo_candidates"] = [profile_repo]
+    payload["local_evidence"]["package_surfaces"] = []
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _write_old_profile_report_with_readme(path: Path) -> Path:
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    profile_repo = next(
+        repo
+        for repo in payload["profile_repo_candidates"]
+        if repo["repo_id"] == "hapax-systems/.github"
+    )
+    payload["generated_at"] = "2020-01-01T00:00:00Z"
+    profile_repo["default_branch"] = "main"
+    profile_repo["default_branch_sha"] = "a" * 40
+    profile_repo["pushed_at"] = "2020-01-01T00:00:00Z"
+    profile_repo["files"] = {
+        "profile/README.md": {
+            "path": "profile/README.md",
+            "exists": True,
+            "sha": "abc1234",
+            "size": 123,
+            "html_url": "https://github.com/hapax-systems/.github/blob/main/profile/README.md",
+            "evidence": "fixture",
+        }
+    }
+    payload["live_repos"] = []
+    payload["profile_repo_candidates"] = [profile_repo]
+    payload["local_evidence"]["package_surfaces"] = []
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _freshness_envelope(**overrides: object) -> dict[str, object]:
+    checked_at = datetime.now(tz=UTC).replace(microsecond=0) - timedelta(minutes=5)
+    expires_at = checked_at + timedelta(seconds=1800)
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "surface_id": TEST_FRESHNESS_SURFACE_ID,
+        "surface_type": "github.readme",
+        "source_ref": "docs/repo-pres/example.md",
+        "source_of_truth": "fixture",
+        "evidence_refs": ["fixture-readback"],
+        "checked_at": _isoformat_z(checked_at),
+        "ttl_s": 1800,
+        "expires_at": _isoformat_z(expires_at),
+        "freshness_result": "missing",
+        "blocks": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _isoformat_z(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _gate_module() -> dict[str, object]:
+    return runpy.run_path(str(SCRIPT))
+
+
 def _run_gate(
     doc: Path,
     token_report: Path,
     source_reconciliation: Path,
     *extra_args: str,
 ) -> subprocess.CompletedProcess[str]:
+    effective_extra_args = list(extra_args)
+    if "--publication-freshness-state" not in effective_extra_args:
+        freshness_state = _write_publication_freshness_state(doc.parent / "freshness-state.json")
+        effective_extra_args.extend(["--publication-freshness-state", str(freshness_state)])
+    if (
+        "--required-publication-freshness-surface-id" not in effective_extra_args
+        and "--github-public-surface-report" not in effective_extra_args
+    ):
+        effective_extra_args.extend(
+            [
+                "--skip-live-github-public-surface-refresh",
+                "--required-publication-freshness-surface-id",
+                TEST_FRESHNESS_SURFACE_ID,
+            ]
+        )
+    elif (
+        "--required-publication-freshness-surface-id" in effective_extra_args
+        and "--skip-live-github-public-surface-refresh" not in effective_extra_args
+    ):
+        effective_extra_args.append("--skip-live-github-public-surface-refresh")
     try:
         return subprocess.run(
             [
@@ -129,7 +269,7 @@ def _run_gate(
                 str(token_report),
                 "--source-reconciliation",
                 str(source_reconciliation),
-                *extra_args,
+                *effective_extra_args,
                 str(doc),
             ],
             cwd=REPO_ROOT,
@@ -142,6 +282,208 @@ def _run_gate(
         raise AssertionError(
             f"public surface gate timed out; stdout={exc.stdout!r} stderr={exc.stderr!r}"
         ) from exc
+
+
+def test_live_github_public_surface_refresh_runs_reconcile_success() -> None:
+    gate = _gate_module()
+    refresh_live_github_public_surface_report = gate["refresh_live_github_public_surface_report"]
+    subprocess_module = gate["subprocess"]
+    original_run = subprocess_module.run
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        output_path = Path(args[args.index("--output") + 1])
+        output_path.write_text(GITHUB_REPORT.read_text(encoding="utf-8"), encoding="utf-8")
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0, stdout="wrote report\n", stderr="")
+
+    subprocess_module.run = fake_run
+    try:
+        report = refresh_live_github_public_surface_report()
+    finally:
+        subprocess_module.run = original_run
+
+    assert isinstance(report, GitHubPublicSurfaceReport)
+    assert calls
+    args, kwargs = calls[0]
+    assert args[:2] == [
+        sys.executable,
+        str(REPO_ROOT / "scripts" / "github-public-surface-reconcile.py"),
+    ]
+    assert "--output" in args
+    assert kwargs["cwd"] == REPO_ROOT
+    assert kwargs["timeout"] == 120
+    assert kwargs["check"] is False
+
+
+def test_live_github_public_surface_refresh_reports_nonzero_reconcile() -> None:
+    gate = _gate_module()
+    refresh_live_github_public_surface_report = gate["refresh_live_github_public_surface_report"]
+    required_input_error = gate["RequiredInputError"]
+    subprocess_module = gate["subprocess"]
+    original_run = subprocess_module.run
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(args, 64, stdout="", stderr="GitHub rate limit\n")
+
+    subprocess_module.run = fake_run
+    try:
+        try:
+            refresh_live_github_public_surface_report()
+        except required_input_error as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("expected RequiredInputError")
+    finally:
+        subprocess_module.run = original_run
+
+    assert "fresh GitHub public-surface reconcile failed: GitHub rate limit" in message
+    assert "hold release until the public-surface claim gate passes" in message
+
+
+def test_live_github_public_surface_refresh_reports_timeout() -> None:
+    gate = _gate_module()
+    refresh_live_github_public_surface_report = gate["refresh_live_github_public_surface_report"]
+    required_input_error = gate["RequiredInputError"]
+    subprocess_module = gate["subprocess"]
+    original_run = subprocess_module.run
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess_module.TimeoutExpired(
+            cmd=args,
+            timeout=kwargs.get("timeout", 120),
+            output="",
+            stderr="timed out upstream\n",
+        )
+
+    subprocess_module.run = fake_run
+    try:
+        try:
+            refresh_live_github_public_surface_report()
+        except required_input_error as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("expected RequiredInputError")
+    finally:
+        subprocess_module.run = original_run
+
+    assert "fresh GitHub public-surface reconcile failed: timed out upstream" in message
+    assert "hold release until the public-surface claim gate passes" in message
+
+
+def test_git_path_status_uses_parent_diff_when_merge_base_unavailable() -> None:
+    gate = _gate_module()
+    git_path_status = gate["_git_path_status"]
+    subprocess_module = gate["subprocess"]
+    original_run = subprocess_module.run
+    diff_ranges: list[str] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        if args[:3] == ["git", "merge-base", "HEAD"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="missing ref\n")
+        if args[:3] == ["git", "diff", "--name-status"]:
+            diff_ranges.append(args[3])
+            return subprocess.CompletedProcess(args, 0, stdout="A\tGOVERNANCE.md\n", stderr="")
+        raise AssertionError(f"unexpected command: {args!r}")
+
+    subprocess_module.run = fake_run
+    try:
+        status = git_path_status("GOVERNANCE.md")
+    finally:
+        subprocess_module.run = original_run
+
+    assert status == "A"
+    assert diff_ranges == ["HEAD^..HEAD"]
+
+
+def test_git_path_status_deepens_shallow_head_when_parent_missing() -> None:
+    gate = _gate_module()
+    git_path_status = gate["_git_path_status"]
+    subprocess_module = gate["subprocess"]
+    original_run = subprocess_module.run
+    original_github_ref = os.environ.pop("GITHUB_REF", None)
+    original_github_sha = os.environ.pop("GITHUB_SHA", None)
+    diff_ranges: list[str] = []
+    fetch_targets: list[str] = []
+    deepened = False
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        nonlocal deepened
+        if args[:3] == ["git", "merge-base", "HEAD"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="missing ref\n")
+        if args[:3] == ["git", "diff", "--name-status"]:
+            diff_ranges.append(args[3])
+            if not deepened:
+                return subprocess.CompletedProcess(args, 128, stdout="", stderr="missing parent\n")
+            return subprocess.CompletedProcess(args, 0, stdout="A\tGOVERNANCE.md\n", stderr="")
+        if args == ["git", "rev-parse", "--is-shallow-repository"]:
+            return subprocess.CompletedProcess(args, 0, stdout="true\n", stderr="")
+        if args == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args, 0, stdout="6296818332e9\n", stderr="")
+        if args[:4] == ["git", "fetch", "--deepen=1", "origin"]:
+            fetch_targets.append(args[4])
+            deepened = True
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {args!r}")
+
+    subprocess_module.run = fake_run
+    try:
+        status = git_path_status("GOVERNANCE.md")
+    finally:
+        subprocess_module.run = original_run
+        if original_github_ref is not None:
+            os.environ["GITHUB_REF"] = original_github_ref
+        if original_github_sha is not None:
+            os.environ["GITHUB_SHA"] = original_github_sha
+
+    assert status == "A"
+    assert diff_ranges == ["HEAD^..HEAD", "HEAD^..HEAD"]
+    assert fetch_targets == ["6296818332e9"]
+
+
+def test_git_path_status_uses_base_tree_when_history_unavailable() -> None:
+    gate = _gate_module()
+    git_path_status = gate["_git_path_status"]
+    subprocess_module = gate["subprocess"]
+    original_run = subprocess_module.run
+    original_github_base_ref = os.environ.get("GITHUB_BASE_REF")
+    os.environ["GITHUB_BASE_REF"] = "main"
+    cat_file_checks: list[str] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        if args[:3] == ["git", "merge-base", "HEAD"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="missing ref\n")
+        if args[:3] == ["git", "diff", "--name-status"]:
+            return subprocess.CompletedProcess(args, 128, stdout="", stderr="missing parent\n")
+        if args == ["git", "rev-parse", "--is-shallow-repository"]:
+            return subprocess.CompletedProcess(args, 0, stdout="false\n", stderr="")
+        if args[:4] == ["git", "rev-parse", "--verify", "--quiet"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:3] == ["git", "cat-file", "-e"]:
+            cat_file_checks.append(args[3])
+            if args[3] == "HEAD:GOVERNANCE.md":
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            if args[3] == "origin/main:GOVERNANCE.md":
+                return subprocess.CompletedProcess(args, 128, stdout="", stderr="")
+            raise AssertionError(f"unexpected cat-file target: {args[3]!r}")
+        raise AssertionError(f"unexpected command: {args!r}")
+
+    subprocess_module.run = fake_run
+    try:
+        status = git_path_status("GOVERNANCE.md")
+    finally:
+        subprocess_module.run = original_run
+        if original_github_base_ref is None:
+            os.environ.pop("GITHUB_BASE_REF", None)
+        else:
+            os.environ["GITHUB_BASE_REF"] = original_github_base_ref
+
+    assert status == "A"
+    assert cat_file_checks == ["HEAD:GOVERNANCE.md", "origin/main:GOVERNANCE.md"]
 
 
 def test_public_surface_claim_gate_fails_absolute_claim(tmp_path: Path) -> None:
@@ -181,6 +523,21 @@ def test_public_surface_claim_gate_warnings_fail_escalates(tmp_path: Path) -> No
 
     assert result.returncode == 1
     assert "Hapax.PublicClaimOverreach" in result.stdout
+
+
+def test_public_surface_gate_offline_mode_cannot_authorize_release(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "offline-release.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(doc, token_report, source_reconciliation, "--warnings-fail")
+
+    assert result.returncode == 1
+    assert "Publication freshness ran in offline diagnostic mode" in result.stdout
+    assert "cannot authorize release/public-current claims" in result.stdout
 
 
 def test_public_surface_claim_gate_ignores_unsupported_file_suffix(tmp_path: Path) -> None:
@@ -281,6 +638,847 @@ def test_public_surface_gate_allows_api_only_receipt_disposition(tmp_path: Path)
 
     assert result.returncode == 0
     assert result.stdout == ""
+
+
+def test_public_surface_gate_fails_publication_freshness_blocker(tmp_path: Path) -> None:
+    doc = tmp_path / "fresh.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=["github.readme.hapax-systems/example.README.md:missing:public_current"],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicationFreshness" in result.stdout
+    assert "github.readme.hapax-systems/example.README.md" in result.stdout
+    assert (
+        "Next action: refresh the publication freshness audit/live-state readback" in result.stdout
+    )
+
+
+def test_public_surface_gate_allows_local_required_file_pending_post_merge_readback(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-pending-local.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    pending_surface_id = "github.security_governance.hapax-systems/hapax-council.GOVERNANCE.md"
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[f"{pending_surface_id}:missing:public_current,release_authorized"],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 0
+    assert "awaiting post-merge public readback" in result.stdout
+    assert pending_surface_id in result.stdout
+
+
+def test_public_surface_gate_keeps_existing_required_file_missing_blocker(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-existing-missing.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    existing_surface_id = "github.readme.hapax-systems/hapax-council.README.md"
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[f"{existing_surface_id}:missing:public_current,release_authorized"],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 1
+    assert "Publication freshness has public-current blockers" in result.stdout
+    assert existing_surface_id in result.stdout
+    assert "awaiting post-merge public readback" not in result.stdout
+
+
+def test_public_surface_gate_missing_publication_freshness_state_exits_2(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-missing.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(tmp_path / "missing-freshness-state.json"),
+    )
+
+    assert result.returncode == 2
+    assert "publication freshness state not found" in result.stderr
+
+
+def test_public_surface_gate_empty_publication_freshness_state_blocks(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-empty.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        envelopes=[],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 1
+    assert "Publication freshness state has no surface envelopes" in result.stdout
+
+
+def test_public_surface_gate_recomputes_freshness_blockers_from_envelopes(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-forged.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[_freshness_envelope()],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicationFreshness" in result.stdout
+    assert "missing" in result.stdout
+
+
+def test_public_surface_gate_blocks_missing_required_freshness_witness(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-incomplete.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    missing_required_id = "github.security_governance.hapax-systems/example.GOVERNANCE.md"
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[
+            _freshness_envelope(
+                freshness_result="match",
+                rendered_hash="abc123",
+                readback_hash="abc123",
+            )
+        ],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+        "--required-publication-freshness-surface-id",
+        TEST_FRESHNESS_SURFACE_ID,
+        "--required-publication-freshness-surface-id",
+        missing_required_id,
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicationFreshness" in result.stdout
+    assert "omits required public-surface witnesses" in result.stdout
+    assert missing_required_id in result.stdout
+
+
+def test_public_surface_gate_rejects_forged_witness_against_live_report(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-forged-report.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    github_report = _write_profile_report_without_required_readme(tmp_path / "github-report.json")
+    forged_surface_id = "github.profile.hapax-systems/.github.profile/README.md"
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[
+            _freshness_envelope(
+                surface_id=forged_surface_id,
+                surface_type="github.profile",
+                source_ref="docs/repo-pres/github-public-surface-live-state-reconcile.json",
+                source_of_truth="github_public_surface_report",
+                evidence_refs=["gh:contents/hapax-systems/.github/profile/README.md"],
+                freshness_result="match",
+                rendered_hash="abc123",
+                readback_hash="abc123",
+            )
+        ],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+        "--skip-live-github-public-surface-refresh",
+        "--github-public-surface-report",
+        str(github_report),
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicationFreshness" in result.stdout
+    assert "does not match live report evidence" in result.stdout
+    assert forged_surface_id in result.stdout
+    assert "freshness_result expected missing observed match" in result.stdout
+
+
+def test_public_surface_gate_rejects_custom_report_without_offline_switch(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-custom-report.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    github_report = _write_profile_report_without_required_readme(tmp_path / "github-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+        "--github-public-surface-report",
+        str(github_report),
+    )
+
+    assert result.returncode == 2
+    assert "custom --github-public-surface-report requires" in result.stderr
+    assert "--skip-live-github-public-surface-refresh" in result.stderr
+
+
+def test_public_surface_gate_rejects_explicit_required_ids_without_offline_switch(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-explicit-required-id.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[
+            _freshness_envelope(
+                freshness_result="match",
+                rendered_hash="abc123",
+                readback_hash="abc123",
+            )
+        ],
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--token-claim-report",
+            str(token_report),
+            "--source-reconciliation",
+            str(source_reconciliation),
+            "--publication-freshness-state",
+            str(freshness_state),
+            "--required-publication-freshness-surface-id",
+            TEST_FRESHNESS_SURFACE_ID,
+            str(doc),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 2
+    assert "--required-publication-freshness-surface-id requires" in result.stderr
+    assert "--skip-live-github-public-surface-refresh" in result.stderr
+
+
+def test_live_expected_comparison_allows_independent_freshness_timestamp(
+    tmp_path: Path,
+) -> None:
+    checked_at = datetime.now(tz=UTC).replace(microsecond=0) - timedelta(minutes=5)
+    expected_checked_at = checked_at + timedelta(minutes=1)
+    observed = PublicSurfaceFreshnessEnvelope.model_validate(
+        _freshness_envelope(
+            checked_at=_isoformat_z(checked_at),
+            expires_at=_isoformat_z(checked_at + timedelta(seconds=1800)),
+            freshness_result="match",
+            source_hash="same-source",
+            rendered_hash="same-content",
+            published_hash="same-content",
+            readback_hash="same-content",
+        )
+    )
+    expected = PublicSurfaceFreshnessEnvelope.model_validate(
+        _freshness_envelope(
+            checked_at=_isoformat_z(expected_checked_at),
+            expires_at=_isoformat_z(expected_checked_at + timedelta(seconds=1800)),
+            freshness_result="match",
+            source_hash="same-source",
+            rendered_hash="same-content",
+            published_hash="same-content",
+            readback_hash="same-content",
+        )
+    )
+    state = PublicationFreshnessSnapshot(
+        generated_at=_isoformat_z(datetime.now(tz=UTC).replace(microsecond=0)),
+        envelopes=(observed,),
+    )
+    gate = _gate_module()
+    check_publication_freshness_state = gate["check_publication_freshness_state"]
+
+    live_findings = check_publication_freshness_state(
+        state,
+        state_path=tmp_path / "freshness-state.json",
+        required_surface_ids=(TEST_FRESHNESS_SURFACE_ID,),
+        expected_envelopes=(expected,),
+        compare_expected_temporal_fields=False,
+    )
+    offline_findings = check_publication_freshness_state(
+        state,
+        state_path=tmp_path / "freshness-state.json",
+        required_surface_ids=(TEST_FRESHNESS_SURFACE_ID,),
+        expected_envelopes=(expected,),
+        compare_expected_temporal_fields=True,
+    )
+
+    assert live_findings == []
+    assert len(offline_findings) == 1
+    assert "checked_at expected" in offline_findings[0].message
+
+
+def test_public_surface_gate_blocks_live_state_drift_finding(tmp_path: Path) -> None:
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    payload["drift_findings"] = [
+        {
+            "finding_id": "github.license.example.registry-mismatch",
+            "severity": "blocking",
+            "category": "license_detection",
+            "surface": "hapax-systems/example",
+            "status": "blocked",
+            "summary": "GitHub detected license does not match the repo registry policy.",
+            "expected": "GitHub public license surfaces align to MIT.",
+            "observed": "GitHub detects NOASSERTION.",
+            "evidence_refs": ["fixture"],
+            "blocks": ["github-public-claim-evidence-gate"],
+        }
+    ]
+    report = GitHubPublicSurfaceReport.model_validate(payload)
+    gate = _gate_module()
+    check_github_public_surface_drift = gate["check_github_public_surface_drift"]
+
+    findings = check_github_public_surface_drift(
+        report,
+        report_path=tmp_path / "github-report.json",
+    )
+
+    assert len(findings) == 1
+    assert findings[0].level == "error"
+    assert "blocks release/public-current claims" in findings[0].message
+    assert "github.license.example.registry-mismatch" in findings[0].message
+
+
+def test_public_surface_gate_blocks_closed_repo_pres_claims_when_blocking(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    payload["drift_findings"] = [
+        {
+            "finding_id": "github.closed-repo-pres.claim-drift",
+            "severity": "blocking",
+            "category": "closed_repo_pres_claims",
+            "surface": "docs/repo-pres",
+            "status": "blocked",
+            "summary": "Closed repo-pres claims still block public refresh.",
+            "expected": "Closed repo-pres claims are reconciled before release.",
+            "observed": "Closed repo-pres claims remain false or unreconciled.",
+            "evidence_refs": ["fixture"],
+            "blocks": ["github-readme-profile-current-project-refresh"],
+        }
+    ]
+    report = GitHubPublicSurfaceReport.model_validate(payload)
+    gate = _gate_module()
+    check_github_public_surface_drift = gate["check_github_public_surface_drift"]
+
+    findings = check_github_public_surface_drift(
+        report,
+        report_path=tmp_path / "github-report.json",
+    )
+
+    assert len(findings) == 1
+    assert findings[0].level == "error"
+    assert "blocks release/public-current claims" in findings[0].message
+    assert "github.closed-repo-pres.claim-drift" in findings[0].message
+
+
+def test_public_surface_gate_warns_on_unauthenticated_fallback_provenance(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    payload["source_refs"] = [
+        *payload["source_refs"],
+        "public_unauthenticated_fallback:gh api repos/hapax-systems/hapax-council",
+    ]
+    report = GitHubPublicSurfaceReport.model_validate(payload)
+    gate = _gate_module()
+    check_fallback_provenance = gate["check_github_public_surface_fallback_provenance"]
+
+    findings = check_fallback_provenance(
+        report,
+        report_path=tmp_path / "github-report.json",
+    )
+
+    assert len(findings) == 1
+    assert findings[0].level == "warning"
+    assert "public unauthenticated fallback" in findings[0].message
+    assert "cannot authorize release/public-current under --warnings-fail" in findings[0].message
+
+
+def test_public_surface_gate_allows_documented_polyform_license_detection(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    payload["drift_findings"] = [
+        {
+            "finding_id": "github.license.hapax-council.apache-vs-polyform",
+            "severity": "blocking",
+            "category": "license_detection",
+            "surface": "hapax-systems/hapax-council",
+            "status": "blocked",
+            "summary": "GitHub/root license detection contradicts the repo registry policy.",
+            "expected": "GitHub public license surfaces align to PolyForm-Strict-1.0.0.",
+            "observed": "GitHub detects NOASSERTION.",
+            "evidence_refs": ["fixture"],
+            "blocks": ["github-readme-profile-current-project-refresh"],
+        }
+    ]
+    report = GitHubPublicSurfaceReport.model_validate(payload)
+    gate = _gate_module()
+    check_github_public_surface_drift = gate["check_github_public_surface_drift"]
+
+    findings = check_github_public_surface_drift(
+        report,
+        report_path=tmp_path / "github-report.json",
+    )
+
+    assert findings == []
+
+
+def test_public_surface_gate_blocks_modified_existing_readme_drift(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "README.md").write_text("No freshness delegation.\n", encoding="utf-8")
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    payload["drift_findings"] = [
+        {
+            "finding_id": "github.readme.current-project-spine-stale",
+            "severity": "high",
+            "category": "readme_currentness",
+            "surface": "README.md",
+            "status": "drift",
+            "summary": "README currentness must be regenerated after live-state reconciliation.",
+            "expected": "README/profile copy cites current project-spine evidence and report head.",
+            "observed": "README predates this live-state report and cannot claim reconciled state.",
+            "evidence_refs": ["fixture"],
+            "blocks": ["github-readme-profile-current-project-refresh"],
+        }
+    ]
+    report = GitHubPublicSurfaceReport.model_validate(payload)
+    gate = _gate_module()
+    check_github_public_surface_drift = gate["check_github_public_surface_drift"]
+    check_github_public_surface_drift.__globals__["REPO_ROOT"] = tmp_path
+    check_github_public_surface_drift.__globals__["_git_path_status"] = lambda path: (
+        "M" if path == "README.md" else None
+    )
+
+    findings = check_github_public_surface_drift(
+        report,
+        report_path=tmp_path / "github-report.json",
+    )
+
+    assert len(findings) == 1
+    assert findings[0].level == "error"
+    assert "blocks release/public-current claims" in findings[0].message
+    assert "github.readme.current-project-spine-stale" in findings[0].message
+
+
+def test_public_surface_gate_allows_readme_freshness_claim_delegation(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "README.md").write_text(
+        "Public-current readback is not asserted by this README. Treat the live "
+        "GitHub public-surface reconcile, publication freshness audit, and release "
+        "gate output as the freshness witness.\n",
+        encoding="utf-8",
+    )
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    payload["drift_findings"] = [
+        {
+            "finding_id": "github.readme.current-project-spine-stale",
+            "severity": "high",
+            "category": "readme_currentness",
+            "surface": "README.md",
+            "status": "drift",
+            "summary": "README currentness must be regenerated after live-state reconciliation.",
+            "expected": "README/profile copy cites current project-spine evidence and report head.",
+            "observed": "README predates this live-state report and cannot claim reconciled state.",
+            "evidence_refs": ["fixture"],
+            "blocks": ["github-readme-profile-current-project-refresh"],
+        }
+    ]
+    report = GitHubPublicSurfaceReport.model_validate(payload)
+    gate = _gate_module()
+    check_github_public_surface_drift = gate["check_github_public_surface_drift"]
+    check_github_public_surface_drift.__globals__["REPO_ROOT"] = tmp_path
+
+    findings = check_github_public_surface_drift(
+        report,
+        report_path=tmp_path / "github-report.json",
+    )
+
+    assert findings == []
+
+
+def test_public_surface_gate_allows_documented_metadata_license_posture(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "CITATION.cff").write_text(
+        "license: PolyForm-Strict-1.0.0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "codemeta.json").write_text(
+        '{"license":"https://polyformproject.org/licenses/strict/1.0.0/"}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / ".zenodo.json").write_text(
+        '{"license":"other-closed"}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "LICENSE").write_text(
+        "PolyForm Strict License 1.0.0\n",
+        encoding="utf-8",
+    )
+    payload = json.loads(GITHUB_REPORT.read_text(encoding="utf-8"))
+    payload["drift_findings"] = [
+        {
+            "finding_id": "github.metadata.citation-codemeta-zenodo-coherence",
+            "severity": "high",
+            "category": "citation_codemeta_zenodo",
+            "surface": "CITATION.cff/codemeta.json/.zenodo.json",
+            "status": "unreconciled",
+            "summary": "Citation/CodeMeta/Zenodo metadata must be reconciled after license drift.",
+            "expected": "Metadata license, preferred citation, and DOI posture agree with live surfaces.",
+            "observed": "Metadata cannot be treated as coherent while GitHub detects a contradictory license.",
+            "evidence_refs": ["fixture"],
+            "blocks": ["github-public-claim-evidence-gate"],
+        }
+    ]
+    report = GitHubPublicSurfaceReport.model_validate(payload)
+    gate = _gate_module()
+    check_github_public_surface_drift = gate["check_github_public_surface_drift"]
+    check_github_public_surface_drift.__globals__["REPO_ROOT"] = tmp_path
+
+    findings = check_github_public_surface_drift(
+        report,
+        report_path=tmp_path / "github-report.json",
+    )
+
+    assert findings == []
+
+
+def test_public_surface_gate_rejects_redated_live_report_witness(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-redated-report.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    github_report = _write_old_profile_report_with_readme(tmp_path / "github-report.json")
+    forged_surface_id = "github.profile.hapax-systems/.github.profile/README.md"
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[
+            _freshness_envelope(
+                surface_id=forged_surface_id,
+                surface_type="github.profile",
+                source_ref="docs/repo-pres/github-public-surface-live-state-reconcile.json",
+                source_of_truth="github_public_surface_report",
+                evidence_refs=["gh:contents/hapax-systems/.github/profile/README.md"],
+                freshness_result="match",
+                rendered_hash="abc1234",
+                readback_hash="abc1234",
+            )
+        ],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+        "--skip-live-github-public-surface-refresh",
+        "--github-public-surface-report",
+        str(github_report),
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicationFreshness" in result.stdout
+    assert "does not match live report evidence" in result.stdout
+    assert forged_surface_id in result.stdout
+    assert "checked_at expected 2020-01-01T00:00:00Z" in result.stdout
+
+
+def test_public_surface_gate_blocks_future_dated_freshness_snapshot(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-future-snapshot.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    future_generated_at = _isoformat_z(
+        datetime.now(tz=UTC).replace(microsecond=0) + timedelta(days=1)
+    )
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        generated_at=future_generated_at,
+        blockers=[],
+        envelopes=[
+            _freshness_envelope(
+                freshness_result="match",
+                rendered_hash="abc123",
+                readback_hash="abc123",
+            )
+        ],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicationFreshness" in result.stdout
+    assert "future-dated witnesses" in result.stdout
+    assert "snapshot.generated_at" in result.stdout
+
+
+def test_public_surface_gate_blocks_future_dated_freshness_envelope(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-future-envelope.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    future_checked_at = datetime.now(tz=UTC).replace(microsecond=0) + timedelta(days=1)
+    future_expires_at = future_checked_at + timedelta(seconds=1800)
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[
+            _freshness_envelope(
+                checked_at=_isoformat_z(future_checked_at),
+                expires_at=_isoformat_z(future_expires_at),
+                freshness_result="match",
+                rendered_hash="abc123",
+                readback_hash="abc123",
+            )
+        ],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicationFreshness" in result.stdout
+    assert "future-dated witnesses" in result.stdout
+    assert "github.readme.hapax-systems/example.README.md.checked_at" in result.stdout
+
+
+def test_public_surface_gate_marks_expired_freshness_state_stale(tmp_path: Path) -> None:
+    doc = tmp_path / "fresh-expired.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[
+            _freshness_envelope(
+                checked_at="2000-01-01T00:00:00Z",
+                expires_at="2000-01-01T00:30:00Z",
+                freshness_result="match",
+                rendered_hash="abc123",
+                readback_hash="abc123",
+            )
+        ],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicationFreshness" in result.stdout
+    assert "stale" in result.stdout
+
+
+def test_public_surface_gate_rejects_forged_oversized_freshness_ttl(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-forged-ttl.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[],
+        envelopes=[
+            _freshness_envelope(
+                checked_at="2020-01-01T00:00:00Z",
+                ttl_s=315_360_000,
+                expires_at="2029-12-29T00:00:00Z",
+                freshness_result="match",
+                rendered_hash="abc123",
+                readback_hash="abc123",
+            )
+        ],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 2
+    assert "publication freshness state is malformed" in result.stderr
+    assert "ttl_s must be <=" in result.stderr
+    assert "Next action: regenerate or repair the state" in result.stderr
+
+
+def test_public_surface_gate_reports_malformed_freshness_state_generated_at(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-bad-generated-at.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        generated_at="not-a-timestamp",
+        blockers=[],
+        envelopes=[
+            _freshness_envelope(
+                freshness_result="match",
+                rendered_hash="abc123",
+                readback_hash="abc123",
+            )
+        ],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 1
+    assert "Hapax.PublicationFreshness" in result.stdout
+    assert "malformed timestamp snapshot.generated_at" in result.stdout
+    assert "Next action: regenerate the publication freshness audit/live-state" in result.stdout
+
+
+def test_public_surface_gate_malformed_freshness_state_exits_2_with_next_action(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-malformed.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    freshness_state = tmp_path / "freshness-state.json"
+    freshness_state.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 2
+    assert "publication freshness state is malformed" in result.stderr
+    assert "Next action: regenerate or repair the state" in result.stderr
 
 
 def test_public_surface_gate_json_includes_v2_rule_ids(tmp_path: Path) -> None:

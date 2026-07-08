@@ -6,14 +6,14 @@ post, or GitHub profile link.
 
 ## One-Sentence Claim
 
-Hapax is a single-operator autonomous grounding lab: a live agentic system that
-tries to determine what it knows, what it may claim, what it must refuse, and
-what can safely become public evidence.
+Hapax is a single-operator autonomous grounding lab. It studies which evidence
+supports a claim, which claims are authorized, which outputs must be refused,
+and what can safely become public evidence.
 
 ## Why This Exists
 
-Most agent demonstrations evaluate whether a task was completed. Hapax treats a
-larger path as the safety-relevant unit: perception, source recruitment, claim
+Most agent demonstrations ask whether an agent completed a task. Hapax treats
+a larger path as the safety-relevant unit: perception, source recruitment, claim
 formation, uncertainty, refusal, correction, public/private boundary handling,
 and publication or livestream egress.
 
@@ -28,24 +28,35 @@ That makes this repository relevant to empirical AI safety work around:
 - multi-agent coordination under operational pressure.
 
 The intended research output is not "an AI streamer" or a creator product. The
-intended output is a benchmarkable and reviewable account of grounding attempts:
-episodes where an agentic system makes, refuses, revises, publishes, suppresses,
-or corrects claims under real tool, source, privacy, and public-facing
+intended output is a benchmarkable account of grounding attempts. These are
+episodes where an agentic system makes, refuses, revises, publishes,
+suppresses, or corrects claims under tool, source, privacy, and public-facing
 constraints.
 
-For OpenAI Safety Fellowship or similar AI-safety reviewers: this is meant to
-fit the lane of empirically grounded safety evaluation, agentic oversight,
-robustness, scalable mitigations, and privacy-preserving safety methods, with a
-substantial external output in the form of a benchmark, dataset, and methods
+For AI-safety reviewers, this is meant to fit empirically grounded safety
+evaluation, agentic oversight, robustness work, and privacy-preserving safety
+methods. The intended external output is a benchmark, dataset, and methods
 paper.
+
+## Reader Value
+
+Different readers should get different evidence from the same system, without
+the copy pretending those values are the same:
+
+| Reader | What Hapax makes inspectable |
+|---|---|
+| AI-safety researchers | Grounding attempts with source state, uncertainty, refusal, correction, and public-egress decisions instead of isolated answer scores. |
+| Technical directors | Authority boundaries, route metadata, release gates, and receipts that can be audited before adapting any mechanism. |
+| Harness evaluators | A live outlier case where orchestration, governance, refusal, and publication are part of the measured surface, not add-ons around a task runner. |
+| Narrow-tool adopters | A way to distinguish portable hooks such as `agentgov` and Reins read/preview surfaces from the stricter research/runtime estate. |
 
 ## Review Path
 
 If you have five minutes:
 
 1. Read this file.
-2. Read the first half of [`README.md`](README.md), especially "Project spine,"
-   "What this is," and "Architecture."
+2. Read [`README.md`](README.md), especially "Reader Map," "What This
+   Repository Shows," and "What Not To Infer."
 3. Inspect [`research/THEORY-MAP.md`](research/THEORY-MAP.md) for the link
    between grounding theory and implementation surfaces.
 

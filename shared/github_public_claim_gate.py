@@ -348,9 +348,14 @@ def evaluate_github_public_claims(
                 claim_class=GitHubClaimClass.MATERIAL_CURRENTNESS,
                 decision=Decision.REFUSE,
                 surface=envelope.surface,
-                reason="profile README repo is missing/private or lacks root README.md",
+                reason=(
+                    "organization profile README repo is missing/private or lacks profile/README.md"
+                ),
                 claim_text=_snippet(text),
-                correction="publish only after the user profile repo is present and public",
+                correction=(
+                    "publish only after hapax-systems/.github/profile/README.md "
+                    "is present and public"
+                ),
                 evidence_refs=envelope.current_source_refs,
             )
         )

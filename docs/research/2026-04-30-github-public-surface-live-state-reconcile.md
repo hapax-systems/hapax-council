@@ -1,56 +1,63 @@
 ---
 title: GitHub public surface live state reconcile
 date: 2026-04-30
+refresh_date: 2026-07-08
+generated_at: 2026-07-08T18:07:11Z
 status: evidence-produced
 source: github-public-surface-live-state-reconcile
 ---
 
 # GitHub Public Surface Live State Reconcile
 
-- Generated: `2026-04-30T03:49:18Z`
+- Filename note: the April slug is retained for historical ledger continuity; the YAML `date` field matches that slug, while `refresh_date`, `generated_at`, and `Generated` record the current live-state refresh. Freshness checks must read the refresh fields before treating this as current.
+- Generated: `2026-07-08T18:07:11Z`
+- Recheck: `uv run python scripts/github-public-surface-reconcile.py`
 - Claim ceiling: `public_archive`
-- Blocking findings: `4`
+- Blocking findings: `1`
 - Report schema: `schema_version=1`
 
 ## Live Repos
 
 | Repo | Visibility | Default SHA | License | Issues | Discussions | Wiki | Pages |
 |---|---:|---|---|---:|---:|---:|---:|
-| ryanklee/hapax-council | public | 8d7b3aa37d74 | Apache-2.0 | true | false | false | false |
-| ryanklee/hapax-constitution | public | 104a22ac3b24 | Apache-2.0 | true | false | true | false |
-| ryanklee/hapax-officium | public | 10bbd0173b79 | NOASSERTION | true | false | false | false |
-| ryanklee/hapax-watch | private |  |  |  |  |  | false |
-| ryanklee/hapax-phone | private |  |  |  |  |  | false |
-| ryanklee/hapax-mcp | private |  |  |  |  |  | false |
-| ryanklee/hapax-assets | missing_or_private |  |  |  |  |  | false |
+| hapax-systems/agentgov | public | ca8b3bdf7ac9 | MIT | true | false | false | false |
+| hapax-systems/hapax-council | public | 3a2664d48fef | NOASSERTION | true | false | false | false |
+| hapax-systems/hapax-constitution | public | 96ea7f557e50 | Apache-2.0 | true | false | true | false |
+| hapax-systems/hapax-officium | public | 69583619391b | NOASSERTION | true | false | false | false |
+| hapax-systems/hapax-watch | public | f12bf995be38 | NOASSERTION | true | false | false | false |
+| hapax-systems/hapax-phone | public | f2843fc5dd77 | NOASSERTION | true | false | false | false |
+| hapax-systems/hapax-mcp | public | 44c70eea4ca4 | MIT | true | false | false | false |
+| hapax-systems/hapax-research-ledger | public | 5c99dced93b8 | CC0-1.0 | true | false | false | false |
+| hapax-systems/hapax-assets | public | 1890c08b4d72 |  | true | false | false | true |
+| hapax-systems/reins | public | 882ef2129131 | NOASSERTION | true | false | false | false |
 
 ## Drift Findings
 
 | Severity | Category | Surface | Summary |
 |---|---|---|---|
-| high | license_detection | ryanklee/hapax-constitution | GitHub detected license does not match the repo registry policy. |
-| high | license_detection | ryanklee/hapax-officium | GitHub detected license does not match the repo registry policy. |
-| high | settings_truth | ryanklee/hapax-watch | An intended public first-party repo is not publicly visible. |
-| high | settings_truth | ryanklee/hapax-phone | An intended public first-party repo is not publicly visible. |
-| high | settings_truth | ryanklee/hapax-mcp | An intended public first-party repo is not publicly visible. |
-| blocking | license_detection | ryanklee/hapax-council | GitHub/root license detection contradicts the repo registry policy. |
-| blocking | notice_links | NOTICE.md | NOTICE links to CONTRIBUTING.md, but the linked file is absent. |
-| high | contributing_governance | ryanklee/hapax-council | GOVERNANCE.md is missing from the public repo root. |
-| high | settings_truth | ryanklee/hapax-council | Issues are enabled while GitHub does not report an issue template. |
+| high | license_detection | hapax-systems/hapax-constitution | GitHub detected license does not match the repo registry policy. |
+| high | license_detection | hapax-systems/hapax-officium | GitHub detected license does not match the repo registry policy. |
+| high | license_detection | hapax-systems/hapax-watch | GitHub detected license does not match the repo registry policy. |
+| high | license_detection | hapax-systems/hapax-phone | GitHub detected license does not match the repo registry policy. |
+| high | license_detection | hapax-systems/reins | GitHub detected license does not match the repo registry policy. |
+| blocking | license_detection | hapax-systems/hapax-council | GitHub/root license detection contradicts the repo registry policy. |
+| high | contributing_governance | hapax-systems/hapax-council | GOVERNANCE.md is missing from the public repo root. |
+| high | settings_truth | hapax-systems/hapax-council | Issues are enabled while GitHub does not report an issue template. |
 | high | readme_currentness | README.md | README currentness must be regenerated after live-state reconciliation. |
 | high | citation_codemeta_zenodo | CITATION.cff/codemeta.json/.zenodo.json | Citation/CodeMeta/Zenodo metadata must be reconciled after license drift. |
-| blocking | profile_repo_state | ryanklee/ryanklee | User profile README repo is missing, private, or lacks root README.md. |
-| blocking | pages_cdn_state | ryanklee/hapax-assets | hapax-assets is not a verified public Pages/CDN surface. |
-| medium | package_public_surfaces | packages/ | Some package README/PyPI surfaces contain issue/support language needing claim discipline. |
-| high | closed_repo_pres_claims | cc-task closed/repo-pres-* | Closed repo-pres task claims were compared to live state. |
+| info | profile_repo_state | hapax-systems/.github | Organization profile README is present at the selected Hapax Systems path. |
+| info | notice_links | NOTICE.md | NOTICE links resolve against the current local public-surface evidence. |
+| info | pages_cdn_state | hapax-systems/hapax-assets | hapax-assets is visible with a readable GitHub Pages state. |
+| info | package_public_surfaces | packages/ | Package public surfaces were inventoried and did not trigger issue/support drift. |
+| info | closed_repo_pres_claims | cc-task closed/repo-pres-* | Closed repo-pres task claims were compared to live state. |
 
 ## Profile README Decision
 
-Current GitHub docs require a public user repo named `ryanklee` with a root `README.md` for a user profile README. The `.github/profile/README.md` pattern is for organization profiles, so it is evidence only for this operator-account surface.
+Current GitHub docs use a public `.github` repository with `profile/README.md` for organization profile READMEs. Hapax public frontmatter is organization-owned, so the selected profile surface is `hapax-systems/.github/profile/README.md`.
 
 ## Anti-Overclaim
 
-Observed user-profile candidate: `gh: Not Found (HTTP 404)`.
+Observed organization-profile candidate: `visibility=public, private=False, profile_readme=True`.
 
 - live GitHub coherence does not prove research validity.
 - live GitHub coherence does not prove livestream health.

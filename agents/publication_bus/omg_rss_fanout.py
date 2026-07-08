@@ -25,21 +25,57 @@ on every weblog publish.
 from __future__ import annotations
 
 import logging
+import re
+import subprocess
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 import yaml
 from prometheus_client import Counter
 
+from shared.public_gate_receipts import (
+    PUBLIC_GATE_REVIEW_HEAD_RE,
+    public_gate_expected_head_sha_from_mapping,
+    public_gate_receipt_value_present,
+)
+
 log = logging.getLogger(__name__)
 
-DEFAULT_CONFIG_PATH: Path = Path(__file__).resolve().parents[2] / "config" / "omg-lol-fanout.yaml"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH: Path = REPO_ROOT / "config" / "omg-lol-fanout.yaml"
 """Repository-relative config path: ``<repo>/config/omg-lol-fanout.yaml``."""
 
 FANOUT_LOOP_HEADER_PREFIX: str = "<!-- X-Hapax-Fanout-Source:"
 """HTML-comment header prepended to fanned-out content. Loop-prevention
 checks for this substring in incoming content before re-fanning out."""
+
+FANOUT_REQUIRED_GATES: tuple[str, ...] = (
+    "source_artifact_public_safe",
+    "source_refs_present",
+    "rights_privacy_redaction_pass",
+    "target_surface_allowlist_pass",
+    "fanout_loop_prevention_present",
+    "claim_review_current",
+    "no_direct_public_egress",
+)
+FANOUT_ALLOWED_GATE_IDS = frozenset(FANOUT_REQUIRED_GATES)
+"""Receipt ids required before any cross-weblog public fanout egress."""
+FANOUT_SURFACE_ID = "omg-lol-weblog-bearer-fanout"
+FANOUT_REVIEW_REQUIRED = "Claim Verification Council"
+
+PUBLIC_GATE_RECEIPT_ROOTS: tuple[Path, ...] = (
+    Path.home() / ".cache" / "hapax" / "relay" / "receipts",
+    Path(__file__).resolve().parents[2] / "docs" / "research" / "evidence",
+)
+
+OMG_LOL_ADDRESS_RE = re.compile(r"\A[a-z0-9][a-z0-9-]{0,62}\Z")
+"""Conservative omg.lol address segment accepted before public fanout egress."""
+
+OMG_LOL_WEBLOG_ENTRY_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._~-]{0,191}\Z")
+"""Conservative unreserved weblog entry path segment accepted before public fanout egress."""
 
 omg_fanouts_total = Counter(
     "hapax_publication_bus_omg_fanouts_total",
@@ -61,19 +97,346 @@ class OmgFanoutConfig:
     """
 
     addresses: list[str] = field(default_factory=list)
+    required_gates: list[str] = field(default_factory=lambda: list(FANOUT_REQUIRED_GATES))
+    gate_policy_error: str | None = None
+    publication_policy_verified: bool = False
+    expected_head_sha: str | None = None
 
 
 def load_fanout_config(*, path: Path = DEFAULT_CONFIG_PATH) -> OmgFanoutConfig:
     """Load the fanout config from YAML; return empty config when absent."""
     if not path.exists():
         return OmgFanoutConfig()
-    raw = yaml.safe_load(path.read_text()) or {}
+    try:
+        raw = yaml.safe_load(path.read_text()) or {}
+    except OSError:
+        return OmgFanoutConfig(
+            gate_policy_error=(
+                "fanout config unreadable; next action: restore a readable guarded_public_fanout "
+                "policy before public fanout"
+            )
+        )
+    except yaml.YAMLError:
+        return OmgFanoutConfig(
+            gate_policy_error=(
+                "fanout config YAML is malformed; next action: repair the guarded_public_fanout "
+                "policy before public fanout"
+            )
+        )
     if not isinstance(raw, dict):
-        return OmgFanoutConfig()
+        return OmgFanoutConfig(
+            gate_policy_error=(
+                "fanout config must be a mapping; next action: restore a guarded_public_fanout "
+                "policy before public fanout"
+            )
+        )
     addresses = raw.get("addresses", [])
     if not isinstance(addresses, list):
         addresses = []
-    return OmgFanoutConfig(addresses=[str(a) for a in addresses])
+        address_policy_error = (
+            "fanout config addresses must be a list; next action: restore a list of "
+            "operator-owned omg.lol address ids before public fanout"
+        )
+    else:
+        addresses, address_policy_error = _configured_addresses(addresses)
+    required_gates, gate_policy_error, publication_policy_verified = _configured_required_gates(
+        raw.get("publication_frontmatter_policy")
+    )
+    expected_head_sha = public_gate_expected_head_sha_from_mapping(raw)
+    if expected_head_sha is None:
+        expected_head_sha = public_gate_expected_head_sha_from_mapping(
+            raw.get("publication_frontmatter_policy")
+        )
+    if expected_head_sha is None:
+        expected_head_sha = _current_repo_head_sha()
+    return OmgFanoutConfig(
+        addresses=addresses,
+        required_gates=required_gates,
+        gate_policy_error=_join_policy_errors(address_policy_error, gate_policy_error),
+        publication_policy_verified=publication_policy_verified,
+        expected_head_sha=expected_head_sha,
+    )
+
+
+def _join_policy_errors(*errors: str | None) -> str | None:
+    present = [error for error in errors if error]
+    return "; ".join(present) if present else None
+
+
+def _safe_omg_lol_address(value: object) -> bool:
+    return isinstance(value, str) and OMG_LOL_ADDRESS_RE.fullmatch(value.strip()) is not None
+
+
+def _safe_omg_lol_weblog_entry_id(value: object) -> bool:
+    return (
+        isinstance(value, str) and OMG_LOL_WEBLOG_ENTRY_ID_RE.fullmatch(value.strip()) is not None
+    )
+
+
+def _duplicate_values(values: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for value in values:
+        if value in seen:
+            duplicates.add(value)
+        else:
+            seen.add(value)
+    return sorted(duplicates)
+
+
+def _current_repo_head_sha(repo_root: Path = REPO_ROOT) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return None
+    head_sha = result.stdout.strip()
+    if result.returncode != 0 or PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(head_sha) is None:
+        return None
+    return head_sha
+
+
+def _configured_addresses(values: Sequence[object]) -> tuple[list[str], str | None]:
+    addresses: list[str] = []
+    malformed = []
+    for value in values:
+        if _safe_omg_lol_address(value):
+            addresses.append(str(value).strip())
+        else:
+            malformed.append(repr(value))
+    errors: list[str] = []
+    if malformed:
+        errors.append(
+            "fanout config addresses contains malformed address ids: "
+            + ", ".join(sorted(malformed))
+            + "; next action: use lowercase omg.lol address path segments only"
+        )
+    duplicates = _duplicate_values(addresses)
+    if duplicates:
+        errors.append(
+            "fanout config addresses contains duplicate address ids: "
+            + ", ".join(duplicates)
+            + "; next action: list each target address once before public fanout"
+        )
+    return addresses, _join_policy_errors(*errors)
+
+
+def _configured_required_gates(policy: object) -> tuple[list[str], str | None, bool]:
+    baseline = list(FANOUT_REQUIRED_GATES)
+    if not isinstance(policy, dict):
+        return (
+            baseline,
+            (
+                "fanout config missing publication_frontmatter_policy; next action: restore "
+                "required publication gate policy before public fanout"
+            ),
+            False,
+        )
+
+    errors: list[str] = []
+    if policy.get("status") != "guarded_public_fanout":
+        errors.append(
+            "fanout config publication_frontmatter_policy.status must be "
+            "guarded_public_fanout; next action: repair the guarded fanout policy before "
+            "public fanout"
+        )
+    if policy.get("publication_allowed_without_bus") is not False:
+        errors.append(
+            "fanout config publication_allowed_without_bus must be false; next action: "
+            "route fanout only through the publication bus"
+        )
+    if policy.get("direct_public_egress_allowed") is not False:
+        errors.append(
+            "fanout config direct_public_egress_allowed must be false; next action: "
+            "keep direct public egress disabled for fanout"
+        )
+    if policy.get("review_required") != FANOUT_REVIEW_REQUIRED:
+        errors.append(
+            "fanout config review_required must be Claim Verification Council; next "
+            "action: restore CVC review before public fanout"
+        )
+    target_surfaces = policy.get("target_surfaces")
+    if not isinstance(target_surfaces, list) or not all(
+        isinstance(surface, str) and surface.strip() for surface in target_surfaces
+    ):
+        errors.append(
+            "fanout config target_surfaces must be a non-empty string list; next action: "
+            "restore the fanout target-surface allowlist"
+        )
+    elif FANOUT_SURFACE_ID not in {surface.strip() for surface in target_surfaces}:
+        errors.append(
+            "fanout config target_surfaces must include omg-lol-weblog-bearer-fanout; "
+            "next action: restore the fanout target-surface allowlist"
+        )
+    claim_ceiling = policy.get("claim_ceiling")
+    if not isinstance(claim_ceiling, str) or not claim_ceiling.strip():
+        errors.append(
+            "fanout config claim_ceiling must be a non-empty string; next action: "
+            "state the fanout claim ceiling before public fanout"
+        )
+
+    configured = policy.get("required_gates")
+    if not isinstance(configured, list) or not configured:
+        errors.append(
+            "fanout config publication_frontmatter_policy.required_gates must be a "
+            "non-empty list; next action: restore the full required gate list before "
+            "public fanout"
+        )
+        return baseline, _join_policy_errors(*errors), False
+
+    normalized: list[str] = []
+    malformed = False
+    for gate in configured:
+        if not isinstance(gate, str) or not gate.strip():
+            malformed = True
+            continue
+        normalized.append(gate.strip())
+
+    required = list(dict.fromkeys([*baseline, *normalized]))
+    if malformed:
+        errors.append(
+            "fanout config required_gates contains blank or non-string gate ids; "
+            "next action: remove malformed gate ids before public fanout"
+        )
+
+    missing = sorted(set(FANOUT_REQUIRED_GATES) - set(normalized))
+    if missing:
+        errors.append(
+            "fanout config required_gates missing required gate ids: "
+            + ", ".join(missing)
+            + "; next action: restore every FANOUT_REQUIRED_GATES id before public fanout"
+        )
+
+    unknown = sorted(set(normalized) - FANOUT_ALLOWED_GATE_IDS)
+    if unknown:
+        errors.append(
+            "fanout config required_gates contains unknown gate ids: "
+            + ", ".join(unknown)
+            + "; next action: use only FANOUT_REQUIRED_GATES ids before public fanout"
+        )
+
+    return required, _join_policy_errors(*errors), not errors
+
+
+def _receipt_value_present(
+    gate: str,
+    value: object,
+    *,
+    bindings: Mapping[str, object] | None = None,
+    expected_head_sha: str | None = None,
+) -> bool:
+    return public_gate_receipt_value_present(
+        value,
+        expected_gate=gate,
+        roots=PUBLIC_GATE_RECEIPT_ROOTS,
+        bindings=bindings,
+        expected_head_sha=expected_head_sha,
+    )
+
+
+def _missing_gate_receipts(
+    required_gates: Sequence[str],
+    gate_receipts: Mapping[str, object] | None,
+    *,
+    bindings: Mapping[str, object] | None = None,
+    expected_head_sha: str | None = None,
+) -> list[str]:
+    receipts = gate_receipts or {}
+    return sorted(
+        gate
+        for gate in required_gates
+        if not _receipt_value_present(
+            gate,
+            receipts.get(gate),
+            bindings=bindings,
+            expected_head_sha=expected_head_sha,
+        )
+    )
+
+
+def _effective_required_gates(config: OmgFanoutConfig) -> tuple[list[str], str | None]:
+    errors: list[str] = []
+    if not config.publication_policy_verified:
+        errors.append(
+            "fanout config publication_frontmatter_policy was not verified; next action: "
+            "load a guarded_public_fanout policy before public fanout"
+        )
+    malformed = False
+    configured: list[str] = []
+    for gate in config.required_gates:
+        if not isinstance(gate, str) or not gate.strip():
+            malformed = True
+            continue
+        configured.append(gate.strip())
+
+    required = list(dict.fromkeys([*FANOUT_REQUIRED_GATES, *configured]))
+    if malformed:
+        errors.append(
+            "fanout config required_gates contains blank or non-string gate ids; "
+            "next action: remove malformed gate ids before public fanout"
+        )
+    unknown = sorted(set(configured) - FANOUT_ALLOWED_GATE_IDS)
+    if unknown:
+        errors.append(
+            "fanout config required_gates contains unknown gate ids: "
+            + ", ".join(unknown)
+            + "; next action: use only FANOUT_REQUIRED_GATES ids before public fanout"
+        )
+    return required, _join_policy_errors(*errors)
+
+
+def _fanout_address_policy_error(
+    *,
+    source_address: str,
+    entry_id: str,
+    targets: Sequence[str],
+) -> str | None:
+    errors: list[str] = []
+    if not _safe_omg_lol_address(source_address):
+        errors.append(
+            "fanout source_address is malformed; next action: use a lowercase omg.lol "
+            "address path segment before public fanout"
+        )
+    if not _safe_omg_lol_weblog_entry_id(entry_id):
+        errors.append(
+            "fanout entry_id is malformed; next action: use a single omg.lol weblog "
+            "entry path segment containing only URL-unreserved characters before public fanout"
+        )
+    malformed_targets = [target for target in targets if not _safe_omg_lol_address(target)]
+    if malformed_targets:
+        errors.append(
+            "fanout target addresses contain malformed address ids: "
+            + ", ".join(sorted(malformed_targets))
+            + "; next action: use lowercase omg.lol address path segments only"
+        )
+    duplicate_targets = _duplicate_values(list(targets))
+    if duplicate_targets:
+        errors.append(
+            "fanout target addresses contain duplicate address ids: "
+            + ", ".join(duplicate_targets)
+            + "; next action: list each target address once before public fanout"
+        )
+    return _join_policy_errors(*errors)
+
+
+def _fanout_receipt_bindings(
+    *,
+    source_address: str,
+    entry_id: str,
+    content: str,
+    targets: Sequence[str],
+) -> dict[str, object]:
+    return {
+        "source_address": source_address,
+        "entry_id": entry_id,
+        "content_sha256": sha256(content.encode("utf-8")).hexdigest(),
+        "target_addresses": tuple(sorted(targets)),
+    }
 
 
 def fanout(
@@ -83,27 +446,88 @@ def fanout(
     content: str,
     config: OmgFanoutConfig,
     client: Any,
+    gate_receipts: Mapping[str, object] | None = None,
 ) -> dict[str, str]:
     """Fan out one entry to every address in ``config`` other than the source.
 
     Returns ``{target_address: outcome}`` where outcome is one of:
     ``ok`` (set_entry returned a body), ``error`` (set_entry returned
     None), ``client-disabled`` (the client object is disabled — usually
-    because no operator bearer-token is configured). Targets identical
+    because no operator bearer-token is configured), ``loop-skipped``
+    (loop-prevention header already present), ``gate-policy-blocked``
+    (configured gate policy is unavailable or malformed), or ``gate-blocked``
+    (required gate receipts are missing or invalid). Targets identical
     to ``source_address`` are skipped.
 
     Loop-prevention: when ``content`` already contains
-    :data:`FANOUT_LOOP_HEADER_PREFIX`, the fanout is a no-op (returns
-    empty dict). This catches re-fanouts from a peer-driven flow and
-    prevents A→B→A loops without requiring graph-topology validation.
+    :data:`FANOUT_LOOP_HEADER_PREFIX`, the fanout is a no-egress skip
+    that records a ``loop-skipped`` outcome for each non-source target.
+    This catches re-fanouts from a peer-driven flow and prevents A→B→A
+    loops without requiring graph-topology validation.
     """
-    if FANOUT_LOOP_HEADER_PREFIX in content:
-        log.debug("fanout skipped — loop-prevention header detected")
-        return {}
-
     targets = [addr for addr in config.addresses if addr != source_address]
+    required_gates, boundary_gate_policy_error = _effective_required_gates(config)
+    address_policy_error = _fanout_address_policy_error(
+        source_address=source_address,
+        entry_id=entry_id,
+        targets=targets,
+    )
+    gate_policy_error = _join_policy_errors(
+        config.gate_policy_error,
+        boundary_gate_policy_error,
+        address_policy_error,
+    )
+    if gate_policy_error:
+        log.error("fanout blocked before public egress; %s", gate_policy_error)
+        for target in targets:
+            omg_fanouts_total.labels(
+                source=source_address, target=target, result="gate-policy-blocked"
+            ).inc()
+        return {target: "gate-policy-blocked" for target in targets}
+
     if not targets:
         return {}
+
+    if FANOUT_LOOP_HEADER_PREFIX in content:
+        log.warning(
+            "fanout skipped before public egress; loop-prevention header detected "
+            "source=%s entry_id=%s targets=%s; next action: inspect source content if "
+            "this was not an intentional replay",
+            source_address,
+            entry_id,
+            ",".join(targets) if targets else "none",
+        )
+        for target in targets:
+            omg_fanouts_total.labels(
+                source=source_address, target=target, result="loop-skipped"
+            ).inc()
+        return {target: "loop-skipped" for target in targets}
+
+    receipt_bindings = _fanout_receipt_bindings(
+        source_address=source_address,
+        entry_id=entry_id,
+        content=content,
+        targets=targets,
+    )
+    missing_receipts = _missing_gate_receipts(
+        required_gates,
+        gate_receipts,
+        bindings=receipt_bindings,
+        expected_head_sha=config.expected_head_sha,
+    )
+    if missing_receipts:
+        missing_text = ", ".join(missing_receipts)
+        log.error(
+            "fanout blocked before public egress; missing or invalid publication gate "
+            "receipts: %s; next action: record durable public-gate receipt refs before "
+            "fanout",
+            missing_text,
+        )
+        for target in targets:
+            omg_fanouts_total.labels(
+                source=source_address, target=target, result="gate-blocked"
+            ).inc()
+        return {target: "gate-blocked" for target in targets}
 
     body = f"{FANOUT_LOOP_HEADER_PREFIX} {source_address} -->\n{content}"
     outcomes: dict[str, str] = {}
@@ -127,6 +551,7 @@ def fanout(
 
 __all__ = [
     "DEFAULT_CONFIG_PATH",
+    "FANOUT_REQUIRED_GATES",
     "FANOUT_LOOP_HEADER_PREFIX",
     "OmgFanoutConfig",
     "fanout",
