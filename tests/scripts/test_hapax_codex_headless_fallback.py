@@ -127,6 +127,7 @@ def test_codex_headless_validates_local_fallback_token_before_claim(tmp_path: Pa
     (home / ".cache" / "hapax").mkdir(parents=True)
     _write_codex_access_token(home)
     token_path = home / ".cache" / "hapax" / "codex-oauth" / "access_token"
+    token_path.unlink()
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     workdir = tmp_path / "worktree"
     workdir.mkdir()
@@ -156,7 +157,6 @@ PY
 )"
 printf '%s\\n' "$kind" >> "{ssh_log}"
 if [ "$kind" = "worktree" ]; then
-  rm -f "{token_path}"
   exit 255
 fi
 exec bash -c "$remote_cmd"
@@ -190,8 +190,6 @@ exit 0
     )
 
     assert result.returncode == 78
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
-    assert "remote worktree bootstrap failed" in result.stderr
-    assert "explicit local fallback" in result.stderr
     assert "Codex OAuth access token" in result.stderr
-    assert claim_log.read_text(encoding="utf-8") == "task-x\n"
+    assert not ssh_log.exists()
+    assert not claim_log.exists()

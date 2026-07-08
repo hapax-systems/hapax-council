@@ -337,6 +337,19 @@ PYEOF
   rm -rf "$tmp_codex_home"
 }
 
+prove_local_fallback_before_claim() {
+  if [[ "${HAPAX_DISPATCH_HOST_FALLBACK:-}" != "local" ]]; then
+    return 0
+  fi
+  if [[ "$LOCAL_FALLBACK_BEARER_PROVEN" == "1" ]]; then
+    return 0
+  fi
+  load_local_codex_access_token
+  CODEX_BIN="$(resolve_local_codex_bin)"
+  prove_local_codex_bearer_actuation "$CODEX_BIN"
+  LOCAL_FALLBACK_BEARER_PROVEN=1
+}
+
 remote_preflight_payload_b64() {
   local token_only="${1:-0}" token_handoff_file="${2:-}"
   python3 - "$WORKDIR" "$COUNCIL_DIR" "$HOME/projects/hapax-mcp" "$token_only" \
@@ -961,6 +974,7 @@ REMOTE_TOKEN_HANDOFF_CREATED=0
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 CODEX_PID=""
 CODEX_BIN=""
+LOCAL_FALLBACK_BEARER_PROVEN=0
 # shellcheck disable=SC2329
 cleanup() {
   local current_pid=""
@@ -1043,6 +1057,7 @@ if [[ -f "$PID_FILE" ]]; then
 fi
 
 if [[ -n "$DISPATCH_HOST_REQUESTED" && -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
+  prove_local_fallback_before_claim
   [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
   (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
   CLAIMED_TASK="$CODEX_TASK"
@@ -1123,9 +1138,12 @@ if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
 fi
 
 if [[ -z "$DISPATCH_HOST_REQUESTED" && -z "$DISPATCH_HOST" ]]; then
-  load_local_codex_access_token
-  CODEX_BIN="$(resolve_local_codex_bin)"
-  prove_local_codex_bearer_actuation "$CODEX_BIN"
+  if [[ "$LOCAL_FALLBACK_BEARER_PROVEN" != "1" ]]; then
+    load_local_codex_access_token
+    CODEX_BIN="$(resolve_local_codex_bin)"
+    prove_local_codex_bearer_actuation "$CODEX_BIN"
+    LOCAL_FALLBACK_BEARER_PROVEN=1
+  fi
   if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
     [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
     (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
