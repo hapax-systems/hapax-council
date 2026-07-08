@@ -564,6 +564,14 @@ class Orchestrator:
                             result_timestamp=_optional_str(record.get("timestamp")),
                         )
 
+        if any(result == "corrupt_surface_log" for result in prior_results.values()):
+            self._move_to_failed(
+                artifact,
+                list(prior_results.values()),
+                artifact_fingerprint=artifact_fingerprint,
+            )
+            return
+
         # Dispatch only surfaces that are not already terminal.
         futures = {}
         for surface in deduped_surfaces:

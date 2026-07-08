@@ -283,6 +283,94 @@ def _run_gate(
         ) from exc
 
 
+def test_live_github_public_surface_refresh_runs_reconcile_success() -> None:
+    gate = _gate_module()
+    refresh_live_github_public_surface_report = gate["refresh_live_github_public_surface_report"]
+    subprocess_module = gate["subprocess"]
+    original_run = subprocess_module.run
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        output_path = Path(args[args.index("--output") + 1])
+        output_path.write_text(GITHUB_REPORT.read_text(encoding="utf-8"), encoding="utf-8")
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0, stdout="wrote report\n", stderr="")
+
+    subprocess_module.run = fake_run
+    try:
+        report = refresh_live_github_public_surface_report()
+    finally:
+        subprocess_module.run = original_run
+
+    assert isinstance(report, GitHubPublicSurfaceReport)
+    assert calls
+    args, kwargs = calls[0]
+    assert args[:2] == [
+        sys.executable,
+        str(REPO_ROOT / "scripts" / "github-public-surface-reconcile.py"),
+    ]
+    assert "--output" in args
+    assert kwargs["cwd"] == REPO_ROOT
+    assert kwargs["timeout"] == 120
+    assert kwargs["check"] is False
+
+
+def test_live_github_public_surface_refresh_reports_nonzero_reconcile() -> None:
+    gate = _gate_module()
+    refresh_live_github_public_surface_report = gate["refresh_live_github_public_surface_report"]
+    required_input_error = gate["RequiredInputError"]
+    subprocess_module = gate["subprocess"]
+    original_run = subprocess_module.run
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        return subprocess.CompletedProcess(args, 64, stdout="", stderr="GitHub rate limit\n")
+
+    subprocess_module.run = fake_run
+    try:
+        try:
+            refresh_live_github_public_surface_report()
+        except required_input_error as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("expected RequiredInputError")
+    finally:
+        subprocess_module.run = original_run
+
+    assert "fresh GitHub public-surface reconcile failed: GitHub rate limit" in message
+    assert "hold release until the public-surface claim gate passes" in message
+
+
+def test_live_github_public_surface_refresh_reports_timeout() -> None:
+    gate = _gate_module()
+    refresh_live_github_public_surface_report = gate["refresh_live_github_public_surface_report"]
+    required_input_error = gate["RequiredInputError"]
+    subprocess_module = gate["subprocess"]
+    original_run = subprocess_module.run
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess_module.TimeoutExpired(
+            cmd=args,
+            timeout=kwargs.get("timeout", 120),
+            output="",
+            stderr="timed out upstream\n",
+        )
+
+    subprocess_module.run = fake_run
+    try:
+        try:
+            refresh_live_github_public_surface_report()
+        except required_input_error as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("expected RequiredInputError")
+    finally:
+        subprocess_module.run = original_run
+
+    assert "fresh GitHub public-surface reconcile failed: timed out upstream" in message
+    assert "hold release until the public-surface claim gate passes" in message
+
+
 def test_public_surface_claim_gate_fails_absolute_claim(tmp_path: Path) -> None:
     doc = tmp_path / "bad.md"
     doc.write_text("No test results, no push.\n", encoding="utf-8")

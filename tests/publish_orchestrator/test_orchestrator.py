@@ -1442,6 +1442,56 @@ class TestSingleSurface:
         ]
         assert any(event_id.endswith(":fake:corrupt_surface_log") for event_id in event_ids)
 
+    def test_corrupt_prior_surface_log_blocks_all_surface_dispatch(
+        self,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        corrupt_module = mock.Mock()
+        corrupt_module.publish_artifact = mock.Mock(return_value="ok")
+        other_module = mock.Mock()
+        other_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "corrupt_publisher", corrupt_module)
+        monkeypatch.setitem(__import__("sys").modules, "other_publisher", other_module)
+
+        _drop_artifact(tmp_path, slug="multi-corrupt-log", surfaces=["corrupt", "other"])
+        log_path = tmp_path / "publish/log/multi-corrupt-log.corrupt.json"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("{not-json", encoding="utf-8")
+        notify_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        orch = _make_orchestrator(
+            tmp_path,
+            surface_registry={
+                "corrupt": "corrupt_publisher:publish_artifact",
+                "other": "other_publisher:publish_artifact",
+            },
+            operator_notify=lambda *args, **kwargs: notify_calls.append((args, kwargs)),
+        )
+
+        with caplog.at_level("WARNING", logger=orchestrator_module.__name__):
+            assert orch.run_once() == 1
+
+        corrupt_module.publish_artifact.assert_not_called()
+        other_module.publish_artifact.assert_not_called()
+        assert "publication prior surface log unreadable" in caplog.text
+        assert (
+            "failed multi-corrupt-log; terminal surface results=corrupt_surface_log" in caplog.text
+        )
+        assert notify_calls
+        surface_log = json.loads(log_path.read_text())
+        assert surface_log["result"] == "corrupt_surface_log"
+        assert not (tmp_path / "publish/log/multi-corrupt-log.other.json").exists()
+        assert not (tmp_path / "publish/inbox/multi-corrupt-log.json").exists()
+        assert not (tmp_path / "publish/published/multi-corrupt-log.json").exists()
+        assert (tmp_path / "publish/failed/multi-corrupt-log.json").exists()
+        event_ids = [
+            json.loads(line)["event_id"]
+            for line in (tmp_path / "public-events.jsonl").read_text().splitlines()
+        ]
+        assert any(event_id.endswith(":corrupt:corrupt_surface_log") for event_id in event_ids)
+        assert not any(":other:" in event_id for event_id in event_ids)
+
     @pytest.mark.parametrize(
         ("prior_payload", "reason"),
         (
