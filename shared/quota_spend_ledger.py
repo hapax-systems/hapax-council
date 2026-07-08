@@ -34,10 +34,13 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 )
 
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
-RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset({"agy.review.direct", "glmcp.review.direct"})
+RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
+    {"agy.review.direct", "glmcp.review.direct", "claude.headless.full"}
+)
 RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
     "agy.review.direct": "google-antigravity-cli-agy",
     "glmcp.review.direct": "z_ai-glm-coding-plan",
+    "claude.headless.full": "anthropic-claude-subscription",
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
 AGY_ADMISSION_SUPPORTED_TOOL = "hapax-agy-reviewer"
@@ -54,6 +57,30 @@ AGY_ADMISSION_SECRETISH_RE = re.compile(
     re.IGNORECASE,
 )
 AGY_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):supported_tool:")
+# Claude subscription-quota admission (scripts/hapax-claude-subscription-quota-admission →
+# hapax-quota-telemetry-writer). The composite ledger evidence ref MUST end in the account-live
+# suffix so the availability guarantor's _account_live_quota_observed_ref attests; lane/session
+# presence never produces this ref (the writer refuses lane/tmux witnesses).
+CLAUDE_ADMISSION_PROVIDER = "anthropic-claude-subscription"
+CLAUDE_ADMISSION_OBSERVATIONS = frozenset(
+    {
+        "subscription_quota_headroom_observed",
+        "operator_confirmed_subscription_headroom",
+    }
+)
+CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX = ":account-live-quota:observed"
+CLAUDE_ADMISSION_RECEIPT_LABEL_RE = re.compile(
+    r"\Arelay-receipt:"
+    r"(?:[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml|"
+    r"unsafe-receipt-name-sha256:[0-9a-f]{16})"
+    r":witness:"
+)
+CLAUDE_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+CLAUDE_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+CLAUDE_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):observation:")
 GLMCP_ADMISSION_CODING_PLAN_ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
 GLMCP_ADMISSION_PAYG_ENDPOINT = "https://api.z.ai/api/paas/v4"
 GLMCP_PAYG_BUDGET_ROUTE_ID = "glmcp.review.direct"
@@ -1356,6 +1383,8 @@ def _subscription_quota_missing_required_admission_evidence(
         return not any(_is_glmcp_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     if normalized_route_id == "agy.review.direct":
         return not any(_is_agy_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    if normalized_route_id == "claude.headless.full":
+        return not any(_is_claude_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     return True
 
 
@@ -1365,6 +1394,8 @@ def _subscription_quota_untrusted_admission_evidence_reason(snapshot: QuotaSnaps
         return "untrusted_glmcp_admission_evidence"
     if normalized_route_id == "agy.review.direct":
         return "untrusted_agy_admission_evidence"
+    if normalized_route_id == "claude.headless.full":
+        return "untrusted_claude_admission_evidence"
     return "untrusted_route_admission_evidence"
 
 
@@ -1419,6 +1450,19 @@ def _is_agy_admission_evidence_ref(ref: str) -> bool:
         and f":model:{AGY_ADMISSION_MODEL}:" in ref
         and ":observed_at:" in ref
         and ":fresh_until:" in ref
+    )
+
+
+def _is_claude_admission_evidence_ref(ref: str) -> bool:
+    return (
+        CLAUDE_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
+        and _has_safe_claude_admission_witness(ref)
+        and any(
+            f":observation:{observation}:" in ref for observation in CLAUDE_ADMISSION_OBSERVATIONS
+        )
+        and ":observed_at:" in ref
+        and ":fresh_until:" in ref
+        and ref.endswith(CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX)
     )
 
 
@@ -1600,6 +1644,17 @@ def _has_safe_agy_admission_witness(ref: str) -> bool:
     return (
         AGY_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
         and AGY_ADMISSION_SECRETISH_RE.search(witness) is None
+    )
+
+
+def _has_safe_claude_admission_witness(ref: str) -> bool:
+    witness_matches = CLAUDE_ADMISSION_WITNESS_REF_RE.findall(ref)
+    if len(witness_matches) != 1:
+        return False
+    witness = witness_matches[0]
+    return (
+        CLAUDE_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
+        and CLAUDE_ADMISSION_SECRETISH_RE.search(witness) is None
     )
 
 

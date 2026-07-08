@@ -104,6 +104,19 @@ AGY_SECRETISH_WITNESS_EVIDENCE_REF = AGY_ADMISSION_EVIDENCE_REF.replace(
     "witness:agy-gemini31pro-smoke-witness:",
     "witness:sk-live-secret-token-000000000000000000000000:",
 )
+CLAUDE_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:"
+    "witness:claude-subscription-headroom-observed-20260708t1400z:"
+    "observation:subscription_quota_headroom_observed:"
+    "observed_at:2026-07-08T14:00:00Z:"
+    "fresh_until:2026-07-08T14:15:00Z:"
+    "account-live-quota:observed"
+)
+CLAUDE_SECRETISH_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:sk-live-secret-token-000000000000000000000000:",
+)
+CLAUDE_NOW = datetime(2026, 7, 8, 14, 5, tzinfo=UTC)
 
 
 def _payload() -> dict[str, Any]:
@@ -1433,6 +1446,118 @@ def test_agy_receipt_bounded_route_rejects_generic_fresh_quota_snapshot() -> Non
         "quota-snapshot:quota-agy-review-direct-generic-fresh:untrusted_agy_admission_evidence"
         in refs
     )
+
+
+def _claude_snapshot(
+    evidence_ref: str,
+    *,
+    snapshot_id: str = "quota-claude-headless-full-fresh",
+    provider: str = "anthropic-claude-subscription",
+    reason: str = "fixture claude admission",
+) -> dict[str, Any]:
+    return {
+        "quota_snapshot_schema": 1,
+        "snapshot_id": snapshot_id,
+        "captured_at": "2026-07-08T13:59:00Z",
+        "fresh_until": "2026-07-08T14:15:00Z",
+        "route_id": "claude.headless.full",
+        "provider": provider,
+        "capacity_pool": "subscription_quota",
+        "subscription_quota_state": "fresh",
+        "evidence_refs": [evidence_ref],
+        "operator_visible_reason": reason,
+    }
+
+
+def _claude_ledger(
+    evidence_ref: str,
+    *,
+    snapshot_id: str = "quota-claude-headless-full-fresh",
+    provider: str = "anthropic-claude-subscription",
+    reason: str = "fixture claude admission",
+    with_telemetry_writer: bool = True,
+) -> QuotaSpendLedger:
+    payload = _active_budget_payload()
+    if with_telemetry_writer:
+        payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    # Isolate the claude snapshot under test: the base fixture carries an EXHAUSTED operator
+    # dry-run snapshot for claude.headless.full that would otherwise dominate the aggregate.
+    payload["quota_snapshots"] = [
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot.get("route_id") != "claude.headless.full"
+    ]
+    payload["quota_snapshots"].append(
+        _claude_snapshot(evidence_ref, snapshot_id=snapshot_id, provider=provider, reason=reason)
+    )
+    return QuotaSpendLedger.model_validate(payload)
+
+
+def test_claude_receipt_bounded_route_has_guarded_provider_mapping() -> None:
+    assert "claude.headless.full" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+    assert (
+        RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS["claude.headless.full"]
+        == "anthropic-claude-subscription"
+    )
+
+
+def test_receipt_bounded_route_accepts_claude_admission_evidence() -> None:
+    ledger = _claude_ledger(CLAUDE_ADMISSION_EVIDENCE_REF)
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.FRESH
+    assert refs == (CLAUDE_ADMISSION_EVIDENCE_REF,)
+    # cross-layer contract: this exact ref is what the availability guarantor attests on.
+    assert CLAUDE_ADMISSION_EVIDENCE_REF.endswith(":account-live-quota:observed")
+
+
+def test_receipt_bounded_route_rejects_secretish_claude_witness() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_SECRETISH_WITNESS_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-secretish-witness",
+        reason="fixture claude secretish witness",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_SECRETISH_WITNESS_EVIDENCE_REF not in refs
+    assert any(ref.startswith("quota-evidence-ref:redacted-secretish-sha256:") for ref in refs)
+    assert (
+        "quota-snapshot:quota-claude-headless-full-secretish-witness:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_claude_receipt_bounded_route_rejects_lane_presence_generic_snapshot() -> None:
+    # A generic/lane-presence-shaped ref must NOT satisfy account-live subscription evidence.
+    ledger = _claude_ledger(
+        "relay-receipt:hapax-claude-eta-session-present",
+        snapshot_id="quota-claude-headless-full-generic-fresh",
+        reason="fixture generic claude quota snapshot",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-claude-headless-full-generic-fresh:untrusted_claude_admission_evidence"
+        in refs
+    )
+
+
+def test_claude_admission_requires_matching_provider_and_telemetry_writer() -> None:
+    # fail-closed: correct admission ref but wrong provider, or missing telemetry-writer generator.
+    wrong_provider = _claude_ledger(CLAUDE_ADMISSION_EVIDENCE_REF, provider="claude-subscription")
+    state, _ = subscription_quota_state_for_route(
+        wrong_provider, "claude.headless.full", now=CLAUDE_NOW
+    )
+    assert state is SubscriptionQuotaState.UNKNOWN
+
+    no_writer = _claude_ledger(CLAUDE_ADMISSION_EVIDENCE_REF, with_telemetry_writer=False)
+    state, _ = subscription_quota_state_for_route(no_writer, "claude.headless.full", now=CLAUDE_NOW)
+    assert state is SubscriptionQuotaState.UNKNOWN
 
 
 def test_spend_receipt_meters_effort_and_structured_model_id() -> None:
