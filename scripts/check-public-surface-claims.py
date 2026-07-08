@@ -493,7 +493,7 @@ def _split_pending_post_merge_blockers(
         if (
             freshness_result == "missing"
             and "release_authorized" in block_set
-            and _local_required_public_file_supplied(surface_id)
+            and _local_required_public_file_newly_supplied(surface_id)
         ):
             pending_post_merge.append(surface_id)
             remaining_blocks = tuple(block for block in blocks if block != "release_authorized")
@@ -512,7 +512,7 @@ def _parse_freshness_blocker(blocker: str) -> tuple[str, str, tuple[str, ...]]:
     return surface_id, freshness_result, tuple(block for block in block_text.split(",") if block)
 
 
-def _local_required_public_file_supplied(surface_id: str) -> bool:
+def _local_required_public_file_newly_supplied(surface_id: str) -> bool:
     marker = "hapax-systems/hapax-council."
     if marker not in surface_id:
         return False
@@ -524,7 +524,47 @@ def _local_required_public_file_supplied(surface_id: str) -> bool:
         candidate.relative_to(REPO_ROOT)
     except ValueError:
         return False
-    return candidate.is_file()
+    if not candidate.is_file():
+        return False
+    relative = candidate.relative_to(REPO_ROOT).as_posix()
+    return _git_path_status(relative) == "A"
+
+
+def _git_path_status(relative_path: str) -> str | None:
+    base_ref = _git_merge_base()
+    if base_ref is None:
+        return None
+    result = subprocess.run(
+        ["git", "diff", "--name-status", f"{base_ref}...HEAD", "--", relative_path],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+    if result.returncode != 0:
+        return None
+    first_line = _first_nonempty_line(result.stdout)
+    if first_line is None:
+        return None
+    return first_line.split(maxsplit=1)[0]
+
+
+def _git_merge_base() -> str | None:
+    for base_ref in ("origin/main", "main"):
+        result = subprocess.run(
+            ["git", "merge-base", "HEAD", base_ref],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+        if result.returncode == 0:
+            merge_base = _first_nonempty_line(result.stdout)
+            if merge_base:
+                return merge_base
+    return None
 
 
 def _check_expected_freshness_envelopes(

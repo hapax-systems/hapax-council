@@ -488,6 +488,33 @@ def test_public_surface_gate_allows_local_required_file_pending_post_merge_readb
     assert pending_surface_id in result.stdout
 
 
+def test_public_surface_gate_keeps_existing_required_file_missing_blocker(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-existing-missing.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    existing_surface_id = "github.readme.hapax-systems/hapax-council.README.md"
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[f"{existing_surface_id}:missing:public_current,release_authorized"],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 1
+    assert "Publication freshness has public-current blockers" in result.stdout
+    assert existing_surface_id in result.stdout
+    assert "awaiting post-merge public readback" not in result.stdout
+
+
 def test_public_surface_gate_missing_publication_freshness_state_exits_2(
     tmp_path: Path,
 ) -> None:
