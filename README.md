@@ -91,7 +91,7 @@ not a supported framework, and not the commercial product front door.
 | `docs/publication-drafts/` | Draft public copy. Drafts are not publishable unless their frontmatter says so and current claim review passes. | Keeps copy reviewable as a controlled artifact instead of a side channel. |
 | `docs/published-artifacts/` | Public artifact ledger and archive metadata. | Gives citations and archive records a place to carry their boundaries. |
 | `START_HERE.md` | Reader guide for navigating the research artifact. | Helps reviewers find the safety/research argument without treating the repo as a product manual. |
-| [Support page](https://hapax.weblog.lol/support) | No-perk research support boundary. | Allows support of the work without creating access, influence, support, or license rights. |
+| [Support Hapax research](https://hapax.weblog.lol/support) | No-perk research support boundary. | Allows support of the work without creating access, influence, support, or license rights. |
 | `SUPPORT.md` / `CONTRIBUTING.md` | Redirect and refusal boundaries. | Makes the non-community, non-support posture explicit before readers open GitHub workflows. |
 
 ## Verification Contract

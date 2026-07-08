@@ -694,10 +694,16 @@ def _local_required_public_file_newly_supplied(surface_id: str) -> bool:
 
 def _git_path_status(relative_path: str) -> str | None:
     base_ref = _git_merge_base()
-    if base_ref is None:
-        return None
+    if base_ref is not None:
+        status = _git_diff_path_status(f"{base_ref}...HEAD", relative_path)
+        if status is not None:
+            return status
+    return _git_diff_path_status("HEAD^..HEAD", relative_path)
+
+
+def _git_diff_path_status(diff_range: str, relative_path: str) -> str | None:
     result = subprocess.run(
-        ["git", "diff", "--name-status", f"{base_ref}...HEAD", "--", relative_path],
+        ["git", "diff", "--name-status", diff_range, "--", relative_path],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,

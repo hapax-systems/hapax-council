@@ -371,6 +371,32 @@ def test_live_github_public_surface_refresh_reports_timeout() -> None:
     assert "hold release until the public-surface claim gate passes" in message
 
 
+def test_git_path_status_uses_parent_diff_when_merge_base_unavailable() -> None:
+    gate = _gate_module()
+    git_path_status = gate["_git_path_status"]
+    subprocess_module = gate["subprocess"]
+    original_run = subprocess_module.run
+    diff_ranges: list[str] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        if args[:3] == ["git", "merge-base", "HEAD"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="missing ref\n")
+        if args[:3] == ["git", "diff", "--name-status"]:
+            diff_ranges.append(args[3])
+            return subprocess.CompletedProcess(args, 0, stdout="A\tGOVERNANCE.md\n", stderr="")
+        raise AssertionError(f"unexpected command: {args!r}")
+
+    subprocess_module.run = fake_run
+    try:
+        status = git_path_status("GOVERNANCE.md")
+    finally:
+        subprocess_module.run = original_run
+
+    assert status == "A"
+    assert diff_ranges == ["HEAD^..HEAD"]
+
+
 def test_public_surface_claim_gate_fails_absolute_claim(tmp_path: Path) -> None:
     doc = tmp_path / "bad.md"
     doc.write_text("No test results, no push.\n", encoding="utf-8")
