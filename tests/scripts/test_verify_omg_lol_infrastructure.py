@@ -190,6 +190,7 @@ def test_validation_publication_policy_shape_errors_include_next_actions() -> No
         "publication_frontmatter_policy.target_surfaces next action: replace non-string "
         "entries with explicit surface id strings"
     ) in errors
+    assert "publication_frontmatter_policy.target_surfaces must be unique" not in errors
     assert "publication_frontmatter_policy.required_gates must contain strings" in errors
     assert (
         "publication_frontmatter_policy.required_gates next action: replace non-string "
@@ -199,6 +200,20 @@ def test_validation_publication_policy_shape_errors_include_next_actions() -> No
     assert (
         "publication_frontmatter_policy.required_gates next action: remove duplicate gate ids"
     ) in errors
+
+
+def test_validation_does_not_report_required_gate_duplicates_for_only_malformed_entries() -> None:
+    module = _load_module()
+    config = module.load_config(CONFIG_PATH)
+    config["publication_frontmatter_policy"]["required_gates"] = [
+        "source_artifact_public_safe",
+        7,
+    ]
+
+    errors = module.validate_config(config)
+
+    assert "publication_frontmatter_policy.required_gates must contain strings" in errors
+    assert "publication_frontmatter_policy.required_gates must be unique" not in errors
 
 
 def test_primary_config_pins_publication_frontmatter_policy_gates_and_targets() -> None:

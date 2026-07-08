@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,6 +20,7 @@ from agents.publication_bus.omg_rss_fanout import (
 )
 from shared import public_gate_receipts
 
+_CURRENT_REPO_HEAD_SHA = omg_rss_fanout._current_repo_head_sha
 _RECEIPT_ROOT: Path | None = None
 TASK_ID = "cc-task-public-gate-test"
 AUTHORITY_SECRET = "test-public-gate-authority-secret"
@@ -43,6 +45,30 @@ def durable_public_gate_receipts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     _write_public_gate_review_evidence(root, gates=FANOUT_REQUIRED_GATES)
     _RECEIPT_ROOT = root
     monkeypatch.setattr(omg_rss_fanout, "PUBLIC_GATE_RECEIPT_ROOTS", (root,))
+
+
+def test_current_repo_head_sha_uses_fixed_git_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout=("a" * 40) + "\n")
+
+    monkeypatch.setattr(omg_rss_fanout, "_current_repo_head_sha", _CURRENT_REPO_HEAD_SHA)
+    monkeypatch.setattr(omg_rss_fanout.subprocess, "run", fake_run)
+
+    assert omg_rss_fanout._current_repo_head_sha(tmp_path) == "a" * 40
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args == ["git", "rev-parse", "--verify", "HEAD"]
+    assert kwargs["cwd"] == tmp_path
+    assert kwargs["capture_output"] is True
+    assert kwargs["check"] is False
+    assert kwargs["text"] is True
+    assert "shell" not in kwargs
 
 
 def _write_public_gate_review_evidence(

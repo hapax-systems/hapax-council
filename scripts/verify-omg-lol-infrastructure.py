@@ -237,14 +237,17 @@ def validate_config(config: Mapping[str, Any]) -> list[str]:
         )
         target_surface_set: set[str] = set()
     else:
-        target_surface_set = {surface for surface in target_surfaces if isinstance(surface, str)}
+        target_surface_strings = [
+            surface for surface in target_surfaces if isinstance(surface, str)
+        ]
+        target_surface_set = set(target_surface_strings)
         if any(not isinstance(surface, str) for surface in target_surfaces):
             errors.append("publication_frontmatter_policy.target_surfaces must contain strings")
             errors.append(
                 "publication_frontmatter_policy.target_surfaces next action: replace "
                 "non-string entries with explicit surface id strings"
             )
-        if len(target_surface_set) != len(target_surfaces):
+        if len(target_surface_set) != len(target_surface_strings):
             errors.append("publication_frontmatter_policy.target_surfaces must be unique")
             errors.append(
                 "publication_frontmatter_policy.target_surfaces next action: remove "
@@ -268,14 +271,15 @@ def validate_config(config: Mapping[str, Any]) -> list[str]:
             "required gate ids for this policy status"
         )
     else:
-        required_gate_set = {gate for gate in required_gates if isinstance(gate, str)}
+        required_gate_strings = [gate for gate in required_gates if isinstance(gate, str)]
+        required_gate_set = set(required_gate_strings)
         if any(not isinstance(gate, str) for gate in required_gates):
             errors.append("publication_frontmatter_policy.required_gates must contain strings")
             errors.append(
                 "publication_frontmatter_policy.required_gates next action: replace "
                 "non-string entries with explicit gate id strings"
             )
-        if len(required_gate_set) != len(required_gates):
+        if len(required_gate_set) != len(required_gate_strings):
             errors.append("publication_frontmatter_policy.required_gates must be unique")
             errors.append(
                 "publication_frontmatter_policy.required_gates next action: remove "
