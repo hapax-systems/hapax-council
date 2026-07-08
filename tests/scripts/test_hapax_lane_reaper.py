@@ -35,7 +35,7 @@ def _write_fake_tmux(bin_dir: Path) -> None:
             printf '%s\n' "${TMUX_PANE_TEXT:?}"
             ;;
           display-message)
-            printf '%s\n' "$(date +%s)"
+            printf '%s\n' "${TMUX_ACTIVITY:?}"
             ;;
           *)
             exit 0
@@ -63,9 +63,12 @@ def _base_env(tmp_path: Path, *, pane_pid: int, pane_text: str) -> dict[str, str
             "TMUX_SESSION": "hapax-codex-cx-red",
             "TMUX_PANE_PID": str(pane_pid),
             "TMUX_PANE_TEXT": pane_text,
+            "TMUX_ACTIVITY": "1",
+            "HAPAX_COUNCIL_DIR": str(tmp_path / "council"),
             "HAPAX_DISPATCH_SERVICE_TIME_CACHE": str(cache),
             "HAPAX_REAP_ATTEMPTS_DIR": str(attempts),
             "HAPAX_RECOVERY_GOVERNOR_OFF": "1",
+            "HAPAX_DISPATCH_SCHEDULER_LEGACY": "1",
         }
     )
     return env
@@ -98,6 +101,10 @@ def _spawn_pane_shell() -> subprocess.Popen[bytes]:
     )
 
 
+def _spawn_dead_pane() -> subprocess.Popen[bytes]:
+    return subprocess.Popen(["sleep", "600"])
+
+
 def _cleanup(proc: subprocess.Popen[bytes]) -> None:
     proc.terminate()
     try:
@@ -122,6 +129,32 @@ def test_lane_reaper_help_exits_without_tmux_or_mutation() -> None:
 
     assert result.returncode == 0
     assert "Usage: hapax-lane-reaper" in result.stdout
+
+
+def test_lane_reaper_rejects_unknown_argument_without_tmux() -> None:
+    result = subprocess.run(
+        [str(REAPER), "--bogus"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 64
+    assert "unknown argument: --bogus" in result.stderr
+    assert "Usage: hapax-lane-reaper" in result.stderr
+
+
+def test_lane_reaper_requires_threshold_value_without_tmux() -> None:
+    result = subprocess.run(
+        [str(REAPER), "--threshold"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 64
+    assert "--threshold requires a MINUTES argument" in result.stderr
+    assert "Usage: hapax-lane-reaper" in result.stderr
 
 
 def test_lane_reaper_dry_run_does_not_release_quota_stuck_lane(tmp_path: Path) -> None:
@@ -152,14 +185,15 @@ def test_lane_reaper_ignores_quota_receipt_footer_without_real_wall(tmp_path: Pa
         env = _base_env(
             tmp_path,
             pane_pid=pane.pid,
-            pane_text="background-agent: quota-receipt writer idle\nstatus: monitoring receipts\nready",
+            pane_text="Map quota-receipt pattern surface\nstatus: monitoring receipts\nready",
         )
         claim_file, task_file = _write_claim(env)
 
         result = _run(env)
 
         assert result.returncode == 0, result.stderr
-        assert "STUCK (quota/rate-limit)" not in result.stderr
+        assert "Released task: quota-task" not in result.stderr
+        assert "DRY RUN: would release task: quota-task" not in result.stderr
         assert claim_file.exists()
         task_text = task_file.read_text(encoding="utf-8")
         assert "status: in_progress" in task_text
@@ -190,6 +224,29 @@ def test_lane_reaper_releases_real_quota_wall_in_live_mode(tmp_path: Path) -> No
         _cleanup(pane)
 
 
+def test_lane_reaper_dry_run_does_not_release_dead_lane_stale_claim(tmp_path: Path) -> None:
+    pane = _spawn_dead_pane()
+    try:
+        env = _base_env(
+            tmp_path,
+            pane_pid=pane.pid,
+            pane_text="ready",
+        )
+        claim_file, task_file = _write_claim(env)
+
+        result = _run(env, "--dry-run", "--threshold", "0")
+
+        assert result.returncode == 0, result.stderr
+        assert "DRY RUN: would release stale task: quota-task" in result.stderr
+        assert "DRY RUN: would remove stale claim file:" in result.stderr
+        assert claim_file.exists()
+        task_text = task_file.read_text(encoding="utf-8")
+        assert "status: in_progress" in task_text
+        assert "assigned_to: cx-red" in task_text
+    finally:
+        _cleanup(pane)
+
+
 def test_lane_reaper_classifier_keeps_quota_receipts_active() -> None:
     result = subprocess.run(
         [str(REAPER)],
@@ -202,3 +259,31 @@ def test_lane_reaper_classifier_keeps_quota_receipts_active() -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "active"
+
+
+def test_lane_reaper_classifier_keeps_quota_receipt_footer_active() -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input="background-agent: quota-receipt writer idle\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "active"
+
+
+def test_lane_reaper_classifier_accepts_blocked_quota_exhausted_wall() -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input="BLOCKED: quota exhausted\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "stuck"

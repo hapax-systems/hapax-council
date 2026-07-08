@@ -94,7 +94,7 @@ is_quota_wall_output() {
     local text="$1"
     [[ -z "$text" ]] && return 1
     printf '%s\n' "$text" | grep -Eiq \
-        '(^|[^[:alnum:]])(HTTP[[:space:]]*)?429([^[:alnum:]]|$)|Too Many Requests|rate[-_.[:space:]]*limit(ed)?[-_.[:space:]]*(exceeded|reached|hit|error)|rate[-_.[:space:]]*limited|Usage limit[[:space:]]+(reached|exceeded)|weekly[[:space:]]+limit|quota[-_[:space:]]+(wall|limit|exceeded|reached)'
+        '(^|[^[:alnum:]])(HTTP[[:space:]]*)?429([^[:alnum:]]|$)|Too Many Requests|rate[-_.[:space:]]*limit(ed)?[-_.[:space:]]*(exceeded|reached|hit|error)|rate[-_.[:space:]]*limited|Usage limit[[:space:]]+(reached|exceeded)|weekly[[:space:]]+limit|quota[-_[:space:]]+(wall|limit|exceeded|reached|blocked|exhausted)|blocked[: _-]+quota([^[:alnum:]-]|$)'
 }
 
 if [[ "${HAPAX_LANE_REAPER_CLASSIFY_STDIN:-}" == "1" ]]; then
@@ -309,14 +309,24 @@ for session in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "
             # Release the task back to offered
             for task_file in "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/active/${claim}"*.md; do
                 if [[ -f "$task_file" ]]; then
-                    sed -i "s/^status: claimed/status: offered/" "$task_file"
-                    sed -i "s/^status: in_progress/status: offered/" "$task_file"
-                    sed -i "s/^assigned_to: .*/assigned_to: unassigned/" "$task_file"
-                    log "  Released task: $claim → offered"
+                    if [[ "$DRY_RUN" -eq 0 ]]; then
+                        sed -i "s/^status: claimed/status: offered/" "$task_file"
+                        sed -i "s/^status: in_progress/status: offered/" "$task_file"
+                        sed -i "s/^assigned_to: .*/assigned_to: unassigned/" "$task_file"
+                        log "  Released task: $claim → offered"
+                    else
+                        log "  DRY RUN: would release stale task: $claim → offered"
+                    fi
                 fi
             done
         fi
-        rm -f "$claim_file"
+        if [[ "$DRY_RUN" -eq 0 ]]; then
+            rm -f "$claim_file"
+        else
+            log "  DRY RUN: would remove stale claim file: $claim_file"
+        fi
+    elif [[ "$DRY_RUN" -eq 1 ]]; then
+        log "  DRY RUN: no stale claim file to release for $role"
     fi
 
     # Reap (governed: a reap is a recovery action). MUST-FIX: the kill is a single
