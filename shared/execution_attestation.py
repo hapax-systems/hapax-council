@@ -44,6 +44,8 @@ def sanctioned_models_for_route(
         return frozenset()
     models = {str(route.execution_descriptor.model_id)}
     for variant in route.descriptor_variants:
+        if variant.blocked_reasons:
+            continue
         override = variant.knobs_override.get("model_id") if variant.knobs_override else None
         if override:
             models.add(str(override))

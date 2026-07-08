@@ -14,8 +14,23 @@ def _write(path: Path, records: list[dict]) -> Path:
     return path
 
 
-def _stub_registry(route_id: str, model_id: str, variant_models: list[str] | None = None):
-    variants = [SimpleNamespace(knobs_override={"model_id": vm}) for vm in (variant_models or [])]
+def _stub_registry(
+    route_id: str,
+    model_id: str,
+    variant_models: list[str] | None = None,
+    blocked_variant_models: list[str] | None = None,
+):
+    variants = [
+        SimpleNamespace(knobs_override={"model_id": vm}, blocked_reasons=[])
+        for vm in (variant_models or [])
+    ]
+    variants.extend(
+        SimpleNamespace(
+            knobs_override={"model_id": vm},
+            blocked_reasons=["quota_telemetry_unknown"],
+        )
+        for vm in (blocked_variant_models or [])
+    )
     route = SimpleNamespace(
         execution_descriptor=SimpleNamespace(model_id=model_id),
         descriptor_variants=variants,
@@ -33,6 +48,18 @@ def test_sanctioned_models_from_route_descriptor() -> None:
 def test_sanctioned_models_include_variant_overrides() -> None:
     reg = _stub_registry(
         "local_tool.local.worker", "command-r-08-2024", variant_models=["qwen3.5-9b"]
+    )
+    assert sanctioned_models_for_route("local_tool.local.worker", reg) == frozenset(
+        {"command-r-08-2024", "qwen3.5-9b"}
+    )
+
+
+def test_sanctioned_models_exclude_blocked_variant_overrides() -> None:
+    reg = _stub_registry(
+        "local_tool.local.worker",
+        "command-r-08-2024",
+        variant_models=["qwen3.5-9b"],
+        blocked_variant_models=["blocked-model"],
     )
     assert sanctioned_models_for_route("local_tool.local.worker", reg) == frozenset(
         {"command-r-08-2024", "qwen3.5-9b"}
