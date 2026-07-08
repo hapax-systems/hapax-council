@@ -18,13 +18,16 @@ ORG_PROFILE_REPO_ID: str = "hapax-systems/.github"
 ORG_PROFILE_README_PATH: str = "profile/README.md"
 
 INTENDED_PUBLIC_REPOS: tuple[str, ...] = (
+    "hapax-systems/agentgov",
     "hapax-systems/hapax-council",
     "hapax-systems/hapax-constitution",
     "hapax-systems/hapax-officium",
     "hapax-systems/hapax-watch",
     "hapax-systems/hapax-phone",
     "hapax-systems/hapax-mcp",
+    "hapax-systems/hapax-research-ledger",
     "hapax-systems/hapax-assets",
+    "hapax-systems/reins",
 )
 
 PROFILE_REPO_CANDIDATES: tuple[str, ...] = (ORG_PROFILE_REPO_ID,)

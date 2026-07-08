@@ -8,7 +8,7 @@ source: github-public-surface-live-state-reconcile
 # GitHub Public Surface Live State Reconcile
 
 - Filename note: the April slug is retained for historical ledger continuity; the YAML `date` and `Generated` fields record the current live-state refresh. Freshness checks must read those fields, not the filename slug. Re-run the `Recheck` command below before treating this as current.
-- Generated: `2026-07-08T15:36:39Z`
+- Generated: `2026-07-08T18:07:11Z`
 - Recheck: `uv run python scripts/github-public-surface-reconcile.py`
 - Claim ceiling: `public_archive`
 - Blocking findings: `1`
@@ -18,13 +18,16 @@ source: github-public-surface-live-state-reconcile
 
 | Repo | Visibility | Default SHA | License | Issues | Discussions | Wiki | Pages |
 |---|---:|---|---|---:|---:|---:|---:|
-| hapax-systems/hapax-council | public | 955cf0ae010c | NOASSERTION | true | false | false | false |
+| hapax-systems/agentgov | public | ca8b3bdf7ac9 | MIT | true | false | false | false |
+| hapax-systems/hapax-council | public | 3a2664d48fef | NOASSERTION | true | false | false | false |
 | hapax-systems/hapax-constitution | public | 96ea7f557e50 | Apache-2.0 | true | false | true | false |
 | hapax-systems/hapax-officium | public | 69583619391b | NOASSERTION | true | false | false | false |
 | hapax-systems/hapax-watch | public | f12bf995be38 | NOASSERTION | true | false | false | false |
 | hapax-systems/hapax-phone | public | f2843fc5dd77 | NOASSERTION | true | false | false | false |
 | hapax-systems/hapax-mcp | public | 44c70eea4ca4 | MIT | true | false | false | false |
+| hapax-systems/hapax-research-ledger | public | 5c99dced93b8 | CC0-1.0 | true | false | false | false |
 | hapax-systems/hapax-assets | public | 1890c08b4d72 |  | true | false | false | true |
+| hapax-systems/reins | public | 882ef2129131 | NOASSERTION | true | false | false | false |
 
 ## Drift Findings
 
@@ -34,6 +37,7 @@ source: github-public-surface-live-state-reconcile
 | high | license_detection | hapax-systems/hapax-officium | GitHub detected license does not match the repo registry policy. |
 | high | license_detection | hapax-systems/hapax-watch | GitHub detected license does not match the repo registry policy. |
 | high | license_detection | hapax-systems/hapax-phone | GitHub detected license does not match the repo registry policy. |
+| high | license_detection | hapax-systems/reins | GitHub detected license does not match the repo registry policy. |
 | blocking | license_detection | hapax-systems/hapax-council | GitHub/root license detection contradicts the repo registry policy. |
 | high | contributing_governance | hapax-systems/hapax-council | GOVERNANCE.md is missing from the public repo root. |
 | high | settings_truth | hapax-systems/hapax-council | Issues are enabled while GitHub does not report an issue template. |
