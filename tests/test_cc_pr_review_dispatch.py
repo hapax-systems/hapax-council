@@ -1305,10 +1305,62 @@ checklist:
             demand_vector=None,
             gate_result="accept",
         )
+        alternate_gate_event = build_gate_event(
+            frontmatter,
+            route="claude.headless.full",
+            demand_vector=None,
+            gate_result="reject",
+        )
 
         assert result["status"] == "dispatched"
         assert set(reviewers.task_hashes) == {expected_hash}
         assert gate_event.task_hash == expected_hash
+        assert alternate_gate_event.task_hash == expected_hash
+
+    def test_review_pr_companion_note_forwards_primary_task_hash(self, tmp_path: Path) -> None:
+        class HashRecordingReviewers(RecordingReviewers):
+            def __init__(self) -> None:
+                super().__init__()
+                self.task_hashes: list[str | None] = []
+
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.task_hashes.append(family_cfg.get("_review_task_hash"))
+                return super().__call__(seat, family_cfg, prompt)
+
+        vault = _make_vault(tmp_path)
+        primary = _write_task(vault, task_id="primary-task", pr=99)
+        companion = _write_task(
+            vault,
+            task_id="companion-task",
+            pr=42,
+            extra_frontmatter="primary_task: primary-task",
+        )
+        reviewers = HashRecordingReviewers()
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
+        )
+        primary_frontmatter = dispatch.review_team._note_frontmatter(primary)
+        assert primary_frontmatter is not None
+        expected_hash = dispatch.review_task_hash(primary_frontmatter)
+        dossier = yaml.safe_load(
+            (companion.parent / "companion-task.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+
+        assert result["status"] == "dispatched"
+        assert set(reviewers.task_hashes) == {expected_hash}
+        assert dossier["review_task_hash"] == expected_hash
+        assert dossier["review_task_hash_source_task_id"] == "primary-task"
+        assert dossier["review_task_hash_source_note"] == "primary-task.md"
 
     def test_review_task_hash_rejects_gate_event_producer_divergence(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1332,6 +1384,33 @@ checklist:
 
         with pytest.raises(ValueError, match="stable frontmatter hash"):
             dispatch.review_task_hash({"task_id": "task-a"})
+
+    def test_review_pr_omits_task_hash_when_hash_source_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class HashRecordingReviewers(RecordingReviewers):
+            def __init__(self) -> None:
+                super().__init__()
+                self.task_hashes: list[str | None] = []
+
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.task_hashes.append(family_cfg.get("_review_task_hash"))
+                return super().__call__(seat, family_cfg, prompt)
+
+        def fail_hash(_frontmatter: dict[str, Any]) -> str:
+            raise ValueError("fixture hash divergence")
+
+        monkeypatch.setattr(dispatch, "review_task_hash", fail_hash)
+        reviewers = HashRecordingReviewers()
+        result, _, _, note = _review(tmp_path, reviewers=reviewers)
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+
+        assert result["status"] == "dispatched"
+        assert set(reviewers.task_hashes) == {None}
+        assert dossier["review_task_hash_omitted_reason"].startswith("task_hash_unavailable:")
+        assert "fixture hash divergence" in dossier["review_task_hash_omitted_reason"]
 
     def test_pr_metadata_uses_rest_not_graphql_pr_view(self, tmp_path: Path) -> None:
         gh = FakeGh()
@@ -1820,6 +1899,8 @@ checklist:
         dossier_b = yaml.safe_load(
             (note_b.parent / "task-b.review-dossier.yaml").read_text(encoding="utf-8")
         )
+        assert dossier_a["review_task_hash_omitted_reason"] == "ambiguous_task_notes:2"
+        assert dossier_b["review_task_hash_omitted_reason"] == "ambiguous_task_notes:2"
         assert dossier_a["writer_family"] == "claude"
         assert dossier_b["writer_family"] == "codex"
         assert dossier_a["constitution_writer_family"] == dossier_b["constitution_writer_family"]
@@ -3339,6 +3420,35 @@ class TestFamilyOutageDegradation:
 
         with pytest.raises(ValueError, match="review task hash"):
             dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+    def test_default_runner_clears_parent_task_env_when_not_forwarded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for env_name in (
+            "HAPAX_GLMCP_REVIEW_TASK_ID",
+            "HAPAX_CC_TASK_ID",
+            "HAPAX_GLMCP_REVIEW_TASK_HASH",
+            "HAPAX_CC_TASK_HASH",
+        ):
+            monkeypatch.setenv(env_name, "sha256:" + ("c" * 64))
+        family_cfg = {
+            "family": "glm",
+            "reviewer_command": [
+                "bash",
+                "-c",
+                (
+                    "printf '%s|%s|%s|%s' "
+                    '"$HAPAX_GLMCP_REVIEW_TASK_ID" "$HAPAX_CC_TASK_ID" '
+                    '"$HAPAX_GLMCP_REVIEW_TASK_HASH" "$HAPAX_CC_TASK_HASH"'
+                ),
+            ],
+            "timeout_seconds": 30,
+        }
+        seat = dispatch.review_team.Seat(id="glm-1", family="glm")
+
+        result = dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+        assert result.stdout == "|||"
 
     def test_successful_reviewer_stderr_is_recorded_and_redacted(self) -> None:
         constitution = dispatch.review_team.Constitution(
