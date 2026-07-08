@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -44,7 +46,12 @@ def test_observation_is_immutable() -> None:
 
 
 def test_missing_custody_blocks_non_blocked_disposition() -> None:
-    observation = _observation(source_refs=(), authority_case=None)
+    observation = _observation(
+        source_refs=("",),
+        authority_case=None,
+        parent_spec=" ",
+        evidence_refs=("  ",),
+    )
 
     receipt = build_disposition_receipt(
         observation,
@@ -55,6 +62,8 @@ def test_missing_custody_blocks_non_blocked_disposition() -> None:
     assert receipt.disposition == RdlcDispositionKind.BLOCKED
     assert "missing_custody:source_refs" in receipt.blocked_reasons
     assert "missing_custody:authority_case" in receipt.blocked_reasons
+    assert "missing_custody:parent_spec" in receipt.blocked_reasons
+    assert "missing_custody:evidence_refs" in receipt.blocked_reasons
     with pytest.raises(RdlcDispositionError):
         build_preprint_draft_from_disposition(receipt, slug="x", title="X")
 
@@ -87,6 +96,39 @@ def test_publish_candidate_missing_freeze_inputs_blocks() -> None:
         build_preprint_draft_from_disposition(receipt, slug="x", title="X")
 
 
+def test_publish_candidate_blank_evidence_refs_block() -> None:
+    receipt = build_disposition_receipt(
+        _observation(),
+        disposition=RdlcDispositionKind.PUBLISH_CANDIDATE,
+        rationale="candidate with blank public evidence",
+        claim_text="The SDLC event supports a recurring RDLC observation pattern.",
+        frozen_ruler_ref="sha256:rdlc-ruler",
+        frozen_ruler_version="2026-07-08T02:40:00Z",
+        public_safe_evidence_refs=(" ",),
+        freshness_ref="gh:pr-4459:a35262fe",
+        currentness_ref="gh:checks:2026-07-08T02:24Z",
+    )
+
+    assert receipt.disposition == RdlcDispositionKind.BLOCKED
+    assert "missing_publish:public_safe_evidence_refs" in receipt.blocked_reasons
+
+
+def test_publish_candidate_missing_claim_text_blocks() -> None:
+    receipt = build_disposition_receipt(
+        _observation(),
+        disposition=RdlcDispositionKind.PUBLISH_CANDIDATE,
+        rationale="candidate with missing claim text",
+        frozen_ruler_ref="sha256:rdlc-ruler",
+        frozen_ruler_version="2026-07-08T02:40:00Z",
+        public_safe_evidence_refs=("public:pr-4459-check-summary",),
+        freshness_ref="gh:pr-4459:a35262fe",
+        currentness_ref="gh:checks:2026-07-08T02:24Z",
+    )
+
+    assert receipt.disposition == RdlcDispositionKind.BLOCKED
+    assert "missing_publish:claim_text" in receipt.blocked_reasons
+
+
 def test_direct_publish_candidate_rejects_missing_freeze_inputs() -> None:
     with pytest.raises(
         RdlcDispositionError,
@@ -110,7 +152,7 @@ def test_support_non_authoritative_preserves_context_without_artifact() -> None:
     )
 
     assert receipt.disposition == RdlcDispositionKind.SUPPORT_NON_AUTHORITATIVE
-    with pytest.raises(RdlcDispositionError, match="support_non_authoritative"):
+    with pytest.raises(RdlcDispositionError, match="next action: provide a publish_candidate"):
         build_preprint_draft_from_disposition(receipt, slug="support", title="Support")
 
 
@@ -175,7 +217,17 @@ def test_convert_to_task_rejects_incomplete_task_minting_detail() -> None:
         )
 
 
-def test_publish_candidate_creates_draft_only_preprint_artifact(tmp_path) -> None:
+def test_publish_candidate_creates_draft_only_preprint_artifact(monkeypatch) -> None:
+    write_attempts: list[tuple[str, str]] = []
+    original_open = Path.open
+
+    def fail_on_write(path: Path, mode: str = "r", *args, **kwargs):  # type: ignore[no-untyped-def]
+        if any(flag in mode for flag in ("w", "a", "x", "+")):
+            write_attempts.append((str(path), mode))
+            raise AssertionError(f"unexpected artifact write to {path} with mode {mode}")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_on_write)
     receipt = build_disposition_receipt(
         _observation(),
         disposition=RdlcDispositionKind.PUBLISH_CANDIDATE,
@@ -212,4 +264,4 @@ def test_publish_candidate_creates_draft_only_preprint_artifact(tmp_path) -> Non
     assert "AuthorityCase: CASE-RDLC-SDLC-EXPERIMENTAL-CONTEXT-20260704" in artifact.body_md
     assert "Frozen ruler: sha256:rdlc-ruler@2026-07-08T02:40:00Z" in artifact.body_md
     assert "- public:pr-4459-check-summary" in artifact.body_md
-    assert not (tmp_path / "publish" / "inbox").exists()
+    assert write_attempts == []

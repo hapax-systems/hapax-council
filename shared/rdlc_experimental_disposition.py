@@ -45,7 +45,7 @@ def _non_empty(value: str | None) -> bool:
 
 
 def _missing_tuple(value: tuple[str, ...], field_name: str) -> tuple[str, ...]:
-    return () if value else (field_name,)
+    return () if value and all(_non_empty(item) for item in value) else (field_name,)
 
 
 class RdlcExperimentalObservation(_FrozenRdlcModel):
@@ -143,8 +143,7 @@ class RdlcDispositionReceipt(_FrozenRdlcModel):
             missing.append("frozen_ruler_ref")
         if not _non_empty(self.frozen_ruler_version):
             missing.append("frozen_ruler_version")
-        if not self.public_safe_evidence_refs:
-            missing.append("public_safe_evidence_refs")
+        missing.extend(_missing_tuple(self.public_safe_evidence_refs, "public_safe_evidence_refs"))
         if not _non_empty(self.freshness_ref):
             missing.append("freshness_ref")
         if not _non_empty(self.currentness_ref):
@@ -254,7 +253,9 @@ def build_preprint_draft_from_disposition(
 
     if receipt.disposition != RdlcDispositionKind.PUBLISH_CANDIDATE:
         raise RdlcDispositionError(
-            f"cannot create PreprintArtifact for disposition {receipt.disposition.value}"
+            f"cannot create PreprintArtifact for disposition {receipt.disposition.value}; "
+            "next action: provide a publish_candidate disposition receipt with custody, "
+            "assay, and freeze inputs before constructing a draft"
         )
 
     body_md = "\n".join(
