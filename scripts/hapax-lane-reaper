@@ -94,7 +94,7 @@ is_quota_wall_output() {
     local text="$1"
     [[ -z "$text" ]] && return 1
     printf '%s\n' "$text" | grep -Eiq \
-        'HTTP[[:space:]]*429|429[[:space:]]+Too Many Requests|rate[-_.[:space:]]*limit(ed)?[-_.[:space:]]*(exceeded|reached|hit|error)|rate[-_.[:space:]]*limited|Usage limit[[:space:]]+(reached|exceeded|hit)|weekly[[:space:]]+limit[[:space:]]+(reached|exceeded|hit)|hit[^[:cntrl:]]*weekly[[:space:]]+limit|quota[-_[:space:]]+(wall|exceeded|reached|blocked|exhausted)|quota[-_[:space:]]+limit[-_[:space:]]+(reached|exceeded|hit)|blocked[: _-]+quota([^[:alnum:]-]|$)'
+        'HTTP[[:space:]]*429[^[:cntrl:]]*(Too Many Requests|rate[-_.[:space:]]*limit|quota|limit|blocked|exceeded|reached|error)|429[[:space:]]+Too Many Requests|rate[-_.[:space:]]*limit(ed)?[-_.[:space:]]*(exceeded|reached|hit|error)|rate[-_.[:space:]]*limited|Usage limit[[:space:]]+(reached|exceeded|hit)|weekly[[:space:]]+limit[[:space:]]+(reached|exceeded|hit)|hit[^[:cntrl:]]*weekly[[:space:]]+limit|quota[-_[:space:]]+(wall|exceeded|reached|blocked|exhausted)|quota[-_[:space:]]+limit[-_[:space:]]+(reached|exceeded|hit)|blocked[: _-]+quota([^[:alnum:]-]|$)'
 }
 
 if [[ "${HAPAX_LANE_REAPER_CLASSIFY_STDIN:-}" == "1" ]]; then

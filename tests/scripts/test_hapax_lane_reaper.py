@@ -239,6 +239,7 @@ def test_lane_reaper_dry_run_does_not_release_dead_lane_stale_claim(tmp_path: Pa
         assert result.returncode == 0, result.stderr
         assert "DRY RUN: would release stale task: quota-task" in result.stderr
         assert "DRY RUN: would remove stale claim file:" in result.stderr
+        assert "DRY RUN: would os.kill" in result.stderr
         assert claim_file.exists()
         assert pane.poll() is None
         assert not (Path(env["HAPAX_REAP_ATTEMPTS_DIR"]) / "cx-red").exists()
@@ -312,10 +313,24 @@ def test_lane_reaper_classifier_keeps_line_number_429_active() -> None:
     assert result.stdout.strip() == "active"
 
 
-def test_lane_reaper_classifier_accepts_http_429_wall() -> None:
+def test_lane_reaper_classifier_keeps_http_429_receipt_label_active() -> None:
     result = subprocess.run(
         [str(REAPER)],
-        input="HTTP 429\n",
+        input="Map HTTP 429 receipt pattern surface\n",
+        env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "active"
+
+
+def test_lane_reaper_classifier_accepts_http_429_too_many_requests_wall() -> None:
+    result = subprocess.run(
+        [str(REAPER)],
+        input="HTTP 429 Too Many Requests\n",
         env={**os.environ, "HAPAX_LANE_REAPER_CLASSIFY_STDIN": "1"},
         capture_output=True,
         text=True,
