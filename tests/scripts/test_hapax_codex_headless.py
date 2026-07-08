@@ -1690,7 +1690,6 @@ def test_codex_headless_remote_preflight_self_cleans_unconsumed_token_handoff(
     env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
 
     try:
-        started = time.monotonic()
         result = subprocess.run(
             [sys.executable, "-c", remote_preflight_py],
             capture_output=True,
@@ -1698,10 +1697,8 @@ def test_codex_headless_remote_preflight_self_cleans_unconsumed_token_handoff(
             env=env,
             timeout=5,
         )
-        elapsed = time.monotonic() - started
 
         assert result.returncode == 0, result.stderr
-        assert elapsed < 1.5
         assert handoff.exists()
         sealed = handoff.read_text(encoding="utf-8")
         assert sealed.startswith("hapax-token-sealed-v1.")

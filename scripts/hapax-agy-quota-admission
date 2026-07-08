@@ -198,6 +198,7 @@ def _write_flat_yaml_atomic(path: Path, fields: list[tuple[str, object]]) -> Non
         try:
             Path(tmp_name).unlink()
         except OSError:
+            # Cleanup is best-effort; preserve and re-raise the original write failure.
             pass
         raise
 
