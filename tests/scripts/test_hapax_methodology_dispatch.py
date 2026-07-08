@@ -65,6 +65,10 @@ def _fresh_registry(tmp_path: Path) -> Path:
                 "blocked_reasons": [],
             },
         }
+        if route.get("platform") == "codex" and route.get("auth_surface") == "oauth":
+            route["freshness"]["evidence"]["capability"]["evidence_refs"].append(
+                "local:codex:exec:auth:observed"
+            )
         for score in route["capability_scores"].values():
             score["observed_at"] = checked_at
         for tool in route["tool_state"]:

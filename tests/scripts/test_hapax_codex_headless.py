@@ -174,7 +174,7 @@ elif "required_dirs" in code and "executables" in code:
     print("preflight")
 elif "token_handoff_cleanup" in code:
     print("cleanup")
-elif "os.execvp" in code:
+elif "os.execv" in code:
     print("exec")
 else:
     print("unknown")
@@ -357,6 +357,72 @@ exit 0
     assert session_epoch == "1234567890"
     assert legacy_task == "task-x"
     assert session_task == "task-x"
+
+
+def test_codex_headless_remote_uses_configured_codex_binary(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
+    _write_claim_epoch(cache, "cx-amber", "task-x")
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    remote_path = _python_only_remote_path(tmp_path)
+    path_marker = tmp_path / "path-codex-used"
+    _write_executable(
+        bin_dir / "ssh",
+        f"""remote_cmd="${{@: -1}}"
+env -u HAPAX_CODEX_BIN -u HAPAX_CODEX_BIN_PATH -u NPM_CONFIG_PREFIX PATH="{remote_path}" bash -c "$remote_cmd"
+""",
+    )
+    _write_rejecting_codex(
+        bin_dir / "codex",
+        fallback_body=f"""printf '%s\\n' "$*" > {path_marker}
+exit 66
+""",
+    )
+    configured_codex = tmp_path / "configured-bin" / "codex"
+    configured_args = tmp_path / "configured-codex-args.txt"
+    _write_executable(
+        configured_codex,
+        f"""printf '%s\\n' "$*" > {configured_args}
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+    env["HAPAX_CODEX_BIN_PATH"] = str(configured_codex)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "exec --dangerously-bypass-approvals-and-sandbox" in configured_args.read_text(
+        encoding="utf-8"
+    )
+    assert not path_marker.exists()
+    proofs = list(
+        (home / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs").glob(
+            "*cx-amber-task-x-headless-remote.json"
+        )
+    )
+    assert len(proofs) == 1
+    proof = json.loads(proofs[0].read_text(encoding="utf-8"))
+    assert proof["argv0"] == str(configured_codex)
 
 
 def test_codex_headless_remote_no_claim_without_epoch_fails_closed(tmp_path: Path) -> None:

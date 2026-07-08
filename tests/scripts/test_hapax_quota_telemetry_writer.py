@@ -60,6 +60,40 @@ def _run_writer(
     return result, out
 
 
+def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+    calls: list[list[str]] = []
+
+    def fake_run(
+        argv: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        assert capture_output is True
+        assert text is True
+        assert timeout == 36
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
+
+    assert namespace["refresh_capability_receipts"](timeout=12) is True
+    assert calls == [
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"),
+            "--all",
+            "--codex-exec-auth-probe",
+            "--timeout",
+            "12",
+        ]
+    ]
+
+
 def _wall_receipt(
     relay: Path,
     role: str,

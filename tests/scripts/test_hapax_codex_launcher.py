@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -358,6 +359,8 @@ def test_remote_preflight_refuses_world_readable_published_token(tmp_path: Path)
     }
     env = os.environ.copy()
     env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+    env["PATH"] = ""
+    env["NPM_CONFIG_PREFIX"] = ""
 
     result = subprocess.run(
         [sys.executable, "-c", remote_preflight_py],
@@ -609,6 +612,7 @@ def test_launcher_remote_exec_uses_preclaim_proven_token_handoff(tmp_path: Path)
         "proof_file": "",
         "token_handoff_file": str(handoff),
         "token_handoff_seal_key": seal_key,
+        "codex_bin_path": sys.executable,
         "argv": [
             sys.executable,
             "-c",
@@ -622,6 +626,8 @@ def test_launcher_remote_exec_uses_preclaim_proven_token_handoff(tmp_path: Path)
     }
     env = os.environ.copy()
     env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+    env["PATH"] = ""
+    env["NPM_CONFIG_PREFIX"] = ""
 
     result = subprocess.run(
         [sys.executable, "-c", remote_exec_py],
@@ -965,6 +971,100 @@ def test_appendix_codex_exec_uses_remote_payload_without_shell_interpolation(
     proof = proofs[0].read_text(encoding="utf-8")
     assert '"requested_host": "appendix"' in proof
     assert '"platform": "codex"' in proof
+
+
+def test_appendix_codex_exec_uses_remote_configured_codex_binary(tmp_path: Path) -> None:
+    env, _path_args_file, _path_env_file = _env_with_fake_codex(tmp_path)
+    _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
+    (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
+    remote_bin = tmp_path / "remote-bin"
+    remote_bin.mkdir()
+    python_bin = shutil.which("python3")
+    bash_bin = shutil.which("bash")
+    assert python_bin is not None
+    assert bash_bin is not None
+    (remote_bin / "python3").symlink_to(python_bin)
+    (remote_bin / "bash").symlink_to(bash_bin)
+    ssh = tmp_path / "bin" / "ssh"
+    ssh.write_text(
+        f"""#!/usr/bin/env bash
+remote_cmd="${{@: -1}}"
+env -u HAPAX_CODEX_BIN -u HAPAX_CODEX_BIN_PATH -u NPM_CONFIG_PREFIX PATH="{remote_bin}" bash -c "$remote_cmd"
+""",
+        encoding="utf-8",
+    )
+    ssh.chmod(0o755)
+
+    path_codex = Path(env["PATH"].split(":", 1)[0]) / "codex"
+    path_marker = tmp_path / "path-codex-used"
+    path_codex.write_text(
+        f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
+  echo "PATH codex should not satisfy remote preflight" >&2
+  exit 77
+fi
+printf '%s\\n' "$*" > {path_marker}
+exit 66
+""",
+        encoding="utf-8",
+    )
+    path_codex.chmod(0o755)
+
+    configured_codex = tmp_path / "configured-bin" / "codex"
+    configured_args = tmp_path / "configured-codex-args.txt"
+    configured_env = tmp_path / "configured-codex-env.txt"
+    configured_codex.parent.mkdir()
+    configured_codex.write_text(
+        f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
+  printf '%s\\n' '{{"models":[{{"slug":"test"}}]}}'
+  exit 0
+fi
+printf '%s\\n' "$*" > {configured_args}
+printf 'HAPAX_DISPATCH_HOST=%s\\n' "${{HAPAX_DISPATCH_HOST:-}}" > {configured_env}
+printf 'CODEX_ACCESS_TOKEN_PRESENT=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" >> {configured_env}
+exit 0
+""",
+        encoding="utf-8",
+    )
+    configured_codex.chmod(0o755)
+
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    env["HAPAX_CODEX_BIN_PATH"] = str(configured_codex)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-red",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--",
+            "mcp",
+            "list",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "mcp list" in configured_args.read_text(encoding="utf-8")
+    assert not path_marker.exists()
+    launched_env = configured_env.read_text(encoding="utf-8")
+    assert "HAPAX_DISPATCH_HOST=local" in launched_env
+    assert "CODEX_ACCESS_TOKEN_PRESENT=yes" in launched_env
+    proofs = list(
+        (Path(env["HOME"]) / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs").glob(
+            "*cx-red-no-task-remote.json"
+        )
+    )
+    assert len(proofs) == 1
+    proof = json.loads(proofs[0].read_text(encoding="utf-8"))
+    assert proof["argv0"] == str(configured_codex)
 
 
 def test_launcher_scrubs_mcp_tokens_from_codex_session_env(tmp_path: Path) -> None:
