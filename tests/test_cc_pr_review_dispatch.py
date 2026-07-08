@@ -749,6 +749,10 @@ class TestApply:
         assert "RuntimeError" in by_family["codex"]["raw_reply_excerpt"]
         assert "RuntimeError" in by_family["codex"]["runner_stderr_excerpt"]
 
+    def test_reviewer_internal_error_is_not_family_outage_verdict(self) -> None:
+        assert "reviewer-internal-error" in dispatch.review_team.REVIEWER_VERDICTS
+        assert "reviewer-internal-error" not in dispatch.review_team.FAMILY_OUTAGE_VERDICTS
+
     def test_reviewer_runner_exception_sanitizes_persisted_error_excerpt(
         self, tmp_path: Path
     ) -> None:

@@ -5,7 +5,8 @@ closure is tracked separately in the public-surface live-state report. Zenodo's
 machine `license` field uses `other-closed` because PolyForm Strict is not a
 standard Zenodo license id; the same Zenodo record carries the explicit
 repository-license note. Verify that note from the checked-in `.zenodo.json`
-object itself; GitHub diff views may truncate before the `notes` field.
+object itself; GitHub diff views may truncate before the `notes` field. The
+`Recheck` section below includes the runnable JSON/YAML assertion.
 
 ## Current Local State
 

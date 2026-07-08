@@ -60,6 +60,8 @@ FANOUT_REQUIRED_GATES: tuple[str, ...] = (
 )
 FANOUT_ALLOWED_GATE_IDS = frozenset(FANOUT_REQUIRED_GATES)
 """Receipt ids required before any cross-weblog public fanout egress."""
+FANOUT_SURFACE_ID = "omg-lol-weblog-bearer-fanout"
+FANOUT_REVIEW_REQUIRED = "Claim Verification Council"
 
 PUBLIC_GATE_RECEIPT_PREFIXES = _PUBLIC_GATE_RECEIPT_PREFIXES
 """Durable public-gate receipt ref prefixes accepted for fanout egress."""
@@ -94,6 +96,7 @@ class OmgFanoutConfig:
     addresses: list[str] = field(default_factory=list)
     required_gates: list[str] = field(default_factory=lambda: list(FANOUT_REQUIRED_GATES))
     gate_policy_error: str | None = None
+    publication_policy_verified: bool = False
 
 
 def load_fanout_config(*, path: Path = DEFAULT_CONFIG_PATH) -> OmgFanoutConfig:
@@ -112,13 +115,14 @@ def load_fanout_config(*, path: Path = DEFAULT_CONFIG_PATH) -> OmgFanoutConfig:
         )
     else:
         addresses, address_policy_error = _configured_addresses(addresses)
-    required_gates, gate_policy_error = _configured_required_gates(
+    required_gates, gate_policy_error, publication_policy_verified = _configured_required_gates(
         raw.get("publication_frontmatter_policy")
     )
     return OmgFanoutConfig(
         addresses=addresses,
         required_gates=required_gates,
         gate_policy_error=_join_policy_errors(address_policy_error, gate_policy_error),
+        publication_policy_verified=publication_policy_verified,
     )
 
 
@@ -167,21 +171,68 @@ def _configured_addresses(values: Sequence[object]) -> tuple[list[str], str | No
     return addresses, _join_policy_errors(*errors)
 
 
-def _configured_required_gates(policy: object) -> tuple[list[str], str | None]:
+def _configured_required_gates(policy: object) -> tuple[list[str], str | None, bool]:
     baseline = list(FANOUT_REQUIRED_GATES)
     if not isinstance(policy, dict):
-        return baseline, (
-            "fanout config missing publication_frontmatter_policy; next action: restore "
-            "required publication gate policy before public fanout"
+        return (
+            baseline,
+            (
+                "fanout config missing publication_frontmatter_policy; next action: restore "
+                "required publication gate policy before public fanout"
+            ),
+            False,
+        )
+
+    errors: list[str] = []
+    if policy.get("status") != "guarded_public_fanout":
+        errors.append(
+            "fanout config publication_frontmatter_policy.status must be "
+            "guarded_public_fanout; next action: repair the guarded fanout policy before "
+            "public fanout"
+        )
+    if policy.get("publication_allowed_without_bus") is not False:
+        errors.append(
+            "fanout config publication_allowed_without_bus must be false; next action: "
+            "route fanout only through the publication bus"
+        )
+    if policy.get("direct_public_egress_allowed") is not False:
+        errors.append(
+            "fanout config direct_public_egress_allowed must be false; next action: "
+            "keep direct public egress disabled for fanout"
+        )
+    if policy.get("review_required") != FANOUT_REVIEW_REQUIRED:
+        errors.append(
+            "fanout config review_required must be Claim Verification Council; next "
+            "action: restore CVC review before public fanout"
+        )
+    target_surfaces = policy.get("target_surfaces")
+    if not isinstance(target_surfaces, list) or not all(
+        isinstance(surface, str) and surface.strip() for surface in target_surfaces
+    ):
+        errors.append(
+            "fanout config target_surfaces must be a non-empty string list; next action: "
+            "restore the fanout target-surface allowlist"
+        )
+    elif FANOUT_SURFACE_ID not in {surface.strip() for surface in target_surfaces}:
+        errors.append(
+            "fanout config target_surfaces must include omg-lol-weblog-bearer-fanout; "
+            "next action: restore the fanout target-surface allowlist"
+        )
+    claim_ceiling = policy.get("claim_ceiling")
+    if not isinstance(claim_ceiling, str) or not claim_ceiling.strip():
+        errors.append(
+            "fanout config claim_ceiling must be a non-empty string; next action: "
+            "state the fanout claim ceiling before public fanout"
         )
 
     configured = policy.get("required_gates")
     if not isinstance(configured, list) or not configured:
-        return baseline, (
+        errors.append(
             "fanout config publication_frontmatter_policy.required_gates must be a "
             "non-empty list; next action: restore the full required gate list before "
             "public fanout"
         )
+        return baseline, _join_policy_errors(*errors), False
 
     normalized: list[str] = []
     malformed = False
@@ -193,14 +244,14 @@ def _configured_required_gates(policy: object) -> tuple[list[str], str | None]:
 
     required = list(dict.fromkeys([*baseline, *normalized]))
     if malformed:
-        return required, (
+        errors.append(
             "fanout config required_gates contains blank or non-string gate ids; "
             "next action: remove malformed gate ids before public fanout"
         )
 
     missing = sorted(set(FANOUT_REQUIRED_GATES) - set(normalized))
     if missing:
-        return required, (
+        errors.append(
             "fanout config required_gates missing required gate ids: "
             + ", ".join(missing)
             + "; next action: restore every FANOUT_REQUIRED_GATES id before public fanout"
@@ -208,13 +259,13 @@ def _configured_required_gates(policy: object) -> tuple[list[str], str | None]:
 
     unknown = sorted(set(normalized) - FANOUT_ALLOWED_GATE_IDS)
     if unknown:
-        return required, (
+        errors.append(
             "fanout config required_gates contains unknown gate ids: "
             + ", ".join(unknown)
             + "; next action: use only FANOUT_REQUIRED_GATES ids before public fanout"
         )
 
-    return required, None
+    return required, _join_policy_errors(*errors), not errors
 
 
 def _receipt_value_present(
@@ -246,6 +297,12 @@ def _missing_gate_receipts(
 
 
 def _effective_required_gates(config: OmgFanoutConfig) -> tuple[list[str], str | None]:
+    errors: list[str] = []
+    if not config.publication_policy_verified:
+        errors.append(
+            "fanout config publication_frontmatter_policy was not verified; next action: "
+            "load a guarded_public_fanout policy before public fanout"
+        )
     malformed = False
     configured: list[str] = []
     for gate in config.required_gates:
@@ -256,18 +313,18 @@ def _effective_required_gates(config: OmgFanoutConfig) -> tuple[list[str], str |
 
     required = list(dict.fromkeys([*FANOUT_REQUIRED_GATES, *configured]))
     if malformed:
-        return required, (
+        errors.append(
             "fanout config required_gates contains blank or non-string gate ids; "
             "next action: remove malformed gate ids before public fanout"
         )
     unknown = sorted(set(configured) - FANOUT_ALLOWED_GATE_IDS)
     if unknown:
-        return required, (
+        errors.append(
             "fanout config required_gates contains unknown gate ids: "
             + ", ".join(unknown)
             + "; next action: use only FANOUT_REQUIRED_GATES ids before public fanout"
         )
-    return required, None
+    return required, _join_policy_errors(*errors)
 
 
 def _fanout_address_policy_error(*, source_address: str, targets: Sequence[str]) -> str | None:

@@ -333,10 +333,12 @@ class Orchestrator:
                     continue
                 except OSError as exc:
                     log.warning(
-                        "transient inbox artifact read failure at %s; leaving for retry: %s",
+                        "inbox artifact read failure at %s; quarantining before public egress: %s",
                         path,
                         exc,
                     )
+                    self._quarantine_unreadable_inbox_artifact(path, exc)
+                    handled += 1
                     continue
                 except Exception as exc:  # noqa: BLE001
                     log.exception(
@@ -934,6 +936,19 @@ class Orchestrator:
             inbox_path,
             finding=finding,
             quarantine_reason="invalid_inbox_artifact",
+            suspected_code_path_error=False,
+        )
+
+    def _quarantine_unreadable_inbox_artifact(self, inbox_path: Path, exc: OSError) -> None:
+        finding = (
+            "inbox artifact could not be read: "
+            f"{type(exc).__name__}; next action: inspect storage/permissions and re-drop "
+            "a readable approved PreprintArtifact"
+        )
+        self._quarantine_raw_inbox_artifact(
+            inbox_path,
+            finding=finding,
+            quarantine_reason="unreadable_inbox_artifact",
             suspected_code_path_error=False,
         )
 

@@ -683,7 +683,7 @@ class TestSingleSurface:
         assert payload["quarantine_reason"] == "invalid_inbox_artifact"
         assert (tmp_path / "publish" / "published" / "valid-after-bad.json").exists()
 
-    def test_transient_inbox_load_error_stays_in_inbox_for_retry(self, tmp_path, monkeypatch):
+    def test_inbox_load_oserror_quarantines_before_public_egress(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()
         fake_module.publish_artifact = mock.Mock(return_value="ok")
         monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
@@ -695,10 +695,14 @@ class TestSingleSurface:
         )
 
         with mock.patch.object(orch, "_load_artifact", side_effect=OSError("temporary I/O")):
-            assert orch.run_once() == 0
+            assert orch.run_once() == 1
 
-        assert inbox_path.exists()
-        assert not (tmp_path / "publish" / "failed" / "retry-after-read-error.json").exists()
+        assert not inbox_path.exists()
+        failed = list((tmp_path / "publish" / "failed").glob("invalid-artifact-*.json"))
+        assert len(failed) == 1
+        payload = json.loads(failed[0].read_text())
+        assert payload["quarantine_reason"] == "unreadable_inbox_artifact"
+        assert payload["suspected_code_path_error"] is False
         fake_module.publish_artifact.assert_not_called()
 
     def test_unexpected_inbox_load_error_quarantines_poison_pill(self, tmp_path, monkeypatch):
