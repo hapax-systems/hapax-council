@@ -358,15 +358,24 @@ def write_publication_freshness_events(
     log_path: Path = DEFAULT_FRESHNESS_EVENTS,
     dry_run: bool = False,
 ) -> tuple[str, ...]:
-    """Serialize freshness events and optionally append to the JSONL ledger."""
+    """Serialize freshness events and optionally append new rows to the JSONL ledger."""
 
     lines = tuple(event.to_json_line() for event in events)
     if dry_run:
         return lines
+    existing_ids = _existing_publication_freshness_event_ids(log_path)
+    append_lines: list[str] = []
+    for event, line in zip(events, lines, strict=True):
+        if event.event_id in existing_ids:
+            continue
+        existing_ids.add(event.event_id)
+        append_lines.append(line)
+    if not append_lines:
+        return ()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as handle:
-        handle.writelines(lines)
-    return lines
+        handle.writelines(append_lines)
+    return tuple(append_lines)
 
 
 def write_publication_freshness_snapshot(
@@ -383,6 +392,22 @@ def write_publication_freshness_snapshot(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return text
+
+
+def _existing_publication_freshness_event_ids(log_path: Path) -> set[str]:
+    if not log_path.exists():
+        return set()
+    event_ids: set[str] = set()
+    for line in log_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("event_id"), str):
+            event_ids.add(payload["event_id"])
+    return event_ids
 
 
 def publication_freshness_event_id(

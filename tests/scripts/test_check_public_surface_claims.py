@@ -351,6 +351,9 @@ def test_public_surface_gate_fails_publication_freshness_blocker(tmp_path: Path)
     assert result.returncode == 1
     assert "Hapax.PublicationFreshness" in result.stdout
     assert "github.readme.hapax-systems/example.README.md" in result.stdout
+    assert (
+        "Next action: refresh the publication freshness audit/live-state readback" in result.stdout
+    )
 
 
 def test_public_surface_gate_recomputes_freshness_blockers_from_envelopes(

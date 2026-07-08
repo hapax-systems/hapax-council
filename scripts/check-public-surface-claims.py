@@ -265,7 +265,11 @@ def check_publication_freshness_state(
             line=1,
             level="error",
             rule=PUBLICATION_FRESHNESS_RULE,
-            message=(f"Publication freshness has public-current blockers: {', '.join(blockers)}"),
+            message=(
+                "Publication freshness has public-current blockers: "
+                f"{', '.join(blockers)}. Next action: refresh the publication freshness "
+                "audit/live-state readback and hold release until the blockers clear."
+            ),
         )
     ]
 

@@ -151,3 +151,22 @@ def test_freshness_event_and_snapshot_are_witness_only(tmp_path: Path) -> None:
     assert json.loads(dry_state)["claim_ceiling"] == "freshness_witness_only"
     assert not log_path.exists()
     assert not state_path.exists()
+
+
+def test_freshness_event_writes_are_idempotent_by_event_id(tmp_path: Path) -> None:
+    snapshot = build_publication_freshness_snapshot(_github_envelopes(), generated_at=GENERATED_AT)
+    event = build_publication_freshness_event(
+        snapshot.envelopes[0],
+        event_type="publication.surface_readback",
+        generated_at=GENERATED_AT,
+        occurred_at=GENERATED_AT,
+    )
+    log_path = tmp_path / "freshness-events.jsonl"
+
+    first = write_publication_freshness_events((event,), log_path=log_path)
+    second = write_publication_freshness_events((event,), log_path=log_path)
+
+    rows = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert len(first) == 1
+    assert second == ()
+    assert [row["event_id"] for row in rows] == [event.event_id]

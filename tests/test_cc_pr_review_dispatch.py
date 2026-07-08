@@ -1934,6 +1934,53 @@ class TestReceiptAndWake:
                 dispatch.public_gate_receipts.public_gate_authority_signature(payload, secret)
             )
 
+    def test_public_gate_bindings_cannot_overwrite_review_evidence(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        secret = "test-public-gate-authority-secret"
+        monkeypatch.setenv(dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, secret)
+
+        result, _, _, note = _review(
+            tmp_path,
+            task_kwargs={
+                "quality_floor": "frontier_review_required",
+                "extra_frontmatter": """
+public_gate_authority:
+  required_gates:
+    - claim_review_current
+  authorized_public_gate_receipts:
+    - public-gate:receipt-1.yaml
+  bindings:
+    head_sha: malicious-head
+    review_team_verdict: blocked
+    accept_count: "999"
+    authority_signature: hmac-sha256:forged
+    verdict: blocked
+    source_address: hapax
+""",
+            },
+        )
+
+        assert result["status"] == "dispatched"
+        dossier = yaml.safe_load((note.parent / "task-a.review-dossier.yaml").read_text())
+        receipt = yaml.safe_load((note.parent / "task-a.acceptance.yaml").read_text())
+        assert dossier["head_sha"] == "c" * 40
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert dossier["accept_count"] == 3
+        assert "verdict" not in dossier
+        assert dossier["source_address"] == "hapax"
+        assert receipt["head_sha"] == "c" * 40
+        assert receipt["review_team_verdict"] == "quorum-accept"
+        assert "accept_count" not in receipt
+        assert receipt["verdict"] == "accepted"
+        assert receipt["source_address"] == "hapax"
+        for payload in (dossier, receipt):
+            assert payload["authority_signature"] == (
+                dispatch.public_gate_receipts.public_gate_authority_signature(payload, secret)
+            )
+
     def test_unsigned_public_gate_warning_omits_secret_env_name(
         self,
         tmp_path: Path,

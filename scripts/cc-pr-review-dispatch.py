@@ -148,6 +148,47 @@ PUBLIC_GATE_AUTHORITY_BINDING_CONTEXT_KEYS = (
     "publication_gate_bindings",
 )
 PUBLIC_GATE_AUTHORITY_BINDING_KEY_RE = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
+PUBLIC_GATE_AUTHORITY_RESERVED_BINDING_KEYS = frozenset(
+    {
+        "accept_count",
+        "acceptor",
+        "artifact",
+        "authority_issuer",
+        "authority_signature",
+        "basis",
+        "changed_file_count",
+        "changed_files",
+        "constituted_at",
+        "constitution_notes",
+        "constitution_writer_family",
+        "degraded_family_outage",
+        "degraded_family_route_blocked",
+        "dossier_schema",
+        "escalations",
+        "findings",
+        "head_sha",
+        "lenses",
+        "parse_path",
+        "post_recovery_rereview_required",
+        "post_route_receipt_rereview_required",
+        "pr",
+        "quorum_required",
+        "registry_declared_at",
+        "registry_id",
+        "required_gates",
+        "authorized_public_gate_receipts",
+        "review_team_verdict",
+        "reviewers",
+        "runner_diagnostics",
+        "runner_stderr_excerpt",
+        "status",
+        "task_id",
+        "team_class",
+        "timestamp",
+        "verdict",
+        "writer_family",
+    }
+)
 
 
 def _review_team_authority_issuer(reviewers: list[dict[str, Any]]) -> str:
@@ -223,7 +264,11 @@ def _copy_safe_binding(
     value: str | list[str] | None,
 ) -> None:
     normalized = key.strip().casefold()
-    if value is not None and PUBLIC_GATE_AUTHORITY_BINDING_KEY_RE.fullmatch(normalized):
+    if (
+        value is not None
+        and normalized not in PUBLIC_GATE_AUTHORITY_RESERVED_BINDING_KEYS
+        and PUBLIC_GATE_AUTHORITY_BINDING_KEY_RE.fullmatch(normalized)
+    ):
         bindings[normalized] = value
 
 
