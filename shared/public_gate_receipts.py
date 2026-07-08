@@ -785,7 +785,12 @@ def _review_dossier_evidence_allows(
         return False
     quorum_required = _direct_int_value(data, "quorum_required")
     accept_count = _direct_int_value(data, "accept_count")
-    if quorum_required is None or accept_count is None or accept_count < quorum_required:
+    if (
+        quorum_required is None
+        or quorum_required < 1
+        or accept_count is None
+        or accept_count < quorum_required
+    ):
         return False
     reviewers = data.get("reviewers")
     if not isinstance(reviewers, list):

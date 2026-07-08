@@ -700,7 +700,7 @@ def _slugify(title: str) -> str:
 
 
 def _parse_surfaces(raw: str | None) -> list[str]:
-    if not raw:
+    if raw is None:
         return DEFAULT_SURFACES
     return [s.strip() for s in raw.split(",") if s.strip()]
 

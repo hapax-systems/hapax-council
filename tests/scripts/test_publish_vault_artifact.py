@@ -696,7 +696,12 @@ def test_surface_outside_allowlist_refuses_publication(tmp_path, capsys) -> None
     assert not (tmp_path / "publish" / "inbox").exists()
 
 
-def test_empty_explicit_surface_list_refuses_publication(tmp_path, capsys) -> None:
+@pytest.mark.parametrize("surfaces_arg", (",", ""))
+def test_empty_explicit_surface_list_refuses_publication(
+    tmp_path,
+    capsys,
+    surfaces_arg: str,
+) -> None:
     draft = tmp_path / "draft.md"
     body_md = "# Empty Surfaces\n\nBody\n"
     receipts = _write_bound_receipts_for_expected_artifact(
@@ -721,7 +726,7 @@ def test_empty_explicit_surface_list_refuses_publication(tmp_path, capsys) -> No
         [
             str(draft),
             "--surfaces",
-            ",",
+            surfaces_arg,
             "--state-root",
             str(tmp_path),
             "--dry-run",

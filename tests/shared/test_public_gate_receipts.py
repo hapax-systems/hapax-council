@@ -315,6 +315,25 @@ def test_rejects_signed_review_dossier_without_distinct_known_family_quorum(
     )
 
 
+def test_rejects_signed_review_dossier_without_positive_quorum_required(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(
+        tmp_path,
+        receipt_name="receipt-1.yaml",
+        reviewers=[],
+        quorum_required=0,
+        accept_count=0,
+    )
+
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+    )
+
+
 def test_accepts_signed_review_dossier_with_codex_claude_review_families(
     tmp_path: Path,
 ) -> None:
