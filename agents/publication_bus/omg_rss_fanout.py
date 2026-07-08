@@ -80,6 +80,9 @@ PUBLIC_GATE_RECEIPT_ROOTS: tuple[Path, ...] = (
 OMG_LOL_ADDRESS_RE = re.compile(r"\A[a-z0-9][a-z0-9-]{0,62}\Z")
 """Conservative omg.lol address segment accepted before public fanout egress."""
 
+OMG_LOL_WEBLOG_ENTRY_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._~-]{0,191}\Z")
+"""Conservative unreserved weblog entry path segment accepted before public fanout egress."""
+
 omg_fanouts_total = Counter(
     "hapax_publication_bus_omg_fanouts_total",
     "omg.lol cross-weblog fanout outcomes per source + target + result.",
@@ -168,6 +171,12 @@ def _join_policy_errors(*errors: str | None) -> str | None:
 
 def _safe_omg_lol_address(value: object) -> bool:
     return isinstance(value, str) and OMG_LOL_ADDRESS_RE.fullmatch(value.strip()) is not None
+
+
+def _safe_omg_lol_weblog_entry_id(value: object) -> bool:
+    return (
+        isinstance(value, str) and OMG_LOL_WEBLOG_ENTRY_ID_RE.fullmatch(value.strip()) is not None
+    )
 
 
 def _duplicate_values(values: Sequence[str]) -> list[str]:
@@ -387,12 +396,22 @@ def _effective_required_gates(config: OmgFanoutConfig) -> tuple[list[str], str |
     return required, _join_policy_errors(*errors)
 
 
-def _fanout_address_policy_error(*, source_address: str, targets: Sequence[str]) -> str | None:
+def _fanout_address_policy_error(
+    *,
+    source_address: str,
+    entry_id: str,
+    targets: Sequence[str],
+) -> str | None:
     errors: list[str] = []
     if not _safe_omg_lol_address(source_address):
         errors.append(
             "fanout source_address is malformed; next action: use a lowercase omg.lol "
             "address path segment before public fanout"
+        )
+    if not _safe_omg_lol_weblog_entry_id(entry_id):
+        errors.append(
+            "fanout entry_id is malformed; next action: use a single omg.lol weblog "
+            "entry path segment containing only URL-unreserved characters before public fanout"
         )
     malformed_targets = [target for target in targets if not _safe_omg_lol_address(target)]
     if malformed_targets:
@@ -471,6 +490,7 @@ def fanout(
     required_gates, boundary_gate_policy_error = _effective_required_gates(config)
     address_policy_error = _fanout_address_policy_error(
         source_address=source_address,
+        entry_id=entry_id,
         targets=targets,
     )
     gate_policy_error = _join_policy_errors(

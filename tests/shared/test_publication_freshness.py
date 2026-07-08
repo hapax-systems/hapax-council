@@ -61,7 +61,19 @@ def test_github_publication_witness_rows_project_to_freshness_envelopes() -> Non
 
 
 def test_missing_github_surface_becomes_public_current_blocker() -> None:
-    missing = next(envelope for envelope in _github_envelopes() if envelope.blocks)
+    missing = PublicSurfaceFreshnessEnvelope(
+        surface_id="github.repo_metadata.hapax-systems/private-example",
+        surface_type="github.repo_metadata",
+        source_ref="fixture-report",
+        target_ref="https://github.com/hapax-systems/private-example",
+        source_of_truth="fixture",
+        evidence_refs=("gh:repos/hapax-systems/private-example",),
+        checked_at=GENERATED_AT,
+        ttl_s=1_800,
+        expires_at="2026-05-01T01:20:00Z",
+        freshness_result="missing",
+        blocks=("public_current", "release_authorized"),
+    )
 
     assert missing.freshness_result == "missing"
     assert "public_current" in missing.blocks

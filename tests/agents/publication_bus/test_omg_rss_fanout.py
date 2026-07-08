@@ -510,6 +510,21 @@ class TestFanout:
         assert result == {"../escape": "gate-policy-blocked"}
         client.set_entry.assert_not_called()
 
+    @pytest.mark.parametrize("entry_id", ("../escape", "entry?draft=true", "entry#frag", ""))
+    def test_malformed_entry_id_blocks_before_public_egress(self, entry_id: str) -> None:
+        client = _make_client()
+        config = _config()
+        result = fanout(
+            source_address="hapax",
+            entry_id=entry_id,
+            content="body",
+            config=config,
+            client=client,
+            gate_receipts=_gate_receipts(entry_id=entry_id),
+        )
+        assert result == {"oudepode": "gate-policy-blocked"}
+        client.set_entry.assert_not_called()
+
     def test_direct_config_cannot_weaken_required_gates(self) -> None:
         client = _make_client()
         config = _config(required_gates=[])

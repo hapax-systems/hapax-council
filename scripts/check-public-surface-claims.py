@@ -22,6 +22,7 @@ from shared.github_public_claim_gate import (
     github_material_envelope_from_mapping,
 )
 from shared.publication_freshness import (
+    DEFAULT_FRESHNESS_STATE,
     PublicationFreshnessSnapshot,
     build_publication_freshness_snapshot,
     isoformat_z,
@@ -255,14 +256,29 @@ def check_publication_freshness_state(
     *,
     state_path: Path,
 ) -> list[LintFinding]:
+    findings: list[LintFinding] = []
+    if not state.envelopes:
+        findings.append(
+            LintFinding(
+                file=str(state_path),
+                line=1,
+                level="error",
+                rule=PUBLICATION_FRESHNESS_RULE,
+                message=(
+                    "Publication freshness state has no surface envelopes. Next action: "
+                    "regenerate the publication freshness audit/live-state readback and "
+                    "hold release until at least one current public-surface witness is present."
+                ),
+            )
+        )
     reassessed = build_publication_freshness_snapshot(
         state.envelopes,
         generated_at=isoformat_z(datetime.now(tz=UTC)),
     )
     blockers = tuple(dict.fromkeys((*state.blockers, *reassessed.blockers)))
     if not blockers:
-        return []
-    return [
+        return findings
+    findings.append(
         LintFinding(
             file=str(state_path),
             line=1,
@@ -274,7 +290,8 @@ def check_publication_freshness_state(
                 "audit/live-state readback and hold release until the blockers clear."
             ),
         )
-    ]
+    )
+    return findings
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -306,7 +323,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--publication-freshness-state",
         type=Path,
-        help="machine-readable public-surface freshness snapshot from publication-freshness-audit",
+        default=DEFAULT_FRESHNESS_STATE,
+        help=(
+            "required machine-readable public-surface freshness snapshot from "
+            "publication-freshness-audit"
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -329,23 +350,20 @@ def main(argv: list[str] | None = None) -> int:
             if args.github_material_envelope is not None
             else None
         )
-        publication_freshness_state = (
-            load_publication_freshness_state(args.publication_freshness_state)
-            if args.publication_freshness_state is not None
-            else None
+        publication_freshness_state = load_publication_freshness_state(
+            args.publication_freshness_state
         )
     except RequiredInputError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
     paths = args.paths or list(DEFAULT_TARGETS)
-    if publication_freshness_state is not None:
-        findings.extend(
-            check_publication_freshness_state(
-                publication_freshness_state,
-                state_path=args.publication_freshness_state,
-            )
+    findings.extend(
+        check_publication_freshness_state(
+            publication_freshness_state,
+            state_path=args.publication_freshness_state,
         )
+    )
     for path in iter_files(paths):
         findings.extend(lint_file(path))
         findings.extend(check_token_claim_ceiling(path, token_claim_patterns))

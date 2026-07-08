@@ -20,6 +20,15 @@ object itself; GitHub diff views may truncate before the `notes` field. The
 | `README.md` | Defers to `NOTICE.md` / `CITATION.cff` / `codemeta.json` |
 | Public prose | Uses "source-visible" to describe inspectability, not an open-source license |
 
+## DOI Succession Status
+
+The existing Zenodo snapshot DOI `10.5281/zenodo.20113515` and concept DOI
+`10.5281/zenodo.20113514` remain the active citation identifiers for this
+repository. They are retained in `.zenodo.json`, `CITATION.cff`, and the README
+badge. No replacement deposit is active in this branch; any future
+Hapax Systems org-owned successor deposit must document the relationship to
+these identifiers before removing or superseding them from citation surfaces.
+
 ## Decision rationale (2026-05-09)
 
 Path 1 adopted per operator directive ("research best license for me and go with it"). Research agent evaluated Apache 2.0, AGPL-3.0, BSL, Elastic 2.0, SSPL, PolyForm Noncommercial, and CC BY-NC-SA against six requirements:

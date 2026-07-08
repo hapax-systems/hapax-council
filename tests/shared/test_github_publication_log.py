@@ -61,8 +61,19 @@ def test_github_publication_rows_are_witness_only_and_anti_overclaim() -> None:
 
 
 def test_missing_or_private_rows_do_not_carry_live_urls_or_public_mode() -> None:
-    private_event = next(
-        event for event in _events() if event.publication_state == "missing_or_private"
+    private_event = build_github_publication_event(
+        repo="hapax-systems/private-example",
+        surface="repo_metadata",
+        generated_at=GENERATED_AT,
+        occurred_at=GENERATED_AT,
+        source_refs=("fixture-report",),
+        evidence_refs=("gh:repos/hapax-systems/private-example",),
+        publication_state="missing_or_private",
+        publication_mode="private",
+        live_url=None,
+        commit_sha=None,
+        content_sha=None,
+        ref="main",
     )
 
     assert private_event.publication_mode == "private"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -15,11 +16,22 @@ def _report_generated_at() -> str:
     return json.loads(REPORT.read_text(encoding="utf-8"))["generated_at"]
 
 
+def _iso_after_report(seconds: int = 0) -> str:
+    generated_at = datetime.fromisoformat(_report_generated_at().replace("Z", "+00:00"))
+    return (
+        (generated_at + timedelta(seconds=seconds))
+        .astimezone(UTC)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
 def test_publication_freshness_audit_dry_run_prints_state_without_writing(
     tmp_path: Path,
 ) -> None:
     events = tmp_path / "freshness-events.jsonl"
     state = tmp_path / "freshness-state.json"
+    generated_at = _iso_after_report()
 
     result = subprocess.run(
         [
@@ -32,7 +44,7 @@ def test_publication_freshness_audit_dry_run_prints_state_without_writing(
             "--output-state",
             str(state),
             "--generated-at",
-            GENERATED_AT,
+            generated_at,
             "--dry-run",
         ],
         cwd=REPO_ROOT,
@@ -48,7 +60,7 @@ def test_publication_freshness_audit_dry_run_prints_state_without_writing(
     assert payload["github_checked_at"] == report_generated_at
     assert payload["events"]
     assert {event["occurred_at"] for event in payload["events"]} == {report_generated_at}
-    assert {event["generated_at"] for event in payload["events"]} == {GENERATED_AT}
+    assert {event["generated_at"] for event in payload["events"]} == {generated_at}
     assert payload["state"]["envelopes"]
     assert {envelope["checked_at"] for envelope in payload["state"]["envelopes"]} == {
         report_generated_at
@@ -60,6 +72,7 @@ def test_publication_freshness_audit_dry_run_prints_state_without_writing(
 def test_publication_freshness_audit_writes_events_and_state(tmp_path: Path) -> None:
     events = tmp_path / "freshness-events.jsonl"
     state = tmp_path / "freshness-state.json"
+    generated_at = _iso_after_report()
 
     result = subprocess.run(
         [
@@ -72,7 +85,7 @@ def test_publication_freshness_audit_writes_events_and_state(tmp_path: Path) -> 
             "--output-state",
             str(state),
             "--generated-at",
-            GENERATED_AT,
+            generated_at,
         ],
         cwd=REPO_ROOT,
         check=True,
@@ -97,6 +110,7 @@ def test_publication_freshness_audit_events_match_assessed_snapshot(
 ) -> None:
     events = tmp_path / "freshness-events.jsonl"
     state = tmp_path / "freshness-state.json"
+    generated_at = _iso_after_report(seconds=60)
 
     result = subprocess.run(
         [
@@ -109,7 +123,7 @@ def test_publication_freshness_audit_events_match_assessed_snapshot(
             "--output-state",
             str(state),
             "--generated-at",
-            GENERATED_AT,
+            generated_at,
             "--github-ttl-s",
             "1",
         ],

@@ -1,6 +1,6 @@
 ---
 title: GitHub public surface live state reconcile
-date: 2026-07-07
+date: 2026-07-08
 status: evidence-produced
 source: github-public-surface-live-state-reconcile
 ---
@@ -8,7 +8,7 @@ source: github-public-surface-live-state-reconcile
 # GitHub Public Surface Live State Reconcile
 
 - Filename note: the April slug is retained for historical ledger continuity; the YAML `date` and `Generated` fields record the current live-state refresh. Freshness checks must read those fields, not the filename slug. Re-run the `Recheck` command below before treating this as current.
-- Generated: `2026-07-07T16:26:12Z`
+- Generated: `2026-07-08T10:05:30Z`
 - Recheck: `uv run python scripts/github-public-surface-reconcile.py`
 - Claim ceiling: `public_archive`
 - Blocking findings: `1`
@@ -18,13 +18,13 @@ source: github-public-surface-live-state-reconcile
 
 | Repo | Visibility | Default SHA | License | Issues | Discussions | Wiki | Pages |
 |---|---:|---|---|---:|---:|---:|---:|
-| hapax-systems/hapax-council | public | 70da7e1c9c76 | NOASSERTION | true | false | false | false |
-| hapax-systems/hapax-constitution | public | d51b20024317 | Apache-2.0 | true | false | true | false |
-| hapax-systems/hapax-officium | public | 4884d8524a5c | NOASSERTION | true | false | false | false |
-| hapax-systems/hapax-watch | private |  |  |  |  |  | false |
-| hapax-systems/hapax-phone | private |  |  |  |  |  | false |
-| hapax-systems/hapax-mcp | private |  |  |  |  |  | false |
-| hapax-systems/hapax-assets | public | 69325016921c |  | true | false | false | true |
+| hapax-systems/hapax-council | public | 21b9e9153e98 | NOASSERTION | true | false | false | false |
+| hapax-systems/hapax-constitution | public | 96ea7f557e50 | Apache-2.0 | true | false | true | false |
+| hapax-systems/hapax-officium | public | 69583619391b | NOASSERTION | true | false | false | false |
+| hapax-systems/hapax-watch | public | f12bf995be38 | NOASSERTION | true | false | false | false |
+| hapax-systems/hapax-phone | public | f2843fc5dd77 | NOASSERTION | true | false | false | false |
+| hapax-systems/hapax-mcp | public | 44c70eea4ca4 | MIT | true | false | false | false |
+| hapax-systems/hapax-assets | public | 1890c08b4d72 |  | true | false | false | true |
 
 ## Drift Findings
 
@@ -32,9 +32,8 @@ source: github-public-surface-live-state-reconcile
 |---|---|---|---|
 | high | license_detection | hapax-systems/hapax-constitution | GitHub detected license does not match the repo registry policy. |
 | high | license_detection | hapax-systems/hapax-officium | GitHub detected license does not match the repo registry policy. |
-| high | settings_truth | hapax-systems/hapax-watch | An intended public first-party repo is not publicly visible. |
-| high | settings_truth | hapax-systems/hapax-phone | An intended public first-party repo is not publicly visible. |
-| high | settings_truth | hapax-systems/hapax-mcp | An intended public first-party repo is not publicly visible. |
+| high | license_detection | hapax-systems/hapax-watch | GitHub detected license does not match the repo registry policy. |
+| high | license_detection | hapax-systems/hapax-phone | GitHub detected license does not match the repo registry policy. |
 | blocking | license_detection | hapax-systems/hapax-council | GitHub/root license detection contradicts the repo registry policy. |
 | high | contributing_governance | hapax-systems/hapax-council | GOVERNANCE.md is missing from the public repo root. |
 | high | settings_truth | hapax-systems/hapax-council | Issues are enabled while GitHub does not report an issue template. |

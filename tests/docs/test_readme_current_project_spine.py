@@ -232,6 +232,6 @@ class TestGithubPublicSurfaceLiveStateDoc:
         generated_line = next(line for line in text.splitlines() if line.startswith("- Generated:"))
 
         assert self.DOC.name.startswith("2026-04-30-")
-        assert str(frontmatter["date"]) == "2026-07-07"
-        assert "2026-07-07T" in generated_line
+        generated_at = generated_line.split("`", 2)[1]
+        assert str(frontmatter["date"]) == generated_at.split("T", 1)[0]
         assert "Freshness checks must read those fields, not the filename slug." in text
