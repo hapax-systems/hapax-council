@@ -288,7 +288,9 @@ def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None
         snapshot.route_id: snapshot.subscription_quota_state.value
         for snapshot in ledger.quota_snapshots
     }
-    assert states["claude.headless.full"] == "fresh"
+    # claude.headless.full is now receipt-bounded (like agy): unknown without a fresh admission
+    # receipt — account-live quota is never inferred from lane/session presence or wall-absence.
+    assert states["claude.headless.full"] == "unknown"
     assert states["codex.headless.full"] == "fresh"
     assert states["agy.review.direct"] == "unknown"
     assert "gemini.headless.full" not in states
@@ -791,6 +793,127 @@ def test_fresh_agy_admission_receipt_marks_agy_fresh(tmp_path: Path) -> None:
     assert "receipt-bounded" in agy_snapshot["operator_visible_reason"]
     summary = json.loads(result.stdout)
     assert summary["agy_admissions"] == 1
+
+
+def _claude_admission(
+    relay: Path,
+    *,
+    observed_at: str,
+    stale_after_seconds: str = "900",
+    evidence_ref: str = "claude-subscription-headroom-observed-20260609t2355z",
+    observation: str = "subscription_quota_headroom_observed",
+    secret_value_persisted: str = "false",
+    lane_presence_used_as_quota_evidence: str = "false",
+    name: str = "claude-subscription-quota-admission.yaml",
+) -> None:
+    (relay / name).write_text(
+        "schema: hapax.claude_quota_admission.v1\n"
+        "status: quota_available\n"
+        "provider: anthropic-claude-subscription\n"
+        "route_id: claude.headless.full\n"
+        "capacity_pool: subscription_quota\n"
+        "auth_surface: subscription\n"
+        f"observation: {observation}\n"
+        f"observed_at: {observed_at}\n"
+        f"stale_after_seconds: {stale_after_seconds}\n"
+        f"evidence_ref: {evidence_ref}\n"
+        "secret_source: claude:operator-session-subscription\n"
+        f"secret_value_persisted: {secret_value_persisted}\n"
+        "prompt_or_output_persisted: false\n"
+        "billing_mode: operator_session_subscription\n"
+        "account_live_quota_observed: true\n"
+        f"lane_presence_used_as_quota_evidence: {lane_presence_used_as_quota_evidence}\n"
+        "positive_admission: true\n",
+        encoding="utf-8",
+    )
+
+
+def _claude_snapshot(payload: dict) -> dict:
+    return next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "claude.headless.full"
+    )
+
+
+def test_fresh_claude_admission_receipt_marks_claude_fresh(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["provider"] == "anthropic-claude-subscription"
+    assert snapshot["subscription_quota_state"] == "fresh"
+    assert snapshot["fresh_until"] == "2026-06-10T00:10:00Z"
+    ref = next(
+        r for r in snapshot["evidence_refs"] if "claude-subscription-quota-admission.yaml" in r
+    )
+    assert ref.endswith(":account-live-quota:observed")
+    assert "witness:claude-subscription-headroom-observed-20260609t2355z" in ref
+    assert "observation:subscription_quota_headroom_observed" in ref
+    assert "receipt-bounded" in snapshot["operator_visible_reason"]
+    assert json.loads(result.stdout)["claude_admissions"] == 1
+
+
+def test_fresh_claude_admission_ref_passes_ledger_validator(tmp_path: Path) -> None:
+    # Cross-layer contract: the composite ref the telemetry writer emits is exactly what the ledger
+    # accepts as claude admission evidence, so the guarantor attests. Pins telemetry <-> ledger.
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
+
+    result, out = _run_writer(tmp_path)
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    ref = next(
+        r for r in snapshot["evidence_refs"] if "claude-subscription-quota-admission.yaml" in r
+    )
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import _is_claude_admission_evidence_ref
+
+    assert _is_claude_admission_evidence_ref(ref) is True
+
+
+def test_claude_admission_rejects_lane_presence_evidence_ref(tmp_path: Path) -> None:
+    # Defense in depth: even a receipt naming lane/tmux presence is refused by the scanner.
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        evidence_ref="tmux-hapax-claude-eta-present-20260609",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "unknown"
+    assert any(":ignored:" in ref for ref in snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["claude_admissions"] == 0
+    assert summary["claude_ignored_admissions"] == 1
+
+
+def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z", secret_value_persisted="true")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "unknown"
+    summary = json.loads(result.stdout)
+    assert summary["claude_admissions"] == 0
+    assert summary["claude_ignored_admissions"] == 1
+    # the receipt field name/value must never echo to stderr (generic warning only).
+    assert "secret_value_persisted" not in result.stderr
 
 
 def test_agy_admission_rejects_secret_persistence(tmp_path: Path) -> None:
