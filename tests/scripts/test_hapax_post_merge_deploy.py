@@ -2015,6 +2015,23 @@ def test_check_symlink_drift_flags_offtree(tmp_path: Path) -> None:
     assert "off-tree" in result.stderr
 
 
+def test_check_symlink_drift_flags_hapax_script_name_mismatch(tmp_path: Path) -> None:
+    """A managed ``hapax-*`` symlink to a different managed script is drift."""
+    canonical = tmp_path / "worktree"
+    scripts = canonical / "scripts"
+    scripts.mkdir(parents=True)
+    target = scripts / "hapax-other"
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    _link(bin_dir, "hapax-demo", target)
+
+    result = _check_drift(_drift_env(tmp_path, bin_dir, HAPAX_DEPLOY_SYMLINK_ROOTS=str(canonical)))
+
+    assert result.returncode == 1, result.stdout
+    assert "target name mismatch" in result.stderr
+    assert "hapax-demo" in result.stderr
+
+
 def test_check_symlink_drift_ignores_non_script_install_symlinks(tmp_path: Path) -> None:
     """``hapax-hooks-doctor -> ~/.local/lib/hapax/hooks/hooks-doctor.sh`` is a
     manifest-installed hook, not a deploy-tree symlink — its target is not under
@@ -2055,3 +2072,449 @@ def test_pw_deploy_parse_lints_confs(tmp_path):
     script = SCRIPT.read_text()
     assert "spa-json-dump" in script, "conf parse-lint missing from PW deploy path"
     assert "REFUSED (spa-json parse error" in script
+
+
+def _fake_hooks_doctor() -> str:
+    return """#!/usr/bin/env bash
+set -euo pipefail
+from=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --from) from="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+from="${from:-$(pwd)}"
+if [ -n "${HAPAX_HOOKS_DOCTOR_CALLS:-}" ]; then
+    printf '%s\\n' "$from" >> "$HAPAX_HOOKS_DOCTOR_CALLS"
+fi
+if [ "${HAPAX_FAKE_HOOKS_DOCTOR_FAIL:-0}" = "1" ]; then
+    echo "fake hooks-doctor deploy failure" >&2
+    exit 23
+fi
+: "${HAPAX_CANONICAL_HOOKS:?}"
+mkdir -p "$HAPAX_CANONICAL_HOOKS"
+cp "$from/hooks/scripts/cc-task-gate.impl.sh" "$HAPAX_CANONICAL_HOOKS/cc-task-gate.sh"
+for sibling in agent-role.sh escape-grant.sh hapax_check_enable_latch.sh cc-task-gate-bootstrap.py hooks-doctor.sh; do
+    cp "$from/hooks/scripts/$sibling" "$HAPAX_CANONICAL_HOOKS/$sibling"
+done
+"""
+
+
+def _gate_closure_bodies() -> dict[str, str]:
+    return {
+        "hooks/scripts/cc-task-gate.impl.sh": (
+            "#!/usr/bin/env bash\nis_cognition_path() { return 0; }\necho gate impl\n"
+        ),
+        "hooks/scripts/agent-role.sh": "#!/usr/bin/env bash\necho agent-role\n",
+        "hooks/scripts/escape-grant.sh": "#!/usr/bin/env bash\necho escape-grant\n",
+        "hooks/scripts/hapax_check_enable_latch.sh": ("#!/usr/bin/env bash\necho enable-latch\n"),
+        "hooks/scripts/cc-task-gate-bootstrap.py": "print('bootstrap')\n",
+        "hooks/scripts/hooks-doctor.sh": _fake_hooks_doctor(),
+    }
+
+
+def _repo_with_gate_closure_and_docs_commit(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    for relative, body in _gate_closure_bodies().items():
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base with gate closure")
+    (repo / "docs.md").write_text("docs only\n", encoding="utf-8")
+    _git(repo, "add", "docs.md")
+    _git(repo, "commit", "-m", "docs only")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def _seed_canonical_gate(repo: Path, canon: Path, *, stale: bool) -> None:
+    canon.mkdir(parents=True, exist_ok=True)
+    if stale:
+        (canon / "cc-task-gate.sh").write_text(
+            "#!/usr/bin/env bash\necho stale\n", encoding="utf-8"
+        )
+        for sibling in (
+            "agent-role.sh",
+            "escape-grant.sh",
+            "cc-task-gate-bootstrap.py",
+            "hooks-doctor.sh",
+        ):
+            (canon / sibling).write_text(f"stale {sibling}\n", encoding="utf-8")
+        return
+
+    (canon / "cc-task-gate.sh").write_text(
+        (repo / "hooks" / "scripts" / "cc-task-gate.impl.sh").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    for sibling in (
+        "agent-role.sh",
+        "escape-grant.sh",
+        "hapax_check_enable_latch.sh",
+        "cc-task-gate-bootstrap.py",
+        "hooks-doctor.sh",
+    ):
+        (canon / sibling).write_text(
+            (repo / "hooks" / "scripts" / sibling).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+
+def _gate_reconcile_env(
+    tmp_path: Path, repo: Path, canon: Path, calls: Path, *, fail: bool = False
+) -> dict[str, str]:
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "REPO": str(repo),
+        "HAPAX_CANONICAL_HOOKS": str(canon),
+        "HAPAX_HOOKS_DOCTOR_CALLS": str(calls),
+        "HAPAX_LOCAL_BIN": str(home / ".local" / "bin"),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces" / "post-merge-traces.jsonl"),
+        "HAPAX_DRIFT_NTFY": "0",
+    }
+    env.pop("GITHUB_WORKSPACE", None)
+    if fail:
+        env["HAPAX_FAKE_HOOKS_DOCTOR_FAIL"] = "1"
+    return env
+
+
+def test_gate_untouched_diff_redeploys_drifted_canonical_gate(tmp_path: Path) -> None:
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "canonical gate drift detected: redeploying canonical gate" in result.stdout
+    assert calls.exists(), "drifted canonical gate should invoke hooks-doctor"
+    assert (canon / "cc-task-gate.sh").read_text(encoding="utf-8") == (
+        repo / "hooks" / "scripts" / "cc-task-gate.impl.sh"
+    ).read_text(encoding="utf-8")
+    receipt = tmp_path / "traces" / "last-deployed-sha"
+    assert receipt.read_text(encoding="utf-8").strip() == sha
+    record = json.loads(
+        (tmp_path / "traces" / "post-merge-traces.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert record["deploy_groups"]["canonical_gate_closure"] == [
+        "hooks/scripts/cc-task-gate.impl.sh"
+    ]
+    assert record["manual_deploy_needed"] is True
+    assert record["manual_deploy_executed"] is True
+    assert record["avsdlc"]["runtime_media_witness_required"] is True
+    assert record["avsdlc"]["runtime_media_witness_groups"] == ["canonical_gate_closure"]
+
+
+def test_dry_run_gate_drift_does_not_redeploy(tmp_path: Path) -> None:
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--dry-run", sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "dry-run: canonical gate drift detected; would redeploy" in result.stdout
+    assert not calls.exists(), "dry-run drift should not invoke hooks-doctor"
+    assert (canon / "cc-task-gate.sh").read_text(encoding="utf-8") == (
+        "#!/usr/bin/env bash\necho stale\n"
+    )
+    assert not (tmp_path / "traces" / "last-deployed-sha").exists()
+    record = json.loads(
+        (tmp_path / "traces" / "post-merge-traces.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert record["status"] == "dry_run"
+    assert record["deploy_groups"]["canonical_gate_closure"] == [
+        "hooks/scripts/cc-task-gate.impl.sh"
+    ]
+    assert record["manual_deploy_needed"] is True
+    assert record["manual_deploy_executed"] is False
+
+
+def test_no_files_path_gate_drift_success_records_completed_deploy(tmp_path: Path) -> None:
+    repo, _ = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    _git(repo, "commit", "--allow-empty", "-m", "empty merge")
+    sha = _git(repo, "rev-parse", "HEAD")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls.exists(), "zero-file drift should still invoke hooks-doctor"
+    assert (tmp_path / "traces" / "last-deployed-sha").read_text(encoding="utf-8").strip() == sha
+    record = json.loads(
+        (tmp_path / "traces" / "post-merge-traces.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert record["status"] == "completed"
+    assert record["changed_files"] == []
+    assert record["deploy_groups"]["canonical_gate_closure"] == [
+        "hooks/scripts/cc-task-gate.impl.sh"
+    ]
+    assert record["manual_deploy_needed"] is True
+    assert record["manual_deploy_executed"] is True
+
+
+def test_healthy_canonical_gate_does_not_redeploy(tmp_path: Path) -> None:
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=False)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "canonical gate closure already matches" in result.stdout
+    assert not calls.exists(), "healthy canonical gate should not invoke hooks-doctor"
+    record = json.loads(
+        (tmp_path / "traces" / "post-merge-traces.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert record["deploy_groups"]["canonical_gate_closure"] == []
+    assert record["manual_deploy_needed"] is False
+    assert record["manual_deploy_executed"] is False
+
+
+def test_canonical_gate_deploy_failure_does_not_stamp_last_deployed_sha(
+    tmp_path: Path,
+) -> None:
+    repo, sha = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls, fail=True)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 23, (result.stdout, result.stderr)
+    assert "canonical gate deploy failed" in result.stderr
+    assert "next: inspect hooks-doctor --deploy-canonical output" in result.stderr
+    assert calls.exists(), "failing deploy should still attempt hooks-doctor"
+    assert not (tmp_path / "traces" / "last-deployed-sha").exists()
+    assert (canon / "cc-task-gate.sh").read_text(encoding="utf-8") == (
+        "#!/usr/bin/env bash\necho stale\n"
+    )
+    record = json.loads(
+        (tmp_path / "traces" / "post-merge-traces.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert record["status"] == "failed"
+    assert record["exit_code"] == 23
+    assert record["deploy_groups"]["canonical_gate_closure"] == [
+        "hooks/scripts/cc-task-gate.impl.sh"
+    ]
+
+
+def test_partial_gate_closure_fails_with_next_action(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "base")
+    partial = repo / "hooks" / "scripts" / "cc-task-gate.impl.sh"
+    partial.parent.mkdir(parents=True)
+    partial.write_text("#!/usr/bin/env bash\necho partial\n", encoding="utf-8")
+    partial.chmod(0o755)
+    _git(repo, "add", str(partial.relative_to(repo)))
+    _git(repo, "commit", "-m", "partial gate closure")
+    sha = _git(repo, "rev-parse", "HEAD")
+    env = _gate_reconcile_env(tmp_path, repo, tmp_path / "canon", tmp_path / "calls.txt")
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "incomplete canonical gate closure" in result.stderr
+    assert "next: ensure every GATE_CLOSURE_FILES member exists" in result.stderr
+    assert not (tmp_path / "traces" / "last-deployed-sha").exists()
+
+
+def test_enable_latch_change_counts_as_gate_closure(tmp_path: Path) -> None:
+    repo, _ = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    latch = repo / "hooks" / "scripts" / "hapax_check_enable_latch.sh"
+    latch.write_text("#!/usr/bin/env bash\necho changed-enable-latch\n", encoding="utf-8")
+    _git(repo, "add", str(latch.relative_to(repo)))
+    _git(repo, "commit", "-m", "change enable latch")
+    sha = _git(repo, "rev-parse", "HEAD")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "gate closure changed (1): redeploying canonical gate" in result.stdout
+    assert (canon / "hapax_check_enable_latch.sh").read_text(encoding="utf-8") == (
+        "#!/usr/bin/env bash\necho changed-enable-latch\n"
+    )
+
+
+def test_no_files_path_gate_deploy_failure_does_not_stamp(tmp_path: Path) -> None:
+    """The zero-files-changed path must also refuse the stamp when the gate
+    redeploy fails (set -e propagates the bare reconcile call — lock it)."""
+    repo, _ = _repo_with_gate_closure_and_docs_commit(tmp_path)
+    _git(repo, "commit", "--allow-empty", "-m", "empty merge")
+    sha = _git(repo, "rev-parse", "HEAD")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls, fail=True)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode != 0, (result.stdout, result.stderr)
+    assert not (tmp_path / "traces" / "last-deployed-sha").exists()
+    assert (canon / "cc-task-gate.sh").read_text(encoding="utf-8") == (
+        "#!/usr/bin/env bash\necho stale\n"
+    )
+
+
+def test_reconcile_stages_complete_closure_for_real_hooks_doctor(tmp_path: Path) -> None:
+    """Contract test against the REPOSITORY hooks-doctor: deploy_canonical
+    refuses an incomplete staged closure, so the script's GATE_CLOSURE_FILES
+    must stay a superset of hooks-doctor's CLOSURE_SIBLINGS. A fake doctor
+    with a shortened list would hide exactly that regression."""
+    real_doctor = (REPO_ROOT / "hooks" / "scripts" / "hooks-doctor.sh").read_text(encoding="utf-8")
+    bodies = _gate_closure_bodies()
+    bodies["hooks/scripts/hooks-doctor.sh"] = real_doctor
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "trace-test@example.test")
+    _git(repo, "config", "user.name", "Trace Test")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    for relative, body in bodies.items():
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base with real-doctor gate closure")
+    (repo / "docs.md").write_text("docs only\n", encoding="utf-8")
+    _git(repo, "add", "docs.md")
+    _git(repo, "commit", "-m", "docs only")
+    sha = _git(repo, "rev-parse", "HEAD")
+    canon = tmp_path / "canon"
+    calls = tmp_path / "hooks-doctor-calls.txt"
+    _seed_canonical_gate(repo, canon, stale=True)
+    env = _gate_reconcile_env(tmp_path, repo, canon, calls)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    deployed = (canon / "cc-task-gate.sh").read_text(encoding="utf-8")
+    assert "is_cognition_path" in deployed, "real hooks-doctor must accept the staged closure"
+    assert (canon / "hapax_check_enable_latch.sh").exists()
+
+    second = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert second.returncode == 0, (second.stdout, second.stderr)
+    assert "canonical gate closure already matches" in second.stdout
+
+
+def test_check_symlink_drift_ignores_legacy_alias_to_nonmatching_script(
+    tmp_path: Path,
+) -> None:
+    """``hapax-request-decompose -> scripts/request-decompose`` is a legacy alias,
+    not a deploy-managed ``scripts/hapax-*`` link. The live unit runs
+    ``scripts/request-decompose`` directly, so the drift auditor should stop
+    advertising this alias as off-tree deploy drift.
+    """
+    foreign = tmp_path / "foreign" / "scripts"
+    foreign.mkdir(parents=True)
+    target = foreign / "request-decompose"
+    target.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    _link(bin_dir, "hapax-request-decompose", target)
+
+    result = _check_drift(
+        _drift_env(tmp_path, bin_dir, HAPAX_DEPLOY_SYMLINK_ROOTS=str(tmp_path / "wt"))
+    )
+
+    assert result.returncode == 0, result.stderr
