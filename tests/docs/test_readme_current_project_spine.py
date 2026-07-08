@@ -125,6 +125,11 @@ class TestAudienceValueCopy:
         ):
             assert command in body
 
+    def test_obsidian_home_does_not_link_private_mcp_repo_as_public_source(self) -> None:
+        body = OBSIDIAN_HOME.read_text(encoding="utf-8")
+        assert "https://github.com/hapax-systems/hapax-mcp" not in body
+        assert "not listed as public until live-state readback reports" in body
+
 
 class TestMetadataCoherence:
     def test_no_apache_badge(self) -> None:

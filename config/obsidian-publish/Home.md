@@ -59,7 +59,8 @@ maintenance as design requirements rather than as afterthoughts.
 - **Livestream**: [youtube.com/@legomena-live](https://youtube.com/@legomena-live)
 - **Source (council)**: [github.com/hapax-systems/hapax-council](https://github.com/hapax-systems/hapax-council)
 - **Source (constitution)**: [github.com/hapax-systems/hapax-constitution](https://github.com/hapax-systems/hapax-constitution)
-- **Source (MCP bridge)**: [github.com/hapax-systems/hapax-mcp](https://github.com/hapax-systems/hapax-mcp)
+- **MCP bridge source**: not listed as public until live-state readback reports
+  `hapax-systems/hapax-mcp` as publicly visible.
 
 ## Research
 
