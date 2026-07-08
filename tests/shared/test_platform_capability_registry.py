@@ -53,6 +53,14 @@ GLMCP_PAYG_ADMISSION_EVIDENCE_REF = (
     "fresh_until:2026-05-17T08:05:00Z"
 )
 GLMCP_PAYG_BUDGET_ID = "tb-20260517-zai-glmcp-payg-review"
+AGY_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:agy-quota-admission.yaml:"
+    "witness:agy-gemini31pro-smoke-witness:"
+    "supported_tool:hapax-agy-reviewer:"
+    "model:gemini-3.1-pro-preview:"
+    "observed_at:2026-05-17T07:59:00Z:"
+    "fresh_until:2026-05-17T08:05:00Z"
+)
 
 
 def _dispatcher_module() -> ModuleType:
@@ -725,6 +733,30 @@ def _make_glmcp_receipt(
     )
 
 
+def _write_agy_live_quota_ledger(path: Path) -> None:
+    payload = deepcopy(json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8")))
+    payload["ledger_id"] = "quota-spend-ledger-test-agy-live"
+    payload["captured_at"] = "2026-05-17T07:59:30Z"
+    payload["generated_from"] = list(
+        dict.fromkeys([*payload["generated_from"], "scripts/hapax-quota-telemetry-writer"])
+    )
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-agy-review-direct-fresh",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "agy.review.direct",
+            "provider": "google-antigravity-cli-agy",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [AGY_ADMISSION_EVIDENCE_REF],
+            "operator_visible_reason": "fixture agy admission receipt",
+        }
+    )
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def _write_glmcp_live_quota_ledger(path: Path) -> None:
     payload = deepcopy(json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8")))
     payload["ledger_id"] = "quota-spend-ledger-test-glmcp-payg-live"
@@ -832,6 +864,54 @@ def test_subscription_quota_nonblocking_uses_receipt_stale_after() -> None:
 
     quota_errors = [e for e in result.routes[0].errors if "quota" in e]
     assert not quota_errors, f"quota should not be stale after 1h: {quota_errors}"
+
+
+def test_loader_applies_route_authority_receipts_after_platform_receipts(tmp_path: Path) -> None:
+    """Platform freshness projections must mirror dispatch route authority."""
+
+    from shared.dispatcher_policy import (
+        build_route_authority_receipt,
+        write_route_authority_receipt,
+    )
+
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    observed_at = datetime(2026, 5, 9, 20, 0, tzinfo=UTC)
+    platform_receipt = _make_receipt(observed_at=observed_at).model_copy(
+        update={
+            "receipt_id": "test-claude-opus",
+            "routes": ["claude.headless.opus"],
+        }
+    )
+    (receipt_dir / "claude.json").write_text(
+        json.dumps(platform_receipt.model_dump(mode="json"), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    write_route_authority_receipt(
+        build_route_authority_receipt(
+            receipt_type="opus_model_entitlement",
+            route_id="claude.headless.opus",
+            evidence_refs=["operator-signed:test-opus"],
+            receipt_id="test-opus-entitlement",
+            issued_at=observed_at,
+        ),
+        receipt_dir=receipt_dir,
+    )
+
+    check_at = datetime(2026, 5, 9, 20, 1, tzinfo=UTC)
+    registry = load_platform_capability_registry(receipt_dir=receipt_dir, now=check_at)
+    route = registry.require("claude.headless.opus")
+    result = check_registry_freshness(registry, route_ids=["claude.headless.opus"], now=check_at)
+
+    assert route.route_state is RouteState.ACTIVE
+    assert result.ok is True
+    assert "opus_model_entitlement_receipt_absent" not in route.blocked_reasons
+    assert "fresh_capability_evidence_absent" not in route.blocked_reasons
+    assert "account_live_quota_receipt_absent" not in route.blocked_reasons
+    assert any(
+        ref.startswith("route-authority-receipt:opus_model_entitlement")
+        for ref in result.routes[0].evidence_refs
+    )
 
 
 def test_vibe_receipt_backfills_capability_checked_at_from_observed_at() -> None:
@@ -986,9 +1066,13 @@ def test_agy_quota_receipt_removable_reasons_preserve_route_specific_blocker() -
     assert "agy_review_seat_receipt_admission_required" not in removable
 
 
-def test_agy_has_no_sanctioned_route_specific_quota_admission_path() -> None:
+def test_agy_has_no_route_specific_quota_admission_without_live_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     payload = _payload()
     route = _route_payload(payload, "agy.review.direct")
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(tmp_path / "missing-live.json"))
 
     admitted, refs = _route_specific_quota_admission_fresh(
         route,
@@ -997,6 +1081,38 @@ def test_agy_has_no_sanctioned_route_specific_quota_admission_path() -> None:
 
     assert admitted is False
     assert refs == ()
+
+
+def test_agy_receipt_with_fresh_live_admission_clears_route_quota(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_agy_live_quota_ledger(live_ledger)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+
+    receipt_time = datetime(2026, 5, 17, 8, 0, tzinfo=UTC)
+    (receipt_dir / "agy.json").write_text(
+        _make_agy_receipt(observed_at=receipt_time).model_dump_json(),
+        encoding="utf-8",
+    )
+    registry = load_platform_capability_registry(
+        receipt_dir=receipt_dir,
+        now=datetime(2026, 5, 17, 8, 1, tzinfo=UTC),
+    )
+    route = registry.require("agy.review.direct")
+    result = check_registry_freshness(
+        registry,
+        route_ids=["agy.review.direct"],
+        now=datetime(2026, 5, 17, 8, 1, tzinfo=UTC),
+    )
+
+    assert route.route_state is RouteState.ACTIVE
+    assert route.blocked_reasons == []
+    assert AGY_ADMISSION_EVIDENCE_REF in route.freshness.evidence.quota.evidence_refs
+    assert result.ok is True
 
 
 def test_api_receipt_does_not_open_cloud_burst_release_gate() -> None:

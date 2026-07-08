@@ -143,6 +143,40 @@ payg_fallback: {payg_fallback}
     )
 
 
+def _agy_admission(
+    relay: Path,
+    *,
+    observed_at: str,
+    stale_after_seconds: int = 900,
+    evidence_ref: str = "agy-gemini31pro-smoke-witness",
+    model: str = "gemini-3.1-pro-preview",
+    name: str = "agy-quota-admission.yaml",
+    secret_value_persisted: str = "false",
+) -> None:
+    (relay / name).write_text(
+        f"""schema: hapax.agy_quota_admission.v1
+status: quota_available
+provider: google-antigravity-cli-agy
+capacity_pool: subscription_quota
+route_id: agy.review.direct
+supported_tool: hapax-agy-reviewer
+model: {model}
+observed_at: {observed_at}
+stale_after_seconds: {stale_after_seconds}
+evidence_ref: {evidence_ref}
+secret_source: agy:operator-session
+secret_value_persisted: {secret_value_persisted}
+prompt_or_output_persisted: false
+billing_mode: operator_session_subscription
+smoke_command: scripts/hapax-agy-reviewer
+smoke_returncode: 0
+smoke_stdout_validated: true
+positive_admission: true
+""",
+        encoding="utf-8",
+    )
+
+
 def _glmcp_payg_spend(
     relay: Path,
     *,
@@ -220,6 +254,7 @@ def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None
     }
     assert states["claude.headless.full"] == "fresh"
     assert states["codex.headless.full"] == "fresh"
+    assert states["agy.review.direct"] == "unknown"
     assert "gemini.headless.full" not in states
     assert states["glmcp.review.direct"] == "unknown"
     assert states["litellm.local.command-r-35b"] == "fresh"
@@ -647,6 +682,124 @@ def test_fresh_glmcp_admission_receipt_marks_glmcp_fresh(tmp_path: Path) -> None
     assert "finite" in glmcp_snapshot["operator_visible_reason"]
     summary = json.loads(result.stdout)
     assert summary["glmcp_admissions"] == 1
+
+
+def test_fresh_agy_admission_receipt_marks_agy_fresh(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _agy_admission(relay, observed_at="2026-06-09T23:55:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    agy_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "agy.review.direct"
+    )
+    assert agy_snapshot["provider"] == "google-antigravity-cli-agy"
+    assert agy_snapshot["subscription_quota_state"] == "fresh"
+    assert agy_snapshot["fresh_until"] == "2026-06-10T00:10:00Z"
+    assert any("agy-quota-admission.yaml" in ref for ref in agy_snapshot["evidence_refs"])
+    assert any(
+        "witness:agy-gemini31pro-smoke-witness" in ref
+        and "supported_tool:hapax-agy-reviewer" in ref
+        and "model:gemini-3.1-pro-preview" in ref
+        for ref in agy_snapshot["evidence_refs"]
+    )
+    assert "receipt-bounded" in agy_snapshot["operator_visible_reason"]
+    summary = json.loads(result.stdout)
+    assert summary["agy_admissions"] == 1
+
+
+def test_agy_admission_rejects_secret_persistence(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _agy_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        secret_value_persisted="true",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    agy_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "agy.review.direct"
+    )
+    assert agy_snapshot["subscription_quota_state"] == "unknown"
+    assert any("ignored:secret-value-persisted" in ref for ref in agy_snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["agy_admissions"] == 0
+    assert summary["agy_ignored_admissions"] == 1
+    assert "ignoring agy admission receipt: validation failed" in result.stderr
+    assert "false-negative recovery" in result.stderr
+    assert "secret_value_persisted" not in result.stderr
+
+
+def test_ignored_agy_admission_warning_omits_secretish_receipt_dir(tmp_path: Path) -> None:
+    secretish_dir = tmp_path / "sk-secret-token-relay-receipts-000000000000000000000000"
+    secretish_dir.mkdir()
+    (secretish_dir / "agy-quota-admission-invalid-utf8.yaml").write_bytes(b"\xff\xfe\xfa")
+
+    result, out = _run_writer(tmp_path, "--relay-receipt-dir", str(secretish_dir))
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    agy_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "agy.review.direct"
+    )
+    assert agy_snapshot["subscription_quota_state"] == "unknown"
+    assert "ignoring agy admission receipt: validation failed" in result.stderr
+    assert secretish_dir.name not in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["agy_admissions"] == 0
+    assert summary["agy_ignored_admissions"] == 1
+
+
+def test_agy_admission_rejects_missing_smoke_validation(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "agy-quota-admission.yaml").write_text(
+        """schema: hapax.agy_quota_admission.v1
+status: quota_available
+provider: google-antigravity-cli-agy
+capacity_pool: subscription_quota
+route_id: agy.review.direct
+supported_tool: hapax-agy-reviewer
+model: gemini-3.1-pro-preview
+observed_at: 2026-06-09T23:55:00Z
+stale_after_seconds: 900
+evidence_ref: agy-gemini31pro-smoke-witness
+secret_source: agy:operator-session
+secret_value_persisted: false
+prompt_or_output_persisted: false
+billing_mode: operator_session_subscription
+positive_admission: true
+""",
+        encoding="utf-8",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    agy_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "agy.review.direct"
+    )
+    assert agy_snapshot["subscription_quota_state"] == "unknown"
+    assert any("ignored:smoke-command-missing" in ref for ref in agy_snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["agy_admissions"] == 0
+    assert summary["agy_ignored_admissions"] == 1
 
 
 def test_fresh_glmcp_payg_admission_without_active_wall_stays_unknown(tmp_path: Path) -> None:

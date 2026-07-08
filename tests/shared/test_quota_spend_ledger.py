@@ -35,9 +35,11 @@ from shared.quota_spend_ledger import (
     SupportArtifactDisposition,
     build_dashboard,
     evaluate_paid_route_eligibility,
+    has_successful_task_scoped_glmcp_payg_review_spend,
     load_quota_spend_ledger,
     load_quota_spend_ledger_resolved,
     subscription_quota_state_for_route,
+    successful_task_scoped_glmcp_payg_review_spend_receipts,
 )
 
 NOW = datetime(2026, 5, 17, 8, 0, 0, tzinfo=UTC)
@@ -88,6 +90,18 @@ GLMCP_HASHED_ADMISSION_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
 )
 GLMCP_SECRETISH_WITNESS_EVIDENCE_REF = GLMCP_ADMISSION_EVIDENCE_REF.replace(
     "witness:supported-tool-usage-witness:",
+    "witness:sk-live-secret-token-000000000000000000000000:",
+)
+AGY_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:agy-quota-admission.yaml:"
+    "witness:agy-gemini31pro-smoke-witness:"
+    "supported_tool:hapax-agy-reviewer:"
+    "model:gemini-3.1-pro-preview:"
+    "observed_at:2026-05-17T07:59:00Z:"
+    "fresh_until:2026-05-17T08:05:00Z"
+)
+AGY_SECRETISH_WITNESS_EVIDENCE_REF = AGY_ADMISSION_EVIDENCE_REF.replace(
+    "witness:agy-gemini31pro-smoke-witness:",
     "witness:sk-live-secret-token-000000000000000000000000:",
 )
 
@@ -661,6 +675,40 @@ def test_receipt_bounded_route_accepts_payg_endpoint_admission_evidence() -> Non
     assert GLMCP_PAYG_ADMISSION_EVIDENCE_REF in refs
     assert "spend-gate:glmcp.review.direct:eligible_active_budget" in refs
     assert f"spend-gate-budget:{budget_id}" in refs
+
+
+def test_successful_task_scoped_glmcp_payg_review_spend_witness_is_discovered() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+    receipt = payload["spend_receipts"][-1]
+    receipt["actual_cost_usd"] = "0.05"
+    receipt["cap_remaining_usd"] = "1.95"
+    receipt["reconciliation_state"] = "reconciled"
+    receipt["reconciled_at"] = "2026-05-17T08:00:00Z"
+    receipt["reconciliation_reason"] = (
+        "PAYG API call returned model output; provider invoice unavailable"
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    receipts = successful_task_scoped_glmcp_payg_review_spend_receipts(ledger, task_id)
+
+    assert [receipt.spend_id for receipt in receipts] == [
+        "spend-20260517T075900Z-glmcp-payg-review-test"
+    ]
+    assert has_successful_task_scoped_glmcp_payg_review_spend(ledger, task_id) is True
+
+
+def test_pending_task_scoped_glmcp_payg_review_spend_is_not_successful_witness() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    assert successful_task_scoped_glmcp_payg_review_spend_receipts(ledger, task_id) == ()
+    assert has_successful_task_scoped_glmcp_payg_review_spend(ledger, task_id) is False
 
 
 def test_receipt_bounded_route_rejects_payg_when_witness_task_cap_exhausted() -> None:
@@ -1238,10 +1286,74 @@ def test_effort_and_model_id_enum_parity_with_registry() -> None:
     assert {m.value for m in ModelId} == {m.value for m in RegistryModelId}
 
 
-def test_agy_receipt_bounded_route_has_no_single_provider_mapping() -> None:
+def test_agy_receipt_bounded_route_has_guarded_provider_mapping() -> None:
     assert "agy.review.direct" in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
-    assert "agy.review.direct" not in RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS
+    assert (
+        RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS["agy.review.direct"] == "google-antigravity-cli-agy"
+    )
     assert RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS["glmcp.review.direct"] == "z_ai-glm-coding-plan"
+
+
+def test_receipt_bounded_route_accepts_agy_admission_evidence() -> None:
+    payload = _active_budget_payload()
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-agy-review-direct-fresh",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "agy.review.direct",
+            "provider": "google-antigravity-cli-agy",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [AGY_ADMISSION_EVIDENCE_REF],
+            "operator_visible_reason": "fixture agy admission",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "agy.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.FRESH
+    assert refs == (AGY_ADMISSION_EVIDENCE_REF,)
+
+
+def test_receipt_bounded_route_rejects_secretish_agy_witness() -> None:
+    payload = _active_budget_payload()
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-agy-review-direct-secretish-witness",
+            "captured_at": "2026-05-17T07:59:00Z",
+            "fresh_until": "2026-05-17T08:05:00Z",
+            "route_id": "agy.review.direct",
+            "provider": "google-antigravity-cli-agy",
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [AGY_SECRETISH_WITNESS_EVIDENCE_REF],
+            "operator_visible_reason": "fixture agy secretish witness",
+        }
+    )
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, refs = subscription_quota_state_for_route(
+        ledger,
+        "agy.review.direct",
+        now=datetime(2026, 5, 17, 8, 0, tzinfo=UTC),
+    )
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert AGY_SECRETISH_WITNESS_EVIDENCE_REF not in refs
+    assert any(ref.startswith("quota-evidence-ref:redacted-secretish-sha256:") for ref in refs)
+    assert (
+        "quota-snapshot:quota-agy-review-direct-secretish-witness:untrusted_agy_admission_evidence"
+    ) in refs
 
 
 def test_agy_receipt_bounded_route_rejects_generic_fresh_quota_snapshot() -> None:

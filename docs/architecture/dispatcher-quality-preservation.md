@@ -10,10 +10,12 @@ The methodology-aware headless dispatcher routes tasks to admitted platform
 lanes (Claude, Codex, and Vibe) while preserving quality guarantees. Gemini API
 routes are provider-gateway surfaces, not standing Gemini CLI worker lanes;
 retired Antigravity/agy worker surfaces remain non-dispatchable. The live
-`agy.review.direct` route is read-only review-plane supply and stays blocked
-until route-specific admission receipts exist. The dispatcher reads fresh quota
-state, enforces quality floors, prevents silent downgrades, and emits observable
-route decisions.
+`agy.review.direct` route is read-only review-plane supply. It defaults blocked
+and is admitted only when a fresh agy platform-capability receipt clears review
+seat admission and a fresh short-lived `hapax.agy_quota_admission.v1` receipt is
+projected into the live quota ledger. The dispatcher reads fresh quota state,
+enforces quality floors, prevents silent downgrades, and emits observable route
+decisions.
 
 Recheck the agy receipt clearing path with:
 
@@ -23,8 +25,13 @@ uv run pytest \
   tests/shared/test_platform_capability_registry.py::test_agy_observed_route_quota_receipt_does_not_admit_review_route \
   tests/shared/test_platform_capability_registry.py::test_forged_agy_observed_quota_receipt_cannot_clear_route_specific_blocker \
   tests/shared/test_platform_capability_registry.py::test_agy_quota_receipt_removable_reasons_preserve_route_specific_blocker \
-  tests/shared/test_platform_capability_registry.py::test_agy_has_no_sanctioned_route_specific_quota_admission_path \
+  tests/shared/test_platform_capability_registry.py::test_agy_has_no_route_specific_quota_admission_without_live_ledger \
+  tests/shared/test_platform_capability_registry.py::test_agy_receipt_with_fresh_live_admission_clears_route_quota \
   tests/shared/test_quota_spend_ledger.py::test_agy_receipt_bounded_route_rejects_generic_fresh_quota_snapshot \
+  tests/shared/test_quota_spend_ledger.py::test_receipt_bounded_route_accepts_agy_admission_evidence \
+  tests/scripts/test_hapax_agy_quota_admission.py::test_agy_quota_admission_writes_short_lived_safe_receipt \
+  tests/scripts/test_hapax_agy_quota_admission.py::test_agy_quota_admission_rejects_failed_reviewer_smoke \
+  tests/scripts/test_hapax_quota_telemetry_writer.py::test_fresh_agy_admission_receipt_marks_agy_fresh \
   tests/shared/test_platform_capability_receipts.py::test_agy_receipt_records_live_review_route_without_unblocking_quota \
   tests/test_review_team.py::TestConstitution::test_retired_authoring_lanes_fail_closed \
   tests/test_review_team.py::TestConstitution::test_t1_route_blocked_family_degrades_with_receipt_reason \

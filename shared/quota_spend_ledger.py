@@ -29,9 +29,24 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
 RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset({"agy.review.direct", "glmcp.review.direct"})
 RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
+    "agy.review.direct": "google-antigravity-cli-agy",
     "glmcp.review.direct": "z_ai-glm-coding-plan",
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
+AGY_ADMISSION_SUPPORTED_TOOL = "hapax-agy-reviewer"
+AGY_ADMISSION_MODEL = "gemini-3.1-pro-preview"
+AGY_ADMISSION_RECEIPT_LABEL_RE = re.compile(
+    r"\Arelay-receipt:"
+    r"(?:[a-z0-9_.+-]*agy-quota-admission[a-z0-9_.+-]*\.yaml|"
+    r"unsafe-receipt-name-sha256:[0-9a-f]{16})"
+    r":witness:"
+)
+AGY_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+AGY_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+AGY_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):supported_tool:")
 GLMCP_ADMISSION_CODING_PLAN_ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
 GLMCP_ADMISSION_PAYG_ENDPOINT = "https://api.z.ai/api/paas/v4"
 GLMCP_PAYG_BUDGET_ROUTE_ID = "glmcp.review.direct"
@@ -1321,7 +1336,11 @@ def _subscription_quota_missing_required_admission_evidence(
         return True
     if snapshot.provider != expected_provider:
         return True
-    return not any(_is_glmcp_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    if normalized_route_id == "glmcp.review.direct":
+        return not any(_is_glmcp_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    if normalized_route_id == "agy.review.direct":
+        return not any(_is_agy_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    return True
 
 
 def _subscription_quota_untrusted_admission_evidence_reason(snapshot: QuotaSnapshot) -> str:
@@ -1376,6 +1395,17 @@ def _is_glmcp_admission_evidence_ref(ref: str) -> bool:
     )
 
 
+def _is_agy_admission_evidence_ref(ref: str) -> bool:
+    return (
+        AGY_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
+        and _has_safe_agy_admission_witness(ref)
+        and f":supported_tool:{AGY_ADMISSION_SUPPORTED_TOOL}:" in ref
+        and f":model:{AGY_ADMISSION_MODEL}:" in ref
+        and ":observed_at:" in ref
+        and ":fresh_until:" in ref
+    )
+
+
 def _is_glmcp_payg_admission_evidence_ref(ref: str) -> bool:
     return (
         _is_glmcp_admission_evidence_ref(ref)
@@ -1417,6 +1447,75 @@ def _matching_glmcp_payg_spend_receipts(
         for receipt in ledger.spend_receipts
         if witnesses & _glmcp_payg_spend_receipt_witness_refs(receipt)
     )
+
+
+def _glmcp_payg_budget_allows_review_spend(
+    budget: TransitionBudget,
+    receipt: SpendReceipt,
+) -> bool:
+    if budget.budget_id != receipt.budget_id:
+        return False
+    if budget.capacity_pool is not CapacityPool.API_PAID_SPEND:
+        return False
+    if receipt.provider not in budget.providers_allowed:
+        return False
+    if GLMCP_PAYG_BUDGET_PROFILE not in budget.profiles_allowed:
+        return False
+    if GLMCP_PAYG_BUDGET_TASK_CLASS not in budget.task_classes_allowed:
+        return False
+    if GLMCP_PAYG_BUDGET_QUALITY_FLOOR not in budget.quality_floors_allowed:
+        return False
+    return budget.created_at <= receipt.created_at < budget.expires_at
+
+
+def successful_task_scoped_glmcp_payg_review_spend_receipts(
+    ledger: QuotaSpendLedger,
+    task_id: str,
+) -> tuple[SpendReceipt, ...]:
+    """Reconciled GLMCP PAYG review spends already consumed for one task."""
+
+    normalized_task_id = task_id.strip()
+    if not normalized_task_id:
+        return ()
+    ledger_budgets = getattr(ledger, "transition_budgets", ())
+    ledger_receipts = getattr(ledger, "spend_receipts", ())
+    budgets = {budget.budget_id: budget for budget in ledger_budgets}
+    receipts: list[SpendReceipt] = []
+    for receipt in ledger_receipts:
+        budget = budgets.get(str(receipt.budget_id or ""))
+        if budget is None:
+            continue
+        if receipt.task_id != normalized_task_id:
+            continue
+        if not _glmcp_payg_spend_receipt_witness_refs(receipt):
+            continue
+        if receipt.auth_surface is not AuthSurface.API_KEY:
+            continue
+        if receipt.quality_floor != GLMCP_PAYG_BUDGET_QUALITY_FLOOR:
+            continue
+        if receipt.reconciliation_state is not SpendReconciliationState.RECONCILED:
+            continue
+        if receipt.actual_cost_usd is None or receipt.actual_cost_usd <= Decimal("0"):
+            continue
+        if receipt.reconciled_at is None or not receipt.reconciliation_reason:
+            continue
+        model_id = receipt.model_id.value if receipt.model_id is not None else None
+        if (
+            receipt.model_or_engine not in GLMCP_ADMISSION_MODELS
+            and model_id != ModelId.Z_AI_GLM_5_2.value
+        ):
+            continue
+        if not _glmcp_payg_budget_allows_review_spend(budget, receipt):
+            continue
+        receipts.append(receipt)
+    return tuple(receipts)
+
+
+def has_successful_task_scoped_glmcp_payg_review_spend(
+    ledger: QuotaSpendLedger,
+    task_id: str,
+) -> bool:
+    return bool(successful_task_scoped_glmcp_payg_review_spend_receipts(ledger, task_id))
 
 
 def _glmcp_payg_budget_request(task_id: str) -> PaidRouteRequest:
@@ -1474,6 +1573,17 @@ def _has_safe_glmcp_admission_witness(ref: str) -> bool:
     return (
         GLMCP_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
         and GLMCP_ADMISSION_SECRETISH_RE.search(witness) is None
+    )
+
+
+def _has_safe_agy_admission_witness(ref: str) -> bool:
+    witness_matches = AGY_ADMISSION_WITNESS_REF_RE.findall(ref)
+    if len(witness_matches) != 1:
+        return False
+    witness = witness_matches[0]
+    return (
+        AGY_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
+        and AGY_ADMISSION_SECRETISH_RE.search(witness) is None
     )
 
 

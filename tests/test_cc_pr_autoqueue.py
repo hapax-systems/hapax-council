@@ -596,6 +596,63 @@ class _FakeRunner:
         return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
 
 
+class _GraphQLRollupOnRestIndeterminateRunner(_FakeRunner):
+    def __init__(
+        self,
+        *,
+        graphql_head_sha: str | None = None,
+        graphql_rollup: list[dict[str, Any]] | None = None,
+        graphql_error: bool = False,
+    ) -> None:
+        super().__init__()
+        self.graphql_head_sha = graphql_head_sha
+        self.graphql_rollup = graphql_rollup
+        self.graphql_error = graphql_error
+
+    def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            path = cmd[6]
+            if re.fullmatch(r"repos/owner/repo/commits/(.+)/(check-runs|status)", path):
+                return subprocess.CompletedProcess(cmd, 1, "", "secondary rate limit")
+        return super()._rest_response(cmd)
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "graphql"] and any("statusCheckRollup" in part for part in cmd):
+            self.calls.append(list(cmd))
+            if self.graphql_error:
+                return subprocess.CompletedProcess(cmd, 1, "", "graphql unavailable")
+            pr = self.open_prs[0] if self.open_prs else _pr(0)
+            head_sha = self.graphql_head_sha or str(pr.get("headRefOid") or "")
+            rollup = (
+                self.graphql_rollup
+                if self.graphql_rollup is not None
+                else pr.get("statusCheckRollup") or []
+            )
+            payload = {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "headRefOid": head_sha,
+                            "commits": {
+                                "nodes": [
+                                    {
+                                        "commit": {
+                                            "oid": head_sha,
+                                            "statusCheckRollup": {
+                                                "contexts": {"nodes": rollup},
+                                            },
+                                        }
+                                    }
+                                ]
+                            },
+                        }
+                    }
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return super().__call__(cmd, **kwargs)
+
+
 def test_fetch_pr_release_evidence_rejects_non_json_success(tmp_path: Path) -> None:
     def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(cmd, 0, "not json", "")
@@ -610,6 +667,180 @@ def test_fetch_pr_release_evidence_rejects_non_json_success(tmp_path: Path) -> N
     assert ok is False
     assert message == "invalid_pr_release_evidence_payload"
     assert checks == set()
+
+
+def test_fetch_pr_release_evidence_falls_back_to_graphql_when_rest_pull_indeterminate(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "secondary rate limit")
+        if cmd[:3] == ["gh", "api", "rate_limit"]:
+            payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            payload = {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "headRefOid": "sha-42",
+                            "commits": {
+                                "nodes": [
+                                    {
+                                        "commit": {
+                                            "oid": "sha-42",
+                                            "statusCheckRollup": {
+                                                "contexts": {
+                                                    "nodes": [
+                                                        {
+                                                            "__typename": "CheckRun",
+                                                            "name": "authority-case-check",
+                                                            "status": "COMPLETED",
+                                                            "conclusion": "SUCCESS",
+                                                        }
+                                                    ]
+                                                }
+                                            },
+                                        }
+                                    }
+                                ]
+                            },
+                        }
+                    }
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+    ok, sha, checks = autoqueue.fetch_pr_release_evidence(
+        42,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is True
+    assert sha == "sha-42"
+    assert checks == {"authority-case-check"}
+    assert any(call[:3] == ["gh", "api", "graphql"] for call in calls)
+
+
+def test_fetch_status_rollup_falls_back_to_graphql_when_rest_indeterminate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_rest_rollup(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": autoqueue.REST_INDETERMINATE_CHECK_NAME,
+                "status": "PENDING",
+                "conclusion": None,
+            }
+        ]
+
+    monkeypatch.setattr(autoqueue, "fetch_status_check_rollup_rest", fake_rest_rollup)
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:3] == ["gh", "api", "rate_limit"]:
+            payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            payload = {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "headRefOid": "sha-graph",
+                            "commits": {
+                                "nodes": [
+                                    {
+                                        "commit": {
+                                            "oid": "sha-graph",
+                                            "statusCheckRollup": {
+                                                "contexts": {
+                                                    "nodes": [
+                                                        {
+                                                            "__typename": "CheckRun",
+                                                            "name": "lint",
+                                                            "status": "COMPLETED",
+                                                            "conclusion": "SUCCESS",
+                                                            "completedAt": "2026-07-07T21:45:00Z",
+                                                        },
+                                                        {
+                                                            "__typename": "CheckRun",
+                                                            "name": "test",
+                                                            "status": "COMPLETED",
+                                                            "conclusion": "SUCCESS",
+                                                            "completedAt": "2026-07-07T21:46:00Z",
+                                                        },
+                                                    ]
+                                                }
+                                            },
+                                        }
+                                    }
+                                ]
+                            },
+                        }
+                    }
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+    rollup = autoqueue._fetch_status_check_rollup(
+        701,
+        head_sha="sha-graph",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+    summary = autoqueue.summarize_checks(rollup)
+
+    assert {"lint", "test"} <= summary.observed
+    assert autoqueue.REST_INDETERMINATE_CHECK_NAME not in summary.observed
+    assert any(call[:3] == ["gh", "api", "graphql"] for call in calls)
+
+
+def test_fetch_status_rollup_keeps_rest_indeterminate_when_graphql_head_mismatches(
+    tmp_path: Path,
+) -> None:
+    runner = _GraphQLRollupOnRestIndeterminateRunner(graphql_head_sha="sha-other")
+    runner.open_prs = [_pr(701)]
+
+    rollup = autoqueue._fetch_status_check_rollup(
+        701,
+        head_sha="sha-701",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+    summary = autoqueue.summarize_checks(rollup)
+
+    assert summary.observed == {autoqueue.REST_INDETERMINATE_CHECK_NAME}
+    assert any(call[:3] == ["gh", "api", "graphql"] for call in runner.calls)
+
+
+def test_fetch_pr_release_evidence_fails_closed_when_rest_and_graphql_unreadable(
+    tmp_path: Path,
+) -> None:
+    runner = _GraphQLRollupOnRestIndeterminateRunner(graphql_error=True)
+    runner.open_prs = [_pr(702)]
+
+    ok, message, checks = autoqueue.fetch_pr_release_evidence(
+        702,
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+
+    assert ok is False
+    assert message == "invalid_status_check_rollup"
+    assert checks == set()
+    assert any(call[:3] == ["gh", "api", "graphql"] for call in runner.calls)
 
 
 def test_fetch_pr_release_evidence_rejects_missing_head_oid(tmp_path: Path) -> None:
@@ -783,6 +1014,44 @@ def test_queue_green_governed_pr(tmp_path: Path) -> None:
     assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
 
 
+def test_reconciler_falls_back_to_graphql_when_rest_rollup_indeterminate(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=4455)
+    runner = _GraphQLRollupOnRestIndeterminateRunner()
+    runner.open_prs = [_pr(4455)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        required_checks=("lint", "test", "typecheck", "web-build", "vscode-build"),
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    assert report["counts"]["queue"] == 1
+    assert not any(
+        reason.startswith("missing_required_checks:") for reason in decision.get("reasons", [])
+    )
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "4455",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+    ] in runner.calls
+    assert any(
+        call[:3] == ["gh", "api", "graphql"] and any("statusCheckRollup" in part for part in call)
+        for call in runner.calls
+    )
+
+
 def test_does_not_queue_when_admission_status_write_fails(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="task-a", pr=142)
@@ -912,6 +1181,37 @@ def test_blocks_failed_dirty_draft_and_hold_prs(tmp_path: Path) -> None:
     assert "merge_state:DIRTY" in reasons[2]
     assert "draft" in reasons[3]
     assert "hold_labels:do-not-merge" in reasons[4]
+
+
+def test_ignores_failed_non_required_advisory_check(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=47)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(
+            47,
+            checks=[
+                _check("lint"),
+                _check("test"),
+                _check("typecheck"),
+                _check("web-build"),
+                _check("vscode-build"),
+                _check("hkp-advisory", "FAILURE"),
+            ],
+        )
+    ]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert not report["decisions"][0].get("reasons")
+    assert any(call[:4] == ["gh", "pr", "merge", "47"] for call in runner.calls)
 
 
 def test_ignores_prior_autoqueue_admission_checks_when_classifying_checks(
@@ -2035,6 +2335,7 @@ def test_summarize_checks_keeps_admission_context_ignored_until_written_by_autoq
         [
             _check(autoqueue.AUTOQUEUE_ADMISSION_CONTEXT),
             _check("governance-gate"),
+            _check("hkp-advisory", "CANCELLED"),
             _check("pr-admission"),
             _check("review"),
             _check(autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE),
@@ -2045,9 +2346,11 @@ def test_summarize_checks_keeps_admission_context_ignored_until_written_by_autoq
     assert "review" in summary.verified_passed
     assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE not in summary.verified_passed
     assert "governance-gate" not in summary.verified_passed
+    assert "hkp-advisory" not in summary.verified_passed
     assert "pr-admission" not in summary.verified_passed
     assert autoqueue.AUTOQUEUE_ADMISSION_CONTEXT not in summary.passed
     assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE not in summary.passed
+    assert "hkp-advisory" not in summary.failed
 
 
 def test_auto_arms_release_unauthorized_pr_open_task(tmp_path: Path) -> None:

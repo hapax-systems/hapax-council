@@ -11,10 +11,21 @@ import json
 import os
 import re
 import subprocess
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
+
+from shared.quota_spend_ledger import (
+    AuthSurface,
+    CapacityPool,
+    ModelId,
+    SpendReason,
+    SpendReconciliationState,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LENS_DIR = REPO_ROOT / "config" / "review-lenses"
@@ -892,6 +903,86 @@ class TestVerdictBlockers:
             ],
         )
 
+    def _glm_seated_dossier(self, rt) -> dict:
+        return _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("claude-1", "claude", "accept"),
+                _review("glm-1", "glm", "accept"),
+            ],
+        )
+
+    def _glmcp_payg_evidence_refs(self, rt) -> tuple[str, ...]:
+        return (
+            "relay-receipt:glmcp-quota-admission.yaml:"
+            "witness:glmcp-payg-spend-test.yaml:"
+            "supported_tool:hapax-glmcp-reviewer:"
+            f"endpoint:{rt.GLMCP_ADMISSION_PAYG_ENDPOINT}:"
+            "model:glm-5.2:"
+            "observed_at:2026-06-11T21:00:00Z:"
+            "fresh_until:2026-06-11T22:00:00Z:"
+            "primary_error_class:quota_exhausted:"
+            "quota_wall_evidence_ref:cx-glmcp-quota-wall.yaml:",
+        )
+
+    def _glmcp_payg_budget(self, rt):
+        return SimpleNamespace(
+            budget_id="tb-test-glmcp-payg",
+            capacity_pool=CapacityPool.API_PAID_SPEND,
+            providers_allowed=(rt.GLMCP_PAYG_BUDGET_PROVIDER,),
+            profiles_allowed=(rt.GLMCP_PAYG_BUDGET_PROFILE,),
+            task_classes_allowed=(rt.GLMCP_PAYG_BUDGET_TASK_CLASS,),
+            quality_floors_allowed=(rt.GLMCP_PAYG_BUDGET_QUALITY_FLOOR,),
+            created_at=datetime(2026, 6, 11, 20, 0, tzinfo=UTC),
+            expires_at=datetime(2026, 6, 12, 20, 0, tzinfo=UTC),
+        )
+
+    def _glmcp_payg_receipt(self, rt, **overrides):
+        payload = {
+            "spend_id": "spend-20260611T210000Z-glmcp-payg-review-test",
+            "route_id": rt.GLMCP_PAYG_BUDGET_ROUTE_ID,
+            "task_id": "task-x",
+            "capacity_pool": CapacityPool.API_PAID_SPEND,
+            "provider": rt.GLMCP_PAYG_BUDGET_PROVIDER,
+            "quality_floor": rt.GLMCP_PAYG_BUDGET_QUALITY_FLOOR,
+            "spend_reason": SpendReason.QUOTA_EXHAUSTION,
+            "reconciliation_state": SpendReconciliationState.RECONCILED,
+            "budget_id": "tb-test-glmcp-payg",
+            "model_or_engine": "glm-5.2",
+            "model_id": ModelId.Z_AI_GLM_5_2,
+            "auth_surface": AuthSurface.API_KEY,
+            "actual_cost_usd": Decimal("0.05"),
+            "created_at": datetime(2026, 6, 11, 21, 0, tzinfo=UTC),
+            "reconciled_at": "2026-06-11T21:01:00Z",
+            "reconciliation_reason": "test PAYG API call returned output",
+        }
+        payload.update(overrides)
+        return SimpleNamespace(**payload)
+
+    def _install_glmcp_payg_ledger(
+        self,
+        rt,
+        monkeypatch: pytest.MonkeyPatch,
+        *receipts,
+        eligibility=None,
+    ) -> None:
+        ledger = SimpleNamespace(
+            spend_receipts=tuple(receipts),
+            transition_budgets=(self._glmcp_payg_budget(rt),),
+        )
+        resolved = SimpleNamespace(source="live", live_error=None, ledger=ledger)
+        monkeypatch.setattr(rt, "load_quota_spend_ledger_resolved", lambda: resolved)
+        monkeypatch.setattr(
+            rt,
+            "subscription_quota_state_for_route",
+            lambda *_args, **_kwargs: ("fresh", self._glmcp_payg_evidence_refs(rt)),
+        )
+        if eligibility is not None:
+            monkeypatch.setattr(
+                rt, "evaluate_paid_route_eligibility", lambda *_args, **_kwargs: eligibility
+            )
+
     def test_missing_dossier_blocks(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         note = tmp_path / "task-x.md"
@@ -935,6 +1026,88 @@ class TestVerdictBlockers:
             route_blocked_families={"gemini": ("route_specific_quota_receipt_absent",)},
         )
         assert "review_dossier_blocked_route_family_seated:gemini" in blockers
+
+    def test_task_scoped_paid_route_existing_spend_witness_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        self._install_glmcp_payg_ledger(
+            rt,
+            monkeypatch,
+            self._glmcp_payg_receipt(rt),
+        )
+        monkeypatch.setattr(
+            rt,
+            "evaluate_paid_route_eligibility",
+            lambda *_args, **_kwargs: pytest.fail("existing spend witness should short-circuit"),
+        )
+
+        blocked = rt.task_scoped_paid_review_route_blocked_families(
+            rt.load_lens_registry(),
+            {},
+            ("task-x",),
+        )
+
+        assert blocked == {}
+
+    def test_task_scoped_paid_route_pending_spend_still_blocks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        self._install_glmcp_payg_ledger(
+            rt,
+            monkeypatch,
+            self._glmcp_payg_receipt(
+                rt,
+                reconciliation_state=SpendReconciliationState.PENDING,
+                actual_cost_usd=None,
+                reconciled_at=None,
+                reconciliation_reason=None,
+            ),
+            eligibility=SimpleNamespace(
+                eligible=False,
+                budget_id=None,
+                state="refused_exhausted_budget",
+                blocking_reasons=("matching TransitionBudget cap exhausted",),
+            ),
+        )
+
+        blocked = rt.task_scoped_paid_review_route_blocked_families(
+            rt.load_lens_registry(),
+            {},
+            ("task-x",),
+        )
+
+        assert blocked["glm"] == (
+            "glmcp.review.direct:task_scoped_paid_spend_gate:refused_exhausted_budget",
+            "glmcp.review.direct:task_scoped_paid_spend_blocker:"
+            "matching_transitionbudget_cap_exhausted",
+        )
+
+    def test_glm_seated_reconciled_payg_review_does_not_reblock_admission(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._glm_seated_dossier(rt))
+        self._install_glmcp_payg_ledger(
+            rt,
+            monkeypatch,
+            self._glmcp_payg_receipt(rt),
+        )
+        monkeypatch.setattr(
+            rt,
+            "evaluate_paid_route_eligibility",
+            lambda *_args, **_kwargs: pytest.fail("existing spend witness should short-circuit"),
+        )
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+        )
+
+        assert "review_dossier_blocked_route_family_seated:glm" not in blockers
+        assert blockers == ()
 
     def _route_blocked_degraded_dossier(self, rt) -> dict:
         notes = (
@@ -980,6 +1153,90 @@ class TestVerdictBlockers:
             },
         )
         assert prefixed_blockers == ()
+
+    def test_task_scoped_paid_route_degradation_default_witness_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:glm",
+            "route_blocked_family_reason:glm:glmcp.review.direct:"
+            "task_scoped_paid_spend_gate:refused_exhausted_budget",
+            "route_blocked_family_reason:glm:glmcp.review.direct:"
+            "task_scoped_paid_spend_blocker:matching_transitionbudget_cap_exhausted",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        monkeypatch.setattr(
+            rt,
+            "task_scoped_paid_review_route_blocked_families",
+            lambda registry, route_blocked, task_ids, *, now=None: {
+                "glm": (
+                    "glmcp.review.direct:task_scoped_paid_spend_gate:refused_exhausted_budget",
+                    "glmcp.review.direct:task_scoped_paid_spend_blocker:"
+                    "matching_transitionbudget_cap_exhausted",
+                )
+            },
+        )
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+        )
+
+        assert blockers == ()
+
+    def test_task_scoped_paid_route_degradation_default_witness_mismatch_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:glm",
+            "route_blocked_family_reason:glm:glmcp.review.direct:"
+            "task_scoped_paid_spend_gate:refused_exhausted_budget",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+
+        monkeypatch.setattr(
+            rt,
+            "task_scoped_paid_review_route_blocked_families",
+            lambda registry, route_blocked, task_ids, *, now=None: {
+                "glm": ("glmcp.review.direct:task_scoped_paid_spend_gate:other_state",)
+            },
+        )
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+        )
+
+        assert "review_dossier_route_block_degradation_reason_mismatch:glm" in blockers
 
     def test_recovered_route_block_invalidates_pending_degraded_admission(
         self, tmp_path: Path
