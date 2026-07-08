@@ -731,7 +731,10 @@ class TavilyClient:
         except (httpx.RequestError, ValueError) as exc:
             raise TavilyRequestError(f"Tavily usage request failed: {exc}") from exc
         if not isinstance(data, dict):
-            raise TavilyRequestError("Tavily usage request failed: response JSON is not an object")
+            raise TavilyRequestError(
+                "Tavily usage request failed: response JSON is not an object; "
+                "next action: recheck the provider /usage response shape or proxy logs"
+            )
         return TavilyUsageResponse(
             key=TavilyAccountUsage.model_validate(
                 _usage_section_payload(data, "key"),

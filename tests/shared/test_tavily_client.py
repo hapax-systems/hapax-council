@@ -24,6 +24,7 @@ from shared.tavily_client import (
     TavilyExtractRequest,
     TavilyMapRequest,
     TavilyPolicyViolation,
+    TavilyRequestError,
     TavilyResearchRequest,
     TavilySearchRequest,
     load_tavily_api_key,
@@ -779,6 +780,56 @@ def test_usage_endpoint_defaults_missing_usage_objects_and_warns(
     messages = [record.getMessage() for record in caplog.records]
     assert any("section=key" in message for message in messages)
     assert any("section=account" in message for message in messages)
+
+
+def test_usage_endpoint_defaults_null_usage_objects_and_warns(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING", logger="shared.tavily_client")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/usage"
+        return httpx.Response(200, json={"key": None, "account": None})
+
+    client = TavilyClient(
+        api_key="test-token",
+        config_path=_config(tmp_path / "tavily.yaml"),
+        cache_dir=tmp_path / "cache",
+        ledger_path=tmp_path / "usage.jsonl",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        now=_now,
+    )
+
+    response = client.usage()
+
+    assert response.key.usage == 0
+    assert response.key.limit == 0
+    assert response.account.usage == 0
+    assert response.account.limit == 0
+    assert not (tmp_path / "usage.jsonl").exists()
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("null usage object; section=key" in message for message in messages)
+    assert any("null usage object; section=account" in message for message in messages)
+
+
+def test_usage_endpoint_rejects_non_object_json_with_next_action(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/usage"
+        return httpx.Response(200, json=[])
+
+    client = TavilyClient(
+        api_key="test-token",
+        config_path=_config(tmp_path / "tavily.yaml"),
+        cache_dir=tmp_path / "cache",
+        ledger_path=tmp_path / "usage.jsonl",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        now=_now,
+    )
+
+    with pytest.raises(TavilyRequestError, match="next action: recheck"):
+        client.usage()
+    assert not (tmp_path / "usage.jsonl").exists()
 
 
 def test_tavily_account_usage_rejects_non_numeric_usage_values() -> None:
