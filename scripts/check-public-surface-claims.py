@@ -447,7 +447,24 @@ def check_publication_freshness_state(
         generated_at=isoformat_z(now),
     )
     blockers = tuple(dict.fromkeys((*state.blockers, *reassessed.blockers)))
-    if not blockers:
+    blocking_blockers, pending_post_merge_surfaces = _split_pending_post_merge_blockers(blockers)
+    if pending_post_merge_surfaces:
+        findings.append(
+            LintFinding(
+                file=str(state_path),
+                line=1,
+                level="info",
+                rule=PUBLICATION_FRESHNESS_RULE,
+                message=(
+                    "Publication freshness has required public files supplied by this PR "
+                    "but still awaiting post-merge public readback: "
+                    f"{', '.join(pending_post_merge_surfaces)}. Next action: after merge, "
+                    "refresh the publication freshness audit/live-state readback before "
+                    "claiming public_current."
+                ),
+            )
+        )
+    if not blocking_blockers:
         return findings
     findings.append(
         LintFinding(
@@ -457,12 +474,57 @@ def check_publication_freshness_state(
             rule=PUBLICATION_FRESHNESS_RULE,
             message=(
                 "Publication freshness has public-current blockers: "
-                f"{', '.join(blockers)}. Next action: refresh the publication freshness "
+                f"{', '.join(blocking_blockers)}. Next action: refresh the publication freshness "
                 "audit/live-state readback and hold release until the blockers clear."
             ),
         )
     )
     return findings
+
+
+def _split_pending_post_merge_blockers(
+    blockers: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    blocking: list[str] = []
+    pending_post_merge: list[str] = []
+    for blocker in blockers:
+        surface_id, freshness_result, blocks = _parse_freshness_blocker(blocker)
+        block_set = set(blocks)
+        if (
+            freshness_result == "missing"
+            and "release_authorized" in block_set
+            and _local_required_public_file_supplied(surface_id)
+        ):
+            pending_post_merge.append(surface_id)
+            remaining_blocks = tuple(block for block in blocks if block != "release_authorized")
+            if any(block != "public_current" for block in remaining_blocks):
+                blocking.append(f"{surface_id}:{freshness_result}:{','.join(remaining_blocks)}")
+            continue
+        blocking.append(blocker)
+    return tuple(blocking), tuple(pending_post_merge)
+
+
+def _parse_freshness_blocker(blocker: str) -> tuple[str, str, tuple[str, ...]]:
+    parts = blocker.split(":", 2)
+    if len(parts) != 3:
+        return blocker, "", ()
+    surface_id, freshness_result, block_text = parts
+    return surface_id, freshness_result, tuple(block for block in block_text.split(",") if block)
+
+
+def _local_required_public_file_supplied(surface_id: str) -> bool:
+    marker = "hapax-systems/hapax-council."
+    if marker not in surface_id:
+        return False
+    relative_path = surface_id.split(marker, 1)[1]
+    if not relative_path:
+        return False
+    candidate = (REPO_ROOT / relative_path).resolve()
+    try:
+        candidate.relative_to(REPO_ROOT)
+    except ValueError:
+        return False
+    return candidate.is_file()
 
 
 def _check_expected_freshness_envelopes(
@@ -681,6 +743,22 @@ def main(argv: list[str] | None = None) -> int:
             compare_expected_temporal_fields=args.skip_live_github_public_surface_refresh,
         )
     )
+    if args.skip_live_github_public_surface_refresh and args.warnings_fail:
+        findings.append(
+            LintFinding(
+                file=str(args.publication_freshness_state),
+                line=1,
+                level="warning",
+                rule=PUBLICATION_FRESHNESS_RULE,
+                message=(
+                    "Publication freshness ran in offline diagnostic mode. This mode can "
+                    "support focused tests or emergency diagnosis, but it cannot authorize "
+                    "release/public-current claims. Next action: rerun without "
+                    "--skip-live-github-public-surface-refresh so the gate binds witnesses "
+                    "to fresh live GitHub readback."
+                ),
+            )
+        )
     for path in iter_files(paths):
         findings.extend(lint_file(path))
         findings.extend(check_token_claim_ceiling(path, token_claim_patterns))

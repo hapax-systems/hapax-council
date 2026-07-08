@@ -16,8 +16,31 @@ uv run python scripts/publication-freshness-audit.py --fail-on-blockers
 uv run python scripts/check-public-surface-claims.py --warnings-fail \
   --token-claim-report docs/research/evidence/2026-05-13-token-capital-claim-regate-v2.json \
   --source-reconciliation docs/research/evidence/2026-05-13-public-surface-source-of-truth-reconciliation.json \
+	  --publication-freshness-state ~/hapax-state/publication/freshness-state.json
+```
+
+For PR release authorization when the PR itself adds a required public file
+that is not yet visible on GitHub default-branch readback, derive the freshness
+state without `--fail-on-blockers`, then run the claim gate in normal live mode:
+
+```bash
+uv run python scripts/github-public-surface-reconcile.py
+uv run python scripts/publication-freshness-audit.py
+uv run python scripts/check-public-surface-claims.py --warnings-fail \
   --publication-freshness-state ~/hapax-state/publication/freshness-state.json
 ```
+
+The claim gate performs its own fresh GitHub public-surface reconcile by default
+before deriving required freshness witnesses. The committed
+`docs/repo-pres/github-public-surface-live-state-reconcile.json` is an evidence
+snapshot and offline shape fixture, not the release trust root.
+`--skip-live-github-public-surface-refresh`, custom
+`--github-public-surface-report`, and explicit
+`--required-publication-freshness-surface-id` arguments are diagnostic/test-only
+paths; with `--warnings-fail`, offline diagnostic mode cannot authorize release.
+If a locally supplied required file removes only the `release_authorized` block,
+the gate exits cleanly with an `info` finding and still requires post-merge
+readback before any `public_current` claim.
 
 Default targets are:
 

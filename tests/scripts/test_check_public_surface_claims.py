@@ -321,6 +321,21 @@ def test_public_surface_claim_gate_warnings_fail_escalates(tmp_path: Path) -> No
     assert "Hapax.PublicClaimOverreach" in result.stdout
 
 
+def test_public_surface_gate_offline_mode_cannot_authorize_release(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "offline-release.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(doc, token_report, source_reconciliation, "--warnings-fail")
+
+    assert result.returncode == 1
+    assert "Publication freshness ran in offline diagnostic mode" in result.stdout
+    assert "cannot authorize release/public-current claims" in result.stdout
+
+
 def test_public_surface_claim_gate_ignores_unsupported_file_suffix(tmp_path: Path) -> None:
     doc = tmp_path / "bad.txt"
     doc.write_text("No test results, no push.\n", encoding="utf-8")
@@ -445,6 +460,32 @@ def test_public_surface_gate_fails_publication_freshness_blocker(tmp_path: Path)
     assert (
         "Next action: refresh the publication freshness audit/live-state readback" in result.stdout
     )
+
+
+def test_public_surface_gate_allows_local_required_file_pending_post_merge_readback(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "fresh-pending-local.md"
+    doc.write_text("Bounded public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    pending_surface_id = "github.security_governance.hapax-systems/hapax-council.GOVERNANCE.md"
+    freshness_state = _write_publication_freshness_state(
+        tmp_path / "freshness-state.json",
+        blockers=[f"{pending_surface_id}:missing:public_current,release_authorized"],
+    )
+
+    result = _run_gate(
+        doc,
+        token_report,
+        source_reconciliation,
+        "--publication-freshness-state",
+        str(freshness_state),
+    )
+
+    assert result.returncode == 0
+    assert "awaiting post-merge public readback" in result.stdout
+    assert pending_surface_id in result.stdout
 
 
 def test_public_surface_gate_missing_publication_freshness_state_exits_2(
