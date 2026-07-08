@@ -4153,6 +4153,12 @@ from shared.perception_registry import PerceptionPoint  # noqa: E402
 
 PerceptionPoint._geometry_policy
 
+# pydantic @model_serializer(mode="wrap") — invoked by pydantic during
+# model_dump, not by an explicit static call site.
+from shared.quota_spend_ledger import SpendReceipt as _QuotaSpendLedgerSpendReceipt  # noqa: E402
+
+_QuotaSpendLedgerSpendReceipt._serialize_without_empty_task_hash
+
 # Platform session contract v1: exported adapter-conformance helpers are invoked
 # by fixture suites and future trainyard adapter runners. Pydantic field validators
 # are framework entrypoints, and the diff-only vulture gate does not count tests.

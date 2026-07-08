@@ -27,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
+from shared.gate_event_producer import build_gate_event  # noqa: E402
 from shared.quota_spend_ledger import SubscriptionQuotaState  # noqa: E402
 
 
@@ -1149,6 +1150,34 @@ checklist:
                     "excerpt": review["runner_stderr_excerpt"],
                 }
             ]
+
+    def test_review_pr_forwards_frontmatter_hash_matching_gate_event_hash(
+        self, tmp_path: Path
+    ) -> None:
+        class HashRecordingReviewers(RecordingReviewers):
+            def __init__(self) -> None:
+                super().__init__()
+                self.task_hashes: list[str | None] = []
+
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.task_hashes.append(family_cfg.get("_review_task_hash"))
+                return super().__call__(seat, family_cfg, prompt)
+
+        reviewers = HashRecordingReviewers()
+        result, _, _, note = _review(tmp_path, reviewers=reviewers)
+        frontmatter = dispatch.review_team._note_frontmatter(note)
+        assert frontmatter is not None
+        expected_hash = dispatch.review_task_hash(frontmatter)
+        gate_event = build_gate_event(
+            frontmatter,
+            route="codex.headless.full",
+            demand_vector=None,
+            gate_result="accept",
+        )
+
+        assert result["status"] == "dispatched"
+        assert set(reviewers.task_hashes) == {expected_hash}
+        assert gate_event.task_hash == expected_hash
 
     def test_pr_metadata_uses_rest_not_graphql_pr_view(self, tmp_path: Path) -> None:
         gh = FakeGh()
@@ -2519,13 +2548,15 @@ class TestFamilyOutageDegradation:
                 "bash",
                 "-c",
                 (
-                    "printf '%s|%s|%s|%s' "
+                    "printf '%s|%s|%s|%s|%s|%s' "
                     '"$HAPAX_GLMCP_REVIEW_TASK_ID" "$HAPAX_CC_TASK_ID" '
+                    '"$HAPAX_GLMCP_REVIEW_TASK_HASH" "$HAPAX_CC_TASK_HASH" '
                     '"$HAPAX_REVIEW_SEAT_ID" "$HAPAX_REVIEW_FAMILY"'
                 ),
             ],
             "timeout_seconds": 30,
             "_review_task_id": "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+            "_review_task_hash": "sha256:" + ("a" * 64),
         }
         seat = dispatch.review_team.Seat(id="glm-1", family="glm")
 
@@ -2533,8 +2564,22 @@ class TestFamilyOutageDegradation:
 
         assert result.stdout == (
             "cc-task-glmcp-review-seat-glm52-model-contract-20260706|"
-            "cc-task-glmcp-review-seat-glm52-model-contract-20260706|glm-1|glm"
+            "cc-task-glmcp-review-seat-glm52-model-contract-20260706|"
+            f"{'sha256:' + ('a' * 64)}|"
+            f"{'sha256:' + ('a' * 64)}|glm-1|glm"
         )
+
+    def test_default_runner_rejects_malformed_review_task_hash(self) -> None:
+        family_cfg = {
+            "family": "glm",
+            "reviewer_command": ["bash", "-c", "echo should-not-run"],
+            "timeout_seconds": 30,
+            "_review_task_hash": "not-a-sha256-hash",
+        }
+        seat = dispatch.review_team.Seat(id="glm-1", family="glm")
+
+        with pytest.raises(ValueError, match="review task hash"):
+            dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
 
     def test_successful_reviewer_stderr_is_recorded_and_redacted(self) -> None:
         constitution = dispatch.review_team.Constitution(

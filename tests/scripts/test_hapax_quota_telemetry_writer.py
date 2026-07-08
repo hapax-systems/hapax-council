@@ -183,17 +183,19 @@ def _glmcp_payg_spend(
     name: str = "glmcp-payg-spend.yaml",
     spend_id: str = "spend-20260706T140430Z-glmcp-payg-review-test",
     task_id: str = "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+    task_hash: str | None = None,
     created_at: str = "2026-07-06T14:04:30Z",
     reconcile_by: str = "2026-07-07T14:04:30Z",
     estimated_cost_usd: str = "0.05",
     extra_fields: str = "",
 ) -> None:
+    task_hash_line = f"task_hash: {task_hash}\n" if task_hash is not None else ""
     (relay / name).write_text(
         f"""schema: hapax.glmcp_payg_spend.v1
 status: spend_estimated
 spend_id: {spend_id}
 task_id: {task_id}
-authority_case: CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706
+{task_hash_line}authority_case: CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706
 route_id: glmcp.review.direct
 capacity_pool: api_paid_spend
 budget_id: tb-20260706-zai-glmcp-payg-review
@@ -371,7 +373,11 @@ def test_glmcp_payg_spend_receipt_counts_against_budget_gate(tmp_path: Path) -> 
         name="glmcp-quota-admission-payg.yaml",
         evidence_ref=spend_receipt_name,
     )
-    _glmcp_payg_spend(relay, name=spend_receipt_name)
+    _glmcp_payg_spend(
+        relay,
+        name=spend_receipt_name,
+        task_hash="sha256:" + ("a" * 64),
+    )
     base = tmp_path / "quota-spend-ledger-fixtures.json"
     base_payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
     for budget in base_payload["transition_budgets"]:
@@ -383,10 +389,12 @@ def test_glmcp_payg_spend_receipt_counts_against_budget_gate(tmp_path: Path) -> 
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert any(
-        receipt["spend_id"] == "spend-20260706T140430Z-glmcp-payg-review-test"
+    receipt = next(
+        receipt
         for receipt in payload["spend_receipts"]
+        if receipt["spend_id"] == "spend-20260706T140430Z-glmcp-payg-review-test"
     )
+    assert receipt["task_hash"] == "sha256:" + ("a" * 64)
     glmcp_snapshot = next(
         snapshot
         for snapshot in payload["quota_snapshots"]

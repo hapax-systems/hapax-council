@@ -61,6 +61,7 @@ from github_pr_status import (  # noqa: E402
     list_pull_files_rest,
 )
 
+from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
     requires_acceptance_receipt,
@@ -73,6 +74,7 @@ DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "h
 DEFAULT_WAKE_DIR = Path.home() / ".cache" / "hapax" / "review-team" / "wake"
 KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 MAX_DIFF_CHARS = 80_000
 MAX_TASK_NOTE_CHARS = 60_000
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
@@ -759,6 +761,12 @@ def default_reviewer_runner(
     if review_task_id:
         env["HAPAX_GLMCP_REVIEW_TASK_ID"] = review_task_id
         env["HAPAX_CC_TASK_ID"] = review_task_id
+    review_task_hash = str(family_cfg.get("_review_task_hash") or "").strip()
+    if review_task_hash:
+        if not TASK_HASH_RE.fullmatch(review_task_hash):
+            raise ValueError("review task hash must match sha256:<64 lowercase hex>")
+        env["HAPAX_GLMCP_REVIEW_TASK_HASH"] = review_task_hash
+        env["HAPAX_CC_TASK_HASH"] = review_task_hash
     proc = subprocess.run(
         cmd,
         input=prompt,
@@ -793,6 +801,13 @@ def default_reviewer_runner(
     return ReviewerRunnerResult(stdout=proc.stdout, stderr=proc.stderr)
 
 
+def review_task_hash(frontmatter: dict[str, Any]) -> str:
+    value = stable_payload_hash(frontmatter)
+    if not TASK_HASH_RE.fullmatch(value):
+        raise ValueError("stable frontmatter hash must match sha256:<64 lowercase hex>")
+    return value
+
+
 def dispatch_reviews(
     constitution: review_team.Constitution,
     prompts: list[str],
@@ -800,6 +815,7 @@ def dispatch_reviews(
     reviewer_runner: Any,
     *,
     task_id: str | None = None,
+    task_hash: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run all seats in parallel; reviewer failure becomes invalid-output, loudly."""
 
@@ -818,6 +834,8 @@ def dispatch_reviews(
             family_cfg = dict(family_cfgs[seat.family])
             if task_id:
                 family_cfg["_review_task_id"] = task_id
+            if task_hash:
+                family_cfg["_review_task_hash"] = task_hash
             runner_result = reviewer_runner(seat, family_cfg, prompts[index])
             if isinstance(runner_result, ReviewerRunnerResult):
                 reply = runner_result.stdout
@@ -1883,6 +1901,7 @@ def review_pr(
         registry,
         reviewer_runner,
         task_id=task_ids[0] if len(task_ids) == 1 else None,
+        task_hash=review_task_hash(keyed_matches[0][1]) if len(keyed_matches) == 1 else None,
     )
     update_family_outage(reviews, now_iso)
     results: list[dict[str, Any]] = []

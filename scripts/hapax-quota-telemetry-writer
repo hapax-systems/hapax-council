@@ -298,6 +298,7 @@ GLMCP_PAYG_SPEND_FIELDS = frozenset(
         "status",
         "support_artifact_authority",
         "supported_tool",
+        "task_hash",
         "task_id",
     }
 )
@@ -1119,6 +1120,7 @@ def active_glmcp_payg_spend_receipts(
                 "spend_id",
                 "spend_reason",
                 "support_artifact_authority",
+                "task_hash",
                 "task_id",
             }
             and not _glmcp_payg_spend_field_is_nullish(key, value)
