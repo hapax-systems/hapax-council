@@ -332,7 +332,14 @@ class TestRunWatcher:
             repo_root=tmp_path,
             runner=runner,
         )
-        assert counters == {"merged": 1, "linked": 1, "closed": 1, "failed": 0, "skipped": 0}
+        assert counters == {
+            "merged": 1,
+            "linked": 1,
+            "opted_out": 0,
+            "closed": 1,
+            "failed": 0,
+            "skipped": 0,
+        }
         # cc-close was invoked with --pr 100.
         assert any(
             cmd[-3:] == ["--pr", "100", "--retroactive"] for cmd in runner.cc_close_invocations
@@ -460,7 +467,14 @@ class TestRunWatcher:
             repo_root=tmp_path,
             runner=runner,
         )
-        assert counters == {"merged": 1, "linked": 2, "closed": 2, "failed": 0, "skipped": 0}
+        assert counters == {
+            "merged": 1,
+            "linked": 2,
+            "opted_out": 0,
+            "closed": 2,
+            "failed": 0,
+            "skipped": 0,
+        }
         assert [cmd[1] for cmd in runner.cc_close_invocations] == ["task-A", "task-B"]
 
     def test_killswitch_skips(self, tmp_path: Path, monkeypatch: Any) -> None:
@@ -534,6 +548,7 @@ class TestCloseOnPrMergeOptOut:
                 runner=runner,
             )
         assert counters["linked"] == 0
+        assert counters["opted_out"] == 1
         assert counters["closed"] == 0
         assert counters["failed"] == 0
         assert not runner.cc_close_invocations
@@ -541,6 +556,7 @@ class TestCloseOnPrMergeOptOut:
             "task task-A declares close_on_pr_merge: false — lane owner closes explicitly"
             in caplog.text
         )
+        assert "has 1 linked cc-task(s) opted out of auto-close" in caplog.text
         # The skip is intentional, not a failure: the cursor still advances.
         assert watcher.read_cursor(cursor) == datetime(2026, 4, 26, 12, tzinfo=UTC)
 
@@ -568,7 +584,14 @@ class TestCloseOnPrMergeOptOut:
             repo_root=tmp_path,
             runner=runner,
         )
-        assert counters == {"merged": 1, "linked": 1, "closed": 1, "failed": 0, "skipped": 0}
+        assert counters == {
+            "merged": 1,
+            "linked": 1,
+            "opted_out": 0,
+            "closed": 1,
+            "failed": 0,
+            "skipped": 0,
+        }
 
     def test_crlf_frontmatter_still_opts_out(self, tmp_path: Path) -> None:
         """A CRLF-checked-out note must not silently lose the opt-out: the failure
@@ -632,7 +655,14 @@ class TestCloseOnPrMergeOptOut:
             repo_root=tmp_path,
             runner=runner,
         )
-        assert counters == {"merged": 1, "linked": 1, "closed": 1, "failed": 0, "skipped": 0}
+        assert counters == {
+            "merged": 1,
+            "linked": 1,
+            "opted_out": 0,
+            "closed": 1,
+            "failed": 0,
+            "skipped": 0,
+        }
         assert any(
             cmd[-3:] == ["--pr", "100", "--retroactive"] for cmd in runner.cc_close_invocations
         ), runner.cc_close_invocations

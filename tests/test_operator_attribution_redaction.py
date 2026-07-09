@@ -13,8 +13,9 @@ enforces):
   research/corpus paragraphs are pinned in REVIEWED_GENERIC by content hash — editing a
   pinned paragraph re-triggers review fail-closed; new co-occurrences fail closed.
 
-The exclusion list is EMPTY: the operator-hands axioms edit landed 2026-07-09, so every
-tracked surface — including axioms/** — is in scope.
+The policy exclusion list is empty: the operator-hands axioms edit landed 2026-07-09,
+so every tracked text surface in TEXT_SUFFIXES — including axioms/** — is in scope.
+SELF_PATHS exempts only the guard machinery that necessarily names the class.
 
 SCOPE OF THE REDACTION CLASS (operator-ratified 2026-07-09, decision-memo item 27,
 disposition accept-residual): the class this guard enforces is diagnostic ATTRIBUTION

@@ -3045,7 +3045,9 @@ ratifications:
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
         blocking, phantoms = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
-        assert blocking == [] and phantoms == []
+        assert blocking == []
+        assert len(phantoms) == 1
+        assert phantoms[0][1]["_resolution_source"] == "operator-ratification"
         err = capsys.readouterr().err
         assert "ratification-gate: waived" in err
         assert "RAT-TEST-1" in err  # the receipt names the ratification id
@@ -3168,6 +3170,55 @@ ratifications:
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
         blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert blocking == []
+
+    def test_ratified_critical_counts_for_quorum_with_receipt(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [
+            _review("codex-1", "codex", "block", findings=[self._critical()]),
+            _review("claude-1", "claude", "accept"),
+        ]
+
+        dossier = _synth(rt, reviews, repo_root=tmp_path)
+
+        assert dossier["review_team_verdict"] == rt.QUORUM_ACCEPT
+        assert dossier["accept_count"] == 2
+        assert any(e["kind"] == "operator-ratified-critical" for e in dossier["escalations"])
+        finding = dossier["reviewers"][0]["findings"][0]
+        assert finding["resolved"] is True
+        assert finding["resolution_source"] == "operator-ratification"
+        assert "RAT-TEST-1" in finding["resolution_detail"]
+
+    def test_admission_counts_persisted_ratified_critical_for_quorum(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [
+            _review("codex-1", "codex", "block", findings=[self._critical()]),
+            _review("claude-1", "claude", "accept"),
+        ]
+        dossier = _synth(rt, reviews, repo_root=tmp_path)
+
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=reg,
+        )
+
+        assert "review_dossier_quorum_not_met:1/2" not in blockers
+        assert not any(b.startswith("review_team_verdict_not_quorum_accept:") for b in blockers)
 
     def test_topical_finding_with_actual_other_pii_in_file_blocks(
         self, tmp_path: Path, monkeypatch

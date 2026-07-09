@@ -393,6 +393,28 @@ def find_linked_tasks(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) 
     return tasks
 
 
+def count_linked_opt_out_tasks(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) -> int:
+    """Count linked active notes that explicitly opt out of merge-triggered close."""
+    active = vault_root / "active"
+    if not active.is_dir():
+        return 0
+    pr_pattern = re.compile(rf"^pr:\s*{pr_number}\s*$", flags=re.MULTILINE)
+    task_id_pattern = re.compile(r"^task_id:\s*(.+?)\s*$", flags=re.MULTILINE)
+    count = 0
+    for note in sorted(active.glob("*.md")):
+        try:
+            text = note.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if (
+            pr_pattern.search(text)
+            and task_id_pattern.search(text)
+            and declines_close_on_pr_merge(text)
+        ):
+            count += 1
+    return count
+
+
 def find_linked_task(pr_number: int, *, vault_root: Path = DEFAULT_VAULT_ROOT) -> LinkedTask | None:
     """Locate the first vault cc-task note linked to ``pr_number``.
 
@@ -500,11 +522,19 @@ def run_watcher(
 ) -> dict[str, int]:
     """Run one watcher cycle.
 
-    Returns a dict of counters: ``{merged: int, linked: int, closed: int, failed: int}``.
+    Returns a dict of counters:
+    ``{merged: int, linked: int, opted_out: int, closed: int, failed: int}``.
     """
     if os.environ.get(KILLSWITCH_ENV) == "1":
         LOG.info("killswitch %s=1; skipping watcher cycle", KILLSWITCH_ENV)
-        return {"merged": 0, "linked": 0, "closed": 0, "failed": 0, "skipped": 1}
+        return {
+            "merged": 0,
+            "linked": 0,
+            "opted_out": 0,
+            "closed": 0,
+            "failed": 0,
+            "skipped": 1,
+        }
 
     repo_root = repo_root or default_repo_root()
     cursor = read_cursor(cursor_path)
@@ -514,6 +544,7 @@ def run_watcher(
     LOG.info("found %d merged PRs since cursor", len(merged))
 
     linked = 0
+    opted_out = 0
     closed = 0
     failed = 0
     newest_seen = cursor  # start where we were; bump only across a failure-free prefix
@@ -521,7 +552,17 @@ def run_watcher(
     for pr in sorted(merged, key=lambda p: p.merged_at):
         tasks = find_linked_tasks(pr.number, vault_root=vault_root)
         if not tasks:
-            LOG.info("PR #%d (%s) has no linked cc-task; skipping", pr.number, pr.head_branch)
+            pr_opted_out = count_linked_opt_out_tasks(pr.number, vault_root=vault_root)
+            if pr_opted_out:
+                opted_out += pr_opted_out
+                LOG.info(
+                    "PR #%d (%s) has %d linked cc-task(s) opted out of auto-close; skipping",
+                    pr.number,
+                    pr.head_branch,
+                    pr_opted_out,
+                )
+            else:
+                LOG.info("PR #%d (%s) has no linked cc-task; skipping", pr.number, pr.head_branch)
             # Still advance cursor for the success prefix — no work to lose.
             if first_failure_at is None and pr.merged_at > newest_seen:
                 newest_seen = pr.merged_at
@@ -563,6 +604,7 @@ def run_watcher(
     return {
         "merged": len(merged),
         "linked": linked,
+        "opted_out": opted_out,
         "closed": closed,
         "failed": failed,
         "skipped": 0,

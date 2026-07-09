@@ -1430,7 +1430,10 @@ _NON_WAIVABLE_ALLEGATION_RE = re.compile(
     # medical/mental-state datum classes beyond the diagnosis lexicon (round 14):
     # medication, treatment, and affective-state disclosures are never waivable
     r"|medication|prescription|psychiatric|antidepressant|dosage"
-    r"|mental\s+state|emotional\s+state|depress\w*|anxiet\w*|therap\w*|suicid\w*",
+    r"|mental\s+state|emotional\s+state|cognitive\s+state|psychological\s+state"
+    r"|affective\s+state|mood|morale|burnout|stress|well-?being"
+    r"|depress\w*|anxiet\w*|frustrat\w*|overwrought|demorali[sz]\w*"
+    r"|therap\w*|suicid\w*",
     re.IGNORECASE,
 )
 
@@ -1485,6 +1488,7 @@ def _blocking_criticals(
     ratifications = _operator_ratifications(root)
     if ratifications:
         kept: list[tuple[str, dict]] = []
+        resolved: list[tuple[str, dict]] = []
         for reviewer_id, finding in criticals:
             ratification_id = _operator_ratification_for(finding, ratifications, root)
             if ratification_id is None:
@@ -1501,21 +1505,30 @@ def _blocking_criticals(
                 print(
                     f"ratification-gate: NOT waiving {str(finding.get('title'))!r} — "
                     f"{finding.get('file')} is not waiver-safe at head (enforced-class "
-                    "or non-residual PII content present); ledger cannot waive it",
+                    "or non-residual PII/operator mental-state content present); "
+                    "ledger cannot waive it",
                     file=sys.stderr,
                 )
                 kept.append((reviewer_id, finding))
                 continue
+            resolved_finding = dict(finding)
+            resolved_finding["_resolution_source"] = "operator-ratification"
+            resolved_finding["_resolution_detail"] = (
+                f"data-owner ratification {ratification_id}; cited file verified "
+                "waiver-safe at head"
+            )
+            resolved.append((reviewer_id, resolved_finding))
             print(
                 f"ratification-gate: waived critical {str(finding.get('title'))!r} "
                 f"({finding.get('file')}) under {ratification_id} — data-owner "
                 "disposition, receipted; cited file verified waiver-safe at head "
-                "(no enforced-class attribution, no non-residual PII datum)",
+                "(no enforced-class attribution, no non-residual PII/operator "
+                "mental-state content)",
                 file=sys.stderr,
             )
         criticals = kept
     blocking: list[tuple[str, dict]] = []
-    phantom: list[tuple[str, dict]] = []
+    phantom: list[tuple[str, dict]] = list(resolved) if ratifications else []
     for reviewer_id, finding in criticals:
         target = blocking if verify_literal_defect_critical(finding, root) else phantom
         target.append((reviewer_id, finding))
@@ -1532,11 +1545,21 @@ def _finding_key(reviewer_id: str, finding: Mapping[str, Any]) -> tuple[str, str
     )
 
 
+_TRUSTED_CRITICAL_RESOLUTION_SOURCES = frozenset({"review-go-gate", "operator-ratification"})
+
+
+def _trusted_critical_resolution(finding: Mapping[str, Any]) -> bool:
+    return (
+        finding.get("resolved") is True
+        and str(finding.get("resolution_source") or "") in _TRUSTED_CRITICAL_RESOLUTION_SOURCES
+    )
+
+
 def _reviews_with_phantom_resolutions(
     reviews: Sequence[Mapping[str, Any]], phantom_criticals: Sequence[tuple[str, dict]]
 ) -> list[dict[str, Any]]:
-    phantom_keys = {
-        _finding_key(reviewer_id, finding) for reviewer_id, finding in phantom_criticals
+    resolutions = {
+        _finding_key(reviewer_id, finding): finding for reviewer_id, finding in phantom_criticals
     }
     out: list[dict[str, Any]] = []
     for review in reviews:
@@ -1548,11 +1571,15 @@ def _reviews_with_phantom_resolutions(
                 findings.append(finding)
                 continue
             finding_record = dict(finding)
-            if _finding_key(reviewer_id, finding_record) in phantom_keys:
+            resolution = resolutions.get(_finding_key(reviewer_id, finding_record))
+            if resolution is not None:
                 finding_record["resolved"] = True
-                finding_record["resolution_source"] = "review-go-gate"
-                finding_record["resolution_detail"] = (
-                    "literal-defect critical refuted by the file at head"
+                finding_record["resolution_source"] = str(
+                    resolution.get("_resolution_source") or "review-go-gate"
+                )
+                finding_record["resolution_detail"] = str(
+                    resolution.get("_resolution_detail")
+                    or "literal-defect critical refuted by the file at head"
                 )
             findings.append(finding_record)
         record["findings"] = findings
@@ -1576,20 +1603,27 @@ def _reviews_for_quorum(
         record = dict(review)
         if str(review.get("verdict", "")).lower() == "block":
             reviewer_id = str(review.get("id"))
-            critical_keys = {
-                _finding_key(reviewer_id, finding)
+            critical_findings = [
+                finding
                 for finding in review.get("findings") or []
                 if isinstance(finding, Mapping)
                 and str(finding.get("severity", "")).lower() == "critical"
+            ]
+            unresolved_critical_keys = {
+                _finding_key(reviewer_id, finding)
+                for finding in critical_findings
+                if not _trusted_critical_resolution(finding)
             }
             if (
-                critical_keys
-                and not (critical_keys & blocking_keys)
-                and critical_keys <= phantom_keys
+                critical_findings
+                and not (unresolved_critical_keys & blocking_keys)
+                and unresolved_critical_keys <= phantom_keys
             ):
                 record["verdict"] = "accept-with-findings"
                 record["raw_verdict"] = "block"
-                record["verdict_effective_reason"] = "all named criticals invalidated by go-gate"
+                record["verdict_effective_reason"] = (
+                    "all named criticals resolved by go-gate or operator ratification"
+                )
         out.append(record)
     return out
 
@@ -1734,17 +1768,34 @@ def synthesize_dossier(
             }
         )
     for reviewer_id, finding in phantom_criticals:
-        escalations.append(
-            {
-                "kind": "invalidated-phantom-critical",
-                "reviewer": reviewer_id,
-                "title": finding.get("title"),
-                "file": finding.get("file"),
-                "line": finding.get("line"),
-                "lens": finding.get("lens"),
-                "detail": "literal-defect critical refuted by the file at head (fail-closed go-gate)",
-            }
-        )
+        resolution_source = str(finding.get("_resolution_source") or "review-go-gate")
+        if resolution_source == "operator-ratification":
+            escalations.append(
+                {
+                    "kind": "operator-ratified-critical",
+                    "reviewer": reviewer_id,
+                    "title": finding.get("title"),
+                    "file": finding.get("file"),
+                    "line": finding.get("line"),
+                    "lens": finding.get("lens"),
+                    "detail": str(
+                        finding.get("_resolution_detail")
+                        or "critical resolved by data-owner ratification"
+                    ),
+                }
+            )
+        else:
+            escalations.append(
+                {
+                    "kind": "invalidated-phantom-critical",
+                    "reviewer": reviewer_id,
+                    "title": finding.get("title"),
+                    "file": finding.get("file"),
+                    "line": finding.get("line"),
+                    "lens": finding.get("lens"),
+                    "detail": "literal-defect critical refuted by the file at head (fail-closed go-gate)",
+                }
+            )
     if accepts and block_reviews:
         blocking_families = {str(r.get("family")) for r in block_reviews}
         if blocking_families - accept_families or accept_families - blocking_families:
@@ -2105,9 +2156,17 @@ def _dossier_validity_blockers(
     dossier_head_sha = str(dossier.get("head_sha") or "")
     verification_root = _frontmatter_repo_root(frontmatter, dossier_head_sha)
     criticals, phantoms = _blocking_criticals(reviews, verification_root, head_sha=dossier_head_sha)
-    if phantoms:  # receipt: phantom invalidations are auditable in the CI log, never silent
+    if phantoms:  # receipt: critical resolutions are auditable in the CI log, never silent
+        go_gate_count = sum(
+            1
+            for _, finding in phantoms
+            if str(finding.get("_resolution_source") or "review-go-gate") == "review-go-gate"
+        )
+        ratified_count = len(phantoms) - go_gate_count
         print(
-            f"go-gate: invalidated {len(phantoms)} phantom literal-defect critical(s): "
+            "critical-resolution-gate: resolved "
+            f"{len(phantoms)} critical(s) "
+            f"(go-gate={go_gate_count}, operator-ratification={ratified_count}): "
             + "; ".join(str(f.get("title")) for _, f in phantoms),
             file=sys.stderr,
         )
