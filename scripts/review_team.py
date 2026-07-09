@@ -1369,6 +1369,7 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
             return []  # one malformed entry poisons the whole ledger — waive nothing
         lenses = entry.get("lenses")
         files = entry.get("files")
+        topics = entry.get("topics")
         if (
             not isinstance(entry.get("id"), str)
             or not isinstance(entry.get("decision_record"), str)
@@ -1376,6 +1377,9 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
             or not all(isinstance(item, str) for item in lenses)
             or not isinstance(files, list)
             or not all(isinstance(item, str) for item in files)
+            or not isinstance(topics, list)
+            or not topics
+            or not all(isinstance(item, str) for item in topics)
         ):
             return []
         valid.append(dict(entry))
@@ -1385,12 +1389,17 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
 def _operator_ratification_for(
     finding: Mapping[str, Any], ratifications: Sequence[Mapping[str, Any]]
 ) -> str | None:
-    """The ratification id waiving this finding, or None. Waived ONLY when both the
-    finding's lens and its exact file path are named by a single ledger entry."""
+    """The ratification id waiving this finding, or None. Waived ONLY when the
+    finding's lens AND exact file path AND topic (title/detail must reference one of
+    the entry's ratified topic terms) are all named by a single ledger entry — an
+    unrelated finding in a ratified file still blocks."""
     lens = str(finding.get("lens", ""))
     file_ = str(finding.get("file", ""))
+    text = f"{finding.get('title', '')} {finding.get('detail', '')}".lower()
     for entry in ratifications:
-        if lens in entry.get("lenses", ()) and file_ in entry.get("files", ()):
+        if lens not in entry.get("lenses", ()) or file_ not in entry.get("files", ()):
+            continue
+        if any(str(topic).lower() in text for topic in entry.get("topics", ())):
             return str(entry["id"])
     return None
 

@@ -3011,6 +3011,7 @@ ratifications:
     decision_record: "test decision record"
     class: operator-privacy-residual
     lenses: [consent-provenance]
+    topics: [residual]
     files:
       - docs/research/x.md
 """
@@ -3077,6 +3078,27 @@ ratifications:
         self._ledger(tmp_path)
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
         blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="deadbeef" * 5)
+        assert len(blocking) == 1
+
+    def test_unratified_topic_still_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        # lens+file match but the finding is about something ELSE (e.g. an address leak):
+        # topic keying keeps it blocking — the waiver never covers unrelated privacy classes.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        finding = self._critical()
+        finding["title"] = "home address disclosed"
+        finding["detail"] = "the doc leaks a street address"
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_ledger_without_topics_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path, self.LEDGER.replace("    topics: [residual]\n", ""))
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert len(blocking) == 1
 
     def test_killswitch_disables_ratification_gate(self, tmp_path: Path, monkeypatch) -> None:

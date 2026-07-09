@@ -91,10 +91,12 @@ TEXT_SUFFIXES = {
     ".j2",
     ".sh",
 }
-#: This test module and its pins file mention the terms by necessity.
+#: Guard machinery that mentions the terms by necessity: this test module, its pins
+#: file, and the operator-ratification ledger (which names the ratified files/topics).
 SELF_PATHS = {
     "tests/test_operator_attribution_redaction.py",
     "tests/operator_attribution_reviewed_generic.txt",
+    "config/governance/operator-ratifications.yaml",
 }
 
 

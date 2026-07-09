@@ -17,6 +17,22 @@ ratifications:
     decision_record: "operator decision memo 2026-07-09, item 27 — disposition accept-residual (vault: 30-areas/hapax/operator-decision-memo-2026-07-09.md)"
     class: operator-privacy-residual
     lenses: [consent-provenance]
+    # A finding is waived ONLY if its title/detail references the ratified TOPIC —
+    # an unrelated privacy finding (e.g. an address leak) in these files still blocks.
+    topics:
+      - ADHD
+      - AuDHD
+      - autism
+      - autistic
+      - neurodiverg
+      - neurotype
+      - RSD
+      - rejection-sensitiv
+      - dysphoria
+      - diagnosis
+      - diagnostic
+      - cognitive profile
+      - perceptual profile
     files:
       - docs/research/content-scheduling-research.md
       - docs/research/apperception-healthy-self-model-research.md
