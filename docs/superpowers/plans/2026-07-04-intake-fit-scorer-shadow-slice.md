@@ -30,8 +30,8 @@ scored non-`quality_floor` dims) at the task level.
 
 ### Rank-key sites (both patched — the no-spin invariant needs both)
 
-- `shared/dispatch_service_time.py:443` (`plan_dispatches`)
-- `agents/coordinator/core.py:531` (`_repair_cooled_plan`)
+- `shared/dispatch_service_time.py:411` (`plan_dispatches`)
+- `agents/coordinator/core.py:603` (`_repair_cooled_plan`)
 - Replace `wsjf_effective(t.wsjf, t.age_s, age_norm_s)` with
   `composite_rank_key(wsjf_effective(...), fit_score(t.requirement_vector), blend=fit_blend)`.
 

@@ -96,13 +96,14 @@ same hash and joins cleanly. The admission event already carries the route, rout
 requirement_vector the outcome event must mirror.
 
 **Verified against the live log** (`~/.cache/hapax/sdlc-routing/gate-events.jsonl`, point-in-time
-recheck during 2026-07-09 PR recovery): the log had 812 rows, all `gate_type="none"` /
-`provenance!="witnessed"` (808 `"unknown"` from the hapax-methodology-dispatch path + 4 null), and
+recheck during 2026-07-09 PR recovery): the log had 910 rows, all `gate_type="none"` /
+`provenance!="witnessed"` (906 `"unknown"` from the hapax-methodology-dispatch path + 4 null), and
 zero witnessed outcomes. The number will drift because the SDLC loop is always running; the durable
 claim is that the plane is producing admission observations but no learning-eligible outcome events
-yet. That recheck also found 790 full join contexts and 22 legacy/incomplete admission rows with an
-empty requirement vector (2 of those also lack `task_hash`), so the helper must tolerate incomplete
-rows and recover only full join contexts instead of assuming every live row is usable.
+yet. That recheck also found 888 strict, helper-acceptable recoverable join contexts and 22
+legacy/incomplete admission rows with an empty requirement vector (2 of those also lack
+`task_hash`), so the helper must tolerate incomplete rows instead of assuming every live row is
+usable.
 
 Recheck the live-log census with:
 
@@ -111,6 +112,8 @@ python - <<'PY'
 import json
 from collections import Counter
 from pathlib import Path
+
+from shared.sdlc_router import REQUIREMENT_VECTOR_DIMENSIONS
 
 rows = [
     json.loads(line)
@@ -121,16 +124,38 @@ print("events", len(rows))
 print("gate_type", Counter(row.get("gate_type") for row in rows))
 print("provenance", Counter(row.get("provenance") for row in rows))
 print("witnessed", sum(row.get("provenance") == "witnessed" for row in rows))
-incomplete = Counter(
+dims = set(REQUIREMENT_VECTOR_DIMENSIONS)
+
+
+def recoverable(row):
+    rv = row.get("requirement_vector")
+    return (
+        isinstance(row.get("route"), str)
+        and bool(row["route"].strip())
+        and isinstance(row.get("routing_class"), str)
+        and bool(row["routing_class"].strip())
+        and isinstance(row.get("task_hash"), str)
+        and bool(row["task_hash"].strip())
+        and isinstance(row.get("ts"), str)
+        and isinstance(rv, dict)
+        and set(rv) == dims
+        and all(not isinstance(v, bool) and isinstance(v, int) and 0 <= v <= 5 for v in rv.values())
+    )
+
+
+recoverable_count = sum(recoverable(row) for row in rows)
+print("recoverable_join_contexts", recoverable_count)
+print("nonrecoverable_contexts", len(rows) - recoverable_count)
+missing = Counter(
     tuple(
         field
-        for field in ("route", "routing_class", "requirement_vector", "task_hash")
+        for field in ("route", "routing_class", "requirement_vector", "task_hash", "ts")
         if not row.get(field)
     )
     for row in rows
+    if not recoverable(row)
 )
-print("full_join_contexts", incomplete.pop((), 0))
-print("incomplete_join_contexts", incomplete)
+print("nonrecoverable_missing_fields", missing)
 PY
 ```
 
