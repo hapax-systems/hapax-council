@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -1371,6 +1372,7 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
         lenses = entry.get("lenses")
         files = entry.get("files")
         topics = entry.get("topics")
+        pins = entry.get("files_sha256")
         if (
             not isinstance(entry.get("id"), str)
             or not isinstance(entry.get("decision_record"), str)
@@ -1381,10 +1383,30 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
             or not isinstance(topics, list)
             or not topics
             or not all(isinstance(item, str) for item in topics)
+            # content pins are REQUIRED and must cover exactly the files list: the
+            # ratification applies to the reviewed bytes, never to future content
+            or not isinstance(pins, Mapping)
+            or set(pins.keys()) != set(files)
+            or not all(isinstance(v, str) and len(v) == 64 for v in pins.values())
         ):
             return []
         valid.append(dict(entry))
     return valid
+
+
+def _ratified_content_pin_holds(repo_root: Path, entry: Mapping[str, Any], rel_path: str) -> bool:
+    """True iff ``rel_path``'s bytes at ``repo_root`` hash to the entry's ratified pin.
+    The data-owner ratified SPECIFIC content; any edit voids the waiver for that file
+    until re-ratified (fail-closed: unreadable file = pin does not hold)."""
+    pins = entry.get("files_sha256")
+    expected = pins.get(rel_path) if isinstance(pins, Mapping) else None
+    if not isinstance(expected, str):
+        return False
+    try:
+        actual = hashlib.sha256((repo_root / rel_path).read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return actual == expected
 
 
 #: Datum classes a data-owner ratification may NEVER waive, matched over finding PROSE
@@ -1404,19 +1426,24 @@ _NON_WAIVABLE_ALLEGATION_RE = re.compile(
     # local-path/username privacy class — the repo's own claim-inventory taxonomy names
     # it, and unlike names it is enumerable without leaking:
     r"|private\s+path|local\s+path|vault\s+path|home\s+director(?:y|ies)"
-    r"|filesystem\s+path|user\s?name|/home/|~/|C:\\\\Users",
+    r"|filesystem\s+path|user\s?name|/home/|~/|C:\\\\Users"
+    # medical/mental-state datum classes beyond the diagnosis lexicon (round 14):
+    # medication, treatment, and affective-state disclosures are never waivable
+    r"|medication|prescription|psychiatric|antidepressant|dosage"
+    r"|mental\s+state|emotional\s+state|depress\w*|anxiet\w*|therap\w*|suicid\w*",
     re.IGNORECASE,
 )
 
 
 def _operator_ratification_for(
-    finding: Mapping[str, Any], ratifications: Sequence[Mapping[str, Any]]
+    finding: Mapping[str, Any], ratifications: Sequence[Mapping[str, Any]], repo_root: Path
 ) -> str | None:
     """The ratification id waiving this finding, or None. Waived ONLY when the
     finding's lens AND exact file path AND topic (title/detail must reference one of
-    the entry's ratified topic terms) are all named by a single ledger entry, AND the
-    prose alleges no non-waivable datum class — an unrelated or datum-alleging finding
-    in a ratified file still blocks (operator disposition, never auto-waiver)."""
+    the entry's ratified topic terms) are all named by a single ledger entry, the
+    file content hash matches the ratified pin, AND the prose alleges no non-waivable
+    datum class — an unrelated, edited, or datum-alleging finding in a ratified file
+    still blocks (operator disposition, never auto-waiver)."""
     lens = str(finding.get("lens", ""))
     file_ = str(finding.get("file", ""))
     text = f"{finding.get('title', '')} {finding.get('detail', '')}".lower()
@@ -1426,6 +1453,8 @@ def _operator_ratification_for(
         if lens not in entry.get("lenses", ()) or file_ not in entry.get("files", ()):
             continue
         if any(str(topic).lower() in text for topic in entry.get("topics", ())):
+            if not _ratified_content_pin_holds(repo_root, entry, file_):
+                return None
             return str(entry["id"])
     return None
 
@@ -1457,7 +1486,7 @@ def _blocking_criticals(
     if ratifications:
         kept: list[tuple[str, dict]] = []
         for reviewer_id, finding in criticals:
-            ratification_id = _operator_ratification_for(finding, ratifications)
+            ratification_id = _operator_ratification_for(finding, ratifications, root)
             if ratification_id is None:
                 kept.append((reviewer_id, finding))
                 continue

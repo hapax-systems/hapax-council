@@ -3014,6 +3014,8 @@ ratifications:
     topics: [residual]
     files:
       - docs/research/x.md
+    files_sha256:
+      docs/research/x.md: a35e167cd7816b57ad2e59e7803c15d00a5b7a8629c11a7ea9066a58c3de446c
 """
 
     def _ledger(self, root: Path, text: str | None = None) -> None:
@@ -3105,6 +3107,25 @@ ratifications:
         blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert len(blocking) == 1
 
+    def test_ledger_without_content_pins_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace(
+                "    files_sha256:\n"
+                "      docs/research/x.md: "
+                "a35e167cd7816b57ad2e59e7803c15d00a5b7a8629c11a7ea9066a58c3de446c\n",
+                "",
+            ),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
     def test_enforced_class_regression_in_ratified_file_still_blocks(
         self, tmp_path: Path, monkeypatch
     ) -> None:
@@ -3124,6 +3145,17 @@ ratifications:
         blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert len(blocking) == 1
 
+    def test_ratified_file_pin_mismatch_still_blocks(self, tmp_path: Path, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Generic design research grounded in literature.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
     def test_clean_ratified_file_waives(self, tmp_path: Path, monkeypatch) -> None:
         # Companion: same ledger + finding, but the cited file is CLEAN under the
         # enforced-class scan -> waived.
@@ -3132,7 +3164,7 @@ ratifications:
         self._ledger(tmp_path)
         doc = tmp_path / "docs" / "research" / "x.md"
         doc.parent.mkdir(parents=True, exist_ok=True)
-        doc.write_text("Generic design research grounded in literature.\n", encoding="utf-8")
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
         blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert blocking == []
@@ -3170,7 +3202,7 @@ ratifications:
         self._ledger(tmp_path)
         doc = tmp_path / "docs" / "research" / "x.md"
         doc.parent.mkdir(parents=True, exist_ok=True)
-        doc.write_text("Generic research on residual linkage only.\n", encoding="utf-8")
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
         finding = self._critical()
         finding["title"] = "address disclosed in the residual section"
         reviews = [_review("codex-1", "codex", "block", findings=[finding])]
