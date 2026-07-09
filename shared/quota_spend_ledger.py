@@ -71,8 +71,7 @@ CLAUDE_ADMISSION_OBSERVATIONS = frozenset(
 CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX = ":account-live-quota:observed"
 CLAUDE_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"\Arelay-receipt:"
-    r"(?P<label>(?:[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml|"
-    r"unsafe-receipt-name-sha256:[0-9a-f]{16}))"
+    r"(?P<label>[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml)"
     r":witness:"
 )
 CLAUDE_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
@@ -1288,7 +1287,7 @@ def subscription_quota_state_for_route(
             (f"quota-snapshot:{normalized_route_id}:missing",),
         )
     evidence_refs = tuple(
-        _redact_secretish_quota_evidence_ref(ref)
+        _redact_quota_evidence_ref(normalized_route_id, ref)
         for snapshot in snapshots
         for ref in snapshot.evidence_refs
     ) or (f"quota-snapshot:{normalized_route_id}:no-evidence",)
@@ -1497,6 +1496,54 @@ def _has_safe_claude_admission_receipt_label(ref: str) -> bool:
     )
 
 
+def _claude_evidence_receipt_label(ref: str) -> str | None:
+    if not ref.startswith("relay-receipt:"):
+        return None
+    rest = ref.removeprefix("relay-receipt:")
+    if rest.startswith("unsafe-receipt-name-sha256:"):
+        prefix, _, suffix = rest.partition(":")
+        digest, sep, remainder = suffix.partition(":")
+        if not sep:
+            return None
+        label = f"{prefix}:{digest}"
+    else:
+        label, sep, remainder = rest.partition(":")
+        if not sep:
+            return None
+    if remainder.startswith("witness:") or remainder.startswith("ignored:"):
+        return label
+    return None
+
+
+def _is_safe_claude_ignored_evidence_ref(ref: str) -> bool:
+    if ":ignored:" not in ref:
+        return False
+    label = _claude_evidence_receipt_label(ref)
+    if label is None:
+        return False
+    if re.fullmatch(r"unsafe-receipt-name-sha256:[0-9a-f]{16}", label) is not None:
+        return True
+    label_stem = label.removesuffix(".yaml")
+    return (
+        CLAUDE_ADMISSION_RECEIPT_LABEL_RE.match(f"relay-receipt:{label}:witness:") is not None
+        and CLAUDE_ADMISSION_SECRETISH_RE.search(label_stem) is None
+        and CLAUDE_ADMISSION_BILLINGISH_RE.search(label_stem) is None
+        and CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(label_stem) is None
+    )
+
+
+def _is_untrusted_claude_admission_ref_for_evidence(ref: str) -> bool:
+    if not ref.startswith("relay-receipt:"):
+        return False
+    if _is_claude_admission_evidence_ref(ref) or _is_safe_claude_ignored_evidence_ref(ref):
+        return False
+    return (
+        "claude-subscription-quota-admission" in ref
+        or "unsafe-receipt-name-sha256:" in ref
+        or bool(CLAUDE_ADMISSION_WITNESS_REF_RE.search(ref))
+    )
+
+
 def _is_glmcp_payg_admission_evidence_ref(ref: str) -> bool:
     return (
         _is_glmcp_admission_evidence_ref(ref)
@@ -1696,6 +1743,16 @@ def _redact_secretish_quota_evidence_ref(ref: str) -> str:
         return ref
     digest = hashlib.sha256(ref.encode("utf-8", errors="replace")).hexdigest()[:16]
     return f"quota-evidence-ref:redacted-secretish-sha256:{digest}"
+
+
+def _redact_quota_evidence_ref(route_id: str, ref: str) -> str:
+    redacted = _redact_secretish_quota_evidence_ref(ref)
+    if redacted != ref:
+        return redacted
+    if route_id == "claude.headless.full" and _is_untrusted_claude_admission_ref_for_evidence(ref):
+        digest = hashlib.sha256(ref.encode("utf-8", errors="replace")).hexdigest()[:16]
+        return f"quota-evidence-ref:redacted-untrusted-claude-admission-sha256:{digest}"
+    return ref
 
 
 def _subscription_quota_fresh_until_expired(

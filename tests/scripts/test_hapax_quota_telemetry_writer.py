@@ -299,6 +299,20 @@ def test_claude_billingish_regex_is_consistent_across_receipt_layers() -> None:
     )
 
 
+def test_claude_secretish_regex_is_consistent_across_receipt_layers() -> None:
+    telemetry_namespace = runpy.run_path(str(SCRIPT))
+    admission_namespace = runpy.run_path(str(CLAUDE_ADMISSION_SCRIPT))
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import CLAUDE_ADMISSION_SECRETISH_RE
+
+    assert (
+        telemetry_namespace["CLAUDE_ADMISSION_SECRETISH_RE"].pattern
+        == admission_namespace["SECRETISH_RE"].pattern
+        == CLAUDE_ADMISSION_SECRETISH_RE.pattern
+    )
+
+
 def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None:
     result, out = _run_writer(tmp_path)
 

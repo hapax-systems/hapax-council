@@ -140,6 +140,10 @@ CLAUDE_LANE_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
     "relay-receipt:claude-subscription-quota-admission-lane2.yaml:",
 )
+CLAUDE_HASHED_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:",
+)
 CLAUDE_NOW = datetime(2026, 7, 8, 14, 5, tzinfo=UTC)
 
 
@@ -1564,6 +1568,11 @@ def test_receipt_bounded_route_rejects_lane_presence_claude_witness() -> None:
     state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
 
     assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_LANE_PRESENCE_WITNESS_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
     assert (
         "quota-snapshot:quota-claude-headless-full-lane-presence-witness:"
         "untrusted_claude_admission_evidence"
@@ -1612,6 +1621,11 @@ def test_receipt_bounded_route_rejects_billing_identifier_claude_witness() -> No
     state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
 
     assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_BILLING_WITNESS_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
     assert (
         "quota-snapshot:quota-claude-headless-full-billing-witness:"
         "untrusted_claude_admission_evidence"
@@ -1628,6 +1642,11 @@ def test_receipt_bounded_route_rejects_billing_identifier_claude_receipt_label()
     state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
 
     assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_BILLING_RECEIPT_LABEL_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
     assert (
         "quota-snapshot:quota-claude-headless-full-billing-label:"
         "untrusted_claude_admission_evidence"
@@ -1644,8 +1663,33 @@ def test_receipt_bounded_route_rejects_lane_presence_claude_receipt_label() -> N
     state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
 
     assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_LANE_RECEIPT_LABEL_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
     assert (
         "quota-snapshot:quota-claude-headless-full-lane-label:untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_hashed_unsafe_claude_receipt_label() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_HASHED_RECEIPT_LABEL_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-hashed-label",
+        reason="fixture claude hashed unsafe receipt label",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_HASHED_RECEIPT_LABEL_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-hashed-label:untrusted_claude_admission_evidence"
     ) in refs
 
 
