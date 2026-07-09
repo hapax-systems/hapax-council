@@ -77,10 +77,14 @@ Each tick does two writes:
 The output is validated through ``QuotaSpendLedger.model_validate`` before an
 atomic replace, so a bad tick can never clobber a good live ledger with junk.
 No secrets are persisted. Capability receipt refresh performs bounded live route
-probes where the route requires them: GLMCP invokes ``hapax-glmcp-reviewer
---check`` and Codex invokes the published-token ``codex exec`` auth witness.
-Both record redacted availability metadata only; local resource probes remain
-local files and nvidia-smi.
+probes where the route requires them: GLMCP invokes
+``hapax-glmcp-reviewer --check`` and Codex invokes a saved-login ``codex exec``
+sentinel on the effective dispatch host with inherited Codex auth env stripped. Both
+record redacted availability metadata only; local resource probes remain local
+files and nvidia-smi. If the Codex sentinel reports an invalidated saved login,
+the dispatch host login must be repaired through the documented operator
+credential-transfer fallback and then rechecked; telemetry never mints, copies,
+or refreshes Codex bearer material itself.
 """
 
 from __future__ import annotations
@@ -94,6 +98,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -104,6 +109,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.platform_capability_receipts import (  # noqa: E402
+    DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+    PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
+    PlatformCapabilityReceiptError,
+    load_platform_capability_receipt,
+    load_platform_capability_receipts,
+    receipt_is_fresh,
+    receipt_reference,
+)
 from shared.quota_spend_ledger import (  # noqa: E402
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
     QUOTA_SPEND_LEDGER_FIXTURES,
@@ -261,6 +275,45 @@ CLAUDE_ADMISSION_FIELDS = frozenset(
         "account_live_quota_observed",
         "lane_presence_used_as_quota_evidence",
         "positive_admission",
+    }
+)
+
+CODEX_EXEC_AUTH_HOLD_REASONS = frozenset(
+    {
+        "codex_exec_auth_agent_identity_jwt_invalid_json",
+        "codex_exec_auth_binary_missing",
+        "codex_exec_auth_exec_failed",
+        "codex_exec_auth_failed",
+        "codex_exec_auth_login_required",
+        "codex_exec_auth_probe_not_requested",
+        "codex_exec_auth_refresh_token_invalidated",
+        "codex_exec_auth_sentinel_missing",
+        "codex_exec_auth_timeout",
+        "codex_exec_auth_token_invalidated",
+        "codex_exec_auth_witness_absent",
+    }
+)
+CODEX_EXEC_AUTH_NEGATIVE_REF_TOKENS = frozenset(
+    {
+        "absent",
+        "blocked",
+        "denied",
+        "error",
+        "exhausted",
+        "expired",
+        "failed",
+        "failure",
+        "false",
+        "invalid",
+        "missing",
+        "negative",
+        "not",
+        "refused",
+        "stale",
+        "timeout",
+        "unobservable",
+        "unobserved",
+        "zero",
     }
 )
 
@@ -445,6 +498,12 @@ class ClaudeAdmission:
 class ClaudeAdmissionScan:
     admissions: list[ClaudeAdmission]
     ignored_evidence_refs: list[str]
+
+
+@dataclass(frozen=True)
+class CodexAuthBlocker:
+    reason_codes: list[str]
+    evidence_refs: list[str]
 
 
 @dataclass(frozen=True)
@@ -778,6 +837,161 @@ def active_quota_walls(
             )
         )
     return walls
+
+
+def codex_saved_login_blocker(
+    receipt_dir: Path,
+    *,
+    now: datetime,
+) -> CodexAuthBlocker | None:
+    """Return fail-closed Codex auth blockers from platform capability receipts."""
+
+    try:
+        receipt = load_platform_capability_receipts(receipt_dir, now=now).get("codex")
+    except PlatformCapabilityReceiptError as exc:
+        return CodexAuthBlocker(
+            reason_codes=["codex_platform_capability_receipt_invalid"],
+            evidence_refs=[
+                f"platform-capability-receipt:codex:invalid:{_reason_code(str(exc))}",
+            ],
+        )
+    if receipt is None:
+        return stale_codex_platform_receipt_blocker(receipt_dir, now=now)
+    return codex_auth_blocker_from_receipt(receipt)
+
+
+def stale_codex_platform_receipt_blocker(
+    receipt_dir: Path,
+    *,
+    now: datetime,
+) -> CodexAuthBlocker | None:
+    """Return a fail-closed blocker when the newest Codex receipt aged out."""
+
+    if not receipt_dir.exists():
+        return CodexAuthBlocker(
+            reason_codes=["codex_platform_capability_receipt_absent"],
+            evidence_refs=["platform-capability-receipt:codex:absent:receipt-dir-missing"],
+        )
+    codex_receipts = []
+    for path in sorted(receipt_dir.glob("*.json")):
+        receipt = load_platform_capability_receipt(path)
+        if receipt.platform == "codex":
+            codex_receipts.append(receipt)
+    if not codex_receipts:
+        return CodexAuthBlocker(
+            reason_codes=["codex_platform_capability_receipt_absent"],
+            evidence_refs=["platform-capability-receipt:codex:absent:no-codex-receipt"],
+        )
+    latest = max(codex_receipts, key=lambda item: item.observed_at)
+    if receipt_is_fresh(latest, now=now):
+        return None
+    blocker = codex_auth_blocker_from_receipt(latest)
+    reason_codes = ["codex_platform_capability_receipt_stale"]
+    if blocker is not None:
+        reason_codes.extend(blocker.reason_codes)
+    return CodexAuthBlocker(
+        reason_codes=list(dict.fromkeys(reason_codes)),
+        evidence_refs=[
+            f"platform-capability-receipt:codex:stale:{_reason_code(latest.receipt_id)}",
+            receipt_reference(latest),
+            *(
+                blocker.evidence_refs
+                if blocker is not None
+                else [*latest.capability.evidence_refs, *latest.resource.evidence_refs]
+            ),
+        ],
+    )
+
+
+def codex_auth_blocker_from_receipt(receipt: Any) -> CodexAuthBlocker | None:
+    reason_codes = list(
+        dict.fromkeys(
+            [
+                *receipt.capability.reason_codes,
+                *receipt.resource.reason_codes,
+            ]
+        )
+    )
+    auth_reasons = [
+        reason
+        for reason in reason_codes
+        if reason in CODEX_EXEC_AUTH_HOLD_REASONS or reason.startswith("codex_exec_auth_")
+    ]
+    if not auth_reasons:
+        evidence_refs = [
+            *receipt.capability.evidence_refs,
+            *receipt.resource.evidence_refs,
+        ]
+        if codex_exec_auth_witness_observed(evidence_refs):
+            return None
+        return CodexAuthBlocker(
+            reason_codes=["codex_exec_auth_witness_absent"],
+            evidence_refs=[
+                receipt_reference(receipt),
+                *evidence_refs,
+            ],
+        )
+    return CodexAuthBlocker(
+        reason_codes=auth_reasons,
+        evidence_refs=[
+            receipt_reference(receipt),
+            *receipt.capability.evidence_refs,
+            *receipt.resource.evidence_refs,
+        ],
+    )
+
+
+def codex_exec_auth_witness_observed(evidence_refs: Iterable[str]) -> bool:
+    expected_hosts = expected_codex_exec_auth_hosts()
+    return any(
+        codex_exec_auth_ref_attested(ref, expected_hosts=expected_hosts) for ref in evidence_refs
+    )
+
+
+def codex_exec_auth_ref_attested(
+    evidence_ref: str,
+    *,
+    expected_hosts: frozenset[tuple[str, ...]],
+) -> bool:
+    ref = _ref_tokens(evidence_ref)
+    if any(token in CODEX_EXEC_AUTH_NEGATIVE_REF_TOKENS for token in ref):
+        return False
+    if not (
+        len(ref) >= 8
+        and ref[0] == "host"
+        and ref[-6:] == ("codex", "exec", "auth", "saved", "login", "observed")
+    ):
+        return False
+    return ref[1:-6] in expected_hosts
+
+
+def expected_codex_exec_auth_hosts() -> frozenset[tuple[str, ...]]:
+    dispatch_host = (
+        os.environ.get("HAPAX_CODEX_EXEC_AUTH_HOST")
+        or os.environ.get("HAPAX_DISPATCH_HOST")
+        or os.environ.get("HAPAX_DEFAULT_DISPATCH_HOST")
+        or ""
+    ).strip()
+    if dispatch_host:
+        return host_token_variants(dispatch_host)
+    return host_token_variants("appendix")
+
+
+def host_token_variants(host: str) -> frozenset[tuple[str, ...]]:
+    tokens = _ref_tokens(host)
+    variants = {tokens} if tokens else set()
+    if len(tokens) == 1 and tokens[0] not in {"local", "localhost"}:
+        variants.add(("hapax", tokens[0]))
+    if len(tokens) == 2 and tokens[0] == "hapax":
+        variants.add((tokens[1],))
+    return frozenset(variants)
+
+
+def _ref_tokens(evidence_ref: str) -> tuple[str, ...]:
+    normalized = re.sub(r"[\s_:]+", "-", evidence_ref.strip().lower())
+    if not normalized:
+        return ()
+    return tuple(token for token in normalized.split("-") if token)
 
 
 def _warn_ignored_agy_admission(path: Path, reason: str) -> str:
@@ -1508,6 +1722,7 @@ def build_live_ledger(
     glmcp_ignored_receipts: list[str],
     glmcp_payg_spend_receipts: list[SpendReceipt],
     glmcp_ignored_payg_spend_receipts: list[str],
+    codex_auth_blocker: CodexAuthBlocker | None,
     local_resource_state: str,
     local_resource_evidence: list[str],
 ) -> QuotaSpendLedger:
@@ -1730,6 +1945,21 @@ def build_live_ledger(
                     "no fresh claude subscription-quota admission receipt; claude.headless.full "
                     "must hold rather than infer availability from lane/session presence"
                 )
+        elif platform == "codex" and codex_auth_blocker is not None:
+            state = "unknown"
+            evidence = [
+                *codex_auth_blocker.evidence_refs,
+                *(f"codex-auth-blocker:{reason}" for reason in codex_auth_blocker.reason_codes),
+                writer_ref,
+            ]
+            fresh_until = None
+            reason = (
+                "Codex saved-login exec auth receipt is blocked "
+                f"({', '.join(codex_auth_blocker.reason_codes)}); "
+                "repair saved Codex login on the dispatch host via codex login or the "
+                "documented auth-cache transfer fallback, then rerun platform capability "
+                "receipts before dispatching Codex lanes"
+            )
         else:
             state = "fresh"
             evidence = [f"relay-receipt:{platform}:quota-wall:absent", writer_ref]
@@ -1811,7 +2041,7 @@ def quota_spend_live_lock(path: Path) -> Any:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def refresh_capability_receipts(*, timeout: float) -> bool:
+def refresh_capability_receipts(*, timeout: float, receipt_dir: Path) -> bool:
     """Refresh per-provider capability receipts; failure degrades, not aborts."""
 
     script = REPO_ROOT / "scripts" / "hapax-platform-capability-receipts"
@@ -1825,6 +2055,8 @@ def refresh_capability_receipts(*, timeout: float) -> bool:
                 "--codex-exec-auth-probe",
                 "--timeout",
                 str(timeout),
+                "--receipt-dir",
+                str(receipt_dir),
             ],
             capture_output=True,
             text=True,
@@ -1869,6 +2101,17 @@ def main(argv: list[str] | None = None) -> int:
         default=RELAY_RECEIPT_DIR,
         help="Quota-wall relay receipt directory",
     )
+    parser.add_argument(
+        "--platform-capability-receipt-dir",
+        type=Path,
+        default=Path(
+            os.environ.get(
+                PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
+                str(DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR),
+            )
+        ),
+        help="Platform capability receipt directory",
+    )
     parser.add_argument("--now", help="Override observation time as ISO-8601 UTC (tests)")
     parser.add_argument(
         "--skip-receipts",
@@ -1890,7 +2133,10 @@ def main(argv: list[str] | None = None) -> int:
 
     receipts_ok = True
     if not args.skip_receipts:
-        receipts_ok = refresh_capability_receipts(timeout=args.receipt_timeout)
+        receipts_ok = refresh_capability_receipts(
+            timeout=args.receipt_timeout,
+            receipt_dir=args.platform_capability_receipt_dir,
+        )
 
     try:
         base = load_quota_spend_ledger(args.base)
@@ -1913,6 +2159,10 @@ def main(argv: list[str] | None = None) -> int:
             base=base,
             now=now,
         )
+        codex_auth_blocker = codex_saved_login_blocker(
+            args.platform_capability_receipt_dir,
+            now=now,
+        )
         resource_state, resource_evidence = probe_local_resource_state(nvidia_smi=args.nvidia_smi)
         try:
             ledger = build_live_ledger(
@@ -1927,6 +2177,7 @@ def main(argv: list[str] | None = None) -> int:
                 glmcp_ignored_receipts=glmcp_scan.ignored_evidence_refs,
                 glmcp_payg_spend_receipts=glmcp_payg_spend_scan.receipts,
                 glmcp_ignored_payg_spend_receipts=glmcp_payg_spend_scan.ignored_evidence_refs,
+                codex_auth_blocker=codex_auth_blocker,
                 local_resource_state=resource_state,
                 local_resource_evidence=resource_evidence,
             )

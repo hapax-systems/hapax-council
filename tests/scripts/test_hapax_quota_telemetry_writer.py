@@ -32,11 +32,25 @@ def _run_writer(
     *extra_args: str,
     nvidia_body: str = "echo '1000, 32000'",
     now: str = NOW,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     out = tmp_path / "out" / "quota-spend-ledger-live.json"
     relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
     relay.mkdir(exist_ok=True)
+    if "--platform-capability-receipt-dir" not in extra_args:
+        platform_receipts.mkdir(exist_ok=True)
+        _codex_platform_receipt(platform_receipts)
     stub = _fake_nvidia_smi(tmp_path, nvidia_body)
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT),
+        "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR": str(platform_receipts),
+        "HAPAX_DISPATCH_HOST": "",
+        "HAPAX_DEFAULT_DISPATCH_HOST": "",
+    }
+    if extra_env:
+        env.update(extra_env)
     result = subprocess.run(
         [
             sys.executable,
@@ -48,6 +62,8 @@ def _run_writer(
             str(out),
             "--relay-receipt-dir",
             str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
             "--nvidia-smi",
             str(stub),
             "--json",
@@ -56,16 +72,18 @@ def _run_writer(
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        env=env,
     )
     return result, out
 
 
 def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     namespace = runpy.run_path(str(SCRIPT))
     calls: list[list[str]] = []
+    receipt_dir = tmp_path / "platform-receipts"
 
     def fake_run(
         argv: list[str],
@@ -82,7 +100,13 @@ def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
 
     monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
 
-    assert namespace["refresh_capability_receipts"](timeout=12) is True
+    assert (
+        namespace["refresh_capability_receipts"](
+            timeout=12,
+            receipt_dir=receipt_dir,
+        )
+        is True
+    )
     assert calls == [
         [
             sys.executable,
@@ -91,6 +115,8 @@ def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
             "--codex-exec-auth-probe",
             "--timeout",
             "12",
+            "--receipt-dir",
+            str(receipt_dir),
         ]
     ]
 
@@ -115,6 +141,90 @@ action: exit_clean_await_restart
 """,
         encoding="utf-8",
     )
+
+
+def _codex_platform_receipt(
+    receipt_dir: Path,
+    *,
+    reason_code: str | None = None,
+    include_failed_reason: bool = True,
+    saved_login_witness: bool = True,
+    legacy_exec_auth_witness: bool = False,
+    evidence_refs_override: list[str] | None = None,
+    observed_at: str = "2026-06-09T23:59:00Z",
+) -> None:
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    status = "blocked" if reason_code is not None else "observed"
+    reason_codes = (
+        [
+            *(["codex_exec_auth_failed"] if include_failed_reason else []),
+            reason_code,
+        ]
+        if reason_code is not None
+        else []
+    )
+    evidence_refs = evidence_refs_override or (
+        []
+        if reason_code is not None
+        else [
+            "local:codex:exec:auth:observed",
+            "remote:hapax-appendix:codex:exec:auth:observed",
+        ]
+        if legacy_exec_auth_witness
+        else ["local:codex:cli:available", "local:codex:wrapper:present"]
+        if not saved_login_witness
+        else ["host:hapax-appendix:codex:exec:auth:saved-login:observed"]
+    )
+    payload = {
+        "receipt_schema": 1,
+        "receipt_id": "codex-auth-blocked-test" if reason_code else "codex-auth-fresh-test",
+        "platform": "codex",
+        "routes": ["codex.headless.full"],
+        "observed_at": observed_at,
+        "stale_after": "15m",
+        "cli": {"binary": "codex", "available": True, "version": "codex-test"},
+        "wrapper": {
+            "path": "scripts/hapax-codex-headless",
+            "exists": True,
+            "executable": True,
+            "sha256": None,
+        },
+        "config_refs": [],
+        "tool_state": [],
+        "mcp_status": [],
+        "capability": {
+            "status": status,
+            "source": "live",
+            "observed_at": observed_at,
+            "stale_after": "15m",
+            "evidence_refs": evidence_refs,
+            "reason_codes": reason_codes,
+        },
+        "resource": {
+            "status": status,
+            "source": "live",
+            "observed_at": observed_at,
+            "stale_after": "15m",
+            "evidence_refs": evidence_refs,
+            "reason_codes": reason_codes,
+        },
+        "quota": {
+            "status": "observed",
+            "source": "live",
+            "observed_at": observed_at,
+            "stale_after": "15m",
+            "evidence_refs": ["test:quota:observed"],
+            "reason_codes": [],
+        },
+        "provider_docs": {
+            "refs": ["test:provider-docs"],
+            "fetched_at": observed_at,
+            "stale_after": "7d",
+            "fetch_status": "observed",
+        },
+        "known_unknowns": [],
+    }
+    (receipt_dir / "codex.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _glmcp_admission(
@@ -369,6 +479,378 @@ def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None
     assert "gemini.headless.full" not in states
     assert states["glmcp.review.direct"] == "unknown"
     assert states["litellm.local.command-r-35b"] == "fresh"
+
+
+def test_codex_snapshot_fresh_for_default_appendix_saved_login_witness(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts"
+    _codex_platform_receipt(
+        platform_receipts,
+        evidence_refs_override=[
+            "remote:hapax-appendix:codex:exec:auth:observed",
+            "host:hapax-appendix:codex:exec:auth:saved-login:observed",
+        ],
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "fresh"
+    assert "codex_exec_auth_witness_absent" not in codex_snapshot["operator_visible_reason"]
+
+
+def test_codex_snapshot_fresh_for_explicit_local_saved_login_witness(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts"
+    _codex_platform_receipt(
+        platform_receipts,
+        evidence_refs_override=["host:local:codex:exec:auth:saved-login:observed"],
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+        extra_env={"HAPAX_CODEX_EXEC_AUTH_HOST": "local"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "fresh"
+    assert "codex_exec_auth_witness_absent" not in codex_snapshot["operator_visible_reason"]
+
+
+def test_codex_snapshot_unknown_for_local_saved_login_witness_without_dispatch_host(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts"
+    _codex_platform_receipt(
+        platform_receipts,
+        evidence_refs_override=["host:local:codex:exec:auth:saved-login:observed"],
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_exec_auth_witness_absent" in codex_snapshot["operator_visible_reason"]
+
+
+def test_codex_snapshot_unknown_when_exec_auth_receipt_reports_refresh_token_invalidated(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts"
+    _codex_platform_receipt(
+        platform_receipts,
+        reason_code="codex_exec_auth_refresh_token_invalidated",
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_exec_auth_refresh_token_invalidated" in codex_snapshot["operator_visible_reason"]
+    assert (
+        "codex-auth-blocker:codex_exec_auth_refresh_token_invalidated"
+        in codex_snapshot["evidence_refs"]
+    )
+
+
+def test_codex_snapshot_unknown_when_exec_auth_probe_not_requested(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts"
+    _codex_platform_receipt(
+        platform_receipts,
+        reason_code="codex_exec_auth_probe_not_requested",
+        include_failed_reason=False,
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_exec_auth_probe_not_requested" in codex_snapshot["operator_visible_reason"]
+    assert (
+        "codex-auth-blocker:codex_exec_auth_probe_not_requested" in codex_snapshot["evidence_refs"]
+    )
+
+
+def test_codex_snapshot_unknown_when_observed_receipt_lacks_exec_auth_witness(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts"
+    _codex_platform_receipt(platform_receipts, saved_login_witness=False)
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_exec_auth_witness_absent" in codex_snapshot["operator_visible_reason"]
+    assert "codex-auth-blocker:codex_exec_auth_witness_absent" in codex_snapshot["evidence_refs"]
+
+
+def test_codex_snapshot_unknown_when_observed_receipt_has_only_legacy_exec_auth_refs(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts"
+    _codex_platform_receipt(
+        platform_receipts,
+        saved_login_witness=False,
+        legacy_exec_auth_witness=True,
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_exec_auth_witness_absent" in codex_snapshot["operator_visible_reason"]
+    assert "codex-auth-blocker:codex_exec_auth_witness_absent" in codex_snapshot["evidence_refs"]
+
+
+@pytest.mark.parametrize("negative_token", ["absent", "not", "unobserved", "timeout"])
+def test_codex_snapshot_unknown_when_saved_login_witness_ref_is_negated(
+    tmp_path: Path,
+    negative_token: str,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts"
+    _codex_platform_receipt(
+        platform_receipts,
+        evidence_refs_override=[f"host:{negative_token}:codex:exec:auth:saved-login:observed"],
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_exec_auth_witness_absent" in codex_snapshot["operator_visible_reason"]
+    assert "codex-auth-blocker:codex_exec_auth_witness_absent" in codex_snapshot["evidence_refs"]
+
+
+def test_codex_snapshot_unknown_when_saved_login_witness_host_mismatches_dispatch_host(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts"
+    _codex_platform_receipt(
+        platform_receipts,
+        evidence_refs_override=["host:podium:codex:exec:auth:saved-login:observed"],
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+        extra_env={"HAPAX_DISPATCH_HOST": "appendix"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_exec_auth_witness_absent" in codex_snapshot["operator_visible_reason"]
+    assert "codex-auth-blocker:codex_exec_auth_witness_absent" in codex_snapshot["evidence_refs"]
+
+
+def test_codex_snapshot_unknown_when_platform_receipt_is_invalid(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts-invalid"
+    platform_receipts.mkdir()
+    (platform_receipts / "codex.json").write_text("[not a mapping]", encoding="utf-8")
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_platform_capability_receipt_invalid" in codex_snapshot["operator_visible_reason"]
+    assert (
+        "codex-auth-blocker:codex_platform_capability_receipt_invalid"
+        in codex_snapshot["evidence_refs"]
+    )
+
+
+def test_codex_snapshot_unknown_when_platform_receipt_dir_is_missing(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts-absent"
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_platform_capability_receipt_absent" in codex_snapshot["operator_visible_reason"]
+    assert (
+        "platform-capability-receipt:codex:absent:receipt-dir-missing"
+        in codex_snapshot["evidence_refs"]
+    )
+    assert (
+        "codex-auth-blocker:codex_platform_capability_receipt_absent"
+        in codex_snapshot["evidence_refs"]
+    )
+
+
+def test_codex_snapshot_unknown_when_no_codex_platform_receipt(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts-empty"
+    platform_receipts.mkdir()
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_platform_capability_receipt_absent" in codex_snapshot["operator_visible_reason"]
+    assert (
+        "platform-capability-receipt:codex:absent:no-codex-receipt"
+        in codex_snapshot["evidence_refs"]
+    )
+    assert (
+        "codex-auth-blocker:codex_platform_capability_receipt_absent"
+        in codex_snapshot["evidence_refs"]
+    )
+
+
+def test_codex_snapshot_unknown_when_platform_receipt_is_stale(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts-stale"
+    _codex_platform_receipt(
+        platform_receipts,
+        reason_code="codex_exec_auth_refresh_token_invalidated",
+        observed_at="2026-06-09T23:00:00Z",
+    )
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_platform_capability_receipt_stale" in codex_snapshot["operator_visible_reason"]
+    assert "codex_exec_auth_refresh_token_invalidated" in codex_snapshot["operator_visible_reason"]
+    assert (
+        "codex-auth-blocker:codex_platform_capability_receipt_stale"
+        in codex_snapshot["evidence_refs"]
+    )
 
 
 def test_governance_records_carry_over_unchanged(tmp_path: Path) -> None:

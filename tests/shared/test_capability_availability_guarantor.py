@@ -113,7 +113,22 @@ def _mark_current_codex_session_usable(route: dict) -> None:
 
 def _mark_codex_exec_auth_observed(route: dict) -> None:
     route["freshness"]["evidence"]["capability"]["evidence_refs"].append(
-        "local:codex:exec:auth:observed"
+        "host:hapax-appendix:codex:exec:auth:saved-login:observed"
+    )
+
+
+def _mark_local_codex_exec_auth_observed(route: dict) -> None:
+    route["freshness"]["evidence"]["capability"]["evidence_refs"].append(
+        "host:local:codex:exec:auth:saved-login:observed"
+    )
+
+
+def _mark_remote_codex_exec_auth_observed(route: dict) -> None:
+    route["freshness"]["evidence"]["capability"]["evidence_refs"].extend(
+        [
+            "remote:hapax-appendix:codex:exec:auth:observed",
+            "host:hapax-appendix:codex:exec:auth:saved-login:observed",
+        ]
     )
 
 
@@ -174,6 +189,158 @@ def test_codex_oauth_subscription_route_accepts_current_session_and_exec_auth_wi
     assert receipt.reason_codes == ()
 
 
+def test_codex_oauth_subscription_route_accepts_explicit_local_exec_auth_witness(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("HAPAX_CODEX_EXEC_AUTH_HOST", "local")
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    _mark_current_codex_session_usable(route_payload)
+    _mark_local_codex_exec_auth_observed(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is True
+    assert receipt.predicate.exec_auth_attested is True
+    assert receipt.reason_codes == ()
+
+
+def test_codex_oauth_subscription_route_accepts_remote_exec_auth_witness(monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_DISPATCH_HOST", "appendix")
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    _mark_current_codex_session_usable(route_payload)
+    _mark_remote_codex_exec_auth_observed(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is True
+    assert receipt.predicate.exec_auth_attested is True
+    assert receipt.reason_codes == ()
+
+
+def test_codex_oauth_subscription_route_accepts_default_appendix_exec_auth_witness(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("HAPAX_CODEX_EXEC_AUTH_HOST", raising=False)
+    monkeypatch.delenv("HAPAX_DISPATCH_HOST", raising=False)
+    monkeypatch.delenv("HAPAX_DEFAULT_DISPATCH_HOST", raising=False)
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    _mark_current_codex_session_usable(route_payload)
+    _mark_remote_codex_exec_auth_observed(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is True
+    assert receipt.predicate.exec_auth_attested is True
+    assert receipt.reason_codes == ()
+
+
+def test_codex_oauth_subscription_route_rejects_local_exec_auth_witness_without_dispatch_host(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("HAPAX_CODEX_EXEC_AUTH_HOST", raising=False)
+    monkeypatch.delenv("HAPAX_DISPATCH_HOST", raising=False)
+    monkeypatch.delenv("HAPAX_DEFAULT_DISPATCH_HOST", raising=False)
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    _mark_current_codex_session_usable(route_payload)
+    _mark_local_codex_exec_auth_observed(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is False
+    assert receipt.predicate.exec_auth_attested is False
+    assert "codex_exec_auth_witness_absent" in receipt.reason_codes
+
+
+def test_codex_oauth_subscription_route_rejects_mismatched_remote_exec_auth_witness(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("HAPAX_DISPATCH_HOST", "appendix")
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    _mark_current_codex_session_usable(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    route_payload["freshness"]["evidence"]["capability"]["evidence_refs"].extend(
+        [
+            "remote:podium:codex:exec:auth:observed",
+            "host:podium:codex:exec:auth:saved-login:observed",
+        ]
+    )
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is False
+    assert receipt.predicate.exec_auth_attested is False
+    assert "codex_exec_auth_witness_absent" in receipt.reason_codes
+
+
 def test_codex_oauth_subscription_route_degrades_without_exec_auth_witness() -> None:
     payload = _payload()
     route_payload = _route_payload(payload, "codex.headless.full")
@@ -202,6 +369,39 @@ def test_codex_oauth_subscription_route_degrades_without_exec_auth_witness() -> 
     assert "auth_surface_not_fresh" in receipt.reason_codes
 
 
+def test_codex_oauth_subscription_route_rejects_legacy_exec_auth_witness_without_host_saved_login() -> (
+    None
+):
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    _mark_current_codex_session_usable(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    route_payload["freshness"]["evidence"]["capability"]["evidence_refs"].extend(
+        [
+            "local:codex:exec:auth:observed",
+            "remote:hapax-appendix:codex:exec:auth:observed",
+        ]
+    )
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is False
+    assert receipt.predicate.exec_auth_attested is False
+    assert "codex_exec_auth_witness_absent" in receipt.reason_codes
+
+
 def test_codex_oauth_subscription_route_rejects_suffixed_exec_auth_witness() -> None:
     payload = _payload()
     route_payload = _route_payload(payload, "codex.headless.full")
@@ -213,6 +413,101 @@ def test_codex_oauth_subscription_route_rejects_suffixed_exec_auth_witness() -> 
     ]
     route_payload["freshness"]["evidence"]["capability"]["evidence_refs"].append(
         "local:codex:exec:auth:observed:stale"
+    )
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is False
+    assert receipt.predicate.exec_auth_attested is False
+    assert "codex_exec_auth_witness_absent" in receipt.reason_codes
+
+
+def test_codex_oauth_subscription_route_rejects_suffixed_remote_exec_auth_witness() -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    _mark_current_codex_session_usable(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    route_payload["freshness"]["evidence"]["capability"]["evidence_refs"].extend(
+        [
+            "remote:hapax-appendix:codex:exec:auth:observed:stale",
+            "host:hapax-appendix:codex:exec:auth:saved-login:observed:stale",
+        ]
+    )
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is False
+    assert receipt.predicate.exec_auth_attested is False
+    assert "codex_exec_auth_witness_absent" in receipt.reason_codes
+
+
+def test_codex_oauth_subscription_route_rejects_negated_remote_exec_auth_witness() -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    _mark_current_codex_session_usable(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    route_payload["freshness"]["evidence"]["capability"]["evidence_refs"].extend(
+        [
+            "remote:stale:hapax-appendix:codex:exec:auth:observed",
+            "host:blocked:hapax-appendix:codex:exec:auth:saved-login:observed",
+        ]
+    )
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("codex.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is False
+    assert receipt.predicate.exec_auth_attested is False
+    assert "codex_exec_auth_witness_absent" in receipt.reason_codes
+
+
+def test_codex_oauth_subscription_route_rejects_negative_saved_login_ref_tokens() -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, "codex.headless.full")
+    _mark_fresh(route_payload)
+    _mark_current_codex_session_usable(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
+        "local:codex:quota-probe:unobservable",
+        "platform-capability-receipt:codex:test-codex-receipt",
+    ]
+    route_payload["freshness"]["evidence"]["capability"]["evidence_refs"].extend(
+        [
+            "host:absent:codex:exec:auth:saved-login:observed",
+            "host:not:codex:exec:auth:saved-login:observed",
+            "host:unobserved:codex:exec:auth:saved-login:observed",
+            "host:timeout:codex:exec:auth:saved-login:observed",
+        ]
     )
     registry = PlatformCapabilityRegistry.model_validate(payload)
     route = registry.require("codex.headless.full")
@@ -417,7 +712,7 @@ def test_default_codex_oauth_strategy_is_pure_deferred_action() -> None:
     )
 
 
-def test_executable_codex_oauth_strategy_runs_receipt_refresher_without_bearer_daemon() -> None:
+def test_executable_codex_oauth_strategy_runs_saved_login_receipt_refresher() -> None:
     route, freshness = _degraded_codex_route_and_freshness()
     runner = _FakeRefreshRunner(
         guarantor.RefreshCommandResult(
@@ -470,6 +765,7 @@ def test_executable_codex_oauth_strategy_runs_receipt_refresher_without_bearer_d
     assert "platform-capability-receipt:codex:codex-20260509T210000Z" in (
         receipt.refresh_evidence_refs
     )
+    assert "policy:codex_saved_login_exec_auth_witness" in receipt.refresh_evidence_refs
     assert "policy:not_codex_access_token_daemon" in receipt.refresh_evidence_refs
     serialized = " ".join(
         [
@@ -566,7 +862,7 @@ def test_executable_codex_oauth_strategy_defers_when_account_live_quota_unverifi
     assert "refresh_receipt_written" not in receipt.refresh_reason_codes
 
 
-def test_executable_codex_oauth_strategy_fails_when_auth_receipt_blocked() -> None:
+def test_executable_codex_oauth_strategy_preserves_token_invalidation_reason_codes() -> None:
     route, freshness = _degraded_codex_route_and_freshness()
     runner = _FakeRefreshRunner(
         guarantor.RefreshCommandResult(
@@ -581,9 +877,15 @@ def test_executable_codex_oauth_strategy_fails_when_auth_receipt_blocked() -> No
                             "cli_available": True,
                             "wrapper_exists": True,
                             "capability_status": "blocked",
-                            "capability_reason_codes": ["codex_oauth_access_token_absent"],
+                            "capability_reason_codes": [
+                                "codex_exec_auth_failed",
+                                "codex_exec_auth_refresh_token_invalidated",
+                            ],
                             "resource_status": "blocked",
-                            "resource_reason_codes": ["codex_oauth_access_token_absent"],
+                            "resource_reason_codes": [
+                                "codex_exec_auth_failed",
+                                "codex_exec_auth_refresh_token_invalidated",
+                            ],
                             "quota_status": "unobservable",
                             "quota_reason_codes": ["account_live_quota_receipt_absent"],
                         }
@@ -605,7 +907,11 @@ def test_executable_codex_oauth_strategy_fails_when_auth_receipt_blocked() -> No
     assert receipt.refresh_status is guarantor.RefreshStatus.FAILED
     assert "refresh_receipt_observed_codex_unavailable" in receipt.refresh_reason_codes
     assert (
-        "refresh_receipt_capability_reason:codex_oauth_access_token_absent"
+        "refresh_receipt_capability_reason:codex_exec_auth_refresh_token_invalidated"
+        in receipt.refresh_reason_codes
+    )
+    assert (
+        "refresh_receipt_resource_reason:codex_exec_auth_refresh_token_invalidated"
         in receipt.refresh_reason_codes
     )
 
@@ -820,7 +1126,7 @@ def test_reason_token_matching_does_not_overmatch_authority_or_quotable_text() -
         ),
         evidence_refs=(
             "test:codex:account-live-quota:observed",
-            "local:codex:exec:auth:observed",
+            "host:hapax-appendix:codex:exec:auth:saved-login:observed",
         ),
     )
 

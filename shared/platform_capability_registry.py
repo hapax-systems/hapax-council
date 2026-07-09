@@ -1559,6 +1559,9 @@ def _apply_receipt_to_route_payload(
         route_payload,
         now=now,
     )
+    route_specific_blocker = ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS.get(
+        route_payload.get("route_id")
+    )
     quota_admission_refs_to_inject = quota_admission_refs
     if not quota_admission_fresh and route_payload.get("route_id") == CLAUDE_HEADLESS_ROUTE_ID:
         quota_admission_refs_to_inject = tuple(
@@ -1575,8 +1578,19 @@ def _apply_receipt_to_route_payload(
                 ]
             )
         )
+    if route_specific_blocker and not quota_admission_fresh:
+        top_blockers.append(route_specific_blocker)
+        quota_evidence = freshness["evidence"]["quota"]
+        quota_evidence["blocked_reasons"] = list(
+            dict.fromkeys(
+                [
+                    *quota_evidence.get("blocked_reasons", []),
+                    route_specific_blocker,
+                ]
+            )
+        )
     if quota_admission_fresh:
-        blocker = ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS.get(route_payload.get("route_id"))
+        blocker = route_specific_blocker
         if blocker:
             route_payload.setdefault("telemetry", {})["quota_source"] = QuotaSource.LEDGER.value
             removable_top_blockers.add(blocker)

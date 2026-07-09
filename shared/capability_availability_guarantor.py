@@ -9,6 +9,7 @@ unless a caller supplies an executable refresh strategy.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from collections.abc import Iterable
@@ -32,6 +33,27 @@ from shared.platform_capability_registry import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID = "claude.headless.full"
+NEGATIVE_REF_TOKENS = {
+    "absent",
+    "blocked",
+    "denied",
+    "error",
+    "exhausted",
+    "expired",
+    "failed",
+    "failure",
+    "false",
+    "invalid",
+    "missing",
+    "negative",
+    "not",
+    "refused",
+    "stale",
+    "timeout",
+    "unobservable",
+    "unobserved",
+    "zero",
+}
 
 
 class _AvailabilityModel(BaseModel):
@@ -175,7 +197,7 @@ class RefreshStrategyRegistry:
 
 
 class CodexOAuthRefreshStrategy:
-    """First OAuth strategy: supported Codex refresh boundary, no bearer-token daemon."""
+    """Codex OAuth strategy: saved-login exec witness, no bearer-token daemon."""
 
     auth_surface = AuthSurface.OAUTH
     strategy_id = "codex-oauth-supported-refresh"
@@ -203,6 +225,7 @@ class CodexOAuthRefreshStrategy:
                 "script:scripts/hapax-platform-capability-receipts --platform codex "
                 "--codex-exec-auth-probe --json"
             ),
+            "policy:codex_saved_login_exec_auth_witness",
             "policy:not_codex_access_token_daemon",
             *freshness.evidence_refs,
         )
@@ -219,7 +242,7 @@ class CodexOAuthRefreshStrategy:
                 status=RefreshStatus.DEFERRED,
                 strategy_id=self.strategy_id,
                 reason_codes=(
-                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "oauth_refresh_uses_codex_saved_login_exec_witness",
                     "refresh_execution_not_requested",
                     "availability_recheck_required_after_refresh",
                 ),
@@ -244,7 +267,7 @@ class CodexOAuthRefreshStrategy:
                 status=RefreshStatus.FAILED,
                 strategy_id=self.strategy_id,
                 reason_codes=(
-                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "oauth_refresh_uses_codex_saved_login_exec_witness",
                     f"refresh_command_failed:{result.returncode}",
                 ),
                 evidence_refs=base_refs,
@@ -256,7 +279,7 @@ class CodexOAuthRefreshStrategy:
                 status=RefreshStatus.FAILED,
                 strategy_id=self.strategy_id,
                 reason_codes=(
-                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "oauth_refresh_uses_codex_saved_login_exec_witness",
                     "refresh_receipt_missing_from_command_output",
                 ),
                 evidence_refs=base_refs,
@@ -275,7 +298,7 @@ class CodexOAuthRefreshStrategy:
                 status=RefreshStatus.FAILED,
                 strategy_id=self.strategy_id,
                 reason_codes=(
-                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "oauth_refresh_uses_codex_saved_login_exec_witness",
                     "refresh_receipt_observed_codex_unavailable",
                 ),
                 evidence_refs=tuple(dict.fromkeys(evidence_refs)),
@@ -288,7 +311,7 @@ class CodexOAuthRefreshStrategy:
                 status=RefreshStatus.FAILED,
                 strategy_id=self.strategy_id,
                 reason_codes=(
-                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "oauth_refresh_uses_codex_saved_login_exec_witness",
                     "refresh_receipt_observed_codex_unavailable",
                     *surface_unavailable_reasons,
                 ),
@@ -302,7 +325,7 @@ class CodexOAuthRefreshStrategy:
                 status=RefreshStatus.DEFERRED,
                 strategy_id=self.strategy_id,
                 reason_codes=(
-                    "oauth_refresh_uses_supported_codex_auth_path",
+                    "oauth_refresh_uses_codex_saved_login_exec_witness",
                     "refresh_receipt_account_live_unverified",
                     *account_live_reasons,
                     "availability_recheck_required_after_refresh",
@@ -315,7 +338,7 @@ class CodexOAuthRefreshStrategy:
             status=RefreshStatus.REFRESHED,
             strategy_id=self.strategy_id,
             reason_codes=(
-                "oauth_refresh_uses_supported_codex_auth_path",
+                "oauth_refresh_uses_codex_saved_login_exec_witness",
                 "refresh_receipt_written",
                 "availability_recheck_required_after_refresh",
             ),
@@ -606,24 +629,7 @@ def _account_live_quota_observed_ref(ref: str, *, route_id: str | None = None) -
     tokens = _ref_tokens(ref)
     if not tokens:
         return False
-    negative_tokens = {
-        "absent",
-        "blocked",
-        "denied",
-        "exhausted",
-        "expired",
-        "failed",
-        "failure",
-        "false",
-        "missing",
-        "negative",
-        "not",
-        "stale",
-        "unobservable",
-        "unobserved",
-        "zero",
-    }
-    if any(token in negative_tokens for token in tokens):
+    if any(token in NEGATIVE_REF_TOKENS for token in tokens):
         return False
     allowed_suffixes = [("account", "live", "quota", "observed")]
     if normalize_route_id(route_id or "") != CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID:
@@ -666,7 +672,46 @@ def _exec_auth_attested(
     if route.platform.value != "codex" or route.auth_surface is not AuthSurface.OAUTH:
         return True
     refs = tuple(_ref_tokens(ref) for ref in freshness.evidence_refs)
-    return ("local", "codex", "exec", "auth", "observed") in refs
+    expected_hosts = _expected_exec_auth_hosts()
+    return any(_exec_auth_ref_attested(ref, expected_hosts=expected_hosts) for ref in refs)
+
+
+def _exec_auth_ref_attested(
+    ref: tuple[str, ...],
+    *,
+    expected_hosts: frozenset[tuple[str, ...]],
+) -> bool:
+    if any(token in NEGATIVE_REF_TOKENS for token in ref):
+        return False
+    if not (
+        len(ref) >= 8
+        and ref[0] == "host"
+        and ref[-6:] == ("codex", "exec", "auth", "saved", "login", "observed")
+    ):
+        return False
+    return ref[1:-6] in expected_hosts
+
+
+def _expected_exec_auth_hosts() -> frozenset[tuple[str, ...]]:
+    dispatch_host = (
+        os.environ.get("HAPAX_CODEX_EXEC_AUTH_HOST")
+        or os.environ.get("HAPAX_DISPATCH_HOST")
+        or os.environ.get("HAPAX_DEFAULT_DISPATCH_HOST")
+        or ""
+    ).strip()
+    if dispatch_host:
+        return _host_token_variants(dispatch_host)
+    return _host_token_variants("appendix")
+
+
+def _host_token_variants(host: str) -> frozenset[tuple[str, ...]]:
+    tokens = _ref_tokens(host)
+    variants = {tokens} if tokens else set()
+    if len(tokens) == 1 and tokens[0] not in {"local", "localhost"}:
+        variants.add(("hapax", tokens[0]))
+    if len(tokens) == 2 and tokens[0] == "hapax":
+        variants.add((tokens[1],))
+    return frozenset(variants)
 
 
 def _ref_tokens(ref: str) -> tuple[str, ...]:
