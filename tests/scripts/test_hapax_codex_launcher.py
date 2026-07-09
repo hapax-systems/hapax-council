@@ -271,6 +271,44 @@ exit 77
     assert "debug" not in remote_preflight_py
 
 
+def test_remote_preflight_rejects_prompt_echo_without_agent_sentinel(tmp_path: Path) -> None:
+    remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_codex = bin_dir / "codex"
+    fake_codex.write_text(
+        """#!/usr/bin/env bash
+if [ "${1:-}" = "exec" ]; then
+  printf '%s\n' '{"message":"Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"}'
+  exit 0
+fi
+exit 77
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+    payload = {
+        "required_dirs": [],
+        "executables": [],
+        "binaries": ["codex"],
+        "codex_exec_auth_timeout": 5,
+    }
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+
+    result = subprocess.run(
+        [sys.executable, "-c", remote_preflight_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 1
+    assert "codex_saved_auth_sentinel_missing" in result.stderr
+
+
 def test_remote_preflight_reports_refresh_token_invalidated(tmp_path: Path) -> None:
     remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
     bin_dir = tmp_path / "bin"
@@ -589,7 +627,9 @@ def test_launcher_missing_codex_reports_next_action(tmp_path: Path) -> None:
     assert "next action: install the Codex CLI, repair PATH" in result.stderr
 
 
-def test_launcher_remote_exec_strips_ambient_codex_access_token(tmp_path: Path) -> None:
+def test_launcher_remote_exec_strips_ambient_codex_access_token_and_codex_home(
+    tmp_path: Path,
+) -> None:
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
     assert "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE" not in remote_exec_py
     assert '.cache","hapax","codex-oauth"' not in remote_exec_py
@@ -598,9 +638,13 @@ def test_launcher_remote_exec_strips_ambient_codex_access_token(tmp_path: Path) 
     workdir = tmp_path / "workdir"
     workdir.mkdir()
     used_token = tmp_path / "used-token.txt"
+    used_codex_home = tmp_path / "used-codex-home.txt"
     payload = {
         "workdir": str(workdir),
-        "env": {"CODEX_ACCESS_TOKEN": "ambient-token-must-be-stripped"},
+        "env": {
+            "CODEX_ACCESS_TOKEN": "ambient-token-must-be-stripped",
+            "CODEX_HOME": str(tmp_path / "ambient-codex-home"),
+        },
         "proof_file": "",
         "codex_bin_path": sys.executable,
         "argv": [
@@ -609,9 +653,12 @@ def test_launcher_remote_exec_strips_ambient_codex_access_token(tmp_path: Path) 
             (
                 "import os,pathlib,sys;"
                 "pathlib.Path(sys.argv[1]).write_text("
-                "os.environ.get('CODEX_ACCESS_TOKEN',''),encoding='utf-8')"
+                "os.environ.get('CODEX_ACCESS_TOKEN',''),encoding='utf-8');"
+                "pathlib.Path(sys.argv[2]).write_text("
+                "os.environ.get('CODEX_HOME',''),encoding='utf-8')"
             ),
             str(used_token),
+            str(used_codex_home),
         ],
     }
     env = os.environ.copy()
@@ -629,6 +676,7 @@ def test_launcher_remote_exec_strips_ambient_codex_access_token(tmp_path: Path) 
 
     assert result.returncode == 0, result.stderr
     assert used_token.read_text(encoding="utf-8") == ""
+    assert used_codex_home.read_text(encoding="utf-8") == ""
 
 
 def test_launcher_remote_exec_reports_missing_codex_binary(tmp_path: Path) -> None:

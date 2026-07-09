@@ -79,6 +79,7 @@ def test_codex_headless_takes_explicit_local_fallback_after_appendix_preflight_f
 printf 'LOGOS_BASE_URL=%s\\n' "${{LOGOS_BASE_URL:-}}" > {env_file}
 printf 'HAPAX_DISPATCH_HOST=%s\\n' "${{HAPAX_DISPATCH_HOST:-}}" >> {env_file}
 printf 'CODEX_ACCESS_TOKEN_PRESENT=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" >> {env_file}
+printf 'CODEX_HOME_PRESENT=%s\\n' "${{CODEX_HOME:+yes}}" >> {env_file}
 exit 0
 """,
     )
@@ -92,6 +93,8 @@ exit 0
     env["HAPAX_DISPATCH_HOST"] = "appendix"
     env["HAPAX_DISPATCH_HOST_FALLBACK"] = "local"
     env["HAPAX_DISPATCH_PROOF_DIR"] = str(tmp_path / "proofs")
+    env["CODEX_ACCESS_TOKEN"] = "ambient-token-must-not-reach-worker"
+    env["CODEX_HOME"] = str(tmp_path / "ambient-codex-home")
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -109,7 +112,8 @@ exit 0
     launched_env = env_file.read_text(encoding="utf-8")
     assert "LOGOS_BASE_URL=http://localhost:8051/api" in launched_env
     assert "HAPAX_DISPATCH_HOST=appendix" in launched_env
-    assert "CODEX_ACCESS_TOKEN_PRESENT=" in launched_env
+    assert "CODEX_ACCESS_TOKEN_PRESENT=yes" not in launched_env
+    assert "CODEX_HOME_PRESENT=yes" not in launched_env
     proofs = list((tmp_path / "proofs").glob("*cx-amber-task-x-headless-local.json"))
     assert len(proofs) == 1
     proof = json.loads(proofs[0].read_text(encoding="utf-8"))

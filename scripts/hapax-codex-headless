@@ -225,6 +225,69 @@ strip_inherited_codex_access_token() {
     echo "hapax-codex-headless: ignoring inherited CODEX_ACCESS_TOKEN; governed Codex lanes use saved ChatGPT auth on the dispatch host" >&2
     unset CODEX_ACCESS_TOKEN
   fi
+  if [[ -n "${CODEX_HOME:-}" ]]; then
+    echo "hapax-codex-headless: ignoring inherited CODEX_HOME; governed Codex lanes use the dispatch host default saved ChatGPT auth cache" >&2
+    unset CODEX_HOME
+  fi
+}
+
+codex_exec_auth_sentinel_observed() {
+  local output_file="$1"
+  python3 - "$output_file" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+sentinel = "HAPAX_CODEX_EXEC_AUTH_OK"
+
+
+def assistant_content_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        pieces = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    pieces.append(text)
+        return "".join(pieces)
+    return ""
+
+
+def event_text(event):
+    if not isinstance(event, dict):
+        return ""
+    if event.get("type") == "item.completed":
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+            return text if isinstance(text, str) else ""
+    if event.get("type") == "response.output_text.done":
+        text = event.get("text")
+        return text if isinstance(text, str) else ""
+    if event.get("role") == "assistant":
+        return assistant_content_text(event.get("content"))
+    message = event.get("message")
+    if isinstance(message, str):
+        return message
+    if isinstance(message, dict) and message.get("role") == "assistant":
+        return assistant_content_text(message.get("content"))
+    return ""
+
+
+stdout = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+if stdout.strip() == sentinel:
+    raise SystemExit(0)
+for line in stdout.splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if event_text(event).strip() == sentinel:
+        raise SystemExit(0)
+raise SystemExit(1)
+PYEOF
 }
 
 resolve_local_codex_bin() {
@@ -302,7 +365,7 @@ prove_local_codex_exec_auth() {
     rm -f "$output_file" "$error_file"
     exit 78
   fi
-  if ! grep -q 'HAPAX_CODEX_EXEC_AUTH_OK' "$output_file"; then
+  if ! codex_exec_auth_sentinel_observed "$output_file"; then
     echo "hapax-codex-headless: codex exec auth witness did not return the expected sentinel; next action: re-run the Codex auth receipt probe before dispatching Codex lanes" >&2
     rm -f "$output_file" "$error_file"
     exit 78
@@ -447,6 +510,48 @@ def _resolve_codex_bin():
             if resolved:
                 return resolved,""
     return None,"codex_binary_missing"
+def _assistant_content_text(content):
+    if isinstance(content,str):
+        return content
+    if isinstance(content,list):
+        pieces=[]
+        for item in content:
+            if isinstance(item,dict):
+                text=item.get("text")
+                if isinstance(text,str):
+                    pieces.append(text)
+        return "".join(pieces)
+    return ""
+def _auth_event_text(event):
+    if not isinstance(event,dict):
+        return ""
+    if event.get("type")=="item.completed":
+        item=event.get("item")
+        if isinstance(item,dict) and item.get("type")=="agent_message":
+            text=item.get("text")
+            return text if isinstance(text,str) else ""
+    if event.get("type")=="response.output_text.done":
+        text=event.get("text")
+        return text if isinstance(text,str) else ""
+    if event.get("role")=="assistant":
+        return _assistant_content_text(event.get("content"))
+    message=event.get("message")
+    if isinstance(message,str):
+        return message
+    if isinstance(message,dict) and message.get("role")=="assistant":
+        return _assistant_content_text(message.get("content"))
+    return ""
+def _sentinel_observed(stdout):
+    if stdout.strip()==sentinel:
+        return True
+    for line in stdout.splitlines():
+        try:
+            event=json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if _auth_event_text(event).strip()==sentinel:
+            return True
+    return False
 def _auth_error(output, default):
     if "refresh_token_invalidated" in output:
         return "codex_saved_auth_refresh_token_invalidated"
@@ -482,7 +587,7 @@ else:
         output=(result.stdout or "")+"\n"+(result.stderr or "")
         if result.returncode != 0:
             actuation_error=_auth_error(output,"codex_saved_auth_exec_failed:rc="+str(result.returncode))
-        elif sentinel not in result.stdout:
+        elif not _sentinel_observed(result.stdout):
             actuation_error=_auth_error(output,"codex_saved_auth_sentinel_missing")
 if missing_dirs or missing_exec or missing_bins or actuation_error:
     print("remote preflight failed: missing_dirs="+json.dumps(missing_dirs)+" missing_executables="+json.dumps(missing_exec)+" missing_binaries="+json.dumps(missing_bins)+" auth_error="+json.dumps(actuation_error)+"; next action: repair saved Codex login on the dispatch host via codex login or the documented auth-cache transfer fallback, then verify required paths before retrying", file=sys.stderr)
@@ -538,7 +643,7 @@ def _resolve_codex_bin():
             if resolved:
                 return resolved,""
     return None,"codex_binary_missing"
-os.environ.pop("CODEX_ACCESS_TOKEN",None)
+os.environ.pop("CODEX_ACCESS_TOKEN",None); os.environ.pop("CODEX_HOME",None)
 # Exec-host identity materialization mirrors hapax-claude-headless: the
 # session-keyed claim must exist where codex exec runs, or the worker can fall
 # back to stale legacy lane state and reject the governed dispatch.

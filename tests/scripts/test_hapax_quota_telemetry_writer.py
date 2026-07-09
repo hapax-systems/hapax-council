@@ -35,7 +35,9 @@ def _run_writer(
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     out = tmp_path / "out" / "quota-spend-ledger-live.json"
     relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
     relay.mkdir(exist_ok=True)
+    platform_receipts.mkdir(exist_ok=True)
     stub = _fake_nvidia_smi(tmp_path, nvidia_body)
     result = subprocess.run(
         [
@@ -48,6 +50,8 @@ def _run_writer(
             str(out),
             "--relay-receipt-dir",
             str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
             "--nvidia-smi",
             str(stub),
             "--json",
@@ -56,7 +60,11 @@ def _run_writer(
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+        env={
+            **os.environ,
+            "PYTHONPATH": str(REPO_ROOT),
+            "HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR": str(platform_receipts),
+        },
     )
     return result, out
 
@@ -456,6 +464,34 @@ def test_codex_snapshot_unknown_when_exec_auth_receipt_reports_refresh_token_inv
     assert "codex_exec_auth_refresh_token_invalidated" in codex_snapshot["operator_visible_reason"]
     assert (
         "codex-auth-blocker:codex_exec_auth_refresh_token_invalidated"
+        in codex_snapshot["evidence_refs"]
+    )
+
+
+def test_codex_snapshot_unknown_when_platform_receipt_is_invalid(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts-invalid"
+    platform_receipts.mkdir()
+    (platform_receipts / "codex.json").write_text("[not a mapping]", encoding="utf-8")
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_platform_capability_receipt_invalid" in codex_snapshot["operator_visible_reason"]
+    assert (
+        "codex-auth-blocker:codex_platform_capability_receipt_invalid"
         in codex_snapshot["evidence_refs"]
     )
 

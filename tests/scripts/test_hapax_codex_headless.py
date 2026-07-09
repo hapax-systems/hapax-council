@@ -320,6 +320,7 @@ exec bash -c "$remote_cmd"
 printf 'LOGOS_BASE_URL=%s\\n' "${{LOGOS_BASE_URL:-}}" > {env_file}
 printf 'HAPAX_DISPATCH_HOST=%s\\n' "${{HAPAX_DISPATCH_HOST:-}}" >> {env_file}
 printf 'CODEX_ACCESS_TOKEN_PRESENT=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" >> {env_file}
+printf 'CODEX_HOME_PRESENT=%s\\n' "${{CODEX_HOME:+yes}}" >> {env_file}
 exit 0
 """,
     )
@@ -331,6 +332,8 @@ exit 0
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+    env["CODEX_ACCESS_TOKEN"] = "ambient-token-must-not-reach-worker"
+    env["CODEX_HOME"] = str(tmp_path / "ambient-codex-home")
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -347,7 +350,8 @@ exit 0
     launched_env = env_file.read_text(encoding="utf-8")
     assert "LOGOS_BASE_URL=http://192.168.68.85:8051/api" in launched_env
     assert "HAPAX_DISPATCH_HOST=local" in launched_env
-    assert "CODEX_ACCESS_TOKEN_PRESENT=" in launched_env
+    assert "CODEX_ACCESS_TOKEN_PRESENT=yes" not in launched_env
+    assert "CODEX_HOME_PRESENT=yes" not in launched_env
     proofs = list(
         (home / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs").glob(
             "*cx-amber-task-x-headless-remote.json"
@@ -1856,6 +1860,46 @@ def test_codex_headless_remote_preflight_cleanup_child_clears_bearer_material_be
     assert "timeout=auth_timeout" in remote_preflight_py
 
 
+def test_codex_headless_remote_preflight_rejects_prompt_echo_without_agent_sentinel(
+    tmp_path: Path,
+) -> None:
+    remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_codex = bin_dir / "codex"
+    fake_codex.write_text(
+        """#!/usr/bin/env bash
+if [ "${1:-}" = "exec" ]; then
+  printf '%s\n' '{"message":"Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"}'
+  exit 0
+fi
+exit 77
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+    payload = {
+        "required_dirs": [],
+        "executables": [],
+        "binaries": ["codex"],
+        "codex_exec_auth_timeout": 5,
+    }
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+
+    result = subprocess.run(
+        [sys.executable, "-c", remote_preflight_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 1
+    assert "codex_saved_auth_sentinel_missing" in result.stderr
+
+
 def test_codex_headless_remote_preflight_does_not_fork_for_token_cleanup(
     tmp_path: Path,
 ) -> None:
@@ -2021,7 +2065,7 @@ def test_codex_headless_malicious_session_id_does_not_escape_tmp(
             leaked.unlink(missing_ok=True)
 
 
-def test_codex_headless_remote_exec_strips_inherited_access_token(
+def test_codex_headless_remote_exec_strips_inherited_access_token_and_codex_home(
     tmp_path: Path,
 ) -> None:
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
@@ -2029,15 +2073,20 @@ def test_codex_headless_remote_exec_strips_inherited_access_token(
     workdir.mkdir()
     codex_bin = tmp_path / "bin" / "codex"
     used_token = tmp_path / "used-token.txt"
+    used_codex_home = tmp_path / "used-codex-home.txt"
     _write_executable(
         codex_bin,
         f"""printf '%s\\n' "${{CODEX_ACCESS_TOKEN:-}}" > "{used_token}"
+printf '%s\\n' "${{CODEX_HOME:-}}" > "{used_codex_home}"
 exit 0
 """,
     )
     payload = {
         "workdir": str(workdir),
-        "env": {"CODEX_ACCESS_TOKEN": "ambient-token-must-not-reach-worker"},
+        "env": {
+            "CODEX_ACCESS_TOKEN": "ambient-token-must-not-reach-worker",
+            "CODEX_HOME": str(tmp_path / "ambient-codex-home"),
+        },
         "proof_file": "",
         "argv": ["codex"],
     }
@@ -2057,6 +2106,7 @@ exit 0
 
     assert result.returncode == 0, result.stderr
     assert used_token.read_text(encoding="utf-8").strip() == ""
+    assert used_codex_home.read_text(encoding="utf-8").strip() == ""
 
 
 def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
