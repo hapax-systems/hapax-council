@@ -1006,9 +1006,17 @@ def _ref_tokens(evidence_ref: str) -> tuple[str, ...]:
 
 
 def _quota_walls_for_route(walls: list[QuotaWall], route_id: str) -> list[QuotaWall]:
-    """Walls with no route_id are legacy platform-wide walls; scoped walls bind one route."""
+    """Claude subscription walls are shared-pool evidence across Claude routes.
 
-    return [wall for wall in walls if wall.route_id in {None, route_id}]
+    ``route_id`` remains in the evidence ref to preserve where the wall was
+    observed, but the Anthropic subscription quota pool is account-level: a
+    live wall on one Claude subscription route inhibits every route in that
+    provider pool until the wall expires or a new account-live headroom receipt
+    is minted after the wall.
+    """
+
+    _ = route_id
+    return walls
 
 
 def _claude_ignored_receipts_for_route(ignored_refs: list[str], route_id: str) -> list[str]:
@@ -1880,8 +1888,9 @@ def build_live_ledger(
                     evidence = [*route_wall_evidence, writer_ref]
                     fresh_until = None
                     reason = (
-                        f"{claude_route_id} hit an unexpired Claude quota wall; "
-                        "state from route-scoped or legacy platform quota-wall receipt(s)"
+                        f"{claude_route_id} is inhibited by an unexpired Claude subscription "
+                        "quota wall on the shared account-level capacity pool; negative wall "
+                        "evidence outranks stale or earlier positive headroom receipts"
                     )
                 elif route_admissions:
                     state = "fresh"

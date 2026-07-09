@@ -897,7 +897,9 @@ def test_unexpired_quota_wall_marks_platform_exhausted(tmp_path: Path) -> None:
     assert summary["quota_walls"] == {"claude": 1}
 
 
-def test_route_scoped_claude_quota_wall_only_exhausts_matching_route(tmp_path: Path) -> None:
+def test_route_scoped_claude_quota_wall_inhibits_shared_subscription_pool(
+    tmp_path: Path,
+) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
     _wall_receipt(
@@ -923,10 +925,9 @@ def test_route_scoped_claude_quota_wall_only_exhausts_matching_route(tmp_path: P
     assert any(
         ":route_id:claude.headless.full:" in ref for ref in headless_snapshot["evidence_refs"]
     )
-    assert review_snapshot["subscription_quota_state"] == "fresh"
-    assert not any(
-        ":route_id:claude.headless.full:" in ref for ref in review_snapshot["evidence_refs"]
-    )
+    assert review_snapshot["subscription_quota_state"] == "exhausted"
+    assert any(":route_id:claude.headless.full:" in ref for ref in review_snapshot["evidence_refs"])
+    assert "shared account-level capacity pool" in review_snapshot["operator_visible_reason"]
 
 
 def test_quota_wall_route_id_cannot_move_wall_to_another_platform(tmp_path: Path) -> None:

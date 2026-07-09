@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = REPO_ROOT / "scripts" / "hapax-claude-reviewer"
 
@@ -135,7 +137,7 @@ def test_claude_reviewer_omits_child_stdout_on_nonzero_exit(tmp_path: Path) -> N
     assert result.returncode == 42
     assert result.stdout == ""
     assert "rate limited" in result.stderr
-    assert "stdout omitted from classifier" in result.stderr
+    assert "claude stdout diagnostic for classifier" in result.stderr
     assert "stdout omitted" in result.stderr
 
 
@@ -165,3 +167,58 @@ def test_claude_reviewer_preserves_stdout_only_quota_wall_for_classifier(
     assert "claude stdout diagnostic for classifier" in result.stderr
     assert "weekly limit" in result.stderr
     assert "stdout omitted" in result.stderr
+
+
+def test_claude_reviewer_preserves_single_line_stdout_diagnostic_with_child_stderr(
+    tmp_path: Path,
+) -> None:
+    fake = tmp_path / "claude"
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "print('non-quota stderr noise', file=sys.stderr)\n"
+        'print("You\'ve hit your weekly limit - resets 5pm (America/Chicago)")\n'
+        "sys.exit(75)\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o700)
+
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER), "--claude-bin", str(fake)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode == 75
+    assert result.stdout == ""
+    assert "non-quota stderr noise" in result.stderr
+    assert "claude stdout diagnostic for classifier" in result.stderr
+    assert "weekly limit" in result.stderr
+
+
+@pytest.mark.skipif(
+    os.environ.get("HAPAX_RUN_CLAUDE_REVIEWER_REAL_SMOKE") != "1",
+    reason="real Claude CLI no-tools probe is opt-in and uses local subscription quota",
+)
+def test_claude_reviewer_real_cli_no_tools_probe() -> None:
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER)],
+        input=(
+            "No-tools probe. Do not use or request a shell. If a Bash tool is "
+            "available, it would be unsafe to use it here. Emit only the strict "
+            "review YAML: verdict accept, findings [], checklist {}."
+        ),
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        timeout=180,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.stdout.startswith("```yaml\n")
+    assert result.stdout.endswith("\n```\n")
+    assert "tool_use" not in result.stdout.lower()
+    assert "bash" not in result.stdout.lower()

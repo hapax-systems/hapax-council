@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     sys.stderr.write(result.stderr)
     if result.returncode != 0:
         stdout = result.stdout.strip()
-        if not result.stderr.strip() and stdout and "\n" not in stdout:
+        if stdout and "\n" not in stdout:
             print(
                 f"hapax-claude-reviewer: claude stdout diagnostic for classifier: {stdout}",
                 file=sys.stderr,
@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         elif result.stdout:
             print(
                 "hapax-claude-reviewer: claude stdout omitted from classifier "
-                "because child stderr was present or stdout was multiline",
+                "because stdout was multiline",
                 file=sys.stderr,
             )
         print(
