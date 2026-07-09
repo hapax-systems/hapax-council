@@ -168,7 +168,11 @@ class SCEDTargetPolicySnapshot:
             "testing_window_ends_on",
             _coerce_optional_date(self.testing_window_ends_on, "testing_window_ends_on"),
         )
-        object.__setattr__(self, "registry_row_ref", _optional_string(self.registry_row_ref))
+        object.__setattr__(
+            self,
+            "registry_row_ref",
+            _optional_durable_ref(self.registry_row_ref, field="registry_row_ref"),
+        )
         object.__setattr__(self, "source_task", _optional_string(self.source_task))
 
     @classmethod
@@ -758,7 +762,7 @@ def _policy_for_target(
     target: G2GateInput,
     snapshots: Sequence[SCEDTargetPolicySnapshot | Mapping[str, Any]] | None,
 ) -> SCEDTargetPolicySnapshot:
-    candidates = default_target_policy_snapshots() if snapshots is None else snapshots
+    candidates = _target_policy_candidates(snapshots)
     for snapshot in candidates:
         try:
             policy = (
@@ -774,6 +778,19 @@ def _policy_for_target(
         SCEDPhase1RejectReason.MISSING_TARGET_POLICY,
         f"no target policy snapshot for {_target_key(target)}",
     )
+
+
+def _target_policy_candidates(
+    snapshots: Sequence[SCEDTargetPolicySnapshot | Mapping[str, Any]] | None,
+) -> Sequence[SCEDTargetPolicySnapshot | Mapping[str, Any]]:
+    if snapshots is None:
+        return default_target_policy_snapshots()
+    if isinstance(snapshots, str) or not isinstance(snapshots, Sequence):
+        raise _Phase1InputError(
+            SCEDPhase1RejectReason.INVALID_TARGET_POLICY,
+            "target_policies must be a sequence of target policy snapshots",
+        )
+    return snapshots
 
 
 def _policy_snapshot_from_mapping(value: Any) -> SCEDTargetPolicySnapshot:
@@ -977,6 +994,13 @@ def _optional_string(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("optional string field must be a string")
     return value.strip()
+
+
+def _optional_durable_ref(value: Any, *, field: str) -> str:
+    ref = _optional_string(value)
+    if not ref:
+        return ""
+    return _required_durable_ref(ref, field=field)
 
 
 def _sha256_digest(value: Any, *, field: str) -> str:
