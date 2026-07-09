@@ -2,8 +2,7 @@
 Description=Audit deferred root-required post-merge deploy actions
 Documentation=file:%h/.cache/hapax/source-activation/worktree/systemd/README.md
 OnFailure=notify-failure@%n.service
-StartLimitIntervalSec=30min
-StartLimitBurst=2
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot

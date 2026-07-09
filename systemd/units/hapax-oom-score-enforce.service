@@ -3,8 +3,7 @@
 Description=Apply live Hapax OOM scores that require root authority
 Documentation=file:/home/hapax/.cache/hapax/source-activation/worktree/systemd/README.md
 OnFailure=hapax-root-failure-intake@%n.service
-StartLimitIntervalSec=10min
-StartLimitBurst=3
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot

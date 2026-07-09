@@ -3,8 +3,9 @@
 set -euo pipefail
 
 unit="${1:?unit name required}"
-intake="${HAPAX_ROOT_FAILURE_INTAKE_CLI:-/home/hapax/.local/lib/hapax-recovery/council/current/scripts/hapax-p0-incident-intake}"
-ledger="${HAPAX_ROOT_FAILURE_LEDGER:-/home/hapax/.cache/hapax/p0-incident-intake/events.jsonl}"
+hapax_home="${HAPAX_ROOT_FAILURE_HOME:-${HOME:-/home/hapax}}"
+intake="${HAPAX_ROOT_FAILURE_INTAKE_CLI:-$hapax_home/.local/lib/hapax-recovery/council/current/scripts/hapax-p0-incident-intake}"
+ledger="${HAPAX_ROOT_FAILURE_LEDGER:-$hapax_home/.cache/hapax/p0-incident-intake/events.jsonl}"
 
 if [ -x "$intake" ]; then
     exec "$intake" service-failed "$unit"

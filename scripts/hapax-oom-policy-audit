@@ -304,13 +304,6 @@ _ALLOWED_USER_PROTECTED_NAMES = {
     "wireplumber",
     "dbus-broker",
     "dbus-daemon",
-    "hapax-daimonion",
-    "hapax-daimonio",
-    "studio-compositor",
-    "studio-composit",
-    "hapax-imagination",
-    "hapax-imaginat",
-    "hapax-imaginati",
     "systemd",
 }
 

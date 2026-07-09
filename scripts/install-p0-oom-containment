@@ -325,7 +325,7 @@ apply_protected_user_unit_oom_scores() {
 
 allowed_user_protected_process() {
     case "$1" in
-        pipewire|pipewire-pulse|wireplumber|dbus-broker|dbus-daemon|hapax-daimonion|hapax-daimonio|studio-compositor|studio-composit|hapax-imagination|hapax-imaginat|hapax-imaginati|systemd)
+        pipewire|pipewire-pulse|wireplumber|dbus-broker|dbus-daemon|systemd)
             return 0
             ;;
     esac
