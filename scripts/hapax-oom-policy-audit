@@ -16,6 +16,7 @@ BYTES_104G = 104 * 1024**3
 BYTES_8G = 8 * 1024**3
 NEXT_OOM_INSTALL = "next action: scripts/install-p0-oom-containment --install --verify-live"
 PROC_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_PROC_ROOT", "/proc"))
+CGROUP_ROOT = Path(os.environ.get("HAPAX_OOM_AUDIT_CGROUP_ROOT", "/sys/fs/cgroup"))
 PROTECTED_USER_UNITS = {
     "pipewire.service": -900,
     "pipewire-pulse.service": -900,
@@ -165,10 +166,27 @@ def _proc_oom_score(pid: str) -> int | None:
         return None
 
 
+def _cgroup_pids(cgroup: str) -> list[str]:
+    if not cgroup:
+        return []
+    root = CGROUP_ROOT / cgroup.lstrip("/")
+    if not root.is_dir():
+        return []
+    pids: set[str] = set()
+    for procs in root.rglob("cgroup.procs"):
+        try:
+            for line in procs.read_text(encoding="utf-8").splitlines():
+                if line.isdigit():
+                    pids.add(line)
+        except OSError:
+            continue
+    return sorted(pids, key=int)
+
+
 def audit_protected_user_units() -> list[Check]:
     checks: list[Check] = []
     for unit, expected in PROTECTED_USER_UNITS.items():
-        values = _show(unit, ["OOMScoreAdjust", "MainPID"], user=True)
+        values = _show(unit, ["OOMScoreAdjust", "MainPID", "ControlGroup"], user=True)
         if "_error" in values:
             checks.append(
                 Check(
@@ -191,8 +209,11 @@ def audit_protected_user_units() -> list[Check]:
         checks.append(
             Check(f"user_unit_{unit}_OOMScoreAdjust", status, str(expected), actual, detail)
         )
-        pid = values.get("MainPID", "0")
-        if pid and pid != "0":
+        live_pids = _cgroup_pids(values.get("ControlGroup", ""))
+        main_pid = values.get("MainPID", "0")
+        if main_pid.isdigit() and main_pid != "0":
+            live_pids = sorted({*live_pids, main_pid}, key=int)
+        for pid in live_pids:
             live = _proc_oom_score(pid)
             live_actual = "N/A" if live is None else str(live)
             live_status = "pass" if live == expected else "gap"
@@ -203,7 +224,7 @@ def audit_protected_user_units() -> list[Check]:
             )
             checks.append(
                 Check(
-                    f"user_unit_{unit}_live_oom_score_adj",
+                    f"user_unit_{unit}_pid_{pid}_live_oom_score_adj",
                     live_status,
                     str(expected),
                     live_actual,
@@ -243,7 +264,7 @@ def audit_tmux_scopes() -> list[Check]:
         ]
         slice_name = values.get("Slice", "")
         outside_app_slice = slice_name != "app.slice"
-        status = "warn" if unbounded and outside_app_slice else "pass"
+        status = "gap" if unbounded and outside_app_slice else "pass"
         detail_parts = []
         if unbounded:
             detail_parts.append(f"unbounded properties: {', '.join(unbounded)}")

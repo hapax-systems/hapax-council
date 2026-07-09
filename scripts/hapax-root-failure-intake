@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Activation-independent failure intake bridge for system-scope P0 units.
+set -euo pipefail
+
+unit="${1:?unit name required}"
+intake="${HAPAX_ROOT_FAILURE_INTAKE_CLI:-/home/hapax/.local/lib/hapax-recovery/council/current/scripts/hapax-p0-incident-intake}"
+ledger="${HAPAX_ROOT_FAILURE_LEDGER:-/home/hapax/.cache/hapax/p0-incident-intake/events.jsonl}"
+
+if [ -x "$intake" ]; then
+    exec "$intake" service-failed "$unit"
+fi
+
+python3 - "$ledger" "$unit" "$intake" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+ledger = Path(sys.argv[1])
+unit = sys.argv[2]
+intake = sys.argv[3]
+ledger.parent.mkdir(parents=True, exist_ok=True)
+record = {
+    "observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    "kind": "root_failure_intake_cli_missing",
+    "priority": "urgent",
+    "source": "hapax-root-failure-intake",
+    "unit": unit,
+    "missing_intake": intake,
+    "title": f"Root failure intake fallback: {unit}",
+    "message": (
+        f"System-scope failure intake could not exec {intake}; "
+        "recorded emergency ledger fallback. Next action: reinstall the D2 recovery bundle "
+        "and rerun scripts/install-p0-oom-containment --install --verify-live."
+    ),
+}
+with ledger.open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(record, sort_keys=True) + "\n")
+PY
+
+echo "root failure intake fallback recorded for $unit; missing intake: $intake" >&2

@@ -6,6 +6,7 @@ TARGET_USER="${HAPAX_OOM_TARGET_USER:-hapax}"
 TARGET_UID="${HAPAX_OOM_TARGET_UID:-$(id -u "$TARGET_USER")}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
+CGROUP_ROOT="${HAPAX_OOM_CGROUP_ROOT:-/sys/fs/cgroup}"
 
 usage() {
     cat <<'USAGE'
@@ -82,15 +83,42 @@ user_main_pid() {
     return 0
 }
 
+user_control_group() {
+    local unit="$1"
+    run_user_systemctl show "$unit" -p ControlGroup --value 2>/dev/null || true
+}
+
+cgroup_pids() {
+    local cgroup="$1" dir
+    [ -n "$cgroup" ] || return 0
+    dir="$CGROUP_ROOT/${cgroup#/}"
+    [ -d "$dir" ] || return 0
+    find "$dir" -name cgroup.procs -type f -print 2>/dev/null |
+        while IFS= read -r procs; do
+            sed -n '/^[0-9][0-9]*$/p' "$procs" 2>/dev/null || true
+        done | sort -u
+}
+
+user_unit_pids() {
+    local unit="$1" cgroup pid
+    cgroup="$(user_control_group "$unit")"
+    cgroup_pids "$cgroup"
+    pid="$(user_main_pid "$unit")"
+    [ -n "$pid" ] && printf '%s\n' "$pid"
+}
+
 apply_unit_score() {
     local unit="$1" score="$2" pid changed
-    pid="$(user_main_pid "$unit")"
-    [ -n "$pid" ] || return 0
-    if changed="$(write_oom_score_for_unit "$pid" "$score" "$unit")"; then
-        [ -z "$changed" ] || echo "user-unit $unit pid=$pid oom_score_adj=$score"
-    else
-        echo "warn: failed to set oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
-    fi
+    local -a pids
+    mapfile -t pids < <(user_unit_pids "$unit" | sort -u)
+    [ "${#pids[@]}" -gt 0 ] || return 0
+    for pid in "${pids[@]}"; do
+        if changed="$(write_oom_score_for_unit "$pid" "$score" "$unit")"; then
+            [ -z "$changed" ] || echo "user-unit $unit pid=$pid oom_score_adj=$score"
+        else
+            echo "warn: failed to set oom_score_adj for $unit pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        fi
+    done
 }
 
 user_pid="$(system_main_pid "user@$TARGET_UID.service")"

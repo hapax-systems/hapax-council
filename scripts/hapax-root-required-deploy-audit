@@ -5,29 +5,79 @@ set -euo pipefail
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
 SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_SOURCE_ROOT:-$HOME/.cache/hapax/source-activation/worktree}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
+ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
+EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
+SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
+APCUPSD_DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
+APCUPSD_LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
 
 rc=0
 
-audit_oom_enforcer_drift() {
-    local source="$SOURCE_ROOT/scripts/hapax-oom-score-enforce"
+compare_root_file() {
+    local rel="$1" dest="$2" source="$SOURCE_ROOT/$rel"
     if [ ! -f "$source" ]; then
-        echo "root-required OOM enforcer source missing: $source" >&2
+        echo "root-required source missing: $source" >&2
         echo "  next action: restore source activation or run HAPAX_ROOT_REQUIRED_SOURCE_ROOT=<repo> scripts/hapax-root-required-deploy-audit" >&2
         return 1
     fi
-    if [ ! -f "$OOM_ENFORCER_DEST" ]; then
-        echo "root-required OOM enforcer install missing: $OOM_ENFORCER_DEST" >&2
-        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+    if [ ! -f "$dest" ]; then
+        echo "root-required install missing: $dest" >&2
+        case "$rel" in
+            config/apcupsd/*|systemd/logrotate.d/hapax-ups-power-events)
+                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                ;;
+            *)
+                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                ;;
+        esac
         return 1
     fi
-    if ! cmp -s "$source" "$OOM_ENFORCER_DEST"; then
-        echo "root-required OOM enforcer install drift: $OOM_ENFORCER_DEST differs from $source" >&2
-        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+    if ! cmp -s "$source" "$dest"; then
+        echo "root-required install drift: $dest differs from $source" >&2
+        case "$rel" in
+            config/apcupsd/*|systemd/logrotate.d/hapax-ups-power-events)
+                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                ;;
+            *)
+                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                ;;
+        esac
         return 1
     fi
 }
 
-audit_oom_enforcer_drift || rc=1
+audit_root_installs() {
+    local -a manifest=(
+        "scripts/hapax-oom-score-enforce|$OOM_ENFORCER_DEST"
+        "scripts/hapax-root-failure-intake|$ROOT_FAILURE_INTAKE_DEST"
+        "config/earlyoom/default|$EARLYOOM_DEST"
+        "systemd/system/user@1000.service.d/oom.conf|$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf"
+        "systemd/system/apcupsd.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/apcupsd.service.d/oom-protect.conf"
+        "systemd/system/systemd-logind.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/systemd-logind.service.d/oom-protect.conf"
+        "systemd/system/systemd-resolved.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/systemd-resolved.service.d/oom-protect.conf"
+        "systemd/system/systemd-timesyncd.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/systemd-timesyncd.service.d/oom-protect.conf"
+        "systemd/system/NetworkManager.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/NetworkManager.service.d/oom-protect.conf"
+        "systemd/system/dbus-broker.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/dbus-broker.service.d/oom-protect.conf"
+        "systemd/system/sshd.service.d/oom-protect.conf|$SYSTEMD_SYSTEM_DIR/sshd.service.d/oom-protect.conf"
+        "systemd/units/hapax-root-failure-intake@.service|$SYSTEMD_SYSTEM_DIR/hapax-root-failure-intake@.service"
+        "systemd/units/hapax-oom-score-enforce.service|$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.service"
+        "systemd/units/hapax-oom-score-enforce.timer|$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.timer"
+        "config/apcupsd/apcupsd.conf|$APCUPSD_DEST/apcupsd.conf"
+        "config/apcupsd/hapax-power-event.py|$APCUPSD_DEST/hapax-power-event.py"
+        "config/apcupsd/onbattery|$APCUPSD_DEST/onbattery"
+        "config/apcupsd/offbattery|$APCUPSD_DEST/offbattery"
+        "systemd/logrotate.d/hapax-ups-power-events|$APCUPSD_LOGROTATE_DEST"
+    )
+    local entry rel dest failed=0
+    for entry in "${manifest[@]}"; do
+        rel="${entry%%|*}"
+        dest="${entry#*|}"
+        compare_root_file "$rel" "$dest" || failed=1
+    done
+    [ "$failed" -eq 0 ]
+}
+
+audit_root_installs || rc=1
 
 if [ ! -d "$ROOT_DEFER_DIR" ]; then
     if [ "$rc" -ne 0 ]; then

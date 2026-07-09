@@ -191,6 +191,17 @@ for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REP
         continue
     fi
     if system_install_scope_unit "$unit"; then
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            rm -f "$dest"
+            changed=$((changed + 1))
+            echo "removed stale user-scope system unit: $name"
+        fi
+        for wants_link in "$DEST_DIR"/*.wants/"$name"; do
+            [ -e "$wants_link" ] || [ -L "$wants_link" ] || continue
+            rm -f "$wants_link"
+            changed=$((changed + 1))
+            echo "removed stale user-scope wants link: $wants_link"
+        done
         echo "skipped system-scope unit: $name"
         continue
     fi

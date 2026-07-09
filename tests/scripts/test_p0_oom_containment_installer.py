@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = REPO_ROOT / "scripts" / "install-p0-oom-containment"
 OOM_ENFORCER = REPO_ROOT / "scripts" / "hapax-oom-score-enforce"
+ROOT_FAILURE_INTAKE = REPO_ROOT / "scripts" / "hapax-root-failure-intake"
 PROTECTED_USER_UNIT_SCORES = {
     "pipewire.service": -900,
     "pipewire-pulse.service": -900,
@@ -76,6 +78,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     stale_control.write_text("[Slice]\nMemoryHigh=1G\n", encoding="utf-8")
     earlyoom_dest = tmp_path / "earlyoom"
     enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
+    root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
@@ -108,6 +111,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
             "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
             "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
             "HAPAX_OOM_INSTALL_SUDO": "",
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
@@ -127,6 +131,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert "MemorySwapMax=8G" in app_dropin.read_text(encoding="utf-8")
     assert earlyoom_dest.read_text(encoding="utf-8").startswith("EARLYOOM_ARGS=")
     assert enforcer_dest.is_file()
+    assert root_failure_dest.is_file()
     assert not stale_control.exists()
     calls = systemctl_calls.read_text(encoding="utf-8")
     assert "daemon-reload" in calls
@@ -149,6 +154,7 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
     user_control_dir = tmp_path / "systemd-user-control"
     earlyoom_dest = tmp_path / "earlyoom"
     enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
+    root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     unit_pids = {
@@ -211,6 +217,7 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
             "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
             "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
             "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
             "HAPAX_OOM_INSTALL_SUDO": "",
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
@@ -255,6 +262,7 @@ def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
     user_control_dir = tmp_path / "systemd-user-control"
     earlyoom_dest = tmp_path / "earlyoom"
     enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
+    root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
@@ -294,6 +302,7 @@ def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
             "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
             "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
             "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
+            "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
             "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
             "HAPAX_OOM_INSTALL_SUDO": str(fake_sudo),
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
@@ -440,6 +449,65 @@ def test_root_oom_score_enforcer_is_quiet_when_scores_already_match(
     assert result.stdout == ""
 
 
+def test_root_oom_score_enforcer_writes_all_user_unit_cgroup_pids(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    cgroup_root = tmp_path / "cgroup"
+    cgroup_dir = (
+        cgroup_root / "user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service"
+    )
+    cgroup_dir.mkdir(parents=True)
+    (cgroup_dir / "cgroup.procs").write_text("910\n916\n", encoding="utf-8")
+    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
+    _write_proc(proc_root, 910, name="pipewire", uid=1000, oom_score=100)
+    _write_proc(proc_root, 916, name="pipewire-worker", uid=1000, oom_score=100)
+
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        '  *) printf "0\\n" ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+    fake_user_systemctl = tmp_path / "systemctl-user"
+    fake_user_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  *"show pipewire.service -p ControlGroup --value"*) printf "/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service\\n" ;;\n'
+        '  *"show pipewire.service -p MainPID --value"*) printf "910\\n" ;;\n'
+        '  *"show "*" -p ControlGroup --value"*) printf "\\n" ;;\n'
+        '  *"show "*" -p MainPID --value"*) printf "0\\n" ;;\n'
+        '  *) echo "unexpected user args: $*" >&2; exit 9 ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_user_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--apply"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_CGROUP_ROOT": str(cgroup_root),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_USER_SYSTEMCTL": str(fake_user_systemctl),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
+    assert (proc_root / "916" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
+
+
 def test_root_oom_score_enforcer_continues_after_per_unit_write_failure(
     tmp_path: Path,
 ) -> None:
@@ -495,3 +563,47 @@ def test_root_oom_score_enforcer_continues_after_per_unit_write_failure(
     assert "failed to set oom_score_adj for pipewire-pulse.service" in result.stderr
     assert "next action: run scripts/hapax-oom-policy-audit --json" in result.stderr
     assert (proc_root / "912" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
+
+
+def test_root_failure_intake_uses_stable_recovery_bundle(tmp_path: Path) -> None:
+    calls = tmp_path / "calls.txt"
+    fake_intake = tmp_path / "hapax-p0-incident-intake"
+    fake_intake.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > {calls!s}\n",
+        encoding="utf-8",
+    )
+    fake_intake.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_FAILURE_INTAKE), "hapax-oom-score-enforce.service"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "HAPAX_ROOT_FAILURE_INTAKE_CLI": str(fake_intake)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls.read_text(encoding="utf-8").strip() == (
+        "service-failed hapax-oom-score-enforce.service"
+    )
+
+
+def test_root_failure_intake_records_emergency_ledger_when_bundle_missing(tmp_path: Path) -> None:
+    ledger = tmp_path / "events.jsonl"
+
+    result = subprocess.run(
+        [str(ROOT_FAILURE_INTAKE), "hapax-oom-score-enforce.service"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_ROOT_FAILURE_INTAKE_CLI": str(tmp_path / "missing-intake"),
+            "HAPAX_ROOT_FAILURE_LEDGER": str(ledger),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    record = json.loads(ledger.read_text(encoding="utf-8"))
+    assert record["kind"] == "root_failure_intake_cli_missing"
+    assert record["unit"] == "hapax-oom-score-enforce.service"

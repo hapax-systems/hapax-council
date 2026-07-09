@@ -18,13 +18,22 @@ PROTECTED_USER_UNIT_SCORES = {
 }
 
 
-def _protected_user_unit_cases(*, wrong_unit_score: bool = False) -> str:
+def _protected_user_unit_cases(
+    *,
+    wrong_unit_score: bool = False,
+    unit_pids: dict[str, int] | None = None,
+    unit_cgroups: dict[str, str] | None = None,
+) -> str:
+    unit_pids = unit_pids or {}
+    unit_cgroups = unit_cgroups or {}
     cases = []
     for unit, score in PROTECTED_USER_UNIT_SCORES.items():
         actual = 100 if wrong_unit_score and unit == "studio-compositor.service" else score
+        pid = unit_pids.get(unit, 0)
+        cgroup = unit_cgroups.get(unit, "")
         cases.append(
             f'  *"--user show {unit} --no-pager -p OOMScoreAdjust -p MainPID"*) '
-            f"printf 'OOMScoreAdjust={actual}\\nMainPID=0\\n' ;;"
+            f"printf 'OOMScoreAdjust={actual}\\nMainPID={pid}\\nControlGroup={cgroup}\\n' ;;"
         )
     return "\n".join(cases)
 
@@ -37,6 +46,8 @@ def _fake_systemctl(
     tmux_bounded: bool = True,
     tmux_slice: str = "app.slice",
     wrong_unit_score: bool = False,
+    protected_unit_pids: dict[str, int] | None = None,
+    protected_unit_cgroups: dict[str, str] | None = None,
 ) -> Path:
     path = tmp_path / "systemctl"
     app_values = (
@@ -55,7 +66,7 @@ set -euo pipefail
 case "$*" in
   *"show user@1000.service"*) printf 'OOMScoreAdjust={user_oom}\\nDropInPaths=/etc/systemd/system/user@1000.service.d/oom.conf\\nMainPID=900\\n' ;;
   *"show app.slice"*) printf '{app_values}' ;;
-{_protected_user_unit_cases(wrong_unit_score=wrong_unit_score)}
+{_protected_user_unit_cases(wrong_unit_score=wrong_unit_score, unit_pids=protected_unit_pids, unit_cgroups=protected_unit_cgroups)}
   *"list-units --type=scope"*) printf 'tmux-spawn-a.scope loaded active running tmux child pane\\n' ;;
   *"show tmux-spawn-a.scope"*) printf '{tmux_values}' ;;
   *) echo "unexpected args: $*" >&2; exit 9 ;;
@@ -84,13 +95,19 @@ def _run(
     tmux_bounded: bool = True,
     tmux_slice: str = "app.slice",
     wrong_unit_score: bool = False,
+    protected_unit_pids: dict[str, int] | None = None,
+    protected_unit_cgroups: dict[str, str] | None = None,
     proc_root: Path | None = None,
+    cgroup_root: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if proc_root is None:
         proc_root = tmp_path / "proc"
         proc_root.mkdir(exist_ok=True)
     if not (proc_root / "900").exists():
         _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
+    if cgroup_root is None:
+        cgroup_root = tmp_path / "cgroup"
+        cgroup_root.mkdir(exist_ok=True)
     env = {
         **os.environ,
         "HAPAX_SYSTEMCTL": str(
@@ -101,9 +118,12 @@ def _run(
                 tmux_bounded=tmux_bounded,
                 tmux_slice=tmux_slice,
                 wrong_unit_score=wrong_unit_score,
+                protected_unit_pids=protected_unit_pids,
+                protected_unit_cgroups=protected_unit_cgroups,
             )
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
+        "HAPAX_OOM_AUDIT_CGROUP_ROOT": str(cgroup_root),
     }
     return subprocess.run(
         [str(SCRIPT), "--json", "--uid", "1000"],
@@ -157,6 +177,42 @@ def test_audit_fails_when_protected_user_unit_loses_oom_score(tmp_path: Path) ->
     assert "install-p0-oom-containment" in check["detail"]
 
 
+def test_audit_fails_when_protected_user_unit_cgroup_pid_loses_oom_score(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    cgroup_root = tmp_path / "cgroup"
+    cgroup_dir = (
+        cgroup_root / "user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service"
+    )
+    cgroup_dir.mkdir(parents=True)
+    (cgroup_dir / "cgroup.procs").write_text("910\n916\n", encoding="utf-8")
+    _write_proc(proc_root, 910, name="pipewire", uid=1000, oom_score=-900)
+    _write_proc(proc_root, 916, name="pipewire-worker", uid=1000, oom_score=100)
+
+    result = _run(
+        tmp_path,
+        proc_root=proc_root,
+        cgroup_root=cgroup_root,
+        protected_unit_pids={"pipewire.service": 910},
+        protected_unit_cgroups={
+            "pipewire.service": (
+                "/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service"
+            )
+        },
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item
+        for item in payload["checks"]
+        if item["name"] == "user_unit_pipewire.service_pid_916_live_oom_score_adj"
+    )
+    assert check["status"] == "gap"
+
+
 def test_audit_passes_when_unbounded_tmux_scope_is_app_slice_backed(tmp_path: Path) -> None:
     result = _run(tmp_path, tmux_bounded=False, tmux_slice="app.slice")
 
@@ -169,15 +225,15 @@ def test_audit_passes_when_unbounded_tmux_scope_is_app_slice_backed(tmp_path: Pa
     assert "Slice=app.slice" in check["actual"]
 
 
-def test_audit_warns_when_unbounded_tmux_scope_is_outside_app_slice(tmp_path: Path) -> None:
+def test_audit_fails_when_unbounded_tmux_scope_is_outside_app_slice(tmp_path: Path) -> None:
     result = _run(tmp_path, tmux_bounded=False, tmux_slice="session.slice")
 
-    assert result.returncode == 0
+    assert result.returncode == 1
     payload = json.loads(result.stdout)
     check = next(
         item for item in payload["checks"] if item["name"] == "tmux_scope_tmux-spawn-a.scope"
     )
-    assert check["status"] == "warn"
+    assert check["status"] == "gap"
     assert "MemoryMax" in check["detail"]
     assert "Slice=session.slice" in check["detail"]
 

@@ -83,6 +83,7 @@ def test_live_cuepoints_restart_storm_is_bounded() -> None:
     assert _directive(text, "StartLimitIntervalSec") == "10min"
     assert _directive(text, "StartLimitBurst") == "3"
     assert _directive(text, "RestartSec") == "30"
+    assert "OnFailure=notify-failure@%n.service" in text
 
 
 def test_live_cuepoints_runs_from_source_activation_worktree() -> None:
@@ -150,7 +151,8 @@ def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
     assert "AccuracySec=1s" in timer
     assert "# Hapax-Install-Scope: system" in intake
     assert "User=hapax" in intake
-    assert 'scripts/hapax-p0-incident-intake service-failed "%i"' in intake
+    assert 'exec /usr/local/sbin/hapax-root-failure-intake "$1"' in intake
+    assert "source-activation/worktree" not in intake
     assert "ConditionPathExists" not in intake
 
 

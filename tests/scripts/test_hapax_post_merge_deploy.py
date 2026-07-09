@@ -32,6 +32,41 @@ P0_USER_OOM_DROPINS = {
         "[Service]\nOOMScoreAdjust=-800\n"
     ),
 }
+ROOT_AUDIT_SOURCE_FILES = {
+    "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\necho enforcer\n",
+    "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\necho root failure\n",
+    "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
+    "systemd/system/user@1000.service.d/oom.conf": "[Service]\nOOMScoreAdjust=100\n",
+    "systemd/system/apcupsd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
+    "systemd/system/systemd-logind.service.d/oom-protect.conf": (
+        "[Service]\nOOMScoreAdjust=-800\n"
+    ),
+    "systemd/system/systemd-resolved.service.d/oom-protect.conf": (
+        "[Service]\nOOMScoreAdjust=-800\n"
+    ),
+    "systemd/system/systemd-timesyncd.service.d/oom-protect.conf": (
+        "[Service]\nOOMScoreAdjust=-800\n"
+    ),
+    "systemd/system/NetworkManager.service.d/oom-protect.conf": (
+        "[Service]\nOOMScoreAdjust=-800\n"
+    ),
+    "systemd/system/dbus-broker.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
+    "systemd/system/sshd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-1000\n",
+    "systemd/units/hapax-root-failure-intake@.service": (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\n"
+    ),
+    "systemd/units/hapax-oom-score-enforce.service": (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Service]\nType=oneshot\n"
+    ),
+    "systemd/units/hapax-oom-score-enforce.timer": (
+        "[Unit]\n# Hapax-Install-Scope: system\n[Timer]\nOnUnitActiveSec=30s\n"
+    ),
+    "config/apcupsd/apcupsd.conf": "## apcupsd.conf v1.1 ##\nUPSNAME podium\n",
+    "config/apcupsd/hapax-power-event.py": "#!/usr/bin/env python3\n",
+    "config/apcupsd/onbattery": "#!/usr/bin/env bash\n",
+    "config/apcupsd/offbattery": "#!/usr/bin/env bash\n",
+    "systemd/logrotate.d/hapax-ups-power-events": "/var/log/hapax/ups-power-events.jsonl {}\n",
+}
 
 
 def _coverage(paths: list[str]) -> subprocess.CompletedProcess[str]:
@@ -200,6 +235,53 @@ def _write_installed_recovery_bundle(dest: Path, source_ref: str, files: dict[st
         + "\n",
         encoding="utf-8",
     )
+
+
+def _root_audit_env(
+    tmp_path: Path,
+    *,
+    drift_rel: str | None = None,
+    missing_source_rel: str | None = None,
+) -> dict[str, str]:
+    source_root = tmp_path / "source"
+    system_dir = tmp_path / "etc" / "systemd" / "system"
+    apcupsd_dir = tmp_path / "etc" / "apcupsd"
+    logrotate_dest = tmp_path / "etc" / "logrotate.d" / "hapax-ups-power-events"
+    enforcer_dest = tmp_path / "sbin" / "hapax-oom-score-enforce"
+    root_failure_dest = tmp_path / "sbin" / "hapax-root-failure-intake"
+    earlyoom_dest = tmp_path / "etc" / "default" / "earlyoom"
+    dests = {
+        "scripts/hapax-oom-score-enforce": enforcer_dest,
+        "scripts/hapax-root-failure-intake": root_failure_dest,
+        "config/earlyoom/default": earlyoom_dest,
+        "systemd/logrotate.d/hapax-ups-power-events": logrotate_dest,
+    }
+    for rel in ROOT_AUDIT_SOURCE_FILES:
+        if rel.startswith("systemd/system/"):
+            dests[rel] = system_dir / rel.removeprefix("systemd/system/")
+        elif rel.startswith("systemd/units/"):
+            dests[rel] = system_dir / rel.removeprefix("systemd/units/")
+        elif rel.startswith("config/apcupsd/"):
+            dests[rel] = apcupsd_dir / rel.removeprefix("config/apcupsd/")
+    for rel, body in ROOT_AUDIT_SOURCE_FILES.items():
+        if rel != missing_source_rel:
+            source = source_root / rel
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(body, encoding="utf-8")
+        dest = dests[rel]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(("stale\n" if rel == drift_rel else body), encoding="utf-8")
+    return {
+        **os.environ,
+        "HAPAX_ROOT_REQUIRED_SOURCE_ROOT": str(source_root),
+        "HAPAX_OOM_ENFORCER_DEST": str(enforcer_dest),
+        "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
+        "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
+        "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
+        "HAPAX_APCUPSD_DEST": str(apcupsd_dir),
+        "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
+        "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "no-deferrals"),
+    }
 
 
 def _repo_with_intake_units_then_preset_commit(tmp_path: Path) -> tuple[Path, str]:
@@ -515,6 +597,7 @@ def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
     files = {
         "scripts/install-p0-oom-containment": installer_body,
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
+        "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\nexit 0\n",
         "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
         "systemd/system/user@1000.service.d/oom.conf": "[Service]\nOOMScoreAdjust=100\n",
         "systemd/system/apcupsd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
@@ -584,6 +667,7 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
     files = {
         "scripts/install-p0-oom-containment": installer_body,
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
+        "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\nexit 0\n",
         "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
         "systemd/system/user@1000.service.d/oom.conf": "[Service]\nOOMScoreAdjust=100\n",
         "systemd/system/apcupsd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
@@ -668,77 +752,46 @@ def test_root_required_oom_deploy_defers_and_continues_to_user_units(tmp_path: P
 
 
 def test_root_required_audit_fails_when_oom_enforcer_source_missing(tmp_path: Path) -> None:
-    source_root = tmp_path / "source"
-    source_root.mkdir()
-    live_script = tmp_path / "sbin" / "hapax-oom-score-enforce"
-    live_script.parent.mkdir()
-    live_script.write_text("#!/usr/bin/env bash\necho live\n", encoding="utf-8")
-
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
         text=True,
         capture_output=True,
         check=False,
-        env={
-            **os.environ,
-            "HAPAX_ROOT_REQUIRED_SOURCE_ROOT": str(source_root),
-            "HAPAX_OOM_ENFORCER_DEST": str(live_script),
-            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "no-deferrals"),
-        },
+        env=_root_audit_env(
+            tmp_path,
+            missing_source_rel="scripts/hapax-oom-score-enforce",
+        ),
     )
 
     assert result.returncode == 1
-    assert "root-required OOM enforcer source missing" in result.stderr
+    assert "root-required source missing" in result.stderr
     assert "next action:" in result.stderr
 
 
 def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
-    source_root = tmp_path / "source"
-    source_script = source_root / "scripts" / "hapax-oom-score-enforce"
-    source_script.parent.mkdir(parents=True)
-    source_script.write_text("#!/usr/bin/env bash\necho source\n", encoding="utf-8")
-    live_script = tmp_path / "sbin" / "hapax-oom-score-enforce"
-    live_script.parent.mkdir()
-    live_script.write_text("#!/usr/bin/env bash\necho stale\n", encoding="utf-8")
-
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
         text=True,
         capture_output=True,
         check=False,
-        env={
-            **os.environ,
-            "HAPAX_ROOT_REQUIRED_SOURCE_ROOT": str(source_root),
-            "HAPAX_OOM_ENFORCER_DEST": str(live_script),
-            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "no-deferrals"),
-        },
+        env=_root_audit_env(
+            tmp_path,
+            drift_rel="scripts/hapax-oom-score-enforce",
+        ),
     )
 
     assert result.returncode == 1
-    assert "root-required OOM enforcer install drift" in result.stderr
+    assert "root-required install drift" in result.stderr
     assert "install-p0-oom-containment --install --verify-live" in result.stderr
 
 
 def test_root_required_audit_passes_when_oom_enforcer_matches(tmp_path: Path) -> None:
-    source_root = tmp_path / "source"
-    source_script = source_root / "scripts" / "hapax-oom-score-enforce"
-    source_script.parent.mkdir(parents=True)
-    source_script.write_text("#!/usr/bin/env bash\necho source\n", encoding="utf-8")
-    live_script = tmp_path / "sbin" / "hapax-oom-score-enforce"
-    live_script.parent.mkdir()
-    live_script.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
-
     result = subprocess.run(
         [str(ROOT_REQUIRED_AUDIT)],
         text=True,
         capture_output=True,
         check=False,
-        env={
-            **os.environ,
-            "HAPAX_ROOT_REQUIRED_SOURCE_ROOT": str(source_root),
-            "HAPAX_OOM_ENFORCER_DEST": str(live_script),
-            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(tmp_path / "no-deferrals"),
-        },
+        env=_root_audit_env(tmp_path),
     )
 
     assert result.returncode == 0, result.stderr

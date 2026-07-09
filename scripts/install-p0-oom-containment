@@ -9,6 +9,7 @@ SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
 SYSTEMD_USER_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR:-$HOME/.config/systemd/user.control}"
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
+ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
@@ -29,6 +30,7 @@ Installs the P0 podium OOM containment package:
   systemd/units/hapax-root-failure-intake@.service  -> /etc/systemd/system/
   systemd/units/hapax-oom-score-enforce.{service,timer} -> /etc/systemd/system/
   scripts/hapax-oom-score-enforce                   -> /usr/local/sbin/hapax-oom-score-enforce
+  scripts/hapax-root-failure-intake                  -> /usr/local/sbin/hapax-root-failure-intake
   systemd/units/*.service.d/oom-protect.conf        -> ~/.config/systemd/user/*.service.d/oom-protect.conf
   systemd/units/app.slice.d/oom-containment.conf    -> ~/.config/systemd/user/app.slice.d/oom-containment.conf
   config/earlyoom/default                           -> /etc/default/earlyoom
@@ -120,6 +122,7 @@ user_protection_dropins=(
 )
 earlyoom_source="config/earlyoom/default"
 oom_enforcer_source="scripts/hapax-oom-score-enforce"
+root_failure_intake_source="scripts/hapax-root-failure-intake"
 recovery_unit_scores=(
     apcupsd.service:-900
     systemd-logind.service:-800
@@ -187,7 +190,7 @@ system_dest() {
 
 check_source() {
     local rel
-    for rel in "${system_dropins[@]}" "${system_units[@]}" "$user_dropin" "${user_protection_dropins[@]}" "$earlyoom_source" "$oom_enforcer_source"; do
+    for rel in "${system_dropins[@]}" "${system_units[@]}" "$user_dropin" "${user_protection_dropins[@]}" "$earlyoom_source" "$oom_enforcer_source" "$root_failure_intake_source"; do
         [ -f "$(src_path "$rel")" ] || {
             echo "missing source file: $(src_path "$rel"); next action: restore the source tree or rerun from the PR/activation worktree" >&2
             return 1
@@ -350,6 +353,9 @@ install_live() {
     run_root install -d -m 0755 "$(dirname "$OOM_ENFORCER_DEST")"
     run_root install -m 0755 "$(src_path "$oom_enforcer_source")" "$OOM_ENFORCER_DEST"
     echo "  '$oom_enforcer_source' -> '$OOM_ENFORCER_DEST'"
+    run_root install -d -m 0755 "$(dirname "$ROOT_FAILURE_INTAKE_DEST")"
+    run_root install -m 0755 "$(src_path "$root_failure_intake_source")" "$ROOT_FAILURE_INTAKE_DEST"
+    echo "  '$root_failure_intake_source' -> '$ROOT_FAILURE_INTAKE_DEST'"
     run_root install -d -m 0755 "$(dirname "$EARLYOOM_DEST")"
     run_root install -m 0644 "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
     echo "  '$earlyoom_source' -> '$EARLYOOM_DEST'"
@@ -424,6 +430,7 @@ verify_live() {
         verify_pair "$(src_path "$rel")" "$(system_dest "$rel")"
     done
     verify_pair "$(src_path "$oom_enforcer_source")" "$OOM_ENFORCER_DEST"
+    verify_pair "$(src_path "$root_failure_intake_source")" "$ROOT_FAILURE_INTAKE_DEST"
     verify_pair "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
     dest="$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf"
     if [ -L "$dest" ]; then

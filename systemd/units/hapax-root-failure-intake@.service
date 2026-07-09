@@ -1,12 +1,10 @@
 [Unit]
 # Hapax-Install-Scope: system
 Description=Record system-scope Hapax failure for %i
-Documentation=file:/home/hapax/.cache/hapax/source-activation/worktree/systemd/README.md
-After=user@1000.service
+Documentation=file:/home/hapax/.local/lib/hapax-recovery/council/current/manifest.json
 
 [Service]
 Type=oneshot
 User=hapax
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=PATH=/home/hapax/.cache/hapax/source-activation/worktree/.venv/bin:/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/env bash -lc 'exec /home/hapax/.cache/hapax/source-activation/worktree/scripts/hapax-p0-incident-intake service-failed "%i"'
+Environment=PATH=/home/hapax/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env bash -lc 'exec /usr/local/sbin/hapax-root-failure-intake "$1"' hapax-root-failure-intake %I
