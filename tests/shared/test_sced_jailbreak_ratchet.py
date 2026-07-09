@@ -173,6 +173,56 @@ def _admit(candidate: SCEDJailbreakCandidate | None = None) -> SCEDPhase1Decisio
     )
 
 
+def _lit_decision_for_candidate(
+    candidate: SCEDJailbreakCandidate,
+    *,
+    freeze: SCEDRulerFreeze,
+    held_out: HeldOutEvaluation,
+    similarities: tuple[SimilarityObservation, ...],
+    policy: SCEDTargetPolicySnapshot | None = None,
+    submission_mode: str | None = None,
+) -> SCEDPhase1Decision:
+    policy = policy or default_target_policy_snapshots()[0]
+    ruler_hash = freeze.ruler.canonical_hash()
+    similarity_refs = tuple(
+        dict.fromkeys(ref for observation in similarities for ref in observation.evidence_refs)
+    )
+    evidence_refs = (
+        f"candidate:{candidate.candidate_id}",
+        f"candidate-digest:{candidate.candidate_digest}",
+        f"target:{':'.join(candidate.target.key)}",
+        f"ruler-hash:{ruler_hash}",
+        *policy.policy_refs,
+        policy.registry_row_ref,
+        *candidate.evidence_refs,
+        *held_out.evidence_refs,
+        *similarity_refs,
+    )
+    return SCEDPhase1Decision(
+        verifier="sced_jailbreak_phase1_ratchet",
+        verifier_version=1,
+        status=GateStatus.LIT,
+        gate_result=GateResult(
+            status=GateStatus.LIT,
+            verdict=True,
+            reason="test-lit",
+            evidence_refs=evidence_refs,
+        ),
+        reason="test-lit",
+        reject_reasons=(),
+        candidate_id=candidate.candidate_id,
+        candidate_digest=candidate.candidate_digest,
+        submission_mode=candidate.submission_mode if submission_mode is None else submission_mode,
+        technique_refs=candidate.technique_refs,
+        target=candidate.target,
+        ruler_hash=ruler_hash,
+        target_policy_snapshot=policy,
+        held_out_evidence_refs=held_out.evidence_refs,
+        similarity_evidence_refs=similarity_refs,
+        evidence_refs=evidence_refs,
+    )
+
+
 def test_phase1_admits_offline_candidate_with_valid_freeze_target_policy_and_clean_held_out() -> (
     None
 ):
@@ -187,6 +237,7 @@ def test_phase1_admits_offline_candidate_with_valid_freeze_target_policy_and_cle
     payload = decision.to_dict()
     assert payload["target_policy_dates"]["policy_reviewed_on"] == "2026-06-30"
     assert "candidate-digest:sha256:" + HASH_A in payload["evidence_refs"]
+    assert payload["submission_mode"] == "offline_only"
     assert payload["held_out_evidence_refs"] == ["held-out-witness:001"]
     assert payload["similarity_evidence_refs"] == [
         "similarity-witness:low-000",
@@ -1000,6 +1051,7 @@ def test_phase1_decision_truthiness_is_undefined_and_accepted_decision_advances_
     ledger = advance_ratchet(
         SCEDRatchetLedger(),
         decision,
+        candidate=candidate,
         freeze=freeze,
         ruler_hash_commit=freeze.ruler.canonical_hash(),
         held_out_evaluation=held_out,
@@ -1038,6 +1090,7 @@ def test_stale_lit_decision_with_duplicate_digest_does_not_advance_ledger() -> N
         advance_ratchet(
             ledger,
             decision,
+            candidate=candidate,
             freeze=freeze,
             ruler_hash_commit=freeze.ruler.canonical_hash(),
             held_out_evaluation=held_out,
@@ -1068,6 +1121,7 @@ def test_stale_lit_decision_with_duplicate_technique_ref_does_not_advance_ledger
         advance_ratchet(
             ledger,
             decision,
+            candidate=candidate,
             freeze=freeze,
             ruler_hash_commit=freeze.ruler.canonical_hash(),
             held_out_evaluation=held_out,
@@ -1344,6 +1398,12 @@ def test_lit_decision_with_failing_witness_objects_does_not_advance_ledger() -> 
     freeze = _freeze()
     ruler_hash = freeze.ruler.canonical_hash()
     candidate_id = "candidate:failing-witnesses"
+    candidate = _candidate(
+        candidate_id=candidate_id,
+        candidate_digest=DIGEST_B,
+        technique_refs=("technique:new",),
+        evidence_refs=("candidate-witness:failing-witnesses",),
+    )
     held_out = _held_out(
         candidate_id=candidate_id,
         candidate_digest=DIGEST_B,
@@ -1412,6 +1472,102 @@ def test_lit_decision_with_failing_witness_objects_does_not_advance_ledger() -> 
         advance_ratchet(
             ledger,
             decision,
+            candidate=candidate,
+            freeze=freeze,
+            ruler_hash_commit=freeze.ruler.canonical_hash(),
+            held_out_evaluation=held_out,
+            similarity_observations=similarities,
+        )
+        == ledger
+    )
+
+
+def test_lit_decision_with_live_submission_candidate_does_not_advance_ledger() -> None:
+    ledger = SCEDRatchetLedger()
+    candidate = _candidate(
+        candidate_id="candidate:live-advance",
+        candidate_digest=DIGEST_B,
+        submission_mode="live_submission",
+        technique_refs=("technique:live-advance",),
+        evidence_refs=("candidate-witness:live-advance",),
+    )
+    freeze = _freeze(target=candidate.target)
+    held_out = _held_out(
+        candidate_id=candidate.candidate_id,
+        candidate_digest=candidate.candidate_digest,
+        evidence_refs=("held-out-witness:live-advance",),
+    )
+    similarities = _similarities(
+        candidate_id=candidate.candidate_id,
+        candidate_digest=candidate.candidate_digest,
+    )
+    decision = _lit_decision_for_candidate(
+        candidate,
+        freeze=freeze,
+        held_out=held_out,
+        similarities=similarities,
+        submission_mode="offline_only",
+    )
+
+    assert (
+        advance_ratchet(
+            ledger,
+            decision,
+            candidate=candidate,
+            freeze=freeze,
+            ruler_hash_commit=freeze.ruler.canonical_hash(),
+            held_out_evaluation=held_out,
+            similarity_observations=similarities,
+        )
+        == ledger
+    )
+
+
+def test_lit_decision_with_unsupported_target_does_not_advance_ledger() -> None:
+    ledger = SCEDRatchetLedger()
+    target = G2GateInput(
+        surface="bug_bounty",
+        venue="third_party",
+        instrument="unsupported_program",
+    )
+    policy = SCEDTargetPolicySnapshot(
+        target=target,
+        policy_refs=("url:https://example.invalid/unsupported-program-policy",),
+        policy_reviewed_on=NOW.date(),
+        policy_published_on=NOW.date(),
+        registry_row_ref="legal-posture-row:bug_bounty:third_party:unsupported_program",
+        source_task="test",
+    )
+    candidate = _candidate(
+        candidate_id="candidate:unsupported-target",
+        candidate_digest=DIGEST_B,
+        target=target,
+        technique_refs=("technique:unsupported-target",),
+        evidence_refs=("candidate-witness:unsupported-target",),
+    )
+    freeze = _freeze(target=target)
+    held_out = _held_out(
+        candidate_id=candidate.candidate_id,
+        candidate_digest=candidate.candidate_digest,
+        evidence_refs=("held-out-witness:unsupported-target",),
+    )
+    similarities = _similarities(
+        candidate_id=candidate.candidate_id,
+        candidate_digest=candidate.candidate_digest,
+    )
+    decision = _lit_decision_for_candidate(
+        candidate,
+        freeze=freeze,
+        held_out=held_out,
+        similarities=similarities,
+        policy=policy,
+    )
+
+    assert (
+        advance_ratchet(
+            ledger,
+            decision,
+            candidate=candidate,
             freeze=freeze,
             ruler_hash_commit=freeze.ruler.canonical_hash(),
             held_out_evaluation=held_out,

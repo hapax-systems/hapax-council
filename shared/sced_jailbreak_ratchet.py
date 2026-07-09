@@ -452,6 +452,7 @@ class SCEDPhase1Decision:
     reject_reasons: tuple[SCEDPhase1RejectReason, ...]
     candidate_id: str | None = None
     candidate_digest: str | None = None
+    submission_mode: str | None = None
     technique_refs: tuple[str, ...] = ()
     target: G2GateInput | None = None
     ruler_hash: str | None = None
@@ -499,6 +500,7 @@ class SCEDPhase1Decision:
             "next_action": self.next_action,
             "candidate_id": self.candidate_id,
             "candidate_digest": self.candidate_digest,
+            "submission_mode": self.submission_mode,
             "technique_refs": list(self.technique_refs),
             "target": None if self.target is None else _target_to_dict(self.target),
             "ruler_hash": self.ruler_hash,
@@ -652,6 +654,7 @@ def advance_ratchet(
     ledger: SCEDRatchetLedger | Mapping[str, Any],
     decision: SCEDPhase1Decision,
     *,
+    candidate: SCEDJailbreakCandidate | Mapping[str, Any] | None = None,
     freeze: SCEDRulerFreeze | Mapping[str, Any] | None = None,
     ruler_hash_commit: str | None = None,
     held_out_evaluation: HeldOutEvaluation | Mapping[str, Any] | None = None,
@@ -662,6 +665,7 @@ def advance_ratchet(
     ledger_obj = _coerce_ledger(ledger)
     if not _decision_can_advance(
         decision,
+        candidate,
         held_out_evaluation,
         similarity_observations,
         freeze,
@@ -685,6 +689,7 @@ def advance_ratchet(
 
 def _decision_can_advance(
     decision: SCEDPhase1Decision,
+    candidate: SCEDJailbreakCandidate | Mapping[str, Any] | None,
     held_out_evaluation: HeldOutEvaluation | Mapping[str, Any] | None,
     similarity_observations: Sequence[SimilarityObservation | Mapping[str, Any]],
     freeze: SCEDRulerFreeze | Mapping[str, Any] | None,
@@ -700,11 +705,14 @@ def _decision_can_advance(
         and not decision.reject_reasons
         and _decision_has_durable_candidate_id(decision)
         and _decision_has_candidate_digest(decision)
+        and decision.submission_mode == OFFLINE_SUBMISSION_MODE
         and _decision_has_durable_technique_refs(decision)
         and decision.target is not None
+        and _decision_target_is_allowed(decision)
         and _decision_has_ruler_hash(decision)
         and decision.target_policy_snapshot is not None
         and _decision_policy_matches_target(decision)
+        and _decision_has_matching_candidate(decision, candidate)
         and _decision_has_durable_evidence_refs(decision)
         and _decision_has_matching_phase1_witnesses(
             decision,
@@ -756,6 +764,34 @@ def _decision_policy_matches_target(decision: SCEDPhase1Decision) -> bool:
         return False
     return (
         decision.target.normalized().key == decision.target_policy_snapshot.target.normalized().key
+    )
+
+
+def _decision_target_is_allowed(decision: SCEDPhase1Decision) -> bool:
+    return decision.target is not None and decision.target.normalized().key in _ALLOWED_TARGET_KEYS
+
+
+def _decision_has_matching_candidate(
+    decision: SCEDPhase1Decision,
+    candidate: SCEDJailbreakCandidate | Mapping[str, Any] | None,
+) -> bool:
+    if candidate is None or decision.target is None or decision.target_policy_snapshot is None:
+        return False
+    try:
+        candidate_obj = _coerce_candidate(candidate)
+        _policy_for_target(candidate_obj.target, (decision.target_policy_snapshot,))
+    except _Phase1InputError:
+        return False
+    candidate_evidence_refs = set(candidate_obj.evidence_refs)
+    return (
+        candidate_obj.candidate_id == decision.candidate_id
+        and candidate_obj.candidate_digest == decision.candidate_digest
+        and candidate_obj.submission_mode == OFFLINE_SUBMISSION_MODE
+        and decision.submission_mode == candidate_obj.submission_mode
+        and candidate_obj.technique_refs == decision.technique_refs
+        and candidate_obj.target.normalized().key == decision.target.normalized().key
+        and candidate_evidence_refs.issubset(decision.evidence_refs)
+        and candidate_evidence_refs.issubset(decision.gate_result.evidence_refs)
     )
 
 
@@ -1113,6 +1149,7 @@ def _admitted(
         reject_reasons=(),
         candidate_id=candidate.candidate_id,
         candidate_digest=candidate.candidate_digest,
+        submission_mode=candidate.submission_mode,
         technique_refs=candidate.technique_refs,
         target=candidate.target,
         ruler_hash=ruler_hash,
@@ -1157,6 +1194,7 @@ def _refused(
         reject_reasons=reject_reasons,
         candidate_id=None if candidate is None else candidate.candidate_id,
         candidate_digest=None if candidate is None else candidate.candidate_digest,
+        submission_mode=None if candidate is None else candidate.submission_mode,
         technique_refs=() if candidate is None else candidate.technique_refs,
         target=None if candidate is None else candidate.target,
         ruler_hash=ruler_hash,
