@@ -651,7 +651,7 @@ No published system combines:
 2. **Consent contracts as architectural primitives** — working implementation with opt-in, inspection, revocation, scope enumeration, purge, and (planned) invariant threading through all transactional chains via DLM labels and why-provenance
 3. **Alignment tax inversion** — LLM agents as both the governed entities and the governance enforcement mechanism, with empirically measured overhead (~20%) below literature baseline (30-40%)
 4. **Single-operator constitutional sovereignty** — one person, total sovereignty, no aggregation problem, self-authored constitution with democratic legitimacy, architectural not contractual enforcement
-5. **Neurodivergent accommodation as governance axiom** — cognitive accommodation enforced by the same mechanisms as data protection and consent, with 35 derived implications at T0/T1/T2 tiers
+5. **Cognitive accommodation as governance axiom** — accommodation enforced by the same mechanisms as data protection and consent, with 35 derived implications at T0/T1/T2 tiers
 6. **Separation of value enforcement from value internalization** — principles externalized as axioms evaluated by independent models, not embedded in the acting model's weights
 7. **Norm refinement with interpretive canons** — traceability from abstract value through derivation canon to executable enforcement pattern, exceeding the most sophisticated MAS frameworks (OperA, MOISE+, ISLANDER)
 8. **Epistemic carrier dynamics** — bounded cross-domain fact carrying for distributed error correction, with formal grounding in factor graphs, LDPC codes, and network error correction theory, solving a documented lethal problem (cross-domain knowledge silos) that no MAS framework addresses

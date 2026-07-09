@@ -257,8 +257,8 @@ Zentall's Optimal Stimulation Theory (OST) is the key framework:
   due to lower baseline dopamine levels.
 - **Understimulation is actively uncomfortable** -- it produces restlessness,
   task-switching, and self-stimulation behaviors.
-- The operator's rejection of emptiness ("I DON'T LIKE EMPTINESS AT ALL") is
-  a textbook expression of this. An empty display = understimulation.
+- The operator's stated rejection of emptiness ("I DON'T LIKE EMPTINESS AT ALL")
+  fixes the design constraint directly: an empty display = understimulation.
 - The **Yerkes-Dodson curve is narrower** for ADHD: the zone between
   understimulation and overwhelm is smaller, requiring more precise calibration.
 

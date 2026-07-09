@@ -154,7 +154,7 @@ audiences:
         - operational cadence and scheduling
         - honest limitations and tradeoffs
       skip:
-        - personal context and neurodivergence details (mention briefly as motivation, don't dwell)
+        - personal context and personal-health details (omit entirely; never surface neurotype or health information)
         - music production domain
         - management domain internals (people data, 1:1 prep content)
         - basic explanations of technologies Chris already knows deeply

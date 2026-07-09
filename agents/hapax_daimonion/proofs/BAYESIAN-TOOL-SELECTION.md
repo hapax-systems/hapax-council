@@ -64,7 +64,7 @@ strategy, not just apply one.**
 **ADHD and attentional set shifting**: Adults with ADHD show selective
 impairment in shifting attention between task sets. The difficulty is
 not in performing tasks but in transitioning between them. A Bayesian
-mode system that handles transitions for the operator directly
+mode system that handles transitions automatically directly
 addresses this — the system does the set-shifting, not the person.
 
 **MCP (Model Context Protocol)**: Defines primitives for tool

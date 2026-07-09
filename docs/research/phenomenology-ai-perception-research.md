@@ -371,7 +371,7 @@ The comprehensive review by de Haan et al. (2023, *Frontiers in Psychology*) ide
 
 Given the operator's attentional and sensory profile, the standard ambient computing assumptions break down:
 
-**Temporal structure**: The retention-protention structure (Thread 7) cannot assume neurotypical temporal dynamics. ADHD retention may be "shorter" (less persistence of the just-past) and protention "weaker" (less anticipatory readiness), while hyperfocus may produce "deeper" retention and protention within a narrowed domain. The system must adapt its temporal processing to the operator's actual temporal rhythm, not a normative one.
+**Temporal structure**: The retention-protention structure (Thread 7) cannot assume uniform temporal dynamics. Retention may be "shorter" (less persistence of the just-past) and protention "weaker" (less anticipatory readiness), while hyperfocus may produce "deeper" retention and protention within a narrowed domain. The system must adapt its temporal processing to the operator's actual temporal rhythm, not a normative one.
 
 **Attentional transitions**: Monotropic attention means that the ready-to-hand/present-at-hand transition (Thread 4) is particularly consequential. A poorly timed alert doesn't just briefly distract -- it can "completely derail focus" and trigger a cascade of dysregulation. The cost of interruption is much higher than for neurotypical operators.
 

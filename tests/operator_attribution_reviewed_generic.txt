@@ -1,0 +1,17 @@
+# Reviewed-generic paragraph spans (see tests/test_operator_attribution_redaction.py).
+# Format: <repo-relative-path> <sha256[:12] of whitespace-normalized matched span>
+# Reviewed 2026-07-09 (PR #4472 round 4): generic literature/corpus or guest-facing
+# design discussion sharing a paragraph with a system-design "operator" sentence; no
+# diagnosis is attributed to the operator in any pinned span. Editing a pinned
+# paragraph changes its digest and fails the scan closed for re-review.
+agents/demo_pipeline/domain_corpus/cognitive-load-theory.md 672a202c9646
+agents/demo_pipeline/domain_corpus/neurodivergent-technology-design.md aeae0e3ed77a
+agents/hapax_daimonion/proofs/claim-6-bayesian-tools/RESEARCH.md 8ca3270e5c60
+docs/research/2026-03-15-consent-channel-selection-research.md e00e8b0a33d4
+docs/research/2026-03-15-consent-channel-selection-research.md 0d34e2793ebe
+docs/research/apperception-healthy-self-model-research.md 4a0c3b77451f
+docs/research/content-scheduling-research.md b035cb2cac46
+docs/research/content-scheduling-research.md 82cff82efaee
+docs/research/content-scheduling-research.md 2a94b0fe0eee
+tests/shared/fixtures/rerank_eval.jsonl b131871b9172
+tests/shared/fixtures/rerank_eval.jsonl 0d34e2793ebe

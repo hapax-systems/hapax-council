@@ -45,7 +45,7 @@ audiences:  # weights judgment-ranked until an audience-signal source is wired
   operators: {weight: 40}
   management_reviewers: {weight: 40}
 
-constraints:  # registry-level bindings; check script enforces on rows AND rendered surfaces
+constraints:  # registry-level bindings; check script lints REGISTRY ROWS only (rendered-surface linting explicitly deferred to wave-2)
   - id: banned-absolutes
     rule: >-
       'cannot lie' / 'structurally impossible' / 'structurally cannot' / 'proves what happens' /

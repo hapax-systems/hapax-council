@@ -99,7 +99,7 @@ The theory document should NOT be submitted as a single paper. It spans too many
 1. Alignment tax inversion: governance overhead below literature baseline
 2. Separation of enforcement from internalization
 3. Norm refinement with four interpretive canons
-4. Neurodivergent accommodation as constitutional requirement
+4. Cognitive accommodation as constitutional requirement
 5. Single-operator sovereignty as simplification (not limitation)
 6. Ordoliberal frame rules for AI governance
 
@@ -285,7 +285,7 @@ The entire architecture depends on LLMs being capable enough to reason about axi
 
 **AI Safety**: "We demonstrate that externalizing values as weighted axioms evaluated by independent models produces ~20% governance overhead — below the 30-40% alignment tax reported in the literature — while providing stronger guarantees: auditability, amendability, separation of powers, and accumulated case law."
 
-**HCI/Ethics**: "We treat neurodivergent accommodation not as a UX feature but as a constitutional requirement, enforced by the same mechanisms as data protection and consent. The system is a cognitive extension (Clark & Chalmers), governed by a self-authored constitution with total sovereignty — the operator authors the laws that bind their own AI agents."
+**HCI/Ethics**: "We treat cognitive accommodation not as a UX feature but as a constitutional requirement, enforced by the same mechanisms as data protection and consent. The system is a cognitive extension (Clark & Chalmers), governed by a self-authored constitution with total sovereignty — the operator authors the laws that bind their own AI agents."
 
 ---
 

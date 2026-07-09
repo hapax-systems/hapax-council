@@ -23,7 +23,7 @@ endpoint with this 17-topic launch set:
 - `livestream`
 - `pipewire`
 - `systemd`
-- `neurodivergent`
+- `cognitive-accessibility`
 - `consent-governance`
 - `information-flow-control`
 
@@ -50,7 +50,7 @@ gh api -X PUT repos/hapax-systems/hapax-council/topics \
   -f 'names[]=livestream' \
   -f 'names[]=pipewire' \
   -f 'names[]=systemd' \
-  -f 'names[]=neurodivergent' \
+  -f 'names[]=cognitive-accessibility' \
   -f 'names[]=consent-governance' \
   -f 'names[]=information-flow-control'
 ```
