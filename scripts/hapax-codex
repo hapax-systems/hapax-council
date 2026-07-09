@@ -16,6 +16,7 @@ usage() {
 usage: hapax-codex [--session cx-color] [--slot alpha|beta|delta|epsilon] [--cd DIR]
                    [--task TASK_ID] [--bootstrap FILE] [--task-gate]
                    [--terminal none|tmux|foot] [--force] [--no-claim]
+                   [--fugu-profile fugu|fugu-ultra] [--check] [--print-env]
                    [--] [codex args...]
 
 Defaults:
@@ -24,6 +25,9 @@ Defaults:
   - worktree slot is inferred from cwd when --slot is omitted
   - worktree selected from the slot when --cd is omitted
   - terminal is none: exec Codex in the current terminal
+  - Fugu mode uses pass:sakana/api-key and HAPAX_CODEX_FUGU_MODEL_CATALOG
+    (default ~/.codex/fugu.json), refuses caller Codex passthrough args, and
+    pins the reviewed Sakana provider/config internally
 EOF
 }
 
@@ -354,6 +358,23 @@ ensure_codex_worktree() {
   fi
 }
 
+prepare_codex_workdir() {
+  if [ ! -d "$WORKDIR" ] && [ "$WORKDIR_EXPLICIT" -eq 0 ] && [ "$CODEX_WORKTREE_STRATEGY" = "codex-native" ]; then
+    if ! ensure_codex_worktree "$WORKDIR" "$SESSION"; then
+      echo "hapax-codex: codex-native worktree missing and could not be created: $WORKDIR" >&2
+      echo "  session=$SESSION slot=$SLOT strategy=$CODEX_WORKTREE_STRATEGY" >&2
+      return 3
+    fi
+  fi
+
+  if [ -z "$WORKDIR" ] || [ ! -d "$WORKDIR" ]; then
+    echo "hapax-codex: no worktree found for session '$SESSION' slot '$SLOT' at $WORKDIR" >&2
+    return 3
+  fi
+  WORKDIR="$(cd "$WORKDIR" && pwd)"
+  export HAPAX_CODEX_WORKTREE_STRATEGY="$CODEX_WORKTREE_STRATEGY"
+}
+
 pass_first_line() {
   local name="$1"
   command -v pass >/dev/null 2>&1 || return 1
@@ -373,6 +394,354 @@ load_first_available_pass_secret() {
     fi
   done
   return 1
+}
+
+fugu_model_for_profile() {
+  case "${1:-}" in
+    fugu|fugu-ultra)
+      printf '%s\n' "$1"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+fugu_reasoning_effort_valid() {
+  case "${1:-}" in
+    high|xhigh|max)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+fugu_catalog_model_error() {
+  local catalog="$1"
+  local model="$2"
+  python3 - "$catalog" "$model" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+catalog = Path(sys.argv[1])
+model = sys.argv[2]
+if not catalog.exists():
+    print(
+        f"model catalog '{catalog}' does not exist; next action: create it with "
+        "entries for fugu and fugu-ultra or set HAPAX_CODEX_FUGU_MODEL_CATALOG "
+        "to the reviewed catalog path"
+    )
+    sys.exit(1)
+try:
+    raw = catalog.read_text(encoding="utf-8")
+except OSError as exc:
+    print(f"model catalog '{catalog}' is unreadable: {exc}; next action: fix file permissions or set HAPAX_CODEX_FUGU_MODEL_CATALOG")
+    sys.exit(1)
+try:
+    payload = json.loads(raw)
+except json.JSONDecodeError as exc:
+    print(f"model catalog '{catalog}' is not valid JSON: {exc}; next action: repair the catalog before running Fugu")
+    sys.exit(1)
+
+if isinstance(payload, dict):
+    models = payload.get("models", [])
+elif isinstance(payload, list):
+    models = payload
+else:
+    print(f"model catalog '{catalog}' has unsupported JSON shape; next action: use a list or an object with a models list")
+    sys.exit(1)
+
+if not isinstance(models, list):
+    print(f"model catalog '{catalog}' has non-list models; next action: store models as a JSON list")
+    sys.exit(1)
+
+for row in models:
+    if not isinstance(row, dict):
+        continue
+    if model in {
+        str(row.get("slug", "")),
+        str(row.get("id", "")),
+        str(row.get("model", "")),
+    }:
+        sys.exit(0)
+print(
+    f"model catalog '{catalog}' does not contain '{model}'; next action: add a "
+    f"model entry with slug/id/model '{model}' or choose a supported Fugu profile"
+)
+sys.exit(1)
+PYEOF
+}
+
+fugu_catalog_has_model() {
+  fugu_catalog_model_error "$1" "$2" >/dev/null
+}
+
+fugu_toml_quote() {
+  python3 - "$1" <<'PYEOF'
+import json
+import sys
+
+print(json.dumps(sys.argv[1]))
+PYEOF
+}
+
+fugu_pass_secret_available() {
+  local entry="$1"
+  fugu_pass_secret_check_error "$entry" >/dev/null
+}
+
+fugu_pass_secret_check_error() {
+  local entry="$1"
+  local output value status stderr_file stderr_text
+  if ! command -v pass >/dev/null 2>&1; then
+    echo "pass binary not found; next action: install or expose pass before retrying Fugu"
+    return 1
+  fi
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/hapax-fugu-pass-check.XXXXXX")"
+  output="$(pass show "$entry" 2>"$stderr_file")"
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    rm -f "$stderr_file"
+    value="$(printf '%s\n' "$output" | sed -n '1p')"
+    if [ -n "$value" ]; then
+      return 0
+    fi
+    echo "pass entry '$entry' returned an empty first line; next action: run 'pass insert sakana/api-key' with a non-empty secret or restore the operator password store before retrying"
+    return 1
+  fi
+  stderr_text="$(sed -n '1,3p' "$stderr_file" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  rm -f "$stderr_file"
+  if [ -n "$stderr_text" ]; then
+    echo "pass entry '$entry' is unavailable (pass show exit $status: $stderr_text); next action: run 'pass insert sakana/api-key' or restore the operator password store before retrying"
+  else
+    echo "pass entry '$entry' is unavailable (pass show exit $status); next action: run 'pass insert sakana/api-key' or restore the operator password store before retrying"
+  fi
+  return 1
+}
+
+fugu_load_required_pass_secret() {
+  local entry="$1"
+  local output value status stderr_file
+  if ! command -v pass >/dev/null 2>&1; then
+    echo "hapax-codex: pass binary not found while loading pass:$entry" >&2
+    return 1
+  fi
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/hapax-fugu-pass.XXXXXX")"
+  if output="$(pass show "$entry" 2>"$stderr_file")"; then
+    value="$(printf '%s\n' "$output" | sed -n '1p')"
+  else
+    status=$?
+    echo "hapax-codex: pass show '$entry' failed with exit $status" >&2
+    if [ -s "$stderr_file" ]; then
+      sed 's/^/hapax-codex: pass: /' "$stderr_file" >&2
+    fi
+    rm -f "$stderr_file"
+    return 1
+  fi
+  rm -f "$stderr_file"
+  if [ -z "$value" ]; then
+    echo "hapax-codex: pass show '$entry' returned an empty secret" >&2
+    return 1
+  fi
+  export SAKANA_API_KEY="$value"
+}
+
+fugu_refuse_codex_override_args() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -p|--profile|--profile=*|--enable|--enable=*)
+        echo "hapax-codex: Fugu mode refuses Codex profile/feature override '$arg'; next action: remove the override and use the pinned Fugu profile/config path" >&2
+        return 1
+        ;;
+      -m|--model|--model=*|--model-provider|--model-provider=*|--model_provider|--model_provider=*|--provider|--provider=*|--base-url|--base-url=*|--api-base|--api-base=*|--endpoint|--endpoint=*|--api-key|--api-key=*|--env-key|--env-key=*|--model-catalog-json|--model-catalog-json=*|--model_catalog_json|--model_catalog_json=*)
+        echo "hapax-codex: Fugu mode refuses Codex model/provider override '$arg'; next action: remove the override and use the pinned Fugu profile/config path" >&2
+        return 1
+        ;;
+      -c|--config|-c=*|--config=*|-c?*)
+        echo "hapax-codex: Fugu mode refuses Codex config override '$arg'; next action: remove -c/--config and use the pinned Fugu profile/config path" >&2
+        return 1
+        ;;
+      --remote|--remote=*|--remote-*|--remote-*=*|cloud|exec-server)
+        echo "hapax-codex: Fugu mode refuses Codex remote/control override '$arg'; next action: remove remote-control arguments and run the governed Fugu wrapper locally" >&2
+        return 1
+        ;;
+      *)
+        echo "hapax-codex: Fugu mode refuses caller-supplied Codex argument '$arg'; next action: remove extra Codex arguments and use the pinned Fugu profile/config path" >&2
+        return 1
+        ;;
+    esac
+  done
+}
+
+fugu_refuse_codex_binary_override() {
+  if [ -n "${HAPAX_CODEX_BIN_PATH:-}" ]; then
+    echo "hapax-codex: Fugu mode refuses HAPAX_CODEX_BIN_PATH executable override; next action: expose the supported Codex CLI as 'codex' in PATH and rerun the governed Fugu wrapper" >&2
+    return 1
+  fi
+  return 0
+}
+
+fugu_refuse_remote_dispatch() {
+  local requested="${HAPAX_DISPATCH_HOST:-}"
+  if [ -n "$requested" ] && ! dispatch_host_is_local "$requested"; then
+    echo "hapax-codex: Fugu launch refuses remote dispatch; load pass-backed Sakana credentials only on the local execution host; next action: unset HAPAX_DISPATCH_HOST or run the governed wrapper on the local host" >&2
+    return 1
+  fi
+  if [ -n "${DISPATCH_HOST:-}" ]; then
+    echo "hapax-codex: Fugu launch refuses remote dispatch; load pass-backed Sakana credentials only on the local execution host; next action: unset HAPAX_DISPATCH_HOST or run the governed wrapper on the local host" >&2
+    return 1
+  fi
+  return 0
+}
+
+fugu_normalized_base_url() {
+  printf '%s\n' "${1:-}" | sed 's#/*$##'
+}
+
+fugu_collect_config_errors() {
+  local errors_var="$1"
+  local profile="$2"
+  local model="$3"
+  local catalog="$4"
+  local base_url="$5"
+  local wire_api="$6"
+  local reasoning_effort="$7"
+  local secret_entry="$8"
+  local normalized_base
+  local catalog_error
+  local errors=()
+
+  if [ -z "$profile" ] || ! fugu_model_for_profile "$profile" >/dev/null; then
+    errors+=("profile must be exactly 'fugu' or 'fugu-ultra'; next action: rerun with --fugu-profile fugu or --fugu-profile fugu-ultra")
+  fi
+  if [ -z "$model" ] || ! fugu_model_for_profile "$model" >/dev/null; then
+    errors+=("model must be exactly 'fugu' or 'fugu-ultra'; next action: use the governed Fugu profile mapping instead of overriding the model")
+  fi
+  normalized_base="$(fugu_normalized_base_url "$base_url")"
+  if [ "$normalized_base" != "https://api.sakana.ai/v1" ]; then
+    errors+=("unsupported endpoint '$base_url'; expected https://api.sakana.ai/v1; next action: unset HAPAX_CODEX_FUGU_BASE_URL or set it to https://api.sakana.ai/v1")
+  fi
+  if [ "$wire_api" != "responses" ]; then
+    errors+=("unsupported wire_api '$wire_api'; expected responses; next action: unset HAPAX_CODEX_FUGU_WIRE_API or set it to responses")
+  fi
+  if ! fugu_reasoning_effort_valid "$reasoning_effort"; then
+    errors+=("unsupported reasoning effort '$reasoning_effort'; expected high, xhigh, or max; next action: set HAPAX_CODEX_FUGU_REASONING_EFFORT to high, xhigh, or max")
+  fi
+  if [ "$secret_entry" != "sakana/api-key" ]; then
+    errors+=("unsupported secret entry '$secret_entry'; expected pass:sakana/api-key; next action: set HAPAX_CODEX_FUGU_SECRET_ENTRY=sakana/api-key")
+  fi
+  if ! catalog_error="$(fugu_catalog_model_error "$catalog" "$model" 2>&1)"; then
+    if [ -z "$catalog_error" ]; then
+      catalog_error="model catalog validation failed without details; next action: verify python3 is available and rerun --check"
+    else
+      case "$catalog_error" in
+        *"next action:"*) ;;
+        *)
+          catalog_error="$catalog_error; next action: verify python3 is available and rerun --check"
+          ;;
+      esac
+    fi
+    errors+=("$catalog_error")
+  fi
+
+  if [ "${#errors[@]}" -eq 0 ]; then
+    printf -v "$errors_var" ''
+    return 0
+  fi
+  printf -v "$errors_var" '%s\n' "${errors[@]}"
+  return 1
+}
+
+fugu_print_config_errors() {
+  local header="$1"
+  local errors="$2"
+  echo "hapax-codex: $header" >&2
+  if [ -n "$errors" ]; then
+    while IFS= read -r error; do
+      [ -n "$error" ] || continue
+      printf '  - %s\n' "$error" >&2
+    done <<EOF
+$errors
+EOF
+  fi
+}
+
+fugu_check() {
+  local errors="" config_errors="" model pass_error codex_bin
+  if model="$(fugu_model_for_profile "$FUGU_PROFILE")"; then
+    :
+  else
+    model=""
+  fi
+  fugu_collect_config_errors config_errors "$FUGU_PROFILE" "$model" "$FUGU_MODEL_CATALOG" \
+    "$FUGU_BASE_URL" "$FUGU_WIRE_API" "$FUGU_REASONING_EFFORT" "$FUGU_SECRET_ENTRY" || true
+  errors="$config_errors"
+
+  codex_bin="$(command -v codex || true)"
+  if [ -z "$codex_bin" ]; then
+    errors="${errors}codex binary not found in PATH; next action: install or expose the supported Codex CLI before retrying"$'\n'
+  fi
+  if [ "$FUGU_SECRET_ENTRY" = "sakana/api-key" ]; then
+    if ! pass_error="$(fugu_pass_secret_check_error "$FUGU_SECRET_ENTRY")"; then
+      errors="${errors}${pass_error}"$'\n'
+    fi
+  fi
+  if [ ! -x "$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh" ]; then
+    errors="${errors}Codex hook adapter is not executable; next action: fix hook permissions in $COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"$'\n'
+  fi
+
+  if [ -n "$errors" ]; then
+    fugu_print_config_errors "Fugu check failed" "$errors"
+    return 1
+  fi
+
+  cat <<EOF
+hapax-codex: Fugu check ok
+profile=$FUGU_PROFILE
+model=$model
+provider=sakana
+base_url=$(fugu_normalized_base_url "$FUGU_BASE_URL")
+wire_api=$FUGU_WIRE_API
+reasoning_effort=$FUGU_REASONING_EFFORT
+model_catalog=$FUGU_MODEL_CATALOG
+codex_binary=$codex_bin
+codex_bin_path_override=false
+secret_entry=pass:$FUGU_SECRET_ENTRY
+secret_value=<redacted>
+workdir=$WORKDIR
+session=$SESSION
+slot=$SLOT
+prompt_sent=false
+provider_spend=false
+raw_codex_fugu_bypass=false
+EOF
+}
+
+fugu_print_env() {
+  local model
+  model="$(fugu_model_for_profile "$FUGU_PROFILE" || true)"
+  cat <<EOF
+HAPAX_AGENT_ROLE=$SESSION
+HAPAX_AGENT_SLOT=$SLOT
+HAPAX_CODEX_WORKDIR=$WORKDIR
+HAPAX_CODEX_TERMINAL=$TERMINAL
+HAPAX_CODEX_FUGU_PROFILE=$FUGU_PROFILE
+HAPAX_CODEX_FUGU_MODEL=$model
+HAPAX_CODEX_FUGU_PROVIDER=sakana
+HAPAX_CODEX_FUGU_BASE_URL=$(fugu_normalized_base_url "$FUGU_BASE_URL")
+HAPAX_CODEX_FUGU_WIRE_API=$FUGU_WIRE_API
+HAPAX_CODEX_FUGU_REASONING_EFFORT=$FUGU_REASONING_EFFORT
+HAPAX_CODEX_FUGU_MODEL_CATALOG=$FUGU_MODEL_CATALOG
+HAPAX_CODEX_FUGU_SECRET_ENTRY=pass:$FUGU_SECRET_ENTRY
+HAPAX_CODEX_FUGU_SECRET_VALUE=<redacted>
+HAPAX_CODEX_FUGU_PROMPT_SENT=false
+HAPAX_CODEX_FUGU_PROVIDER_SPEND=false
+HAPAX_CODEX_FUGU_RAW_CODEX_FUGU_BYPASS=false
+EOF
 }
 
 load_header_from_claude_mcp() {
@@ -1020,6 +1389,14 @@ TERMINAL="${HAPAX_CODEX_TERMINAL:-none}"
 TASK_GATE=0
 CLAIM_TASK=1
 FORCE=0
+FUGU_PROFILE=""
+FUGU_CHECK=0
+FUGU_PRINT_ENV=0
+FUGU_SECRET_ENTRY="${HAPAX_CODEX_FUGU_SECRET_ENTRY:-sakana/api-key}"
+FUGU_BASE_URL="${HAPAX_CODEX_FUGU_BASE_URL:-https://api.sakana.ai/v1}"
+FUGU_WIRE_API="${HAPAX_CODEX_FUGU_WIRE_API:-responses}"
+FUGU_REASONING_EFFORT="${HAPAX_CODEX_FUGU_REASONING_EFFORT:-high}"
+FUGU_MODEL_CATALOG="${HAPAX_CODEX_FUGU_MODEL_CATALOG:-$HOME/.codex/fugu.json}"
 CODEX_EXTRA=()
 
 while [ $# -gt 0 ]; do
@@ -1103,6 +1480,22 @@ while [ $# -gt 0 ]; do
       FORCE=1
       shift
       ;;
+    --fugu|--fugu-profile)
+      FUGU_PROFILE="${2:-}"
+      shift 2
+      ;;
+    --fugu=*|--fugu-profile=*)
+      FUGU_PROFILE="${1#*=}"
+      shift
+      ;;
+    --check)
+      FUGU_CHECK=1
+      shift
+      ;;
+    --print-env)
+      FUGU_PRINT_ENV=1
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -1181,20 +1574,55 @@ if [ -z "$WORKDIR" ]; then
   fi
 fi
 
-if [ ! -d "$WORKDIR" ] && [ "$WORKDIR_EXPLICIT" -eq 0 ] && [ "$CODEX_WORKTREE_STRATEGY" = "codex-native" ]; then
-  if ! ensure_codex_worktree "$WORKDIR" "$SESSION"; then
-    echo "hapax-codex: codex-native worktree missing and could not be created: $WORKDIR" >&2
-    echo "  session=$SESSION slot=$SLOT strategy=$CODEX_WORKTREE_STRATEGY" >&2
-    exit 3
+if [ "$FUGU_CHECK" -eq 1 ] || [ "$FUGU_PRINT_ENV" -eq 1 ]; then
+  if [ -z "$FUGU_PROFILE" ]; then
+    echo "hapax-codex: --check/--print-env requires --fugu-profile fugu|fugu-ultra; next action: rerun with --fugu-profile fugu or --fugu-profile fugu-ultra" >&2
+    exit 2
   fi
 fi
 
-if [ -z "$WORKDIR" ] || [ ! -d "$WORKDIR" ]; then
-  echo "hapax-codex: no worktree found for session '$SESSION' slot '$SLOT' at $WORKDIR" >&2
-  exit 3
+if [ -n "$FUGU_PROFILE" ]; then
+  unset SAKANA_API_KEY
+  if ! fugu_refuse_codex_binary_override; then
+    exit 2
+  fi
 fi
-WORKDIR="$(cd "$WORKDIR" && pwd)"
-export HAPAX_CODEX_WORKTREE_STRATEGY="$CODEX_WORKTREE_STRATEGY"
+
+if [ -n "$FUGU_PROFILE" ] && [ "$FUGU_PRINT_ENV" -eq 1 ]; then
+  fugu_errors=""
+  if FUGU_MODEL="$(fugu_model_for_profile "$FUGU_PROFILE")"; then
+    :
+  else
+    FUGU_MODEL=""
+  fi
+  if ! fugu_collect_config_errors fugu_errors "$FUGU_PROFILE" "$FUGU_MODEL" "$FUGU_MODEL_CATALOG" \
+    "$FUGU_BASE_URL" "$FUGU_WIRE_API" "$FUGU_REASONING_EFFORT" "$FUGU_SECRET_ENTRY"; then
+    fugu_print_config_errors "Fugu print-env refused unsupported configuration" "$fugu_errors"
+    exit 2
+  fi
+  if ! fugu_refuse_codex_override_args "${CODEX_EXTRA[@]}"; then
+    exit 2
+  fi
+  if ! fugu_refuse_remote_dispatch; then
+    exit 14
+  fi
+  fugu_print_env
+  exit 0
+fi
+
+if [ -n "$FUGU_PROFILE" ] && [ "$FUGU_CHECK" -eq 1 ]; then
+  if ! fugu_refuse_codex_override_args "${CODEX_EXTRA[@]}"; then
+    exit 2
+  fi
+  if ! fugu_refuse_remote_dispatch; then
+    exit 14
+  fi
+  prepare_codex_workdir || exit $?
+  fugu_check
+  exit $?
+fi
+
+prepare_codex_workdir || exit $?
 
 PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
 PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_ROLE:-unknown}}}}"
@@ -1216,6 +1644,9 @@ REMOTE_TOKEN_HANDOFF_CREATED=0
 if [ -n "$DISPATCH_HOST_REQUESTED" ]; then
   if dispatch_host_is_local "$DISPATCH_HOST_REQUESTED"; then
     DISPATCH_HOST_REQUESTED=""
+  elif [ -n "$FUGU_PROFILE" ]; then
+    echo "hapax-codex: Fugu launch refuses remote dispatch; load pass-backed Sakana credentials only on the local execution host; next action: unset HAPAX_DISPATCH_HOST or run the governed wrapper on the local host" >&2
+    exit 14
   else
     PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64 "")"
     PREFLIGHT_COMMAND="$(remote_python_command "$PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
@@ -1248,6 +1679,10 @@ CODEX_BIN=""
 if [ -z "$DISPATCH_HOST" ]; then
   CODEX_BIN="$(command -v codex || true)"
   if [ -z "$CODEX_BIN" ]; then
+    if [ -n "$FUGU_PROFILE" ]; then
+      echo "hapax-codex: Fugu mode requires a PATH-resolved codex executable; fallback executable resolution is refused; next action: expose the supported Codex CLI as 'codex' in PATH before retrying the governed Fugu wrapper" >&2
+      exit 4
+    fi
     # PATH lookup missed codex. A common cause is a thin systemd-unit PATH (e.g.
     # hapax-lane-supervisor) that omits ~/.npm-global/bin, where `npm i -g
     # @openai/codex` installs the launcher — the rc=4 "codex not found" respawn-loop
@@ -1465,6 +1900,9 @@ unset GITHUB_PERSONAL_ACCESS_TOKEN
 unset CODEX_GITHUB_PERSONAL_ACCESS_TOKEN
 unset TAVILY_API_KEY
 unset CONTEXT7_API_KEY
+if [ -n "$FUGU_PROFILE" ]; then
+  unset SAKANA_API_KEY
+fi
 
 MCP_CONFIG_SCRUB="$COUNCIL_DIR/scripts/hapax-codex-mcp-config-scrub"
 if [ -x "$MCP_CONFIG_SCRUB" ]; then
@@ -1472,6 +1910,27 @@ if [ -x "$MCP_CONFIG_SCRUB" ]; then
 fi
 
 maybe_load_local_codex_access_token
+
+FUGU_MODEL=""
+if [ -n "$FUGU_PROFILE" ]; then
+  if FUGU_MODEL="$(fugu_model_for_profile "$FUGU_PROFILE")"; then
+    :
+  else
+    FUGU_MODEL=""
+  fi
+  fugu_errors=""
+  if ! fugu_collect_config_errors fugu_errors "$FUGU_PROFILE" "$FUGU_MODEL" "$FUGU_MODEL_CATALOG" \
+    "$FUGU_BASE_URL" "$FUGU_WIRE_API" "$FUGU_REASONING_EFFORT" "$FUGU_SECRET_ENTRY"; then
+    fugu_print_config_errors "Fugu launch refused unsupported configuration" "$fugu_errors"
+    exit 2
+  fi
+  if ! fugu_refuse_codex_override_args "${CODEX_EXTRA[@]}"; then
+    exit 2
+  fi
+  if ! fugu_refuse_remote_dispatch; then
+    exit 14
+  fi
+fi
 
 HOOK="$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"
 if [ ! -x "$HOOK" ]; then
@@ -1512,8 +1971,29 @@ CODEX_ARGS=(
   -c "mcp_servers.github.command=\"$COUNCIL_DIR/scripts/hapax-github-mcp\""
   -c "mcp_servers.playwright.command=\"$COUNCIL_DIR/scripts/hapax-playwright-mcp\""
   -c "mcp_servers.tavily.command=\"$COUNCIL_DIR/scripts/hapax-tavily-mcp\""
-  "${CODEX_EXTRA[@]}"
 )
+
+if [ -n "$FUGU_PROFILE" ]; then
+  CODEX_ARGS+=(
+    -c "model=$(fugu_toml_quote "$FUGU_MODEL")"
+    -c "model_reasoning_effort=$(fugu_toml_quote "$FUGU_REASONING_EFFORT")"
+    -c 'model_provider="sakana"'
+    -c "model_catalog_json=$(fugu_toml_quote "$FUGU_MODEL_CATALOG")"
+    -c 'model_providers.sakana.name="Sakana API"'
+    -c "model_providers.sakana.base_url=$(fugu_toml_quote "$(fugu_normalized_base_url "$FUGU_BASE_URL")")"
+    -c 'model_providers.sakana.env_key="SAKANA_API_KEY"'
+    -c "model_providers.sakana.wire_api=$(fugu_toml_quote "$FUGU_WIRE_API")"
+    -c 'model_providers.sakana.stream_idle_timeout_ms=7200000'
+    -c 'model_providers.sakana.stream_max_retries=5'
+    -c 'model_providers.sakana.request_max_retries=4'
+    --disable image_generation
+    --disable apps
+  )
+fi
+
+if [ -z "$FUGU_PROFILE" ]; then
+  CODEX_ARGS+=("${CODEX_EXTRA[@]}")
+fi
 
 if [ "$append_bootstrap_prompt" -eq 1 ]; then
   CODEX_ARGS+=("Bootstrap file: $BOOTSTRAP_FILE")
@@ -1545,6 +2025,12 @@ if [ "$TERMINAL" = "none" ]; then
   if [ -n "$DISPATCH_FALLBACK_REASON" ]; then
     write_local_dispatch_proof "$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf local)" "1" "$DISPATCH_FALLBACK_REASON"
   fi
+  if [ -n "$FUGU_PROFILE" ]; then
+    if ! fugu_load_required_pass_secret "$FUGU_SECRET_ENTRY"; then
+      echo "hapax-codex: Fugu launch requires pass:$FUGU_SECRET_ENTRY (value not printed); next action: run 'pass insert sakana/api-key' or restore the operator password store before retrying" >&2
+      exit 7
+    fi
+  fi
   exec "$CODEX_BIN" "${CODEX_ARGS[@]}"
 fi
 
@@ -1575,6 +2061,9 @@ if [ "$TASK_GATE" -eq 1 ]; then
 fi
 if [ -n "$TASK_ID" ]; then
   CHILD_ARGS+=(--task "$TASK_ID")
+fi
+if [ -n "$FUGU_PROFILE" ]; then
+  CHILD_ARGS+=(--fugu-profile "$FUGU_PROFILE")
 fi
 if [ -n "$BOOTSTRAP_FILE" ]; then
   CHILD_ARGS+=(--bootstrap "$BOOTSTRAP_FILE")

@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Governed Reins-facing Sakana Fugu Ultra entrypoint.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROFILE="fugu-ultra"
+DEFAULT_SESSION="${REINS_FUGU_SESSION:-cx-fugu-ultra}"
+
+for arg in "$@"; do
+  case "$arg" in
+    --fugu|--fugu=*|--fugu-profile|--fugu-profile=*)
+      echo "reins-fugu-ultra: refuses caller Fugu profile override '$arg'; next action: use reins-fugu or reins-fugu-ultra for the pinned governed profile" >&2
+      exit 2
+      ;;
+  esac
+done
+
+needs_default_session=1
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--session" ] || [ "$prev" = "--thread" ] || [ "$prev" = "--name" ]; then
+    needs_default_session=0
+    break
+  fi
+  if [ "$prev" = "--role" ]; then
+    case "$arg" in
+      cx-*)
+        needs_default_session=0
+        break
+        ;;
+    esac
+  fi
+  case "$arg" in
+    --session=*|--thread=*|--name=*|--role=cx-*|cx-*)
+      needs_default_session=0
+      break
+      ;;
+  esac
+  prev="$arg"
+done
+
+args=(--fugu-profile "$PROFILE")
+if [ "$needs_default_session" -eq 1 ]; then
+  args=(--session "$DEFAULT_SESSION" "${args[@]}")
+fi
+
+exec "$SCRIPT_DIR/hapax-codex" "${args[@]}" "$@"
