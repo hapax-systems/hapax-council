@@ -85,7 +85,7 @@ the fix is a NEW event that satisfies all of them, not a relaxation.
 
 `build_gate_event` takes `route` as a **required** parameter (`gate_event_producer.py:286`); the
 admission callers supply it because they MADE the dispatch decision
-(`core.py` passes the dispatched route; `hapax-methodology-dispatch:1669` reads
+(`core.py` passes the dispatched route; `hapax-methodology-dispatch:1828` reads
 `route_decision.selected_descriptor_leaf or route_decision.route_id`). An outcome caller at a later
 verdict seam (CI / review / merge) did not make the dispatch decision, so it must RECOVER the route.
 The clean, consume-never-fork way: **join the admission event on `task_hash`**. Both producers
@@ -181,7 +181,7 @@ def emit_witnessed_outcome(
     p_correct: float | None = None,
     path: Path | str | None = None,
 ) -> GateEvent | None:
-    """Resolve route via admission-context join, then delegate to emit_outcome_gate_event.
+    """Resolve route via admission-context join, then build and append a witnessed outcome.
 
     Returns None (and writes nothing) when no admission context is found — a verdict with no
     dispatch admission is a lost join, not a learning signal. Provenance stays "witnessed"

@@ -209,6 +209,17 @@ class TestTickIntegration:
             captured["fit_blend"] = fit_blend
             return []
 
+        def fake_repair_cooled_plan(
+            plan: list[tuple[str, str]],
+            _tasks: list[QueueTask],
+            _lanes: list[QueueLane],
+            *,
+            fit_blend: float,
+            **_kwargs: object,
+        ) -> tuple[list[tuple[str, str]], int]:
+            captured["repair_fit_blend"] = fit_blend
+            return plan, 0
+
         monkeypatch.setenv(INTAKE_FIT_BLEND_ENV, "50")
         with ExitStack() as stack:
             stack.enter_context(patch.object(coord, "_scan_tasks", return_value=[TASK_A]))
@@ -226,11 +237,15 @@ class TestTickIntegration:
             stack.enter_context(
                 patch("agents.coordinator.core.plan_dispatches", side_effect=fake_plan_dispatches)
             )
+            stack.enter_context(
+                patch.object(coord, "_repair_cooled_plan", side_effect=fake_repair_cooled_plan)
+            )
             mock_admission.return_value = MagicMock(state="open")
 
             coord.tick()
 
         assert captured["fit_blend"] == math.nextafter(0.5, 0.0)
+        assert captured["repair_fit_blend"] == math.nextafter(0.5, 0.0)
 
     def test_deterministic_refusal_enters_cooldown_after_k(self, tmp_path: Path) -> None:
         """After K identical deterministic dispatch failures through tick(),
