@@ -51,6 +51,7 @@ BINARY_BY_PLATFORM = {
     "claude": "claude",
     "codex": "codex",
     "glmcp": "scripts/hapax-glmcp-reviewer",
+    "grok": "grok",
     "vibe": "vibe",
 }
 VERSION_ARGS_BY_PLATFORM = {
@@ -59,6 +60,7 @@ VERSION_ARGS_BY_PLATFORM = {
     "claude": ["--version"],
     "codex": ["--version"],
     "glmcp": ["--check"],
+    "grok": ["--version"],
     "vibe": ["--version"],
 }
 CODEX_EXEC_AUTH_SENTINEL = "HAPAX_CODEX_EXEC_AUTH_OK"
@@ -87,6 +89,13 @@ CONFIG_REFS_BY_PLATFORM = {
         "~/.vibe/config.toml",
         "~/.vibe/.env",
         "~/.cache/hapax/relay/onboarding-vbe.md",
+    ],
+    "grok": [
+        "~/.grok/config.toml",
+        "~/.grok/AGENTS.md",
+        "~/.local/bin/hapax-grok",
+        "~/.local/lib/hapax/hooks/grok-hook-adapter.sh",
+        "~/.local/lib/hapax/hooks/authorization-packet-validator.sh",
     ],
 }
 SECRETISH_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|credential)([=:])(\S+)")
@@ -153,6 +162,18 @@ def sha256_file(path: Path) -> str | None:
 
 def candidate_binaries(platform: str) -> list[str]:
     override = os.environ.get(f"HAPAX_{platform.upper()}_BIN", "").strip()
+    if platform == "grok":
+        candidates: list[str] = []
+        if override:
+            candidates.append(override)
+        candidates.extend(
+            [
+                BINARY_BY_PLATFORM[platform],
+                str(Path.home() / ".local" / "bin" / "grok"),
+                str(Path.home() / ".grok" / "bin" / "grok"),
+            ]
+        )
+        return candidates
     if platform == "codex":
         candidates = []
         candidates.append(BINARY_BY_PLATFORM[platform])
