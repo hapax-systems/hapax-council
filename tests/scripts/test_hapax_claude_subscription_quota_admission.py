@@ -112,7 +112,9 @@ def test_rejects_billing_identifier_evidence_ref(tmp_path: Path, capsys) -> None
         "claude-subscription-sub_123-headroom-20260708",
         "claude-subscription-id-123-headroom-20260708",
         "claude-subscription_id_123_headroom-20260708",
+        "claude-subscription+id+123-headroom-20260708",
         "claude-account-acct_123-headroom-20260708",
+        "claude-billing+cus_123-headroom-20260708",
         "claude-invoice7-headroom-20260708",
         "claude-billingcus123-headroom-20260708",
         "claude-in_123-headroom-20260708",
@@ -141,6 +143,8 @@ def test_rejects_lane_presence_evidence_ref(tmp_path: Path, capsys) -> None:  # 
         "claude-lane2-observed-20260708t1400z",
         "claude-headroom-eta2-observed",
         "eta2",
+        "eta+present",
+        "claude+headroom+eta+observed",
         "tmux2-headroom",
         "vbe-3-headroom",
         "mu-headroom",
@@ -224,7 +228,9 @@ def test_rejects_billing_identifier_receipt_name(tmp_path: Path, capsys) -> None
         "claude-subscription-quota-admission-cus_123.yaml",
         "claude-subscription-quota-admission-subscription-id-123.yaml",
         "claude-subscription-quota-admission-subscription_id_123.yaml",
+        "claude-subscription-quota-admission-subscription+id+123.yaml",
         "claude-subscription-quota-admission-invoice7.yaml",
+        "claude-subscription-quota-admission-billing+cus_123.yaml",
         "claude-subscription-quota-admission-billingcus123.yaml",
         "claude-subscription-quota-admission-ch_123.yaml",
     ):
@@ -248,6 +254,7 @@ def test_rejects_lane_presence_receipt_name(tmp_path: Path, capsys) -> None:  # 
     for name in (
         "eta-claude-subscription-quota-admission.yaml",
         "claude-subscription-quota-admission-eta2.yaml",
+        "claude-subscription-quota-admission-eta+present.yaml",
         "claude-subscription-quota-admission-session2.yaml",
         "claude-subscription-quota-admission-lane2.yaml",
     ):

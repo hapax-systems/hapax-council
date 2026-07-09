@@ -92,21 +92,21 @@ CLAUDE_ADMISSION_SECRETISH_RE = re.compile(
 )
 CLAUDE_ADMISSION_BILLINGISH_RE = re.compile(
     r"(?:"
-    r"(?:^|[-_.])(?:billing|customer|account|invoice|payment)[a-z0-9]*(?:$|[-_.])|"
-    r"(?:^|[-_.])subscription[-_]?id[a-z0-9]*(?:$|[-_.])|"
-    r"(?:^|[-_.])(?:cus|sub|acct|in|ch)[_-][a-z0-9]+(?:$|[-_.])"
+    r"(?:^|[-_.+])(?:billing|customer|account|invoice|payment)[a-z0-9]*(?:$|[-_.+])|"
+    r"(?:^|[-_.+])subscription[-_.+]?id[a-z0-9]*(?:$|[-_.+])|"
+    r"(?:^|[-_.+])(?:cus|sub|acct|in|ch)[_+-][a-z0-9]+(?:$|[-_.+])"
     r")",
     re.IGNORECASE,
 )
 CLAUDE_ADMISSION_LANE_PRESENCE_RE = re.compile(
     r"(?:"
     r"hapax-claude-[a-z0-9-]+|session-present|lane-present|lane-exists|"
-    r"(?:^|[-_.])"
+    r"(?:^|[-_.+])"
     r"(?:(?:tmux|sessions?|lanes?|dev)[0-9]*|"
     r"(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
     r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega)[0-9]*|"
     r"cx-[a-z0-9-]+|vbe-[0-9]+)"
-    r"(?:$|[-_.])"
+    r"(?:$|[-_.+])"
     r")",
     re.IGNORECASE,
 )

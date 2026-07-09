@@ -140,6 +140,14 @@ CLAUDE_GREEK_LANE_DIGIT_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.rep
     "witness:claude-subscription-headroom-observed-20260708t1400z:",
     "witness:claude-headroom-eta2-observed:",
 )
+CLAUDE_PLUS_LANE_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:eta+present:",
+)
+CLAUDE_PLUS_BILLING_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "witness:claude-subscription-headroom-observed-20260708t1400z:",
+    "witness:billing+cus_123:",
+)
 CLAUDE_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
     "relay-receipt:claude-subscription-quota-admission-cus_123.yaml:",
@@ -155,6 +163,14 @@ CLAUDE_LANE_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
 CLAUDE_GREEK_LANE_DIGIT_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
     "relay-receipt:claude-subscription-quota-admission-eta2.yaml:",
+)
+CLAUDE_PLUS_LANE_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-eta+present.yaml:",
+)
+CLAUDE_PLUS_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-billing+cus_123.yaml:",
 )
 CLAUDE_HASHED_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
@@ -1681,6 +1697,16 @@ def test_receipt_bounded_route_rejects_billing_identifier_claude_witness() -> No
             "quota-claude-headless-full-greek-lane-digit-witness",
             "fixture claude digit-tailed greek lane witness",
         ),
+        (
+            CLAUDE_PLUS_LANE_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-plus-lane-witness",
+            "fixture claude plus-delimited lane witness",
+        ),
+        (
+            CLAUDE_PLUS_BILLING_WITNESS_EVIDENCE_REF,
+            "quota-claude-headless-full-plus-billing-witness",
+            "fixture claude plus-delimited billing witness",
+        ),
     ],
 )
 def test_receipt_bounded_route_rejects_newly_unsafe_claude_witness_shapes(
@@ -1734,6 +1760,16 @@ def test_receipt_bounded_route_rejects_billing_identifier_claude_receipt_label()
             CLAUDE_GREEK_LANE_DIGIT_RECEIPT_LABEL_EVIDENCE_REF,
             "quota-claude-headless-full-greek-lane-digit-label",
             "fixture claude digit-tailed greek lane receipt label",
+        ),
+        (
+            CLAUDE_PLUS_LANE_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-plus-lane-label",
+            "fixture claude plus-delimited lane receipt label",
+        ),
+        (
+            CLAUDE_PLUS_BILLING_RECEIPT_LABEL_EVIDENCE_REF,
+            "quota-claude-headless-full-plus-billing-label",
+            "fixture claude plus-delimited billing receipt label",
         ),
     ],
 )
