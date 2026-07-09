@@ -94,6 +94,7 @@ CLAUDE_ADMISSION_BILLINGISH_RE = re.compile(
     r"(?:"
     r"(?:^|[-_.+])(?:billing|customer|account|invoice|payment)[a-z0-9]*(?:$|[-_.+])|"
     r"(?:^|[-_.+])subscription[-_.+]?id[a-z0-9]*(?:$|[-_.+])|"
+    r"(?:^|[-_.+])(?:cus|sub|acct|in|ch)[0-9][a-z0-9]*(?:$|[-_.+])|"
     r"(?:^|[-_.+])(?:cus|sub|acct|in|ch)[-_.+][a-z0-9]+(?:$|[-_.+])"
     r")",
     re.IGNORECASE,

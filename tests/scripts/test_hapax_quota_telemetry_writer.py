@@ -1285,6 +1285,27 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
         (
             {
                 "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-cus123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-sub123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-acct123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
                 "evidence_ref": "claude-billingcus123-headroom-20260609",
             },
             "evidence-ref-names-billing-or-account-identifier",
@@ -1398,6 +1419,27 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
             {
                 "observed_at": "2026-06-09T23:55:00Z",
                 "name": "claude-subscription-quota-admission-sub.123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-cus123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-sub123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-acct123.yaml",
             },
             "receipt-name-names-billing-or-account-identifier",
         ),
