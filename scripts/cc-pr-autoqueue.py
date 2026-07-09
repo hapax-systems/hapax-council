@@ -776,6 +776,99 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
     )
 
 
+def _graphql_open_pr_rows(
+    *,
+    repo: str,
+    repo_root: Path,
+    limit: int,
+    runner: Any,
+    include_files: bool,
+    include_status: bool,
+) -> list[dict[str, Any]] | None:
+    owner, name = repo.split("/", 1)
+    files_fragment = "files(first:100){nodes{path}}" if include_files else ""
+    status_fragment = (
+        "commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{"
+        "__typename ... on CheckRun{name status conclusion completedAt startedAt} "
+        "... on StatusContext{context state createdAt}}}}}}}"
+        if include_status
+        else ""
+    )
+    query = (
+        "query($owner:String!,$repo:String!,$limit:Int!){repository(owner:$owner,name:$repo){"
+        "pullRequests(states:OPEN,first:$limit,orderBy:{field:UPDATED_AT,direction:DESC}){"
+        "nodes{number id title body isDraft headRefName headRefOid changedFiles "
+        "mergeStateStatus reviewDecision autoMergeRequest{enabledAt} labels(first:50){nodes{name}} "
+        f"{files_fragment} {status_fragment}"
+        "}}}}"
+    )
+    proc = run_graphql_rate_aware(
+        [
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"repo={name}",
+            "-F",
+            f"limit={max(0, limit)}",
+        ],
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if proc.returncode != 0:
+        LOG.warning("GraphQL open PR fallback indeterminate: %s", proc.stderr.strip())
+        return None
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        LOG.warning("GraphQL open PR fallback emitted non-JSON: %s", exc)
+        return None
+    nodes = (
+        payload.get("data", {}).get("repository", {}).get("pullRequests", {}).get("nodes", [])
+        if isinstance(payload, dict)
+        else []
+    )
+    if not isinstance(nodes, list):
+        return None
+    rows: list[dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        row = dict(node)
+        labels = row.get("labels")
+        row["labels"] = (
+            labels.get("nodes", []) if isinstance(labels, dict) else labels if labels else []
+        )
+        if include_files:
+            files = row.get("files")
+            row["files"] = files.get("nodes", []) if isinstance(files, dict) else []
+        else:
+            row["files"] = None
+        if include_status:
+            commit_nodes = (
+                row.get("commits", {}).get("nodes", [])
+                if isinstance(row.get("commits"), dict)
+                else []
+            )
+            commit = (
+                commit_nodes[-1].get("commit")
+                if commit_nodes and isinstance(commit_nodes[-1], dict)
+                else None
+            )
+            rollup = (
+                commit.get("statusCheckRollup", {}).get("contexts", {}).get("nodes")
+                if isinstance(commit, dict)
+                else None
+            )
+            row["statusCheckRollup"] = rollup if isinstance(rollup, list) else []
+        else:
+            row["statusCheckRollup"] = []
+        row.pop("commits", None)
+        rows.append(row)
+    return rows
+
+
 def fetch_open_prs(
     *,
     repo: str = DEFAULT_REPO,
@@ -785,14 +878,30 @@ def fetch_open_prs(
 ) -> list[PullRequest]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
-    raw = list_open_pr_statuses_rest(
-        repo=repo,
-        repo_root=repo_root,
-        runner=runner,
-        limit=limit,
-        include_files=True,
-        include_review_decision=True,
-    )
+    try:
+        raw = list_open_pr_statuses_rest(
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            limit=limit,
+            include_files=True,
+            include_review_decision=True,
+            fail_on_indeterminate=True,
+        )
+    except subprocess.SubprocessError as exc:
+        LOG.warning("REST open PR scan indeterminate: %s", exc)
+        raw = _graphql_open_pr_rows(
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            limit=limit,
+            include_files=True,
+            include_status=True,
+        )
+        if raw is None:
+            raise subprocess.SubprocessError(
+                f"REST and GraphQL open PR scans indeterminate for {repo}: {exc}"
+            ) from exc
     if not raw:
         LOG.warning("REST open PR scan returned no rows")
         return []
@@ -2636,7 +2745,35 @@ def run_reconciler(
             now=now,
         )
     queued_prs = queued_prs_snapshot
-    prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
+    try:
+        prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
+    except subprocess.SubprocessError as exc:
+        report = {
+            "repo": repo,
+            "apply": apply,
+            "skipped": True,
+            "reason": "open_pr_scan_indeterminate",
+            "detail": str(exc),
+            "queued_prs": sorted(queued_prs),
+            "open_pr_count": None,
+            "decisions": [],
+            "mutations": [],
+            "counts": {
+                "queue": 0,
+                "enable_auto_merge": 0,
+                "already_queued": 0,
+                "already_auto_merge_enabled": 0,
+                "disable_auto_merge": 0,
+                "dequeue": 0,
+                "blocked": 0,
+            },
+        }
+        return _finalize_reconciler_report(
+            report,
+            report_path=report_path,
+            admission_governor_path=admission_governor_path,
+            now=now,
+        )
     preliminary_decisions = [
         classify_pr(
             pr,

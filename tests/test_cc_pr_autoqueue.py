@@ -924,6 +924,132 @@ def test_fetch_open_prs_uses_rest_core_not_gh_pr_list(tmp_path: Path) -> None:
     assert not any(call[:3] == ["gh", "pr", "view"] for call in runner.calls)
 
 
+def test_reconciler_falls_back_to_graphql_when_rest_open_pr_scan_indeterminate(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+
+    class RestOpenPrScanBlockedRunner(_FakeRunner):
+        def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+            if cmd[:5] == ["gh", "api", "--method", "GET", "-H"]:
+                path = cmd[6]
+                if path == "repos/owner/repo/pulls":
+                    return subprocess.CompletedProcess(cmd, 1, "", "secondary rate limit")
+            return super()._rest_response(cmd)
+
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            if cmd[:3] == ["gh", "api", "rate_limit"]:
+                self.calls.append(list(cmd))
+                payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            if cmd[:3] == ["gh", "api", "graphql"] and any("pullRequests" in part for part in cmd):
+                self.calls.append(list(cmd))
+                pr = _pr(42)
+                payload = {
+                    "data": {
+                        "repository": {
+                            "pullRequests": {
+                                "nodes": [
+                                    {
+                                        "number": pr["number"],
+                                        "id": pr["id"],
+                                        "title": pr["title"],
+                                        "body": pr["body"],
+                                        "isDraft": pr["isDraft"],
+                                        "headRefName": pr["headRefName"],
+                                        "headRefOid": pr["headRefOid"],
+                                        "changedFiles": pr["changedFiles"],
+                                        "mergeStateStatus": pr["mergeStateStatus"],
+                                        "reviewDecision": pr["reviewDecision"],
+                                        "autoMergeRequest": None,
+                                        "labels": {"nodes": []},
+                                        "files": {"nodes": []},
+                                        "commits": {
+                                            "nodes": [
+                                                {
+                                                    "commit": {
+                                                        "statusCheckRollup": {
+                                                            "contexts": {
+                                                                "nodes": pr["statusCheckRollup"]
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            ]
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return super().__call__(cmd, **kwargs)
+
+    runner = RestOpenPrScanBlockedRunner()
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["counts"]["queue"] == 1
+    assert report["decisions"][0]["pr"] == 42
+    assert any(
+        call[:5] == ["gh", "api", "--method", "GET", "-H"] and call[6] == "repos/owner/repo/pulls"
+        for call in runner.calls
+    )
+    assert any(call[:3] == ["gh", "api", "graphql"] for call in runner.calls)
+    assert ["gh", "pr", "merge", "42", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
+
+
+def test_reconciler_fails_closed_when_rest_and_graphql_open_pr_scans_indeterminate(
+    tmp_path: Path,
+) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=42)
+
+    class OpenPrScanUnavailableRunner(_FakeRunner):
+        def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:
+            if (
+                cmd[:5] == ["gh", "api", "--method", "GET", "-H"]
+                and cmd[6] == "repos/owner/repo/pulls"
+            ):
+                return subprocess.CompletedProcess(cmd, 1, "", "secondary rate limit")
+            return super()._rest_response(cmd)
+
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            if cmd[:3] == ["gh", "api", "rate_limit"]:
+                self.calls.append(list(cmd))
+                payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            if cmd[:3] == ["gh", "api", "graphql"] and any("pullRequests" in part for part in cmd):
+                self.calls.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 1, "", "graphql unavailable")
+            return super().__call__(cmd, **kwargs)
+
+    runner = OpenPrScanUnavailableRunner()
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    assert report["skipped"] is True
+    assert report["reason"] == "open_pr_scan_indeterminate"
+    assert report["open_pr_count"] is None
+    assert report["queued_prs"] == []
+    assert report["mutations"] == []
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
+
 def test_empty_rest_reviews_do_not_synthesize_review_required(tmp_path: Path) -> None:
     class EmptyReviewsRunner(_FakeRunner):
         def _rest_response(self, cmd: list[str]) -> subprocess.CompletedProcess | None:

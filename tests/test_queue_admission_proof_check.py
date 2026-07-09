@@ -91,6 +91,72 @@ def test_fresh_success_status_passes() -> None:
     assert failures == []
 
 
+def test_fetch_head_sha_falls_back_to_graphql_when_rest_pull_is_blocked() -> None:
+    now = datetime(2026, 5, 21, 2, 0, tzinfo=UTC)
+    calls: list[list[str]] = []
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/pulls/42"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 403 secondary rate limit")
+        if cmd[:3] == ["gh", "api", "rate_limit"]:
+            payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            payload = {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "headRefOid": "abc123",
+                        }
+                    }
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/commits/abc123/statuses?per_page=100"]:
+            statuses = [
+                {
+                    "context": proof.AUTOQUEUE_ADMISSION_CONTEXT,
+                    "state": "success",
+                    "created_at": "2026-05-21T01:55:00Z",
+                    "description": "cc-pr-autoqueue admitted: already_queued",
+                }
+            ]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(statuses), "")
+        return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+    failures = proof.validate_proofs(
+        repo="owner/repo",
+        prs=[42],
+        ttl_seconds=600,
+        now=now,
+        runner=runner,
+    )
+
+    assert failures == []
+    assert any(call[:3] == ["gh", "api", "graphql"] for call in calls)
+
+
+def test_fetch_head_sha_fails_when_rest_and_graphql_are_blocked() -> None:
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if cmd[:3] == ["gh", "api", "repos/owner/repo/pulls/42"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 403 secondary rate limit")
+        if cmd[:3] == ["gh", "api", "rate_limit"]:
+            payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "graphql unavailable")
+        return subprocess.CompletedProcess(cmd, 1, "", "unexpected command")
+
+    try:
+        proof.fetch_head_sha("owner/repo", 42, runner=runner)
+    except RuntimeError as exc:
+        assert "REST pull fetch failed" in str(exc)
+        assert "GraphQL head fallback failed" in str(exc)
+    else:
+        raise AssertionError("fetch_head_sha should fail when both REST and GraphQL are blocked")
+
+
 def test_missing_status_fails() -> None:
     failures = proof.validate_proofs(
         repo="owner/repo",
