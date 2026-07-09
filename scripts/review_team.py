@@ -1372,6 +1372,7 @@ def _ratification_classes(payload: Mapping[str, Any]) -> dict[str, dict[str, Any
             or not authority.strip()
             or not isinstance(safety_policy, str)
             or safety_policy not in _SUPPORTED_RATIFICATION_SAFETY_POLICIES
+            or (safety_policy == "operator_privacy_residual" and authority != "operator")
         ):
             return {}
         out[class_id] = {"authority": authority, "safety_policy": safety_policy}
