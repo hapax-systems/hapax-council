@@ -3352,12 +3352,11 @@ ratifications:
         blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert len(blocking) == 1
 
-    def test_topical_finding_with_no_such_datum_in_file_waives(
+    def test_topical_residual_finding_with_no_datum_allegation_waives(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        # Companion: same topical-sounding allegation, but the file contains NO
-        # address/phone/email/etc. — the allegation has no referent in the file, so
-        # waiving under the data-owner ratification is correct.
+        # Companion: same topic/lens/file match, but the finding alleges only the
+        # ratified residual linkage class — no address/phone/email/etc. datum class.
         rt = _load_review_team_module()
         monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
         self._ledger(tmp_path)
@@ -3365,10 +3364,26 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         finding = self._critical()
-        finding["title"] = "address disclosed in the residual section"
+        finding["title"] = "residual linkage disclosed in the residual section"
         reviews = [_review("codex-1", "codex", "block", findings=[finding])]
         blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert blocking == []
+
+    def test_address_alleging_finding_never_waives_even_on_clean_file(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Generic research on residual linkage only.\n", encoding="utf-8")
+        finding = self._critical()
+        finding["title"] = "address disclosed in the residual section"
+        finding["detail"] = "addresses are alleged near a ratified topic"
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
 
     def test_datum_alleging_finding_never_waives_even_on_clean_file(
         self, tmp_path: Path, monkeypatch

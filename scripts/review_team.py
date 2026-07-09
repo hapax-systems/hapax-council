@@ -1463,7 +1463,8 @@ def _ratified_content_pin_holds(repo_root: Path, entry: Mapping[str, Any], rel_p
 #: prose also mentions a ratified topic term.
 _NON_WAIVABLE_ALLEGATION_RE = re.compile(
     r"legal\s+name|real\s+name|full\s+name|surname|family\s+name|maiden\s+name"
-    r"|home\s+address|street\s+address|mailing\s+address|phone\s+number"
+    r"|\baddress(?:es)?\b|home\s+address(?:es)?|street\s+address(?:es)?"
+    r"|mailing\s+address(?:es)?|phone\s+number"
     r"|e-?mail\s+address|employer|workplace|third[- ]part(?:y|ies)"
     r"|spouse|\bwife\b|\bhusband\b|\bpartner'?s\s+name|\bchild(?:ren)?\b"
     r"|date\s+of\s+birth|\bDOB\b|social\s+security|\bSSN\b"
