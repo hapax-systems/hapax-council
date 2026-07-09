@@ -9,15 +9,16 @@ StartLimitBurst=3
 
 [Service]
 Type=notify
-WorkingDirectory=%h/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 EnvironmentFile=-/run/user/1000/hapax-secrets.env
-Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:/usr/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Environment=HAPAX_LIVE_CUEPOINTS_ENABLED=0
 Environment=HAPAX_CUEPOINT_TICK_S=15
 Environment=HAPAX_CUEPOINT_DEBOUNCE_S=90
 Environment=HAPAX_CUEPOINT_MAX_PER_HOUR=60
 Environment=HAPAX_CUEPOINT_METRICS_PORT=9494
-ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.live_cuepoints
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.live_cuepoints
 Restart=on-failure
 RestartSec=30
 WatchdogSec=60

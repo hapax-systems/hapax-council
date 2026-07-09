@@ -472,6 +472,7 @@ def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> Non
             "systemd/units/pipewire.service.d/cpu-affinity.conf",
             "systemd/units/app.slice.d/oom-containment.conf",
             "systemd/system/user@1000.service.d/oom.conf",
+            "systemd/system/apcupsd.service.d/oom-protect.conf",
             "systemd/user-preset.d/hapax.preset",
             "systemd/scripts/install-units.sh",
             "systemd/overrides/audio-stability/README.md",
@@ -484,6 +485,71 @@ def test_systemd_coverage_includes_dropins_presets_and_source_overrides() -> Non
 
     assert result.returncode == 0, result.stderr
     assert "ok: all systemd/** paths" in result.stdout
+
+
+def test_p0_oom_containment_deploy_uses_installer_without_restarting_app_slice(
+    tmp_path: Path,
+) -> None:
+    installer_calls = tmp_path / "oom-installer-calls.txt"
+    installer_body = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'printf \'%s\\n\' "$*" >> "$HAPAX_OOM_INSTALL_CALLS"\n'
+    )
+    files = {
+        "scripts/install-p0-oom-containment": installer_body,
+        "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
+        "systemd/system/user@1000.service.d/oom.conf": "[Service]\nOOMScoreAdjust=100\n",
+        "systemd/system/apcupsd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-900\n",
+        "systemd/system/systemd-logind.service.d/oom-protect.conf": (
+            "[Service]\nOOMScoreAdjust=-800\n"
+        ),
+        "systemd/system/systemd-resolved.service.d/oom-protect.conf": (
+            "[Service]\nOOMScoreAdjust=-800\n"
+        ),
+        "systemd/system/systemd-timesyncd.service.d/oom-protect.conf": (
+            "[Service]\nOOMScoreAdjust=-800\n"
+        ),
+        "systemd/system/NetworkManager.service.d/oom-protect.conf": (
+            "[Service]\nOOMScoreAdjust=-800\n"
+        ),
+        "systemd/system/dbus-broker.service.d/oom-protect.conf": (
+            "[Service]\nOOMScoreAdjust=-900\n"
+        ),
+        "systemd/system/sshd.service.d/oom-protect.conf": "[Service]\nOOMScoreAdjust=-1000\n",
+        "systemd/units/app.slice.d/oom-containment.conf": (
+            "[Slice]\nMemoryHigh=80G\nMemoryMax=104G\nMemorySwapMax=8G\n"
+        ),
+    }
+    repo, sha = _repo_with_linear_commit(tmp_path, files)
+    home = tmp_path / "home"
+    bin_dir, systemctl_calls = _fake_systemctl(tmp_path)
+    trace_path = tmp_path / "traces" / "post-merge-traces.jsonl"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_OOM_INSTALL_CALLS": str(installer_calls),
+        "HAPAX_SYSTEMCTL_CALLS": str(systemctl_calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(trace_path),
+    }
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--install --verify-live" in installer_calls.read_text(encoding="utf-8")
+    calls = systemctl_calls.read_text(encoding="utf-8") if systemctl_calls.exists() else ""
+    assert "--user restart app.slice" not in calls
+    record = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert set(record["deploy_groups"]["oom_containment"]) == set(files)
+    assert record["deploy_groups"]["systemd_dropins"] == []
 
 
 def test_systemd_coverage_includes_slice_units() -> None:

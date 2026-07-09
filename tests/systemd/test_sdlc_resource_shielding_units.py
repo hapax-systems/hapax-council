@@ -78,6 +78,37 @@ def test_user_manager_does_not_protect_every_interactive_workload() -> None:
     assert _directive(text, "OOMScoreAdjust") == "100"
 
 
+def test_live_cuepoints_restart_storm_is_bounded() -> None:
+    text = (UNITS_DIR / "hapax-live-cuepoints.service").read_text()
+    assert _directive(text, "StartLimitIntervalSec") == "10min"
+    assert _directive(text, "StartLimitBurst") == "3"
+    assert _directive(text, "RestartSec") == "30"
+
+
+def test_live_cuepoints_runs_from_source_activation_worktree() -> None:
+    text = (UNITS_DIR / "hapax-live-cuepoints.service").read_text()
+    assert "WorkingDirectory=%h/.cache/hapax/source-activation/worktree" in text
+    assert "Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin" in text
+    assert "Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree" in text
+    assert "ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python" in text
+    assert "WorkingDirectory=%h/projects/hapax-council" not in text
+
+
+def test_recovery_daemon_oom_dropins_are_source_controlled() -> None:
+    expected = {
+        "apcupsd.service.d/oom-protect.conf": "-900",
+        "systemd-logind.service.d/oom-protect.conf": "-800",
+        "systemd-resolved.service.d/oom-protect.conf": "-800",
+        "systemd-timesyncd.service.d/oom-protect.conf": "-800",
+        "NetworkManager.service.d/oom-protect.conf": "-800",
+        "dbus-broker.service.d/oom-protect.conf": "-900",
+        "sshd.service.d/oom-protect.conf": "-1000",
+    }
+    for rel, score in expected.items():
+        text = (REPO_ROOT / "systemd" / "system" / rel).read_text()
+        assert _directive(text, "OOMScoreAdjust") == score
+
+
 # ── L2: the audio-core cpuset fence ──────────────────────────────────────────
 
 
@@ -142,3 +173,12 @@ def test_installer_links_service_dropins() -> None:
     body = INSTALLER.read_text()
     assert '"$REPO_DIR"/*.service.d' in body
     assert '"$REPO_DIR"/*.slice.d' in body
+
+
+def test_p0_oom_containment_has_dedicated_installer() -> None:
+    installer = REPO_ROOT / "scripts" / "install-p0-oom-containment"
+    body = installer.read_text()
+    assert "systemd/system/user@1000.service.d/oom.conf" in body
+    assert "systemd/units/app.slice.d/oom-containment.conf" in body
+    assert "config/earlyoom/default" in body
+    assert "set-property app.slice MemoryHigh=80G MemoryMax=104G MemorySwapMax=8G" in body

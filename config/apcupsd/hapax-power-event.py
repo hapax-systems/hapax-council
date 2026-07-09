@@ -121,6 +121,35 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     text = EVENT_TEXT[args.event]
     apc, apc_error = read_apcaccess(args.apcaccess)
+    base_record = {
+        "schema": "hapax.ups_power_event.v1",
+        "event": args.event,
+        "apcupsd_args": args.apcupsd_args,
+        "title": text["title"],
+        "message": text["message"],
+        "priority": text["priority"],
+        "ntfy_url": args.ntfy_url,
+        "apcaccess": apc,
+        "apcaccess_error": apc_error,
+        "pid": os.getpid(),
+    }
+    try:
+        append_jsonl(
+            Path(args.audit_log),
+            {
+                **base_record,
+                "phase": "intent",
+                "recorded_at": utc_now(),
+                "monotonic_s": time.monotonic(),
+            },
+        )
+    except OSError as exc:
+        print(
+            "hapax-power-event: failed to append intent audit log: "
+            f"{exc}; next action: check /var/log/hapax permissions and rerun "
+            "scripts/install-apcupsd-power-alerts --install --verify-live",
+            file=sys.stderr,
+        )
     delivery = post_ntfy(
         "" if args.no_ntfy else args.ntfy_url,
         text["title"],
@@ -129,24 +158,21 @@ def main(argv: list[str] | None = None) -> int:
         args.timeout,
     )
     record = {
-        "schema": "hapax.ups_power_event.v1",
+        **base_record,
+        "phase": "delivery",
         "recorded_at": utc_now(),
-        "event": args.event,
-        "apcupsd_args": args.apcupsd_args,
-        "title": text["title"],
-        "message": text["message"],
-        "priority": text["priority"],
-        "ntfy_url": args.ntfy_url,
         "delivery": asdict(delivery),
-        "apcaccess": apc,
-        "apcaccess_error": apc_error,
-        "pid": os.getpid(),
         "monotonic_s": time.monotonic(),
     }
     try:
         append_jsonl(Path(args.audit_log), record)
     except OSError as exc:
-        print(f"hapax-power-event: failed to append audit log: {exc}", file=sys.stderr)
+        print(
+            "hapax-power-event: failed to append delivery audit log: "
+            f"{exc}; next action: check /var/log/hapax permissions and rerun "
+            "scripts/install-apcupsd-power-alerts --install --verify-live",
+            file=sys.stderr,
+        )
     return 0
 
 

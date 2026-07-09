@@ -83,16 +83,32 @@ install_live() {
 
 verify_live() {
     expect_header "$DEST/apcupsd.conf"
+    cmp -s "$SRC/apcupsd.conf" "$DEST/apcupsd.conf" || {
+        echo "live config differs from source: $DEST; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
     [ -x "$DEST/hapax-power-event.py" ] || {
         echo "live helper is not executable: $DEST/hapax-power-event.py" >&2
+        return 1
+    }
+    cmp -s "$SRC/hapax-power-event.py" "$DEST/hapax-power-event.py" || {
+        echo "live helper differs from source: $DEST/hapax-power-event.py; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
         return 1
     }
     [ -x "$DEST/onbattery" ] || {
         echo "live onbattery hook is not executable" >&2
         return 1
     }
+    cmp -s "$SRC/onbattery" "$DEST/onbattery" || {
+        echo "live onbattery hook differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        return 1
+    }
     [ -x "$DEST/offbattery" ] || {
         echo "live offbattery hook is not executable" >&2
+        return 1
+    }
+    cmp -s "$SRC/offbattery" "$DEST/offbattery" || {
+        echo "live offbattery hook differs from source; next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
         return 1
     }
     [ -d "$AUDIT_DIR" ] || {

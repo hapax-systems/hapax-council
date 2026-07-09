@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# Install P0 OOM containment policy from the source tree to live systemd/earlyoom paths.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOURCE="$ROOT"
+SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
+SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
+SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
+SUDO="${HAPAX_OOM_INSTALL_SUDO:-sudo}"
+INSTALL=0
+CHECK=0
+VERIFY_LIVE=0
+APPLY_RUNTIME=1
+
+usage() {
+    cat <<'USAGE'
+usage: scripts/install-p0-oom-containment [--source DIR] [--check] [--install] [--verify-live] [--no-runtime]
+
+Installs the P0 podium OOM containment package:
+  systemd/system/user@1000.service.d/oom.conf       -> /etc/systemd/system/user@1000.service.d/oom.conf
+  systemd/system/*.service.d/oom-protect.conf       -> /etc/systemd/system/*.service.d/oom-protect.conf
+  systemd/units/app.slice.d/oom-containment.conf    -> ~/.config/systemd/user/app.slice.d/oom-containment.conf
+  config/earlyoom/default                           -> /etc/default/earlyoom
+
+The app.slice drop-in is copied, not symlinked, so live containment does not
+depend on a mutable PR worktree. Runtime activation uses set-property for the
+active app.slice instead of restarting the slice.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --source)
+            SOURCE="${2:?source dir required after --source}"
+            shift 2
+            ;;
+        --check)
+            CHECK=1
+            shift
+            ;;
+        --install)
+            INSTALL=1
+            shift
+            ;;
+        --verify-live)
+            VERIFY_LIVE=1
+            shift
+            ;;
+        --no-runtime)
+            APPLY_RUNTIME=0
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [ "$CHECK" -eq 0 ] && [ "$INSTALL" -eq 0 ] && [ "$VERIFY_LIVE" -eq 0 ]; then
+    CHECK=1
+fi
+
+run_root() {
+    if [ -n "$SUDO" ]; then
+        "$SUDO" "$@"
+    else
+        "$@"
+    fi
+}
+
+system_dropins=(
+    systemd/system/user@1000.service.d/oom.conf
+    systemd/system/apcupsd.service.d/oom-protect.conf
+    systemd/system/systemd-logind.service.d/oom-protect.conf
+    systemd/system/systemd-resolved.service.d/oom-protect.conf
+    systemd/system/systemd-timesyncd.service.d/oom-protect.conf
+    systemd/system/NetworkManager.service.d/oom-protect.conf
+    systemd/system/dbus-broker.service.d/oom-protect.conf
+    systemd/system/sshd.service.d/oom-protect.conf
+)
+user_dropin="systemd/units/app.slice.d/oom-containment.conf"
+earlyoom_source="config/earlyoom/default"
+
+src_path() {
+    printf '%s/%s\n' "$SOURCE" "$1"
+}
+
+system_dest() {
+    local rel="$1"
+    printf '%s/%s\n' "$SYSTEMD_SYSTEM_DIR" "${rel#systemd/system/}"
+}
+
+check_source() {
+    local rel
+    for rel in "${system_dropins[@]}" "$user_dropin" "$earlyoom_source"; do
+        [ -f "$(src_path "$rel")" ] || {
+            echo "missing source file: $(src_path "$rel"); next action: restore the source tree or rerun from the PR/activation worktree" >&2
+            return 1
+        }
+    done
+    grep -Eq '^OOMScoreAdjust=100$' "$(src_path systemd/system/user@1000.service.d/oom.conf)" || {
+        echo "user@1000 OOM drop-in must set OOMScoreAdjust=100; next action: restore systemd/system/user@1000.service.d/oom.conf from the P0 PR" >&2
+        return 1
+    }
+    grep -Eq '^MemoryHigh=80G$' "$(src_path "$user_dropin")" || {
+        echo "app.slice drop-in missing MemoryHigh=80G; next action: restore systemd/units/app.slice.d/oom-containment.conf from the P0 PR" >&2
+        return 1
+    }
+    grep -q -- "--ignore" "$(src_path "$earlyoom_source")" || {
+        echo "earlyoom config missing --ignore recovery list; next action: restore config/earlyoom/default from the P0 PR" >&2
+        return 1
+    }
+}
+
+install_live() {
+    local rel dest
+    check_source
+    for rel in "${system_dropins[@]}"; do
+        dest="$(system_dest "$rel")"
+        run_root install -d -m 0755 "$(dirname "$dest")"
+        run_root install -m 0644 "$(src_path "$rel")" "$dest"
+        echo "  '$rel' -> '$dest'"
+    done
+    run_root install -d -m 0755 "$(dirname "$EARLYOOM_DEST")"
+    run_root install -m 0644 "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
+    echo "  '$earlyoom_source' -> '$EARLYOOM_DEST'"
+
+    dest="$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf"
+    install -d -m 0755 "$(dirname "$dest")"
+    if [ -L "$dest" ]; then
+        rm -f "$dest"
+    fi
+    install -m 0644 "$(src_path "$user_dropin")" "$dest"
+    echo "  '$user_dropin' -> '$dest' (copy)"
+
+    run_root "$SYSTEMCTL" daemon-reload
+    "$SYSTEMCTL" --user daemon-reload
+    if [ "$APPLY_RUNTIME" -eq 1 ]; then
+        "$SYSTEMCTL" --user set-property app.slice MemoryHigh=80G MemoryMax=104G MemorySwapMax=8G
+        if "$SYSTEMCTL" is-active --quiet earlyoom.service; then
+            run_root "$SYSTEMCTL" restart earlyoom.service
+        fi
+        user_pid="$("$SYSTEMCTL" show user@1000.service -p MainPID --value 2>/dev/null || true)"
+        if [[ "$user_pid" =~ ^[0-9]+$ ]] && [ "$user_pid" -gt 0 ] && [ -w "/proc/$user_pid/oom_score_adj" ]; then
+            printf '%s\n' 100 > "/proc/$user_pid/oom_score_adj" || true
+        elif [[ "$user_pid" =~ ^[0-9]+$ ]] && [ "$user_pid" -gt 0 ]; then
+            printf '%s\n' 100 | run_root tee "/proc/$user_pid/oom_score_adj" >/dev/null || true
+        fi
+    fi
+}
+
+verify_pair() {
+    local source="$1" dest="$2"
+    [ -f "$dest" ] || {
+        echo "missing live file: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    }
+    cmp -s "$source" "$dest" || {
+        echo "live drift: $dest differs from $source; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    }
+}
+
+verify_live() {
+    local rel dest
+    for rel in "${system_dropins[@]}"; do
+        verify_pair "$(src_path "$rel")" "$(system_dest "$rel")"
+    done
+    verify_pair "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
+    dest="$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf"
+    if [ -L "$dest" ]; then
+        echo "live app.slice drop-in is a symlink: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live to replace it with a copy" >&2
+        return 1
+    fi
+    verify_pair "$(src_path "$user_dropin")" "$dest"
+}
+
+[ "$CHECK" -eq 0 ] || check_source
+[ "$INSTALL" -eq 0 ] || install_live
+[ "$VERIFY_LIVE" -eq 0 ] || verify_live
+echo "p0 oom containment install/check complete"
