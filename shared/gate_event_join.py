@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from shared.gate_event_producer import REQUIREMENT_VECTOR_DIMENSIONS
 from shared.gate_log import DEFAULT_GATE_LOG, GateEvent, GateResult, GateType, append_gate_event
 from shared.gate_outcome_producer import build_outcome_gate_event
 from shared.route_metadata_schema import DemandVector, stable_payload_hash
@@ -141,11 +142,14 @@ def _admission_context_from_payload(payload: Mapping[str, Any]) -> AdmissionCont
 def _requirement_vector_from_payload(value: object) -> dict[str, int] | None:
     if not isinstance(value, Mapping):
         return None
+    if set(value) != set(REQUIREMENT_VECTOR_DIMENSIONS):
+        return None
     vector: dict[str, int] = {}
-    for dimension, score in value.items():
-        if not isinstance(dimension, str):
-            return None
+    for dimension in REQUIREMENT_VECTOR_DIMENSIONS:
+        score = value[dimension]
         if isinstance(score, bool) or not isinstance(score, int):
+            return None
+        if not (0 <= score <= 5):
             return None
         vector[dimension] = score
     return vector

@@ -169,37 +169,58 @@ def test_recover_admission_context_ignores_invalid_context_rows(tmp_path: Path) 
         _admission(route="codex.headless.full", task_hash=task_hash),
         path=log,
     )
+    invalid_rows = [
+        {
+            "route": "invalid.missing-context",
+            "routing_class": "",
+            "requirement_vector": _requirement_vector(),
+            "ts": "2026-07-05T00:03:00+00:00",
+        },
+        {
+            "route": "invalid.empty-vector",
+            "routing_class": "source_python",
+            "requirement_vector": {},
+            "ts": "2026-07-05T00:04:00+00:00",
+        },
+        {
+            "route": "invalid.partial-vector",
+            "routing_class": "source_python",
+            "requirement_vector": {"quality_floor": 3},
+            "ts": "2026-07-05T00:05:00+00:00",
+        },
+        {
+            "route": "invalid.unknown-dimension",
+            "routing_class": "source_python",
+            "requirement_vector": {**_requirement_vector(), "unknown": 3},
+            "ts": "2026-07-05T00:06:00+00:00",
+        },
+        {
+            "route": "invalid.bool-vector",
+            "routing_class": "source_python",
+            "requirement_vector": {**_requirement_vector(), "quality_floor": True},
+            "ts": "2026-07-05T00:07:00+00:00",
+        },
+        {
+            "route": "invalid.out-of-range-vector",
+            "routing_class": "source_python",
+            "requirement_vector": {**_requirement_vector(), "quality_floor": 6},
+            "ts": "2026-07-05T00:08:00+00:00",
+        },
+    ]
     with log.open("a", encoding="utf-8") as fh:
-        fh.write(
-            json.dumps(
-                {
-                    "route": "invalid.missing-context",
-                    "routing_class": "",
-                    "requirement_vector": _requirement_vector(),
-                    "task_hash": task_hash,
-                    "gate_result": "abstain",
-                    "gate_type": "none",
-                    "provenance": "admission",
-                    "ts": "2026-07-05T00:03:00+00:00",
-                }
+        for row in invalid_rows:
+            fh.write(
+                json.dumps(
+                    {
+                        "task_hash": task_hash,
+                        "gate_result": "abstain",
+                        "gate_type": "none",
+                        "provenance": "admission",
+                        **row,
+                    }
+                )
+                + "\n"
             )
-            + "\n"
-        )
-        fh.write(
-            json.dumps(
-                {
-                    "route": "invalid.bool-vector",
-                    "routing_class": "source_python",
-                    "requirement_vector": {**_requirement_vector(), "quality_floor": True},
-                    "task_hash": task_hash,
-                    "gate_result": "abstain",
-                    "gate_type": "none",
-                    "provenance": "admission",
-                    "ts": "2026-07-05T00:04:00+00:00",
-                }
-            )
-            + "\n"
-        )
 
     assert recover_admission_context("", path=log) is None
     context = recover_admission_context(task_hash, path=log)

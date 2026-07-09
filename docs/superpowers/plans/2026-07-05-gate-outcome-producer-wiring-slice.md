@@ -147,6 +147,7 @@ def emit_witnessed_outcome(
     *,
     gate_result: GateResult,           # "accept" | "reject"
     gate_type: GateType,               # caller-chosen per the verdict source
+    demand_vector: DemandVector | None = None,
     p_correct: float | None = None,
     path: Path | str | None = None,
 ) -> GateEvent | None:
@@ -154,7 +155,9 @@ def emit_witnessed_outcome(
 
     Returns None (and writes nothing) when no admission context is found — a verdict with no
     dispatch admission is a lost join, not a learning signal. Provenance stays "witnessed"
-    (the default); task_hash recomputes from the SAME task_fields the admission used.
+    (the default); the join key follows the admission producer exactly:
+    demand_vector.work_item.frontmatter_hash when a demand vector is available, else
+    stable_payload_hash(dict(task_fields)).
     """
 ```
 
