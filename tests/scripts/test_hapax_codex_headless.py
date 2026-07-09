@@ -1870,8 +1870,68 @@ def test_codex_headless_local_auth_timeout_env_is_validated_before_timeout() -> 
     prove_auth = _extract_shell_function("prove_local_codex_exec_auth")
 
     assert "invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS" in prove_auth
+    assert "math.isfinite(value)" in prove_auth
+    assert "value <= 0" in prove_auth
     assert 'timeout_s="30"' in prove_auth
     assert 'timeout "${timeout_s}s" env -i' in prove_auth
+
+
+@pytest.mark.parametrize(
+    ("timeout_value", "expected_timeout"),
+    [
+        ("0", "30s"),
+        ("-1", "30s"),
+        ("nan", "30s"),
+        ("inf", "30s"),
+        ("0.25", "0.25s"),
+    ],
+)
+def test_codex_headless_local_auth_timeout_rejects_unbounded_values(
+    tmp_path: Path,
+    timeout_value: str,
+    expected_timeout: str,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    timeout_log = tmp_path / "timeout-arg.log"
+    fake_codex = bin_dir / "codex"
+    _write_executable(fake_codex, "exit 0\n")
+    _write_executable(
+        bin_dir / "timeout",
+        """printf '%s\\n' "$1" > "$HAPAX_TIMEOUT_ARG_LOG"
+printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}'
+exit 0
+""",
+    )
+    bash = shutil.which("bash") or "/usr/bin/bash"
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_TIMEOUT_ARG_LOG"] = str(timeout_log)
+    env["HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS"] = timeout_value
+
+    result = subprocess.run(
+        [
+            bash,
+            "-c",
+            "\n".join(
+                [
+                    _extract_shell_function("codex_exec_auth_sentinel_observed"),
+                    _extract_shell_function("prove_local_codex_exec_auth"),
+                    f'prove_local_codex_exec_auth "{fake_codex}"',
+                ]
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert timeout_log.read_text(encoding="utf-8").strip() == expected_timeout
+    if expected_timeout == "30s":
+        assert "invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS" in result.stderr
+    else:
+        assert "invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS" not in result.stderr
 
 
 def test_codex_headless_remote_preflight_rejects_prompt_echo_without_agent_sentinel(

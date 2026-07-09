@@ -107,6 +107,13 @@ def _extract_remote_python(name: str) -> str:
     return text[start:end]
 
 
+def _extract_launcher_shell_function(name: str) -> str:
+    text = LAUNCHER.read_text(encoding="utf-8")
+    start = text.index(f"{name}() {{")
+    end = text.index("\n}\n\n", start) + len("\n}\n")
+    return text[start:end]
+
+
 def _write_active_task(
     env: dict[str, str],
     task_id: str,
@@ -560,6 +567,67 @@ def test_launcher_ignores_inherited_codex_auth_env_without_published_token(
     assert "CODEX_HOME_PRESENT=\n" in env_text
     assert "CODEX_API_KEY_PRESENT=\n" in env_text
     assert "OPENAI_API_KEY_PRESENT=\n" in env_text
+
+
+def test_launcher_local_auth_timeout_rejects_unbounded_values(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_codex = bin_dir / "codex"
+    fake_codex.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_codex.chmod(0o755)
+    timeout_arg = tmp_path / "timeout-arg.log"
+    (bin_dir / "timeout").write_text(
+        """#!/usr/bin/env bash
+printf '%s\\n' "$1" >> "$HAPAX_TIMEOUT_ARG_LOG"
+printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}'
+exit 0
+""",
+        encoding="utf-8",
+    )
+    (bin_dir / "timeout").chmod(0o755)
+    bash = shutil.which("bash") or "/usr/bin/bash"
+    script = "\n".join(
+        [
+            _extract_launcher_shell_function("codex_exec_auth_sentinel_observed"),
+            _extract_launcher_shell_function("prove_local_codex_exec_auth"),
+            f'prove_local_codex_exec_auth "{fake_codex}"',
+        ]
+    )
+
+    observed: list[tuple[str, str, str]] = []
+    for timeout_value in ("0", "-1", "nan", "inf", "0.25"):
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["HAPAX_TIMEOUT_ARG_LOG"] = str(timeout_arg)
+        env["HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS"] = timeout_value
+
+        result = subprocess.run(
+            [bash, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=5,
+        )
+
+        assert result.returncode == 0, result.stderr
+        observed.append(
+            (timeout_value, timeout_arg.read_text(encoding="utf-8").splitlines()[-1], result.stderr)
+        )
+
+    assert [(value, actual) for value, actual, _stderr in observed] == [
+        ("0", "30s"),
+        ("-1", "30s"),
+        ("nan", "30s"),
+        ("inf", "30s"),
+        ("0.25", "0.25s"),
+    ]
+    for value, _actual, stderr in observed:
+        if value == "0.25":
+            assert "invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS" not in stderr
+        else:
+            assert "invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS" in stderr
 
 
 def test_launcher_skips_directory_codex_candidates(tmp_path: Path) -> None:

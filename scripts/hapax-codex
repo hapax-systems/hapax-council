@@ -493,9 +493,12 @@ prove_local_codex_exec_auth() {
   local codex_bin="$1" output_file="" error_file="" rc=0 timeout_s="" auth_output="" auth_error=""
   timeout_s="${HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS:-30}"
   if ! python3 - "$timeout_s" <<'PYEOF' >/dev/null 2>&1
+import math
 import sys
 
-float(sys.argv[1])
+value = float(sys.argv[1])
+if not math.isfinite(value) or value <= 0:
+    raise ValueError("timeout must be positive and finite")
 PYEOF
   then
     echo "hapax-codex: invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS='$timeout_s'; using 30s for the saved-login auth witness" >&2
@@ -640,7 +643,7 @@ print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).deco
 PYEOF
 }
 
-REMOTE_PREFLIGHT_PY='import base64,json,os,shutil,subprocess,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"]));
+REMOTE_PREFLIGHT_PY='import base64,json,math,os,shutil,subprocess,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"]));
 missing_dirs=[path for path in p.get("required_dirs",()) if not os.path.isdir(path)]
 missing_exec=[path for path in p.get("executables",()) if not (os.path.isfile(path) and os.access(path, os.X_OK))]
 missing_bins=[binary for binary in p.get("binaries",()) if binary!="codex" and not shutil.which(binary)]
@@ -726,6 +729,8 @@ else:
     try:
         timeout_s=float(p.get("codex_exec_auth_timeout") or 30)
     except (TypeError,ValueError):
+        timeout_s=30.0
+    if not math.isfinite(timeout_s) or timeout_s <= 0:
         timeout_s=30.0
     try:
         result=subprocess.run([codex_bin,"exec","--ephemeral","--skip-git-repo-check","--ignore-rules","--sandbox","read-only","--json","--cd",auth_workdir,"Reply exactly: "+sentinel],text=True,capture_output=True,timeout=timeout_s,env=env)
