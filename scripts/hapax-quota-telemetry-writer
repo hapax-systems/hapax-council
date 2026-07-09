@@ -98,6 +98,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -917,7 +918,19 @@ def codex_auth_blocker_from_receipt(receipt: Any) -> CodexAuthBlocker | None:
         if reason in CODEX_EXEC_AUTH_HOLD_REASONS or reason.startswith("codex_exec_auth_")
     ]
     if not auth_reasons:
-        return None
+        evidence_refs = [
+            *receipt.capability.evidence_refs,
+            *receipt.resource.evidence_refs,
+        ]
+        if codex_exec_auth_witness_observed(evidence_refs):
+            return None
+        return CodexAuthBlocker(
+            reason_codes=["codex_exec_auth_witness_absent"],
+            evidence_refs=[
+                receipt_reference(receipt),
+                *evidence_refs,
+            ],
+        )
     return CodexAuthBlocker(
         reason_codes=auth_reasons,
         evidence_refs=[
@@ -926,6 +939,28 @@ def codex_auth_blocker_from_receipt(receipt: Any) -> CodexAuthBlocker | None:
             *receipt.resource.evidence_refs,
         ],
     )
+
+
+def codex_exec_auth_witness_observed(evidence_refs: Iterable[str]) -> bool:
+    return any(codex_exec_auth_ref_attested(ref) for ref in evidence_refs)
+
+
+def codex_exec_auth_ref_attested(evidence_ref: str) -> bool:
+    ref = _ref_tokens(evidence_ref)
+    if any(token in CODEX_EXEC_AUTH_NEGATIVE_REF_TOKENS for token in ref):
+        return False
+    return (
+        len(ref) >= 8
+        and ref[0] == "host"
+        and ref[-6:] == ("codex", "exec", "auth", "saved", "login", "observed")
+    )
+
+
+def _ref_tokens(evidence_ref: str) -> tuple[str, ...]:
+    normalized = re.sub(r"[\s_:]+", "-", evidence_ref.strip().lower())
+    if not normalized:
+        return ()
+    return tuple(token for token in normalized.split("-") if token)
 
 
 def _warn_ignored_agy_admission(path: Path, reason: str) -> str:

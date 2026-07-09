@@ -324,6 +324,15 @@ resolve_local_codex_bin() {
 prove_local_codex_exec_auth() {
   local codex_bin="$1" output_file="" error_file="" rc=0 timeout_s="" auth_output="" auth_error=""
   timeout_s="${HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS:-30}"
+  if ! python3 - "$timeout_s" <<'PYEOF' >/dev/null 2>&1
+import sys
+
+float(sys.argv[1])
+PYEOF
+  then
+    echo "hapax-codex-headless: invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS='$timeout_s'; using 30s for the saved-login auth witness" >&2
+    timeout_s="30"
+  fi
   output_file="$(mktemp "${TMPDIR:-/tmp}/hapax-codex-exec-auth.XXXXXX")" || {
     echo "hapax-codex-headless: failed to create temporary Codex auth witness file; next action: verify TMPDIR or /tmp permissions before retrying" >&2
     exit 78

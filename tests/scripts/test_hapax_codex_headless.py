@@ -1866,6 +1866,14 @@ def test_codex_headless_remote_preflight_cleanup_child_clears_bearer_material_be
     assert "timeout=auth_timeout" in remote_preflight_py
 
 
+def test_codex_headless_local_auth_timeout_env_is_validated_before_timeout() -> None:
+    prove_auth = _extract_shell_function("prove_local_codex_exec_auth")
+
+    assert "invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS" in prove_auth
+    assert 'timeout_s="30"' in prove_auth
+    assert 'timeout "${timeout_s}s" env -i' in prove_auth
+
+
 def test_codex_headless_remote_preflight_rejects_prompt_echo_without_agent_sentinel(
     tmp_path: Path,
 ) -> None:
