@@ -35,6 +35,7 @@ from pathlib import Path
 from shared.operator_attribution_scan import (
     PARAGRAPH_PATTERNS,
     SENTENCE_PATTERNS,
+    file_waiver_safe,
     load_reviewed_generic,
     span_digest,
 )
@@ -119,3 +120,26 @@ def test_no_operator_attributed_diagnostic_text_on_tracked_surfaces() -> None:
         "(redact it, or — ONLY if genuinely generic — add 'path digest' to "
         "tests/operator_attribution_reviewed_generic.txt):\n" + "\n".join(paragraph_offenders)
     )
+
+
+def test_waiver_safety_blocks_operator_mental_state_content(tmp_path: Path) -> None:
+    rel = "docs/research/x.md"
+    doc = tmp_path / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "The " + "operator" + " is " + "anx" + "ious about the release window.\n",
+        encoding="utf-8",
+    )
+
+    assert not file_waiver_safe(tmp_path, rel)
+
+
+def test_waiver_safety_allows_non_operator_affect_discussion(tmp_path: Path) -> None:
+    rel = "docs/research/x.md"
+    doc = tmp_path / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "The study discusses anxiety detection interfaces in general.\n", encoding="utf-8"
+    )
+
+    assert file_waiver_safe(tmp_path, rel)

@@ -14,7 +14,7 @@ ratifications:
   - id: RAT-20260709-privacy-residual-item27
     ratified: "2026-07-09"
     authority: operator
-    decision_record: "operator decision memo 2026-07-09, item 27 — disposition accept-residual (vault: 30-areas/hapax/operator-decision-memo-2026-07-09.md)"
+    decision_record: "operator-decision-memo:2026-07-09:item-27:accept-residual"
     class: operator-privacy-residual
     lenses: [consent-provenance]
     # A finding is waived ONLY if its title/detail references the ratified TOPIC —
@@ -49,7 +49,7 @@ ratifications:
       docs/research/hapax-ontology-and-visual-fitment.md: d411a2e6edc63188e628f2995fc120bde067cf4af6d35b4684f0bae189cd04e8
       agents/demo_pipeline/domain_corpus/neurodivergent-technology-design.md: 18832d58633f962c3ff7ea1eb92ab5813450b5ae6bdf236af60cf5302759a42d
       agents/demo_pipeline/domain_corpus/cognitive-load-theory.md: 912e76ef694fce2836dad9e3e5b41fb1318d7fc6bd7fc6bf4fc1a2c02cae709a
-      tests/test_operator_attribution_redaction.py: 6d9313339a604d092caa688b518b561d2b2afab83959d15def8f690e797f0faf
+      tests/test_operator_attribution_redaction.py: 04c0f91ebbf4f4ea796afeb57f5df117cc02372f676720c668f4edacc09ce073
       tests/operator_attribution_reviewed_generic.txt: 2c85f6f97f3877a89e2c55da12a23aba472cec87af51cffcd3cf58258c7bc796
     scope_note: >
       The ENFORCED privacy class is tier-1/tier-2 diagnostic attribution to the operator
@@ -59,10 +59,11 @@ ratifications:
       neurotype literature does not constitute an operator diagnosis claim. This entry
       waives consent-provenance criticals on the named files only; any tier-1/tier-2
       attribution regression still fails the durable scan and still blocks review.
-      HONEST LIMITATION + ROUTING: content scans detect only pattern-detectable datum
-      classes (email/phone/SSN/street-address/DOB); estate-specific literals (legal
-      names, places, third-party facts) are NOT content-detectable in public source, so
-      any finding whose prose ALLEGES a name/identity/third-party/credential/medical
-      datum class is non-waivable by rule (_NON_WAIVABLE_ALLEGATION_RE) and routes to
-      operator disposition — the waiver covers only findings about the ratified
-      linkage class itself.
+      HONEST LIMITATION + ROUTING: content scans detect pattern-detectable datum
+      classes (email/phone/SSN/street-address/DOB/local-paths/operator mental-state
+      content). Estate-specific literals (legal names, places, third-party facts) are
+      NOT content-detectable in public source, so any finding whose prose ALLEGES a
+      name/identity/third-party/credential/medical/mental-state datum class is
+      non-waivable by rule (_NON_WAIVABLE_ALLEGATION_RE) and routes to operator
+      disposition — the waiver covers only findings about the ratified linkage class
+      itself.

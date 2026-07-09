@@ -17,6 +17,8 @@ import hashlib
 import re
 from pathlib import Path
 
+from shared.governance.mental_state_redaction import operator_mental_state_present
+
 _DIAGNOSIS = (
     r"(?:\bADHD\b|\bAuDHD\b|\bautis\w*|\bneurodiverg\w*|\bRSD\b|rejection[- ]sensitiv\w*"
     r"|\bdysphor\w*|identity\s+diffusion)"
@@ -97,14 +99,16 @@ def file_enforced_class_clean(repo_root: Path, rel_path: str) -> bool:
 def file_waiver_safe(repo_root: Path, rel_path: str) -> bool:
     """True iff a data-owner waiver may apply to findings citing ``rel_path``: the file
     is clean under the enforced attribution class AND contains no detectable
-    non-residual PII datum. This decides the waiver on FILE CONTENT, not finding
-    prose: if the alleged datum (address, phone, ...) were actually present, this
-    returns False and the finding blocks; if it is absent, the allegation has no
-    referent in the file. Fail-closed: unreadable = not safe."""
+    non-residual PII datum or operator mental-state content. This decides the waiver on
+    FILE CONTENT, not finding prose: if the alleged datum (address, phone, ...) were
+    actually present, this returns False and the finding blocks; if it is absent, the
+    allegation has no referent in the file. Fail-closed: unreadable = not safe."""
     if not file_enforced_class_clean(repo_root, rel_path):
         return False
     try:
         text = (repo_root / rel_path).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
+        return False
+    if operator_mental_state_present(text):
         return False
     return not any(pattern.search(text) for pattern in NON_RESIDUAL_PII_PATTERNS)
