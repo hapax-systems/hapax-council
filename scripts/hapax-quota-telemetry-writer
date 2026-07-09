@@ -1043,8 +1043,8 @@ def active_glmcp_admission_receipts(
 ) -> GlmcpAdmissionScan:
     """Return fresh positive GLMCP quota/admission receipt evidence refs.
 
-    GLM Coding Plan Max is finite quota. Unlike the older Claude/Codex/Gemini
-    subscription snapshots, absence of a wall is not enough to call GLMCP fresh:
+    GLM Coding Plan Max is finite quota. Unlike wall-absence-fresh subscription
+    snapshots, absence of a wall is not enough to call GLMCP fresh:
     a bakeoff or dispatcher must leave an explicit, time-bounded admission
     witness first. This keeps GLMCP fail-closed until a supported-tool witness
     exists, without making provider calls from this writer.
