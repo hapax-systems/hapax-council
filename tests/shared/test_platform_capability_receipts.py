@@ -368,6 +368,7 @@ def test_codex_receipt_exec_auth_failure_fails_closed_with_classified_reason(
     assert "codex_exec_auth_failed" in reasons
     assert "codex_exec_auth_agent_identity_jwt_invalid_json" in reasons
     assert "codex_exec_auth_refresh_token_invalidated" in reasons
+    assert "codex_exec_auth_token_invalidated" not in reasons
     assert "codex_exec_auth_login_required" in reasons
     assert not any(
         ref == "local:codex:exec:auth:observed" for ref in receipt["capability"]["evidence_refs"]
@@ -649,6 +650,61 @@ def test_codex_receipt_exec_auth_exec_oserror_fails_closed(tmp_path: Path) -> No
 
     assert refs == []
     assert reasons == ["codex_exec_auth_exec_failed"]
+
+
+def test_codex_receipt_remote_exec_auth_strips_access_token_without_local_binary(
+    tmp_path: Path,
+) -> None:
+    module = runpy.run_path(str(SCRIPT), run_name="__test__")
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fail_if_local_binary_resolved(_platform: str) -> tuple[None, None, None]:
+        raise AssertionError("remote exec auth must not require a local codex binary")
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=(
+                '{"type":"item.completed","item":{"type":"agent_message",'
+                '"text":"HAPAX_CODEX_EXEC_AUTH_OK"}}'
+            ),
+            stderr="",
+        )
+
+    module["resolve_platform_binary"] = fail_if_local_binary_resolved
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "HAPAX_CODEX_EXEC_AUTH_HOST": "appendix",
+                "HAPAX_CODEX_EXEC_AUTH_REMOTE_CWD": str(tmp_path / "remote cwd"),
+                "CODEX_ACCESS_TOKEN": "ambient-token-must-not-prove-auth",
+                "CODEX_HOME": str(tmp_path / "ambient-codex-home"),
+            },
+        ),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
+        refs, reasons = module["observe_codex_exec_auth"](enabled=True, timeout=7.0)
+
+    assert reasons == []
+    assert refs == [
+        "remote:hapax-appendix:codex:exec:auth:observed",
+        "host:hapax-appendix:codex:exec:auth:saved-login:observed",
+    ]
+    assert len(calls) == 1
+    ssh_args, kwargs = calls[0]
+    assert ssh_args[:5] == ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=7"]
+    assert ssh_args[5] == "appendix"
+    remote_command = ssh_args[6]
+    assert remote_command.startswith("bash -lc ")
+    assert "unset CODEX_ACCESS_TOKEN CODEX_HOME; exec codex exec" in remote_command
+    assert "--cd " in remote_command
+    assert str(tmp_path / "remote cwd") in remote_command
+    assert "ambient-token-must-not-prove-auth" not in remote_command
+    assert "env" not in kwargs
+    assert kwargs["timeout"] == 12.0
 
 
 def test_codex_receipt_exec_auth_probe_strips_access_token_and_codex_home(

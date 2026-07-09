@@ -339,6 +339,7 @@ payload = {
     "workdir": workdir,
     "codex_bin_path": os.environ.get("HAPAX_CODEX_BIN_PATH", ""),
     "npm_config_prefix": os.environ.get("NPM_CONFIG_PREFIX", ""),
+    "codex_exec_auth_timeout": os.environ.get("HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS", "30"),
 }
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
 PYEOF
@@ -460,6 +461,12 @@ codex_bin,codex_resolution_error=_resolve_codex_bin()
 if codex_bin is None:
     actuation_error=codex_resolution_error
 else:
+    try:
+        auth_timeout=float(p.get("codex_exec_auth_timeout") or 30)
+    except (TypeError,ValueError):
+        auth_timeout=30.0
+    if auth_timeout <= 0:
+        auth_timeout=30.0
     env={k:v for k in ("ALL_PROXY","HOME","HTTP_PROXY","HTTPS_PROXY","LANG","LC_ALL","NO_PROXY","PATH","REQUESTS_CA_BUNDLE","SSL_CERT_FILE") if (v:=os.environ.get(k)) is not None}
     env["NO_COLOR"]="1"
     env.pop("CODEX_ACCESS_TOKEN",None)
@@ -468,7 +475,7 @@ else:
     if not os.path.isdir(auth_workdir):
         auth_workdir=os.path.expanduser("~")
     try:
-        result=subprocess.run([codex_bin,"exec","--ephemeral","--skip-git-repo-check","--ignore-rules","--sandbox","read-only","--json","--cd",auth_workdir,"Reply exactly: "+sentinel],text=True,capture_output=True,timeout=30,env=env)
+        result=subprocess.run([codex_bin,"exec","--ephemeral","--skip-git-repo-check","--ignore-rules","--sandbox","read-only","--json","--cd",auth_workdir,"Reply exactly: "+sentinel],text=True,capture_output=True,timeout=auth_timeout,env=env)
     except (OSError,subprocess.TimeoutExpired) as exc:
         actuation_error="codex_saved_auth_exec_failed:"+type(exc).__name__
     else:

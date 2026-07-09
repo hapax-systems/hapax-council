@@ -341,24 +341,31 @@ def classify_codex_exec_auth_failure(output: str) -> list[str]:
         reasons.append("codex_exec_auth_agent_identity_jwt_invalid_json")
     if "refresh_token_invalidated" in output:
         reasons.append("codex_exec_auth_refresh_token_invalidated")
-    if "token_invalidated" in output:
+    if re.search(r"(?<!refresh_)token_invalidated", output):
         reasons.append("codex_exec_auth_token_invalidated")
     if re.search(r"(?i)(login required|required to log in|please log in|not logged in)", output):
         reasons.append("codex_exec_auth_login_required")
     return reasons
 
 
+def remote_codex_exec_auth_command(*, cwd: Path) -> str:
+    inner = "unset CODEX_ACCESS_TOKEN CODEX_HOME; exec " + shlex.join(
+        codex_exec_auth_command(codex_bin="codex", cwd=cwd)
+    )
+    return "bash -lc " + shlex.quote(inner)
+
+
 def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str], list[str]]:
     if not enabled:
         return [], ["codex_exec_auth_probe_not_requested"]
-    _, resolved, _ = resolve_platform_binary("codex")
-    if resolved is None:
-        return [], ["codex_exec_auth_binary_missing"]
     target_host = codex_exec_auth_host()
     normalized_target = normalize_host(target_host)
-    command = codex_exec_auth_command(codex_bin=resolved, cwd=REPO_ROOT)
     try:
         if normalized_target in {"", "local", current_host()}:
+            _, resolved, _ = resolve_platform_binary("codex")
+            if resolved is None:
+                return [], ["codex_exec_auth_binary_missing"]
+            command = codex_exec_auth_command(codex_bin=resolved, cwd=REPO_ROOT)
             result = subprocess.run(
                 command,
                 check=False,
@@ -369,9 +376,7 @@ def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str]
             )
         else:
             remote_cwd = Path(os.environ.get("HAPAX_CODEX_EXEC_AUTH_REMOTE_CWD", str(Path.home())))
-            remote_command = "bash -lc " + shlex.quote(
-                shlex.join(codex_exec_auth_command(codex_bin="codex", cwd=remote_cwd))
-            )
+            remote_command = remote_codex_exec_auth_command(cwd=remote_cwd)
             result = subprocess.run(
                 [
                     "ssh",
@@ -393,10 +398,10 @@ def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str]
         return [], ["codex_exec_auth_exec_failed"]
     if result.returncode == 0:
         if codex_exec_auth_sentinel_observed(result.stdout):
-            return [
-                "local:codex:exec:auth:observed",
-                f"host:{normalize_host(target_host)}:codex:exec:auth:saved-login:observed",
-            ], []
+            host_ref = f"host:{normalized_target}:codex:exec:auth:saved-login:observed"
+            if normalized_target in {"", "local", current_host()}:
+                return ["local:codex:exec:auth:observed", host_ref], []
+            return [f"remote:{normalized_target}:codex:exec:auth:observed", host_ref], []
         return [], ["codex_exec_auth_sentinel_missing"]
 
     output = safe_text("\n".join([result.stderr or "", result.stdout or ""]), limit=2000) or ""

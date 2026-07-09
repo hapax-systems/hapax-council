@@ -1852,6 +1852,8 @@ def test_codex_headless_remote_preflight_cleanup_child_clears_bearer_material_be
 
     assert "os.fork" not in remote_preflight_py
     assert 'env.pop("CODEX_ACCESS_TOKEN",None)' in remote_preflight_py
+    assert 'p.get("codex_exec_auth_timeout")' in remote_preflight_py
+    assert "timeout=auth_timeout" in remote_preflight_py
 
 
 def test_codex_headless_remote_preflight_does_not_fork_for_token_cleanup(

@@ -58,7 +58,7 @@ the dispatch-host login and recheck the sentinel before launching governed lanes
 
 ```bash
 ssh -t appendix 'codex login'
-ssh appendix 'codex exec --ephemeral --skip-git-repo-check --ignore-rules --sandbox read-only --json --cd ~ "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"'
+ssh appendix 'bash -lc '\''unset CODEX_ACCESS_TOKEN CODEX_HOME; exec codex exec --ephemeral --skip-git-repo-check --ignore-rules --sandbox read-only --json --cd ~ "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"'\'''
 ```
 
 If `codex login --device-auth` is unavailable by account or workspace policy,
@@ -74,16 +74,18 @@ stamp=$(date -u +%Y%m%dT%H%M%SZ)
 ssh appendix "bash -lc 'mkdir -p ~/.codex && chmod 700 ~/.codex && if [ -f ~/.codex/auth.json ]; then cp -p ~/.codex/auth.json ~/.codex/auth.json.pre-copy-$stamp; fi'"
 ssh appendix "bash -lc 'umask 077; cat > ~/.codex/auth.json.tmp && chmod 600 ~/.codex/auth.json.tmp && mv ~/.codex/auth.json.tmp ~/.codex/auth.json'" < ~/.codex/auth.json
 ssh appendix "bash -lc 'stat -c \"%a %U %G %s\" ~/.codex/auth.json && codex login status'"
-ssh appendix 'bash -lc '\''codex exec --ephemeral --skip-git-repo-check --ignore-rules --sandbox read-only --json --cd ~ "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"'\'''
+ssh appendix 'bash -lc '\''unset CODEX_ACCESS_TOKEN CODEX_HOME; exec codex exec --ephemeral --skip-git-repo-check --ignore-rules --sandbox read-only --json --cd ~ "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"'\'''
 uv run python scripts/hapax-platform-capability-receipts --platform codex --codex-exec-auth-probe --json
 scripts/hapax-quota-telemetry-writer --json
 ```
 
 `scripts/hapax-quota-telemetry-writer` must not mark Codex subscription quota
-fresh while the current Codex platform capability receipt reports
+fresh while the current fresh Codex platform capability receipt reports
 `codex_exec_auth_failed`, `codex_exec_auth_token_invalidated`, or
 `codex_exec_auth_refresh_token_invalidated`; it records the subscription snapshot
-as `unknown` until the saved-login witness is repaired.
+as `unknown` until a repaired receipt is observed. If receipt refresh itself is
+stale or skipped, dispatch launchers still run their saved-login preflight and
+must fail closed before starting Codex work.
 
 On the remote host, the launcher materializes both the legacy and session-keyed
 claim caches plus their epoch sidecars before `codex exec` starts, using the
