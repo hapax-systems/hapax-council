@@ -20,6 +20,7 @@ schema_version: 1
 repos:
   - name: hapax-council
     license: PolyForm-Strict-1.0.0
+    expected_github_license_detection: NOASSERTION
     license_url: https://polyformproject.org/licenses/strict/1.0.0/
     value_partition: internal_apparatus
     license_posture: "Source-visible strict research/runtime artifact; not open source."
@@ -27,6 +28,7 @@ repos:
 
   - name: hapax-officium
     license: PolyForm-Strict-1.0.0
+    expected_github_license_detection: NOASSERTION
     license_url: https://polyformproject.org/licenses/strict/1.0.0/
     value_partition: internal_apparatus
     license_posture: "Strict source-visible runtime artifact pending product boundary."
@@ -34,6 +36,7 @@ repos:
 
   - name: hapax-watch
     license: PolyForm-Strict-1.0.0
+    expected_github_license_detection: NOASSERTION
     license_url: https://polyformproject.org/licenses/strict/1.0.0/
     value_partition: internal_apparatus
     license_posture: "Single-operator device bridge; not a general biometric app."
@@ -41,6 +44,7 @@ repos:
 
   - name: hapax-phone
     license: PolyForm-Strict-1.0.0
+    expected_github_license_detection: NOASSERTION
     license_url: https://polyformproject.org/licenses/strict/1.0.0/
     value_partition: internal_apparatus
     license_posture: "Single-operator device bridge; not a general biometric app."
@@ -48,6 +52,7 @@ repos:
 
   - name: hapax-mcp
     license: MIT
+    expected_github_license_detection: MIT
     license_url: https://opensource.org/licenses/MIT
     value_partition: internal_apparatus
     license_posture: "Permissive MCP ecosystem bridge; not a general-purpose MCP library."
@@ -58,6 +63,11 @@ repos:
 
   - name: hapax-constitution
     license: CC-BY-NC-ND-4.0
+    # Post-split expectation: two license authority files make licensee
+    # report NOASSERTION. Live main still detects Apache-2.0 (the known
+    # split-license blocker); that divergence stays covered by the
+    # check-public-surface-claims waiver until the split lands.
+    expected_github_license_detection: NOASSERTION
     license_url: https://creativecommons.org/licenses/by-nc-nd/4.0/
     value_partition: evidence_artifact
     license_posture: |
@@ -70,6 +80,7 @@ repos:
 
   - name: agentgov
     license: MIT
+    expected_github_license_detection: MIT
     license_url: https://opensource.org/licenses/MIT
     value_partition: adoption_commons
     license_posture: |
@@ -79,6 +90,7 @@ repos:
 
   - name: hapax-spine
     license: BUSL-1.1
+    expected_github_license_detection: NOASSERTION
     license_url: https://spdx.org/licenses/BUSL-1.1
     value_partition: commercial_moat
     license_posture: |
@@ -88,6 +100,7 @@ repos:
 
   - name: reins
     license: BUSL-1.1
+    expected_github_license_detection: NOASSERTION
     license_url: https://spdx.org/licenses/BUSL-1.1
     value_partition: commercial_moat
     license_posture: |
@@ -97,6 +110,7 @@ repos:
 
   - name: hapax-coord
     license: PolyForm-Strict-1.0.0
+    expected_github_license_detection: NOASSERTION
     license_url: https://polyformproject.org/licenses/strict/1.0.0/
     value_partition: internal_apparatus
     license_posture: |
@@ -106,6 +120,7 @@ repos:
 
   - name: hapax-research-ledger
     license: CC0-1.0
+    expected_github_license_detection: CC0-1.0
     license_url: https://spdx.org/licenses/CC0-1.0
     value_partition: evidence_artifact
     license_posture: |
@@ -115,6 +130,7 @@ repos:
 
   - name: distro-work
     license: PolyForm-Strict-1.0.0
+    expected_github_license_detection: NOASSERTION
     license_url: https://polyformproject.org/licenses/strict/1.0.0/
     value_partition: internal_apparatus
     license_posture: "Personal/system-maintenance scripts; not a Hapax Systems public product."

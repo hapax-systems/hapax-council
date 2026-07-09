@@ -149,6 +149,10 @@ class PackageSurface(StrictModel):
 
 class LocalPublicSurfaceEvidence(StrictModel):
     registry_license_by_repo: dict[str, str]
+    # Expected GitHub license DETECTION per repo (e.g. NOASSERTION for
+    # PolyForm/BSL). When it differs from the policy license, detection cannot
+    # prove the posture and the gate proves the repo authority file instead.
+    registry_expected_detection_by_repo: dict[str, str] = Field(default_factory=dict)
     registry_assets_policy: str | None = None
     root_file_sha256: dict[str, str]
     notice_links: tuple[str, ...]
@@ -226,6 +230,96 @@ def missing_required_categories(report: GitHubPublicSurfaceReport) -> tuple[str,
     return tuple(category for category in REQUIRED_DRIFT_CATEGORIES if category not in present)
 
 
+def _license_detection_findings(
+    *,
+    repo: RepoLiveState,
+    repo_id: str,
+    expected_license: str,
+    expected_detection: str,
+    mismatch_finding_id: str,
+    mismatch_severity: FindingSeverity,
+    mismatch_status: FindingStatus,
+    mismatch_blocks: tuple[str, ...],
+    extra_evidence_refs: tuple[str, ...] = (),
+) -> tuple[DriftFinding, ...]:
+    """License-detection findings against the registry's expected-detection pin.
+
+    GitHub's licensee reports NOASSERTION for PolyForm/BSL and split-license
+    repos, so a raw detected-vs-policy comparison manufactures permanent false
+    drift. The gate compares detection against the expected-detection pin;
+    when the pin cannot prove the policy license (pin != policy), the repo's
+    root LICENSE authority file must exist instead.
+    """
+    detected = repo.license_spdx
+    base_refs = (
+        "docs/repo-pres/repo-registry.yaml",
+        *extra_evidence_refs,
+        f"gh:repos/{repo_id}",
+    )
+    if detected != expected_detection:
+        return (
+            DriftFinding(
+                finding_id=mismatch_finding_id,
+                severity=mismatch_severity,
+                category="license_detection",
+                surface=repo_id,
+                status=mismatch_status,
+                summary=(
+                    "GitHub license detection does not match the registry's expected detection."
+                ),
+                expected=(
+                    f"GitHub detects {expected_detection} for registry policy {expected_license}."
+                ),
+                observed=f"GitHub detects {detected or 'no license'}.",
+                evidence_refs=base_refs,
+                blocks=mismatch_blocks,
+            ),
+        )
+    if expected_detection == expected_license:
+        return ()
+    license_file = repo.files.get("LICENSE", RepoFilePresence(path="LICENSE", exists=False))
+    if not license_file.exists:
+        return (
+            DriftFinding(
+                finding_id=f"github.license.{repo.name}.authority-file-missing",
+                severity="high",
+                category="license_detection",
+                surface=repo_id,
+                status="blocked",
+                summary=(
+                    "Expected detection matches, but no root LICENSE authority "
+                    "file proves the registry policy."
+                ),
+                expected=(
+                    f"A root LICENSE authority file proves {expected_license} "
+                    f"where detection reports {expected_detection}."
+                ),
+                observed="LICENSE is not present on the default branch.",
+                evidence_refs=("gh:contents/LICENSE", *base_refs),
+                blocks=mismatch_blocks,
+            ),
+        )
+    return (
+        DriftFinding(
+            finding_id=f"github.license.{repo.name}.authority-file-proves-posture",
+            severity="info",
+            category="license_detection",
+            surface=repo_id,
+            status="ok",
+            summary=(
+                "License posture proved by the root authority file; GitHub "
+                "detection matches the expected pin."
+            ),
+            expected=(
+                f"Detection {expected_detection} pinned; policy "
+                f"{expected_license} proved by root LICENSE."
+            ),
+            observed="Root LICENSE present; detection matches the expected pin.",
+            evidence_refs=("gh:contents/LICENSE", *base_refs),
+        ),
+    )
+
+
 def build_drift_findings(
     *,
     repos: Mapping[str, RepoLiveState],
@@ -268,43 +362,37 @@ def build_drift_findings(
             and repo.exists
             and repo.visibility == "public"
         ):
-            if repo.license_spdx != expected_license:
-                findings.append(
-                    DriftFinding(
-                        finding_id=f"github.license.{repo.name}.registry-mismatch",
-                        severity="high",
-                        category="license_detection",
-                        surface=repo_id,
-                        status="unreconciled",
-                        summary="GitHub detected license does not match the repo registry policy.",
-                        expected=f"GitHub public license surfaces align to {expected_license}.",
-                        observed=f"GitHub detects {repo.license_spdx or 'no license'}.",
-                        evidence_refs=("docs/repo-pres/repo-registry.yaml", f"gh:repos/{repo_id}"),
-                        blocks=("github-public-claim-evidence-gate",),
-                    )
+            findings.extend(
+                _license_detection_findings(
+                    repo=repo,
+                    repo_id=repo_id,
+                    expected_license=expected_license,
+                    expected_detection=local.registry_expected_detection_by_repo.get(
+                        repo.name, expected_license
+                    ),
+                    mismatch_finding_id=f"github.license.{repo.name}.registry-mismatch",
+                    mismatch_severity="high",
+                    mismatch_status="unreconciled",
+                    mismatch_blocks=("github-public-claim-evidence-gate",),
                 )
+            )
 
     if council is not None:
         expected_license = local.registry_license_by_repo.get("hapax-council")
-        if expected_license and council.license_spdx != expected_license:
-            findings.append(
-                DriftFinding(
-                    finding_id="github.license.hapax-council.apache-vs-polyform",
-                    severity="blocking",
-                    category="license_detection",
-                    surface="hapax-systems/hapax-council",
-                    status="blocked",
-                    summary="GitHub/root license detection contradicts the repo registry policy.",
-                    expected=f"GitHub public license surfaces align to {expected_license}.",
-                    observed=f"GitHub detects {council.license_spdx or 'no license'}.",
-                    evidence_refs=(
-                        "docs/repo-pres/repo-registry.yaml",
-                        "LICENSE",
-                        "CITATION.cff",
-                        "codemeta.json",
-                        "gh:repos/hapax-systems/hapax-council",
+        if expected_license:
+            findings.extend(
+                _license_detection_findings(
+                    repo=council,
+                    repo_id="hapax-systems/hapax-council",
+                    expected_license=expected_license,
+                    expected_detection=local.registry_expected_detection_by_repo.get(
+                        "hapax-council", expected_license
                     ),
-                    blocks=("github-readme-profile-current-project-refresh",),
+                    mismatch_finding_id="github.license.hapax-council.apache-vs-polyform",
+                    mismatch_severity="blocking",
+                    mismatch_status="blocked",
+                    mismatch_blocks=("github-readme-profile-current-project-refresh",),
+                    extra_evidence_refs=("CITATION.cff", "codemeta.json"),
                 )
             )
 

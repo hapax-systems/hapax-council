@@ -626,6 +626,7 @@ def _local_evidence(repo_root: Path) -> LocalPublicSurfaceEvidence:
     package_surfaces = _package_surfaces(repo_root / "packages")
     return LocalPublicSurfaceEvidence(
         registry_license_by_repo=registry["license_by_repo"],
+        registry_expected_detection_by_repo=registry["expected_detection_by_repo"],
         registry_assets_policy=registry["assets_policy"],
         root_file_sha256=_root_hashes(repo_root),
         notice_links=tuple(notice_links),
@@ -647,12 +648,21 @@ def _registry(repo_root: Path) -> dict[str, Any]:
         for item in repos
         if isinstance(item, dict) and "name" in item and "license" in item
     }
+    expected_detection_by_repo = {
+        str(item["name"]): str(item["expected_github_license_detection"])
+        for item in repos
+        if isinstance(item, dict) and "name" in item and "expected_github_license_detection" in item
+    }
     assets_policy = None
     assets = payload.get("assets_repos", []) if isinstance(payload, dict) else []
     for item in assets:
         if isinstance(item, dict) and item.get("name") == "hapax-assets":
             assets_policy = str(item.get("license_policy"))
-    return {"license_by_repo": license_by_repo, "assets_policy": assets_policy}
+    return {
+        "license_by_repo": license_by_repo,
+        "expected_detection_by_repo": expected_detection_by_repo,
+        "assets_policy": assets_policy,
+    }
 
 
 def _notice_links(path: Path) -> list[str]:

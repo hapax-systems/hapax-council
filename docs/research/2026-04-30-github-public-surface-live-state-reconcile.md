@@ -1,8 +1,8 @@
 ---
 title: GitHub public surface live state reconcile
 date: 2026-04-30
-refresh_date: 2026-07-08
-generated_at: 2026-07-08T21:50:15Z
+refresh_date: 2026-07-09
+generated_at: 2026-07-09T00:20:30Z
 status: evidence-produced
 source: github-public-surface-live-state-reconcile
 ---
@@ -10,10 +10,10 @@ source: github-public-surface-live-state-reconcile
 # GitHub Public Surface Live State Reconcile
 
 - Filename note: the April slug is retained for historical ledger continuity; the YAML `date` field matches that slug, while `refresh_date`, `generated_at`, and `Generated` record the current live-state refresh. Freshness checks must read the refresh fields before treating this as current.
-- Generated: `2026-07-08T21:50:15Z`
+- Generated: `2026-07-09T00:20:30Z`
 - Recheck: `uv run python scripts/github-public-surface-reconcile.py`
 - Claim ceiling: `public_archive`
-- Blocking findings: `1`
+- Blocking findings: `0`
 - Report schema: `schema_version=1`
 
 ## Live Repos
@@ -21,8 +21,8 @@ source: github-public-surface-live-state-reconcile
 | Repo | Visibility | Default SHA | License | Issues | Discussions | Wiki | Pages |
 |---|---:|---|---|---:|---:|---:|---:|
 | hapax-systems/agentgov | public | ca8b3bdf7ac9 | MIT | true | false | false | false |
-| hapax-systems/hapax-council | public | 227275251575 | NOASSERTION | true | false | false | false |
-| hapax-systems/hapax-constitution | public | fc075829f643 | Apache-2.0 | true | false | true | false |
+| hapax-systems/hapax-council | public | cdef3adece44 | NOASSERTION | true | false | false | false |
+| hapax-systems/hapax-constitution | public | ef1deb6110b3 | Apache-2.0 | true | false | true | false |
 | hapax-systems/hapax-officium | public | 69583619391b | NOASSERTION | true | false | false | false |
 | hapax-systems/hapax-watch | public | f12bf995be38 | NOASSERTION | true | false | false | false |
 | hapax-systems/hapax-phone | public | f2843fc5dd77 | NOASSERTION | true | false | false | false |
@@ -35,12 +35,12 @@ source: github-public-surface-live-state-reconcile
 
 | Severity | Category | Surface | Summary |
 |---|---|---|---|
-| high | license_detection | hapax-systems/hapax-constitution | GitHub detected license does not match the repo registry policy. |
-| high | license_detection | hapax-systems/hapax-officium | GitHub detected license does not match the repo registry policy. |
-| high | license_detection | hapax-systems/hapax-watch | GitHub detected license does not match the repo registry policy. |
-| high | license_detection | hapax-systems/hapax-phone | GitHub detected license does not match the repo registry policy. |
-| high | license_detection | hapax-systems/reins | GitHub detected license does not match the repo registry policy. |
-| blocking | license_detection | hapax-systems/hapax-council | GitHub/root license detection contradicts the repo registry policy. |
+| high | license_detection | hapax-systems/hapax-constitution | GitHub license detection does not match the registry's expected detection. |
+| info | license_detection | hapax-systems/hapax-officium | License posture proved by the root authority file; GitHub detection matches the expected pin. |
+| info | license_detection | hapax-systems/hapax-watch | License posture proved by the root authority file; GitHub detection matches the expected pin. |
+| info | license_detection | hapax-systems/hapax-phone | License posture proved by the root authority file; GitHub detection matches the expected pin. |
+| info | license_detection | hapax-systems/reins | License posture proved by the root authority file; GitHub detection matches the expected pin. |
+| info | license_detection | hapax-systems/hapax-council | License posture proved by the root authority file; GitHub detection matches the expected pin. |
 | high | settings_truth | hapax-systems/hapax-council | Issues are enabled while GitHub does not report an issue template. |
 | high | readme_currentness | README.md | README currentness must be regenerated after live-state reconciliation. |
 | high | citation_codemeta_zenodo | CITATION.cff/codemeta.json/.zenodo.json | Citation/CodeMeta/Zenodo metadata must be reconciled after license drift. |

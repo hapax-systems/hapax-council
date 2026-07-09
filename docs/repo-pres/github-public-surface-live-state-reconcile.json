@@ -21,7 +21,7 @@
         "gh:repos/hapax-systems/hapax-council",
         "live-report:repo:hapax-systems/hapax-council:exists=true",
         "live-report:repo:hapax-systems/hapax-council:visibility=public",
-        "live-report:repo:hapax-systems/hapax-council:default_branch_sha=2272752515754e52c886d4d863e02246b996a97b",
+        "live-report:repo:hapax-systems/hapax-council:default_branch_sha=cdef3adece449283f7465a0f52c34e3a530f5360",
         "live-report:repo:hapax-systems/hapax-council:license_spdx=NOASSERTION",
         "live-report:repo:hapax-systems/hapax-council:has_issues=true",
         "live-report:repo:hapax-systems/hapax-council:community.issue_template=false"
@@ -60,12 +60,12 @@
         "gh:repos/hapax-systems/hapax-council",
         "live-report:repo:hapax-systems/hapax-council:exists=true",
         "live-report:repo:hapax-systems/hapax-council:visibility=public",
-        "live-report:repo:hapax-systems/hapax-council:default_branch_sha=2272752515754e52c886d4d863e02246b996a97b",
+        "live-report:repo:hapax-systems/hapax-council:default_branch_sha=cdef3adece449283f7465a0f52c34e3a530f5360",
         "live-report:repo:hapax-systems/hapax-council:license_spdx=NOASSERTION",
         "live-report:repo:hapax-systems/hapax-council:has_issues=true",
         "live-report:repo:hapax-systems/hapax-council:community.issue_template=false",
         "live-report:repo:hapax-systems/hapax-council:file:.github/ISSUE_TEMPLATE/config.yml:exists=true",
-        "live-report:repo:hapax-systems/hapax-council:file:.github/ISSUE_TEMPLATE/config.yml:sha=66a3a7a8322fc18dd08d31653b20901c2367f1ae"
+        "live-report:repo:hapax-systems/hapax-council:file:.github/ISSUE_TEMPLATE/config.yml:sha=50a7a508dc02ee2e3ac842a1fc468e93a1e73ca2"
       ],
       "summary": "Issue redirect-wall closure compared to has_issues and community profile state.",
       "task_id": "repo-pres-issues-redirect-walls",
@@ -134,100 +134,94 @@
         "docs/repo-pres/repo-registry.yaml",
         "gh:repos/hapax-systems/hapax-constitution"
       ],
-      "expected": "GitHub public license surfaces align to CC-BY-NC-ND-4.0.",
+      "expected": "GitHub detects NOASSERTION for registry policy CC-BY-NC-ND-4.0.",
       "finding_id": "github.license.hapax-constitution.registry-mismatch",
       "observed": "GitHub detects Apache-2.0.",
       "severity": "high",
       "status": "unreconciled",
-      "summary": "GitHub detected license does not match the repo registry policy.",
+      "summary": "GitHub license detection does not match the registry's expected detection.",
       "surface": "hapax-systems/hapax-constitution"
     },
     {
-      "blocks": [
-        "github-public-claim-evidence-gate"
-      ],
+      "blocks": [],
       "category": "license_detection",
       "evidence_refs": [
+        "gh:contents/LICENSE",
         "docs/repo-pres/repo-registry.yaml",
         "gh:repos/hapax-systems/hapax-officium"
       ],
-      "expected": "GitHub public license surfaces align to PolyForm-Strict-1.0.0.",
-      "finding_id": "github.license.hapax-officium.registry-mismatch",
-      "observed": "GitHub detects NOASSERTION.",
-      "severity": "high",
-      "status": "unreconciled",
-      "summary": "GitHub detected license does not match the repo registry policy.",
+      "expected": "Detection NOASSERTION pinned; policy PolyForm-Strict-1.0.0 proved by root LICENSE.",
+      "finding_id": "github.license.hapax-officium.authority-file-proves-posture",
+      "observed": "Root LICENSE present; detection matches the expected pin.",
+      "severity": "info",
+      "status": "ok",
+      "summary": "License posture proved by the root authority file; GitHub detection matches the expected pin.",
       "surface": "hapax-systems/hapax-officium"
     },
     {
-      "blocks": [
-        "github-public-claim-evidence-gate"
-      ],
+      "blocks": [],
       "category": "license_detection",
       "evidence_refs": [
+        "gh:contents/LICENSE",
         "docs/repo-pres/repo-registry.yaml",
         "gh:repos/hapax-systems/hapax-watch"
       ],
-      "expected": "GitHub public license surfaces align to PolyForm-Strict-1.0.0.",
-      "finding_id": "github.license.hapax-watch.registry-mismatch",
-      "observed": "GitHub detects NOASSERTION.",
-      "severity": "high",
-      "status": "unreconciled",
-      "summary": "GitHub detected license does not match the repo registry policy.",
+      "expected": "Detection NOASSERTION pinned; policy PolyForm-Strict-1.0.0 proved by root LICENSE.",
+      "finding_id": "github.license.hapax-watch.authority-file-proves-posture",
+      "observed": "Root LICENSE present; detection matches the expected pin.",
+      "severity": "info",
+      "status": "ok",
+      "summary": "License posture proved by the root authority file; GitHub detection matches the expected pin.",
       "surface": "hapax-systems/hapax-watch"
     },
     {
-      "blocks": [
-        "github-public-claim-evidence-gate"
-      ],
+      "blocks": [],
       "category": "license_detection",
       "evidence_refs": [
+        "gh:contents/LICENSE",
         "docs/repo-pres/repo-registry.yaml",
         "gh:repos/hapax-systems/hapax-phone"
       ],
-      "expected": "GitHub public license surfaces align to PolyForm-Strict-1.0.0.",
-      "finding_id": "github.license.hapax-phone.registry-mismatch",
-      "observed": "GitHub detects NOASSERTION.",
-      "severity": "high",
-      "status": "unreconciled",
-      "summary": "GitHub detected license does not match the repo registry policy.",
+      "expected": "Detection NOASSERTION pinned; policy PolyForm-Strict-1.0.0 proved by root LICENSE.",
+      "finding_id": "github.license.hapax-phone.authority-file-proves-posture",
+      "observed": "Root LICENSE present; detection matches the expected pin.",
+      "severity": "info",
+      "status": "ok",
+      "summary": "License posture proved by the root authority file; GitHub detection matches the expected pin.",
       "surface": "hapax-systems/hapax-phone"
     },
     {
-      "blocks": [
-        "github-public-claim-evidence-gate"
-      ],
+      "blocks": [],
       "category": "license_detection",
       "evidence_refs": [
+        "gh:contents/LICENSE",
         "docs/repo-pres/repo-registry.yaml",
         "gh:repos/hapax-systems/reins"
       ],
-      "expected": "GitHub public license surfaces align to BUSL-1.1.",
-      "finding_id": "github.license.reins.registry-mismatch",
-      "observed": "GitHub detects NOASSERTION.",
-      "severity": "high",
-      "status": "unreconciled",
-      "summary": "GitHub detected license does not match the repo registry policy.",
+      "expected": "Detection NOASSERTION pinned; policy BUSL-1.1 proved by root LICENSE.",
+      "finding_id": "github.license.reins.authority-file-proves-posture",
+      "observed": "Root LICENSE present; detection matches the expected pin.",
+      "severity": "info",
+      "status": "ok",
+      "summary": "License posture proved by the root authority file; GitHub detection matches the expected pin.",
       "surface": "hapax-systems/reins"
     },
     {
-      "blocks": [
-        "github-readme-profile-current-project-refresh"
-      ],
+      "blocks": [],
       "category": "license_detection",
       "evidence_refs": [
+        "gh:contents/LICENSE",
         "docs/repo-pres/repo-registry.yaml",
-        "LICENSE",
         "CITATION.cff",
         "codemeta.json",
         "gh:repos/hapax-systems/hapax-council"
       ],
-      "expected": "GitHub public license surfaces align to PolyForm-Strict-1.0.0.",
-      "finding_id": "github.license.hapax-council.apache-vs-polyform",
-      "observed": "GitHub detects NOASSERTION.",
-      "severity": "blocking",
-      "status": "blocked",
-      "summary": "GitHub/root license detection contradicts the repo registry policy.",
+      "expected": "Detection NOASSERTION pinned; policy PolyForm-Strict-1.0.0 proved by root LICENSE.",
+      "finding_id": "github.license.hapax-council.authority-file-proves-posture",
+      "observed": "Root LICENSE present; detection matches the expected pin.",
+      "severity": "info",
+      "status": "ok",
+      "summary": "License posture proved by the root authority file; GitHub detection matches the expected pin.",
       "surface": "hapax-systems/hapax-council"
     },
     {
@@ -373,14 +367,14 @@
       "surface": "hapax-systems/hapax-council"
     }
   ],
-  "generated_at": "2026-07-08T21:50:15Z",
+  "generated_at": "2026-07-09T00:20:30Z",
   "generated_by": "scripts/github-public-surface-reconcile.py",
   "live_repos": [
     {
       "api_error": null,
       "archived": false,
       "community": {
-        "description": "Governance hooks for AI coding agents. Enforce safety, git hygiene, and project rules.",
+        "description": "Standalone governance hooks for AI coding agents. Permissive public adoption wedge for safety, git hygiene, and project-rule checks.",
         "error": null,
         "files": {
           "code_of_conduct": false,
@@ -395,7 +389,7 @@
       },
       "default_branch": "main",
       "default_branch_sha": "ca8b3bdf7ac988f319f5f64a861bf55d3251a1c6",
-      "description": "Governance hooks for AI coding agents. Enforce safety, git hygiene, and project rules.",
+      "description": "Standalone governance hooks for AI coding agents. Permissive public adoption wedge for safety, git hygiene, and project-rule checks.",
       "exists": true,
       "expected_public": true,
       "files": {
@@ -532,14 +526,19 @@
         "latest_published_at": null,
         "latest_tag_name": "v0.3.1"
       },
-      "topics": [],
+      "topics": [
+        "ai-governance",
+        "developer-tools",
+        "governance",
+        "safety"
+      ],
       "visibility": "public"
     },
     {
       "api_error": null,
       "archived": false,
       "community": {
-        "description": "Single-operator Hapax operating environment: externalized executive function, constitutional governance, semantic recruitment, multimodal perception, and refusal-as-data research infrastructure.",
+        "description": "Source-visible Hapax Systems research/runtime for evidence-bound AI-agent delivery: governed dispatch, route receipts, claim review, refusal, and publication-egress controls in a single-operator estate.",
         "error": null,
         "files": {
           "code_of_conduct": false,
@@ -553,8 +552,8 @@
         "health_percentage": 75
       },
       "default_branch": "main",
-      "default_branch_sha": "2272752515754e52c886d4d863e02246b996a97b",
-      "description": "Single-operator Hapax operating environment: externalized executive function, constitutional governance, semantic recruitment, multimodal perception, and refusal-as-data research infrastructure.",
+      "default_branch_sha": "cdef3adece449283f7465a0f52c34e3a530f5360",
+      "description": "Source-visible Hapax Systems research/runtime for evidence-bound AI-agent delivery: governed dispatch, route receipts, claim review, refusal, and publication-egress controls in a single-operator estate.",
       "exists": true,
       "expected_public": true,
       "files": {
@@ -563,40 +562,40 @@
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/.github/FUNDING.yml",
           "path": ".github/FUNDING.yml",
-          "sha": "6682ec133586fc6b37e34e501824ea41ea6093e6",
-          "size": 19
+          "sha": "5c271bf5d9c7bd63858bb88e16393849d668d3f6",
+          "size": 45
         },
         ".github/ISSUE_TEMPLATE/config.yml": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/.github/ISSUE_TEMPLATE/config.yml",
           "path": ".github/ISSUE_TEMPLATE/config.yml",
-          "sha": "66a3a7a8322fc18dd08d31653b20901c2367f1ae",
-          "size": 688
+          "sha": "50a7a508dc02ee2e3ac842a1fc468e93a1e73ca2",
+          "size": 710
         },
         ".zenodo.json": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/.zenodo.json",
           "path": ".zenodo.json",
-          "sha": "a7edd676e7fd128c35b422742b94843e45cc92f5",
-          "size": 1093
+          "sha": "ba882dfb58eff7c4842ca8ffec45c79314753138",
+          "size": 1087
         },
         "CITATION.cff": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/CITATION.cff",
           "path": "CITATION.cff",
-          "sha": "04174b765473631095df635e0928f1acc63f0f06",
-          "size": 756
+          "sha": "09085743d0f3438a03863e18f86edc87833cc9bb",
+          "size": 783
         },
         "CONTRIBUTING.md": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/CONTRIBUTING.md",
           "path": "CONTRIBUTING.md",
-          "sha": "51935293ed1ef1e2030f87f65d1d1a7294f262f0",
-          "size": 1759
+          "sha": "06898bdef2e22b18f92a9dc4f16634268edbf8c3",
+          "size": 1614
         },
         "GOVERNANCE.md": {
           "evidence": "github_contents_api",
@@ -619,32 +618,32 @@
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/NOTICE.md",
           "path": "NOTICE.md",
-          "sha": "5fdb3dd86f82cc23a523ab5d71f920689718e128",
-          "size": 1911
+          "sha": "8d6d8d442dfab8b601d974db0af544ba3b44f41d",
+          "size": 1961
         },
         "README.md": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/README.md",
           "path": "README.md",
-          "sha": "4d1e0dbd882ddc5097906244cc35127e2cb29128",
-          "size": 6770
+          "sha": "3e69594c9d5697bc50770656e66fba1ce862bafa",
+          "size": 9337
         },
         "SECURITY.md": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/SECURITY.md",
           "path": "SECURITY.md",
-          "sha": "0c22c19f274190142053f4250e2b333375e7a090",
-          "size": 1361
+          "sha": "c306572a5e2a056908b082dfee81165c702f9d3e",
+          "size": 1613
         },
         "codemeta.json": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-council/blob/main/codemeta.json",
           "path": "codemeta.json",
-          "sha": "af15e9d93649b26dfd6eafccf4fb1d16105a804f",
-          "size": 1135
+          "sha": "9966b19f04f05809fa981d520e25787e887a8807",
+          "size": 1165
         },
         "profile/README.md": {
           "evidence": "github_contents_api",
@@ -675,7 +674,7 @@
         "status": null
       },
       "private": false,
-      "pushed_at": "2026-07-08T21:48:29Z",
+      "pushed_at": "2026-07-09T00:19:25Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -692,23 +691,12 @@
         "latest_tag_name": "zeta-auto-advance-backup-20260531"
       },
       "topics": [
-        "ai-governance",
-        "ai-research",
-        "autonomous-agents",
-        "cognitive-architecture",
-        "consent-governance",
-        "constitutional-ai",
-        "gstreamer",
-        "information-flow-control",
-        "livestream",
-        "multi-agent",
-        "neurodivergent",
-        "personal-ai",
-        "pipewire",
-        "pydantic-ai",
-        "single-operator",
-        "systemd",
-        "wgpu"
+        "claim-authority",
+        "governed-sdlc",
+        "publication-egress",
+        "refusal-systems",
+        "research-software",
+        "single-operator"
       ],
       "visibility": "public"
     },
@@ -716,7 +704,7 @@
       "api_error": null,
       "archived": false,
       "community": {
-        "description": "Architectural pattern documentation for axiom-governed reactive agent platforms",
+        "description": "Governance specification for the Hapax operating environment. Publishes specification/publication material plus the hapax-sdlc enforcement/render tooling consumed by hapax-council and hapax-officium. Not seeking contributors.",
         "error": null,
         "files": {
           "code_of_conduct": false,
@@ -730,8 +718,8 @@
         "health_percentage": 75
       },
       "default_branch": "main",
-      "default_branch_sha": "fc075829f643c0a375a3b7a62c045af841bb8021",
-      "description": "Architectural pattern documentation for axiom-governed reactive agent platforms",
+      "default_branch_sha": "ef1deb6110b319550f6f5ad9b42013c8b025a529",
+      "description": "Governance specification for the Hapax operating environment. Publishes specification/publication material plus the hapax-sdlc enforcement/render tooling consumed by hapax-council and hapax-officium. Not seeking contributors.",
       "exists": true,
       "expected_public": true,
       "files": {
@@ -852,7 +840,7 @@
         "status": null
       },
       "private": false,
-      "pushed_at": "2026-07-08T18:18:17Z",
+      "pushed_at": "2026-07-08T22:06:24Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -881,7 +869,7 @@
       "api_error": null,
       "archived": false,
       "community": {
-        "description": "Management decision support cockpit for engineering managers",
+        "description": "Source-visible internal management decision-support runtime for Hapax Systems boundary review. Published as an artifact, not as HR software, SaaS, or an adoption surface.",
         "error": null,
         "files": {
           "code_of_conduct": false,
@@ -896,7 +884,7 @@
       },
       "default_branch": "main",
       "default_branch_sha": "69583619391b71507f03215cd0cd832788084c5a",
-      "description": "Management decision support cockpit for engineering managers",
+      "description": "Source-visible internal management decision-support runtime for Hapax Systems boundary review. Published as an artifact, not as HR software, SaaS, or an adoption surface.",
       "exists": true,
       "expected_public": true,
       "files": {
@@ -1046,7 +1034,7 @@
       "api_error": null,
       "archived": false,
       "community": {
-        "description": null,
+        "description": "Wrist biometric source for Hapax Systems. Public source-visible Wear OS bridge for approved sensor/context data and local operator awareness display.",
         "error": null,
         "files": {
           "code_of_conduct": false,
@@ -1057,11 +1045,11 @@
           "pull_request_template": false,
           "readme": true
         },
-        "health_percentage": 50
+        "health_percentage": 62
       },
       "default_branch": "main",
       "default_branch_sha": "f12bf995be38df197771f78c491249e595736231",
-      "description": null,
+      "description": "Wrist biometric source for Hapax Systems. Public source-visible Wear OS bridge for approved sensor/context data and local operator awareness display.",
       "exists": true,
       "expected_public": true,
       "files": {
@@ -1209,7 +1197,7 @@
       "api_error": null,
       "archived": false,
       "community": {
-        "description": null,
+        "description": "Mobile context source for Hapax Systems. Public source-visible Android bridge for approved daily health/context summaries and local operator awareness display.",
         "error": null,
         "files": {
           "code_of_conduct": false,
@@ -1220,11 +1208,11 @@
           "pull_request_template": false,
           "readme": true
         },
-        "health_percentage": 50
+        "health_percentage": 62
       },
       "default_branch": "main",
       "default_branch_sha": "f2843fc5dd770901021049f88e4ab8e2fa4b6648",
-      "description": null,
+      "description": "Mobile context source for Hapax Systems. Public source-visible Android bridge for approved daily health/context summaries and local operator awareness display.",
       "exists": true,
       "expected_public": true,
       "files": {
@@ -1372,7 +1360,7 @@
       "api_error": null,
       "archived": false,
       "community": {
-        "description": null,
+        "description": "Hapax Logos MCP Bridge. Public source-visible integration bridge for Hapax Systems logos APIs without becoming a general-purpose MCP framework.",
         "error": null,
         "files": {
           "code_of_conduct": false,
@@ -1383,11 +1371,11 @@
           "pull_request_template": false,
           "readme": true
         },
-        "health_percentage": 50
+        "health_percentage": 62
       },
       "default_branch": "main",
       "default_branch_sha": "44c70eea4ca4ccb09044ce1fa4e5a9ab4ec03858",
-      "description": null,
+      "description": "Hapax Logos MCP Bridge. Public source-visible integration bridge for Hapax Systems logos APIs without becoming a general-purpose MCP framework.",
       "exists": true,
       "expected_public": true,
       "files": {
@@ -1535,7 +1523,7 @@
       "api_error": null,
       "archived": false,
       "community": {
-        "description": "Open, append-only ledger of changing-criterion SCED observations from the Hapax research program. Numeric-only, governed (RDLC), published from the first data point. CC0.",
+        "description": "Public-domain numeric evidence ledger for the Hapax research program. Numeric and evidence-oriented, not runtime code.",
         "error": null,
         "files": {
           "code_of_conduct": false,
@@ -1550,7 +1538,7 @@
       },
       "default_branch": "main",
       "default_branch_sha": "5c99dced93b84086ab86dce18d9de12888fad469",
-      "description": "Open, append-only ledger of changing-criterion SCED observations from the Hapax research program. Numeric-only, governed (RDLC), published from the first data point. CC0.",
+      "description": "Public-domain numeric evidence ledger for the Hapax research program. Numeric and evidence-oriented, not runtime code.",
       "exists": true,
       "expected_public": true,
       "files": {
@@ -1687,14 +1675,18 @@
         "latest_published_at": null,
         "latest_tag_name": null
       },
-      "topics": [],
+      "topics": [
+        "evidence",
+        "research-data",
+        "research-software"
+      ],
       "visibility": "public"
     },
     {
       "api_error": null,
       "archived": false,
       "community": {
-        "description": "Asset CDN for hapax-council (auto-mirrored from assets/aesthetic-library/)",
+        "description": "Public asset mirror for approved Hapax Systems web and publication surfaces. Serves reviewed artifacts and preserves per-asset license notices.",
         "error": null,
         "files": {
           "code_of_conduct": false,
@@ -1709,7 +1701,7 @@
       },
       "default_branch": "main",
       "default_branch_sha": "8c69ac2e52b2367bc20230b21294c76bbce6e698",
-      "description": "Asset CDN for hapax-council (auto-mirrored from assets/aesthetic-library/)",
+      "description": "Public asset mirror for approved Hapax Systems web and publication surfaces. Serves reviewed artifacts and preserves per-asset license notices.",
       "exists": true,
       "expected_public": true,
       "files": {
@@ -1846,14 +1838,18 @@
         "latest_published_at": null,
         "latest_tag_name": null
       },
-      "topics": [],
+      "topics": [
+        "infrastructure-as-argument",
+        "research-software",
+        "single-operator"
+      ],
       "visibility": "public"
     },
     {
       "api_error": null,
       "archived": false,
       "community": {
-        "description": "reins \u2014 the legible only-split cockpit for governed n-DLC automation (declare-and-navigate; the apply-seam witnesses). Built by Hapax Research LLC.",
+        "description": "Read and command-preview cockpit for governed lifecycle automation. Presents Hapax/Reins state without granting authority on its own.",
         "error": null,
         "files": {
           "code_of_conduct": false,
@@ -1868,7 +1864,7 @@
       },
       "default_branch": "main",
       "default_branch_sha": "882ef2129131f8a6106cab870f88523a15a030a0",
-      "description": "reins \u2014 the legible only-split cockpit for governed n-DLC automation (declare-and-navigate; the apply-seam witnesses). Built by Hapax Research LLC.",
+      "description": "Read and command-preview cockpit for governed lifecycle automation. Presents Hapax/Reins state without granting authority on its own.",
       "exists": true,
       "expected_public": true,
       "files": {
@@ -2006,10 +2002,7 @@
         "latest_tag_name": "v0.1.0"
       },
       "topics": [
-        "agent-os",
         "automation",
-        "bubbletea",
-        "go",
         "governance",
         "sdlc",
         "tui"
@@ -2110,6 +2103,20 @@
       }
     ],
     "registry_assets_policy": "per-asset (BSD-3-Clause / CC-BY-SA-4.0)",
+    "registry_expected_detection_by_repo": {
+      "agentgov": "MIT",
+      "distro-work": "NOASSERTION",
+      "hapax-constitution": "NOASSERTION",
+      "hapax-coord": "NOASSERTION",
+      "hapax-council": "NOASSERTION",
+      "hapax-mcp": "MIT",
+      "hapax-officium": "NOASSERTION",
+      "hapax-phone": "NOASSERTION",
+      "hapax-research-ledger": "CC0-1.0",
+      "hapax-spine": "NOASSERTION",
+      "hapax-watch": "NOASSERTION",
+      "reins": "NOASSERTION"
+    },
     "registry_license_by_repo": {
       "agentgov": "MIT",
       "distro-work": "PolyForm-Strict-1.0.0",
@@ -2130,8 +2137,8 @@
       "CLAUDE.md": "sha256:023b149f0a94a873f25da74a48330b1985abbf1f85fad338608d5b222e905d07",
       "LICENSE": "sha256:2183f4abce696be915854ba97c2f1e95d60eb1ff776777c13e787dfec2fa105b",
       "NOTICE.md": "sha256:1a690b8409071022b43538be81f41a6cbef1818ab1d4e883504e4e85d4ca2965",
-      "README.md": "sha256:863acfa9899509a34ad35dca111fb98734626c30514ce1c13c12625a5bcd608e",
-      "SECURITY.md": "sha256:6f3d201c2434b61e21a44b73140eeb073ac07c285f63e250295d302b3d7ae7a1",
+      "README.md": "sha256:ee0eba191e88c9bb4934f3da836b337d3c1ac6ac0c1d4a990dae300c85aba0da",
+      "SECURITY.md": "sha256:65f8288644eb61c644c13713c4c8a8bf17e1f49b04b1156ac6f7f3e0d9f8e24e",
       "codemeta.json": "sha256:a36fa4f14cbd182be2984fa7d93cd4fceb3f6466c37b4695d57fae5288d389f1"
     }
   },

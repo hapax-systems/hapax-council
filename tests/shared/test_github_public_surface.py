@@ -46,6 +46,81 @@ def _minimal_local_evidence() -> LocalPublicSurfaceEvidence:
     )
 
 
+def _reins_live_state(*, license_spdx: str | None, license_file_exists: bool) -> RepoLiveState:
+    return RepoLiveState(
+        repo_id="hapax-systems/reins",
+        owner="hapax-systems",
+        name="reins",
+        exists=True,
+        private=False,
+        visibility="public",
+        license_spdx=license_spdx,
+        files={
+            "LICENSE": RepoFilePresence(path="LICENSE", exists=license_file_exists),
+        },
+    )
+
+
+def _reins_license_findings(
+    *, license_spdx: str | None, license_file_exists: bool, expected_detection: str | None
+) -> list:
+    local = LocalPublicSurfaceEvidence(
+        registry_license_by_repo={"reins": "BUSL-1.1"},
+        registry_expected_detection_by_repo=(
+            {"reins": expected_detection} if expected_detection else {}
+        ),
+        root_file_sha256={},
+        notice_links=(),
+        notice_missing_links=(),
+        package_surfaces=(),
+    )
+    findings = build_drift_findings(
+        repos={
+            "hapax-systems/reins": _reins_live_state(
+                license_spdx=license_spdx, license_file_exists=license_file_exists
+            )
+        },
+        local=local,
+    )
+    return [f for f in findings if f.category == "license_detection" and "reins" in f.finding_id]
+
+
+def test_expected_detection_pin_with_authority_file_is_ok_witness() -> None:
+    findings = _reins_license_findings(
+        license_spdx="NOASSERTION", license_file_exists=True, expected_detection="NOASSERTION"
+    )
+    assert [f.finding_id for f in findings] == [
+        "github.license.reins.authority-file-proves-posture"
+    ]
+    assert findings[0].status == "ok"
+    assert findings[0].severity == "info"
+
+
+def test_expected_detection_pin_without_authority_file_blocks() -> None:
+    findings = _reins_license_findings(
+        license_spdx="NOASSERTION", license_file_exists=False, expected_detection="NOASSERTION"
+    )
+    assert [f.finding_id for f in findings] == ["github.license.reins.authority-file-missing"]
+    assert findings[0].status == "blocked"
+
+
+def test_detection_diverging_from_pin_is_drift() -> None:
+    findings = _reins_license_findings(
+        license_spdx="Apache-2.0", license_file_exists=True, expected_detection="NOASSERTION"
+    )
+    assert [f.finding_id for f in findings] == ["github.license.reins.registry-mismatch"]
+    assert findings[0].status == "unreconciled"
+
+
+def test_missing_pin_falls_back_to_policy_comparison() -> None:
+    # Backward compatibility: no pin means detection must equal the policy
+    # license, which for BUSL repos reproduces the historical mismatch drift.
+    findings = _reins_license_findings(
+        license_spdx="NOASSERTION", license_file_exists=True, expected_detection=None
+    )
+    assert [f.finding_id for f in findings] == ["github.license.reins.registry-mismatch"]
+
+
 def test_report_schema_validates_committed_live_state_report() -> None:
     schema = cast("dict[str, Any]", json.loads(SCHEMA.read_text(encoding="utf-8")))
     payload = _payload()
