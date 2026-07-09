@@ -24,7 +24,7 @@ The project has shifted: **the theory and its exemplary implementation are now t
 | **PL/Security** | Consent-as-information-flow; DLM/LIO application to consent; gradual adoption | Formal soundness of label operations; type-safety claims; performance overhead | POPL, PLDI, Oakland, CCS, POST |
 | **MAS/Normative MAS** | Epistemic carrier dynamics; norm refinement with interpretive canons; OperA extension | Mathematical rigor of factor graph claims; comparison with existing frameworks; evaluation metrics | AAMAS, IJCAI, AAAI |
 | **AI Safety/Alignment** | Alignment tax inversion; separation of enforcement from internalization; externalized values | Empirical measurement methodology; threat model; comparison with Constitutional AI/RLHF | SafeAI workshop, AAAI, NeurIPS |
-| **HCI/Ethics** | Neurodivergent accommodation as governance; single-operator sovereignty; extended mind | User study or evaluation; accessibility claims; philosophical coherence | CHI, FAccT, AIES, CSCW |
+| **HCI/Ethics** | Accommodation-as-governance; single-operator sovereignty; extended mind | User study or evaluation; accessibility claims; philosophical coherence | CHI, FAccT, AIES, CSCW |
 | **Systems/Infrastructure** | Filesystem-as-bus; reactive engine; composition ladder; working implementation | Performance, scalability, fault tolerance; comparison with alternatives | SOSP, OSDI, EuroSys (stretch) |
 | **Organizational theory** | Epistemic Conway's law; cross-domain error correction; documented silo failures | Empirical validation; case study methodology | Organization Science, AMJ, MISQ |
 

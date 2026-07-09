@@ -288,7 +288,7 @@ def test_axiom_registry_ref_without_pii_receipt_fails_c10(tmp_path: Path) -> Non
     assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "Hapax.ValuePropRegistry.C10" in result.stdout
     assert "pii_screen_receipt" in result.stdout
-    assert "medical" in result.stdout
+    assert "privacy-sensitive" in result.stdout
 
 
 def test_axiom_registry_ref_with_pii_receipt_passes_c10(tmp_path: Path) -> None:

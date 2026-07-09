@@ -424,7 +424,7 @@ The deepest gap in the literature is this: everyone recognizes that phenomenolog
 - **Learned** (developed through experience in the environment) -- this is the sensorimotor contingency approach
 - **Both** (bootstrap with engineered structure, refine through learning) -- this is most likely what's needed
 
-The most promising path is active inference as the engineered foundation, with sensorimotor contingency learning as the adaptive refinement layer, all calibrated to the operator's specific neurodivergent phenomenology. This has never been built. It is the next step.
+The most promising path is active inference as the engineered foundation, with sensorimotor contingency learning as the adaptive refinement layer, all calibrated to the operator's specific phenomenology. This has never been built. It is the next step.
 
 ---
 

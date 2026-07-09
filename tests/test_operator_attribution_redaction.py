@@ -16,13 +16,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Tight attribution patterns only — generic domain/field-survey discussion of
-# ADHD/autism (research corpora, external-product notes) is intentionally out
-# of scope; the redaction class is attribution TO THE OPERATOR.
+# Attribution patterns — the redaction class is diagnostic/neurotype attribution TO THE
+# OPERATOR. Generic domain/field-survey discussion (research corpora, guest-facing design,
+# external-product notes) stays in scope only when the diagnosis term and "operator" share
+# a sentence ([^.\n] window). Terms: ADHD, autism/autistic, AuDHD, neurodivergent/-ce.
+_DIAGNOSIS = r"(?:ADHD|AuDHD|autis\w*|neurodiverg\w*)"
 ATTRIBUTION_PATTERNS = (
-    re.compile(r"operator\s+(?:has|with)\s+(?:ADHD|autis)", re.IGNORECASE),
-    re.compile(r"operator'?s\s+(?:ADHD|autis)", re.IGNORECASE),
-    re.compile(r"(?:ADHD|autism)[/\s-]*(?:and\s+autism\s+)?operator", re.IGNORECASE),
+    re.compile(rf"operator\s+(?:has|with|is)\s+{_DIAGNOSIS}", re.IGNORECASE),
+    re.compile(rf"operator'?s\s+(?:specific\s+)?{_DIAGNOSIS}", re.IGNORECASE),
+    re.compile(rf"{_DIAGNOSIS}[^.\n]{{0,60}}\boperator\b", re.IGNORECASE),
+    re.compile(rf"\boperator\b[^.\n]{{0,60}}{_DIAGNOSIS}", re.IGNORECASE),
 )
 
 # Empty since the 2026-07-09 operator-hands axioms edit; add a path here ONLY for a

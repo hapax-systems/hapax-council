@@ -581,12 +581,23 @@ class TestCloseOnPrMergeOptOut:
         assert watcher.declines_close_on_pr_merge(note.read_text())
 
     def test_yaml_equivalent_false_spellings_opt_out(self) -> None:
-        """A YAML-dumper round-trip may re-serialize false as no/off/quoted forms;
-        all of them must keep the opt-out. True-ish values never do."""
-        for spelling in ("false", "no", "off", '"false"', "'false'", "FALSE", "No"):
+        """A YAML-dumper round-trip may re-serialize false as no/off/quoted forms, and a
+        lane owner may append a YAML comment; all of those keep the opt-out. True-ish
+        values and MALFORMED quoting never do (malformed falls to the close default)."""
+        for spelling in (
+            "false",
+            "no",
+            "off",
+            '"false"',
+            "'false'",
+            "FALSE",
+            "No",
+            "false  # lane owner closes explicitly",
+            '"off" # reason',
+        ):
             text = f"---\nclose_on_pr_merge: {spelling}\n---\nbody\n"
             assert watcher.declines_close_on_pr_merge(text), spelling
-        for spelling in ("true", "yes", "on", "0", "falsey"):
+        for spelling in ("true", "yes", "on", "0", "falsey", '"false', "false'", "\"false'"):
             text = f"---\nclose_on_pr_merge: {spelling}\n---\nbody\n"
             assert not watcher.declines_close_on_pr_merge(text), spelling
 

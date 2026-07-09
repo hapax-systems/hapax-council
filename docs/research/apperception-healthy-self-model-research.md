@@ -461,7 +461,7 @@ RSD involves intense emotional responses to perceived or actual rejection, teasi
 
 ### The System Should NOT Mirror the Operator's Challenges
 
-This is a critical design principle. The operator's neurodivergent self-model challenges are *not* something the system should replicate:
+This is a critical design principle. The operator's self-model challenges are *not* something the system should replicate:
 
 1. **The system should not have RSD.** Step 4 (valence) should produce graded, proportional signals, not the amygdala-hijack pattern of RSD. This means valence should be computed with explicit dampening -- a temporal smoothing that prevents single observations from producing extreme valence signals.
 

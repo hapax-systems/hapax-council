@@ -9,7 +9,7 @@ last_reviewed: 2026-03-05
 
 ## Overview
 
-Cognitive Load Theory (CLT), developed by John Sweller and colleagues beginning in the late 1980s, provides a rigorous framework for understanding how the design of information systems affects human cognitive processing. Originally developed for instructional design, CLT's principles generalize powerfully to software interface design, notification systems, and the architecture of autonomous agent systems. For a system designed to serve a neurodivergent operator with executive function challenges, CLT provides the theoretical basis for fundamental design decisions: zero-configuration defaults, proactive alerting, tiered information complexity, and automated routine maintenance.
+Cognitive Load Theory (CLT), developed by John Sweller and colleagues beginning in the late 1980s, provides a rigorous framework for understanding how the design of information systems affects human cognitive processing. Originally developed for instructional design, CLT's principles generalize powerfully to software interface design, notification systems, and the architecture of autonomous agent systems. For a system designed to support a single operator's executive function, CLT provides the theoretical basis for fundamental design decisions: zero-configuration defaults, proactive alerting, tiered information complexity, and automated routine maintenance.
 
 ## The Three Types of Cognitive Load
 

@@ -468,7 +468,7 @@ The system asks for corrections when uncertain, rather than waiting for the oper
 - "Exploration budget" -- a fixed number of queries per day to avoid annoyance
 - Feedback from answers improves both the specific classification and the confidence calibrator
 
-This is where the system transitions from passive learning to active learning. AuDHD accommodations (per operator profile) constrain when and how questions are asked -- never during flow state, prefer quick multiple-choice over open-ended.
+This is where the system transitions from passive learning to active learning. Attention-safety accommodations (per operator profile) constrain when and how questions are asked -- never during flow state, prefer quick multiple-choice over open-ended.
 
 ### Level 5: Cross-Modal Experience Fusion (4-6 months of work)
 

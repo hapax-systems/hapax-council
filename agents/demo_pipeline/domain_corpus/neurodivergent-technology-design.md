@@ -114,7 +114,7 @@ The system's architecture leverages these strengths: the operator designs the sy
 
 The co-occurrence of ADHD and autism is well-documented. Leitner (2014) found that 30-80% of autistic individuals meet criteria for ADHD, and 20-50% of those with ADHD have autistic traits. The combination creates a distinctive profile:
 
-**Competing needs.** ADHD craves novelty and stimulation; autistic processing favors routine and predictability. The system must accommodate both: provide stable, predictable infrastructure (autistic need for routine) while the operator's actual work involves novel problem-solving (ADHD need for stimulation).
+**Competing needs.** ADHD craves novelty and stimulation; autistic processing favors routine and predictability. A system serving this profile must accommodate both: provide stable, predictable infrastructure (the need for routine) while day-to-day work involves novel problem-solving (the need for stimulation).
 
 **Executive function compounded.** Both conditions independently impair executive function, and the combination is more than additive. The system's aggressive externalization of executive functions (automated routines, proactive notifications, zero-config defaults) addresses this compounded impairment.
 
