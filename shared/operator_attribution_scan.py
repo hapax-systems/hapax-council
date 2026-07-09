@@ -20,7 +20,13 @@ from pathlib import Path
 
 _DIAGNOSIS = (
     r"(?:\bADHD\b|\bAuDHD\b|\bautis\w*|\bneurodiverg\w*|\bRSD\b|rejection[- ]sensitiv\w*"
-    r"|\bdysphor\w*|identity\s+diffusion)"
+    r"|\bdysphor\w*|identity\s+diffusion"
+    r"|\bdisorder\w*|executive\s+dysfunction|hyperfocus\w*|\bstim(?:ming|s|med)\b"
+    r"|sensory\s+sensitiv\w*)"
+)
+_DIRECT_DIAGNOSIS = (
+    rf"(?:{_DIAGNOSIS}|\bdiagnos(?:is|es)\b|\bdiagnosed\s+condition(?:s)?\b"
+    r"|\bcondition(?:s)?\b)"
 )
 #: A newline that continues one wrapped prose sentence, rather than starting a new
 #: structural element. Blocked by: a blank line, a markdown table row/heading/quote/list
@@ -33,8 +39,12 @@ _SOFT_WRAP = "\\n(?![ \t]*(?:\\n|[|#>`\"'*+\\]\\}\\)\\-]))"
 #: open on the enforced class. Lazy: `search` stops at the first diagnosis term.
 _SAME_SENTENCE = rf"(?:(?![.!?])(?:[^\n]|{_SOFT_WRAP}))*?"
 SENTENCE_PATTERNS = (
-    re.compile(rf"operator\s+(?:has|with|is)\s+{_DIAGNOSIS}", re.IGNORECASE),
-    re.compile(rf"operator'?s\s+(?:specific\s+)?{_DIAGNOSIS}", re.IGNORECASE),
+    re.compile(
+        rf"operator\s+(?:has|with|is)\s+(?:an?\s+|the\s+)?{_DIRECT_DIAGNOSIS}",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\boperator\s+(?:is|was|were)\s+diagnosed\b", re.IGNORECASE),
+    re.compile(rf"operator'?s\s+(?:specific\s+)?{_DIRECT_DIAGNOSIS}", re.IGNORECASE),
     re.compile(rf"{_DIAGNOSIS}{_SAME_SENTENCE}\boperator(?:'s)?\b", re.IGNORECASE),
     re.compile(rf"\boperator(?:'s)?\b{_SAME_SENTENCE}{_DIAGNOSIS}", re.IGNORECASE),
 )
@@ -115,14 +125,25 @@ def file_enforced_class_clean(repo_root: Path, rel_path: str) -> bool:
 #: bleed into an adjacent sentence that happens to name the operator.
 _STRUCTURAL_SEGMENT_BREAK = r"\n(?=[ \t]*(?:\n|[|#>`\"'*+\]\}\)\-]))"
 _SEGMENT_RE = re.compile(rf"(?<=[.!?])\s+|{_STRUCTURAL_SEGMENT_BREAK}|[\"“”]")
+_OPERATOR_ATTRIBUTED_FIRST_PERSON_AFFECT_RE = re.compile(
+    r"\boperator(?:['’]s)?\b"
+    r"[^.!?]{0,120}\b(?:quote|said|says|stated|wrote|verbatim|asked)\b"
+    r"[^.!?]{0,120}\bI\b"
+    r"[^.!?]{0,80}\b(?:don['’]?t\s+like|do\s+not\s+like|dislike|hate|"
+    r"can(?:not|['’]?t)\s+stand|am\s+(?:anxious|afraid|overwhelmed|"
+    r"frustrated|upset|stressed|worried|exhausted))\b",
+    re.IGNORECASE,
+)
 
 
 def operator_affect_asserted(text: str) -> bool:
     """True iff some segment ATTRIBUTES an affective/mental state TO THE OPERATOR.
 
     Reuses the repo's own detector (``mental_state_redaction.operator_mental_state_present``
-    via ``publication_allowlist.cross_boundary_pii_blockers``) — no new lexicon is authored
-    here — but scopes it to segments that name the operator in the third person.
+    via ``publication_allowlist.cross_boundary_pii_blockers``), scoped to segments that
+    name the operator in the third person. One extra narrow guard catches operator-
+    attributed first-person affect quotes such as ``operator said "I don't like ..."``;
+    the global egress detector deliberately avoids bare like/dislike opinion verbs.
 
     Why the scoping is required, not cosmetic: the bare detector deliberately keys on
     first-person markers so operator affect is caught when written as "I"/"my". In research
@@ -137,6 +158,8 @@ def operator_affect_asserted(text: str) -> bool:
     """
     from shared.governance.mental_state_redaction import operator_mental_state_present
 
+    if _OPERATOR_ATTRIBUTED_FIRST_PERSON_AFFECT_RE.search(" ".join(text.splitlines())):
+        return True
     for segment in _SEGMENT_RE.split(text):
         if "operator" in segment.lower() and operator_mental_state_present(segment):
             return True

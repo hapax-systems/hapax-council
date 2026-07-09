@@ -34,6 +34,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 from shared.operator_attribution_scan import (
@@ -166,6 +167,42 @@ def test_same_sentence_guard_spans_hard_wrapped_prose(tmp_path: Path) -> None:
     assert not file_enforced_class_clean(tmp_path, rel)
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The operator has a diagn" + "osis.\n",
+        "The operator was diagn" + "osed with a condition.\n",
+        "The operator has a diagn" + "osed condition.\n",
+        "The operator has executive dysfunction.\n",
+        "The operator has hyperfocus during work sessions.\n",
+        "The operator is stimming during review.\n",
+        "The operator's sensory sensitivity is relevant.\n",
+        "The operator has a disorder.\n",
+    ],
+)
+def test_same_sentence_guard_matches_expanded_diagnostic_terms(tmp_path: Path, text: str) -> None:
+    rel = "docs/research/x.md"
+    doc = tmp_path / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(text, encoding="utf-8")
+
+    assert any(pattern.search(text) for pattern in SENTENCE_PATTERNS)
+    assert not file_enforced_class_clean(tmp_path, rel)
+
+
+def test_same_sentence_guard_matches_hard_wrapped_expanded_diagnostic_terms(
+    tmp_path: Path,
+) -> None:
+    rel = "docs/research/x.md"
+    doc = tmp_path / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "The operator has a long-term\nexecutive dysfunction pattern.\n", encoding="utf-8"
+    )
+
+    assert not file_enforced_class_clean(tmp_path, rel)
+
+
 def test_same_sentence_guard_does_not_bridge_structural_lines(tmp_path: Path) -> None:
     """A sentence never spans markdown table rows or adjacent list items; separate
     elements, whose unrelated co-occurrence must not read as same-sentence attribution."""
@@ -174,6 +211,21 @@ def test_same_sentence_guard_does_not_bridge_structural_lines(tmp_path: Path) ->
         "| detachment | identity" + " diffusion |\n"
         "- operator config notes\n"
         "- " + "AD" + "HD research references\n"
+    )
+
+    for pattern in SENTENCE_PATTERNS:
+        assert not pattern.search(text), pattern.pattern
+
+
+def test_same_sentence_guard_does_not_bridge_expanded_terms_across_structural_lines(
+    tmp_path: Path,
+) -> None:
+    """Expanded terms still obey Markdown/table/list boundaries."""
+    text = (
+        "| the operator's expectations | calibrated |\n"
+        "| diagnosis | generic |\n"
+        "- operator config notes\n"
+        "- executive dysfunction research references\n"
     )
 
     for pattern in SENTENCE_PATTERNS:
@@ -204,6 +256,45 @@ def test_waiver_safety_blocks_hard_wrapped_operator_mental_state_content(
     )
 
     assert not file_waiver_safe(tmp_path, rel)
+
+
+def test_waiver_safety_blocks_hard_wrapped_expanded_diagnostic_content(
+    tmp_path: Path,
+) -> None:
+    rel = "docs/research/x.md"
+    doc = tmp_path / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text("The operator has\nsensory sensitivity.\n", encoding="utf-8")
+
+    assert not file_waiver_safe(tmp_path, rel)
+
+
+def test_waiver_safety_blocks_operator_attributed_first_person_affect_quote(
+    tmp_path: Path,
+) -> None:
+    rel = "docs/research/x.md"
+    doc = tmp_path / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        'Motivating operator quote: "I don\'t like emptiness at all."\n',
+        encoding="utf-8",
+    )
+
+    assert not file_waiver_safe(tmp_path, rel)
+
+
+def test_waiver_safety_allows_system_attributed_first_person_affect_quote(
+    tmp_path: Path,
+) -> None:
+    rel = "docs/research/x.md"
+    doc = tmp_path / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        'The system says: "I don\'t like empty panels."\n',
+        encoding="utf-8",
+    )
+
+    assert file_waiver_safe(tmp_path, rel)
 
 
 def test_waiver_safety_allows_non_operator_affect_discussion(tmp_path: Path) -> None:

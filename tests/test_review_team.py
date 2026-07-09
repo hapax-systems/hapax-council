@@ -3013,6 +3013,7 @@ ratifications:
     ratified: "2026-07-09"
     authority: operator
     decision_record: "test decision record"
+    decision_record_sha256: bde012231fb6c2cfb7a16e1cee0d9fbeaef0c4089e995e1b510c7c9fb91087a1
     class: operator-privacy-residual
     lenses: [consent-provenance]
     topics: [residual]
@@ -3197,6 +3198,46 @@ ratifications:
             self.LEDGER.replace(
                 '    decision_record: "test decision record"\n',
                 "    decision_record: '  '\n",
+            ),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_ledger_without_decision_record_hash_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace(
+                "    decision_record_sha256: "
+                "bde012231fb6c2cfb7a16e1cee0d9fbeaef0c4089e995e1b510c7c9fb91087a1\n",
+                "",
+            ),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_ledger_with_invalid_decision_record_hash_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace(
+                "    decision_record_sha256: "
+                "bde012231fb6c2cfb7a16e1cee0d9fbeaef0c4089e995e1b510c7c9fb91087a1\n",
+                "    decision_record_sha256: not-a-sha256\n",
             ),
         )
         doc = tmp_path / "docs" / "research" / "x.md"
@@ -3554,6 +3595,12 @@ class TestCommittedRatificationLedgerIsHonest:
             "re-ratification required:\n" + "\n".join(drifted)
         )
 
+    def test_every_ledger_entry_has_decision_record_hash_anchor(self) -> None:
+        for entry in self._ledger()["ratifications"]:
+            digest = entry.get("decision_record_sha256")
+            assert isinstance(digest, str)
+            assert re.fullmatch(r"[0-9a-f]{64}", digest), entry["id"]
+
 
 class TestHeadBoundRepoRoot:
     """The production defect: cc-pr-review-dispatch passes the ACTIVATED SOURCE worktree
@@ -3633,6 +3680,7 @@ class TestHeadBoundRepoRoot:
                             "ratified": "2026-07-09",
                             "authority": "operator",
                             "decision_record": "test",
+                            "decision_record_sha256": hashlib.sha256(b"test").hexdigest(),
                             "class": "operator-privacy-residual",
                             "lenses": ["consent-provenance"],
                             "topics": ["residual"],

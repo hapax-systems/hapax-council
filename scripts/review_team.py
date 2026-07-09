@@ -1417,6 +1417,8 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
             or entry.get("authority") != class_config["authority"]
             or not isinstance(entry.get("decision_record"), str)
             or not str(entry.get("decision_record")).strip()
+            or not isinstance(entry.get("decision_record_sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", str(entry.get("decision_record_sha256")))
             or not isinstance(lenses, list)
             or not lenses
             or not all(isinstance(item, str) and item.strip() for item in lenses)

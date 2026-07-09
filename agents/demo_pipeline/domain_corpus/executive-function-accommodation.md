@@ -35,7 +35,7 @@ Thomas Brown's model (Brown, 2013) offers a complementary framework that emphasi
 5. **Memory** — utilizing working memory and accessing recall
 6. **Action** — monitoring and self-regulating action
 
-Brown's contribution is highlighting that these clusters are not independent — they interact dynamically, and impairment in one area creates cascading effects. A person who struggles with *activation* (task initiation) may have excellent *focus* once engaged (hyperfocus), but the transition cost is enormous. This maps directly to system design choices: automated task initiation (morning briefings, meeting prep generated before the operator wakes) eliminates the highest-cost cognitive step.
+Brown's contribution is highlighting that these clusters are not independent — they interact dynamically, and impairment in one area creates cascading effects. A person who struggles with *activation* (task initiation) may have excellent *focus* once engaged (hyperfocus), but the transition cost is enormous. This maps directly to system design choices: automated task initiation (morning briefings, meeting prep generated before work begins) eliminates the highest-cost cognitive step.
 
 ## Dawson and Guare's Practical Framework
 

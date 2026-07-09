@@ -7,8 +7,8 @@
 # blocks as before. Fail-closed: a malformed ledger waives NOTHING.
 #
 # Governance: entries are sovereign stipulations (registry-guard class). Each entry MUST
-# name its decision record. Waived findings are receipted in the dossier evaluation log,
-# never silent (go-gate phantom precedent).
+# name its decision record and pin that record by sha256. Waived findings are receipted
+# in the dossier evaluation log, never silent (go-gate phantom precedent).
 ratifications_schema: 1
 ratification_classes:
   operator-privacy-residual:
@@ -19,6 +19,7 @@ ratifications:
     ratified: "2026-07-09"
     authority: operator
     decision_record: "operator-decision-memo:2026-07-09:item-27:accept-residual"
+    decision_record_sha256: 2451388794fce2e03fae076101bba93f056a0d7a5f49a8140b5e08fa91ef4664
     class: operator-privacy-residual
     lenses: [consent-provenance]
     # A finding is waived ONLY if its title/detail references the ratified TOPIC —
@@ -47,7 +48,7 @@ ratifications:
     files_sha256:
       docs/research/content-scheduling-research.md: 9e84812fc89af4a4871d60d4d920a292d1ad70af99ab3f7665bff8e12420c524
       docs/research/hapax-ontology-and-visual-fitment.md: d411a2e6edc63188e628f2995fc120bde067cf4af6d35b4684f0bae189cd04e8
-      agents/demo_pipeline/domain_corpus/neurodivergent-technology-design.md: 18832d58633f962c3ff7ea1eb92ab5813450b5ae6bdf236af60cf5302759a42d
+      agents/demo_pipeline/domain_corpus/neurodivergent-technology-design.md: bb4d5711042729154d11e2b7f03122235e736e34141dfee5ce2f9fed1713fe21
       agents/demo_pipeline/domain_corpus/cognitive-load-theory.md: 912e76ef694fce2836dad9e3e5b41fb1318d7fc6bd7fc6bf4fc1a2c02cae709a
       docs/research/apperception-healthy-self-model-research.md: 7855cec64c2d1982f02c00acd6f1a029ece6145b4f2100a4c9a9c17218579ed3
       docs/research/phenomenology-ai-perception-research.md: 3a7554399dcc1c99de02ec63d93b9a14b6131ca01598b160dfa02be7bcfcc753
