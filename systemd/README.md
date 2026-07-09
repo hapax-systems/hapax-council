@@ -144,8 +144,8 @@ write `/dev/shm/hapax-compositor/broadcast-mode.json` through
   blanket limit increase for 128M utility timers.
 - **earlyoom** (`/etc/default/earlyoom`, source: `config/earlyoom/default`): fires SIGTERM @ 5% avail / 5% swap-free, SIGKILL @ 2.5%.
   - `--prefer`: `cargo|rustc|ld.lld|chrome|electron|node|claude|next-server|ffmpeg|bwrap` (expendable targets for OOM)
-  - `--avoid`: `Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-logos|hapax-imagination|hapax-daimonion|studio-compositor|logos-api|officium-api` (stack protection)
-  - `--ignore`: `apcupsd|systemd-logind|systemd-resolved|systemd-timesyncd|systemd-userdbd|dbus-broker|dbus-daemon|NetworkManager|sshd|sshd-session|getty|agetty` (operator recovery and UPS telemetry must not be earlyoom victims)
+  - `--avoid`: `Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar|hapax-logos|hapax-imaginati|hapax-daimonion|studio-composit|logos-api|officium-api` (stack protection; long names use `/proc/<pid>/comm` 15-byte truncation)
+  - `--ignore`: `apcupsd|systemd-logind|systemd-resolve|systemd-timesyn|systemd-userdbd|dbus-broker|dbus-daemon|NetworkManager|sshd|sshd-session|getty|agetty` (operator recovery and UPS telemetry must not be earlyoom victims; long names use `/proc/<pid>/comm` 15-byte truncation)
 - **P0 OOM containment package** (`scripts/install-p0-oom-containment`): installs source-controlled recovery policy into `/etc/default/earlyoom`, `/etc/systemd/system/*.service.d/oom-protect.conf`, `/etc/systemd/system/user@1000.service.d/oom.conf`, `~/.config/systemd/user/app.slice.d/oom-containment.conf`, and the root-side `hapax-oom-score-enforce` service/timer plus `hapax-root-failure-intake@.service`.
   - `user@1000.service`: `OOMScoreAdjust=100`, restoring the packaged kill ordering so the whole user manager does not shield every interactive workload.
   - Recovery daemons: apcupsd (`-900`), systemd-logind/resolved/timesyncd/NetworkManager (`-800`), D-Bus (`-900`), and sshd (`-1000`); the installer writes the running main PIDs without restarting login/network.
@@ -155,6 +155,7 @@ write `/dev/shm/hapax-compositor/broadcast-mode.json` through
   - Root-required post-merge installers return rc `77` when non-interactive sudo is unavailable; `hapax-post-merge-deploy` stages those packages under `~/.cache/hapax/post-merge-root-required/<sha>/`, and `hapax-root-required-deploy-audit.timer` fails while any staged package remains undrained.
 - **Other system-level OOM overrides**: docker (-900), pipewire/wireplumber (-900), and hardware/service-specific drop-ins documented beside their installers.
 - **UPS power-alert provenance** (`scripts/install-apcupsd-power-alerts`): installs the apcupsd config/hooks/helper into `/etc/apcupsd`, hard-codes production hooks to `/etc/apcupsd/hapax-power-event.py`, and installs `/etc/logrotate.d/hapax-ups-power-events` for `/var/log/hapax/ups-power-events.jsonl`.
+  - Recheck: `scripts/install-apcupsd-power-alerts --check` and `scripts/install-apcupsd-power-alerts --verify-live`; use `scripts/install-apcupsd-power-alerts --install --verify-live` to repair live drift.
 
 **Runtime application / receipt path:** source changes in this directory are
 not host mutation authority. A runtime-authorized follow-on task must first

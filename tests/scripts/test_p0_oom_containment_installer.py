@@ -32,6 +32,16 @@ def _systemctl_user_unit_cases(unit_pids: dict[str, int] | None = None) -> str:
     return "\n".join(cases)
 
 
+def _systemctl_app_slice_cases() -> str:
+    return "\n".join(
+        [
+            '  *"--user show app.slice -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
+            '  *"--user show app.slice -p MemoryMax --value"*) printf "111669149696\\n" ;;',
+            '  *"--user show app.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
+        ]
+    )
+
+
 def test_p0_oom_containment_source_check_passes() -> None:
     result = subprocess.run(
         [str(INSTALLER), "--check"],
@@ -45,6 +55,14 @@ def test_p0_oom_containment_source_check_passes() -> None:
     earlyoom = (REPO_ROOT / "config" / "earlyoom" / "default").read_text(encoding="utf-8")
     assert "--ignore (" in earlyoom
     assert "'(" not in earlyoom
+    assert "systemd-resolved" not in earlyoom
+    assert "systemd-timesyncd" not in earlyoom
+    assert "hapax-imagination" not in earlyoom
+    assert "studio-compositor" not in earlyoom
+    assert "systemd-resolve" in earlyoom
+    assert "systemd-timesyn" in earlyoom
+    assert "hapax-imaginati" in earlyoom
+    assert "studio-composit" in earlyoom
 
 
 def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
@@ -71,6 +89,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         'case "$*" in\n'
         '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
         f"{_systemctl_user_unit_cases()}\n"
+        f"{_systemctl_app_slice_cases()}\n"
         "esac\n"
         "exit 0\n",
         encoding="utf-8",
@@ -172,6 +191,7 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
         'case "$*" in\n'
         f"{cases}\n"
         f"{user_cases}\n"
+        f"{_systemctl_app_slice_cases()}\n"
         '  *"is-active --quiet earlyoom.service"*) exit 3 ;;\n'
         "esac\n"
         "exit 0\n",
@@ -221,6 +241,10 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
         assert (proc_root / str(pid) / "oom_score_adj").read_text(encoding="utf-8").strip() == str(
             score
         )
+    calls = systemctl_calls.read_text(encoding="utf-8")
+    assert (
+        "set-property --runtime app.slice MemoryHigh=80G MemoryMax=104G MemorySwapMax=8G" in calls
+    )
 
 
 def test_root_oom_score_enforcer_writes_live_user_manager_and_service_scores(
@@ -288,3 +312,59 @@ def test_root_oom_score_enforcer_writes_live_user_manager_and_service_scores(
         assert (proc_root / str(pid) / "oom_score_adj").read_text(encoding="utf-8").strip() == str(
             score
         )
+
+
+def test_root_oom_score_enforcer_continues_after_per_unit_write_failure(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    unit_pids = {
+        "pipewire.service": 910,
+        "pipewire-pulse.service": 911,
+        "wireplumber.service": 912,
+    }
+    _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=-900)
+    for unit, pid in unit_pids.items():
+        _write_proc(proc_root, pid, name=unit.split(".")[0], uid=1000, oom_score=100)
+    (proc_root / "911" / "oom_score_adj").chmod(0o400)
+
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
+        '  *) printf "0\\n" ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    fake_user_systemctl = tmp_path / "systemctl-user"
+    user_cases = "\n".join(
+        f'  *"show {unit} -p MainPID --value"*) printf "{pid}\\n" ;;'
+        for unit, pid in unit_pids.items()
+    )
+    fake_user_systemctl.write_text(
+        f'#!/usr/bin/env bash\ncase "$*" in\n{user_cases}\n  *) printf "0\\n" ;;\nesac\n',
+        encoding="utf-8",
+    )
+    fake_user_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--apply"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_USER_SYSTEMCTL": str(fake_user_systemctl),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "failed to set oom_score_adj for pipewire-pulse.service" in result.stderr
+    assert (proc_root / "912" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"

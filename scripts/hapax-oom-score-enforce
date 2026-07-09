@@ -52,6 +52,7 @@ system_main_pid() {
     if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
         printf '%s\n' "$pid"
     fi
+    return 0
 }
 
 user_main_pid() {
@@ -60,20 +61,27 @@ user_main_pid() {
     if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
         printf '%s\n' "$pid"
     fi
+    return 0
 }
 
 apply_unit_score() {
     local unit="$1" score="$2" pid
     pid="$(user_main_pid "$unit")"
     [ -n "$pid" ] || return 0
-    write_oom_score "$pid" "$score"
-    echo "user-unit $unit pid=$pid oom_score_adj=$score"
+    if write_oom_score "$pid" "$score"; then
+        echo "user-unit $unit pid=$pid oom_score_adj=$score"
+    else
+        echo "warn: failed to set oom_score_adj for $unit pid=$pid" >&2
+    fi
 }
 
 user_pid="$(system_main_pid "user@$TARGET_UID.service")"
 if [ -n "$user_pid" ]; then
-    write_oom_score "$user_pid" 100
-    echo "system user@$TARGET_UID.service pid=$user_pid oom_score_adj=100"
+    if write_oom_score "$user_pid" 100; then
+        echo "system user@$TARGET_UID.service pid=$user_pid oom_score_adj=100"
+    else
+        echo "warn: failed to set oom_score_adj for user@$TARGET_UID.service pid=$user_pid" >&2
+    fi
 fi
 
 apply_unit_score pipewire.service -900

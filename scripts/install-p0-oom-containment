@@ -10,7 +10,7 @@ SYSTEMD_USER_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR:-$HOME/.config/sy
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
-SUDO="${HAPAX_OOM_INSTALL_SUDO:-sudo}"
+SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
 TARGET_UID="${HAPAX_OOM_TARGET_UID:-$(id -u)}"
 ROOT_REQUIRED_RC=77
@@ -142,6 +142,41 @@ src_path() {
     printf '%s/%s\n' "$SOURCE" "$1"
 }
 
+app_slice_value() {
+    local key="$1" file value
+    file="$(src_path "$user_dropin")"
+    value="$(awk -F= -v key="$key" '$1 == key {print $2; exit}' "$file" 2>/dev/null || true)"
+    if [ -z "$value" ]; then
+        echo "app.slice drop-in missing $key; next action: restore $user_dropin from the P0 PR" >&2
+        return 1
+    fi
+    printf '%s\n' "$value"
+}
+
+memory_to_bytes() {
+    local value="$1" number suffix
+    case "$value" in
+        infinity|max)
+            printf 'infinity\n'
+            ;;
+        *K|*M|*G|*T)
+            number="${value%?}"
+            suffix="${value#"$number"}"
+            [[ "$number" =~ ^[0-9]+$ ]] || return 1
+            case "$suffix" in
+                K) printf '%s\n' "$((number * 1024))" ;;
+                M) printf '%s\n' "$((number * 1024 * 1024))" ;;
+                G) printf '%s\n' "$((number * 1024 * 1024 * 1024))" ;;
+                T) printf '%s\n' "$((number * 1024 * 1024 * 1024 * 1024))" ;;
+            esac
+            ;;
+        *)
+            [[ "$value" =~ ^[0-9]+$ ]] || return 1
+            printf '%s\n' "$value"
+            ;;
+    esac
+}
+
 system_dest() {
     local rel="$1"
     case "$rel" in
@@ -162,10 +197,9 @@ check_source() {
         echo "user@1000 OOM drop-in must set OOMScoreAdjust=100; next action: restore systemd/system/user@1000.service.d/oom.conf from the P0 PR" >&2
         return 1
     }
-    grep -Eq '^MemoryHigh=80G$' "$(src_path "$user_dropin")" || {
-        echo "app.slice drop-in missing MemoryHigh=80G; next action: restore systemd/units/app.slice.d/oom-containment.conf from the P0 PR" >&2
-        return 1
-    }
+    app_slice_value MemoryHigh >/dev/null
+    app_slice_value MemoryMax >/dev/null
+    app_slice_value MemorySwapMax >/dev/null
     grep -q -- "--ignore" "$(src_path "$earlyoom_source")" || {
         echo "earlyoom config missing --ignore recovery list; next action: restore config/earlyoom/default from the P0 PR" >&2
         return 1
@@ -201,6 +235,7 @@ main_pid_for_unit() {
     if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
         printf '%s\n' "$pid"
     fi
+    return 0
 }
 
 main_pid_for_user_unit() {
@@ -209,6 +244,16 @@ main_pid_for_user_unit() {
     if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
         printf '%s\n' "$pid"
     fi
+    return 0
+}
+
+write_oom_score_or_warn() {
+    local pid="$1" score="$2" label="$3"
+    if write_oom_score "$pid" "$score"; then
+        return 0
+    fi
+    echo "warning: failed to set oom_score_adj for $label pid=$pid" >&2
+    return 0
 }
 
 apply_recovery_unit_oom_scores() {
@@ -218,7 +263,7 @@ apply_recovery_unit_oom_scores() {
         score="${spec##*:}"
         pid="$(main_pid_for_unit "$unit")"
         [ -n "$pid" ] || continue
-        write_oom_score "$pid" "$score"
+        write_oom_score_or_warn "$pid" "$score" "$unit"
     done
 }
 
@@ -229,7 +274,7 @@ apply_protected_user_unit_oom_scores() {
         score="${spec##*:}"
         pid="$(main_pid_for_user_unit "$unit")"
         [ -n "$pid" ] || continue
-        write_oom_score "$pid" "$score"
+        write_oom_score_or_warn "$pid" "$score" "$unit"
     done
 }
 
@@ -274,8 +319,11 @@ apply_user_process_oom_floor() {
         [ "$score" -le -800 ] || continue
         protected_user_unit_pid "$pid" && continue
         allowed_user_protected_process "$name" && continue
-        write_oom_score "$pid" 100
-        fixed=$((fixed + 1))
+        if write_oom_score "$pid" 100; then
+            fixed=$((fixed + 1))
+        else
+            echo "warning: failed to set oom_score_adj for user process name=$name pid=$pid" >&2
+        fi
     done
     if [ "$fixed" -gt 0 ]; then
         echo "reset $fixed stale user process oom_score_adj values to 100"
@@ -283,7 +331,7 @@ apply_user_process_oom_floor() {
 }
 
 install_live() {
-    local rel dest
+    local rel dest control_dropin_dir user_pid mem_high mem_max mem_swap
     check_source
     preflight_root
     for rel in "${system_dropins[@]}"; do
@@ -336,7 +384,11 @@ install_live() {
     }
     "$SYSTEMCTL" --user daemon-reload
     if [ "$APPLY_RUNTIME" -eq 1 ]; then
-        "$SYSTEMCTL" --user set-property --runtime app.slice MemoryHigh=80G MemoryMax=104G MemorySwapMax=8G
+        mem_high="$(app_slice_value MemoryHigh)"
+        mem_max="$(app_slice_value MemoryMax)"
+        mem_swap="$(app_slice_value MemorySwapMax)"
+        "$SYSTEMCTL" --user set-property --runtime app.slice \
+            "MemoryHigh=$mem_high" "MemoryMax=$mem_max" "MemorySwapMax=$mem_swap"
         if "$SYSTEMCTL" is-active --quiet earlyoom.service; then
             run_root "$SYSTEMCTL" restart earlyoom.service
         fi
@@ -344,7 +396,7 @@ install_live() {
         apply_protected_user_unit_oom_scores
         user_pid="$("$SYSTEMCTL" show user@1000.service -p MainPID --value 2>/dev/null || true)"
         if [[ "$user_pid" =~ ^[0-9]+$ ]] && [ "$user_pid" -gt 0 ]; then
-            write_oom_score "$user_pid" 100
+            write_oom_score_or_warn "$user_pid" 100 "user@1000.service"
         fi
         apply_user_process_oom_floor
     fi
@@ -382,9 +434,27 @@ verify_live() {
         verify_pair "$(src_path "$rel")" "$SYSTEMD_USER_DIR/${rel#systemd/units/}"
     done
     verify_user_manager_oom_score
+    verify_app_slice_runtime
     verify_recovery_unit_oom_scores
     verify_protected_user_unit_oom_scores
     verify_user_process_oom_floor
+}
+
+verify_app_slice_runtime() {
+    local key expected_raw expected_bytes actual failed=0
+    for key in MemoryHigh MemoryMax MemorySwapMax; do
+        expected_raw="$(app_slice_value "$key")"
+        expected_bytes="$(memory_to_bytes "$expected_raw")" || {
+            echo "cannot parse app.slice $key=$expected_raw from $user_dropin; next action: fix the source drop-in and rerun scripts/install-p0-oom-containment --check" >&2
+            return 1
+        }
+        actual="$("$SYSTEMCTL" --user show app.slice -p "$key" --value 2>/dev/null || true)"
+        if [ "$actual" != "$expected_raw" ] && [ "$actual" != "$expected_bytes" ]; then
+            echo "live app.slice $key drift: actual=$actual expected=$expected_raw; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+        fi
+    done
+    [ "$failed" -eq 0 ]
 }
 
 verify_recovery_unit_oom_scores() {

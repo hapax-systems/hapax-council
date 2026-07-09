@@ -9,7 +9,7 @@ DEST="${HAPAX_APCUPSD_DEST:-/etc/apcupsd}"
 AUDIT_DIR="${HAPAX_APCUPSD_AUDIT_DIR:-/var/log/hapax}"
 LOGROTATE_DEST="${HAPAX_APCUPSD_LOGROTATE_DEST:-/etc/logrotate.d/hapax-ups-power-events}"
 SYSTEMCTL="${HAPAX_APCUPSD_SYSTEMCTL:-systemctl}"
-SUDO="${HAPAX_APCUPSD_INSTALL_SUDO:-sudo}"
+SUDO="${HAPAX_APCUPSD_INSTALL_SUDO-sudo}"
 ROOT_REQUIRED_RC=77
 RESTART=1
 INSTALL=0
@@ -97,8 +97,13 @@ check_source() {
 }
 
 install_live() {
+    local changed=0 pair
     check_source
     preflight_root
+    for pair in apcupsd.conf hapax-power-event.py onbattery offbattery; do
+        cmp -s "$SRC/$pair" "$DEST/$pair" 2>/dev/null || changed=1
+    done
+    cmp -s "$SOURCE/systemd/logrotate.d/hapax-ups-power-events" "$LOGROTATE_DEST" 2>/dev/null || changed=1
     run_root install -d -m 0755 "$DEST"
     run_root install -d -m 0750 "$AUDIT_DIR"
     run_root install -m 0644 "$SRC/apcupsd.conf" "$DEST/apcupsd.conf"
@@ -107,7 +112,7 @@ install_live() {
     run_root install -m 0755 "$SRC/offbattery" "$DEST/offbattery"
     run_root install -d -m 0755 "$(dirname "$LOGROTATE_DEST")"
     run_root install -m 0644 "$SOURCE/systemd/logrotate.d/hapax-ups-power-events" "$LOGROTATE_DEST"
-    if [ "$RESTART" -eq 1 ]; then
+    if [ "$RESTART" -eq 1 ] && [ "$changed" -eq 1 ]; then
         run_root "$SYSTEMCTL" restart apcupsd
     fi
 }

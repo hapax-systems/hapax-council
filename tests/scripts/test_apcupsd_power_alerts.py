@@ -182,6 +182,25 @@ def test_installer_install_and_verify_live_against_temp_destinations(tmp_path: P
     assert audit_dir.is_dir()
     assert logrotate_dest.is_file()
     assert "restart apcupsd" in systemctl_calls.read_text(encoding="utf-8")
+    systemctl_calls.write_text("", encoding="utf-8")
+
+    second_result = subprocess.run(
+        [str(INSTALLER), "--install", "--verify-live"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_DEST": str(dest),
+            "HAPAX_APCUPSD_AUDIT_DIR": str(audit_dir),
+            "HAPAX_APCUPSD_LOGROTATE_DEST": str(logrotate_dest),
+            "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+        },
+    )
+
+    assert second_result.returncode == 0, second_result.stderr
+    assert "restart apcupsd" not in systemctl_calls.read_text(encoding="utf-8")
 
     hook_audit = tmp_path / "hook.jsonl"
     hook_result = subprocess.run(
