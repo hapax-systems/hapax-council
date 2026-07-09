@@ -24,7 +24,7 @@ _DIAGNOSIS = (
 )
 #: A newline that continues one wrapped prose sentence, rather than starting a new
 #: structural element. Blocked by: a blank line, a markdown table row/heading/quote/list
-#: bullet/fence, or a new string literal — so a sentence never bridges table cells or
+#: bullet/fence, or a new string literal; a sentence never bridges table cells or
 #: adjacent list items.
 _SOFT_WRAP = "\\n(?![ \t]*(?:\\n|[|#>`\"'*+\\]\\}\\)\\-]))"
 #: A same-sentence run: ANY distance (no short window), terminated by .!? or by anything

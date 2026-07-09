@@ -72,8 +72,8 @@ constraints:  # registry-level bindings; check script lints REGISTRY ROWS only (
     rule: >-
       Machine list for checker C4: any row claim-copy text (tangible_benefit, claim_ceiling,
       maturity_note, notes, competitive_position, comparative_claims text) containing one of
-      these terms errors unless the row carries the term in embargo_exceptions with a reason
-      (mention-not-use quoting of the ban itself). Seeded from banned-absolutes + the embargo
+      these terms errors unless the row carries the term in embargo_exceptions with a
+      mention-not-use reason that quotes the ban itself. Seeded from banned-absolutes + the embargo
       lexicon; the embargo-lexicon mapping below stays prose (its keys are lexicon ids, not
       scan phrases).
     terms:

@@ -636,8 +636,8 @@ class TestCloseOnPrMergeOptOut:
             assert "unreadable value" in caplog.text or "failed to parse" in caplog.text
             caplog.clear()
 
-    def test_note_with_other_value_still_closes(self, tmp_path: Path) -> None:
-        """Any value other than false (or absence) keeps the auto-close default."""
+    def test_note_with_explicit_true_value_still_closes(self, tmp_path: Path) -> None:
+        """An explicit true-ish value keeps the auto-close default."""
         vault = _make_vault(tmp_path)
         _write_note(vault, task_id="task-A", pr=100, extra_frontmatter="close_on_pr_merge: true")
         cursor = tmp_path / "cursor.txt"

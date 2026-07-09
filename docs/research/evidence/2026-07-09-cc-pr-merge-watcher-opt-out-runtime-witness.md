@@ -6,9 +6,9 @@ Scope: PR #4472 / `cc-task-sdlc-wave3d-20260709`
 
 Purpose: provide a durable live-runtime-composition witness for the merge-watcher
 `close_on_pr_merge: false` path. The production reconciliation function was invoked
-against an isolated temporary vault fixture copied from the active task note. The GitHub
-runner was stubbed to report PR #4472 as `MERGED`; the run used `dry_run=True` and a
-temporary repo root, so it could not mutate the real vault or execute the real
+against an isolated temporary vault fixture containing the reviewed task frontmatter
+shape. The GitHub runner was stubbed to report PR #4472 as `MERGED`; the run used
+`dry_run=True` and a temporary repo root, so it could not mutate the real vault or execute the real
 `scripts/cc-close`.
 
 Recheck command:
@@ -36,16 +36,16 @@ assert spec and spec.loader
 sys.modules[module_name] = watcher
 spec.loader.exec_module(watcher)
 
-source_note = (
-    Path.home()
-    / "Documents"
-    / "Personal"
-    / "20-projects"
-    / "hapax-cc-tasks"
-    / "active"
-    / "cc-task-sdlc-wave3d-20260709.md"
-)
-text = source_note.read_text(encoding="utf-8")
+note_name = "cc-task-sdlc-wave3d-20260709.md"
+task_note_text = """---
+task_id: cc-task-sdlc-wave3d-20260709
+status: pr_open
+pr: 4472
+close_on_pr_merge: false
+---
+
+fixture body: multi-PR lane remains open until the lane owner closes explicitly
+"""
 
 
 class Runner:
@@ -78,8 +78,8 @@ with tempfile.TemporaryDirectory(prefix="cc-pr-merge-watcher-witness-") as td:
     vault = root / "vault"
     active = vault / "active"
     active.mkdir(parents=True)
-    note = active / source_note.name
-    note.write_text(text, encoding="utf-8")
+    note = active / note_name
+    note.write_text(task_note_text, encoding="utf-8")
 
     fake_repo = root / "repo"
     (fake_repo / "scripts").mkdir(parents=True)
