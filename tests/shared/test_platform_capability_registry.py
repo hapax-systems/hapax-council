@@ -1237,7 +1237,7 @@ def test_claude_review_quota_receipt_removable_reasons_preserve_route_specific_b
     removable = _quota_receipt_removable_reasons(route)
 
     assert removable == set()
-    assert "route_specific_quota_receipt_absent" not in removable
+    assert "claude_review_route_specific_quota_receipt_absent" not in removable
     assert "claude_review_seat_receipt_admission_required" not in removable
 
 
@@ -1263,7 +1263,7 @@ def test_claude_review_platform_receipt_alone_keeps_quota_gate_blocked(
 
     assert route.route_state is RouteState.BLOCKED
     assert "claude_review_seat_receipt_admission_required" not in route.blocked_reasons
-    assert "route_specific_quota_receipt_absent" in route.blocked_reasons
+    assert "claude_review_route_specific_quota_receipt_absent" in route.blocked_reasons
 
 
 def test_claude_review_receipt_with_fresh_live_admission_clears_route_quota(

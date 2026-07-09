@@ -520,6 +520,7 @@ class QuotaWall:
     receipt_label: str
     failure_class: str
     rate_limit_type: str
+    route_id: str | None = None
 
 
 LOCAL_COMPUTE_ROUTE = "litellm.local.command-r-35b"
@@ -826,16 +827,23 @@ def active_quota_walls(
             continue
         failure_class = fields.get("failure_class") or "unknown"
         rate_limit_type = fields.get("rate_limit_type") or "unknown"
+        route_id = fields.get("route_id") or None
+        if route_id in CLAUDE_SUBSCRIPTION_ROUTES:
+            platform = "claude"
+        elif route_id and route_id != SUBSCRIPTION_ROUTES.get(platform):
+            route_id = None
+        route_ref = f":route_id:{route_id}" if route_id else ""
         walls.setdefault(platform, []).append(
             QuotaWall(
                 evidence_ref=(
                     f"relay-receipt:{path.name}:failure_class:{failure_class}:"
-                    f"rate_limit_type:{rate_limit_type}:resets_at:"
+                    f"rate_limit_type:{rate_limit_type}{route_ref}:resets_at:"
                     f"{fields.get('resets_at') or 'unknown'}"
                 ),
                 receipt_label=path.name,
                 failure_class=failure_class,
                 rate_limit_type=rate_limit_type,
+                route_id=route_id,
             )
         )
     return walls
@@ -996,6 +1004,17 @@ def _ref_tokens(evidence_ref: str) -> tuple[str, ...]:
     return tuple(token for token in normalized.split("-") if token)
 
 
+def _quota_walls_for_route(walls: list[QuotaWall], route_id: str) -> list[QuotaWall]:
+    """Walls with no route_id are legacy platform-wide walls; scoped walls bind one route."""
+
+    return [wall for wall in walls if wall.route_id in {None, route_id}]
+
+
+def _claude_ignored_receipts_for_route(ignored_refs: list[str], route_id: str) -> list[str]:
+    route_token = f":route_id:{route_id}"
+    return [ref for ref in ignored_refs if ":route_id:" not in ref or route_token in ref]
+
+
 def _warn_ignored_agy_admission(path: Path, reason: str) -> str:
     receipt_label = _receipt_label(path)
     print(
@@ -1007,7 +1026,7 @@ def _warn_ignored_agy_admission(path: Path, reason: str) -> str:
     return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
 
 
-def _warn_ignored_claude_admission(path: Path, reason: str) -> str:
+def _warn_ignored_claude_admission(path: Path, reason: str, route_id: str | None = None) -> str:
     # Generic stderr (like agy) so a rejected receipt's field names/values never echo; the specific
     # reason survives only as a slugified code in the returned ignored evidence ref.
     receipt_label = _receipt_label(path)
@@ -1017,7 +1036,8 @@ def _warn_ignored_claude_admission(path: Path, reason: str) -> str:
         f"{CLAUDE_ADMISSION_RECOVERY_HINT}",
         file=sys.stderr,
     )
-    return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
+    route_ref = f":route_id:{route_id}" if route_id in CLAUDE_SUBSCRIPTION_ROUTES else ""
+    return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}{route_ref}"
 
 
 def active_agy_admission_receipts(
@@ -1142,8 +1162,8 @@ def active_claude_admission_receipts(
     refs: list[ClaudeAdmission] = []
     ignored_refs: list[str] = []
 
-    def reject(path: Path, reason: str) -> None:
-        ignored_refs.append(_warn_ignored_claude_admission(path, reason))
+    def reject(path: Path, reason: str, route_id: str | None = None) -> None:
+        ignored_refs.append(_warn_ignored_claude_admission(path, reason, route_id))
 
     for path in sorted(receipt_dir.glob(CLAUDE_ADMISSION_RECEIPT_GLOB)):
         if CLAUDE_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(path.name) is None:
@@ -1188,7 +1208,11 @@ def active_claude_admission_receipts(
         failed = False
         for key, value in expected.items():
             if fields.get(key, "") != value:
-                reject(path, f"{key} missing or unsupported; expected {value}")
+                reject(
+                    path,
+                    f"{key} missing or unsupported; expected {value}",
+                    fields.get("route_id", "").strip(),
+                )
                 failed = True
                 break
         if failed:
@@ -1199,11 +1223,12 @@ def active_claude_admission_receipts(
                 path,
                 "route_id missing or unsupported; expected one of "
                 + ", ".join(CLAUDE_SUBSCRIPTION_ROUTES),
+                route_id,
             )
             continue
         observation = fields.get("observation", "").strip()
         if observation not in CLAUDE_ADMISSION_OBSERVATIONS:
-            reject(path, "observation missing or unsupported")
+            reject(path, "observation missing or unsupported", route_id)
             continue
         receipt_evidence_ref = " ".join(fields.get("evidence_ref", "").strip().split())
         if (
@@ -1211,48 +1236,54 @@ def active_claude_admission_receipts(
             or CLAUDE_ADMISSION_SECRETISH_RE.search(receipt_evidence_ref) is not None
         ):
             reject(
-                path, "evidence_ref unsafe; expected sanitized account-live observation reference"
+                path,
+                "evidence_ref unsafe; expected sanitized account-live observation reference",
+                route_id,
             )
             continue
         if CLAUDE_ADMISSION_BILLINGISH_RE.search(receipt_evidence_ref) is not None:
-            reject(path, "evidence_ref names billing or account identifier")
+            reject(path, "evidence_ref names billing or account identifier", route_id)
             continue
         if CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(receipt_evidence_ref) is not None:
             reject(
-                path, "evidence_ref names lane/session presence; not account-live quota evidence"
+                path,
+                "evidence_ref names lane/session presence; not account-live quota evidence",
+                route_id,
             )
             continue
         if CLAUDE_ADMISSION_WITNESS_ALLOWLIST_RE.fullmatch(receipt_evidence_ref) is None:
             reject(
                 path,
                 "evidence_ref unsupported; expected claude subscription headroom witness reference",
+                route_id,
             )
             continue
         observed_at = _parse_utc(fields.get("observed_at", "").strip())
         if observed_at is None:
-            reject(path, "missing or malformed observed_at")
+            reject(path, "missing or malformed observed_at", route_id)
             continue
         if observed_at > now:
-            reject(path, "observed_at is in the future")
+            reject(path, "observed_at is in the future", route_id)
             continue
         observed_at = _utc_seconds(observed_at)
         try:
             stale_after_seconds = int(fields.get("stale_after_seconds", "").strip())
         except ValueError:
-            reject(path, "malformed stale_after_seconds")
+            reject(path, "malformed stale_after_seconds", route_id)
             continue
         if stale_after_seconds <= 0:
-            reject(path, "non-positive stale_after_seconds")
+            reject(path, "non-positive stale_after_seconds", route_id)
             continue
         if stale_after_seconds > CLAUDE_ADMISSION_MAX_STALE_AFTER_SECONDS:
             reject(
                 path,
                 f"stale_after_seconds exceeds maximum {CLAUDE_ADMISSION_MAX_STALE_AFTER_SECONDS}",
+                route_id,
             )
             continue
         fresh_until = observed_at + timedelta(seconds=stale_after_seconds)
         if now >= fresh_until:
-            reject(path, "receipt expired")
+            reject(path, "receipt expired", route_id)
             continue
         refs.append(
             ClaudeAdmission(
@@ -1830,6 +1861,72 @@ def build_live_ledger(
                     "no fresh agy route-specific quota admission receipt; agy.review.direct "
                     "must hold/backoff rather than dispatch blind"
                 )
+        elif platform == "claude":
+            for claude_route_id in CLAUDE_SUBSCRIPTION_ROUTES:
+                route_walls = _quota_walls_for_route(platform_walls, claude_route_id)
+                route_wall_evidence = [wall.evidence_ref for wall in route_walls]
+                route_admissions = [
+                    admission
+                    for admission in claude_platform_admissions
+                    if admission.route_id == claude_route_id
+                ]
+                route_ignored = _claude_ignored_receipts_for_route(
+                    claude_ignored_receipts,
+                    claude_route_id,
+                )
+                if route_walls:
+                    state = "exhausted"
+                    evidence = [*route_wall_evidence, writer_ref]
+                    fresh_until = None
+                    reason = (
+                        f"{claude_route_id} hit an unexpired Claude quota wall; "
+                        "state from route-scoped or legacy platform quota-wall receipt(s)"
+                    )
+                elif route_admissions:
+                    state = "fresh"
+                    evidence = [
+                        *(admission.evidence_ref for admission in route_admissions),
+                        writer_ref,
+                    ]
+                    fresh_until = max(admission.fresh_until for admission in route_admissions)
+                    reason = (
+                        "fresh claude subscription-quota admission receipt present; "
+                        f"{claude_route_id} account-live quota is receipt-bounded, "
+                        "not lane/session presence"
+                    )
+                else:
+                    state = "unknown"
+                    evidence = (
+                        [*route_ignored, writer_ref]
+                        if route_ignored
+                        else [
+                            f"relay-receipt:claude:quota-admission:{claude_route_id}:absent",
+                            writer_ref,
+                        ]
+                    )
+                    fresh_until = None
+                    reason = (
+                        "no fresh claude subscription-quota admission receipt; "
+                        f"{claude_route_id} must hold rather than infer availability from "
+                        "lane/session presence"
+                    )
+                snapshot = {
+                    "quota_snapshot_schema": 1,
+                    "snapshot_id": (
+                        f"quota-{claude_route_id.replace('.', '-')}-live-{snapshot_stamp}"
+                    ),
+                    "captured_at": now.isoformat().replace("+00:00", "Z"),
+                    "route_id": claude_route_id,
+                    "provider": SUBSCRIPTION_PROVIDERS["claude"],
+                    "capacity_pool": "subscription_quota",
+                    "subscription_quota_state": state,
+                    "evidence_refs": evidence,
+                    "operator_visible_reason": reason,
+                }
+                if fresh_until is not None:
+                    snapshot["fresh_until"] = _iso_z_seconds(fresh_until)
+                snapshots.append(snapshot)
+            continue
         elif platform_walls and glmcp_eligible_payg_budget_decisions:
             state = "fresh"
             eligible_admissions = [
@@ -1879,24 +1976,6 @@ def build_live_ledger(
                 f"{platform} subscription lane hit an unexpired quota wall; "
                 "state from quota-wall relay receipt(s)"
             )
-            if platform == "claude":
-                for claude_route_id in CLAUDE_SUBSCRIPTION_ROUTES:
-                    snapshots.append(
-                        {
-                            "quota_snapshot_schema": 1,
-                            "snapshot_id": (
-                                f"quota-{claude_route_id.replace('.', '-')}-live-{snapshot_stamp}"
-                            ),
-                            "captured_at": now.isoformat().replace("+00:00", "Z"),
-                            "route_id": claude_route_id,
-                            "provider": SUBSCRIPTION_PROVIDERS["claude"],
-                            "capacity_pool": "subscription_quota",
-                            "subscription_quota_state": state,
-                            "evidence_refs": evidence,
-                            "operator_visible_reason": reason,
-                        }
-                    )
-                continue
         elif platform == "glmcp":
             if glmcp_coding_plan_admissions:
                 state = "fresh"
@@ -1948,58 +2027,6 @@ def build_live_ledger(
                         "and unknown quota must hold/backoff rather than dispatch blind"
                     )
                 fresh_until = None
-        elif platform == "claude":
-            for claude_route_id in CLAUDE_SUBSCRIPTION_ROUTES:
-                route_admissions = [
-                    admission
-                    for admission in claude_platform_admissions
-                    if admission.route_id == claude_route_id
-                ]
-                if route_admissions:
-                    state = "fresh"
-                    evidence = [
-                        *(admission.evidence_ref for admission in route_admissions),
-                        writer_ref,
-                    ]
-                    fresh_until = max(admission.fresh_until for admission in route_admissions)
-                    reason = (
-                        "fresh claude subscription-quota admission receipt present; "
-                        f"{claude_route_id} account-live quota is receipt-bounded, "
-                        "not lane/session presence"
-                    )
-                else:
-                    state = "unknown"
-                    evidence = (
-                        [*claude_ignored_receipts, writer_ref]
-                        if claude_ignored_receipts
-                        else [
-                            f"relay-receipt:claude:quota-admission:{claude_route_id}:absent",
-                            writer_ref,
-                        ]
-                    )
-                    fresh_until = None
-                    reason = (
-                        "no fresh claude subscription-quota admission receipt; "
-                        f"{claude_route_id} must hold rather than infer availability from "
-                        "lane/session presence"
-                    )
-                snapshot = {
-                    "quota_snapshot_schema": 1,
-                    "snapshot_id": (
-                        f"quota-{claude_route_id.replace('.', '-')}-live-{snapshot_stamp}"
-                    ),
-                    "captured_at": now.isoformat().replace("+00:00", "Z"),
-                    "route_id": claude_route_id,
-                    "provider": SUBSCRIPTION_PROVIDERS["claude"],
-                    "capacity_pool": "subscription_quota",
-                    "subscription_quota_state": state,
-                    "evidence_refs": evidence,
-                    "operator_visible_reason": reason,
-                }
-                if fresh_until is not None:
-                    snapshot["fresh_until"] = _iso_z_seconds(fresh_until)
-                snapshots.append(snapshot)
-            continue
         elif platform == "codex" and codex_auth_blocker is not None:
             state = "unknown"
             evidence = [

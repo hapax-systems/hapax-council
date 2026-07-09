@@ -3096,6 +3096,40 @@ class TestFamilyOutageDegradation:
         assert any(family == "glm" for _, family, _ in reviewers.invocations)
         assert json.loads(state.read_text(encoding="utf-8")) == {}
 
+    def test_route_admission_does_not_clear_legacy_string_outage_latch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-11T20:55:00+00:00"
+        state.write_text(json.dumps({"glm": observed}), encoding="utf-8")
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {"glm": observed},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            state_path=state,
+        )
+
+        assert witness == {"glm": observed}
+        assert json.loads(state.read_text(encoding="utf-8")) == {"glm": observed}
+
+    def test_route_admission_does_not_clear_unreadable_outage_latch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-11T20:55:00+00:00"
+        state.write_text("{not-json", encoding="utf-8")
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {"glm": observed},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            state_path=state,
+        )
+
+        assert witness == {"glm": observed}
+        assert state.read_text(encoding="utf-8") == "{not-json"
+
     def test_route_admission_invalidates_existing_degraded_dossier_before_skip(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:

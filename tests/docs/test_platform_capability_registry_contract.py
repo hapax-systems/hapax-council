@@ -348,7 +348,7 @@ def test_seed_registry_records_claude_review_route_as_blocked_review_supply() ->
     assert route["route_state"] == "blocked"
     assert route["blocked_reasons"] == [
         "claude_review_seat_receipt_admission_required",
-        "route_specific_quota_receipt_absent",
+        "claude_review_route_specific_quota_receipt_absent",
     ]
     assert route["mutability"] == {
         "vault_docs": False,
@@ -365,7 +365,7 @@ def test_seed_registry_records_claude_review_route_as_blocked_review_supply() ->
     }
     assert route["execution_descriptor"]["model_id"] == "claude-opus-4-8"
     assert (
-        "route_specific_quota_receipt_absent"
+        "claude_review_route_specific_quota_receipt_absent"
         in route["freshness"]["evidence"]["quota"]["blocked_reasons"]
     )
 

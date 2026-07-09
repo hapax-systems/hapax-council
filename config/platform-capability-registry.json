@@ -2094,13 +2094,13 @@
       "platform": "claude",
       "mode": "review",
       "profile": "opus",
-      "launcher": "scripts/hapax-claude-reviewer (review seat: blind-review prompt on stdin -> claude -p --model opus --allowedTools \"\" YAML verdict on stdout)",
+      "launcher": "scripts/hapax-claude-reviewer (review seat: blind-review prompt on stdin -> claude -p --model opus --tools \"\" --allowedTools \"\" --permission-mode manual --safe-mode YAML verdict on stdout)",
       "summary": "Claude Opus no-tools review seat",
       "notes": "Read-only Claude review route. The wrapper pins Opus, disables tools, and preserves strict fenced-YAML output for review-team dossiers.",
       "route_state": "blocked",
       "blocked_reasons": [
         "claude_review_seat_receipt_admission_required",
-        "route_specific_quota_receipt_absent"
+        "claude_review_route_specific_quota_receipt_absent"
       ],
       "model_or_engine": "claude-opus",
       "execution_descriptor": {
@@ -2169,7 +2169,7 @@
           "quota": {
             "evidence_refs": [],
             "blocked_reasons": [
-              "route_specific_quota_receipt_absent"
+              "claude_review_route_specific_quota_receipt_absent"
             ]
           },
           "resource": {

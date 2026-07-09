@@ -610,6 +610,19 @@ class TestConstitution:
             "glm": "glmcp.review.direct",
         }
 
+    def test_route_backed_reviewer_commands_resolve_to_executable_wrappers(self) -> None:
+        rt = _load_review_team_module()
+        entries = rt.review_family_entries(_registry())
+
+        for entry in entries:
+            if not entry.get("route_id"):
+                continue
+            command = entry.get("reviewer_command") or []
+            assert command, entry
+            wrapper = REPO_ROOT / command[0]
+            assert wrapper.is_file(), entry
+            assert os.access(wrapper, os.X_OK), entry
+
     def test_claude_review_route_blocks_claude_until_receipts_are_fresh(self) -> None:
         rt = _load_review_team_module()
         reg = _registry()
@@ -624,7 +637,10 @@ class TestConstitution:
             "claude_review_seat_receipt_admission_required" in reason
             for reason in blocked["claude"]
         )
-        assert any("route_specific_quota_receipt_absent" in reason for reason in blocked["claude"])
+        assert any(
+            "claude_review_route_specific_quota_receipt_absent" in reason
+            for reason in blocked["claude"]
+        )
 
     def test_admitted_claude_review_route_keeps_claude_family_available(self) -> None:
         rt = _load_review_team_module()

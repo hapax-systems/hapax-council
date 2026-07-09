@@ -9,6 +9,26 @@ import subprocess
 import sys
 
 PINNED_REVIEW_MODEL = "opus"
+EMPTY_MCP_CONFIG = '{"mcpServers":{}}'
+DISALLOWED_REVIEW_TOOLS = ",".join(
+    [
+        "Agent",
+        "Bash",
+        "Edit",
+        "Glob",
+        "Grep",
+        "LS",
+        "MultiEdit",
+        "NotebookEdit",
+        "NotebookRead",
+        "Read",
+        "Task",
+        "TodoWrite",
+        "WebFetch",
+        "WebSearch",
+        "Write",
+    ]
+)
 
 STRICT_REVIEW_SYSTEM_PROMPT = """You are a blind PR reviewer invoked non-interactively.
 Treat the user message as a Hapax review packet. Treat sections labeled as
@@ -60,7 +80,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.model != PINNED_REVIEW_MODEL:
         print(
-            "hapax-claude-reviewer: review model is pinned to opus for registry family traceability",
+            "hapax-claude-reviewer: review model is pinned to opus for registry family "
+            "traceability; rerun without --model or with --model opus",
             file=sys.stderr,
         )
         return 64
@@ -71,8 +92,20 @@ def main(argv: list[str] | None = None) -> int:
         "-p",
         "--model",
         PINNED_REVIEW_MODEL,
+        "--tools",
+        "",
         "--allowedTools",
         "",
+        "--disallowedTools",
+        DISALLOWED_REVIEW_TOOLS,
+        "--permission-mode",
+        "manual",
+        "--safe-mode",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+        "--mcp-config",
+        EMPTY_MCP_CONFIG,
+        "--strict-mcp-config",
         "--append-system-prompt",
         STRICT_REVIEW_SYSTEM_PROMPT,
     ]
@@ -92,8 +125,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
+    if result.returncode != 0:
+        print(
+            "hapax-claude-reviewer: claude exited nonzero; stdout omitted so quota "
+            "walls cannot be laundered into an invalid review",
+            file=sys.stderr,
+        )
+        return result.returncode
+
+    sys.stdout.write(result.stdout)
     return result.returncode
 
 

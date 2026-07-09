@@ -1165,6 +1165,42 @@ def test_agy_receipt_records_live_review_route_without_unblocking_quota(
     assert "route_specific_quota_receipt_absent" in route.blocked_reasons
 
 
+def test_claude_receipt_blocks_when_any_distinct_wrapper_is_unusable(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_binary(bin_dir, "claude", "claude-cli 2.1.143")
+    good_wrapper = tmp_path / "hapax-claude-headless"
+    good_wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    good_wrapper.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    bad_wrapper = tmp_path / "hapax-claude-reviewer"
+    bad_wrapper.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    bad_wrapper.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    registry_payload = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    for route in registry_payload["routes"]:
+        if route["platform"] != "claude":
+            continue
+        route["sanctioned_wrapper"] = (
+            str(bad_wrapper) if route["route_id"] == "claude.review.opus" else str(good_wrapper)
+        )
+    registry_path = tmp_path / "platform-capability-registry.json"
+    registry_path.write_text(json.dumps(registry_payload), encoding="utf-8")
+
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": str(bin_dir)},
+        platform="claude",
+        registry=registry_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((tmp_path / "claude.json").read_text(encoding="utf-8"))
+    assert receipt["capability"]["status"] == "blocked"
+    assert "sanctioned_wrapper_not_executable" in receipt["capability"]["reason_codes"]
+    assert receipt["resource"]["status"] == "blocked"
+    assert "wrapper_not_executable" in receipt["resource"]["reason_codes"]
+    assert any(ref.endswith("executable:false") for ref in receipt["resource"]["evidence_refs"])
+
+
 def test_agy_receipt_requires_executable_review_wrapper(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
