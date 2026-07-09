@@ -108,8 +108,8 @@ constraints:  # registry-level bindings; check script enforces on rows AND rende
   - id: pii-screen
     rule: >-
       Any copy quoting axioms/registry.yaml or frozen axiom snapshots (hapax-axioms,
-      hapax-refusals) requires a PII-screen receipt first: executive_function axiom text
-      contains operator medical details.
+      hapax-refusals) requires a PII-screen receipt first: axiom-adjacent text is
+      privacy-sensitive (defense-in-depth; historical snapshots may predate redactions).
   - id: spine-copy-gate
     rule: >-
       ALL spine copy placements estate-wide (including rows witnessed-only-learning,
@@ -733,17 +733,17 @@ registry:
       - "research-ledger no-user-study disclosure; EDT receipts branded 'n=1 honest'"
     claim_ceiling_ref: ceiling.scope_declaration_not_validation
     claim_ceiling: >-
-      Scope declaration is not validation — zero generalization claims. CRITICAL PII: the
-      adjacent executive_function axiom text contains operator medical details — public n=1
-      copy cites single_user mechanics ONLY and never surfaces operator-health axiom text;
-      audit hapax-refusals/hapax-axioms frozen snapshots before quoting registry text
-      (constraint pii-screen).
+      Scope declaration is not validation — zero generalization claims. PII discipline:
+      axiom-adjacent text is privacy-sensitive — public n=1 copy cites single_user
+      mechanics ONLY and never quotes adjacent axiom text; audit hapax-refusals/hapax-axioms
+      frozen snapshots before quoting registry text (historical snapshots may predate
+      redactions; constraint pii-screen).
     pinned_counts:
       "100": "axioms/registry.yaml single_user weight: 100 (hardcoded, constitutional; reverified 2026-07-09)"
     pii_screen_receipt: >-
       2026-07-09 checker-v2 rollout screen: row quotes single_user id/weight mechanics only;
-      the executive_function axiom text (operator medical details) is not quoted anywhere in
-      the row. Screened against axioms/registry.yaml in the C10 rollout commit
+      no adjacent axiom text is quoted anywhere in the row. Screened against
+      axioms/registry.yaml in the C10 rollout commit
       (branch codex/sdlc-wave3-closure-checker-v2-20260709).
     evidence_level: SV
     competitive_position: "The plan's 'claim ceilings are part of the value proposition' made concrete"

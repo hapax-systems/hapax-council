@@ -570,6 +570,26 @@ class TestCloseOnPrMergeOptOut:
         )
         assert counters == {"merged": 1, "linked": 1, "closed": 1, "failed": 0, "skipped": 0}
 
+    def test_crlf_frontmatter_still_opts_out(self, tmp_path: Path) -> None:
+        """A CRLF-checked-out note must not silently lose the opt-out: the failure
+        direction of a parse miss is the lane-killing auto-close."""
+        vault = _make_vault(tmp_path)
+        note = _write_note(
+            vault, task_id="task-A", pr=100, extra_frontmatter="close_on_pr_merge: false"
+        )
+        note.write_text(note.read_text().replace("\n", "\r\n"))
+        assert watcher.declines_close_on_pr_merge(note.read_text())
+
+    def test_yaml_equivalent_false_spellings_opt_out(self) -> None:
+        """A YAML-dumper round-trip may re-serialize false as no/off/quoted forms;
+        all of them must keep the opt-out. True-ish values never do."""
+        for spelling in ("false", "no", "off", '"false"', "'false'", "FALSE", "No"):
+            text = f"---\nclose_on_pr_merge: {spelling}\n---\nbody\n"
+            assert watcher.declines_close_on_pr_merge(text), spelling
+        for spelling in ("true", "yes", "on", "0", "falsey"):
+            text = f"---\nclose_on_pr_merge: {spelling}\n---\nbody\n"
+            assert not watcher.declines_close_on_pr_merge(text), spelling
+
     def test_note_with_other_value_still_closes(self, tmp_path: Path) -> None:
         """Any value other than false (or absence) keeps the auto-close default."""
         vault = _make_vault(tmp_path)

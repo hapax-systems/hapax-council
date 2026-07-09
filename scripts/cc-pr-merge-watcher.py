@@ -216,9 +216,12 @@ class LinkedTask:
 # Multi-PR lane opt-out: `close_on_pr_merge: false` in the note frontmatter
 # means the lane owner closes explicitly; the watcher must never auto-close.
 _CLOSE_ON_PR_MERGE_FALSE_RE = re.compile(
-    r"^close_on_pr_merge:\s*(?i:false)\s*$", flags=re.MULTILINE
+    # YAML-false spellings (false/no/off, optionally quoted) — a round-trip through a
+    # YAML dumper must not silently drop the opt-out. \s* absorbs a trailing \r.
+    r"""^close_on_pr_merge:\s*["']?(?i:false|no|off)["']?\s*$""",
+    flags=re.MULTILINE,
 )
-_FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---(?:\n|\Z)", flags=re.DOTALL)
+_FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", flags=re.DOTALL)
 
 
 def declines_close_on_pr_merge(text: str) -> bool:

@@ -47,9 +47,9 @@ D4 marker convergence):
                            pinned_counts[<digits>] witness ref on the row.
   C10 PII screen         — rows referencing axioms/registry.yaml, 'frozen axiom',
                            or paths under 30-areas/ / Documents/Personal must
-                           carry pii_screen_receipt (the adjacent
-                           executive_function axiom text contains operator
-                           medical details — constraint pii-screen).
+                           carry pii_screen_receipt (axiom-adjacent text is
+                           privacy-sensitive; historical snapshots may predate
+                           redactions — constraint pii-screen).
 """
 
 from __future__ import annotations
@@ -556,8 +556,8 @@ def check_c10_pii_screen(rows: list[Mapping[str, Any]], *, registry_path: Path) 
                 message=(
                     f"{label} references {sorted(hits)} but carries no pii_screen_receipt. "
                     "Next action: run the PII screen and record pii_screen_receipt: <ref> "
-                    "— the adjacent executive_function axiom text contains operator "
-                    "medical details (constraint pii-screen)."
+                    "— axiom-adjacent text is privacy-sensitive and historical snapshots "
+                    "may predate redactions (constraint pii-screen)."
                 ),
             )
         )
