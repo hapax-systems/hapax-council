@@ -151,7 +151,7 @@ class LocalPublicSurfaceEvidence(StrictModel):
     registry_license_by_repo: dict[str, str]
     # Expected GitHub license DETECTION per repo (e.g. NOASSERTION for
     # PolyForm/BSL). When it differs from the policy license, detection cannot
-    # prove the posture and the gate proves the repo authority file instead.
+    # witness the posture and the gate checks root LICENSE presence instead.
     registry_expected_detection_by_repo: dict[str, str] = Field(default_factory=dict)
     registry_assets_policy: str | None = None
     root_file_sha256: dict[str, str]
@@ -288,11 +288,12 @@ def _license_detection_findings(
                 status="blocked",
                 summary=(
                     "Expected detection matches, but no root LICENSE authority "
-                    "file proves the registry policy."
+                    "file is present to carry the registry policy."
                 ),
                 expected=(
-                    f"A root LICENSE authority file proves {expected_license} "
-                    f"where detection reports {expected_detection}."
+                    f"A root LICENSE authority file is present carrying "
+                    f"{expected_license} where detection reports "
+                    f"{expected_detection}."
                 ),
                 observed="LICENSE is not present on the default branch.",
                 evidence_refs=("gh:contents/LICENSE", *base_refs),
@@ -301,18 +302,23 @@ def _license_detection_findings(
         )
     return (
         DriftFinding(
-            finding_id=f"github.license.{repo.name}.authority-file-proves-posture",
+            # Presence-level witness only: the gate checks that a root LICENSE
+            # exists and that detection matches the pin. It does NOT verify the
+            # file's text carries the policy license — content-level witnessing
+            # (contents sha vs a pinned hash) is a registered follow-up.
+            finding_id=f"github.license.{repo.name}.authority-file-present",
             severity="info",
             category="license_detection",
             surface=repo_id,
             status="ok",
             summary=(
-                "License posture proved by the root authority file; GitHub "
-                "detection matches the expected pin."
+                "Root LICENSE authority file is present and GitHub detection "
+                "matches the expected pin (presence-level witness only)."
             ),
             expected=(
-                f"Detection {expected_detection} pinned; policy "
-                f"{expected_license} proved by root LICENSE."
+                f"Detection {expected_detection} pinned; root LICENSE present "
+                f"to carry policy {expected_license} (text not content-verified "
+                f"by this check)."
             ),
             observed="Root LICENSE present; detection matches the expected pin.",
             evidence_refs=("gh:contents/LICENSE", *base_refs),

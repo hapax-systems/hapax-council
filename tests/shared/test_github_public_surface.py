@@ -89,11 +89,12 @@ def test_expected_detection_pin_with_authority_file_is_ok_witness() -> None:
     findings = _reins_license_findings(
         license_spdx="NOASSERTION", license_file_exists=True, expected_detection="NOASSERTION"
     )
-    assert [f.finding_id for f in findings] == [
-        "github.license.reins.authority-file-proves-posture"
-    ]
+    assert [f.finding_id for f in findings] == ["github.license.reins.authority-file-present"]
     assert findings[0].status == "ok"
     assert findings[0].severity == "info"
+    # Presence-level witness only — the wording must not overclaim proof.
+    assert "presence-level" in findings[0].summary
+    assert "proved" not in findings[0].summary
 
 
 def test_expected_detection_pin_without_authority_file_blocks() -> None:
@@ -119,6 +120,82 @@ def test_missing_pin_falls_back_to_policy_comparison() -> None:
         license_spdx="NOASSERTION", license_file_exists=True, expected_detection=None
     )
     assert [f.finding_id for f in findings] == ["github.license.reins.registry-mismatch"]
+
+
+def test_pin_equal_to_policy_with_matching_detection_yields_no_findings() -> None:
+    # MIT-class repos: the pin equals the policy license and licensee detects
+    # it, so the early return emits nothing (no witness needed — detection
+    # itself is the proof).
+    local = LocalPublicSurfaceEvidence(
+        registry_license_by_repo={"agentgov": "MIT"},
+        registry_expected_detection_by_repo={"agentgov": "MIT"},
+        root_file_sha256={},
+        notice_links=(),
+        notice_missing_links=(),
+        package_surfaces=(),
+    )
+    findings = build_drift_findings(
+        repos={
+            "hapax-systems/agentgov": RepoLiveState(
+                repo_id="hapax-systems/agentgov",
+                owner="hapax-systems",
+                name="agentgov",
+                exists=True,
+                private=False,
+                visibility="public",
+                license_spdx="MIT",
+                files={"LICENSE": RepoFilePresence(path="LICENSE", exists=True)},
+            )
+        },
+        local=local,
+    )
+    assert [
+        f.finding_id
+        for f in findings
+        if f.category == "license_detection" and "agentgov" in f.finding_id
+    ] == []
+
+
+def _council_license_findings(*, license_spdx: str | None) -> list:
+    local = LocalPublicSurfaceEvidence(
+        registry_license_by_repo={"hapax-council": "PolyForm-Strict-1.0.0"},
+        registry_expected_detection_by_repo={"hapax-council": "NOASSERTION"},
+        root_file_sha256={},
+        notice_links=(),
+        notice_missing_links=(),
+        package_surfaces=(),
+    )
+    council = RepoLiveState(
+        repo_id="hapax-systems/hapax-council",
+        owner="hapax-systems",
+        name="hapax-council",
+        exists=True,
+        private=False,
+        visibility="public",
+        license_spdx=license_spdx,
+        files={"LICENSE": RepoFilePresence(path="LICENSE", exists=True)},
+    )
+    findings = build_drift_findings(repos={"hapax-systems/hapax-council": council}, local=local)
+    return [
+        f for f in findings if f.category == "license_detection" and "hapax-council" in f.finding_id
+    ]
+
+
+def test_council_call_site_pins_detection_and_keeps_blocking_mismatch_id() -> None:
+    # Divergence on the council-specific call site keeps the historical
+    # blocking finding id and severity, plus the extra metadata evidence refs.
+    diverged = _council_license_findings(license_spdx="Apache-2.0")
+    assert [f.finding_id for f in diverged] == ["github.license.hapax-council.apache-vs-polyform"]
+    assert diverged[0].severity == "blocking"
+    assert diverged[0].status == "blocked"
+    assert "CITATION.cff" in diverged[0].evidence_refs
+    assert "codemeta.json" in diverged[0].evidence_refs
+
+    # Pinned NOASSERTION detection with the authority file present yields the
+    # presence-level witness through the same call site.
+    pinned = _council_license_findings(license_spdx="NOASSERTION")
+    assert [f.finding_id for f in pinned] == ["github.license.hapax-council.authority-file-present"]
+    assert pinned[0].status == "ok"
 
 
 def test_report_schema_validates_committed_live_state_report() -> None:
@@ -163,10 +240,20 @@ def test_hard_blockers_are_explicit_and_feed_downstream_tasks() -> None:
     report = _report()
     findings = {finding.finding_id: finding for finding in report.drift_findings}
 
-    license_finding = findings["github.license.hapax-council.apache-vs-polyform"]
-    assert license_finding.severity == "blocking"
-    assert license_finding.category == "license_detection"
-    assert "github-readme-profile-current-project-refresh" in license_finding.blocks
+    # Council's NOASSERTION detection is pinned as expected; the committed
+    # report carries the presence-level authority-file witness instead of the
+    # historical apache-vs-polyform blocker.
+    council_license = findings["github.license.hapax-council.authority-file-present"]
+    assert council_license.severity == "info"
+    assert council_license.status == "ok"
+    assert council_license.category == "license_detection"
+
+    # The remaining license hard-blocker is the constitution split-license
+    # divergence (live Apache-2.0 vs pinned NOASSERTION).
+    constitution_license = findings["github.license.hapax-constitution.registry-mismatch"]
+    assert constitution_license.severity == "high"
+    assert constitution_license.status == "unreconciled"
+    assert "github-public-claim-evidence-gate" in constitution_license.blocks
 
     assert findings["github.notice.links-resolve"].status == "ok"
     assert findings["github.profile.org-profile-readme-present"].severity == "info"

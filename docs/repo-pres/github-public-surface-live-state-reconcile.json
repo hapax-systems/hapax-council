@@ -150,12 +150,12 @@
         "docs/repo-pres/repo-registry.yaml",
         "gh:repos/hapax-systems/hapax-officium"
       ],
-      "expected": "Detection NOASSERTION pinned; policy PolyForm-Strict-1.0.0 proved by root LICENSE.",
-      "finding_id": "github.license.hapax-officium.authority-file-proves-posture",
+      "expected": "Detection NOASSERTION pinned; root LICENSE present to carry policy PolyForm-Strict-1.0.0 (text not content-verified by this check).",
+      "finding_id": "github.license.hapax-officium.authority-file-present",
       "observed": "Root LICENSE present; detection matches the expected pin.",
       "severity": "info",
       "status": "ok",
-      "summary": "License posture proved by the root authority file; GitHub detection matches the expected pin.",
+      "summary": "Root LICENSE authority file is present and GitHub detection matches the expected pin (presence-level witness only).",
       "surface": "hapax-systems/hapax-officium"
     },
     {
@@ -166,12 +166,12 @@
         "docs/repo-pres/repo-registry.yaml",
         "gh:repos/hapax-systems/hapax-watch"
       ],
-      "expected": "Detection NOASSERTION pinned; policy PolyForm-Strict-1.0.0 proved by root LICENSE.",
-      "finding_id": "github.license.hapax-watch.authority-file-proves-posture",
+      "expected": "Detection NOASSERTION pinned; root LICENSE present to carry policy PolyForm-Strict-1.0.0 (text not content-verified by this check).",
+      "finding_id": "github.license.hapax-watch.authority-file-present",
       "observed": "Root LICENSE present; detection matches the expected pin.",
       "severity": "info",
       "status": "ok",
-      "summary": "License posture proved by the root authority file; GitHub detection matches the expected pin.",
+      "summary": "Root LICENSE authority file is present and GitHub detection matches the expected pin (presence-level witness only).",
       "surface": "hapax-systems/hapax-watch"
     },
     {
@@ -182,12 +182,12 @@
         "docs/repo-pres/repo-registry.yaml",
         "gh:repos/hapax-systems/hapax-phone"
       ],
-      "expected": "Detection NOASSERTION pinned; policy PolyForm-Strict-1.0.0 proved by root LICENSE.",
-      "finding_id": "github.license.hapax-phone.authority-file-proves-posture",
+      "expected": "Detection NOASSERTION pinned; root LICENSE present to carry policy PolyForm-Strict-1.0.0 (text not content-verified by this check).",
+      "finding_id": "github.license.hapax-phone.authority-file-present",
       "observed": "Root LICENSE present; detection matches the expected pin.",
       "severity": "info",
       "status": "ok",
-      "summary": "License posture proved by the root authority file; GitHub detection matches the expected pin.",
+      "summary": "Root LICENSE authority file is present and GitHub detection matches the expected pin (presence-level witness only).",
       "surface": "hapax-systems/hapax-phone"
     },
     {
@@ -198,12 +198,12 @@
         "docs/repo-pres/repo-registry.yaml",
         "gh:repos/hapax-systems/reins"
       ],
-      "expected": "Detection NOASSERTION pinned; policy BUSL-1.1 proved by root LICENSE.",
-      "finding_id": "github.license.reins.authority-file-proves-posture",
+      "expected": "Detection NOASSERTION pinned; root LICENSE present to carry policy BUSL-1.1 (text not content-verified by this check).",
+      "finding_id": "github.license.reins.authority-file-present",
       "observed": "Root LICENSE present; detection matches the expected pin.",
       "severity": "info",
       "status": "ok",
-      "summary": "License posture proved by the root authority file; GitHub detection matches the expected pin.",
+      "summary": "Root LICENSE authority file is present and GitHub detection matches the expected pin (presence-level witness only).",
       "surface": "hapax-systems/reins"
     },
     {
@@ -216,12 +216,12 @@
         "codemeta.json",
         "gh:repos/hapax-systems/hapax-council"
       ],
-      "expected": "Detection NOASSERTION pinned; policy PolyForm-Strict-1.0.0 proved by root LICENSE.",
-      "finding_id": "github.license.hapax-council.authority-file-proves-posture",
+      "expected": "Detection NOASSERTION pinned; root LICENSE present to carry policy PolyForm-Strict-1.0.0 (text not content-verified by this check).",
+      "finding_id": "github.license.hapax-council.authority-file-present",
       "observed": "Root LICENSE present; detection matches the expected pin.",
       "severity": "info",
       "status": "ok",
-      "summary": "License posture proved by the root authority file; GitHub detection matches the expected pin.",
+      "summary": "Root LICENSE authority file is present and GitHub detection matches the expected pin (presence-level witness only).",
       "surface": "hapax-systems/hapax-council"
     },
     {
@@ -367,7 +367,7 @@
       "surface": "hapax-systems/hapax-council"
     }
   ],
-  "generated_at": "2026-07-09T00:20:30Z",
+  "generated_at": "2026-07-09T00:43:32Z",
   "generated_by": "scripts/github-public-surface-reconcile.py",
   "live_repos": [
     {
@@ -388,7 +388,7 @@
         "health_percentage": 75
       },
       "default_branch": "main",
-      "default_branch_sha": "ca8b3bdf7ac988f319f5f64a861bf55d3251a1c6",
+      "default_branch_sha": "0b7427e18778971f8609600ac50d40c74b815f11",
       "description": "Standalone governance hooks for AI coding agents. Permissive public adoption wedge for safety, git hygiene, and project-rule checks.",
       "exists": true,
       "expected_public": true,
@@ -406,8 +406,8 @@
           "exists": true,
           "html_url": "https://github.com/hapax-systems/agentgov/blob/main/.github/ISSUE_TEMPLATE/config.yml",
           "path": ".github/ISSUE_TEMPLATE/config.yml",
-          "sha": "784bc268ade53a975ccb81cfa07d96b966e407a5",
-          "size": 673
+          "sha": "8e5166435686d602fe846fe2b00cf15478a35029",
+          "size": 695
         },
         ".zenodo.json": {
           "evidence": "github_contents_api",
@@ -430,8 +430,8 @@
           "exists": true,
           "html_url": "https://github.com/hapax-systems/agentgov/blob/main/CONTRIBUTING.md",
           "path": "CONTRIBUTING.md",
-          "sha": "1a898d7d2fedfc0b64b23304a039f2a0d2833c64",
-          "size": 1416
+          "sha": "511f6c01294b0df47bc06debc1e2ce78fe78daf6",
+          "size": 1468
         },
         "GOVERNANCE.md": {
           "evidence": "github_contents_api",
@@ -462,16 +462,16 @@
           "exists": true,
           "html_url": "https://github.com/hapax-systems/agentgov/blob/main/README.md",
           "path": "README.md",
-          "sha": "7e6dfaa925148946e196e2d2e35e29e0791f2aee",
-          "size": 5927
+          "sha": "818fb3b67e79b4bf4ce7c5d2ae2eaca9aeba2a11",
+          "size": 6074
         },
         "SECURITY.md": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/agentgov/blob/main/SECURITY.md",
           "path": "SECURITY.md",
-          "sha": "f1c22c0e40e884e06c96753bc75e8da6797cc0b4",
-          "size": 1194
+          "sha": "c306572a5e2a056908b082dfee81165c702f9d3e",
+          "size": 1613
         },
         "codemeta.json": {
           "evidence": "github_contents_api",
@@ -510,7 +510,7 @@
         "status": null
       },
       "private": false,
-      "pushed_at": "2026-07-07T23:54:31Z",
+      "pushed_at": "2026-07-09T00:31:58Z",
       "releases": {
         "count": 1,
         "error": null,
@@ -674,7 +674,7 @@
         "status": null
       },
       "private": false,
-      "pushed_at": "2026-07-09T00:19:25Z",
+      "pushed_at": "2026-07-09T00:40:39Z",
       "releases": {
         "count": 0,
         "error": null,
@@ -718,7 +718,7 @@
         "health_percentage": 75
       },
       "default_branch": "main",
-      "default_branch_sha": "ef1deb6110b319550f6f5ad9b42013c8b025a529",
+      "default_branch_sha": "b2dd026d86d45a6c2e6955557d71f7f2b699a32f",
       "description": "Governance specification for the Hapax operating environment. Publishes specification/publication material plus the hapax-sdlc enforcement/render tooling consumed by hapax-council and hapax-officium. Not seeking contributors.",
       "exists": true,
       "expected_public": true,
@@ -736,8 +736,8 @@
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-constitution/blob/main/.github/ISSUE_TEMPLATE/config.yml",
           "path": ".github/ISSUE_TEMPLATE/config.yml",
-          "sha": "495d90938b57771242336485fb15fde622db2134",
-          "size": 703
+          "sha": "38c997e1a11a91981846d65e83e515c98552f4e7",
+          "size": 725
         },
         ".zenodo.json": {
           "evidence": "github_contents_api",
@@ -760,8 +760,8 @@
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-constitution/blob/main/CONTRIBUTING.md",
           "path": "CONTRIBUTING.md",
-          "sha": "2244384ee68ae031e381b62498a06fa4269b9c2b",
-          "size": 1521
+          "sha": "06898bdef2e22b18f92a9dc4f16634268edbf8c3",
+          "size": 1614
         },
         "GOVERNANCE.md": {
           "evidence": "github_contents_api",
@@ -792,16 +792,16 @@
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-constitution/blob/main/README.md",
           "path": "README.md",
-          "sha": "e9fb17e3b46ef9540f0c5463a53efaf196332e15",
-          "size": 5572
+          "sha": "6d43807916bb89f1b8ca10e546840073332a20ce",
+          "size": 5719
         },
         "SECURITY.md": {
           "evidence": "github_contents_api",
           "exists": true,
           "html_url": "https://github.com/hapax-systems/hapax-constitution/blob/main/SECURITY.md",
           "path": "SECURITY.md",
-          "sha": "5c478e7a5f20228cf77b91afad2f12575eb98d8f",
-          "size": 1176
+          "sha": "c306572a5e2a056908b082dfee81165c702f9d3e",
+          "size": 1613
         },
         "codemeta.json": {
           "evidence": "github_contents_api",
@@ -840,7 +840,7 @@
         "status": null
       },
       "private": false,
-      "pushed_at": "2026-07-08T22:06:24Z",
+      "pushed_at": "2026-07-09T00:31:33Z",
       "releases": {
         "count": 0,
         "error": null,

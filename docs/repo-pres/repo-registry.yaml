@@ -67,6 +67,10 @@ repos:
     # report NOASSERTION. Live main still detects Apache-2.0 (the known
     # split-license blocker); that divergence stays covered by the
     # check-public-surface-claims waiver until the split lands.
+    # Recheck: uv run python scripts/check-public-surface-claims.py
+    # must NOT list github.license.hapax-constitution.registry-mismatch as an
+    # unwaived error (the waiver is _drift_finding_is_custom_license_detection
+    # in scripts/check-public-surface-claims.py).
     expected_github_license_detection: NOASSERTION
     license_url: https://creativecommons.org/licenses/by-nc-nd/4.0/
     value_partition: evidence_artifact
