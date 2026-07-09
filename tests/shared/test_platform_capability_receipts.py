@@ -495,7 +495,7 @@ def test_codex_exec_auth_sentinel_parser_accepts_complete_output_shapes() -> Non
         )
         is True
     )
-    assert observed('{"message":"HAPAX_CODEX_EXEC_AUTH_OK"}\n') is True
+    assert observed('{"message":"HAPAX_CODEX_EXEC_AUTH_OK"}\n') is False
     assert (
         observed('{"type":"response.output_text.delta","text":"HAPAX_CODEX_EXEC_AUTH_OK"}\n')
         is False
@@ -801,6 +801,8 @@ def test_codex_receipt_remote_exec_auth_strips_access_token_without_local_binary
                 "HAPAX_CODEX_EXEC_AUTH_REMOTE_CWD": str(tmp_path / "remote cwd"),
                 "CODEX_ACCESS_TOKEN": "ambient-token-must-not-prove-auth",
                 "CODEX_HOME": str(tmp_path / "ambient-codex-home"),
+                "CODEX_API_KEY": "ambient-codex-api-key-must-not-prove-auth",
+                "OPENAI_API_KEY": "ambient-openai-api-key-must-not-prove-auth",
             },
         ),
         patch("subprocess.run", side_effect=fake_run),
@@ -824,7 +826,12 @@ def test_codex_receipt_remote_exec_auth_strips_access_token_without_local_binary
     assert "--cd " in remote_command
     assert str(tmp_path / "remote cwd") in remote_command
     assert "ambient-token-must-not-prove-auth" not in remote_command
-    assert "env" not in kwargs
+    ssh_env = kwargs["env"]
+    assert isinstance(ssh_env, dict)
+    assert "CODEX_ACCESS_TOKEN" not in ssh_env
+    assert "CODEX_HOME" not in ssh_env
+    assert "CODEX_API_KEY" not in ssh_env
+    assert "OPENAI_API_KEY" not in ssh_env
     assert kwargs["timeout"] == 12.0
 
 

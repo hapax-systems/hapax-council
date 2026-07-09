@@ -1653,10 +1653,15 @@ exit 0
     used_token = tmp_path / "remote-used-token.txt"
     preflight_count = tmp_path / "preflight-count.txt"
     ssh_log = tmp_path / "ssh.log"
+    ssh_env_log = tmp_path / "ssh-env.log"
     _write_classifying_ssh(
         bin_dir / "ssh",
         ssh_log,
         remove_workdir_on_worktree=workdir,
+        before_preflight_run=f"""  printf 'preflight token=%s home=%s codex_api=%s openai_api=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" "${{CODEX_HOME:+yes}}" "${{CODEX_API_KEY:+yes}}" "${{OPENAI_API_KEY:+yes}}" >> "{ssh_env_log}"
+""",
+        before_exec_run=f"""  printf 'exec token=%s home=%s codex_api=%s openai_api=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" "${{CODEX_HOME:+yes}}" "${{CODEX_API_KEY:+yes}}" "${{OPENAI_API_KEY:+yes}}" >> "{ssh_env_log}"
+""",
         after_preflight_success=f"""  count="$(cat "{preflight_count}" 2>/dev/null || printf '0')"
   count="$((count + 1))"
   printf '%s\\n' "$count" > "{preflight_count}"
@@ -1679,6 +1684,10 @@ exit 0
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE"] = str(token_file)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+    env["CODEX_ACCESS_TOKEN"] = "ambient-token-must-not-reach-ssh"
+    env["CODEX_HOME"] = str(tmp_path / "ambient-codex-home")
+    env["CODEX_API_KEY"] = "ambient-codex-api-key-must-not-reach-ssh"
+    env["OPENAI_API_KEY"] = "ambient-openai-api-key-must-not-reach-ssh"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
@@ -1699,6 +1708,12 @@ exit 0
     assert preflight_count.read_text(encoding="utf-8").strip() == "3"
     assert token_file.read_text(encoding="utf-8").strip() == rotated_token
     assert used_token.read_text(encoding="utf-8").strip() == ""
+    assert ssh_env_log.read_text(encoding="utf-8").splitlines() == [
+        "preflight token= home= codex_api= openai_api=",
+        "preflight token= home= codex_api= openai_api=",
+        "preflight token= home= codex_api= openai_api=",
+        "exec token= home= codex_api= openai_api=",
+    ]
 
 
 def test_codex_headless_remote_preflight_does_not_materialize_token_handoff(

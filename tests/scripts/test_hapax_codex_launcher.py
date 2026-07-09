@@ -33,7 +33,7 @@ if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
   exit 0
 fi
 if [ "${{1:-}}" = "exec" ]; then
-  printf '%s\\n' '{{"message":"HAPAX_CODEX_EXEC_AUTH_OK"}}'
+  printf '%s\\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}}}'
   exit 0
 fi
 printf '%s\\n' "$*" > {args_file}
@@ -266,7 +266,7 @@ def test_remote_preflight_uses_saved_login_sentinel_without_token_handoff(tmp_pa
     fake_codex.write_text(
         """#!/usr/bin/env bash
 if [ "${1:-}" = "exec" ]; then
-  printf '%s\n' '{"message":"HAPAX_CODEX_EXEC_AUTH_OK"}'
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}'
   exit 0
 fi
 exit 77
@@ -384,7 +384,7 @@ def test_remote_preflight_ignores_obsolete_published_token_payload_fields(tmp_pa
     fake_codex.write_text(
         """#!/usr/bin/env bash
 if [ "${1:-}" = "exec" ]; then
-  printf '%s\n' '{"message":"HAPAX_CODEX_EXEC_AUTH_OK"}'
+  printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}'
   exit 0
 fi
 exit 77
@@ -1263,7 +1263,7 @@ if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
   exit 0
 fi
 if [ "${{1:-}}" = "exec" ]; then
-  printf '%s\\n' '{{"message":"HAPAX_CODEX_EXEC_AUTH_OK"}}'
+  printf '%s\\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}}}'
   exit 0
 fi
 printf '%s\\n' "$*" > {configured_args}
@@ -1479,7 +1479,7 @@ if [ "${{1:-}}" = "debug" ] && [ "${{2:-}}" = "models" ]; then
 fi
 if [ "${{1:-}}" = "exec" ]; then
   printf '%s\\n' auth > {auth_log}
-  printf '%s\\n' '{{"message":"HAPAX_CODEX_EXEC_AUTH_OK"}}'
+  printf '%s\\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}}}'
   exit 0
 fi
 printf '%s\\n' "$*" > {args_file}
@@ -1592,7 +1592,7 @@ exit 0
 case "$*" in
   *"Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"*)
     printf '%s\\n' auth > {auth_log}
-    printf '%s\\n' '{{"message":"HAPAX_CODEX_EXEC_AUTH_OK"}}'
+    printf '%s\\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}}}'
     exit 0
     ;;
 esac

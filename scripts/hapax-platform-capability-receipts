@@ -256,8 +256,6 @@ def codex_exec_auth_event_text(event: Any) -> str:
     if event.get("role") == "assistant":
         return assistant_content_text(event.get("content"))
     message = event.get("message")
-    if isinstance(message, str):
-        return message
     if isinstance(message, dict) and message.get("role") == "assistant":
         return assistant_content_text(message.get("content"))
     return ""
@@ -335,6 +333,7 @@ def codex_exec_auth_env() -> dict[str, str]:
     }
     env["NO_COLOR"] = "1"
     env.pop("CODEX_ACCESS_TOKEN", None)
+    env.pop("CODEX_HOME", None)
     env.pop("CODEX_API_KEY", None)
     env.pop("OPENAI_API_KEY", None)
     return env
@@ -398,6 +397,7 @@ def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str]
                 text=True,
                 capture_output=True,
                 timeout=max(timeout + 5, 10),
+                env=codex_exec_auth_env(),
             )
     except subprocess.TimeoutExpired:
         return [], ["codex_exec_auth_timeout"]

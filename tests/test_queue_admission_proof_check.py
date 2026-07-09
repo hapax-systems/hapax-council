@@ -11,6 +11,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
+
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
@@ -32,9 +34,16 @@ proof = _load_module()
 
 
 class _FakeRunner:
-    def __init__(self, statuses: list[dict[str, Any]], *, graphql_fails: bool = False) -> None:
+    def __init__(
+        self,
+        statuses: list[dict[str, Any]],
+        *,
+        graphql_fails: bool = False,
+        graphql_semantic_error: bool = False,
+    ) -> None:
         self.statuses = statuses
         self.graphql_fails = graphql_fails
+        self.graphql_semantic_error = graphql_semantic_error
         self.calls: list[list[str]] = []
 
     def __call__(self, cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
@@ -42,6 +51,12 @@ class _FakeRunner:
         if cmd[:3] == ["gh", "api", "graphql"]:
             if self.graphql_fails:
                 return subprocess.CompletedProcess(cmd, 1, "", "graphql unavailable")
+            if self.graphql_semantic_error:
+                payload = {
+                    "data": {"repository": None},
+                    "errors": [{"message": "repository unavailable"}],
+                }
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
             contexts = [
                 {
                     "context": item.get("context"),
@@ -150,6 +165,29 @@ def test_graphql_failure_falls_back_to_rest() -> None:
 
     assert failures == []
     assert any(cmd[:3] == ["gh", "api", "repos/owner/repo/pulls/42"] for cmd in runner.calls)
+
+
+def test_graphql_semantic_error_does_not_fall_back_to_rest() -> None:
+    runner = _FakeRunner([], graphql_semantic_error=True)
+
+    with pytest.raises(RuntimeError, match="GraphQL response contained errors"):
+        proof.fetch_latest_proof("owner/repo", 42, runner=runner)
+
+    assert runner.calls == [
+        [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={proof._GRAPHQL_PROOF_QUERY}",
+            "-f",
+            "owner=owner",
+            "-f",
+            "name=repo",
+            "-F",
+            "number=42",
+        ]
+    ]
 
 
 def test_missing_status_fails() -> None:

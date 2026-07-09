@@ -59,6 +59,10 @@ class Proof:
     description: str
 
 
+class GhJsonError(RuntimeError):
+    """Raised when `gh` transport fails or emits malformed JSON."""
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -77,11 +81,11 @@ def _gh_json(cmd: list[str], *, runner: Any = None) -> Any:
     runner = runner or subprocess.run
     proc = runner(cmd, capture_output=True, text=True, check=False, timeout=60)
     if proc.returncode != 0:
-        raise RuntimeError((proc.stderr or proc.stdout or f"command failed: {cmd}").strip())
+        raise GhJsonError((proc.stderr or proc.stdout or f"command failed: {cmd}").strip())
     try:
         return json.loads(proc.stdout or "null")
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"gh emitted non-JSON for {cmd}: {exc}") from exc
+        raise GhJsonError(f"gh emitted non-JSON for {cmd}: {exc}") from exc
 
 
 def _split_repo(repo: str) -> tuple[str, str]:
@@ -155,7 +159,7 @@ def fetch_head_sha(repo: str, pr: int, *, runner: Any = None) -> str:
 def fetch_latest_proof(repo: str, pr: int, *, runner: Any = None) -> Proof:
     try:
         return fetch_latest_proof_graphql(repo, pr, runner=runner)
-    except RuntimeError:
+    except GhJsonError:
         # Keep the old REST path as a fallback for older GitHub Enterprise
         # shapes, but prefer GraphQL because Actions REST reads are the
         # pressure point during merge-queue churn.
@@ -184,7 +188,13 @@ def fetch_latest_proof_graphql(repo: str, pr: int, *, runner: Any = None) -> Pro
     repository = (
         ((payload.get("data") or {}).get("repository") or {}) if isinstance(payload, dict) else {}
     )
+    if isinstance(payload, dict) and payload.get("errors"):
+        raise RuntimeError(f"GraphQL response contained errors for PR #{pr}")
+    if not repository:
+        raise RuntimeError(f"GraphQL repository payload unavailable for PR #{pr}")
     pull_request = repository.get("pullRequest") or {}
+    if not pull_request:
+        raise RuntimeError(f"GraphQL pullRequest payload unavailable for PR #{pr}")
     head_sha = str(pull_request.get("headRefOid") or "")
     commit_nodes = ((pull_request.get("commits") or {}).get("nodes")) or []
     commit = {}

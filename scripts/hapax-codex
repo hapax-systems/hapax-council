@@ -468,8 +468,6 @@ def event_text(event):
     if event.get("role") == "assistant":
         return assistant_content_text(event.get("content"))
     message = event.get("message")
-    if isinstance(message, str):
-        return message
     if isinstance(message, dict) and message.get("role") == "assistant":
         return assistant_content_text(message.get("content"))
     return ""
@@ -690,8 +688,6 @@ def _auth_event_text(event):
     if event.get("role")=="assistant":
         return _assistant_content_text(event.get("content"))
     message=event.get("message")
-    if isinstance(message,str):
-        return message
     if isinstance(message,dict) and message.get("role")=="assistant":
         return _assistant_content_text(message.get("content"))
     return ""
