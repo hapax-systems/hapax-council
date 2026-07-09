@@ -592,7 +592,7 @@ else:
         auth_timeout=30.0
     env={k:v for k in ("ALL_PROXY","HOME","HTTP_PROXY","HTTPS_PROXY","LANG","LC_ALL","NO_PROXY","PATH","REQUESTS_CA_BUNDLE","SSL_CERT_FILE") if (v:=os.environ.get(k)) is not None}
     env["NO_COLOR"]="1"
-    env.pop("CODEX_ACCESS_TOKEN",None); env.pop("CODEX_API_KEY",None); env.pop("OPENAI_API_KEY",None)
+    env.pop("CODEX_ACCESS_TOKEN",None); env.pop("CODEX_HOME",None); env.pop("CODEX_API_KEY",None); env.pop("OPENAI_API_KEY",None)
     sentinel="HAPAX_CODEX_EXEC_AUTH_OK"
     auth_workdir=p.get("workdir") or os.getcwd()
     if not os.path.isdir(auth_workdir):

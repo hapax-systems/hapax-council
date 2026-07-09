@@ -1935,8 +1935,62 @@ def test_codex_headless_remote_preflight_cleanup_child_clears_bearer_material_be
 
     assert "os.fork" not in remote_preflight_py
     assert 'env.pop("CODEX_ACCESS_TOKEN",None)' in remote_preflight_py
+    assert 'env.pop("CODEX_HOME",None)' in remote_preflight_py
     assert 'p.get("codex_exec_auth_timeout")' in remote_preflight_py
     assert "timeout=auth_timeout" in remote_preflight_py
+
+
+def test_codex_headless_remote_preflight_strips_codex_home_from_auth_exec(
+    tmp_path: Path,
+) -> None:
+    remote_preflight_py = _extract_remote_python("REMOTE_PREFLIGHT_PY")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    used_token = tmp_path / "used-token.txt"
+    used_codex_home = tmp_path / "used-codex-home.txt"
+    used_codex_api_key = tmp_path / "used-codex-api-key.txt"
+    used_openai_api_key = tmp_path / "used-openai-api-key.txt"
+    fake_codex = bin_dir / "fake-codex"
+    _write_executable(
+        fake_codex,
+        f"""printf '%s\\n' "${{CODEX_ACCESS_TOKEN:-}}" > "{used_token}"
+printf '%s\\n' "${{CODEX_HOME:-}}" > "{used_codex_home}"
+printf '%s\\n' "${{CODEX_API_KEY:-}}" > "{used_codex_api_key}"
+printf '%s\\n' "${{OPENAI_API_KEY:-}}" > "{used_openai_api_key}"
+printf '%s\\n' '{{"type":"item.completed","item":{{"type":"agent_message","text":"HAPAX_CODEX_EXEC_AUTH_OK"}}}}'
+exit 0
+""",
+    )
+    payload = {
+        "required_dirs": [],
+        "executables": [],
+        "binaries": [],
+        "workdir": str(tmp_path),
+        "codex_exec_auth_timeout": 5,
+        "codex_bin_path": str(fake_codex),
+    }
+    env = os.environ.copy()
+    env["PATH"] = "/usr/bin:/bin"
+    env["NPM_CONFIG_PREFIX"] = ""
+    env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
+    env["CODEX_ACCESS_TOKEN"] = "ambient-token-must-not-reach-preflight"
+    env["CODEX_HOME"] = str(tmp_path / "ambient-codex-home")
+    env["CODEX_API_KEY"] = "ambient-codex-api-key-must-not-reach-preflight"
+    env["OPENAI_API_KEY"] = "ambient-openai-api-key-must-not-reach-preflight"
+
+    result = subprocess.run(
+        [sys.executable, "-c", remote_preflight_py],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert used_token.read_text(encoding="utf-8").strip() == ""
+    assert used_codex_home.read_text(encoding="utf-8").strip() == ""
+    assert used_codex_api_key.read_text(encoding="utf-8").strip() == ""
+    assert used_openai_api_key.read_text(encoding="utf-8").strip() == ""
 
 
 def test_codex_headless_local_auth_timeout_env_is_validated_before_timeout() -> None:
