@@ -79,7 +79,7 @@ atomic replace, so a bad tick can never clobber a good live ledger with junk.
 No secrets are persisted. Capability receipt refresh performs bounded live route
 probes where the route requires them: GLMCP invokes ``hapax-glmcp-reviewer
 --check`` and Codex invokes a saved-login ``codex exec`` sentinel on the
-effective dispatch host with inherited ``CODEX_ACCESS_TOKEN`` stripped. Both
+effective dispatch host with inherited Codex auth env stripped. Both
 record redacted availability metadata only; local resource probes remain local
 files and nvidia-smi. If the Codex sentinel reports an invalidated saved login,
 the dispatch host login must be repaired through the documented operator

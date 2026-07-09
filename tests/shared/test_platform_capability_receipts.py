@@ -145,6 +145,8 @@ def _fake_codex_exec_success(
     marker: Path,
     token_marker: Path | None = None,
     codex_home_marker: Path | None = None,
+    codex_api_key_marker: Path | None = None,
+    openai_api_key_marker: Path | None = None,
     stdout: str = (
         '{"type":"item.completed","item":{"type":"agent_message",'
         '"text":"HAPAX_CODEX_EXEC_AUTH_OK"}}'
@@ -168,6 +170,16 @@ def _fake_codex_exec_success(
                 *(
                     [f'  printf "%s\\n" "${{CODEX_HOME:-}}" > "{codex_home_marker}"']
                     if codex_home_marker is not None
+                    else []
+                ),
+                *(
+                    [f'  printf "%s\\n" "${{CODEX_API_KEY:-}}" > "{codex_api_key_marker}"']
+                    if codex_api_key_marker is not None
+                    else []
+                ),
+                *(
+                    [f'  printf "%s\\n" "${{OPENAI_API_KEY:-}}" > "{openai_api_key_marker}"']
+                    if openai_api_key_marker is not None
                     else []
                 ),
                 f"  printf '%s\\n' '{stdout}'",
@@ -699,7 +711,9 @@ def test_codex_receipt_remote_exec_auth_strips_access_token_without_local_binary
     assert ssh_args[5] == "appendix"
     remote_command = ssh_args[6]
     assert remote_command.startswith("bash -lc ")
-    assert "unset CODEX_ACCESS_TOKEN CODEX_HOME; exec codex exec" in remote_command
+    assert (
+        "unset CODEX_ACCESS_TOKEN CODEX_HOME CODEX_API_KEY OPENAI_API_KEY; exec codex exec"
+    ) in remote_command
     assert "--cd " in remote_command
     assert str(tmp_path / "remote cwd") in remote_command
     assert "ambient-token-must-not-prove-auth" not in remote_command
@@ -707,18 +721,22 @@ def test_codex_receipt_remote_exec_auth_strips_access_token_without_local_binary
     assert kwargs["timeout"] == 12.0
 
 
-def test_codex_receipt_exec_auth_probe_strips_access_token_and_codex_home(
+def test_codex_receipt_exec_auth_probe_strips_codex_auth_env(
     tmp_path: Path,
 ) -> None:
     configured = tmp_path / "configured-codex"
     marker = tmp_path / "configured-codex-used"
     token_marker = tmp_path / "configured-codex-token"
     codex_home_marker = tmp_path / "configured-codex-home"
+    codex_api_key_marker = tmp_path / "configured-codex-api-key"
+    openai_api_key_marker = tmp_path / "configured-openai-api-key"
     _fake_codex_exec_success(
         configured,
         marker,
         token_marker=token_marker,
         codex_home_marker=codex_home_marker,
+        codex_api_key_marker=codex_api_key_marker,
+        openai_api_key_marker=openai_api_key_marker,
     )
     token_file = _write_codex_access_token(tmp_path / "codex-oauth")
     ambient_codex_home = tmp_path / "ambient-codex-home"
@@ -732,6 +750,8 @@ def test_codex_receipt_exec_auth_probe_strips_access_token_and_codex_home(
             "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE": str(token_file),
             "CODEX_ACCESS_TOKEN": "ambient-token-must-be-replaced",
             "CODEX_HOME": str(ambient_codex_home),
+            "CODEX_API_KEY": "ambient-codex-api-key-must-not-prove-auth",
+            "OPENAI_API_KEY": "ambient-openai-api-key-must-not-prove-auth",
         },
     )
 
@@ -741,6 +761,8 @@ def test_codex_receipt_exec_auth_probe_strips_access_token_and_codex_home(
     assert token_marker.read_text(encoding="utf-8").strip() == ""
     observed_codex_home = codex_home_marker.read_text(encoding="utf-8").strip()
     assert observed_codex_home == ""
+    assert codex_api_key_marker.read_text(encoding="utf-8").strip() == ""
+    assert openai_api_key_marker.read_text(encoding="utf-8").strip() == ""
     assert receipt["capability"]["status"] == "observed"
     assert "local:codex:exec:auth:observed" in receipt["capability"]["evidence_refs"]
 

@@ -332,6 +332,8 @@ def codex_exec_auth_env() -> dict[str, str]:
     }
     env["NO_COLOR"] = "1"
     env.pop("CODEX_ACCESS_TOKEN", None)
+    env.pop("CODEX_API_KEY", None)
+    env.pop("OPENAI_API_KEY", None)
     return env
 
 
@@ -349,7 +351,7 @@ def classify_codex_exec_auth_failure(output: str) -> list[str]:
 
 
 def remote_codex_exec_auth_command(*, cwd: Path) -> str:
-    inner = "unset CODEX_ACCESS_TOKEN CODEX_HOME; exec " + shlex.join(
+    inner = "unset CODEX_ACCESS_TOKEN CODEX_HOME CODEX_API_KEY OPENAI_API_KEY; exec " + shlex.join(
         codex_exec_auth_command(codex_bin="codex", cwd=cwd)
     )
     return "bash -lc " + shlex.quote(inner)

@@ -47,6 +47,8 @@ printf 'GITHUB_PERSONAL_ACCESS_TOKEN=%s\\n' "${{GITHUB_PERSONAL_ACCESS_TOKEN:-}}
 printf 'CODEX_GITHUB_PERSONAL_ACCESS_TOKEN=%s\\n' "${{CODEX_GITHUB_PERSONAL_ACCESS_TOKEN:-}}" >> {env_file}
 printf 'TAVILY_API_KEY=%s\\n' "${{TAVILY_API_KEY:-}}" >> {env_file}
 printf 'CODEX_ACCESS_TOKEN_PRESENT=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" >> {env_file}
+printf 'CODEX_API_KEY_PRESENT=%s\\n' "${{CODEX_API_KEY:+yes}}" >> {env_file}
+printf 'OPENAI_API_KEY_PRESENT=%s\\n' "${{OPENAI_API_KEY:+yes}}" >> {env_file}
 """
     )
     fake_codex.chmod(0o755)
@@ -519,11 +521,13 @@ def test_launcher_skips_expired_published_codex_access_token(tmp_path: Path) -> 
     assert "CODEX_ACCESS_TOKEN_PRESENT=\n" in env_file.read_text(encoding="utf-8")
 
 
-def test_launcher_ignores_inherited_codex_access_token_without_published_token(
+def test_launcher_ignores_inherited_codex_auth_env_without_published_token(
     tmp_path: Path,
 ) -> None:
     env, _args_file, env_file = _env_with_fake_codex(tmp_path)
     env["CODEX_ACCESS_TOKEN"] = "ambient-token"
+    env["CODEX_API_KEY"] = "ambient-codex-api-key"
+    env["OPENAI_API_KEY"] = "ambient-openai-api-key"
 
     result = subprocess.run(
         [
@@ -546,7 +550,11 @@ def test_launcher_ignores_inherited_codex_access_token_without_published_token(
 
     assert result.returncode == 0, result.stderr
     assert "ignoring inherited CODEX_ACCESS_TOKEN" in result.stderr
+    assert "ignoring inherited CODEX_API_KEY" in result.stderr
+    assert "ignoring inherited OPENAI_API_KEY" in result.stderr
     assert "CODEX_ACCESS_TOKEN_PRESENT=\n" in env_file.read_text(encoding="utf-8")
+    assert "CODEX_API_KEY_PRESENT=\n" in env_file.read_text(encoding="utf-8")
+    assert "OPENAI_API_KEY_PRESENT=\n" in env_file.read_text(encoding="utf-8")
 
 
 def test_launcher_skips_directory_codex_candidates(tmp_path: Path) -> None:
@@ -627,7 +635,7 @@ def test_launcher_missing_codex_reports_next_action(tmp_path: Path) -> None:
     assert "next action: install the Codex CLI, repair PATH" in result.stderr
 
 
-def test_launcher_remote_exec_strips_ambient_codex_access_token_and_codex_home(
+def test_launcher_remote_exec_strips_ambient_codex_auth_env(
     tmp_path: Path,
 ) -> None:
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
@@ -639,11 +647,15 @@ def test_launcher_remote_exec_strips_ambient_codex_access_token_and_codex_home(
     workdir.mkdir()
     used_token = tmp_path / "used-token.txt"
     used_codex_home = tmp_path / "used-codex-home.txt"
+    used_codex_api_key = tmp_path / "used-codex-api-key.txt"
+    used_openai_api_key = tmp_path / "used-openai-api-key.txt"
     payload = {
         "workdir": str(workdir),
         "env": {
             "CODEX_ACCESS_TOKEN": "ambient-token-must-be-stripped",
             "CODEX_HOME": str(tmp_path / "ambient-codex-home"),
+            "CODEX_API_KEY": "ambient-codex-api-key-must-be-stripped",
+            "OPENAI_API_KEY": "ambient-openai-api-key-must-be-stripped",
         },
         "proof_file": "",
         "codex_bin_path": sys.executable,
@@ -655,10 +667,16 @@ def test_launcher_remote_exec_strips_ambient_codex_access_token_and_codex_home(
                 "pathlib.Path(sys.argv[1]).write_text("
                 "os.environ.get('CODEX_ACCESS_TOKEN',''),encoding='utf-8');"
                 "pathlib.Path(sys.argv[2]).write_text("
-                "os.environ.get('CODEX_HOME',''),encoding='utf-8')"
+                "os.environ.get('CODEX_HOME',''),encoding='utf-8');"
+                "pathlib.Path(sys.argv[3]).write_text("
+                "os.environ.get('CODEX_API_KEY',''),encoding='utf-8');"
+                "pathlib.Path(sys.argv[4]).write_text("
+                "os.environ.get('OPENAI_API_KEY',''),encoding='utf-8')"
             ),
             str(used_token),
             str(used_codex_home),
+            str(used_codex_api_key),
+            str(used_openai_api_key),
         ],
     }
     env = os.environ.copy()
@@ -677,6 +695,8 @@ def test_launcher_remote_exec_strips_ambient_codex_access_token_and_codex_home(
     assert result.returncode == 0, result.stderr
     assert used_token.read_text(encoding="utf-8") == ""
     assert used_codex_home.read_text(encoding="utf-8") == ""
+    assert used_codex_api_key.read_text(encoding="utf-8") == ""
+    assert used_openai_api_key.read_text(encoding="utf-8") == ""
 
 
 def test_launcher_remote_exec_reports_missing_codex_binary(tmp_path: Path) -> None:

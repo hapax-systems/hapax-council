@@ -419,6 +419,14 @@ strip_inherited_codex_access_token() {
     echo "hapax-codex: ignoring inherited CODEX_HOME; governed Codex lanes use the dispatch host default saved ChatGPT auth cache" >&2
     unset CODEX_HOME
   fi
+  if [ -n "${CODEX_API_KEY:-}" ]; then
+    echo "hapax-codex: ignoring inherited CODEX_API_KEY; governed Codex lanes must not use API-key auth" >&2
+    unset CODEX_API_KEY
+  fi
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    echo "hapax-codex: ignoring inherited OPENAI_API_KEY; governed Codex lanes must not use API-key auth" >&2
+    unset OPENAI_API_KEY
+  fi
   return 0
 }
 
@@ -582,7 +590,7 @@ if codex_bin is None:
 else:
     env={k:v for k in ("ALL_PROXY","HOME","HTTP_PROXY","HTTPS_PROXY","LANG","LC_ALL","NO_PROXY","PATH","REQUESTS_CA_BUNDLE","SSL_CERT_FILE") if (v:=os.environ.get(k)) is not None}
     env["NO_COLOR"]="1"
-    env.pop("CODEX_ACCESS_TOKEN",None)
+    env.pop("CODEX_ACCESS_TOKEN",None); env.pop("CODEX_API_KEY",None); env.pop("OPENAI_API_KEY",None)
     sentinel="HAPAX_CODEX_EXEC_AUTH_OK"
     auth_workdir=p.get("workdir") or os.getcwd()
     if not os.path.isdir(auth_workdir):
@@ -607,7 +615,7 @@ if missing_dirs or missing_exec or missing_bins or auth_error:
     print("remote preflight failed: missing_dirs="+json.dumps(missing_dirs)+" missing_executables="+json.dumps(missing_exec)+" missing_binaries="+json.dumps(missing_bins)+" auth_error="+json.dumps(auth_error)+"; next action: repair saved Codex login on the dispatch host via codex login or the documented auth-cache transfer fallback, then verify required paths before retrying", file=sys.stderr)
     sys.exit(1)
 sys.exit(0)'
-REMOTE_EXEC_PY='import base64,json,os,shutil,socket,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); os.environ.pop("CODEX_ACCESS_TOKEN",None); os.environ.pop("CODEX_HOME",None); proof=p.get("proof_file",""); cgroup="";
+REMOTE_EXEC_PY='import base64,json,os,shutil,socket,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); os.environ.pop("CODEX_ACCESS_TOKEN",None); os.environ.pop("CODEX_HOME",None); os.environ.pop("CODEX_API_KEY",None); os.environ.pop("OPENAI_API_KEY",None); proof=p.get("proof_file",""); cgroup="";
 try:
     cgroup=open("/proc/self/cgroup",encoding="utf-8").read()
 except OSError:

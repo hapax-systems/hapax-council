@@ -36,8 +36,9 @@ Remote appendix dispatch uses this order:
    and live PID guard;
 2. run a remote saved-login auth preflight before any remote worktree mutation;
    the dispatch host must already have a working `codex login` session, and the
-   preflight runs a bounded `codex exec` sentinel with inherited
-   `CODEX_ACCESS_TOKEN` stripped;
+   preflight runs a bounded `codex exec` sentinel with inherited Codex auth
+   env stripped (`CODEX_ACCESS_TOKEN`, `CODEX_HOME`, `CODEX_API_KEY`, and
+   `OPENAI_API_KEY`);
 3. bootstrap the default remote session worktree if it is missing and
    `HAPAX_CODEX_CREATE_WORKTREE=1` (the unset/default value is `1`);
 4. run full remote preflight for required directories, hook adapter, `python3`,
@@ -47,18 +48,18 @@ Remote appendix dispatch uses this order:
    remote claim proof, then rerun the remote saved-login preflight;
 6. execute `codex exec` on the remote host using that host's saved ChatGPT auth.
    The launcher never ships, injects, persists, or reuses a published bearer
-   token, and remote exec strips inherited `CODEX_ACCESS_TOKEN` before starting.
+   token, and remote exec strips inherited Codex auth env before starting.
 
 Local headless dispatch similarly proves saved-login auth with a bounded
-`codex exec` sentinel before `cc-claim`; it must strip inherited
-`CODEX_ACCESS_TOKEN` and must not treat the published token cache as authority.
+`codex exec` sentinel before `cc-claim`; it must strip inherited Codex auth env
+and must not treat published token caches or API-key env as authority.
 
 If appendix reports `token_invalidated` or `refresh_token_invalidated`, refresh
 the dispatch-host login and recheck the sentinel before launching governed lanes:
 
 ```bash
 ssh -t appendix 'codex login'
-ssh appendix 'bash -lc '\''unset CODEX_ACCESS_TOKEN CODEX_HOME; exec codex exec --ephemeral --skip-git-repo-check --ignore-rules --sandbox read-only --json --cd ~ "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"'\'''
+ssh appendix 'bash -lc '\''unset CODEX_ACCESS_TOKEN CODEX_HOME CODEX_API_KEY OPENAI_API_KEY; exec codex exec --ephemeral --skip-git-repo-check --ignore-rules --sandbox read-only --json --cd ~ "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"'\'''
 ```
 
 If `codex login --device-auth` is unavailable by account or workspace policy,
@@ -74,7 +75,7 @@ stamp=$(date -u +%Y%m%dT%H%M%SZ)
 ssh appendix "bash -lc 'mkdir -p ~/.codex && chmod 700 ~/.codex && if [ -f ~/.codex/auth.json ]; then cp -p ~/.codex/auth.json ~/.codex/auth.json.pre-copy-$stamp; fi'"
 ssh appendix "bash -lc 'umask 077; cat > ~/.codex/auth.json.tmp && chmod 600 ~/.codex/auth.json.tmp && mv ~/.codex/auth.json.tmp ~/.codex/auth.json'" < ~/.codex/auth.json
 ssh appendix "bash -lc 'stat -c \"%a %U %G %s\" ~/.codex/auth.json && codex login status'"
-ssh appendix 'bash -lc '\''unset CODEX_ACCESS_TOKEN CODEX_HOME; exec codex exec --ephemeral --skip-git-repo-check --ignore-rules --sandbox read-only --json --cd ~ "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"'\'''
+ssh appendix 'bash -lc '\''unset CODEX_ACCESS_TOKEN CODEX_HOME CODEX_API_KEY OPENAI_API_KEY; exec codex exec --ephemeral --skip-git-repo-check --ignore-rules --sandbox read-only --json --cd ~ "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK"'\'''
 uv run python scripts/hapax-platform-capability-receipts --platform codex --codex-exec-auth-probe --json
 scripts/hapax-quota-telemetry-writer --json
 ```
@@ -122,8 +123,9 @@ Remote bootstrap failures print the failing branch and a next action. Check:
 - `HAPAX_CODEX_CREATE_WORKTREE` (default `1`);
 - `HAPAX_CODEX_BRANCH_PREFIX` (default `codex`);
 - `HAPAX_CODEX_WORKTREE_BASE` if a non-default base was requested.
-- saved-login Codex auth on the dispatch host with inherited
-  `CODEX_ACCESS_TOKEN` stripped.
+- saved-login Codex auth on the dispatch host with inherited Codex auth env
+  stripped (`CODEX_ACCESS_TOKEN`, `CODEX_HOME`, `CODEX_API_KEY`, and
+  `OPENAI_API_KEY`).
 
 Recheck the contract from the council repo with:
 

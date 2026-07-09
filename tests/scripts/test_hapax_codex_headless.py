@@ -321,6 +321,8 @@ printf 'LOGOS_BASE_URL=%s\\n' "${{LOGOS_BASE_URL:-}}" > {env_file}
 printf 'HAPAX_DISPATCH_HOST=%s\\n' "${{HAPAX_DISPATCH_HOST:-}}" >> {env_file}
 printf 'CODEX_ACCESS_TOKEN_PRESENT=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" >> {env_file}
 printf 'CODEX_HOME_PRESENT=%s\\n' "${{CODEX_HOME:+yes}}" >> {env_file}
+printf 'CODEX_API_KEY_PRESENT=%s\\n' "${{CODEX_API_KEY:+yes}}" >> {env_file}
+printf 'OPENAI_API_KEY_PRESENT=%s\\n' "${{OPENAI_API_KEY:+yes}}" >> {env_file}
 exit 0
 """,
     )
@@ -334,6 +336,8 @@ exit 0
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
     env["CODEX_ACCESS_TOKEN"] = "ambient-token-must-not-reach-worker"
     env["CODEX_HOME"] = str(tmp_path / "ambient-codex-home")
+    env["CODEX_API_KEY"] = "ambient-codex-api-key-must-not-reach-worker"
+    env["OPENAI_API_KEY"] = "ambient-openai-api-key-must-not-reach-worker"
 
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
@@ -352,6 +356,8 @@ exit 0
     assert "HAPAX_DISPATCH_HOST=local" in launched_env
     assert "CODEX_ACCESS_TOKEN_PRESENT=yes" not in launched_env
     assert "CODEX_HOME_PRESENT=yes" not in launched_env
+    assert "CODEX_API_KEY_PRESENT=yes" not in launched_env
+    assert "OPENAI_API_KEY_PRESENT=yes" not in launched_env
     proofs = list(
         (home / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs").glob(
             "*cx-amber-task-x-headless-remote.json"
@@ -2065,7 +2071,7 @@ def test_codex_headless_malicious_session_id_does_not_escape_tmp(
             leaked.unlink(missing_ok=True)
 
 
-def test_codex_headless_remote_exec_strips_inherited_access_token_and_codex_home(
+def test_codex_headless_remote_exec_strips_inherited_codex_auth_env(
     tmp_path: Path,
 ) -> None:
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
@@ -2074,10 +2080,14 @@ def test_codex_headless_remote_exec_strips_inherited_access_token_and_codex_home
     codex_bin = tmp_path / "bin" / "codex"
     used_token = tmp_path / "used-token.txt"
     used_codex_home = tmp_path / "used-codex-home.txt"
+    used_codex_api_key = tmp_path / "used-codex-api-key.txt"
+    used_openai_api_key = tmp_path / "used-openai-api-key.txt"
     _write_executable(
         codex_bin,
         f"""printf '%s\\n' "${{CODEX_ACCESS_TOKEN:-}}" > "{used_token}"
 printf '%s\\n' "${{CODEX_HOME:-}}" > "{used_codex_home}"
+printf '%s\\n' "${{CODEX_API_KEY:-}}" > "{used_codex_api_key}"
+printf '%s\\n' "${{OPENAI_API_KEY:-}}" > "{used_openai_api_key}"
 exit 0
 """,
     )
@@ -2086,6 +2096,8 @@ exit 0
         "env": {
             "CODEX_ACCESS_TOKEN": "ambient-token-must-not-reach-worker",
             "CODEX_HOME": str(tmp_path / "ambient-codex-home"),
+            "CODEX_API_KEY": "ambient-codex-api-key-must-not-reach-worker",
+            "OPENAI_API_KEY": "ambient-openai-api-key-must-not-reach-worker",
         },
         "proof_file": "",
         "argv": ["codex"],
@@ -2107,6 +2119,8 @@ exit 0
     assert result.returncode == 0, result.stderr
     assert used_token.read_text(encoding="utf-8").strip() == ""
     assert used_codex_home.read_text(encoding="utf-8").strip() == ""
+    assert used_codex_api_key.read_text(encoding="utf-8").strip() == ""
+    assert used_openai_api_key.read_text(encoding="utf-8").strip() == ""
 
 
 def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
