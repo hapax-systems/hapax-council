@@ -663,8 +663,8 @@ def _decision_can_advance(decision: SCEDPhase1Decision) -> bool:
         and decision.gate_result.verdict is True
         and not decision.reject_reasons
         and _decision_has_durable_candidate_id(decision)
-        and bool(decision.candidate_digest)
-        and bool(decision.technique_refs)
+        and _decision_has_candidate_digest(decision)
+        and _decision_has_durable_technique_refs(decision)
         and decision.target is not None
         and _decision_has_ruler_hash(decision)
         and decision.target_policy_snapshot is not None
@@ -680,6 +680,21 @@ def _decision_has_durable_candidate_id(decision: SCEDPhase1Decision) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _decision_has_candidate_digest(decision: SCEDPhase1Decision) -> bool:
+    try:
+        _sha256_digest(decision.candidate_digest, field="candidate_digest")
+    except ValueError:
+        return False
+    return True
+
+
+def _decision_has_durable_technique_refs(decision: SCEDPhase1Decision) -> bool:
+    try:
+        return bool(_durable_ref_tuple(decision.technique_refs, field="technique_refs"))
+    except ValueError:
+        return False
 
 
 def _decision_has_ruler_hash(decision: SCEDPhase1Decision) -> bool:
