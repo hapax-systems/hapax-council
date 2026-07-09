@@ -621,6 +621,36 @@ def test_phase1_blocks_missing_target_policy_snapshot() -> None:
     assert decision.reject_reasons == (SCEDPhase1RejectReason.MISSING_TARGET_POLICY,)
 
 
+def test_phase1_blocks_custom_policy_for_unsupported_target() -> None:
+    target = G2GateInput(
+        surface="bug_bounty",
+        venue="third_party",
+        instrument="direct_invited_universal_jailbreak_bounty",
+    )
+    freeze = _freeze(target=target)
+    candidate = _candidate(target=target)
+
+    decision = evaluate_phase1_candidate(
+        candidate,
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
+        target_policies=(
+            SCEDTargetPolicySnapshot(
+                target=target,
+                policy_refs=("url:https://example.test/policy",),
+                policy_reviewed_on=NOW.date(),
+                registry_row_ref="registry:legal-posture:third-party-bounty",
+            ),
+        ),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.MISSING_TARGET_POLICY,)
+    assert "unsupported Phase 1 direct-lab target" in decision.reason
+
+
 def test_phase1_blocks_invalid_target_policy_refs_or_review_date() -> None:
     freeze = _freeze()
     decision = evaluate_phase1_candidate(

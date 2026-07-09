@@ -37,6 +37,10 @@ OPENAI_BIO_JAILBREAK_TARGET: Final = G2GateInput(
     venue="openai",
     instrument="direct_invited_bio_universal_jailbreak_bounty",
 )
+_ALLOWED_TARGET_KEYS: Final = {
+    ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET.normalized().key,
+    OPENAI_BIO_JAILBREAK_TARGET.normalized().key,
+}
 
 
 class SCEDPhase1RejectReason(StrEnum):
@@ -841,6 +845,12 @@ def _policy_for_target(
     target: G2GateInput,
     snapshots: Sequence[SCEDTargetPolicySnapshot | Mapping[str, Any]] | None,
 ) -> SCEDTargetPolicySnapshot:
+    target_key = target.normalized().key
+    if target_key not in _ALLOWED_TARGET_KEYS:
+        raise _Phase1InputError(
+            SCEDPhase1RejectReason.MISSING_TARGET_POLICY,
+            f"unsupported Phase 1 direct-lab target {_target_key(target)}",
+        )
     candidates = _target_policy_candidates(snapshots)
     for snapshot in candidates:
         try:
@@ -851,7 +861,7 @@ def _policy_for_target(
             )
         except (TypeError, ValueError) as exc:
             raise _Phase1InputError(SCEDPhase1RejectReason.INVALID_TARGET_POLICY, str(exc)) from exc
-        if policy.target.normalized().key == target.normalized().key:
+        if policy.target.normalized().key == target_key:
             return policy
     raise _Phase1InputError(
         SCEDPhase1RejectReason.MISSING_TARGET_POLICY,
