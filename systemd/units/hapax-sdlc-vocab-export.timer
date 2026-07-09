@@ -1,0 +1,11 @@
+# Hapax-Auto-Enable: true
+[Unit]
+Description=SDLC vocab export timer
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=10min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

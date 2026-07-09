@@ -105,13 +105,22 @@ def _git(repo: Path, *args: str) -> None:
     )
 
 
-def _make_repo(tmp_path: Path, units: dict[str, str]) -> tuple[Path, str]:
+def _make_repo(
+    tmp_path: Path,
+    units: dict[str, str],
+    *,
+    files: dict[str, str] | None = None,
+) -> tuple[Path, str]:
     repo = tmp_path / "repo"
     (repo / "systemd" / "units").mkdir(parents=True)
     for name, body in units.items():
         (repo / "systemd" / "units" / name).write_text(
             textwrap.dedent(body).strip() + "\n", encoding="utf-8"
         )
+    for relpath, body in (files or {}).items():
+        path = repo / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(body).strip() + "\n", encoding="utf-8")
     _git(repo, "init", "-q")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "fixture units")
@@ -203,6 +212,165 @@ def test_deploy_skips_marked_unit_without_install_section(tmp_path: Path) -> Non
     res = _run([sha], repo=repo, bin_dir=bin_dir, tmp_path=tmp_path)
     assert res.returncode == 0, res.stderr
     assert "enable --now" not in calls.read_text(encoding="utf-8")
+
+
+def test_deploy_removes_temporary_sdlc_vocab_pr_worktree_dropin(tmp_path: Path) -> None:
+    """The temporary PR bridge must not survive the source-owned unit deploy."""
+    repo, sha = _make_repo(
+        tmp_path,
+        {
+            "hapax-sdlc-vocab-export.service": """
+            [Unit]
+            Description=Export the SDLC vocabulary for Trainyard/Reins consumers
+            ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-sdlc-vocab-export
+            ConditionPathExists=%h/.local/bin/uv
+            [Service]
+            Type=oneshot
+            TimeoutStartSec=300
+            WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+            ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run --frozen python scripts/hapax-sdlc-vocab-export
+            """,
+        },
+    )
+    home = tmp_path / "home"
+    dropin = (
+        home
+        / ".config/systemd/user/hapax-sdlc-vocab-export.service.d/20-pr-4459-runtime-bridge.conf"
+    )
+    dropin.parent.mkdir(parents=True)
+    dropin.write_text(
+        """
+        [Service]
+        WorkingDirectory=/home/hapax/projects/hapax-council--cx-crit-gap1
+        ExecStart=
+        ExecStart=/home/hapax/projects/hapax-council--cx-crit-gap1/.venv/bin/python /home/hapax/projects/hapax-council--cx-crit-gap1/scripts/hapax-sdlc-vocab-export
+        """,
+        encoding="utf-8",
+    )
+    bin_dir, calls = _make_fake_systemctl(tmp_path)
+
+    res = _run([sha], repo=repo, bin_dir=bin_dir, tmp_path=tmp_path)
+
+    assert res.returncode == 0, res.stderr
+    assert not dropin.exists()
+    assert "removing temporary PR-worktree bridge drop-in" in res.stdout
+    assert "daemon-reload" in calls.read_text(encoding="utf-8")
+
+
+def test_deploy_removes_sdlc_vocab_bridge_by_content_and_preserves_unrelated_dropin(
+    tmp_path: Path,
+) -> None:
+    """Cleanup covers renamed bridge files without deleting unrelated drop-ins."""
+    repo, sha = _make_repo(
+        tmp_path,
+        {
+            "hapax-sdlc-vocab-export.service": """
+            [Unit]
+            Description=Export the SDLC vocabulary for Trainyard/Reins consumers
+            ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-sdlc-vocab-export
+            ConditionPathExists=%h/.local/bin/uv
+            [Service]
+            Type=oneshot
+            TimeoutStartSec=300
+            WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+            ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run --frozen python scripts/hapax-sdlc-vocab-export
+            """,
+        },
+    )
+    dropin_dir = tmp_path / "home/.config/systemd/user/hapax-sdlc-vocab-export.service.d"
+    dropin_dir.mkdir(parents=True)
+    generic_bridge = dropin_dir / "20-pr-9999-runtime-bridge.conf"
+    renamed_bridge = dropin_dir / "90-local-bridge.conf"
+    scratch_bridge = dropin_dir / "10-relocate.conf"
+    unrelated = dropin_dir / "99-operator-note.conf"
+    generic_bridge.write_text("[Service]\nEnvironment=HAPAX_TEMP_BRIDGE=1\n", encoding="utf-8")
+    renamed_bridge.write_text(
+        "ExecStart=/home/hapax/projects/hapax-council--cx-green-gap1/scripts/hapax-sdlc-vocab-export\n",
+        encoding="utf-8",
+    )
+    scratch_bridge.write_text(
+        "ExecStart=%h/.cache/hapax/scratch/vocab-export/scripts/hapax-sdlc-vocab-export\n",
+        encoding="utf-8",
+    )
+    unrelated.write_text(
+        "[Service]\n# retired reference: scratch/vocab-export\nEnvironment=HAPAX_KEEP_THIS_DROPIN=1\n",
+        encoding="utf-8",
+    )
+    bin_dir, _calls = _make_fake_systemctl(tmp_path)
+
+    res = _run([sha], repo=repo, bin_dir=bin_dir, tmp_path=tmp_path)
+
+    assert res.returncode == 0, res.stderr
+    assert not generic_bridge.exists()
+    assert not renamed_bridge.exists()
+    assert not scratch_bridge.exists()
+    assert unrelated.exists()
+    assert dropin_dir.exists()
+
+
+def test_deploy_removes_stale_coord_rebuild_dropins_and_preserves_unrelated(
+    tmp_path: Path,
+) -> None:
+    """Source-owned coord rebuild must not keep stale local/recovery overrides."""
+    repo, sha = _make_repo(
+        tmp_path,
+        {
+            "hapax-coord-rebuild.service": """
+            [Unit]
+            Description=Deploy hapax-coord activation from origin/main
+            ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-coord-deploy
+            Wants=network-online.target
+            After=network-online.target
+            [Service]
+            Type=oneshot
+            WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+            ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-coord-deploy
+            """,
+        },
+        files={
+            "scripts/hapax-recovery-plane-install": """
+            #!/usr/bin/env bash
+            exit 0
+            """,
+        },
+    )
+    dropin_dir = tmp_path / "home/.config/systemd/user/hapax-coord-rebuild.service.d"
+    dropin_dir.mkdir(parents=True)
+    scratch = dropin_dir / "10-relocate.conf"
+    recovery = dropin_dir / "99-d2-stable-recovery-bundle.conf"
+    mutable_root = dropin_dir / "20-old-pr-root.conf"
+    unrelated = dropin_dir / "50-operator-environment.conf"
+    scratch.write_text(
+        "[Service]\nExecStart=\n"
+        "ExecStart=%h/.cache/hapax/scratch/vocab-export/scripts/hapax-coord-deploy\n",
+        encoding="utf-8",
+    )
+    recovery.write_text(
+        "[Unit]\n"
+        "ConditionPathExists=%h/.local/lib/hapax-recovery/council/current/scripts/hapax-coord-deploy\n"
+        "[Service]\nExecStart=\n"
+        "ExecStart=%h/.local/lib/hapax-recovery/council/current/scripts/hapax-coord-deploy\n",
+        encoding="utf-8",
+    )
+    mutable_root.write_text(
+        "[Service]\nWorkingDirectory=!/home/hapax\n",
+        encoding="utf-8",
+    )
+    unrelated.write_text(
+        "[Service]\nEnvironment=HAPAX_COORD_REBUILD_NOTE=keep\n",
+        encoding="utf-8",
+    )
+    bin_dir, _calls = _make_fake_systemctl(tmp_path)
+
+    res = _run([sha], repo=repo, bin_dir=bin_dir, tmp_path=tmp_path)
+
+    assert res.returncode == 0, res.stderr
+    assert not scratch.exists()
+    assert not recovery.exists()
+    assert not mutable_root.exists()
+    assert unrelated.exists()
+    assert dropin_dir.exists()
+    assert "removing stale coord rebuild drop-in" in res.stdout
 
 
 def test_deploy_auto_enables_marked_timer(tmp_path: Path) -> None:

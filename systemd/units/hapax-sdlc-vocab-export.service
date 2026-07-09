@@ -1,0 +1,11 @@
+[Unit]
+Description=Export the SDLC vocabulary for Trainyard/Reins consumers
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-sdlc-vocab-export
+ConditionPathExists=%h/.local/bin/uv
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=300
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run --frozen python scripts/hapax-sdlc-vocab-export

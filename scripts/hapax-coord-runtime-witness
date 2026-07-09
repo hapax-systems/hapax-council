@@ -1,0 +1,569 @@
+#!/usr/bin/env python3
+"""Read-only runtime witness for the hapax-coord deployment path."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import re
+import shlex
+import socket
+import ssl
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse, urlunparse
+
+UNIT = "hapax-coord.service"
+DEFAULT_ACTIVATION = Path.home() / ".cache/hapax/coord-activation/worktree"
+DEFAULT_SOURCE_REPO = Path("/home/hapax/projects/hapax-coord")
+DEFAULT_URL = "http://127.0.0.1:8765/"
+OVERFLOW_SIGNATURE_RE = re.compile(r"handle-new-connection|unsigned-byte", re.IGNORECASE)
+COORDINATION_MARKER_RE = re.compile(r"hapax coordination", re.IGNORECASE)
+WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+WEBSOCKET_MAX_FRAME_BYTES = 4 * 1024 * 1024
+CLOG_PATH_CHALLENGE_RE = re.compile(r'ws\.send \("([^":]+):"\+eval\("')
+HTTP_MARKER_READ_BYTES = 1024 * 1024
+
+
+@dataclass
+class CmdResult:
+    rc: int
+    stdout: str
+    stderr: str
+
+
+def _cmd_env(name: str, default: str) -> list[str]:
+    return shlex.split(os.environ.get(name, default))
+
+
+def _default_source_repo() -> str:
+    return os.environ.get(
+        "HAPAX_COORD_WITNESS_SOURCE_REPO",
+        os.environ.get("HAPAX_COORD_DEPLOY_REPO", str(DEFAULT_SOURCE_REPO)),
+    )
+
+
+def _run(argv: list[str], *, timeout: float = 30.0) -> CmdResult:
+    try:
+        proc = subprocess.run(
+            argv,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        return CmdResult(124, stdout, stderr or f"timeout after {timeout}s")
+    return CmdResult(proc.returncode, proc.stdout, proc.stderr)
+
+
+def _parse_key_values(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key] = value
+    return values
+
+
+def _execstart_points_at_run_dev(exec_start: str, run_dev: Path) -> bool:
+    run_dev_s = str(run_dev)
+    path_match = re.search(r"(?:^|[;\s])path=([^;]+)", exec_start)
+    argv_match = re.search(r"(?:^|[;\s])argv\[\]=([^;]+)", exec_start)
+    if not path_match or not argv_match:
+        return False
+    if path_match.group(1).strip() != run_dev_s:
+        return False
+    try:
+        argv = shlex.split(argv_match.group(1).strip())
+    except ValueError:
+        return False
+    return bool(argv) and argv[0] == run_dev_s
+
+
+def _activation_dirty_entries(status: str) -> list[str]:
+    entries = []
+    for line in status.splitlines():
+        if not line.strip():
+            continue
+        path = line[3:] if len(line) > 3 else line
+        if path == ".deployed-sha" and line[:2] in {"??", "!!"}:
+            continue
+        entries.append(line)
+    return entries
+
+
+def _check_systemd(unit: str, activation: Path) -> tuple[dict[str, Any], list[str]]:
+    systemctl = _cmd_env("HAPAX_COORD_WITNESS_SYSTEMCTL", "systemctl")
+    props = ",".join(
+        [
+            "ActiveState",
+            "SubState",
+            "Result",
+            "ExecMainStatus",
+            "MainPID",
+            "FragmentPath",
+            "DropInPaths",
+            "WorkingDirectory",
+            "ExecStart",
+        ]
+    )
+    result = _run([*systemctl, "--user", "show", unit, f"--property={props}"])
+    evidence: dict[str, Any] = {
+        "command": [*systemctl, "--user", "show", unit, f"--property={props}"],
+        "returncode": result.rc,
+    }
+    failures: list[str] = []
+    if result.rc != 0:
+        failures.append(f"systemctl_show_failed:{result.stderr.strip() or result.rc}")
+        return evidence, failures
+
+    values = _parse_key_values(result.stdout)
+    evidence.update(values)
+    activation_s = str(activation)
+    if values.get("ActiveState") != "active":
+        failures.append(f"unit_not_active:{values.get('ActiveState')}")
+    if values.get("SubState") != "running":
+        failures.append(f"unit_not_running:{values.get('SubState')}")
+    if values.get("Result") not in {"", "success"}:
+        failures.append(f"unit_result_not_success:{values.get('Result')}")
+    if values.get("WorkingDirectory") != activation_s:
+        failures.append(f"unit_wrong_working_directory:{values.get('WorkingDirectory')}")
+    exec_start = values.get("ExecStart", "")
+    if not _execstart_points_at_run_dev(exec_start, activation / "scripts/run-dev.sh"):
+        failures.append("unit_execstart_not_activation_run_dev")
+    return evidence, failures
+
+
+def _git(git: list[str], repo: Path, *args: str) -> CmdResult:
+    return _run([*git, "-C", str(repo), *args])
+
+
+def _check_activation(activation: Path, source_repo: Path) -> tuple[dict[str, Any], list[str]]:
+    git = _cmd_env("HAPAX_COORD_WITNESS_GIT", "git")
+    evidence: dict[str, Any] = {
+        "activation_worktree": str(activation),
+        "source_repo": str(source_repo),
+    }
+    failures: list[str] = []
+
+    run_dev = activation / "scripts/run-dev.sh"
+    receipt = activation / ".deployed-sha"
+    if not run_dev.exists():
+        failures.append(f"activation_run_dev_missing:{run_dev}")
+    receipt_exists = receipt.is_file()
+    if not receipt_exists:
+        failures.append(f"deployed_sha_receipt_missing:{receipt}")
+
+    head = _git(git, activation, "rev-parse", "HEAD")
+    if head.rc == 0:
+        evidence["activation_head"] = head.stdout.strip()
+    else:
+        failures.append(f"activation_head_unreadable:{head.stderr.strip() or head.rc}")
+
+    deployed_sha = receipt.read_text(encoding="utf-8").strip() if receipt_exists else ""
+    evidence["deployed_sha"] = deployed_sha
+    if receipt_exists and not deployed_sha:
+        failures.append("deployed_sha_receipt_empty")
+    elif head.rc == 0 and deployed_sha != head.stdout.strip():
+        failures.append("deployed_sha_mismatch")
+
+    status = _git(git, activation, "status", "--porcelain=v1", "--untracked-files=all")
+    if status.rc == 0:
+        dirty = _activation_dirty_entries(status.stdout)
+        evidence["activation_dirty_entries"] = dirty
+        if dirty:
+            failures.append("activation_worktree_dirty")
+    else:
+        failures.append(f"activation_status_unreadable:{status.stderr.strip() or status.rc}")
+
+    source_main = _git(git, source_repo, "rev-parse", "refs/remotes/origin/main")
+    if source_main.rc == 0:
+        evidence["source_origin_main"] = source_main.stdout.strip()
+        if head.rc == 0 and head.stdout.strip() != source_main.stdout.strip():
+            failures.append("activation_not_at_source_origin_main")
+    else:
+        failures.append(
+            f"source_origin_main_unreadable:{source_main.stderr.strip() or source_main.rc}"
+        )
+
+    remote_main = _git(git, source_repo, "ls-remote", "origin", "refs/heads/main")
+    if remote_main.rc == 0:
+        remote_line = remote_main.stdout.strip().splitlines()
+        remote_sha = remote_line[0].split()[0] if remote_line and remote_line[0].split() else ""
+        evidence["source_remote_main"] = remote_sha
+        if not remote_sha:
+            failures.append("source_remote_main_unreadable:empty")
+        elif head.rc == 0 and head.stdout.strip() != remote_sha:
+            failures.append("activation_not_at_source_remote_main")
+    else:
+        failures.append(
+            f"source_remote_main_unreadable:{remote_main.stderr.strip() or remote_main.rc}"
+        )
+
+    source_status = _git(git, source_repo, "status", "--porcelain=v1", "--untracked-files=all")
+    if source_status.rc == 0:
+        evidence["source_repo_dirty_count"] = len(
+            [line for line in source_status.stdout.splitlines() if line.strip()]
+        )
+    else:
+        evidence["source_repo_dirty_count"] = None
+
+    return evidence, failures
+
+
+def _check_http(url: str, timeout: float) -> tuple[dict[str, Any], list[str]]:
+    evidence: dict[str, Any] = {"url": url}
+    failures: list[str] = []
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            body = response.read(HTTP_MARKER_READ_BYTES).decode("utf-8", errors="replace")
+            evidence["status"] = response.status
+            evidence["content_type"] = response.headers.get("Content-Type")
+            evidence["body_prefix"] = body[:160]
+    except urllib.error.HTTPError as exc:
+        body = exc.read(HTTP_MARKER_READ_BYTES).decode("utf-8", errors="replace")
+        evidence["status"] = exc.code
+        evidence["content_type"] = exc.headers.get("Content-Type")
+        evidence["body_prefix"] = body[:160]
+    except Exception as exc:  # noqa: BLE001 - report witness failures, do not crash.
+        failures.append(f"http_probe_failed:{exc}")
+        return evidence, failures
+
+    if evidence.get("status") != 200:
+        failures.append(f"http_status_not_200:{evidence.get('status')}")
+    if not COORDINATION_MARKER_RE.search(body):
+        failures.append("http_render_missing_coordination_marker")
+    return evidence, failures
+
+
+def _default_websocket_url(http_url: str) -> str:
+    parsed = urlparse(http_url)
+    scheme = {"http": "ws", "https": "wss"}.get(parsed.scheme, "ws")
+    netloc = parsed.netloc or parsed.path
+    return urlunparse((scheme, netloc, "/clog", "", "", ""))
+
+
+def _read_until_headers(sock: socket.socket, *, max_bytes: int = 16384) -> tuple[bytes, bytes]:
+    data = bytearray()
+    while b"\r\n\r\n" not in data:
+        chunk = sock.recv(1024)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if len(data) > max_bytes:
+            raise RuntimeError("websocket handshake headers exceeded limit")
+    header_end = data.find(b"\r\n\r\n")
+    if header_end < 0:
+        return bytes(data), b""
+    split_at = header_end + 4
+    return bytes(data[:split_at]), bytes(data[split_at:])
+
+
+def _parse_headers(header_bytes: bytes) -> tuple[int | None, dict[str, str]]:
+    text = header_bytes.decode("iso-8859-1", errors="replace")
+    lines = text.split("\r\n")
+    status: int | None = None
+    if lines:
+        parts = lines[0].split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            status = int(parts[1])
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        headers[key.strip().lower()] = value.strip()
+    return status, headers
+
+
+def _read_exact(sock: socket.socket, size: int, pending: bytearray | None = None) -> bytes:
+    data = bytearray()
+    if pending:
+        take = min(size, len(pending))
+        data.extend(pending[:take])
+        del pending[:take]
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise RuntimeError("websocket connection closed while reading frame")
+        data.extend(chunk)
+    return bytes(data)
+
+
+def _send_websocket_text(sock: socket.socket, text: str) -> None:
+    payload = text.encode("utf-8")
+    mask = os.urandom(4)
+    header = bytearray([0x81])
+    length = len(payload)
+    if length < 126:
+        header.append(0x80 | length)
+    elif length <= 0xFFFF:
+        header.extend([0x80 | 126, (length >> 8) & 0xFF, length & 0xFF])
+    else:
+        header.append(0x80 | 127)
+        header.extend(length.to_bytes(8, "big"))
+    masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    sock.sendall(bytes(header) + mask + masked)
+
+
+def _send_websocket_close(sock: socket.socket) -> None:
+    mask = os.urandom(4)
+    sock.sendall(bytes([0x88, 0x80]) + mask)
+
+
+def _read_websocket_frame(sock: socket.socket, pending: bytearray) -> dict[str, Any]:
+    first, second = _read_exact(sock, 2, pending)
+    opcode = first & 0x0F
+    masked = bool(second & 0x80)
+    length = second & 0x7F
+    if length == 126:
+        length = int.from_bytes(_read_exact(sock, 2, pending), "big")
+    elif length == 127:
+        length = int.from_bytes(_read_exact(sock, 8, pending), "big")
+    if length > WEBSOCKET_MAX_FRAME_BYTES:
+        raise RuntimeError(f"websocket frame too large:{length}")
+    mask = _read_exact(sock, 4, pending) if masked else b""
+    payload = _read_exact(sock, length, pending) if length else b""
+    if masked:
+        payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    text: str | None = None
+    if opcode == 1:
+        text = payload.decode("utf-8", errors="replace")
+    return {
+        "opcode": opcode,
+        "payload_bytes": length,
+        "text": text,
+        "preview": (text if text is not None else payload[:160].hex())[:240],
+    }
+
+
+def _check_websocket(url: str, timeout: float) -> tuple[dict[str, Any], list[str]]:
+    evidence: dict[str, Any] = {"url": url, "frames": []}
+    failures: list[str] = []
+    parsed = urlparse(url)
+    if parsed.scheme not in {"ws", "wss"} or not parsed.hostname:
+        return evidence, [f"websocket_url_invalid:{url}"]
+
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    evidence["path"] = path
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    expected_accept = base64.b64encode(
+        hashlib.sha1(f"{key}{WEBSOCKET_GUID}".encode("ascii")).digest()
+    ).decode("ascii")
+    connect_host = host
+    if ":" in host and not host.startswith("["):
+        host_header = f"[{host}]"
+    else:
+        host_header = host
+    if parsed.port:
+        host_header = f"{host_header}:{port}"
+
+    try:
+        raw_sock = socket.create_connection((connect_host, port), timeout=timeout)
+        with raw_sock:
+            raw_sock.settimeout(timeout)
+            sock: socket.socket | ssl.SSLSocket
+            if parsed.scheme == "wss":
+                context = ssl.create_default_context()
+                context.minimum_version = ssl.TLSVersion.TLSv1_2
+                sock = context.wrap_socket(raw_sock, server_hostname=host)
+            else:
+                sock = raw_sock
+            request = (
+                f"GET {path} HTTP/1.1\r\n"
+                f"Host: {host_header}\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\n"
+                "Sec-WebSocket-Version: 13\r\n"
+                f"Origin: {'https' if parsed.scheme == 'wss' else 'http'}://{host_header}\r\n"
+                "\r\n"
+            )
+            sock.sendall(request.encode("ascii"))
+            header_bytes, pending_bytes = _read_until_headers(sock)
+            pending = bytearray(pending_bytes)
+            status, headers = _parse_headers(header_bytes)
+            evidence["status"] = status
+            evidence["headers"] = {
+                key: headers[key]
+                for key in ("upgrade", "connection", "sec-websocket-accept")
+                if key in headers
+            }
+            if status != 101:
+                return evidence, [f"websocket_status_not_101:{status}"]
+            if headers.get("sec-websocket-accept") != expected_accept:
+                return evidence, ["websocket_accept_mismatch"]
+
+            saw_marker = False
+            path_challenge_seen = False
+            path_reply_sent = False
+            evidence["render_marker_seen"] = False
+            evidence["path_challenge_seen"] = False
+            evidence["path_reply_sent"] = False
+            for _ in range(8):
+                try:
+                    frame = _read_websocket_frame(sock, pending)
+                except TimeoutError:
+                    break
+                except RuntimeError as exc:
+                    if "closed while reading frame" in str(exc):
+                        break
+                    raise
+                text = frame.pop("text")
+                evidence["frames"].append(frame)
+                if frame["opcode"] == 8:
+                    if not saw_marker:
+                        failures.append("websocket_closed_before_render_marker")
+                    if not path_reply_sent:
+                        failures.append("websocket_closed_before_path_challenge")
+                    break
+                if text:
+                    if COORDINATION_MARKER_RE.search(text):
+                        saw_marker = True
+                        evidence["render_marker_seen"] = True
+                    match = CLOG_PATH_CHALLENGE_RE.search(text)
+                    if match:
+                        path_challenge_seen = True
+                        evidence["path_challenge_seen"] = True
+                        _send_websocket_text(sock, f"{match.group(1)}:/")
+                        path_reply_sent = True
+                        evidence["path_reply_sent"] = True
+                    if saw_marker and path_reply_sent:
+                        break
+            if not path_challenge_seen:
+                failures.append("websocket_path_challenge_missing")
+            elif not path_reply_sent:
+                failures.append("websocket_path_reply_not_sent")
+            if not saw_marker:
+                failures.append("websocket_render_missing_coordination_marker")
+            try:
+                _send_websocket_close(sock)
+            except OSError:
+                pass
+    except Exception as exc:  # noqa: BLE001 - report witness failures, do not crash.
+        failures.append(f"websocket_probe_failed:{exc}")
+    return evidence, failures
+
+
+def _check_journal(unit: str, lines: int) -> tuple[dict[str, Any], list[str]]:
+    journalctl = _cmd_env("HAPAX_COORD_WITNESS_JOURNALCTL", "journalctl")
+    argv = [*journalctl, "--user", "-u", unit, "-n", str(lines), "--no-pager"]
+    result = _run(argv)
+    evidence: dict[str, Any] = {"command": argv, "returncode": result.rc, "lines_checked": lines}
+    failures: list[str] = []
+    if result.rc != 0:
+        failures.append(f"journalctl_failed:{result.stderr.strip() or result.rc}")
+        return evidence, failures
+
+    matches = [line for line in result.stdout.splitlines() if OVERFLOW_SIGNATURE_RE.search(line)]
+    evidence["overflow_signature_matches"] = matches
+    if matches:
+        failures.append("clog_overflow_signature_seen")
+    return evidence, failures
+
+
+def build_witness(args: argparse.Namespace) -> dict[str, Any]:
+    activation = Path(args.activation_worktree).expanduser()
+    source_repo = Path(args.source_repo).expanduser()
+    checks: dict[str, Any] = {}
+    failures: list[str] = []
+
+    checks["systemd"], systemd_failures = _check_systemd(args.unit, activation)
+    failures.extend(systemd_failures)
+
+    checks["activation"], activation_failures = _check_activation(activation, source_repo)
+    failures.extend(activation_failures)
+
+    if args.skip_http:
+        checks["http"] = {"skipped": True}
+    else:
+        checks["http"], http_failures = _check_http(args.url, args.timeout)
+        failures.extend(http_failures)
+
+    if args.skip_websocket:
+        checks["websocket"] = {"skipped": True}
+    else:
+        websocket_url = args.websocket_url or _default_websocket_url(args.url)
+        checks["websocket"], websocket_failures = _check_websocket(websocket_url, args.timeout)
+        failures.extend(websocket_failures)
+
+    if args.skip_journal:
+        checks["journal"] = {"skipped": True}
+    else:
+        checks["journal"], journal_failures = _check_journal(args.unit, args.journal_lines)
+        failures.extend(journal_failures)
+
+    return {
+        "schema": 1,
+        "ok": not failures,
+        "unit": args.unit,
+        "checks": checks,
+        "failures": failures,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="emit JSON witness")
+    parser.add_argument("--unit", default=os.environ.get("HAPAX_COORD_WITNESS_UNIT", UNIT))
+    parser.add_argument(
+        "--activation-worktree",
+        default=os.environ.get("HAPAX_COORD_WITNESS_ACTIVATION_WORKTREE", str(DEFAULT_ACTIVATION)),
+    )
+    parser.add_argument(
+        "--source-repo",
+        default=_default_source_repo(),
+    )
+    parser.add_argument("--url", default=os.environ.get("HAPAX_COORD_WITNESS_URL", DEFAULT_URL))
+    parser.add_argument(
+        "--websocket-url",
+        default=os.environ.get("HAPAX_COORD_WITNESS_WEBSOCKET_URL", ""),
+        help="explicit CLOG websocket URL; defaults to ws(s)://<HTTP host>/clog",
+    )
+    parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument("--journal-lines", type=int, default=300)
+    parser.add_argument("--skip-http", action="store_true")
+    parser.add_argument("--skip-websocket", action="store_true")
+    parser.add_argument("--skip-journal", action="store_true")
+    args = parser.parse_args(argv)
+
+    witness = build_witness(args)
+    if args.json:
+        print(json.dumps(witness, indent=2, sort_keys=True))
+    elif witness["ok"]:
+        activation = witness["checks"]["activation"]
+        print(
+            "hapax-coord-runtime-witness: OK "
+            f"unit={witness['unit']} "
+            f"head={activation.get('activation_head')} "
+            f"source_origin_main={activation.get('source_origin_main')}"
+        )
+    else:
+        print(
+            "hapax-coord-runtime-witness: FAIL "
+            + ", ".join(witness["failures"])
+            + "; next: inspect JSON output, systemctl --user status hapax-coord.service, "
+            "activation .deployed-sha, and the recent journal",
+            file=sys.stderr,
+        )
+    return 0 if witness["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
