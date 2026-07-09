@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -112,6 +114,21 @@ def _extract_launcher_shell_function(name: str) -> str:
     start = text.index(f"{name}() {{")
     end = text.index("\n}\n\n", start) + len("\n}\n")
     return text[start:end]
+
+
+def _remote_dispatch_host() -> str:
+    current_host = socket.gethostname().split(".", 1)[0]
+    return "podium" if current_host == "hapax-appendix" else "appendix"
+
+
+def _remote_command_kind(remote_cmd: str) -> str:
+    parts = shlex.split(remote_cmd)
+    code = base64.b64decode(parts[-1]).decode()
+    if "required_dirs" in code and "executables" in code:
+        return "preflight"
+    if "os.execv" in code or "os.execvp" in code:
+        return "exec"
+    return "unknown"
 
 
 def _write_active_task(
@@ -628,6 +645,46 @@ exit 0
             assert "invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS" not in stderr
         else:
             assert "invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS" in stderr
+
+
+def test_launcher_local_auth_classifies_login_required_variants(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_codex = bin_dir / "codex"
+    bash = shutil.which("bash") or "/usr/bin/bash"
+    script = "\n".join(
+        [
+            _extract_launcher_shell_function("codex_exec_auth_sentinel_observed"),
+            _extract_launcher_shell_function("prove_local_codex_exec_auth"),
+            f'prove_local_codex_exec_auth "{fake_codex}"',
+        ]
+    )
+
+    for auth_message in ("Please log in", "required to log in", "NOT LOGGED IN"):
+        fake_codex.write_text(
+            f"""#!/usr/bin/env bash
+if [ "${{1:-}}" = "exec" ]; then
+  printf '%s\n' {shlex.quote(auth_message)} >&2
+  exit 42
+fi
+exit 0
+""",
+            encoding="utf-8",
+        )
+        fake_codex.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+        result = subprocess.run(
+            [bash, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=5,
+        )
+
+        assert result.returncode == 78
+        assert "codex_saved_auth_login_required" in result.stderr
 
 
 def test_launcher_skips_directory_codex_candidates(tmp_path: Path) -> None:
@@ -1880,6 +1937,58 @@ esac
     proof_root = Path(env["HOME"]) / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs"
     assert list(proof_root.glob("*cx-amber-demo-task-local.json"))
     assert list(proof_root.glob("*cx-amber-demo-task-remote.json"))
+
+
+def test_terminal_none_remote_reruns_saved_auth_preflight_after_claim(tmp_path: Path) -> None:
+    env, args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
+    (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
+    remote_cmds = tmp_path / "remote-cmds.txt"
+    _write_fake_ssh_eval(tmp_path / "bin")
+    env["HAPAX_FAKE_SSH_REMOTE_CMDS"] = str(remote_cmds)
+    env["HAPAX_DISPATCH_HOST"] = _remote_dispatch_host()
+
+    workdir = tmp_path / "worktree"
+    claim_log = tmp_path / "claim.log"
+    (workdir / "scripts").mkdir(parents=True)
+    claim_script = workdir / "scripts" / "cc-claim"
+    claim_script.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\n' "$*" >> {claim_log}
+exit 0
+""",
+        encoding="utf-8",
+    )
+    claim_script.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-amber",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(workdir),
+            "--task",
+            "demo-task",
+            "--terminal",
+            "none",
+            "--force",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert claim_log.read_text(encoding="utf-8").strip() == "demo-task"
+    kinds = [
+        _remote_command_kind(line) for line in remote_cmds.read_text(encoding="utf-8").splitlines()
+    ]
+    assert kinds == ["preflight", "preflight", "preflight", "exec"]
+    assert "--dangerously-bypass-approvals-and-sandbox" in args_file.read_text(encoding="utf-8")
 
 
 def test_terminal_tmux_remote_runner_refuses_handoff_when_self_delete_fails(

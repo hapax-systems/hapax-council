@@ -63,7 +63,7 @@ def _write_rejecting_codex(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         f"""#!/usr/bin/env bash
-if [ "${1:-}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
+if [ "${{1:-}}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
   echo "{auth_message}" >&2
   exit 77
 fi

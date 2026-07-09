@@ -111,6 +111,22 @@ def test_claude_settings_hook_command_with_args_uses_command_basename(tmp_path: 
     assert result.returncode == 0, result.stderr
 
 
+def test_claude_settings_wrapped_hook_command_uses_target_hook_basename(
+    tmp_path: Path,
+) -> None:
+    settings = _write_claude_settings(
+        tmp_path,
+        hook_command_overrides={
+            "hooks-doctor.sh": (
+                "bash /opt/hapax/hooks/grok-hook-adapter.sh /opt/hapax/hooks/hooks-doctor.sh"
+            )
+        },
+    )
+    result = _run("--claude-settings", settings)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_claude_settings_drift_with_args_reports_command_basename(tmp_path: Path) -> None:
     settings = _write_claude_settings(
         tmp_path,

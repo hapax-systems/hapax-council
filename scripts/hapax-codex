@@ -536,15 +536,16 @@ PYEOF
       >"$output_file" 2>"$error_file" || rc=$?
   if [ "$rc" -ne 0 ]; then
     auth_output="$(cat "$output_file" "$error_file" 2>/dev/null || true)"
+    auth_output_lc="${auth_output,,}"
     auth_error="codex_saved_auth_exec_failed:rc=$rc"
-    case "$auth_output" in
+    case "$auth_output_lc" in
       *refresh_token_invalidated*)
         auth_error="codex_saved_auth_refresh_token_invalidated"
         ;;
       *token_invalidated*)
         auth_error="codex_saved_auth_token_invalidated"
         ;;
-      *"login required"*|*"not logged in"*)
+      *"login required"*|*"required to log in"*|*"please log in"*|*"not logged in"*)
         auth_error="codex_saved_auth_login_required"
         ;;
     esac
@@ -711,7 +712,12 @@ def _auth_error(output, default):
     if "token_invalidated" in output:
         return "codex_saved_auth_token_invalidated"
     lowered=output.lower()
-    if "login required" in lowered or "not logged in" in lowered:
+    if (
+        "login required" in lowered
+        or "required to log in" in lowered
+        or "please log in" in lowered
+        or "not logged in" in lowered
+    ):
         return "codex_saved_auth_login_required"
     return default
 auth_error=""
@@ -1229,7 +1235,6 @@ fi
 
 strip_inherited_codex_access_token
 
-REMOTE_EXEC_AUTH_PREFLIGHT_PROVEN=0
 LOCAL_CODEX_EXEC_AUTH_PROVEN=0
 if [ "$explicit_codex_command" -eq 0 ]; then
   if [ -n "$DISPATCH_HOST" ]; then
@@ -1241,7 +1246,6 @@ if [ "$explicit_codex_command" -eq 0 ]; then
       echo "hapax-codex: remote saved-login auth preflight failed for $DISPATCH_HOST; next action: repair saved Codex login on the dispatch host, then retry" >&2
       exit 75
     fi
-    REMOTE_EXEC_AUTH_PREFLIGHT_PROVEN=1
   else
     # Local Codex launches must prove saved-login exec auth before cc-claim,
     # bootstrap creation, or worker exec can expose a stale/missing login.
@@ -1428,15 +1432,13 @@ fi
 
 if [ "$TERMINAL" = "none" ]; then
   if [ -n "$DISPATCH_HOST" ]; then
-    if [ "${REMOTE_EXEC_AUTH_PREFLIGHT_PROVEN:-0}" != "1" ]; then
-      REMOTE_EXEC_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
-      REMOTE_EXEC_PREFLIGHT_COMMAND="$(remote_python_command "$REMOTE_EXEC_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
-      if ! ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
-          -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST" \
-          "$REMOTE_EXEC_PREFLIGHT_COMMAND"; then
-        echo "hapax-codex: remote saved-login auth preflight failed for $DISPATCH_HOST; next action: repair saved Codex login on the dispatch host, then retry" >&2
-        exit 75
-      fi
+    REMOTE_EXEC_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
+    REMOTE_EXEC_PREFLIGHT_COMMAND="$(remote_python_command "$REMOTE_EXEC_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+        -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST" \
+        "$REMOTE_EXEC_PREFLIGHT_COMMAND"; then
+      echo "hapax-codex: remote saved-login auth preflight failed for $DISPATCH_HOST; next action: repair saved Codex login on the dispatch host, then retry" >&2
+      exit 75
     fi
     REMOTE_EXEC_PAYLOAD="$(remote_exec_payload_b64 "$DISPATCH_PROOF_FILE" codex "${CODEX_ARGS[@]}")"
     REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
