@@ -1173,6 +1173,7 @@ checklist: {}
             encoding="utf-8",
         )
         monkeypatch.setattr(dispatch.review_team, "_repo_head_matches", lambda *a, **k: True)
+        monkeypatch.setattr(dispatch.review_team, "_repo_worktree_clean", lambda *a, **k: True)
         reviewers = RecordingReviewers(
             replies={
                 "gemini": """```yaml

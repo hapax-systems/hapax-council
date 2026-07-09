@@ -19,6 +19,7 @@ ratifications:
     ratified: "2026-07-09"
     authority: operator
     decision_record: "operator-decision-memo:2026-07-09:item-27:accept-residual"
+    decision_record_path: "vault://30-areas/hapax/wave3d-session-reconstruction-2026-07-09.md"
     decision_record_sha256: 2451388794fce2e03fae076101bba93f056a0d7a5f49a8140b5e08fa91ef4664
     class: operator-privacy-residual
     lenses: [consent-provenance]

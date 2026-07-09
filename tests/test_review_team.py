@@ -7,6 +7,7 @@ Spec: ~/Documents/Personal/30-areas/hapax/pr-review-team-design-2026-06-11.md
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -2285,6 +2286,11 @@ class TestGoGate:
     when the actual file at head refutes it — verified deterministically out-of-model (ast.parse for
     Python; file/line existence otherwise). Non-literal criticals are never touched."""
 
+    @pytest.fixture(autouse=True)
+    def _synthetic_head_bound_worktrees_are_clean(self, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: True)
+
     def _py(self, root: Path, rel: str, src: str) -> None:
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -3013,7 +3019,8 @@ ratifications:
     ratified: "2026-07-09"
     authority: operator
     decision_record: "test decision record"
-    decision_record_sha256: bde012231fb6c2cfb7a16e1cee0d9fbeaef0c4089e995e1b510c7c9fb91087a1
+    decision_record_path: decision-record.md
+    decision_record_sha256: 72fcd1f631df8627a1cb5bb4c24564b746364d037660811d7b235ae738bdc564
     class: operator-privacy-residual
     lenses: [consent-provenance]
     topics: [residual]
@@ -3023,10 +3030,16 @@ ratifications:
       docs/research/x.md: a35e167cd7816b57ad2e59e7803c15d00a5b7a8629c11a7ea9066a58c3de446c
 """
 
+    @pytest.fixture(autouse=True)
+    def _synthetic_head_bound_worktrees_are_clean(self, monkeypatch) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: True)
+
     def _ledger(self, root: Path, text: str | None = None) -> None:
         path = root / "config" / "governance" / "operator-ratifications.yaml"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text if text is not None else self.LEDGER, encoding="utf-8")
+        (root / "decision-record.md").write_text("test decision record\n", encoding="utf-8")
 
     def _critical(self, lens: str = "consent-provenance", file: str = "docs/research/x.md") -> dict:
         return {
@@ -3216,9 +3229,25 @@ ratifications:
             tmp_path,
             self.LEDGER.replace(
                 "    decision_record_sha256: "
-                "bde012231fb6c2cfb7a16e1cee0d9fbeaef0c4089e995e1b510c7c9fb91087a1\n",
+                "72fcd1f631df8627a1cb5bb4c24564b746364d037660811d7b235ae738bdc564\n",
                 "",
             ),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_ledger_without_decision_record_path_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace("    decision_record_path: decision-record.md\n", ""),
         )
         doc = tmp_path / "docs" / "research" / "x.md"
         doc.parent.mkdir(parents=True, exist_ok=True)
@@ -3236,8 +3265,29 @@ ratifications:
             tmp_path,
             self.LEDGER.replace(
                 "    decision_record_sha256: "
-                "bde012231fb6c2cfb7a16e1cee0d9fbeaef0c4089e995e1b510c7c9fb91087a1\n",
+                "72fcd1f631df8627a1cb5bb4c24564b746364d037660811d7b235ae738bdc564\n",
                 "    decision_record_sha256: not-a-sha256\n",
+            ),
+        )
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_ledger_with_decision_record_pin_mismatch_waives_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(
+            tmp_path,
+            self.LEDGER.replace(
+                "    decision_record_sha256: "
+                "72fcd1f631df8627a1cb5bb4c24564b746364d037660811d7b235ae738bdc564\n",
+                "    decision_record_sha256: "
+                "0000000000000000000000000000000000000000000000000000000000000000\n",
             ),
         )
         doc = tmp_path / "docs" / "research" / "x.md"
@@ -3595,11 +3645,20 @@ class TestCommittedRatificationLedgerIsHonest:
             "re-ratification required:\n" + "\n".join(drifted)
         )
 
-    def test_every_ledger_entry_has_decision_record_hash_anchor(self) -> None:
+    def test_every_ledger_decision_record_pin_matches_record_bytes(self) -> None:
         for entry in self._ledger()["ratifications"]:
-            digest = entry.get("decision_record_sha256")
-            assert isinstance(digest, str)
-            assert re.fullmatch(r"[0-9a-f]{64}", digest), entry["id"]
+            record_ref = str(entry["decision_record_path"])
+            if record_ref.startswith("vault://"):
+                vault_root = Path(
+                    os.environ.get("HAPAX_VAULT_ROOT", "~/Documents/Personal")
+                ).expanduser()
+                record_path = vault_root / record_ref.removeprefix("vault://").lstrip("/")
+            else:
+                record_path = Path(record_ref).expanduser()
+            if not record_path.is_absolute():
+                record_path = self._repo_root() / record_path
+            actual = hashlib.sha256(record_path.read_bytes()).hexdigest()
+            assert actual == entry["decision_record_sha256"], entry["id"]
 
 
 class TestHeadBoundRepoRoot:
@@ -3620,6 +3679,7 @@ class TestHeadBoundRepoRoot:
     def test_prefers_the_caller_root_when_it_matches(self, tmp_path: Path, monkeypatch) -> None:
         rt = _load_review_team_module()
         monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: root == tmp_path)
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: True)
         monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
         assert rt._head_bound_repo_root(tmp_path, "a" * 40) == tmp_path
 
@@ -3635,7 +3695,34 @@ class TestHeadBoundRepoRoot:
         monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
         monkeypatch.setattr(rt, "_worktrees_of", lambda root: [stale, pr_tree])
         monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: root == pr_tree)
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: root == pr_tree)
         assert rt._head_bound_repo_root(stale, "b" * 40) == pr_tree
+
+    def test_skips_dirty_matching_worktree_and_uses_clean_matching_worktree(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        stale, dirty, clean = tmp_path / "activated", tmp_path / "a-dirty", tmp_path / "z-clean"
+        stale.mkdir()
+        dirty.mkdir()
+        clean.mkdir()
+        monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
+        monkeypatch.setattr(rt, "_worktrees_of", lambda root: [clean, dirty])
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: root in {dirty, clean})
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: root == clean)
+        assert rt._head_bound_repo_root(stale, "d" * 40) == clean
+
+    def test_returns_none_when_only_matching_worktree_is_dirty(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        dirty = tmp_path / "dirty"
+        dirty.mkdir()
+        monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
+        monkeypatch.setattr(rt, "_worktrees_of", lambda root: [dirty])
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: root == dirty)
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: False)
+        assert rt._head_bound_repo_root(tmp_path, "e" * 40) is None
 
     def test_none_when_no_checkout_is_the_reviewed_commit(
         self, tmp_path: Path, monkeypatch
@@ -3645,6 +3732,7 @@ class TestHeadBoundRepoRoot:
         monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
         monkeypatch.setattr(rt, "_worktrees_of", lambda root: [])
         monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: False)
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: True)
         assert rt._head_bound_repo_root(tmp_path, "c" * 40) is None
 
     def test_stale_caller_root_no_longer_disables_the_ratification_gate(
@@ -3662,6 +3750,8 @@ class TestHeadBoundRepoRoot:
         doc = pr_tree / "docs" / "research" / "x.md"
         doc.parent.mkdir(parents=True)
         doc.write_text("Generic residual research.\n", encoding="utf-8")
+        decision_record = pr_tree / "decision-record.md"
+        decision_record.write_text("test", encoding="utf-8")
         led = pr_tree / "config" / "governance" / "operator-ratifications.yaml"
         led.parent.mkdir(parents=True)
         led.write_text(
@@ -3680,6 +3770,7 @@ class TestHeadBoundRepoRoot:
                             "ratified": "2026-07-09",
                             "authority": "operator",
                             "decision_record": "test",
+                            "decision_record_path": "decision-record.md",
                             "decision_record_sha256": hashlib.sha256(b"test").hexdigest(),
                             "class": "operator-privacy-residual",
                             "lenses": ["consent-provenance"],
@@ -3697,6 +3788,7 @@ class TestHeadBoundRepoRoot:
         monkeypatch.setattr(rt, "_discover_repo_root", lambda: None)
         monkeypatch.setattr(rt, "_worktrees_of", lambda root: [stale, pr_tree])
         monkeypatch.setattr(rt, "_repo_head_matches", lambda root, sha: root == pr_tree)
+        monkeypatch.setattr(rt, "_repo_worktree_clean", lambda root: root == pr_tree)
         finding = {
             "severity": "critical",
             "lens": "consent-provenance",

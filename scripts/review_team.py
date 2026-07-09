@@ -1350,6 +1350,26 @@ _OPERATOR_RATIFICATIONS_RELPATH = Path("config/governance/operator-ratifications
 _SUPPORTED_RATIFICATION_SAFETY_POLICIES = frozenset({"operator_privacy_residual"})
 
 
+def _decision_record_pin_holds(repo_root: Path, entry: Mapping[str, Any]) -> bool:
+    """True iff the ratification's decision record exists and matches its sha256 pin."""
+    raw_path = entry.get("decision_record_path")
+    expected = entry.get("decision_record_sha256")
+    if not isinstance(raw_path, str) or not raw_path.strip() or not isinstance(expected, str):
+        return False
+    if raw_path.startswith("vault://"):
+        vault_root = Path(os.environ.get("HAPAX_VAULT_ROOT", "~/Documents/Personal")).expanduser()
+        record_path = vault_root / raw_path.removeprefix("vault://").lstrip("/")
+    else:
+        record_path = Path(raw_path).expanduser()
+    if not record_path.is_absolute():
+        record_path = repo_root / record_path
+    try:
+        actual = hashlib.sha256(record_path.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return actual == expected
+
+
 def _ratification_classes(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """Ledger-declared ratification classes keyed by stable class id.
 
@@ -1417,8 +1437,11 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
             or entry.get("authority") != class_config["authority"]
             or not isinstance(entry.get("decision_record"), str)
             or not str(entry.get("decision_record")).strip()
+            or not isinstance(entry.get("decision_record_path"), str)
+            or not str(entry.get("decision_record_path")).strip()
             or not isinstance(entry.get("decision_record_sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", str(entry.get("decision_record_sha256")))
+            or not _decision_record_pin_holds(repo_root, entry)
             or not isinstance(lenses, list)
             or not lenses
             or not all(isinstance(item, str) and item.strip() for item in lenses)
@@ -1541,6 +1564,21 @@ def _worktrees_of(repo_root: Path) -> list[Path]:
     ]
 
 
+def _repo_worktree_clean(repo_root: Path) -> bool:
+    """True iff ``repo_root`` has no uncommitted tracked or untracked working-tree bytes."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0 and not out.stdout.strip()
+
+
 def _head_bound_repo_root(repo_root: Path | None, head_sha: str | None) -> Path | None:
     """The checkout that IS the reviewed commit, or None.
 
@@ -1551,9 +1589,11 @@ def _head_bound_repo_root(repo_root: Path | None, head_sha: str | None) -> Path 
     and is essentially never at a PR head — so both gates silently no-oped in production
     and every phantom/waivable critical blocked forever.
 
-    Resolution order, each candidate accepted ONLY if its HEAD equals ``head_sha``:
-    the caller's root, the CWD-discovered repo, then any sibling worktree of either.
-    Returning None preserves the fail-closed behaviour (every critical blocks).
+    Resolution order: the caller's root, the CWD-discovered repo, then deterministic
+    sibling worktree paths of either. Each candidate is accepted ONLY if its HEAD equals
+    ``head_sha`` AND its working tree is clean, because the gates read file bytes from the
+    working tree. Returning None preserves the fail-closed behaviour (every critical
+    blocks).
     """
     want = str(head_sha or "").strip()
     if not want:
@@ -1565,12 +1605,12 @@ def _head_bound_repo_root(repo_root: Path | None, head_sha: str | None) -> Path 
             continue
         seen.add(base)
         candidates.append(base)
-        for tree in _worktrees_of(base):
+        for tree in sorted(_worktrees_of(base), key=lambda path: str(path)):
             if tree not in seen:
                 seen.add(tree)
                 candidates.append(tree)
     for candidate in candidates:
-        if _repo_head_matches(candidate, want):
+        if _repo_head_matches(candidate, want) and _repo_worktree_clean(candidate):
             return candidate
     return None
 

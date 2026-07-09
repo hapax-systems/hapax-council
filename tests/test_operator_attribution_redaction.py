@@ -43,6 +43,7 @@ from shared.operator_attribution_scan import (
     file_enforced_class_clean,
     file_waiver_safe,
     load_reviewed_generic,
+    operator_affect_asserted,
     span_digest,
 )
 
@@ -281,6 +282,14 @@ def test_waiver_safety_blocks_operator_attributed_first_person_affect_quote(
     )
 
     assert not file_waiver_safe(tmp_path, rel)
+
+
+def test_operator_affect_asserted_detects_attributed_first_person_affect_quote() -> None:
+    assert operator_affect_asserted('Motivating operator quote: "I don\'t like emptiness."')
+
+
+def test_operator_affect_asserted_ignores_system_first_person_affect_quote() -> None:
+    assert not operator_affect_asserted('The system says: "I don\'t like empty panels."')
 
 
 def test_waiver_safety_allows_system_attributed_first_person_affect_quote(

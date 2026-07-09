@@ -26,7 +26,7 @@ _DIAGNOSIS = (
 )
 _DIRECT_DIAGNOSIS = (
     rf"(?:{_DIAGNOSIS}|\bdiagnos(?:is|es)\b|\bdiagnosed\s+condition(?:s)?\b"
-    r"|\bcondition(?:s)?\b)"
+    r"|\b(?:medical|health|mental\s+health|neurodevelopmental|cognitive)\s+condition(?:s)?\b)"
 )
 #: A newline that continues one wrapped prose sentence, rather than starting a new
 #: structural element. Blocked by: a blank line, a markdown table row/heading/quote/list
