@@ -1370,6 +1370,46 @@ def test_every_m_crossing_variant_with_inherited_scores_carries_the_boundary_blo
     }
     for variant in crossing_with_inheritance:
         assert SCORES_INHERITED_ACROSS_MODEL_BOUNDARY in variant.blocked_reasons, variant.variant_id
+    # the same-model leaf carries NO boundary blocker: it does not cross the M-axis and
+    # must remain the selected reachable leaf (see the resolver test below)
+    agy = registry.require("agy.review.direct")
+    pro_high = next(v for v in agy.descriptor_variants if v.variant_id == "agy@gemini-3.1-pro-high")
+    assert SCORES_INHERITED_ACROSS_MODEL_BOUNDARY not in pro_high.blocked_reasons
+    assert not (pro_high.knobs_override.keys() & _MODEL_BOUNDARY_KNOBS)
+
+
+def test_disarmed_variants_are_excluded_from_effort_leaf_resolution() -> None:
+    # The real enforcement path (zero dispatcher edits): _build_supply_descriptor excludes
+    # blocked variants, so the cheapest-meeting-leaf resolver can no longer pick the
+    # cross-model gpt-oss leaf for a medium effort demand.
+    from shared.dispatcher_policy import _resolve_effort_leaf
+    from shared.platform_capability_registry import _build_supply_descriptor
+
+    route = load_platform_capability_registry().require("agy.review.direct")
+    descriptor = _build_supply_descriptor(route)
+
+    # the blocked M-crossing leaves are not reachable supply at all
+    assert "agy@gpt-oss-120b-medium" not in descriptor.effort_to_variant.values()
+    assert "agy@claude-sonnet-4.6-thinking" not in descriptor.effort_to_variant.values()
+
+    # effort_demand=medium resolves to the SAME-MODEL gemini-3.1-pro-high leaf — the
+    # pre-declared enforce-day behavior — never to the cross-model gpt-oss leaf
+    assert _resolve_effort_leaf(descriptor, "medium") == "agy@gemini-3.1-pro-high"
+
+    # RED direction (the armed path this PR disarms): with the blocker counterfactually
+    # removed, the identical demand resolves to the cross-model gpt-oss leaf on inherited
+    # scores. model_copy skips validation deliberately — constructing this variant
+    # normally is impossible (the rule-1 guard raises).
+    rearmed_variants = [
+        variant.model_copy(update={"blocked_reasons": []})
+        if variant.variant_id == "agy@gpt-oss-120b-medium"
+        else variant
+        for variant in route.descriptor_variants
+    ]
+    rearmed = _build_supply_descriptor(
+        route.model_copy(update={"descriptor_variants": rearmed_variants})
+    )
+    assert _resolve_effort_leaf(rearmed, "medium") == "agy@gpt-oss-120b-medium"
 
 
 def test_variant_inheriting_scores_across_model_boundary_requires_blocker() -> None:
