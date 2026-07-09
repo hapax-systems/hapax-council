@@ -2219,8 +2219,15 @@ def _contains_any(value: str, needles: tuple[str, ...]) -> bool:
 def _contains_audio_or_live_egress_marker(value: str) -> bool:
     # "go-live" is the SDLC/program milestone phrase, not evidence that the task
     # mutates a live public/audio egress surface.
+    # NOTE: bare "live" is intentionally NOT a needle. It is adverbial as often
+    # as not ("the live grounded path" = the actual path) — PR #4265's title
+    # tripped on it and its system auto-arm was vetoed over a pure recruiter
+    # fix. Real live-egress surfaces say "livestream"/"broadcast"; "audio" and
+    # "egress" remain the SSOT tokens. (A path/diff-based derivation — does the
+    # task actually touch audio/egress file paths — is the perception-grounded
+    # long-term direction; this narrows the lexical rule until then.)
     without_go_live = _GO_LIVE_RE.sub("golive", value.lower())
-    return _contains_any(without_go_live, ("audio", "egress", "live"))
+    return _contains_any(without_go_live, ("audio", "egress", "livestream", "broadcast"))
 
 
 def _optional_frontmatter_string(value: object) -> str | None:
