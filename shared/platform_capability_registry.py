@@ -31,6 +31,7 @@ from shared.platform_capability_receipts import (
     receipt_reference,
 )
 from shared.quota_spend_ledger import (
+    CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
     QuotaSpendLedgerError,
     SubscriptionQuotaState,
@@ -78,9 +79,16 @@ AGY_REVIEW_ROUTE_ID = "agy.review.direct"
 AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
 GLMCP_REVIEW_ROUTE_ID = "glmcp.review.direct"
 GLMCP_REVIEW_ADMISSION_BLOCKER = "glmcp_review_seat_receipt_admission_required"
+CLAUDE_HEADLESS_ROUTE_ID = "claude.headless.full"
+CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER = "account_live_quota_receipt_absent"
 ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     AGY_REVIEW_ROUTE_ID: AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER,
     GLMCP_REVIEW_ROUTE_ID: GLMCP_REVIEW_ADMISSION_BLOCKER,
+    # claude.headless.full: a fresh live ledger admission (telemetry-writer-folded) injects the
+    # account-live-quota:observed evidence ref into quota freshness so the availability guarantor
+    # attests. Without a live ledger, _route_specific_quota_admission_fresh returns (False, ()) and
+    # the route stays held — lane/session presence never clears this.
+    CLAUDE_HEADLESS_ROUTE_ID: CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER,
 }
 SCORES_INHERITED_ACROSS_MODEL_BOUNDARY = "scores_inherited_across_model_boundary"
 #: knobs_override keys that change the model axis of the subject tuple. Route-level scores
@@ -89,6 +97,19 @@ SCORES_INHERITED_ACROSS_MODEL_BOUNDARY = "scores_inherited_across_model_boundary
 #: the one that earned them (the silent-downgrade path).
 _MODEL_BOUNDARY_KNOBS = frozenset({"model_id", "quantization"})
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
+
+
+def _ref_tokens(ref: str) -> tuple[str, ...]:
+    normalized = re.sub(r"[\s_:]+", "-", ref.strip().lower())
+    if not normalized:
+        return ()
+    return tuple(token for token in normalized.split("-") if token)
+
+
+def _ref_has_token_suffix(ref: str, suffix: str) -> bool:
+    ref_tokens = _ref_tokens(ref)
+    suffix_tokens = _ref_tokens(suffix)
+    return bool(suffix_tokens) and ref_tokens[-len(suffix_tokens) :] == suffix_tokens
 
 
 class PlatformCapabilityRegistryError(ValueError):
@@ -1564,12 +1585,19 @@ def _apply_receipt_to_route_payload(
         route_payload,
         now=now,
     )
-    if quota_admission_refs:
+    quota_admission_refs_to_inject = quota_admission_refs
+    if not quota_admission_fresh and route_payload.get("route_id") == CLAUDE_HEADLESS_ROUTE_ID:
+        quota_admission_refs_to_inject = tuple(
+            ref
+            for ref in quota_admission_refs
+            if not _ref_has_token_suffix(ref, CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX)
+        )
+    if quota_admission_refs_to_inject:
         freshness["evidence"]["quota"]["evidence_refs"] = list(
             dict.fromkeys(
                 [
                     *freshness["evidence"]["quota"].get("evidence_refs", []),
-                    *quota_admission_refs,
+                    *quota_admission_refs_to_inject,
                 ]
             )
         )
@@ -1616,7 +1644,7 @@ def _quota_spend_live_path_from_env() -> Path | None:
     if not configured:
         return None
     if configured.strip() in {"0", "none", "None", "false", "False"}:
-        return None
+        return Path("/dev/null/hapax-quota-spend-ledger-live-disabled.json")
     return Path(configured).expanduser()
 
 
@@ -1695,7 +1723,12 @@ def _resource_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[st
 
 
 def _quota_unobservable_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
-    reasons = {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+    reasons = {"quota_telemetry_unknown"}
+    if (
+        ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS.get(route_payload.get("route_id"))
+        != CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER
+    ):
+        reasons.add(CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER)
     if route_payload.get("capacity_pool") in {
         CapacityPool.API_PAID_SPEND.value,
         CapacityPool.BOOTSTRAP_BUDGET.value,
@@ -1710,6 +1743,11 @@ def _quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
         # Route-specific quota admission is consumed from the live quota ledger,
         # not from a platform-capability quota receipt.
         return set()
+    if (
+        ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS.get(route_payload.get("route_id"))
+        == CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER
+    ):
+        return {"quota_telemetry_unknown"}
     return {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
 
 

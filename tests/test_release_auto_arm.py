@@ -107,6 +107,25 @@ def test_ineligible_when_audio_or_live_egress_sensitive() -> None:
     assert any("audio_or_live_egress" in blocker for blocker in assessment.blockers)
 
 
+def test_account_live_quota_evidence_does_not_false_block_release_auto_arm() -> None:
+    fm = _eligible_frontmatter(
+        title="Claude subscription quota receipts require account-live evidence",
+        risk_flags={
+            "governance_sensitive": True,
+            "privacy_or_secret_sensitive": True,
+        },
+        tags=["cc-task", "quota", "receipt", "subscription"],
+    )
+    verified_checks = set(RELEASE_MITIGATION_CHECKS["governance_sensitive"]) | set(
+        RELEASE_MITIGATION_CHECKS["privacy_or_secret_sensitive"]
+    )
+
+    assessment = assess_release_auto_arm(fm, verified_checks=verified_checks)
+
+    assert assessment.eligible is True
+    assert not any("audio_or_live_egress_sensitive" in blocker for blocker in assessment.blockers)
+
+
 def test_ineligible_when_public_claim_sensitive() -> None:
     fm = _eligible_frontmatter(
         title="Publish public claim to external surface",
