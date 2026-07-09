@@ -734,6 +734,7 @@ def _decision_has_durable_evidence_refs(decision: SCEDPhase1Decision) -> bool:
         _nonempty_durable_refs(decision.evidence_refs)
         and _nonempty_durable_refs(decision.gate_result.evidence_refs)
         and _decision_evidence_binds_material(decision)
+        and _decision_evidence_binds_phase1_witnesses(decision)
     )
 
 
@@ -757,6 +758,19 @@ def _decision_evidence_binds_material(decision: SCEDPhase1Decision) -> bool:
     return expected.issubset(decision.evidence_refs) and expected.issubset(
         decision.gate_result.evidence_refs
     )
+
+
+def _decision_evidence_binds_phase1_witnesses(decision: SCEDPhase1Decision) -> bool:
+    required_prefixes = ("held-out-witness:", "similarity-witness:")
+    return all(
+        _has_ref_with_prefix(decision.evidence_refs, prefix)
+        and _has_ref_with_prefix(decision.gate_result.evidence_refs, prefix)
+        for prefix in required_prefixes
+    )
+
+
+def _has_ref_with_prefix(values: Sequence[str], prefix: str) -> bool:
+    return any(value.startswith(prefix) for value in values)
 
 
 def _nonempty_durable_refs(values: Sequence[str]) -> bool:
