@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -158,6 +159,15 @@ DEFAULT_STORM_RECENT_RUN_LIMIT = 20
 STORM_MAX_ENTRIES_TO_BUILD = 1
 STEADY_MAX_ENTRIES_TO_BUILD = 6
 FAILED_MERGE_GROUP_CONCLUSIONS = {"failure", "timed_out", "startup_failure", "cancelled"}
+
+
+class AutoqueueTerminated(RuntimeError):
+    """Foreground SIGTERM interrupted reconciliation before a full report."""
+
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+        super().__init__(f"autoqueue terminated by {_signal_name(signum)}")
+
 
 # Shared-file epic serialization — single-lane affinity (CASE-SBCL-CLOG-COORD-001).
 # The CLOG/Trainyard cockpit epic is a parallel dependency DAG whose branches all
@@ -542,6 +552,73 @@ def write_stable_report(
     except OSError as exc:
         return payload, (False, f"{exc.__class__.__name__}: {exc}")
     return payload, (True, str(report_path))
+
+
+def _signal_name(signum: int) -> str:
+    try:
+        return signal.Signals(signum).name
+    except ValueError:
+        return f"signal_{signum}"
+
+
+def _install_foreground_termination_handler() -> Any:
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def _handle_sigterm(signum: int, _frame: Any) -> None:
+        raise AutoqueueTerminated(signum)
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+    return previous
+
+
+def _restore_foreground_termination_handler(previous: Any) -> None:
+    signal.signal(signal.SIGTERM, previous)
+
+
+def _termination_report_from_args(
+    args: argparse.Namespace,
+    *,
+    signum: int,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    now = now or datetime.now(UTC)
+    exit_code = 128 + int(signum)
+    report = {
+        "repo": args.repo,
+        "apply": bool(args.apply),
+        "skipped": True,
+        "reason": "terminated_by_signal",
+        "signal": _signal_name(signum),
+        "exit_code": exit_code,
+        "detail": (
+            "Foreground autoqueue received SIGTERM before completing a full "
+            "reconciliation report; no additional queue mutation was attempted "
+            "by the termination handler."
+        ),
+        "require_route_metadata": not args.allow_legacy_task_metadata,
+        "include_pending_auto": not args.no_pending_auto,
+        "required_checks": []
+        if args.no_required_checks
+        else list(args.required_checks or DEFAULT_REQUIRED_CHECKS),
+        "limit": args.limit,
+        "decisions": [],
+        "mutations": [],
+        "counts": {
+            "queue": 0,
+            "enable_auto_merge": 0,
+            "already_queued": 0,
+            "already_auto_merge_enabled": 0,
+            "disable_auto_merge": 0,
+            "dequeue": 0,
+            "blocked": 0,
+        },
+    }
+    return _finalize_reconciler_report(
+        report,
+        report_path=None if args.no_write_report else args.report_path,
+        admission_governor_path=args.admission_governor_path,
+        now=now,
+    )
 
 
 def _finalize_reconciler_report(
@@ -2992,26 +3069,34 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stderr,
     )
 
-    report = run_reconciler(
-        repo=args.repo,
-        repo_root=args.repo_root,
-        vault_root=args.vault_root,
-        apply=args.apply,
-        require_route_metadata=not args.allow_legacy_task_metadata,
-        include_pending_auto=not args.no_pending_auto,
-        required_checks=()
-        if args.no_required_checks
-        else tuple(args.required_checks or DEFAULT_REQUIRED_CHECKS),
-        limit=args.limit,
-        lineage_ledger_path=args.lineage_ledger_path,
-        storm_mode_enabled=not args.disable_storm_mode,
-        advisory_open_pr_count=args.advisory_open_pr_count,
-        storm_failed_merge_group_threshold=args.storm_failed_merge_group_threshold,
-        storm_recent_run_limit=args.storm_recent_run_limit,
-        report_path=None if args.no_write_report else args.report_path,
-        admission_governor_path=args.admission_governor_path,
-    )
-    print(json.dumps(report, indent=2, sort_keys=True))
+    previous_sigterm = _install_foreground_termination_handler()
+    try:
+        report = run_reconciler(
+            repo=args.repo,
+            repo_root=args.repo_root,
+            vault_root=args.vault_root,
+            apply=args.apply,
+            require_route_metadata=not args.allow_legacy_task_metadata,
+            include_pending_auto=not args.no_pending_auto,
+            required_checks=()
+            if args.no_required_checks
+            else tuple(args.required_checks or DEFAULT_REQUIRED_CHECKS),
+            limit=args.limit,
+            lineage_ledger_path=args.lineage_ledger_path,
+            storm_mode_enabled=not args.disable_storm_mode,
+            advisory_open_pr_count=args.advisory_open_pr_count,
+            storm_failed_merge_group_threshold=args.storm_failed_merge_group_threshold,
+            storm_recent_run_limit=args.storm_recent_run_limit,
+            report_path=None if args.no_write_report else args.report_path,
+            admission_governor_path=args.admission_governor_path,
+        )
+    except AutoqueueTerminated as exc:
+        report = _termination_report_from_args(args, signum=exc.signum)
+        print(json.dumps(report, indent=2, sort_keys=True), flush=True)
+        return 128 + exc.signum
+    finally:
+        _restore_foreground_termination_handler(previous_sigterm)
+    print(json.dumps(report, indent=2, sort_keys=True), flush=True)
     return 0
 
 

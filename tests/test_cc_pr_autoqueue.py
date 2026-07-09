@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import signal
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -1961,6 +1962,53 @@ def test_writes_stable_report_with_verbatim_governor_and_blockers(tmp_path: Path
             "auto_arm": False,
         }
     ]
+
+
+def test_main_emits_stable_report_when_foreground_sigterm_interrupts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report_path = tmp_path / "orchestration" / "cc-pr-autoqueue-report.json"
+    governor_path = tmp_path / "pr-admission-governor.yaml"
+
+    def interrupted_reconciler(**_: Any) -> dict[str, Any]:
+        raise autoqueue.AutoqueueTerminated(signal.SIGTERM)
+
+    monkeypatch.setattr(autoqueue, "run_reconciler", interrupted_reconciler)
+
+    rc = autoqueue.main(
+        [
+            "--repo",
+            "owner/repo",
+            "--repo-root",
+            str(tmp_path),
+            "--vault-root",
+            str(tmp_path),
+            "--apply",
+            "--limit",
+            "10",
+            "--report-path",
+            str(report_path),
+            "--admission-governor-path",
+            str(governor_path),
+        ]
+    )
+
+    assert rc == 143
+    stdout_payload = json.loads(capsys.readouterr().out)
+    assert stdout_payload["reason"] == "terminated_by_signal"
+    assert stdout_payload["signal"] == "SIGTERM"
+    assert stdout_payload["exit_code"] == 143
+    assert stdout_payload["apply"] is True
+    assert stdout_payload["limit"] == 10
+    assert stdout_payload["mutations"] == []
+    assert stdout_payload["stable_report"]["written"] is True
+
+    stable_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert stable_payload["event"] == "cc_pr_autoqueue_report"
+    assert stable_payload["reason"] == "terminated_by_signal"
+    assert stable_payload["signal"] == "SIGTERM"
+    assert stable_payload["exit_code"] == 143
+    assert stable_payload["per_pr_admission"] == []
 
 
 def test_stable_report_marks_missing_governor_without_defaulting_normal(tmp_path: Path) -> None:
