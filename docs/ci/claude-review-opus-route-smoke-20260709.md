@@ -7,7 +7,7 @@ values, account identifiers, billing identifiers, or lane/session presence as
 quota evidence.
 
 - Observed at: `2026-07-09T13:36:12Z`
-- Worktree: `/home/hapax/projects/hapax-council--cx-mondlc`
+- Worktree: `~/projects/hapax-council--cx-mondlc`
 - Claude CLI version: `2.1.205 (Claude Code)`
 - Wrapper: `scripts/hapax-claude-reviewer`
 - Wrapper sha256: `f725efc83ddc3765ca92f818af13642f2121d100888c1b09cda6929ace2c7992`
@@ -26,7 +26,7 @@ quota evidence.
   contained no `tool_use` marker and no `bash` text.
 - Prompt/output persistence: prompt omitted, output body omitted, hash only.
 - Admission receipt minted from the account-live observation:
-  `/home/hapax/.cache/hapax/relay/receipts/claude-subscription-quota-admission-review-opus-20260709t132643z.yaml`
+  `~/.cache/hapax/relay/receipts/claude-subscription-quota-admission-review-opus-20260709t132643z.yaml`
   (`fresh_until: 2026-07-09T13:41:48Z`).
 
 ## Tool Surface Challenge
