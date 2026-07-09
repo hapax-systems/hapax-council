@@ -12,6 +12,7 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 from shared.dispatcher_policy import (
@@ -39,6 +40,9 @@ NOW_DT = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
 API_NOW = "2026-06-04T16:00:00Z"
 API_NOW_DT = datetime.fromisoformat(API_NOW.replace("Z", "+00:00"))
 SECRET = "sk-live-secret-value"
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _run_receipts(
@@ -535,6 +539,40 @@ def test_codex_receipt_exec_auth_timeout_fails_closed(tmp_path: Path) -> None:
     assert "codex_exec_auth_timeout" in reasons
 
 
+def test_codex_exec_auth_timeout_env_malformed_falls_back_to_default(
+    tmp_path: Path,
+) -> None:
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": "", "HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS": "not-a-float"},
+        codex_access_token=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS" in result.stderr
+    receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
+    assert receipt["capability"]["status"] == "blocked"
+    assert "cli_missing_or_unusable" in receipt["capability"]["reason_codes"]
+    assert "codex_exec_auth_failed" in receipt["capability"]["reason_codes"]
+
+
+def test_codex_exec_auth_timeout_env_nonpositive_falls_back_to_default(
+    tmp_path: Path,
+) -> None:
+    result = _run_receipts(
+        tmp_path,
+        env={"PATH": "", "HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS": "0"},
+        codex_access_token=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "nonpositive HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS" in result.stderr
+    receipt = json.loads((tmp_path / "codex.json").read_text(encoding="utf-8"))
+    assert receipt["capability"]["status"] == "blocked"
+    assert "cli_missing_or_unusable" in receipt["capability"]["reason_codes"]
+    assert "codex_exec_auth_failed" in receipt["capability"]["reason_codes"]
+
+
 def test_codex_receipt_exec_auth_timeout_is_separate_from_cli_timeout(
     tmp_path: Path,
 ) -> None:
@@ -932,7 +970,11 @@ def test_antigrav_receipt_cannot_reintroduce_excised_route(tmp_path: Path) -> No
         assert not (tmp_path / f"{platform}.json").exists()
 
 
-def test_agy_receipt_records_live_review_route_without_unblocking_quota(tmp_path: Path) -> None:
+def test_agy_receipt_records_live_review_route_without_unblocking_quota(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(tmp_path / "missing-live.json"))
     bin_dir = tmp_path / "bin"
     home_dir = tmp_path / "home"
     bin_dir.mkdir()

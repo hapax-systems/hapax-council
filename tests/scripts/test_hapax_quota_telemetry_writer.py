@@ -37,7 +37,9 @@ def _run_writer(
     relay = tmp_path / "relay-receipts"
     platform_receipts = tmp_path / "platform-receipts"
     relay.mkdir(exist_ok=True)
-    platform_receipts.mkdir(exist_ok=True)
+    if "--platform-capability-receipt-dir" not in extra_args:
+        platform_receipts.mkdir(exist_ok=True)
+        _codex_platform_receipt(platform_receipts)
     stub = _fake_nvidia_smi(tmp_path, nvidia_body)
     result = subprocess.run(
         [
@@ -138,13 +140,18 @@ action: exit_clean_await_restart
 def _codex_platform_receipt(
     receipt_dir: Path,
     *,
-    reason_code: str,
+    reason_code: str | None = None,
     observed_at: str = "2026-06-09T23:59:00Z",
 ) -> None:
     receipt_dir.mkdir(parents=True, exist_ok=True)
+    status = "blocked" if reason_code is not None else "observed"
+    reason_codes = ["codex_exec_auth_failed", reason_code] if reason_code is not None else []
+    evidence_refs = (
+        [] if reason_code is not None else ["host:local:codex:exec:auth:saved-login:observed"]
+    )
     payload = {
         "receipt_schema": 1,
-        "receipt_id": "codex-auth-blocked-test",
+        "receipt_id": "codex-auth-blocked-test" if reason_code else "codex-auth-fresh-test",
         "platform": "codex",
         "routes": ["codex.headless.full"],
         "observed_at": observed_at,
@@ -160,20 +167,20 @@ def _codex_platform_receipt(
         "tool_state": [],
         "mcp_status": [],
         "capability": {
-            "status": "blocked",
+            "status": status,
             "source": "live",
             "observed_at": observed_at,
             "stale_after": "15m",
-            "evidence_refs": [],
-            "reason_codes": ["codex_exec_auth_failed", reason_code],
+            "evidence_refs": evidence_refs,
+            "reason_codes": reason_codes,
         },
         "resource": {
-            "status": "blocked",
+            "status": status,
             "source": "live",
             "observed_at": observed_at,
             "stale_after": "15m",
-            "evidence_refs": [],
-            "reason_codes": ["codex_exec_auth_failed", reason_code],
+            "evidence_refs": evidence_refs,
+            "reason_codes": reason_codes,
         },
         "quota": {
             "status": "observed",
@@ -502,6 +509,67 @@ def test_codex_snapshot_unknown_when_platform_receipt_is_invalid(
     assert "codex_platform_capability_receipt_invalid" in codex_snapshot["operator_visible_reason"]
     assert (
         "codex-auth-blocker:codex_platform_capability_receipt_invalid"
+        in codex_snapshot["evidence_refs"]
+    )
+
+
+def test_codex_snapshot_unknown_when_platform_receipt_dir_is_missing(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts-absent"
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_platform_capability_receipt_absent" in codex_snapshot["operator_visible_reason"]
+    assert (
+        "platform-capability-receipt:codex:absent:receipt-dir-missing"
+        in codex_snapshot["evidence_refs"]
+    )
+    assert (
+        "codex-auth-blocker:codex_platform_capability_receipt_absent"
+        in codex_snapshot["evidence_refs"]
+    )
+
+
+def test_codex_snapshot_unknown_when_no_codex_platform_receipt(
+    tmp_path: Path,
+) -> None:
+    platform_receipts = tmp_path / "platform-receipts-empty"
+    platform_receipts.mkdir()
+
+    result, out = _run_writer(
+        tmp_path,
+        "--platform-capability-receipt-dir",
+        str(platform_receipts),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "unknown"
+    assert "codex_platform_capability_receipt_absent" in codex_snapshot["operator_visible_reason"]
+    assert (
+        "platform-capability-receipt:codex:absent:no-codex-receipt"
+        in codex_snapshot["evidence_refs"]
+    )
+    assert (
+        "codex-auth-blocker:codex_platform_capability_receipt_absent"
         in codex_snapshot["evidence_refs"]
     )
 

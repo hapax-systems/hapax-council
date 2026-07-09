@@ -867,14 +867,20 @@ def stale_codex_platform_receipt_blocker(
     """Return a fail-closed blocker when the newest Codex receipt aged out."""
 
     if not receipt_dir.exists():
-        return None
+        return CodexAuthBlocker(
+            reason_codes=["codex_platform_capability_receipt_absent"],
+            evidence_refs=["platform-capability-receipt:codex:absent:receipt-dir-missing"],
+        )
     codex_receipts = []
     for path in sorted(receipt_dir.glob("*.json")):
         receipt = load_platform_capability_receipt(path)
         if receipt.platform == "codex":
             codex_receipts.append(receipt)
     if not codex_receipts:
-        return None
+        return CodexAuthBlocker(
+            reason_codes=["codex_platform_capability_receipt_absent"],
+            evidence_refs=["platform-capability-receipt:codex:absent:no-codex-receipt"],
+        )
     latest = max(codex_receipts, key=lambda item: item.observed_at)
     if receipt_is_fresh(latest, now=now):
         return None

@@ -430,6 +430,134 @@ strip_inherited_codex_access_token() {
   return 0
 }
 
+codex_exec_auth_sentinel_observed() {
+  local output_file="$1"
+  python3 - "$output_file" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+sentinel = "HAPAX_CODEX_EXEC_AUTH_OK"
+
+
+def assistant_content_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        pieces = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    pieces.append(text)
+        return "".join(pieces)
+    return ""
+
+
+def event_text(event):
+    if not isinstance(event, dict):
+        return ""
+    if event.get("type") == "item.completed":
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+            return text if isinstance(text, str) else ""
+    if event.get("type") == "response.output_text.done":
+        text = event.get("text")
+        return text if isinstance(text, str) else ""
+    if event.get("role") == "assistant":
+        return assistant_content_text(event.get("content"))
+    message = event.get("message")
+    if isinstance(message, str):
+        return message
+    if isinstance(message, dict) and message.get("role") == "assistant":
+        return assistant_content_text(message.get("content"))
+    return ""
+
+
+stdout = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+if stdout.strip() == sentinel:
+    raise SystemExit(0)
+for line in stdout.splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if event_text(event).strip() == sentinel:
+        raise SystemExit(0)
+raise SystemExit(1)
+PYEOF
+}
+
+prove_local_codex_exec_auth() {
+  local codex_bin="$1" output_file="" error_file="" rc=0 timeout_s="" auth_output="" auth_error=""
+  timeout_s="${HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS:-30}"
+  if ! python3 - "$timeout_s" <<'PYEOF' >/dev/null 2>&1
+import sys
+
+float(sys.argv[1])
+PYEOF
+  then
+    echo "hapax-codex: invalid HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS='$timeout_s'; using 30s for the saved-login auth witness" >&2
+    timeout_s="30"
+  fi
+  output_file="$(mktemp "${TMPDIR:-/tmp}/hapax-codex-exec-auth.XXXXXX")" || {
+    echo "hapax-codex: failed to create temporary Codex auth witness file; next action: verify TMPDIR or /tmp permissions before retrying" >&2
+    exit 78
+  }
+  error_file="$(mktemp "${TMPDIR:-/tmp}/hapax-codex-exec-auth-err.XXXXXX")" || {
+    rm -f "$output_file"
+    echo "hapax-codex: failed to create temporary Codex auth witness file; next action: verify TMPDIR or /tmp permissions before retrying" >&2
+    exit 78
+  }
+  timeout "${timeout_s}s" env -i \
+    ALL_PROXY="${ALL_PROXY:-}" \
+    HOME="$HOME" \
+    HTTP_PROXY="${HTTP_PROXY:-}" \
+    HTTPS_PROXY="${HTTPS_PROXY:-}" \
+    LANG="${LANG:-C}" \
+    LC_ALL="${LC_ALL:-}" \
+    NO_COLOR=1 \
+    NO_PROXY="${NO_PROXY:-}" \
+    PATH="$PATH" \
+    REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-}" \
+    SSL_CERT_FILE="${SSL_CERT_FILE:-}" \
+    "$codex_bin" exec \
+      --ephemeral \
+      --skip-git-repo-check \
+      --ignore-rules \
+      --sandbox read-only \
+      --json \
+      --cd "$WORKDIR" \
+      "Reply exactly: HAPAX_CODEX_EXEC_AUTH_OK" \
+      >"$output_file" 2>"$error_file" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    auth_output="$(cat "$output_file" "$error_file" 2>/dev/null || true)"
+    auth_error="codex_saved_auth_exec_failed:rc=$rc"
+    case "$auth_output" in
+      *refresh_token_invalidated*)
+        auth_error="codex_saved_auth_refresh_token_invalidated"
+        ;;
+      *token_invalidated*)
+        auth_error="codex_saved_auth_token_invalidated"
+        ;;
+      *"login required"*|*"not logged in"*)
+        auth_error="codex_saved_auth_login_required"
+        ;;
+    esac
+    echo "hapax-codex: saved Codex auth was rejected by codex exec ($auth_error; rc=$rc); next action: repair saved Codex login on the dispatch host via codex login or the documented auth-cache transfer fallback, then retry governed dispatch" >&2
+    sed -n '1,4p' "$error_file" >&2 || true
+    rm -f "$output_file" "$error_file"
+    exit 78
+  fi
+  if ! codex_exec_auth_sentinel_observed "$output_file"; then
+    echo "hapax-codex: codex exec auth witness did not return the expected sentinel; next action: re-run the Codex auth receipt probe before dispatching Codex lanes" >&2
+    rm -f "$output_file" "$error_file"
+    exit 78
+  fi
+  rm -f "$output_file" "$error_file"
+}
+
 remote_preflight_payload_b64() {
   python3 - "$WORKDIR" "$COUNCIL_DIR" "$HOME/projects/hapax-mcp" <<'PYEOF'
 import base64
@@ -590,7 +718,7 @@ if codex_bin is None:
 else:
     env={k:v for k in ("ALL_PROXY","HOME","HTTP_PROXY","HTTPS_PROXY","LANG","LC_ALL","NO_PROXY","PATH","REQUESTS_CA_BUNDLE","SSL_CERT_FILE") if (v:=os.environ.get(k)) is not None}
     env["NO_COLOR"]="1"
-    env.pop("CODEX_ACCESS_TOKEN",None); env.pop("CODEX_API_KEY",None); env.pop("OPENAI_API_KEY",None)
+    env.pop("CODEX_ACCESS_TOKEN",None); env.pop("CODEX_HOME",None); env.pop("CODEX_API_KEY",None); env.pop("OPENAI_API_KEY",None)
     sentinel="HAPAX_CODEX_EXEC_AUTH_OK"
     auth_workdir=p.get("workdir") or os.getcwd()
     if not os.path.isdir(auth_workdir):
@@ -1089,6 +1217,30 @@ export LOGOS_BASE_URL
 export COCKPIT_BASE_URL
 export HAPAX_CC_TASK_GATE="$TASK_GATE"
 
+explicit_codex_command=0
+if [ "${#CODEX_EXTRA[@]}" -gt 0 ] && is_codex_subcommand "${CODEX_EXTRA[0]}"; then
+  explicit_codex_command=1
+fi
+
+strip_inherited_codex_access_token
+
+REMOTE_EXEC_AUTH_PREFLIGHT_PROVEN=0
+if [ "$explicit_codex_command" -eq 0 ]; then
+  if [ -n "$DISPATCH_HOST" ]; then
+    REMOTE_EXEC_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
+    REMOTE_EXEC_PREFLIGHT_COMMAND="$(remote_python_command "$REMOTE_EXEC_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+        -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST" \
+        "$REMOTE_EXEC_PREFLIGHT_COMMAND"; then
+      echo "hapax-codex: remote saved-login auth preflight failed for $DISPATCH_HOST; next action: repair saved Codex login on the dispatch host, then retry" >&2
+      exit 75
+    fi
+    REMOTE_EXEC_AUTH_PREFLIGHT_PROVEN=1
+  else
+    prove_local_codex_exec_auth "$CODEX_BIN"
+  fi
+fi
+
 if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   CLAIM_SCRIPT="$WORKDIR/scripts/cc-claim"
   if [ ! -x "$CLAIM_SCRIPT" ]; then
@@ -1106,11 +1258,6 @@ fi
 
 SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/codex-spawns"
 mkdir -p "$SPAWN_DIR"
-
-explicit_codex_command=0
-if [ "${#CODEX_EXTRA[@]}" -gt 0 ] && is_codex_subcommand "${CODEX_EXTRA[0]}"; then
-  explicit_codex_command=1
-fi
 
 if [ "${#CODEX_EXTRA[@]}" -gt 0 ]; then
   case "${CODEX_EXTRA[0]}" in
@@ -1216,8 +1363,6 @@ if [ -x "$MCP_CONFIG_SCRUB" ]; then
   "$MCP_CONFIG_SCRUB"
 fi
 
-strip_inherited_codex_access_token
-
 HOOK="$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"
 if [ ! -x "$HOOK" ]; then
   echo "hapax-codex: hook adapter is not executable: $HOOK" >&2
@@ -1266,13 +1411,15 @@ fi
 
 if [ "$TERMINAL" = "none" ]; then
   if [ -n "$DISPATCH_HOST" ]; then
-    REMOTE_EXEC_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
-    REMOTE_EXEC_PREFLIGHT_COMMAND="$(remote_python_command "$REMOTE_EXEC_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
-    if ! ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
-        -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST" \
-        "$REMOTE_EXEC_PREFLIGHT_COMMAND"; then
-      echo "hapax-codex: remote saved-login auth preflight failed for $DISPATCH_HOST; next action: repair saved Codex login on the dispatch host, then retry" >&2
-      exit 75
+    if [ "${REMOTE_EXEC_AUTH_PREFLIGHT_PROVEN:-0}" != "1" ]; then
+      REMOTE_EXEC_PREFLIGHT_PAYLOAD="$(remote_preflight_payload_b64)"
+      REMOTE_EXEC_PREFLIGHT_COMMAND="$(remote_python_command "$REMOTE_EXEC_PREFLIGHT_PAYLOAD" "$REMOTE_PREFLIGHT_PY")"
+      if ! ssh -o BatchMode=yes -o ConnectTimeout=4 -i "$HOME/.ssh/id_ed25519" \
+          -o ControlPath="$HOME/.ssh/cm-%r@%h:%p" "$DISPATCH_HOST" \
+          "$REMOTE_EXEC_PREFLIGHT_COMMAND"; then
+        echo "hapax-codex: remote saved-login auth preflight failed for $DISPATCH_HOST; next action: repair saved Codex login on the dispatch host, then retry" >&2
+        exit 75
+      fi
     fi
     REMOTE_EXEC_PAYLOAD="$(remote_exec_payload_b64 "$DISPATCH_PROOF_FILE" codex "${CODEX_ARGS[@]}")"
     REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"

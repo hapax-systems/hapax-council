@@ -32,6 +32,23 @@ from shared.platform_capability_registry import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID = "claude.headless.full"
+NEGATIVE_REF_TOKENS = {
+    "absent",
+    "blocked",
+    "denied",
+    "exhausted",
+    "expired",
+    "failed",
+    "failure",
+    "false",
+    "missing",
+    "negative",
+    "not",
+    "stale",
+    "unobservable",
+    "unobserved",
+    "zero",
+}
 
 
 class _AvailabilityModel(BaseModel):
@@ -607,24 +624,7 @@ def _account_live_quota_observed_ref(ref: str, *, route_id: str | None = None) -
     tokens = _ref_tokens(ref)
     if not tokens:
         return False
-    negative_tokens = {
-        "absent",
-        "blocked",
-        "denied",
-        "exhausted",
-        "expired",
-        "failed",
-        "failure",
-        "false",
-        "missing",
-        "negative",
-        "not",
-        "stale",
-        "unobservable",
-        "unobserved",
-        "zero",
-    }
-    if any(token in negative_tokens for token in tokens):
+    if any(token in NEGATIVE_REF_TOKENS for token in tokens):
         return False
     allowed_suffixes = [("account", "live", "quota", "observed")]
     if normalize_route_id(route_id or "") != CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID:
@@ -671,6 +671,8 @@ def _exec_auth_attested(
 
 
 def _exec_auth_ref_attested(ref: tuple[str, ...]) -> bool:
+    if any(token in NEGATIVE_REF_TOKENS for token in ref):
+        return False
     if ref == ("local", "codex", "exec", "auth", "observed"):
         return True
     if len(ref) >= 6 and ref[0] == "remote" and ref[-4:] == ("codex", "exec", "auth", "observed"):

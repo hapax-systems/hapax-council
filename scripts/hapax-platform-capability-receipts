@@ -634,6 +634,27 @@ def write_receipt(receipt: PlatformCapabilityReceipt, receipt_dir: Path) -> Path
     return path
 
 
+def positive_float_env_default(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        print(
+            f"hapax-platform-capability-receipts: invalid {name}={raw!r}; using {default:g}s",
+            file=sys.stderr,
+        )
+        return default
+    if value <= 0:
+        print(
+            f"hapax-platform-capability-receipts: nonpositive {name}={raw!r}; using {default:g}s",
+            file=sys.stderr,
+        )
+        return default
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--registry", type=Path, default=PLATFORM_CAPABILITY_REGISTRY)
@@ -656,7 +677,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--codex-exec-auth-timeout",
         type=float,
-        default=float(os.environ.get("HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS", "30")),
+        default=positive_float_env_default("HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS", 30.0),
         help=(
             "Timeout in seconds for the bounded Codex exec-auth sentinel. "
             "Defaults to HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS or 30."
