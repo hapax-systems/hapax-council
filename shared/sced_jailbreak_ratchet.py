@@ -168,11 +168,10 @@ class SCEDTargetPolicySnapshot:
             "testing_window_ends_on",
             _coerce_optional_date(self.testing_window_ends_on, "testing_window_ends_on"),
         )
-        object.__setattr__(
-            self,
-            "registry_row_ref",
-            _optional_durable_ref(self.registry_row_ref, field="registry_row_ref"),
-        )
+        registry_row_ref = _optional_durable_ref(self.registry_row_ref, field="registry_row_ref")
+        if not registry_row_ref:
+            raise ValueError("target policy snapshot requires registry_row_ref")
+        object.__setattr__(self, "registry_row_ref", registry_row_ref)
         object.__setattr__(self, "source_task", _optional_string(self.source_task))
 
     @classmethod

@@ -705,6 +705,32 @@ def test_phase1_blocks_target_policy_with_prose_registry_ref_without_exception()
     assert "registry_row_ref must contain durable reference tokens" in decision.reason
 
 
+def test_phase1_blocks_target_policy_missing_registry_ref_without_exception() -> None:
+    freeze = _freeze()
+    decision = evaluate_phase1_candidate(
+        _candidate(),
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
+        target_policies=(
+            {
+                "target": {
+                    "surface": "bug_bounty",
+                    "venue": "anthropic",
+                    "instrument": "direct_invited_model_safety_universal_jailbreak_bounty",
+                },
+                "policy_refs": ("url:https://example.test/policy",),
+                "policy_reviewed_on": "2026-06-30",
+            },
+        ),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_TARGET_POLICY,)
+    assert "target policy snapshot requires registry_row_ref" in decision.reason
+
+
 def test_phase1_blocks_when_phase0_collection_is_not_admitted() -> None:
     decision = evaluate_phase1_candidate(
         _candidate(),
@@ -752,6 +778,10 @@ def test_target_policy_snapshot_from_mapping_accepts_datetime_dates_and_trims_re
             "policy_published_on": datetime(2026, 4, 23, 18, 0, tzinfo=UTC),
             "application_deadline": datetime(2026, 6, 22, 18, 0, tzinfo=UTC),
             "testing_window_ends_on": datetime(2026, 7, 27, 18, 0, tzinfo=UTC),
+            "registry_row_ref": (
+                " legal-posture-row:bug_bounty:openai:"
+                "direct_invited_bio_universal_jailbreak_bounty "
+            ),
         }
     )
 
@@ -764,6 +794,10 @@ def test_target_policy_snapshot_from_mapping_accepts_datetime_dates_and_trims_re
     assert snapshot.application_deadline.isoformat() == "2026-06-22"
     assert snapshot.testing_window_ends_on is not None
     assert snapshot.testing_window_ends_on.isoformat() == "2026-07-27"
+    assert (
+        snapshot.registry_row_ref
+        == "legal-posture-row:bug_bounty:openai:direct_invited_bio_universal_jailbreak_bounty"
+    )
 
 
 def test_phase1_admits_openai_target_and_records_deadline_window() -> None:
