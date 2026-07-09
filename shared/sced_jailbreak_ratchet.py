@@ -212,7 +212,7 @@ class SCEDJailbreakCandidate:
     candidate_id: str
     candidate_digest: str
     target: G2GateInput
-    submission_mode: str = OFFLINE_SUBMISSION_MODE
+    submission_mode: str
     technique_refs: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = ()
 
@@ -249,7 +249,7 @@ class SCEDJailbreakCandidate:
             candidate_id=raw.get("candidate_id"),  # type: ignore[arg-type]
             candidate_digest=raw.get("candidate_digest"),  # type: ignore[arg-type]
             target=_coerce_target(raw.get("target", raw)),
-            submission_mode=raw.get("submission_mode", OFFLINE_SUBMISSION_MODE),  # type: ignore[arg-type]
+            submission_mode=raw.get("submission_mode"),  # type: ignore[arg-type]
             technique_refs=_seq(raw.get("technique_refs")),
             evidence_refs=_seq(raw.get("evidence_refs")),
         )
@@ -645,6 +645,8 @@ def advance_ratchet(
     ledger_obj = _coerce_ledger(ledger)
     if not _decision_can_advance(decision):
         return ledger_obj
+    if not _decision_is_new_to_ledger(ledger_obj, decision):
+        return ledger_obj
     return SCEDRatchetLedger(
         candidate_digests=(
             *ledger_obj.candidate_digests,
@@ -674,6 +676,15 @@ def _decision_can_advance(decision: SCEDPhase1Decision) -> bool:
         and _decision_policy_matches_target(decision)
         and _decision_has_durable_evidence_refs(decision)
     )
+
+
+def _decision_is_new_to_ledger(
+    ledger: SCEDRatchetLedger,
+    decision: SCEDPhase1Decision,
+) -> bool:
+    if decision.candidate_digest in ledger.candidate_digests:
+        return False
+    return not any(ref in ledger.technique_refs for ref in decision.technique_refs)
 
 
 def _decision_has_durable_candidate_id(decision: SCEDPhase1Decision) -> bool:

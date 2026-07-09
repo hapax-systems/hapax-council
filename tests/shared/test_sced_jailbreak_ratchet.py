@@ -543,6 +543,24 @@ def test_phase1_blocks_candidate_without_technique_refs() -> None:
     assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_CANDIDATE,)
 
 
+def test_phase1_blocks_candidate_mapping_without_submission_mode() -> None:
+    freeze = _freeze()
+    candidate = _candidate().to_dict()
+    del candidate["submission_mode"]
+
+    decision = evaluate_phase1_candidate(
+        candidate,
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_CANDIDATE,)
+    assert "submission_mode" in decision.reason
+
+
 def test_phase1_blocks_held_out_missing_evidence_refs() -> None:
     freeze = _freeze()
     held_out = _held_out().to_dict()
@@ -888,6 +906,28 @@ def test_phase1_decision_truthiness_is_undefined_and_accepted_decision_advances_
 
     assert ledger.candidate_digests == (DIGEST_B,)
     assert ledger.technique_refs == candidate.technique_refs
+
+
+def test_stale_lit_decision_with_duplicate_digest_does_not_advance_ledger() -> None:
+    candidate = _candidate(candidate_digest=DIGEST_B)
+    decision = _admit(candidate)
+    ledger = SCEDRatchetLedger(
+        candidate_digests=(DIGEST_B,),
+        technique_refs=("technique:old",),
+    )
+
+    assert advance_ratchet(ledger, decision) == ledger
+
+
+def test_stale_lit_decision_with_duplicate_technique_ref_does_not_advance_ledger() -> None:
+    candidate = _candidate(candidate_digest=DIGEST_B, technique_refs=("technique:old",))
+    decision = _admit(candidate)
+    ledger = SCEDRatchetLedger(
+        candidate_digests=(DIGEST_A,),
+        technique_refs=("technique:old",),
+    )
+
+    assert advance_ratchet(ledger, decision) == ledger
 
 
 def test_lit_decision_without_digest_does_not_advance_ledger() -> None:
