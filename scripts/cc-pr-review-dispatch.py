@@ -1009,7 +1009,8 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
     if not diff.strip():
         raise RuntimeError(
             f"local git diff for PR #{pr_info.number} was empty between "
-            f"{pr_info.base_sha[:12]} and {head[:12]}; next action: fetch PR head/base and retry"
+            f"{pr_info.base_sha[:12]} and {head[:12]}; next action: fetch origin/{base_ref} "
+            f"and pull/{pr_info.number}/head, then retry review dispatch"
         )
     return diff
 
@@ -1814,6 +1815,14 @@ _PRIOR_CRITICAL_SYMBOL_HINTS = (
     "_reserve_payg_spend_receipt",
     "_payg_reservation_suffix",
 )
+_OPERATOR_ATTRIBUTION_TEST_SYMBOL_HINTS = (
+    "test_same_sentence_guard_spans_hard_wrapped_prose",
+    "test_same_sentence_guard_spans_abbreviation_periods",
+    "test_same_sentence_guard_does_not_bridge_structural_lines",
+    "test_waiver_safety_blocks_operator_mental_state_content",
+    "test_waiver_safety_blocks_hard_wrapped_expanded_diagnostic_content",
+    "test_waiver_safety_blocks_operator_attributed_first_person_affect_quote",
+)
 
 
 def _rel_for_display(rel: str) -> str | None:
@@ -1833,6 +1842,13 @@ def _prior_symbol_hints(finding: dict[str, Any]) -> tuple[str, ...]:
     hints = [symbol for symbol in _PRIOR_CRITICAL_SYMBOL_HINTS if symbol in text]
     if "PAYG endpoint" in text or "primary URL" in text:
         hints.append("_valid_coding_plan_primary_base_url")
+    if str(finding.get("file") or "") == "tests/test_operator_attribution_redaction.py" and (
+        "_SOFT_WRAP" in text
+        or "file_waiver_safe" in text
+        or "hard-wrapped" in text
+        or "abbreviation" in text
+    ):
+        hints.extend(_OPERATOR_ATTRIBUTION_TEST_SYMBOL_HINTS)
     return tuple(dict.fromkeys(hints))
 
 
@@ -2678,6 +2694,9 @@ def review_pr(
             changed_files=pr_info.files,
             changed_file_count=pr_info.changed_file_count,
             repo_root=repo_root,
+            release_authorized_head_sha=str(
+                target_frontmatter.get("release_authorized_head_sha") or ""
+            ),
         )
         # Durable evidence audit trail: exactly which prior-critical excerpts
         # were shown to reviewers, pinned to which head (sdlc-legibility —

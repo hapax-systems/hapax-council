@@ -698,6 +698,7 @@ def _critical(title: str = "named critical", resolved: bool = False) -> dict:
 
 def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard", **kwargs) -> dict:
     reg = rt.load_lens_registry()
+    release_authorized_head_sha = kwargs.pop("release_authorized_head_sha", "a" * 40)
     return rt.synthesize_dossier(
         task_id="task-x",
         pr_number=99,
@@ -707,6 +708,7 @@ def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard", **kwargs
         reviews=reviews,
         lenses=ALWAYS_ON_LENSES,
         constituted_at="2026-06-11T20:00:00+00:00",
+        release_authorized_head_sha=release_authorized_head_sha,
         **kwargs,
     )
 
@@ -2655,6 +2657,7 @@ class TestGoGate:
             dossier,
             pr_head_sha="a" * 40,
             registry=reg,
+            frontmatter={"release_authorized_head_sha": "a" * 40},
         )
 
         assert "review_dossier_quorum_not_met:1/2" not in blockers
@@ -3082,6 +3085,22 @@ ratifications:
             "resolved": False,
         }
 
+    def _blocking_criticals(
+        self,
+        rt,
+        reviews: list[dict],
+        repo_root: Path,
+        *,
+        head_sha: str = "a" * 40,
+        release_authorized_head_sha: str | None = None,
+    ):
+        return rt._blocking_criticals(
+            reviews,
+            repo_root,
+            head_sha=head_sha,
+            release_authorized_head_sha=release_authorized_head_sha or head_sha,
+        )
+
     def test_ratified_lens_file_critical_is_waived_with_receipt(
         self, tmp_path: Path, monkeypatch, capsys
     ) -> None:
@@ -3092,7 +3111,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, phantoms = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, phantoms = self._blocking_criticals(rt, reviews, tmp_path)
         assert blocking == []
         assert len(phantoms) == 1
         assert phantoms[0][1]["_resolution_source"] == "operator-ratification"
@@ -3107,7 +3126,7 @@ ratifications:
         reviews = [
             _review("codex-1", "codex", "block", findings=[self._critical(lens="correctness")])
         ]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_unratified_file_still_blocks(self, tmp_path: Path, monkeypatch) -> None:
@@ -3117,7 +3136,7 @@ ratifications:
         reviews = [
             _review("codex-1", "codex", "block", findings=[self._critical(file="docs/other.md")])
         ]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_malformed_ledger_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
@@ -3125,7 +3144,7 @@ ratifications:
         monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
         self._ledger(tmp_path, "ratifications_schema: 1\nratifications: [{id: 1}]\n")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_ledger_with_empty_topic_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
@@ -3138,7 +3157,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_ledger_without_operator_authority_waives_nothing(
@@ -3151,7 +3170,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_configured_class_id_is_not_hardcoded(self, tmp_path: Path, monkeypatch) -> None:
@@ -3165,7 +3184,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert blocking == []
 
     def test_ledger_with_unknown_class_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
@@ -3182,7 +3201,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_ledger_with_unsupported_class_policy_waives_nothing(
@@ -3201,7 +3220,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_operator_privacy_policy_requires_operator_authority(
@@ -3217,7 +3236,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_ledger_with_blank_id_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
@@ -3228,7 +3247,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_ledger_with_blank_decision_record_waives_nothing(
@@ -3247,7 +3266,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_ledger_without_decision_record_hash_waives_nothing(
@@ -3267,7 +3286,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_ledger_without_decision_record_path_waives_nothing(
@@ -3283,7 +3302,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_ledger_with_invalid_decision_record_hash_waives_nothing(
@@ -3303,7 +3322,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_ledger_with_decision_record_pin_mismatch_waives_nothing(
@@ -3324,7 +3343,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_ledger_without_decision_record_authority_signature_waives_nothing(
@@ -3337,7 +3356,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_ledger_without_decision_record_authority_issuer_waives_nothing(
@@ -3352,7 +3371,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_forged_decision_record_authority_signature_waives_nothing(
@@ -3370,7 +3389,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_signed_ledger_without_authority_secret_waives_nothing(
@@ -3384,7 +3403,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_wrong_checkout_ignores_ledger(self, tmp_path: Path) -> None:
@@ -3405,7 +3424,7 @@ ratifications:
         finding["title"] = "home address disclosed"
         finding["detail"] = "the doc leaks a street address"
         reviews = [_review("codex-1", "codex", "block", findings=[finding])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_ledger_without_topics_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
@@ -3413,7 +3432,7 @@ ratifications:
         monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
         self._ledger(tmp_path, self.LEDGER.replace("    topics: [residual]\n", ""))
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_ledger_without_content_pins_waives_nothing(self, tmp_path: Path, monkeypatch) -> None:
@@ -3432,7 +3451,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_enforced_class_regression_in_ratified_file_still_blocks(
@@ -3451,7 +3470,7 @@ ratifications:
         finding = self._critical()
         finding["title"] = "residual disclosure regression"
         reviews = [_review("codex-1", "codex", "block", findings=[finding])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_ratified_file_pin_mismatch_still_blocks(self, tmp_path: Path, monkeypatch) -> None:
@@ -3462,7 +3481,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Generic design research grounded in literature.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_clean_ratified_file_waives(self, tmp_path: Path, monkeypatch) -> None:
@@ -3475,8 +3494,29 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert blocking == []
+
+    def test_stale_release_authorized_head_disables_ratification_gate(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+
+        blocking, _ = self._blocking_criticals(
+            rt,
+            reviews,
+            tmp_path,
+            head_sha="a" * 40,
+            release_authorized_head_sha="b" * 40,
+        )
+
+        assert len(blocking) == 1
 
     def test_ratified_critical_counts_for_quorum_with_receipt(
         self, tmp_path: Path, monkeypatch
@@ -3546,7 +3586,7 @@ ratifications:
         finding["title"] = "address disclosed in the residual section"
         finding["detail"] = "a street address appears alongside residual research context"
         reviews = [_review("codex-1", "codex", "block", findings=[finding])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_topical_residual_finding_with_no_datum_allegation_waives(
@@ -3563,7 +3603,7 @@ ratifications:
         finding = self._critical()
         finding["title"] = "residual linkage disclosed in the residual section"
         reviews = [_review("codex-1", "codex", "block", findings=[finding])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert blocking == []
 
     def test_address_alleging_finding_never_waives_even_on_clean_file(
@@ -3579,7 +3619,7 @@ ratifications:
         finding["title"] = "address disclosed in the residual section"
         finding["detail"] = "addresses are alleged near a ratified topic"
         reviews = [_review("codex-1", "codex", "block", findings=[finding])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_datum_alleging_finding_never_waives_even_on_clean_file(
@@ -3599,7 +3639,7 @@ ratifications:
         finding["title"] = "legal name disclosed in the residual section"
         finding["detail"] = "a third-party legal name appears in the residual research context"
         reviews = [_review("codex-1", "codex", "block", findings=[finding])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     @pytest.mark.parametrize(
@@ -3641,7 +3681,7 @@ ratifications:
         finding["title"] = title
         finding["detail"] = detail
         reviews = [_review("codex-1", "codex", "block", findings=[finding])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_path_alleging_finding_never_waives(self, tmp_path: Path, monkeypatch) -> None:
@@ -3656,7 +3696,7 @@ ratifications:
         finding = self._critical()
         finding["title"] = "private path disclosed in residual paragraph"
         reviews = [_review("codex-1", "codex", "block", findings=[finding])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_file_containing_local_path_is_not_waiver_safe(
@@ -3671,7 +3711,7 @@ ratifications:
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("See /home/someuser/notes for the residual research.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
     def test_killswitch_disables_ratification_gate(self, tmp_path: Path, monkeypatch) -> None:
@@ -3680,7 +3720,7 @@ ratifications:
         self._ledger(tmp_path)
         monkeypatch.setenv("HAPAX_REVIEW_GO_GATE_OFF", "1")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
-        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, _ = self._blocking_criticals(rt, reviews, tmp_path)
         assert len(blocking) == 1
 
 
@@ -3895,7 +3935,12 @@ class TestHeadBoundRepoRoot:
             "resolved": False,
         }
         reviews = [_review("codex-1", "codex", "block", findings=[finding])]
-        blocking, phantom = rt._blocking_criticals(reviews, stale, head_sha="d" * 40)
+        blocking, phantom = rt._blocking_criticals(
+            reviews,
+            stale,
+            head_sha="d" * 40,
+            release_authorized_head_sha="d" * 40,
+        )
         assert blocking == [], "waivable critical must not block when a head-bound tree exists"
         assert len(phantom) == 1, "waived critical must feed the quorum-promotion leg"
         assert phantom[0][1]["_resolution_source"] == "operator-ratification"

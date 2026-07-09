@@ -30,3 +30,7 @@ Observed response:
 
 Conclusion: the live public topic list no longer contains the prior
 diagnosis/neurotype topic term.
+
+Note: `docs/repo-pres/2026-05-10-hn-launch-github-topics.md` is a historical
+launch runbook and replacement recipe. It is not a current-state witness; the
+current live readback above is authoritative for the July 9 redaction check.

@@ -1,4 +1,4 @@
-"""Operator-attributed diagnosis-token scan — the ENFORCED privacy subset, importable.
+"""Operator-attributed diagnosis-token scan — the ENFORCED diagnosis-token subset.
 
 Single source for the two-tier diagnostic-attribution patterns, used by BOTH the
 durable test guard (tests/test_operator_attribution_redaction.py) and the review

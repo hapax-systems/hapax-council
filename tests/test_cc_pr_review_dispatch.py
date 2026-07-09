@@ -799,6 +799,51 @@ class TestApply:
         assert "0005|     ledger = load_quota_spend_ledger_resolved()" in rendered
         assert any(record.get("symbol") == "_require_payg_spend_gate" for record in records)
 
+    def test_prior_file_excerpts_show_operator_attribution_regression_tests(
+        self, tmp_path: Path
+    ) -> None:
+        rel = "tests/test_operator_attribution_redaction.py"
+        source = "\n".join(
+            [
+                '"""scan tests"""',
+                "",
+                "def test_same_sentence_guard_spans_hard_wrapped_prose():",
+                "    assert not file_enforced_class_clean(root, rel)",
+                "",
+                "def test_same_sentence_guard_does_not_bridge_structural_lines():",
+                "    assert not any(pattern.search(text) for pattern in SENTENCE_PATTERNS)",
+                "",
+                "def test_waiver_safety_blocks_operator_mental_state_content():",
+                "    assert not file_waiver_safe(root, rel)",
+                "",
+                "def after():",
+                "    pass",
+            ]
+        )
+        head_sha = self._git_repo_with_commit(tmp_path, rel, source)
+
+        rendered, records = dispatch.build_prior_file_excerpts(
+            [
+                {
+                    "file": rel,
+                    "line": 1,
+                    "title": "_SOFT_WRAP and file_waiver_safe regression evidence missing",
+                    "detail": "hard-wrapped structural-boundary file_waiver_safe coverage",
+                }
+            ],
+            repo_root=tmp_path,
+            head_sha=head_sha,
+            radius=0,
+        )
+
+        assert "(test_same_sentence_guard_spans_hard_wrapped_prose)" in rendered
+        assert "(test_same_sentence_guard_does_not_bridge_structural_lines)" in rendered
+        assert "(test_waiver_safety_blocks_operator_mental_state_content)" in rendered
+        assert any(
+            record.get("symbol") == "test_waiver_safety_blocks_operator_mental_state_content"
+            for record in records
+        )
+
     def test_changed_file_excerpts_show_review_critical_symbols(self, tmp_path: Path) -> None:
         rel = "scripts/hapax-glmcp-reviewer"
         source = "\n".join(

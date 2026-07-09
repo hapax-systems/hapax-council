@@ -1438,7 +1438,7 @@ def _ratification_classes(payload: Mapping[str, Any]) -> dict[str, dict[str, Any
 
 
 def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
-    """Load the data-owner ratification ledger. FAIL-CLOSED: any parse or schema problem
+    """Load the operator-stipulated ratification ledger. FAIL-CLOSED: any parse or schema problem
     returns [] (waive nothing). Entries waive exactly the (lens x file) intersection they
     name; governance and rationale live in the ledger header."""
     path = repo_root / _OPERATOR_RATIFICATIONS_RELPATH
@@ -1503,6 +1503,22 @@ def _operator_ratifications(repo_root: Path) -> list[dict[str, Any]]:
         ratification["_safety_policy"] = class_config["safety_policy"]
         valid.append(ratification)
     return valid
+
+
+def _ratification_release_head_authorized(
+    head_sha: str | None,
+    release_authorized_head_sha: str | None,
+) -> bool:
+    """True iff the task note's governed release authorization names this exact head."""
+    head = str(head_sha or "").strip()
+    authorized = str(release_authorized_head_sha or "").strip()
+    return (
+        bool(head)
+        and bool(authorized)
+        and re.fullmatch(r"[0-9a-fA-F]{40}", head) is not None
+        and re.fullmatch(r"[0-9a-fA-F]{40}", authorized) is not None
+        and hmac.compare_digest(head.lower(), authorized.lower())
+    )
 
 
 def _ratified_content_pin_holds(repo_root: Path, entry: Mapping[str, Any], rel_path: str) -> bool:
@@ -1658,17 +1674,19 @@ def _blocking_criticals(
     reviews: Sequence[Mapping[str, Any]],
     repo_root: Path | None,
     head_sha: str | None = None,
+    release_authorized_head_sha: str | None = None,
 ) -> tuple[list[tuple[str, dict]], list[tuple[str, dict]]]:
     """Partition unresolved criticals into (blocking, phantom). ``repo_root=None`` discovers the repo
     from cwd. The verifier runs ONLY when the checkout is confirmed to be the reviewed commit
     (``head_sha`` matches local HEAD, when given); otherwise — no repo, killswitch, or a wrong/unknown
     checkout — every critical blocks (the safe, pre-go-gate behaviour).
 
-    Data-owner ratifications: criticals whose (lens, file) are named by an active entry in
+    Operator-stipulated ratifications: criticals whose (lens, file) are named by an active entry in
     the operator-ratification ledger are waived WITH a stderr receipt (go-gate phantom
-    precedent) — the disposition belongs to the data owner (single_user axiom), not to
-    reviewers. Same binding rule as the go-gate: the ledger is honored only against a
-    checkout proven to be the reviewed head, and the killswitch disables it too."""
+    precedent) — the disposition belongs to the operator/data owner under the single_user
+    axiom, not to reviewers. Same binding rule as the go-gate: the ledger is honored only
+    against a checkout proven to be the reviewed head and a task note whose
+    release_authorized_head_sha matches that head; the killswitch disables it too."""
     criticals = _unresolved_criticals(reviews)
     if os.environ.get(_GO_GATE_OFF_ENV) == "1":
         return criticals, []  # killswitch: every critical blocks (pre-go-gate behaviour)
@@ -1678,7 +1696,11 @@ def _blocking_criticals(
     root = _head_bound_repo_root(repo_root, head_sha)
     if root is None:
         return criticals, []  # no commit to bind to, or wrong checkout -> do not verify (keep all)
-    ratifications = _operator_ratifications(root)
+    ratifications = (
+        _operator_ratifications(root)
+        if _ratification_release_head_authorized(head_sha, release_authorized_head_sha)
+        else []
+    )
     if ratifications:
         kept: list[tuple[str, dict]] = []
         resolved: list[tuple[str, dict]] = []
@@ -1707,13 +1729,13 @@ def _blocking_criticals(
             resolved_finding = dict(finding)
             resolved_finding["_resolution_source"] = "operator-ratification"
             resolved_finding["_resolution_detail"] = (
-                f"data-owner ratification {ratification_id}; cited file verified "
+                f"operator-stipulated ratification {ratification_id}; cited file verified "
                 "waiver-safe at head"
             )
             resolved.append((reviewer_id, resolved_finding))
             print(
                 f"ratification-gate: waived critical {str(finding.get('title'))!r} "
-                f"({finding.get('file')}) under {ratification_id} — data-owner "
+                f"({finding.get('file')}) under {ratification_id} — operator-stipulated "
                 "disposition, receipted; cited file verified waiver-safe at head "
                 "(no enforced-class attribution, no non-residual PII/operator "
                 "mental-state content)",
@@ -1904,6 +1926,7 @@ def synthesize_dossier(
     changed_files: Sequence[str] | None = None,
     changed_file_count: int | None = None,
     repo_root: Path | None = None,
+    release_authorized_head_sha: str | None = None,
 ) -> dict[str, Any]:
     """Reconcile blind reviews into a dossier (the synthesizer, spec §3/§5).
 
@@ -1940,7 +1963,12 @@ def synthesize_dossier(
         if any(str(n) == "degraded_to:t2_standard" for n in constitution_notes):
             sizing = registry["sizing"]["t2_standard"]
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
-    criticals, phantom_criticals = _blocking_criticals(reviews, repo_root, head_sha=head_sha)
+    criticals, phantom_criticals = _blocking_criticals(
+        reviews,
+        repo_root,
+        head_sha=head_sha,
+        release_authorized_head_sha=release_authorized_head_sha,
+    )
     quorum_reviews = _reviews_for_quorum(reviews, criticals, phantom_criticals)
     accepts = _checklist_complete_accepts(quorum_reviews, lenses)
     accept_families = {str(r.get("family")) for r in accepts}
@@ -1973,7 +2001,7 @@ def synthesize_dossier(
                     "lens": finding.get("lens"),
                     "detail": str(
                         finding.get("_resolution_detail")
-                        or "critical resolved by data-owner ratification"
+                        or "critical resolved by operator-stipulated ratification"
                     ),
                 }
             )
@@ -2348,7 +2376,14 @@ def _dossier_validity_blockers(
     # prefer a declared task worktree when one is available and head-bound.
     dossier_head_sha = str(dossier.get("head_sha") or "")
     verification_root = _frontmatter_repo_root(frontmatter, dossier_head_sha)
-    criticals, phantoms = _blocking_criticals(reviews, verification_root, head_sha=dossier_head_sha)
+    criticals, phantoms = _blocking_criticals(
+        reviews,
+        verification_root,
+        head_sha=dossier_head_sha,
+        release_authorized_head_sha=str(
+            (frontmatter or {}).get("release_authorized_head_sha") or ""
+        ),
+    )
     if phantoms:  # receipt: critical resolutions are auditable in the CI log, never silent
         go_gate_count = sum(
             1
