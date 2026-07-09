@@ -1808,9 +1808,21 @@ def test_receipt_bounded_route_allows_sanitized_hashed_ignored_claude_reason() -
     assert CLAUDE_SAFE_HASHED_IGNORED_EVIDENCE_REF in refs
 
 
-def test_receipt_bounded_route_redacts_unsafe_hashed_ignored_claude_reason() -> None:
-    ledger = _claude_ledger(
+@pytest.mark.parametrize(
+    "evidence_ref",
+    [
         CLAUDE_UNSAFE_HASHED_IGNORED_EVIDENCE_REF,
+        "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:session-present",
+        "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:lane-present",
+        "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:billingcus123",
+        "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:ignored:subscriptionid123",
+    ],
+)
+def test_receipt_bounded_route_redacts_unsafe_hashed_ignored_claude_reason(
+    evidence_ref: str,
+) -> None:
+    ledger = _claude_ledger(
+        evidence_ref,
         snapshot_id="quota-claude-headless-full-unsafe-ignored-reason",
         reason="fixture claude unsafe ignored reason",
     )
@@ -1818,7 +1830,7 @@ def test_receipt_bounded_route_redacts_unsafe_hashed_ignored_claude_reason() -> 
     state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
 
     assert state is SubscriptionQuotaState.UNKNOWN
-    assert CLAUDE_UNSAFE_HASHED_IGNORED_EVIDENCE_REF not in refs
+    assert evidence_ref not in refs
     assert any(
         ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
         for ref in refs

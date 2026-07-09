@@ -1618,7 +1618,7 @@ def _quota_spend_live_path_from_env() -> Path | None:
     if not configured:
         return None
     if configured.strip() in {"0", "none", "None", "false", "False"}:
-        return None
+        return Path("/dev/null/hapax-quota-spend-ledger-live-disabled.json")
     return Path(configured).expanduser()
 
 

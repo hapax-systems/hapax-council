@@ -114,8 +114,9 @@ CLAUDE_ADMISSION_IGNORED_REASON_RE = re.compile(r"\A[a-z0-9][a-z0-9-]{0,119}\Z")
 CLAUDE_ADMISSION_IGNORED_UNSAFE_DETAIL_RE = re.compile(
     r"(?:"
     r"(?:^|-)(?:cus|sub|acct|in|ch)-[a-z0-9]+(?:$|-)|"
-    r"(?:^|-)subscription-id-[a-z0-9]+(?:$|-)|"
-    r"(?:^|-)(?:customer|account|invoice|payment|billing)-[a-z0-9]*[0-9][a-z0-9]*(?:$|-)|"
+    r"(?:^|-)subscription-?id-?[a-z0-9]*[0-9][a-z0-9]*(?:$|-)|"
+    r"(?:^|-)(?:customer|account|invoice|payment|billing)[a-z0-9-]*[0-9][a-z0-9-]*(?:$|-)|"
+    r"(?:^|-)(?:session-present|lane-present|lane-exists)(?:$|-)|"
     r"(?:^|-)(?:tmux|sessions?|lanes?|dev)[0-9]+(?:$|-)|"
     r"(?:^|-)(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
     r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega)[0-9]*(?:$|-)|"

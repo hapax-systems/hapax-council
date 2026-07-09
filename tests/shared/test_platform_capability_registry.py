@@ -1092,7 +1092,11 @@ def test_provider_gateway_receipt_clears_gateway_evidence_blockers() -> None:
     assert result.ok is True
 
 
-def test_agy_local_receipt_clears_review_seat_but_not_route_quota() -> None:
+def test_agy_local_receipt_clears_review_seat_but_not_route_quota(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(tmp_path / "missing-live.json"))
     payload = _payload()
     route = _route_payload(payload, "agy.review.direct")
 
@@ -1108,7 +1112,11 @@ def test_agy_local_receipt_clears_review_seat_but_not_route_quota() -> None:
     )
 
 
-def test_agy_observed_route_quota_receipt_does_not_admit_review_route() -> None:
+def test_agy_observed_route_quota_receipt_does_not_admit_review_route(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(tmp_path / "missing-live.json"))
     payload = _payload()
     route = _route_payload(payload, "agy.review.direct")
 
@@ -1141,7 +1149,11 @@ def test_agy_observed_route_quota_receipt_does_not_admit_review_route() -> None:
     assert "route_specific_quota_receipt_absent" in result.routes[0].blocked_reasons
 
 
-def test_forged_agy_observed_quota_receipt_cannot_clear_route_specific_blocker() -> None:
+def test_forged_agy_observed_quota_receipt_cannot_clear_route_specific_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(tmp_path / "missing-live.json"))
     payload = _payload()
     route = _route_payload(payload, "agy.review.direct")
     quota_blockers = [
@@ -1186,6 +1198,22 @@ def test_agy_has_no_route_specific_quota_admission_without_live_ledger(
     payload = _payload()
     route = _route_payload(payload, "agy.review.direct")
     monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(tmp_path / "missing-live.json"))
+
+    admitted, refs = _route_specific_quota_admission_fresh(
+        route,
+        now=datetime(2026, 7, 5, 14, 52, tzinfo=UTC),
+    )
+
+    assert admitted is False
+    assert refs == ()
+
+
+def test_quota_spend_live_env_disable_sentinel_skips_default_live_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _payload()
+    route = _route_payload(payload, "agy.review.direct")
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", "none")
 
     admitted, refs = _route_specific_quota_admission_fresh(
         route,
