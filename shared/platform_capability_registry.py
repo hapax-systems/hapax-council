@@ -31,6 +31,7 @@ from shared.platform_capability_receipts import (
     receipt_reference,
 )
 from shared.quota_spend_ledger import (
+    CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
     QuotaSpendLedgerError,
     SubscriptionQuotaState,
@@ -1548,7 +1549,9 @@ def _apply_receipt_to_route_payload(
     quota_admission_refs_to_inject = quota_admission_refs
     if not quota_admission_fresh and route_payload.get("route_id") == CLAUDE_HEADLESS_ROUTE_ID:
         quota_admission_refs_to_inject = tuple(
-            ref for ref in quota_admission_refs if not ref.endswith(":account-live-quota:observed")
+            ref
+            for ref in quota_admission_refs
+            if not ref.endswith(CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX)
         )
     if quota_admission_refs_to_inject:
         freshness["evidence"]["quota"]["evidence_refs"] = list(

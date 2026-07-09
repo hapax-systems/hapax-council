@@ -379,7 +379,11 @@ class SubscriptionRefreshStrategy:
                 ),
             )
 
-        admission_command = "scripts/hapax-claude-subscription-quota-admission --json"
+        admission_command = (
+            "scripts/hapax-claude-subscription-quota-admission "
+            "--evidence-ref claude-subscription-headroom-observed-$(date -u +%Y%m%dt%H%M%Sz) "
+            "--json"
+        )
         telemetry_command = "scripts/hapax-quota-telemetry-writer --json"
         return RefreshOutcome(
             status=RefreshStatus.DEFERRED,
@@ -395,7 +399,7 @@ class SubscriptionRefreshStrategy:
                     [
                         f"platform-capability-registry:{route.route_id}:auth_surface:subscription",
                         "policy:account_live_subscription_quota_not_lane_presence",
-                        "script:scripts/hapax-claude-subscription-quota-admission --json",
+                        f"script:{admission_command}",
                         *freshness.evidence_refs,
                     ]
                 )
@@ -593,11 +597,12 @@ def _account_live_quota_attested(
     if route.capacity_pool is not CapacityPool.SUBSCRIPTION_QUOTA:
         return True
     return any(
-        _account_live_quota_observed_ref(ref) for ref in freshness.evidence_refs
+        _account_live_quota_observed_ref(ref, route_id=route.route_id)
+        for ref in freshness.evidence_refs
     ) or _current_session_subscription_quota_attested(route, freshness)
 
 
-def _account_live_quota_observed_ref(ref: str) -> bool:
+def _account_live_quota_observed_ref(ref: str, *, route_id: str | None = None) -> bool:
     tokens = _ref_tokens(ref)
     if not tokens:
         return False
@@ -620,10 +625,9 @@ def _account_live_quota_observed_ref(ref: str) -> bool:
     }
     if any(token in negative_tokens for token in tokens):
         return False
-    allowed_suffixes = (
-        ("account", "live", "quota", "observed"),
-        ("quota", "status", "observed"),
-    )
+    allowed_suffixes = [("account", "live", "quota", "observed")]
+    if normalize_route_id(route_id or "") != CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID:
+        allowed_suffixes.append(("quota", "status", "observed"))
     return any(tokens[-len(suffix) :] == suffix for suffix in allowed_suffixes)
 
 

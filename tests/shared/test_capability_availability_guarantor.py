@@ -26,6 +26,10 @@ CLAUDE_ADMISSION_EVIDENCE_REF = (
     "fresh_until:2026-07-08T14:15:00Z:"
     "account-live-quota:observed"
 )
+CLAUDE_ADMISSION_REMEDIATION_COMMAND = (
+    "scripts/hapax-claude-subscription-quota-admission "
+    "--evidence-ref claude-subscription-headroom-observed-$(date -u +%Y%m%dt%H%M%Sz) --json"
+)
 
 
 class _FakeOAuthStrategy:
@@ -291,6 +295,29 @@ def test_non_oauth_subscription_route_requires_account_live_quota_evidence() -> 
     assert observed.available is True
     assert observed.predicate.account_live_quota_attested is True
     assert "account_live_quota_evidence_absent" not in observed.reason_codes
+
+
+def test_claude_generic_quota_status_ref_does_not_attest_account_live_quota() -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, "claude.headless.full")
+    _mark_fresh(route_payload)
+    route_payload["freshness"]["evidence"]["quota"]["evidence_refs"].append(
+        "test:claude:quota-status-observed"
+    )
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route = registry.require("claude.headless.full")
+    freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
+
+    receipt = guarantor.evaluate_route_availability(
+        route,
+        freshness,
+        refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+        now=NOW,
+    )
+
+    assert receipt.available is False
+    assert receipt.predicate.account_live_quota_attested is False
+    assert "account_live_quota_evidence_absent" in receipt.reason_codes
 
 
 def test_claude_route_with_admission_receipt_ref_is_available() -> None:
@@ -893,7 +920,7 @@ def test_subscription_route_uses_registered_strategy_not_absent() -> None:
     assert "subscription_quota_not_programmatically_refreshable" in receipt.refresh_reason_codes
     reasons = guarantor.availability_dispatch_reason_codes(receipt)
     assert "refresh_strategy_absent:subscription" not in reasons
-    assert "refresh_remediation:scripts/hapax-claude-subscription-quota-admission --json" in reasons
+    assert f"refresh_remediation:{CLAUDE_ADMISSION_REMEDIATION_COMMAND}" in reasons
 
 
 def test_subscription_strategy_does_not_emit_claude_remediation_for_other_routes() -> None:
@@ -913,10 +940,7 @@ def test_subscription_strategy_does_not_emit_claude_remediation_for_other_routes
     assert receipt.refresh_status is guarantor.RefreshStatus.DEFERRED
     assert "subscription_admission_writer_route_unsupported" in receipt.refresh_reason_codes
     reasons = guarantor.availability_dispatch_reason_codes(receipt)
-    assert (
-        "refresh_remediation:scripts/hapax-claude-subscription-quota-admission --json"
-        not in reasons
-    )
+    assert f"refresh_remediation:{CLAUDE_ADMISSION_REMEDIATION_COMMAND}" not in reasons
     assert (
         "refresh_remediation:register subscription quota admission writer for vibe.headless.full"
         in reasons
