@@ -631,6 +631,22 @@ def test_phase1_blocks_invalid_target_policy_refs_or_review_date() -> None:
     assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_TARGET_POLICY,)
 
 
+def test_phase1_blocks_non_mapping_target_policy_without_exception() -> None:
+    freeze = _freeze()
+    decision = evaluate_phase1_candidate(
+        _candidate(),
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        similarity_observations=_similarities(),
+        target_policies=("target-policy:bad",),  # type: ignore[arg-type]
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_TARGET_POLICY,)
+    assert "target policy snapshot must be an object or mapping" in decision.reason
+
+
 def test_phase1_blocks_when_phase0_collection_is_not_admitted() -> None:
     decision = evaluate_phase1_candidate(
         _candidate(),

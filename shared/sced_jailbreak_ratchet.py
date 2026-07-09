@@ -764,7 +764,7 @@ def _policy_for_target(
             policy = (
                 snapshot
                 if isinstance(snapshot, SCEDTargetPolicySnapshot)
-                else SCEDTargetPolicySnapshot.from_mapping(snapshot)
+                else _policy_snapshot_from_mapping(snapshot)
             )
         except (TypeError, ValueError) as exc:
             raise _Phase1InputError(SCEDPhase1RejectReason.INVALID_TARGET_POLICY, str(exc)) from exc
@@ -774,6 +774,12 @@ def _policy_for_target(
         SCEDPhase1RejectReason.MISSING_TARGET_POLICY,
         f"no target policy snapshot for {_target_key(target)}",
     )
+
+
+def _policy_snapshot_from_mapping(value: Any) -> SCEDTargetPolicySnapshot:
+    if not isinstance(value, Mapping):
+        raise TypeError("target policy snapshot must be an object or mapping")
+    return SCEDTargetPolicySnapshot.from_mapping(value)
 
 
 def _require_freeze_target(
