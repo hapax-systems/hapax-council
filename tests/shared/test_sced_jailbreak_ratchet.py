@@ -595,6 +595,30 @@ def test_phase1_blocks_held_out_empty_witness_placeholder() -> None:
     assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_HELD_OUT_EVALUATION,)
 
 
+def test_phase1_blocks_candidate_smuggled_held_out_witness_ref() -> None:
+    freeze = _freeze()
+    candidate = _candidate(
+        evidence_refs=(
+            "candidate-witness:001",
+            "held-out-witness:smuggled",
+            "similarity-witness:smuggled",
+        )
+    )
+    held_out = _held_out().to_dict()
+    held_out["evidence_refs"] = ("audit:held-out-001",)
+
+    decision = evaluate_phase1_candidate(
+        candidate,
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=held_out,
+        similarity_observations=_similarities(),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_HELD_OUT_EVALUATION,)
+
+
 def test_phase1_blocks_similarity_missing_evidence_refs() -> None:
     freeze = _freeze()
     similarity = _similarities()[0].to_dict()
@@ -619,6 +643,23 @@ def test_phase1_blocks_similarity_empty_witness_placeholder() -> None:
 
     decision = evaluate_phase1_candidate(
         _candidate(),
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(),
+        similarity_observations=(similarity,),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.INVALID_SIMILARITY_OBSERVATION,)
+
+
+def test_phase1_blocks_similarity_without_similarity_witness_ref() -> None:
+    freeze = _freeze()
+    similarity = _similarities()[0].to_dict()
+    similarity["evidence_refs"] = ("audit:similarity-001",)
+
+    decision = evaluate_phase1_candidate(
+        _candidate(evidence_refs=("candidate-witness:001", "similarity-witness:smuggled")),
         freeze=freeze,
         ruler_hash_commit=freeze.ruler.canonical_hash(),
         held_out_evaluation=_held_out(),

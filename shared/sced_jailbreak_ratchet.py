@@ -305,6 +305,8 @@ class HeldOutEvaluation:
         evidence_refs = _durable_ref_tuple(self.evidence_refs, field="evidence_refs")
         if not evidence_refs:
             raise ValueError("evidence_refs requires at least one durable evidence ref")
+        if not _has_ref_with_prefix(evidence_refs, "held-out-witness:"):
+            raise ValueError("evidence_refs requires a held-out-witness ref")
         object.__setattr__(self, "evidence_refs", evidence_refs)
 
     @classmethod
@@ -372,6 +374,8 @@ class SimilarityObservation:
         evidence_refs = _durable_ref_tuple(self.evidence_refs, field="evidence_refs")
         if not evidence_refs:
             raise ValueError("evidence_refs requires at least one durable evidence ref")
+        if not _has_ref_with_prefix(evidence_refs, "similarity-witness:"):
+            raise ValueError("evidence_refs requires a similarity-witness ref")
         object.__setattr__(self, "evidence_refs", evidence_refs)
 
     @classmethod
