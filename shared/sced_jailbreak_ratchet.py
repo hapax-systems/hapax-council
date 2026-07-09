@@ -46,6 +46,7 @@ class SCEDPhase1RejectReason(StrEnum):
     INVALID_CANDIDATE = "invalid_candidate"
     INVALID_LEDGER = "invalid_ledger"
     INVALID_TARGET_POLICY = "invalid_target_policy"
+    FREEZE_TARGET_MISMATCH = "freeze_target_mismatch"
     MISSING_TARGET_POLICY = "missing_target_policy"
     LIVE_SUBMISSION_REQUESTED = "live_submission_requested"
     DUPLICATE_CANDIDATE_DIGEST = "duplicate_candidate_digest"
@@ -74,6 +75,9 @@ _NEXT_ACTIONS: Final[dict[SCEDPhase1RejectReason, str]] = {
     ),
     SCEDPhase1RejectReason.INVALID_TARGET_POLICY: (
         "repair the target policy snapshot refs and dates"
+    ),
+    SCEDPhase1RejectReason.FREEZE_TARGET_MISMATCH: (
+        "re-freeze the SCED ruler with an M2 budget envelope for the candidate target"
     ),
     SCEDPhase1RejectReason.MISSING_TARGET_POLICY: (
         "record a direct-lab target policy snapshot before evaluating the candidate"
@@ -558,6 +562,7 @@ def evaluate_phase1_candidate(
     ruler_hash = collection.ruler_hash or ruler.canonical_hash()
 
     try:
+        _require_freeze_target(candidate_obj, freeze)
         ledger_obj = _coerce_ledger(ledger)
         policy_snapshot = _policy_for_target(candidate_obj.target, target_policies)
         held_out = _coerce_held_out(held_out_evaluation)
@@ -771,6 +776,61 @@ def _policy_for_target(
     )
 
 
+def _require_freeze_target(
+    candidate: SCEDJailbreakCandidate,
+    freeze: SCEDRulerFreeze | Mapping[str, Any] | None,
+) -> None:
+    freeze_target = _freeze_budget_target(freeze)
+    candidate_target = candidate.target.normalized()
+    if freeze_target.key != candidate_target.key:
+        raise _Phase1InputError(
+            SCEDPhase1RejectReason.FREEZE_TARGET_MISMATCH,
+            (
+                "candidate target "
+                f"{_target_key(candidate_target)} does not match signed M2 budget envelope target "
+                f"{_target_key(freeze_target)}"
+            ),
+        )
+
+
+def _freeze_budget_target(freeze: SCEDRulerFreeze | Mapping[str, Any] | None) -> G2GateInput:
+    if isinstance(freeze, SCEDRulerFreeze):
+        envelope = freeze.m2_artifact.budget_envelope
+        raw_target = {
+            "surface": envelope.surface,
+            "venue": envelope.venue,
+            "instrument": envelope.instrument,
+        }
+    elif isinstance(freeze, Mapping):
+        artifact = freeze.get("m2_artifact")
+        if artifact is None:
+            artifact = freeze.get("freeze_artifact")
+        if not isinstance(artifact, Mapping):
+            raise _Phase1InputError(
+                SCEDPhase1RejectReason.FREEZE_TARGET_MISMATCH,
+                "freeze is missing the signed M2 artifact target",
+            )
+        envelope = artifact.get("budget_envelope")
+        if not isinstance(envelope, Mapping):
+            raise _Phase1InputError(
+                SCEDPhase1RejectReason.FREEZE_TARGET_MISMATCH,
+                "freeze is missing the signed M2 budget envelope target",
+            )
+        raw_target = envelope
+    else:
+        raise _Phase1InputError(
+            SCEDPhase1RejectReason.FREEZE_TARGET_MISMATCH,
+            "freeze is missing the signed M2 budget envelope target",
+        )
+    try:
+        return _coerce_target(raw_target)
+    except ValueError as exc:
+        raise _Phase1InputError(
+            SCEDPhase1RejectReason.FREEZE_TARGET_MISMATCH,
+            f"freeze budget envelope target is incomplete: {exc}",
+        ) from exc
+
+
 def _admitted(
     candidate: SCEDJailbreakCandidate,
     policy_snapshot: SCEDTargetPolicySnapshot,
@@ -961,7 +1021,7 @@ def _seq(value: Any) -> tuple[str, ...]:
         raise ValueError("expected a sequence of strings")
     if not all(isinstance(item, str) for item in value):
         raise ValueError("expected a sequence of strings")
-    return tuple(value)
+    return tuple(item.strip() for item in value)
 
 
 def _coerce_date(value: Any, field: str) -> date:

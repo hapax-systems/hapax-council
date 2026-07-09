@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 
 from shared.capdlc_lifecycle import GateResult, GateStatus
+from shared.legal_posture_registry import G2GateInput
 from shared.mdlc_m2_freeze import M2BudgetEnvelope
 from shared.sced_jailbreak_ratchet import (
     ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET,
@@ -16,6 +17,7 @@ from shared.sced_jailbreak_ratchet import (
     SCEDPhase1Decision,
     SCEDPhase1RejectReason,
     SCEDRatchetLedger,
+    SCEDTargetPolicySnapshot,
     SimilarityObservation,
     advance_ratchet,
     default_target_policy_snapshots,
@@ -64,26 +66,34 @@ def _ruler(**overrides: object) -> SCEDJailbreakRuler:
     return SCEDJailbreakRuler(**data)  # type: ignore[arg-type]
 
 
-def _budget() -> M2BudgetEnvelope:
+def _budget(
+    *,
+    target: G2GateInput = ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET,
+) -> M2BudgetEnvelope:
+    target = target.normalized()
     return M2BudgetEnvelope(
         authority_ref="authority:CASE-SDLC-REFORM-001",
         currency="usd",
         max_notional=35000.0,
         max_position=1.0,
-        purpose="anthropic model-safety universal jailbreak bounty",
-        surface="bug_bounty",
-        venue="anthropic",
-        instrument="direct_invited_model_safety_universal_jailbreak_bounty",
+        purpose=f"{target.venue} universal jailbreak bounty",
+        surface=target.surface,
+        venue=target.venue,
+        instrument=target.instrument,
         non_public=True,
     )
 
 
-def _freeze(ruler: SCEDJailbreakRuler | None = None) -> SCEDRulerFreeze:
+def _freeze(
+    ruler: SCEDJailbreakRuler | None = None,
+    *,
+    target: G2GateInput = ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET,
+) -> SCEDRulerFreeze:
     ruler = ruler or _ruler()
     return freeze_ruler(
         ruler,
         artifact_id="m2-freeze:sced-jailbreak-ruler-v0",
-        budget_envelope=_budget(),
+        budget_envelope=_budget(target=target),
         signer="operator:hapax",
         signed_at=NOW,
         signature_ref="signature:sced-jailbreak-ruler-v0",
@@ -147,7 +157,7 @@ def _similarities(
 
 def _admit(candidate: SCEDJailbreakCandidate | None = None) -> SCEDPhase1Decision:
     candidate = candidate or _candidate()
-    freeze = _freeze()
+    freeze = _freeze(target=candidate.target)
     return evaluate_phase1_candidate(
         candidate,
         freeze=freeze,
@@ -655,6 +665,33 @@ def test_default_target_policy_snapshots_record_anthropic_and_openai_refs_dates_
     assert "url:https://openai.com/index/gpt-5-5-bio-bug-bounty/" in openai.policy_refs
 
 
+def test_target_policy_snapshot_from_mapping_accepts_datetime_dates_and_trims_refs() -> None:
+    snapshot = SCEDTargetPolicySnapshot.from_mapping(
+        {
+            "target": {
+                "surface": " bug_bounty ",
+                "venue": " openai ",
+                "instrument": " direct_invited_bio_universal_jailbreak_bounty ",
+            },
+            "policy_refs": (" url:https://openai.com/index/gpt-5-5-bio-bug-bounty/ ",),
+            "policy_reviewed_on": datetime(2026, 6, 30, 18, 0, tzinfo=UTC),
+            "policy_published_on": datetime(2026, 4, 23, 18, 0, tzinfo=UTC),
+            "application_deadline": datetime(2026, 6, 22, 18, 0, tzinfo=UTC),
+            "testing_window_ends_on": datetime(2026, 7, 27, 18, 0, tzinfo=UTC),
+        }
+    )
+
+    assert snapshot.target == OPENAI_BIO_JAILBREAK_TARGET
+    assert snapshot.policy_refs == ("url:https://openai.com/index/gpt-5-5-bio-bug-bounty/",)
+    assert snapshot.policy_reviewed_on.isoformat() == "2026-06-30"
+    assert snapshot.policy_published_on is not None
+    assert snapshot.policy_published_on.isoformat() == "2026-04-23"
+    assert snapshot.application_deadline is not None
+    assert snapshot.application_deadline.isoformat() == "2026-06-22"
+    assert snapshot.testing_window_ends_on is not None
+    assert snapshot.testing_window_ends_on.isoformat() == "2026-07-27"
+
+
 def test_phase1_admits_openai_target_and_records_deadline_window() -> None:
     decision = _admit(
         _candidate(
@@ -671,6 +708,35 @@ def test_phase1_admits_openai_target_and_records_deadline_window() -> None:
     assert payload["target_policy_dates"]["application_deadline"] == "2026-06-22"
     assert payload["target_policy_dates"]["testing_window_ends_on"] == "2026-07-27"
     assert "url:https://openai.com/index/gpt-5-5-bio-bug-bounty/" in payload["target_policy_refs"]
+
+
+def test_phase1_rejects_candidate_when_signed_freeze_budget_targets_other_lab() -> None:
+    candidate = _candidate(
+        candidate_id="candidate:openai-001",
+        candidate_digest=DIGEST_B,
+        target=OPENAI_BIO_JAILBREAK_TARGET,
+        technique_refs=("technique:openai-novel-001",),
+    )
+    freeze = _freeze(target=ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET)
+
+    decision = evaluate_phase1_candidate(
+        candidate,
+        freeze=freeze,
+        ruler_hash_commit=freeze.ruler.canonical_hash(),
+        held_out_evaluation=_held_out(
+            candidate_id=candidate.candidate_id,
+            candidate_digest=candidate.candidate_digest,
+        ),
+        similarity_observations=_similarities(
+            candidate_id=candidate.candidate_id,
+            candidate_digest=candidate.candidate_digest,
+        ),
+    )
+
+    assert decision.status is GateStatus.DARK
+    assert decision.target == OPENAI_BIO_JAILBREAK_TARGET
+    assert decision.reject_reasons == (SCEDPhase1RejectReason.FREEZE_TARGET_MISMATCH,)
+    assert "does not match signed M2 budget envelope target" in decision.reason
 
 
 def test_phase1_decision_truthiness_is_undefined_and_accepted_decision_advances_ledger() -> None:
