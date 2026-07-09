@@ -220,6 +220,21 @@ def test_same_sentence_guard_spans_abbreviation_periods(tmp_path: Path) -> None:
     assert not file_enforced_class_clean(tmp_path, rel)
 
 
+@pytest.mark.parametrize("continuation", ['"ADHD" per the note.', "-ADHD support."])
+def test_same_sentence_guard_spans_wrapped_quote_or_hyphen_continuation(
+    tmp_path: Path, continuation: str
+) -> None:
+    rel = "docs/research/x.md"
+    doc = tmp_path / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(
+        "The operator is a person who has\n" + continuation + "\n",
+        encoding="utf-8",
+    )
+
+    assert not file_enforced_class_clean(tmp_path, rel)
+
+
 def test_same_sentence_guard_does_not_bridge_structural_lines(tmp_path: Path) -> None:
     """A sentence never spans markdown table rows or adjacent list items; separate
     elements, whose unrelated co-occurrence must not read as same-sentence attribution."""

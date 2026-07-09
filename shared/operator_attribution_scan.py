@@ -31,10 +31,12 @@ _DIRECT_DIAGNOSIS = (
     r"|\b(?:medical|health|mental\s+health|neurodevelopmental|cognitive)\s+condition(?:s)?\b)"
 )
 #: A newline that continues one wrapped prose sentence, rather than starting a new
-#: structural element. Blocked by: a blank line, a markdown table row/heading/quote/list
-#: bullet/fence, or a new string literal; a sentence never bridges table cells or
-#: adjacent list items.
-_SOFT_WRAP = "\\n(?![ \t]*(?:\\n|[|#>`\"'*+\\]\\}\\)\\-]))"
+#: structural element. Blocked by: a blank line, a markdown table row/heading/quote,
+#: fence, a real list bullet (`- `, `* `, `+ `, numbered item), or an indented source
+#: string literal; a sentence never bridges table cells, adjacent list items, or code
+#: string-list elements. Unindented line-leading quote marks, brackets, and hyphenated
+#: word continuations remain ordinary prose continuation points.
+_SOFT_WRAP = r"\n(?![ \t]*(?:\n|[|#>`]|[-*+]\s|\d+[.)]\s)|[ \t]{2,}[\"'])"
 #: A same-sentence run: ANY distance (no short window), terminated by sentence-final
 #: punctuation or by anything `_SOFT_WRAP` refuses to cross. Common abbreviation and
 #: decimal periods do not terminate the sentence; otherwise an attribution containing
