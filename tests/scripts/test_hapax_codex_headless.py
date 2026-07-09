@@ -279,6 +279,62 @@ exit 0
     )
 
 
+def _council_workdir(home: Path, lane: str = "cx-amber") -> Path:
+    workdir = home / "projects" / f"hapax-council--{lane}"
+    workdir.mkdir(parents=True, exist_ok=True)
+    return workdir
+
+
+def _write_activation_redemption_stub(home: Path, marker: Path) -> None:
+    stub = (
+        home
+        / ".cache"
+        / "hapax"
+        / "source-activation"
+        / "worktree"
+        / "shared"
+        / "governance"
+        / "dispatch_redemption.py"
+    )
+    stub.parent.mkdir(parents=True)
+    (stub.parents[1] / "__init__.py").write_text("", encoding="utf-8")
+    (stub.parent / "__init__.py").write_text("", encoding="utf-8")
+    stub.write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        "Path(os.environ['HAPAX_TEST_ACTIVATION_IMPORT_MARKER']).write_text("
+        "'imported\\n', encoding='utf-8')\n"
+        "class LaunchRedemptionContext:\n"
+        "    def __init__(self, **kwargs): pass\n"
+        "class LaunchRedemptionRequest:\n"
+        "    def __init__(self, **kwargs): pass\n"
+        "class Response:\n"
+        "    ok = False\n"
+        "    reason = 'socket_unavailable:test'\n"
+        "def redeem_launch_via_socket(_request):\n"
+        "    return Response()\n",
+        encoding="utf-8",
+    )
+    marker.parent.mkdir(parents=True, exist_ok=True)
+
+
+def test_codex_headless_scrubs_dispatch_redemption_binding_after_redeem() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+
+    assert "scrub_dispatch_redemption_binding_env()" in text
+    # redeem then scrub the binding — redemption now gates every external launch
+    # (local or remote) before any bearer loader / remote SSH preflight.
+    assert "validate_dispatch_redemption_authority\n  scrub_dispatch_redemption_binding_env" in text
+    for name in (
+        "HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN",
+        "HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID",
+        "HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF",
+        "HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE",
+        "HAPAX_METHODOLOGY_DISPATCH_PARENT_SPEC",
+    ):
+        assert f"unset {name}" in text
+
+
 def _init_primary_council_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     subprocess.run(
@@ -310,8 +366,7 @@ def test_codex_headless_runs_on_appendix_via_remote_payload(tmp_path: Path) -> N
     (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
     _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -469,8 +524,11 @@ def test_codex_headless_remote_no_claim_without_epoch_fails_closed(tmp_path: Pat
     cache.mkdir(parents=True)
     (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    # Council workdir: redemption is skipped for a council worktree, so this test
+    # exercises the remote preflight/epoch flow. Remote EXTERNAL launches redeem
+    # first — see test_codex_headless_remote_external_launch_requires_redemption.
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -520,8 +578,11 @@ def test_codex_headless_remote_no_claim_with_orphan_epoch_fails_closed(
     cache.mkdir(parents=True)
     (cache / "cc-claim-epoch-cx-amber").write_text("1234567890 task-x\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    # Council workdir: redemption is skipped for a council worktree, so this test
+    # exercises the remote preflight/epoch flow. Remote EXTERNAL launches redeem
+    # first — see test_codex_headless_remote_external_launch_requires_redemption.
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -567,8 +628,7 @@ def test_codex_headless_treats_appendix_alias_as_local_on_appendix(tmp_path: Pat
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     ssh_called = tmp_path / "ssh-called"
@@ -622,8 +682,7 @@ def test_codex_headless_treats_appendix_local_ip_as_local(tmp_path: Path) -> Non
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     ssh_called = tmp_path / "ssh-called"
@@ -678,8 +737,11 @@ def test_codex_headless_refuses_local_launch_without_published_token(tmp_path: P
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    # Council workdir: redemption is skipped for a local council launch, so this
+    # exercises the local Codex-OAuth bearer gate. External launches redeem first
+    # (proven by test_codex_headless_external_no_claim_requires_live_redemption_authority).
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
 
     bin_dir = tmp_path / "bin"
     codex_called = tmp_path / "codex-called"
@@ -717,8 +779,9 @@ def test_codex_headless_refuses_inherited_token_without_published_token(tmp_path
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    # Council workdir: redemption skipped, so this exercises the local bearer gate.
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
 
     bin_dir = tmp_path / "bin"
     codex_called = tmp_path / "codex-called"
@@ -756,8 +819,9 @@ def test_codex_headless_refuses_unsafe_published_token_file(tmp_path: Path) -> N
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    # Council workdir: redemption skipped, so this exercises the local bearer gate.
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
 
     bin_dir = tmp_path / "bin"
     codex_called = tmp_path / "codex-called"
@@ -797,8 +861,9 @@ def test_codex_headless_refuses_rejected_local_bearer_before_claim(tmp_path: Pat
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    # Council workdir: redemption skipped, so this exercises the local bearer gate.
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
 
     bin_dir = tmp_path / "bin"
     codex_args = tmp_path / "codex-args.txt"
@@ -847,8 +912,9 @@ def test_codex_headless_uses_preclaim_proven_local_bearer_after_claim_rotation(
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    # Council workdir: redemption skipped, so this exercises the local bearer gate.
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
 
     token_file = _write_codex_access_token(
         home / ".cache" / "hapax" / "codex-oauth",
@@ -1058,6 +1124,9 @@ exit 99
     )
 
     env = os.environ.copy()
+    # A governed lane running this suite carries its own dispatch task binding;
+    # the launcher would adopt it at CODEX_TASK init and skip the no-task guard.
+    env.pop("HAPAX_METHODOLOGY_DISPATCH_TASK", None)
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HAPAX_COUNCIL_DIR"] = str(primary)
@@ -1078,6 +1147,617 @@ exit 99
     assert workdir.exists()
 
 
+def test_codex_headless_external_no_claim_requires_live_redemption_authority(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+
+    fake_capability = tmp_path / "same-user-capability.json"
+    fake_capability.write_text('{"kind":"dispatch","capability_id":"fake"}\n', encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_METHODOLOGY_DISPATCH_CAPABILITY"] = str(fake_capability)
+    env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = "self-minted"
+    env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "019f-fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = "route-decision:fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE"] = "CASE-CAPACITY-ROUTING-001"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert "dispatch redemption refused" in result.stderr
+    assert not codex_called.exists()
+
+
+def test_codex_headless_remote_external_launch_requires_redemption(tmp_path: Path) -> None:
+    # A REMOTE external-worktree launch must redeem the governed grant against the
+    # fixed LOCAL governor BEFORE any SSH preflight/exec. An ungoverned remote
+    # Reins-style launch must fail closed with no grant_redeemed and never reach the
+    # dispatch host (regression pin for the remote-redemption-bypass finding).
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"  # external worktree, not under hapax-council
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    ssh_called = tmp_path / "ssh-called"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(bin_dir / "ssh", f': > "{ssh_called}"\nexit 0\n')
+    _write_executable(bin_dir / "codex", f': > "{codex_called}"\nexit 0\n')
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"  # remote dispatch
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert not ssh_called.exists(), "remote SSH must not run before redemption"
+    assert not codex_called.exists()
+
+
+def test_codex_headless_outside_projects_workdir_fails_closed_without_redemption_binding(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "outside" / "reins"
+    workdir.mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "missing dispatch redemption binding env" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert not codex_called.exists()
+
+
+def test_codex_headless_primary_council_subdir_does_not_require_redemption(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = home / "projects" / "hapax-council" / "scripts"
+    workdir.mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "missing dispatch redemption binding env" not in result.stderr
+    assert codex_called.exists()
+
+
+def test_codex_headless_council_symlink_to_external_tree_still_requires_redemption(
+    tmp_path: Path,
+) -> None:
+    # A council-prefixed SPELLING of an external tree must classify by what it
+    # resolves to (pwd -P), matching dispatcher-side is_external_project_worktree:
+    # the symlink name must not exempt the launch from redemption.
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    real_workdir = home / "projects" / "reins"
+    real_workdir.mkdir(parents=True)
+    council_spelling = home / "projects" / "hapax-council--reins"
+    council_spelling.symlink_to(real_workdir)
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(council_spelling)
+    env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = "self-minted"
+    env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "019f-fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = "route-decision:fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE"] = "CASE-CAPACITY-ROUTING-001"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert "dispatch redemption refused" in result.stderr
+    assert not codex_called.exists()
+
+
+def test_codex_headless_redemption_verifier_imports_from_launcher_checkout(
+    tmp_path: Path,
+) -> None:
+    # The verifier must import shared.governance.dispatch_redemption from the
+    # launcher's own council checkout, never from the caller's cwd (`python3 -`
+    # puts cwd at sys.path[0]). From a non-council cwd the launch must reach
+    # the redemption verdict (socket refusal), not an import failure.
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = "self-minted"
+    env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "019f-fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = "route-decision:fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE"] = "CASE-CAPACITY-ROUTING-001"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "cannot import dispatch redemption verifier" not in result.stderr
+    assert "dispatch redemption refused" in result.stderr
+    assert not codex_called.exists()
+
+
+def test_codex_headless_redemption_uses_trusted_python_not_path_spoof(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    fake_python_called = tmp_path / "fake-python-called"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "python3",
+        f""": > "{fake_python_called}"
+exit 0
+""",
+    )
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+    sitecustomize_marker = tmp_path / "sitecustomize-ran"
+    sitecustomize_dir = tmp_path / "pythonpath"
+    sitecustomize_dir.mkdir()
+    (sitecustomize_dir / "sitecustomize.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(sitecustomize_marker)!r}).write_text('ran\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["PYTHONPATH"] = str(sitecustomize_dir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "missing dispatch redemption binding env" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert not fake_python_called.exists()
+    assert not sitecustomize_marker.exists()
+    assert not codex_called.exists()
+
+
+def test_codex_headless_plain_copy_uses_source_activation_verifier(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+    deployed = home / ".local" / "bin" / "hapax-codex-headless"
+    deployed.parent.mkdir(parents=True)
+    deployed.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    deployed.chmod(0o755)
+    marker = tmp_path / "activation-imported"
+    _write_activation_redemption_stub(home, marker)
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_TEST_ACTIVATION_IMPORT_MARKER"] = str(marker)
+    env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = "self-minted"
+    env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "019f-fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = "route-decision:fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE"] = "CASE-CAPACITY-ROUTING-001"
+
+    result = subprocess.run(
+        [str(deployed), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert marker.read_text(encoding="utf-8") == "imported\n"
+    assert "cannot import dispatch redemption verifier" not in result.stderr
+    assert "dispatch redemption refused: socket_unavailable:test" in result.stderr
+    assert not codex_called.exists()
+
+
+def test_codex_headless_redemption_ignores_caller_council_dir_stub(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+    attacker_root = tmp_path / "attacker-council"
+    attacker_imported = tmp_path / "attacker-redemption-imported"
+    agent_role_sourced = tmp_path / "attacker-agent-role-sourced"
+    _write_executable(attacker_root / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
+    _write_executable(
+        attacker_root / "hooks" / "scripts" / "agent-role.sh",
+        f': > "{agent_role_sourced}"\n',
+    )
+    stub = attacker_root / "shared" / "governance" / "dispatch_redemption.py"
+    stub.parent.mkdir(parents=True)
+    stub.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(attacker_imported)!r}).write_text('imported\\n', encoding='utf-8')\n"
+        "class LaunchRedemptionContext:\n"
+        "    def __init__(self, **kwargs): pass\n"
+        "class LaunchRedemptionRequest:\n"
+        "    def __init__(self, **kwargs): pass\n"
+        "class Response:\n"
+        "    ok = True\n"
+        "    reason = 'ok'\n"
+        "def redeem_launch_via_socket(_request):\n"
+        "    return Response()\n",
+        encoding="utf-8",
+    )
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(attacker_root)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = "self-minted"
+    env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "019f-fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = "route-decision:fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE"] = "CASE-CAPACITY-ROUTING-001"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "dispatch redemption refused" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert not agent_role_sourced.exists()
+    assert not attacker_imported.exists()
+    assert not codex_called.exists()
+
+
+def test_codex_headless_redemption_ignores_path_readlink_spoof(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+    attacker_root = tmp_path / "attacker-council"
+    attacker_imported = tmp_path / "attacker-redemption-imported"
+    stub = attacker_root / "shared" / "governance" / "dispatch_redemption.py"
+    stub.parent.mkdir(parents=True)
+    stub.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(attacker_imported)!r}).write_text('imported\\n', encoding='utf-8')\n"
+        "class LaunchRedemptionContext:\n"
+        "    def __init__(self, **kwargs): pass\n"
+        "class LaunchRedemptionRequest:\n"
+        "    def __init__(self, **kwargs): pass\n"
+        "class Response:\n"
+        "    ok = True\n"
+        "    reason = 'ok'\n"
+        "def redeem_launch_via_socket(_request):\n"
+        "    return Response()\n",
+        encoding="utf-8",
+    )
+
+    bin_dir = tmp_path / "bin"
+    fake_readlink_called = tmp_path / "fake-readlink-called"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "readlink",
+        f""": > "{fake_readlink_called}"
+printf '%s\\n' "{attacker_root / "scripts" / "hapax-codex-headless"}"
+exit 0
+""",
+    )
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN"] = "self-minted"
+    env["HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID"] = "019f-fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF"] = "route-decision:fake"
+    env["HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE"] = "CASE-CAPACITY-ROUTING-001"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "dispatch redemption refused" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert not fake_readlink_called.exists()
+    assert not attacker_imported.exists()
+    assert not codex_called.exists()
+
+
+def test_codex_headless_external_claim_task_redeems_before_local_claim(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "missing dispatch redemption binding env" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert "missing cc-claim" not in result.stderr
+    assert not codex_called.exists()
+
+
+def test_codex_headless_external_workdir_redeems_before_spoofed_lifecycle_scripts(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = home / "projects" / "reins"
+    workdir.mkdir(parents=True)
+    spoofed_claim = tmp_path / "spoofed-cc-claim-called"
+
+    _write_executable(
+        workdir / "scripts" / "cc-claim",
+        f""": > "{spoofed_claim}"
+exit 0
+""",
+    )
+    _write_executable(workdir / "scripts" / "cc-close", "exit 0\n")
+
+    bin_dir = tmp_path / "bin"
+    codex_called = tmp_path / "codex-called"
+    _write_executable(
+        bin_dir / "codex",
+        f""": > "{codex_called}"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=10,
+    )
+
+    assert result.returncode == 17
+    assert "missing dispatch redemption binding env" in result.stderr
+    assert "requires live methodology dispatch redemption" in result.stderr
+    assert not spoofed_claim.exists()
+    assert not codex_called.exists()
+
+
 def test_codex_headless_claim_mismatch_refuses_before_remote_bootstrap(
     tmp_path: Path,
 ) -> None:
@@ -1086,8 +1766,7 @@ def test_codex_headless_claim_mismatch_refuses_before_remote_bootstrap(
     cache.mkdir(parents=True)
     (cache / "cc-active-task-cx-amber").write_text("other-task\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     ssh_log = tmp_path / "ssh.log"
@@ -1124,8 +1803,11 @@ def test_codex_headless_remote_token_preflight_refuses_after_claim(tmp_path: Pat
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    # Council workdir: redemption is skipped for a council worktree, so this test
+    # exercises the remote preflight/epoch flow. Remote EXTERNAL launches redeem
+    # first — see test_codex_headless_remote_external_launch_requires_redemption.
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
 
     bin_dir = tmp_path / "bin"
     ssh_log = tmp_path / "ssh.log"
@@ -1174,8 +1856,11 @@ def test_codex_headless_remote_token_preflight_rejects_unaccepted_bearer_after_c
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    # Council workdir: redemption is skipped for a council worktree, so this test
+    # exercises the remote preflight/epoch flow. Remote EXTERNAL launches redeem
+    # first — see test_codex_headless_remote_external_launch_requires_redemption.
+    workdir = home / "projects" / "hapax-council--cx-amber"
+    workdir.mkdir(parents=True)
 
     bin_dir = tmp_path / "bin"
     ssh_log = tmp_path / "ssh.log"
@@ -1223,8 +1908,7 @@ def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
     cache.mkdir(parents=True)
     _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "explicit-worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     ssh_log = tmp_path / "ssh.log"
@@ -1351,8 +2035,7 @@ def test_codex_headless_live_pid_blocks_remote_bootstrap_before_ssh(tmp_path: Pa
     cache.mkdir(parents=True)
     _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
     pid_dir = tmp_path / "pids"
     pid_dir.mkdir()
 
@@ -2430,8 +3113,7 @@ def test_codex_headless_prefers_session_keyed_claim_over_stale_legacy(
     (cache / "cc-active-task-cx-amber").write_text("old-task\n", encoding="utf-8")
     (cache / f"cc-active-task-cx-amber-{sid}").write_text("task-x\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -2470,8 +3152,7 @@ def test_codex_headless_blocks_retired_relay_without_force(tmp_path: Path) -> No
     relay.mkdir(parents=True)
     (relay / "cx-amber.yaml").write_text("status: retired\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -2512,8 +3193,7 @@ def test_codex_headless_blocks_wound_down_relay_session_status(tmp_path: Path) -
     relay_file = relay / "cx-amber.yaml"
     relay_file.write_text("session_status: |\n  wind_down_idle\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -2554,8 +3234,7 @@ def test_codex_headless_does_not_overmatch_transitional_relay_status(tmp_path: P
     relay.mkdir(parents=True)
     (relay / "cx-amber.yaml").write_text("status: retiring-soon\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -2593,8 +3272,7 @@ def test_codex_headless_blocks_suffixed_terminal_relay_status(tmp_path: Path) ->
     relay.mkdir(parents=True)
     (relay / "cx-amber.yaml").write_text("status: closed_done\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -2633,8 +3311,7 @@ def test_codex_headless_force_reactivates_retired_relay(tmp_path: Path) -> None:
     relay.mkdir(parents=True)
     (relay / "cx-amber.yaml").write_text("status: retired\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
 
     bin_dir = tmp_path / "bin"
     args_file = tmp_path / "codex-args.txt"
@@ -2675,8 +3352,7 @@ def test_codex_headless_force_does_not_bypass_live_pid_guard(tmp_path: Path) -> 
     relay_file = relay / "cx-amber.yaml"
     relay_file.write_text("status: active\n", encoding="utf-8")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
     pid_dir = tmp_path / "pids"
     pid_dir.mkdir()
 
@@ -2733,8 +3409,7 @@ def test_codex_headless_cleanup_removes_owned_pid_and_retires_relay(
     cache = home / ".cache" / "hapax"
     (cache / "relay").mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
     pid_dir = tmp_path / "pids"
     pid_dir.mkdir()
     council_dir = tmp_path / "council"
@@ -2772,8 +3447,7 @@ def test_codex_headless_cleanup_preserves_replaced_pid_without_retiring_relay(
     cache = home / ".cache" / "hapax"
     (cache / "relay").mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
-    workdir = tmp_path / "worktree"
-    workdir.mkdir()
+    workdir = _council_workdir(home)
     pid_dir = tmp_path / "pids"
     pid_dir.mkdir()
     council_dir = tmp_path / "council"
@@ -2812,3 +3486,37 @@ exit 0
     assert result.returncode == 0, result.stderr
     assert (pid_dir / "cx-amber.pid").read_text(encoding="utf-8") == "999999\n"
     assert not retire_log.exists()
+
+
+def test_codex_headless_rejects_session_with_path_separators(tmp_path: Path) -> None:
+    # SESSION flows into relay/log/PID/proof paths; a value with slashes or `..`
+    # (e.g. cx-a/../../x) must be refused before it can route state out of the
+    # per-lane namespace, regardless of which hapax_agent_is_codex_name is active.
+    home = tmp_path / "home"
+    (home / ".cache" / "hapax").mkdir(parents=True)
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    for bad in ("cx-a/../../x", "cx-a/b", "../cx-x", "cx-a;rm", "cx-A"):
+        result = subprocess.run(
+            [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", bad, "prompt"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+        assert result.returncode == 2, (
+            f"{bad!r} not rejected (rc={result.returncode}): {result.stderr}"
+        )
+        assert "invalid session" in result.stderr
+
+    # A legitimate lane name must NOT be a format rejection (it may fail later for
+    # unrelated setup, but never with the invalid-session guard).
+    ok = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-p0", "prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+    assert not (ok.returncode == 2 and "invalid session" in ok.stderr), ok.stderr

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing as mp
+import os
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import shared.jsonl_append as jsonl_append
 from shared.jsonl_append import _lock_path, append_jsonl, append_jsonl_lines
 
 
@@ -85,6 +87,41 @@ class TestFailOpen:
         target = clash / "ledger.jsonl"  # parent is a regular file -> mkdir raises
         with pytest.raises(OSError):
             append_jsonl(target, {"a": 1}, raising=True)
+
+    def test_short_write_loops_until_record_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "ledger.jsonl"
+        real_write = os.write
+        write_sizes: list[int] = []
+
+        def short_write(fd: int, data) -> int:
+            chunk = max(1, len(data) // 2)
+            written = real_write(fd, bytes(data[:chunk]))
+            write_sizes.append(written)
+            return written
+
+        monkeypatch.setattr(jsonl_append.os, "write", short_write)
+
+        assert append_jsonl(target, {"a": "x" * 100}, sort_keys=True) is True
+        lines = target.read_text(encoding="utf-8").splitlines()
+        assert [json.loads(line) for line in lines] == [{"a": "x" * 100}]
+        assert len(write_sizes) > 1
+        assert len(write_sizes) <= 16
+
+    def test_zero_progress_write_returns_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(jsonl_append.os, "write", lambda _fd, _data: 0)
+
+        assert append_jsonl(tmp_path / "ledger.jsonl", {"a": 1}) is False
+
+    def test_zero_progress_batched_write_returns_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(jsonl_append.os, "write", lambda _fd, _data: 0)
+
+        assert append_jsonl_lines([{"a": 1}, {"b": 2}], tmp_path / "ledger.jsonl") is False
 
 
 class TestConcurrencyNoInterleave:

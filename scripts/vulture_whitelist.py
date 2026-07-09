@@ -4734,6 +4734,21 @@ from shared.entitlement_capability import is_routable_supply as _is_routable_sup
 
 _ = (_classify_entitlement, _is_routable_supply)
 
+# Dispatch launch redemption authority/server methods are invoked by the fixed
+# governor/coord process and focused tests; production vulture does not follow
+# that dynamic service boundary.
+from shared.governance.dispatch_redemption import (  # noqa: E402
+    DispatchLaunchRedemptionAuthority as _DispatchLaunchRedemptionAuthority,
+)
+from shared.governance.dispatch_redemption import (  # noqa: E402
+    DispatchLaunchRedemptionServer as _DispatchLaunchRedemptionServer,
+)
+
+_ = (
+    _DispatchLaunchRedemptionAuthority.mint,
+    _DispatchLaunchRedemptionServer.serve_once,
+)
+
 # GitHub PR status helper consumed by scripts/hapax-merge-queue-lineage, an
 # extensionless Python CLI that vulture's source scan does not follow.
 from github_pr_status import get_pr_status_rest as _get_pr_status_rest  # noqa: E402

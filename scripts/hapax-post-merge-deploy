@@ -27,7 +27,10 @@
 #   systemd/units/*.slice            → cp + daemon-reload (members activate it; no enable/restart)
 #       unless the unit has `# Hapax-Install-Scope: system`, in which case
 #       it is system/root-scoped and must be installed by its dedicated
-#       installer rather than copied into the user unit directory.
+#       installer rather than copied into the user unit directory. The dispatch
+#       redemption governor is activated by
+#       scripts/hapax-dispatch-redemption-service-install when its unit,
+#       requester, daemon, or shared governor module changes.
 #       A unit carrying `# Hapax-Auto-Enable: true` (+ an [Install] section)
 #       is `enable --now`'d when newly installed, so a freshly-merged
 #       service/timer goes live instead of installing-but-sleeping (the
@@ -154,6 +157,11 @@ TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
 # isolates it automatically.
 LAST_DEPLOYED_SHA_PATH="${HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH:-$(dirname "$TRACE_PATH")/last-deployed-sha}"
 RECOVERY_INSTALLER_PATH="scripts/hapax-recovery-plane-install"
+DISPATCH_REDEMPTION_UNIT_PATH="systemd/units/hapax-dispatch-redemption.service"
+DISPATCH_REDEMPTION_INSTALLER_PATH="scripts/hapax-dispatch-redemption-service-install"
+DISPATCH_REDEMPTION_REQUESTER_PATH="scripts/hapax-methodology-dispatch"
+DISPATCH_REDEMPTION_DAEMON_PATH="scripts/hapax-dispatch-redemption-authority"
+DISPATCH_REDEMPTION_SHARED_PATH="shared/governance/dispatch_redemption.py"
 RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
 RECOVERY_BUNDLE_SOURCE_FILES=(
     scripts/hapax-p0-incident-intake
@@ -570,6 +578,7 @@ CANONICAL_HOOKS_DIR="${HAPAX_CANONICAL_HOOKS:-$HOME/.local/lib/hapax/hooks}"
 SYSTEMD_UNCLASSIFIED=()
 AUDIO_SAFE_RESTARTS=()
 RECOVERY_BUNDLE_SELF_HEAL=0
+DISPATCH_REDEMPTION_INSTALL_NEEDED=0
 DID_ANYTHING=0
 GOVERNED_INTAKE_PRESET_UNIT_SETS=(
     "hapax-request-decompose.timer hapax-request-decompose.service"
@@ -948,11 +957,20 @@ while IFS= read -r f; do
         shared/__init__.py|shared/jsonl_append.py|shared/p0_incident_intake.py)
             RECOVERY_BUNDLE+=("$f")
             ;;
+        shared/governance/dispatch_redemption.py)
+            DISPATCH_REDEMPTION_INSTALL_NEEDED=1
+            ;;
         hooks/scripts/cc-task-gate.impl.sh|hooks/scripts/agent-role.sh|hooks/scripts/escape-grant.sh|hooks/scripts/hapax_check_enable_latch.sh|hooks/scripts/cc-task-gate-bootstrap.py|hooks/scripts/hooks-doctor.sh|hooks/scripts/cc-task-gate.sh)
             GATE_CLOSURE+=("$f") ;;
         assets/quake/maps/*|assets/quake/qc/*|assets/quake/csqc/*|assets/quake/models/*|assets/quake/sound/*|assets/quake/glsl/*|assets/quake/scripts/*|assets/quake/config/*|assets/quake/darkplaces/*)
             QUAKE_ASSETS+=("$f") ;;
-        scripts/hapax-*)                  SCRIPTS+=("$f") ;;
+        scripts/hapax-*)
+            SCRIPTS+=("$f")
+            if [ "$f" = "$DISPATCH_REDEMPTION_REQUESTER_PATH" ] ||
+                [ "$f" = "$DISPATCH_REDEMPTION_DAEMON_PATH" ]; then
+                DISPATCH_REDEMPTION_INSTALL_NEEDED=1
+            fi
+            ;;
         scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
         systemd/expected-timers.yaml)     ;; # frozen-baseline doc, not deployable
         systemd/README.md)                ;; # docs
@@ -1284,6 +1302,16 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
         if [ -e "$dest" ] || [ -L "$dest" ]; then
             rm -fv "$dest" || true
         fi
+        if [ "$f" = "$DISPATCH_REDEMPTION_UNIT_PATH" ]; then
+            installer="$REPO/$DISPATCH_REDEMPTION_INSTALLER_PATH"
+            if [ ! -f "$installer" ]; then
+                echo "hapax-post-merge-deploy: missing dispatch redemption service installer at $installer" >&2
+                echo "  next action: ensure $DISPATCH_REDEMPTION_INSTALLER_PATH exists in the active source, then rerun hapax-post-merge-deploy for this merge" >&2
+                exit 1
+            fi
+            echo "  activating $base via $DISPATCH_REDEMPTION_INSTALLER_PATH"
+            HAPAX_COUNCIL_DIR="$REPO" bash "$installer" --install
+        fi
     done
     systemctl --user daemon-reload
     DID_ANYTHING=1
@@ -1459,6 +1487,18 @@ if [ "${#SCRIPTS[@]}" -gt 0 ]; then
             fi
         done
     done
+    DID_ANYTHING=1
+fi
+
+if [ "$DISPATCH_REDEMPTION_INSTALL_NEEDED" -eq 1 ]; then
+    installer="$REPO/$DISPATCH_REDEMPTION_INSTALLER_PATH"
+    if [ ! -f "$installer" ]; then
+        echo "hapax-post-merge-deploy: missing dispatch redemption service installer at $installer" >&2
+        echo "  next action: ensure $DISPATCH_REDEMPTION_INSTALLER_PATH exists in the active source, then rerun hapax-post-merge-deploy for this merge" >&2
+        exit 1
+    fi
+    echo "activating dispatch redemption governor after source change via $DISPATCH_REDEMPTION_INSTALLER_PATH"
+    HAPAX_COUNCIL_DIR="$REPO" bash "$installer" --install
     DID_ANYTHING=1
 fi
 

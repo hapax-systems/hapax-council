@@ -10,15 +10,12 @@
 set -euo pipefail
 
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
-ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
-if [ -f "$ROLE_HELPER" ]; then
-  # shellcheck source=../hooks/scripts/agent-role.sh
-  # shellcheck disable=SC1091
-  . "$ROLE_HELPER"
-fi
 if ! declare -F hapax_agent_is_codex_name >/dev/null 2>&1; then
   hapax_agent_is_codex_name() {
-    [[ "${1:-}" =~ ^cx-[a-z][a-z-]*$ ]]
+    # Anchored: cx- followed by dash-separated lowercase-alnum segments only.
+    # A glob such as cx-[a-z]* accepts cx-a/../../x (the * spans slashes), which
+    # would route relay/log/PID/proof paths outside the per-lane namespace.
+    [[ "${1:-}" =~ ^cx-[a-z0-9]+(-[a-z0-9]+)*$ ]]
   }
 fi
 
@@ -136,6 +133,135 @@ dispatch_host_is_local() {
     done
   fi
   return 1
+}
+
+launcher_source_root() {
+  local launcher="${BASH_SOURCE[0]}" root="" activation_root="$HOME/.cache/hapax/source-activation/worktree"
+  if [[ -x /usr/bin/readlink ]]; then
+    launcher="$(/usr/bin/readlink -f "$launcher" 2>/dev/null || printf '%s' "$launcher")"
+  fi
+  if root="$(cd "$(dirname "$launcher")/.." 2>/dev/null && pwd -P)"; then
+    if [[ -r "$root/shared/governance/dispatch_redemption.py" ]]; then
+      printf '%s\n' "$root"
+      return 0
+    fi
+  fi
+  if [[ -r "$activation_root/shared/governance/dispatch_redemption.py" ]]; then
+    (cd "$activation_root" && pwd -P)
+    return 0
+  fi
+  # Fail closed: neither this launcher's physical root nor the activation
+  # worktree carries the verifier. Emit NOTHING and signal failure so the
+  # caller aborts. Printing an empty/untrusted root here would let the verifier
+  # prepend "" (== cwd) to sys.path, so a hostile external worktree could supply
+  # a fake dispatch_redemption module and forge redemption success.
+  return 1
+}
+
+workdir_requires_dispatch_redemption() {
+  [[ "${HAPAX_METHODOLOGY_DISPATCH_EXTERNAL:-}" == "1" ]] && return 0
+  case "$WORKDIR" in
+    "$HOME/projects/hapax-council"|"$HOME/projects/hapax-council/"*|"$HOME/projects/hapax-council--"*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+validate_dispatch_redemption_authority() {
+  # Redemption parity with hapax-claude-headless: the verifier imports from
+  # this launcher's physical council checkout, never from caller-controlled
+  # HAPAX_COUNCIL_DIR, PATH, the external WORKDIR, cwd, or PYTHONPATH.
+  local council_dir python_bin="/usr/bin/python3" profile="${HAPAX_METHODOLOGY_DISPATCH_PROFILE:-full}"
+  if ! council_dir="$(launcher_source_root)" \
+    || [[ -z "$council_dir" || ! -r "$council_dir/shared/governance/dispatch_redemption.py" ]]; then
+    echo "hapax-codex-headless: no trusted council source root for the dispatch redemption verifier; refusing launch (fail-closed)" >&2
+    exit 17
+  fi
+  if ! "$python_bin" -I - "$council_dir" "$CODEX_TASK" "$SESSION" "$WORKDIR" codex headless "$profile" <<'PYEOF'
+import os
+import sys
+import time
+
+council_dir, task_id, lane, worktree, platform, mode, profile = sys.argv[1:]
+if not council_dir or not os.path.isfile(
+    os.path.join(council_dir, "shared", "governance", "dispatch_redemption.py")
+):
+    print("dispatch redemption verifier: untrusted or empty council root", file=sys.stderr)
+    raise SystemExit(1)
+sys.path = [council_dir] + [p for p in sys.path if p not in ("", os.getcwd())]
+
+try:
+    from shared.governance.dispatch_redemption import (
+        LaunchRedemptionContext,
+        LaunchRedemptionRequest,
+        redeem_launch_via_socket,
+    )
+except Exception as exc:  # noqa: BLE001
+    print(f"cannot import dispatch redemption verifier: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+token = os.environ.get("HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN", "").strip()
+message_id = os.environ.get("HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID", "").strip()
+route_decision_ref = os.environ.get(
+    "HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF", ""
+).strip()
+authority_case = os.environ.get("HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE", "").strip()
+parent_spec = os.environ.get("HAPAX_METHODOLOGY_DISPATCH_PARENT_SPEC", "").strip() or None
+
+missing = [
+    name
+    for name, value in (
+        ("HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN", token),
+        ("HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID", message_id),
+        ("HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF", route_decision_ref),
+        ("HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE", authority_case),
+    )
+    if not value
+]
+if missing:
+    print(
+        "missing dispatch redemption binding env: " + ", ".join(missing),
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+context = LaunchRedemptionContext(
+    task_id=task_id,
+    lane=lane,
+    platform=platform,
+    mode=mode,
+    profile=profile,
+    worktree=worktree,
+    purpose="external_launch",
+    dispatch_message_id=message_id,
+    route_decision_ref=route_decision_ref,
+    authority_case=authority_case,
+    parent_spec=parent_spec,
+)
+response = redeem_launch_via_socket(
+    LaunchRedemptionRequest(
+        token=token,
+        context=context,
+        wrapper="hapax-codex-headless",
+        wrapper_pid=os.getpid(),
+        observed_at=time.time(),
+    )
+)
+if not response.ok:
+    print(f"dispatch redemption refused: {response.reason}", file=sys.stderr)
+    raise SystemExit(1)
+PYEOF
+  then
+    echo "hapax-codex-headless: external workdir requires live methodology dispatch redemption; next action: launch external worktrees through hapax-methodology-dispatch with an active dispatch-redemption authority" >&2
+    exit 17
+  fi
+}
+
+scrub_dispatch_redemption_binding_env() {
+  unset HAPAX_METHODOLOGY_DISPATCH_REDEMPTION_TOKEN
+  unset HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID
+  unset HAPAX_METHODOLOGY_DISPATCH_ROUTE_DECISION_REF
+  unset HAPAX_METHODOLOGY_DISPATCH_AUTHORITY_CASE
+  unset HAPAX_METHODOLOGY_DISPATCH_PARENT_SPEC
 }
 
 token_handoff_component() {
@@ -881,8 +1007,11 @@ if [[ -z "$SESSION" ]]; then
   usage
   exit 1
 fi
-if ! hapax_agent_is_codex_name "$SESSION"; then
-  echo "hapax-codex-headless: invalid session '$SESSION' (expected cx-<color>)" >&2
+# Enforce the anchored lane-identity format independently of which
+# hapax_agent_is_codex_name (canonical or fallback) is in scope: SESSION flows
+# into relay/log/PID/proof paths, so a value with slashes or `..` must never pass.
+if ! hapax_agent_is_codex_name "$SESSION" || [[ ! "$SESSION" =~ ^cx-[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+  echo "hapax-codex-headless: invalid session '$SESSION' (expected cx-<lane>, [a-z0-9-] only, no path separators)" >&2
   exit 2
 fi
 
@@ -927,7 +1056,11 @@ if [[ ! -d "$WORKDIR" && "$WORKDIR_EXPLICIT" -eq 0 ]]; then
   WORKDIR="$COUNCIL_DIR"
 fi
 [[ -d "$WORKDIR" ]] || { echo "hapax-codex-headless: worktree not found: $WORKDIR" >&2; exit 3; }
-WORKDIR="$(cd "$WORKDIR" && pwd)"
+# Physical resolution (-P): redemption classification must see what the path
+# RESOLVES to, matching dispatcher-side is_external_project_worktree. A
+# council-prefixed symlink or /../ spelling of an external tree must not be
+# exempted by its textual name.
+WORKDIR="$(cd "$WORKDIR" && pwd -P)"
 
 HOOK="$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh"
 [[ -x "$HOOK" ]] || { echo "hapax-codex-headless: hook adapter not executable: $HOOK" >&2; exit 6; }
@@ -940,7 +1073,19 @@ if [[ -n "$DISPATCH_HOST_REQUESTED" ]] && dispatch_host_is_local "$DISPATCH_HOST
   DISPATCH_HOST_REQUESTED=""
 fi
 
+# Redemption gates EVERY external worktree launch (local OR remote) against the
+# FIXED LOCAL governor BEFORE any credential loader or remote SSH preflight/exec.
+# An external worktree has no local cc-claim lifecycle, so admission is the governed
+# one-time grant: a governed dispatch carries a valid binding and redeems here; an
+# ungoverned external launch fails closed whether it would run locally or remotely
+# (a remote SSH exec must never proceed without a grant_redeemed from the governor).
+if workdir_requires_dispatch_redemption; then
+  validate_dispatch_redemption_authority
+  scrub_dispatch_redemption_binding_env
+fi
+
 if [[ -z "$DISPATCH_HOST_REQUESTED" ]]; then
+  # Local dispatch: load the local codex bearer AFTER redemption has admitted the launch.
   load_local_codex_access_token
 fi
 
@@ -987,6 +1132,7 @@ if [[ -n "$CLAIMED_TASK" && "$CLAIMED_TASK" != "$CODEX_TASK" ]]; then
   echo "hapax-codex-headless: refusing launch; '$SESSION' already claims '$CLAIMED_TASK', not dispatch task '$CODEX_TASK'" >&2
   exit 13
 fi
+
 export HAPAX_METHODOLOGY_DISPATCH_TASK="$CODEX_TASK"
 CLAIM_EPOCH_LINE="$(claim_epoch_for_task "$SESSION" "$SESSION_UUID" "$CODEX_TASK" || true)"
 if [[ -n "$CLAIM_EPOCH_LINE" ]]; then

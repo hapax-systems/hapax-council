@@ -32,9 +32,9 @@ def _env(tmp_path: Path) -> tuple[dict[str, str], Path]:
     dispatcher_log = tmp_path / "methodology-dispatch-args.txt"
     fake_dispatcher = tmp_path / "hapax-methodology-dispatch"
     fake_dispatcher.write_text(
-        f"""#!/usr/bin/env bash
-printf '%s\\n' "$@" > {dispatcher_log}
-""",
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"Path({str(dispatcher_log)!r}).write_text('\\n'.join(sys.argv[1:]) + '\\n', encoding='utf-8')\n",
         encoding="utf-8",
     )
     fake_dispatcher.chmod(0o755)

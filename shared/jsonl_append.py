@@ -5,7 +5,7 @@ is atomic only for writes <= ``PIPE_BUF`` (4096B), and two live ledgers
 (``cc-task-gate-decisions.jsonl`` at ~9KB, ``sdlc-invariant-findings.jsonl`` at
 ~3.4KB) exceed it; the Python writers also used buffered text-mode ``open("a")``
 whose single logical record can split across multiple ``write()`` syscalls. A
-per-file advisory ``flock`` held across one ``os.write`` of the fully-serialised
+per-file advisory ``flock`` held across a write-all loop of the fully-serialised
 blob makes every append atomic for any record size, host-local.
 
 Fails OPEN: a lock or IO failure returns ``False`` and never blocks the caller
@@ -65,6 +65,18 @@ def _make_serializer(
     return _serialize
 
 
+def _write_all(fd: int, blob: bytes) -> None:
+    view = memoryview(blob)
+    written = 0
+    while written < len(view):
+        count = os.write(fd, view[written:])
+        if count < 0:
+            raise OSError(f"os.write returned negative byte count: {count}")
+        if count == 0:
+            raise OSError("os.write returned no progress")
+        written += count
+
+
 def append_jsonl(
     path: str | os.PathLike[str],
     record: Record,
@@ -78,8 +90,8 @@ def append_jsonl(
     """Append one JSON record as a line, atomically across processes/worktrees.
 
     Returns ``True`` on durable append, ``False`` on a swallowed failure. Holds an
-    exclusive ``flock`` on the ``<name>.lock`` sidecar across a single
-    ``O_APPEND`` ``os.write`` so records > ``PIPE_BUF`` cannot interleave. The
+    exclusive ``flock`` on the ``<name>.lock`` sidecar across an ``O_APPEND``
+    write-all loop so records > ``PIPE_BUF`` cannot interleave. The
     default serialisation matches bare ``json.dumps`` (``ensure_ascii=True``,
     spaced separators); pass ``serialize`` for an exact custom encoder.
     """
@@ -106,8 +118,8 @@ def append_jsonl_lines(
 ) -> bool:
     """Append many records under ONE lock acquisition (e.g. the findings loop).
 
-    The whole batch is serialised, then written with a single ``os.write`` under
-    one exclusive ``flock`` — the multi-row interleave risk is eliminated. Fails
+    The whole batch is serialised, then written fully under one exclusive
+    ``flock`` — the multi-row interleave risk is eliminated. Fails
     OPEN (returns ``False``) unless ``raising=True``.
     """
     target = Path(path)
@@ -124,7 +136,7 @@ def append_jsonl_lines(
             fcntl.flock(lock_fd, fcntl.LOCK_EX)  # blocking; ledger appends are sub-ms
             data_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             try:
-                os.write(data_fd, blob)  # single syscall under the lock
+                _write_all(data_fd, blob)
             finally:
                 os.close(data_fd)
         finally:

@@ -66,6 +66,63 @@ class TestPrimaryWorktreeGuard:
         )
 
 
+class TestSystemScopedUnits:
+    """System-manager units must never be linked into the user manager."""
+
+    def test_system_scoped_units_are_removed_from_user_install(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        calls = tmp_path / "systemctl-calls.txt"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf '%s\n' "$*" >> "{calls}"
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        uv.chmod(0o755)
+
+        home = tmp_path / "home"
+        user_units = home / ".config" / "systemd" / "user"
+        user_units.mkdir(parents=True)
+        shadow = user_units / "hapax-dispatch-redemption.service"
+        shadow.write_text("stale user-manager shadow\n", encoding="utf-8")
+
+        env = os.environ.copy()
+        env["ALLOW_NONSTANDARD_REPO"] = "1"
+        env["HOME"] = str(home)
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["SKIP_TIMER_ENABLE"] = "1"
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert not shadow.exists()
+        assert "removed system-scoped user shadow: hapax-dispatch-redemption.service" in (
+            result.stdout
+        )
+        call_log = calls.read_text(encoding="utf-8")
+        assert "--user enable --now hapax-dispatch-redemption.service" not in call_log
+        # rm alone leaves an enabled/running user shadow alive; the sweep must
+        # stop+disable it before removing the file (deployed-vs-repo drift).
+        assert "--user disable --now hapax-dispatch-redemption.service" in call_log, (
+            "system-scoped user shadow must be stopped+disabled, not just file-removed"
+        )
+
+
 class TestTimerEnablementSweep:
     """Pin the delta 2026-04-14-systemd-timer-enablement-gap fix."""
 

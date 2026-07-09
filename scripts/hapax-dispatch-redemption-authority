@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""hapax-dispatch-redemption-authority — fixed-socket launch grant governor.
+
+Runtime owner for /run/hapax/coord/dispatch-redemption.sock. Runs the
+DispatchLaunchRedemptionAuthority mint/redeem grant table behind the fixed
+governor socket so external-worktree wrapper launches redeem a live,
+governed-path one-time grant instead of trusting same-UID files.
+
+Trust boundary (keep this honest): this is governed-path admission and
+deviation witnessability in a single-operator system, NOT user auth and NOT
+same-UID non-forgeability. A same-UID operator can stop or replace their own
+services; what this daemon guarantees is that the governed launch path is the
+easy path, wrappers fail closed without it, and every mint/redeem/refusal is
+witnessed token-free.
+
+Modes:
+  --serve     run the governor (default under systemd)
+  --receipt   print a token-free JSON receipt of the runtime namespace and
+              socket owner/mode; exit 0 healthy / 1 absent-or-misowned
+
+The socket/runtime/events path flags exist so tests can run the daemon
+unprivileged against a temp directory. Wrappers NEVER read these flags or
+any env to locate the governor: the wrapper-side client hardcodes the fixed
+socket (shared.governance.dispatch_redemption.dispatch_launch_redemption_socket).
+
+Pure stdlib + repo-internal imports so the system unit can run it with the
+distro python3 (no uv/venv dependency), mirroring coord-boot-reconcile.
+"""
+
+from __future__ import annotations
+
+import argparse
+import grp
+import json
+import os
+import pwd
+import signal
+import socket
+import stat
+import sys
+import time
+from collections.abc import Callable
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from shared.governance.dispatch_redemption import (  # noqa: E402
+    DispatchLaunchRedemptionAuthority,
+    DispatchLaunchRedemptionServer,
+    LaunchRedemptionContext,
+    LaunchRedemptionEvent,
+    dispatch_launch_redemption_socket,
+    redemption_event_payload,
+)
+from shared.jsonl_append import append_jsonl  # noqa: E402
+
+DEFAULT_EVENTS_PATH = Path("/var/lib/hapax/dispatch-redemption/events.jsonl")
+EVENT_LEDGER_DIR_MODE = 0o750
+EVENT_LEDGER_FILE_MODE = 0o640
+PRODUCTION_RUNTIME_OWNER = "root"
+PRODUCTION_RUNTIME_GROUP = "hapax"
+# Purge cadence for expired/consumed grants. Purging maps a replayed token to
+# "unknown_token" instead of "already_consumed" — both fail closed.
+PURGE_INTERVAL_S = 300.0
+
+
+def _log(message: str) -> None:
+    print(f"hapax-dispatch-redemption-authority: {message}", flush=True)
+
+
+def _owner_names(st: os.stat_result) -> tuple[str, str]:
+    try:
+        user = pwd.getpwuid(st.st_uid).pw_name
+    except KeyError:
+        user = str(st.st_uid)
+    try:
+        group = grp.getgrgid(st.st_gid).gr_name
+    except KeyError:
+        group = str(st.st_gid)
+    return user, group
+
+
+def _path_receipt(path: Path, *, expect_socket: bool = False) -> dict[str, object]:
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return {"path": str(path), "present": False}
+    user, group = _owner_names(st)
+    receipt: dict[str, object] = {
+        "path": str(path),
+        "present": True,
+        "owner": user,
+        "group": group,
+        "mode": format(stat.S_IMODE(st.st_mode), "04o"),
+    }
+    if expect_socket:
+        receipt["is_socket"] = stat.S_ISSOCK(st.st_mode)
+    return receipt
+
+
+def _is_production_runtime_dir(runtime_dir: Path) -> bool:
+    return (
+        runtime_dir.expanduser().resolve(strict=False) == dispatch_launch_redemption_socket().parent
+    )
+
+
+def _runtime_owner_expectation(runtime_dir: Path) -> tuple[str, str]:
+    if _is_production_runtime_dir(runtime_dir):
+        return (
+            PRODUCTION_RUNTIME_OWNER,
+            os.environ.get(
+                "HAPAX_DISPATCH_REDEMPTION_RUNTIME_GROUP", PRODUCTION_RUNTIME_GROUP
+            ).strip()
+            or PRODUCTION_RUNTIME_GROUP,
+        )
+    return pwd.getpwuid(os.getuid()).pw_name, grp.getgrgid(os.getgid()).gr_name
+
+
+def _protocol_probe(socket_path: Path, *, timeout_s: float = 0.5) -> dict[str, object]:
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(timeout_s)
+            client.connect(str(socket_path))
+            client.sendall(
+                json.dumps(
+                    {"schema": "hapax.dispatch_launch_probe.v1"},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                + b"\n"
+            )
+            data = client.recv(65536)
+    except Exception as exc:  # noqa: BLE001 - receipt must report drift, not crash.
+        return {"ok": False, "reason": f"{type(exc).__name__}:{exc}"}
+    try:
+        payload = json.loads(data.decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - malformed probe response is unhealthy.
+        return {"ok": False, "reason": f"malformed_response:{type(exc).__name__}"}
+    ok = (
+        isinstance(payload, dict)
+        and payload.get("schema") == "hapax.dispatch_launch_probe_response.v1"
+        and payload.get("ok") is True
+        and payload.get("reason") == "probe_witnessed"
+    )
+    return {
+        "ok": ok,
+        "reason": "protocol_witnessed" if ok else "unexpected_response",
+    }
+
+
+def runtime_receipt(runtime_dir: Path, socket_path: Path) -> dict[str, object]:
+    dir_receipt = _path_receipt(runtime_dir)
+    sock_receipt = _path_receipt(socket_path, expect_socket=True)
+    expected_owner, expected_group = _runtime_owner_expectation(runtime_dir)
+    protocol_probe = (
+        _protocol_probe(socket_path)
+        if sock_receipt.get("present") and sock_receipt.get("is_socket")
+        else {"ok": False, "reason": "socket_absent"}
+    )
+    healthy = bool(
+        dir_receipt.get("present")
+        and dir_receipt.get("owner") == expected_owner
+        and dir_receipt.get("group") == expected_group
+        and dir_receipt.get("mode") == "0750"
+        and sock_receipt.get("present")
+        and sock_receipt.get("is_socket")
+        and sock_receipt.get("owner") == expected_owner
+        and sock_receipt.get("group") == expected_group
+        and sock_receipt.get("mode") == "0660"
+        and protocol_probe.get("ok") is True
+    )
+    return {
+        "schema": "hapax.dispatch_redemption_runtime_receipt.v1",
+        "observed_at": time.time(),
+        "runtime_dir": dir_receipt,
+        "socket": sock_receipt,
+        "expected_owner": expected_owner,
+        "expected_group": expected_group,
+        "protocol_probe": protocol_probe,
+        "healthy": healthy,
+    }
+
+
+def check_runtime_dir(runtime_dir: Path) -> None:
+    """Refuse to serve from an unprovisioned or foreign-owned namespace.
+
+    The namespace must come from the system manager (RuntimeDirectory= in
+    hapax-dispatch-redemption.service), not an ad hoc mkdir: a daemon that
+    silently self-provisions would hide exactly the drift this task exists
+    to make witnessable.
+    """
+
+    try:
+        st = os.stat(runtime_dir)
+    except FileNotFoundError:
+        raise SystemExit(
+            f"runtime namespace missing: {runtime_dir}\n"
+            "  next action: install + start the system-scoped unit "
+            "systemd/units/hapax-dispatch-redemption.service "
+            "(RuntimeDirectory=hapax/coord provisions this namespace)"
+        ) from None
+    expected_owner, expected_group = _runtime_owner_expectation(runtime_dir)
+    owner, group = _owner_names(st)
+    if owner != expected_owner or group != expected_group:
+        raise SystemExit(
+            f"runtime namespace {runtime_dir} owned by '{owner}:{group}', "
+            f"not expected '{expected_owner}:{expected_group}'\n"
+            "  next action: remove the foreign directory and restart "
+            "hapax-dispatch-redemption.service so systemd re-provisions it"
+        )
+    mode = stat.S_IMODE(st.st_mode)
+    if mode != 0o750:
+        raise SystemExit(
+            f"runtime namespace {runtime_dir} has mode {mode:04o}, not expected 0750\n"
+            "  next action: restart hapax-dispatch-redemption.service so systemd "
+            "re-provisions the namespace"
+        )
+
+
+def mint_policy(context: LaunchRedemptionContext) -> str | None:
+    """Minimum governed-path admission for minting a launch grant.
+
+    Context completeness (task/lane/message-id/route-ref/authority-case
+    non-empty) is already enforced by LaunchRedemptionContext.validate().
+    """
+
+    worktree = Path(context.worktree)
+    if not worktree.is_dir():
+        return f"worktree_missing:{worktree}"
+    route_ref = context.route_decision_ref
+    if route_ref.startswith("/") and not Path(route_ref).is_file():
+        return f"route_decision_receipt_missing:{route_ref}"
+    return None
+
+
+def _event_writer(events_path: Path) -> Callable[[LaunchRedemptionEvent], None]:
+    _prepare_event_ledger(events_path)
+
+    def _write(event: LaunchRedemptionEvent) -> None:
+        payload = redemption_event_payload(event)
+        ok = append_jsonl(events_path, payload)
+        _log(
+            f"event {event.event_type} reason={event.reason} task={event.task_id} "
+            f"lane={event.lane} grant={event.grant_id} ledger={'ok' if ok else 'FAILED'}"
+        )
+        if not ok:
+            raise RuntimeError(f"dispatch redemption event ledger append failed: {events_path}")
+
+    return _write
+
+
+def _prepare_event_ledger(events_path: Path) -> None:
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        events_path.parent.chmod(EVENT_LEDGER_DIR_MODE)
+    except OSError:
+        pass
+    for path in (events_path, events_path.with_name(events_path.name + ".lock")):
+        path.touch(exist_ok=True)
+        try:
+            path.chmod(EVENT_LEDGER_FILE_MODE)
+        except OSError:
+            pass
+
+
+def serve(
+    runtime_dir: Path,
+    socket_path: Path,
+    events_path: Path,
+    purge_interval_s: float = PURGE_INTERVAL_S,
+) -> int:
+    check_runtime_dir(runtime_dir)
+    stopping = False
+
+    def _stop(_signum: int, _frame: object) -> None:
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+
+    authority = DispatchLaunchRedemptionAuthority(
+        mint_policy_check=mint_policy,
+        event_sink=_event_writer(events_path),
+    )
+    server = DispatchLaunchRedemptionServer(
+        authority,
+        socket_path=socket_path,
+        require_mint_requester_process=True,
+    )
+
+    last_purge = time.monotonic()
+
+    def _should_stop() -> bool:
+        nonlocal last_purge
+        if time.monotonic() - last_purge >= purge_interval_s:
+            last_purge = time.monotonic()
+            purged = authority.purge_expired()
+            if purged:
+                _log(f"purged {purged} expired/consumed grant(s)")
+        return stopping
+
+    _log(f"serving mint/redeem authority on {socket_path} (events: {events_path})")
+    server.serve_forever(
+        should_stop=_should_stop,
+        on_error=lambda exc: _log(f"connection error contained: {type(exc).__name__}: {exc}"),
+    )
+    _log("stopped; socket unlinked")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="hapax-dispatch-redemption-authority", description=__doc__
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--serve", action="store_true", help="run the governor (default)")
+    mode.add_argument(
+        "--receipt",
+        action="store_true",
+        help="print token-free runtime namespace + socket receipt and exit",
+    )
+    parser.add_argument(
+        "--socket-path",
+        type=Path,
+        default=None,
+        help="TEST ONLY: serve on this socket instead of the fixed governor path",
+    )
+    parser.add_argument(
+        "--runtime-dir",
+        type=Path,
+        default=None,
+        help="TEST ONLY: runtime namespace to validate instead of /run/hapax/coord",
+    )
+    parser.add_argument(
+        "--events-path",
+        type=Path,
+        default=None,
+        help="token-free event ledger path (default /var/lib/hapax/dispatch-redemption/events.jsonl)",
+    )
+    parser.add_argument(
+        "--purge-interval",
+        type=float,
+        default=None,
+        help="TEST ONLY: seconds between expired/consumed grant purges (default 300)",
+    )
+    args = parser.parse_args(argv)
+
+    socket_path = args.socket_path or dispatch_launch_redemption_socket()
+    runtime_dir = args.runtime_dir or socket_path.parent
+    events_path = args.events_path or DEFAULT_EVENTS_PATH
+
+    if args.receipt:
+        receipt = runtime_receipt(runtime_dir, socket_path)
+        print(json.dumps(receipt, sort_keys=True))
+        return 0 if receipt["healthy"] else 1
+    return serve(
+        runtime_dir,
+        socket_path,
+        events_path,
+        purge_interval_s=args.purge_interval
+        if args.purge_interval is not None
+        else PURGE_INTERVAL_S,
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

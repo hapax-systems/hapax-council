@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# Install and activate the system-scoped dispatch redemption governor unit.
+set -euo pipefail
+
+REPO_DIR="${HAPAX_COUNCIL_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+MODE="check"
+ROOT=""
+UNIT_NAME="hapax-dispatch-redemption.service"
+UNIT_SRC="$REPO_DIR/systemd/units/$UNIT_NAME"
+DAEMON_SRC="$REPO_DIR/scripts/hapax-dispatch-redemption-authority"
+STATE_DIR="/var/lib/hapax/dispatch-redemption"
+EVENTS_PATH="$STATE_DIR/events.jsonl"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/hapax-dispatch-redemption-service-install [--check|--dry-run|--install] [--root PATH] [--skip-receipt]
+
+Modes:
+  --check         verify source and installed unit drift; write nothing (default)
+  --dry-run      print the install/activation plan; write nothing
+  --install      install /etc/systemd/system/hapax-dispatch-redemption.service,
+                 reload the system manager, enable/restart the unit, then witness
+                 the fixed-socket protocol receipt
+
+Options:
+  --root PATH     install/check system files under PATH instead of /
+  --skip-receipt skip the post-start protocol receipt witness
+EOF
+}
+
+SKIP_RECEIPT=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check)
+      MODE="check"
+      ;;
+    --dry-run)
+      MODE="dry-run"
+      ;;
+    --install)
+      MODE="install"
+      ;;
+    --root)
+      ROOT="${2:?--root requires a path}"
+      shift
+      ;;
+    --skip-receipt)
+      SKIP_RECEIPT=1
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+system_path() {
+  local path="$1"
+  if [[ -n "$ROOT" ]]; then
+    printf '%s%s\n' "${ROOT%/}" "$path"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
+run_privileged() {
+  if [[ -n "$ROOT" || "${EUID:-$(id -u)}" -eq 0 ]]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo -n "$@"
+  else
+    echo "ERROR: need root or passwordless sudo for system install: $*" >&2
+    exit 1
+  fi
+}
+
+require_source_contract() {
+  [[ -f "$UNIT_SRC" ]] || { echo "missing unit source: $UNIT_SRC" >&2; exit 1; }
+  [[ -f "$DAEMON_SRC" ]] || { echo "missing daemon source: $DAEMON_SRC" >&2; exit 1; }
+  grep -q "Hapax-Install-Scope: system" "$UNIT_SRC" || {
+    echo "unit is not marked Hapax-Install-Scope: system: $UNIT_SRC" >&2
+    exit 1
+  }
+  grep -q "^RuntimeDirectory=hapax/coord$" "$UNIT_SRC" || {
+    echo "unit does not provision RuntimeDirectory=hapax/coord: $UNIT_SRC" >&2
+    exit 1
+  }
+  grep -q "^User=root$" "$UNIT_SRC" || {
+    echo "unit must run the root-owned socket namespace owner: $UNIT_SRC" >&2
+    exit 1
+  }
+  grep -q "^Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_USER=hapax$" "$UNIT_SRC" || {
+    echo "unit does not permit the hapax caller user explicitly: $UNIT_SRC" >&2
+    exit 1
+  }
+  grep -q "^Environment=HAPAX_DISPATCH_REDEMPTION_ALLOWED_REQUESTER_PATHS=" "$UNIT_SRC" || {
+    echo "unit does not pin allowed methodology-dispatch requester paths: $UNIT_SRC" >&2
+    exit 1
+  }
+  grep -q "hapax-dispatch-redemption-authority --serve" "$UNIT_SRC" || {
+    echo "unit does not exec hapax-dispatch-redemption-authority --serve: $UNIT_SRC" >&2
+    exit 1
+  }
+  grep -q -- "--events-path $EVENTS_PATH" "$UNIT_SRC" || {
+    echo "unit does not pin dispatch redemption events ledger path: $UNIT_SRC" >&2
+    exit 1
+  }
+}
+
+UNIT_DST="$(system_path "/etc/systemd/system/$UNIT_NAME")"
+STATE_DIR_DST="$(system_path "$STATE_DIR")"
+
+prepare_state_dir() {
+  if [[ -n "$ROOT" ]]; then
+    install -d -m 0750 "$STATE_DIR_DST"
+    return
+  fi
+  run_privileged install -d -o root -g hapax -m 0750 "$STATE_DIR_DST"
+}
+
+require_source_contract
+
+case "$MODE" in
+  dry-run)
+    echo "would install $UNIT_DST <- $UNIT_SRC"
+    echo "would run: systemctl daemon-reload"
+    echo "would run: systemctl enable $UNIT_NAME"
+    echo "would run: systemctl restart $UNIT_NAME"
+    echo "would ensure root:hapax 0750 $STATE_DIR_DST"
+    if [[ "$SKIP_RECEIPT" -eq 0 && -z "$ROOT" ]]; then
+      echo "would run: $DAEMON_SRC --receipt"
+    fi
+    ;;
+  check)
+    status=0
+    if [[ -f "$UNIT_DST" ]] && cmp -s "$UNIT_SRC" "$UNIT_DST"; then
+      echo "ok   $UNIT_DST"
+    else
+      echo "drift $UNIT_DST"
+      status=1
+    fi
+    if [[ -z "$ROOT" ]]; then
+      if systemctl is-enabled "$UNIT_NAME" >/dev/null 2>&1; then
+        echo "ok   $UNIT_NAME enabled"
+      else
+        echo "drift $UNIT_NAME not enabled"
+        status=1
+      fi
+      if systemctl is-active "$UNIT_NAME" >/dev/null 2>&1; then
+        echo "ok   $UNIT_NAME active"
+      else
+        echo "drift $UNIT_NAME not active"
+        status=1
+      fi
+    fi
+    exit "$status"
+    ;;
+  install)
+    prepare_state_dir
+    run_privileged install -Dm 0644 "$UNIT_SRC" "$UNIT_DST"
+    echo "wrote $UNIT_DST"
+    if [[ -z "$ROOT" ]]; then
+      run_privileged systemctl daemon-reload
+      run_privileged systemctl enable "$UNIT_NAME"
+      run_privileged systemctl restart "$UNIT_NAME"
+      if [[ "$SKIP_RECEIPT" -eq 0 ]]; then
+        "$DAEMON_SRC" --receipt
+      fi
+    else
+      echo "root fixture mode: skipped systemctl activation and receipt"
+    fi
+    ;;
+esac
