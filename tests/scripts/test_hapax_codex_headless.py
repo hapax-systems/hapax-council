@@ -54,12 +54,17 @@ def _extract_shell_function(name: str) -> str:
     return text[start:end]
 
 
-def _write_rejecting_codex(path: Path, fallback_body: str = "exit 0\n") -> None:
+def _write_rejecting_codex(
+    path: Path,
+    fallback_body: str = "exit 0\n",
+    *,
+    auth_message: str = "login required",
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        """#!/usr/bin/env bash
+        f"""#!/usr/bin/env bash
 if [ "${1:-}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
-  echo "login required" >&2
+  echo "{auth_message}" >&2
   exit 77
 fi
 """
@@ -1178,6 +1183,59 @@ def test_codex_headless_remote_saved_auth_preflight_rejects_unaccepted_login_aft
 mkdir -p "$HOME/.cache/hapax"
 printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
 printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 75
+    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight"]
+    assert "remote Codex auth preflight failed" in result.stderr
+    assert "codex_saved_auth_login_required" in result.stderr
+    assert claim_log.read_text(encoding="utf-8") == "task-x\n"
+
+
+@pytest.mark.parametrize(
+    "auth_message",
+    ["Please log in", "required to log in", "NOT LOGGED IN"],
+)
+def test_codex_headless_remote_saved_auth_preflight_classifies_login_required_variants(
+    tmp_path: Path,
+    auth_message: str,
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    ssh_log = tmp_path / "ssh.log"
+    claim_log = tmp_path / "claim.log"
+    _write_rejecting_codex(bin_dir / "codex", auth_message=auth_message)
+    _write_classifying_ssh(bin_dir / "ssh", ssh_log)
+    _write_executable(
+        workdir / "scripts" / "cc-claim",
+        f"""printf '%s\n' "$*" >> "{claim_log}"
+mkdir -p "$HOME/.cache/hapax"
+printf '%s\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
+printf '1234567890 %s\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
 exit 0
 """,
     )

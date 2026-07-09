@@ -368,15 +368,16 @@ PYEOF
       >"$output_file" 2>"$error_file" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     auth_output="$(cat "$output_file" "$error_file" 2>/dev/null || true)"
+    auth_output_lc="${auth_output,,}"
     auth_error="codex_saved_auth_exec_failed:rc=$rc"
-    case "$auth_output" in
+    case "$auth_output_lc" in
       *refresh_token_invalidated*)
         auth_error="codex_saved_auth_refresh_token_invalidated"
         ;;
       *token_invalidated*)
         auth_error="codex_saved_auth_token_invalidated"
         ;;
-      *"login required"*|*"not logged in"*)
+      *"login required"*|*"required to log in"*|*"please log in"*|*"not logged in"*)
         auth_error="codex_saved_auth_login_required"
         ;;
     esac
@@ -578,7 +579,12 @@ def _auth_error(output, default):
     if "token_invalidated" in output:
         return "codex_saved_auth_token_invalidated"
     lowered=output.lower()
-    if "login required" in lowered or "not logged in" in lowered:
+    if (
+        "login required" in lowered
+        or "required to log in" in lowered
+        or "please log in" in lowered
+        or "not logged in" in lowered
+    ):
         return "codex_saved_auth_login_required"
     return default
 actuation_error=""
