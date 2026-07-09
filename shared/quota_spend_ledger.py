@@ -74,6 +74,17 @@ CLAUDE_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"(?P<label>[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml)"
     r":witness:"
 )
+CLAUDE_ADMISSION_COMPOSITE_REF_RE = re.compile(
+    r"\Arelay-receipt:"
+    r"(?P<label>[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml):"
+    r"witness:(?P<witness>[a-z0-9][a-z0-9_.+-]{2,239}):"
+    r"observation:(?P<observation>"
+    r"subscription_quota_headroom_observed|operator_confirmed_subscription_headroom"
+    r"):"
+    r"observed_at:(?P<observed_at>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z):"
+    r"fresh_until:(?P<fresh_until>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z):"
+    r"account-live-quota:observed\Z"
+)
 CLAUDE_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
 CLAUDE_ADMISSION_SECRETISH_RE = re.compile(
     r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
@@ -1471,16 +1482,9 @@ def _is_agy_admission_evidence_ref(ref: str) -> bool:
 
 
 def _is_claude_admission_evidence_ref(ref: str) -> bool:
-    return (
-        _has_safe_claude_admission_receipt_label(ref)
-        and _has_safe_claude_admission_witness(ref)
-        and any(
-            f":observation:{observation}:" in ref for observation in CLAUDE_ADMISSION_OBSERVATIONS
-        )
-        and ":observed_at:" in ref
-        and ":fresh_until:" in ref
-        and ref.endswith(CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX)
-    )
+    if CLAUDE_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref) is None:
+        return False
+    return _has_safe_claude_admission_receipt_label(ref) and _has_safe_claude_admission_witness(ref)
 
 
 def _has_safe_claude_admission_receipt_label(ref: str) -> bool:
@@ -1533,9 +1537,14 @@ def _is_safe_claude_ignored_evidence_ref(ref: str) -> bool:
 
 
 def _is_untrusted_claude_admission_ref_for_evidence(ref: str) -> bool:
-    if not ref.startswith("relay-receipt:"):
-        return False
     if _is_claude_admission_evidence_ref(ref) or _is_safe_claude_ignored_evidence_ref(ref):
+        return False
+    if (
+        CLAUDE_ADMISSION_BILLINGISH_RE.search(ref) is not None
+        or CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(ref) is not None
+    ):
+        return True
+    if not ref.startswith("relay-receipt:"):
         return False
     return (
         "claude-subscription-quota-admission" in ref

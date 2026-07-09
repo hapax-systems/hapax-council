@@ -917,6 +917,9 @@ def active_claude_admission_receipts(
             reject(path, "unsafe receipt name")
             continue
         receipt_name_stem = path.name.removesuffix(".yaml")
+        if CLAUDE_ADMISSION_SECRETISH_RE.search(receipt_name_stem) is not None:
+            reject(path, "receipt name names secretish value")
+            continue
         if CLAUDE_ADMISSION_BILLINGISH_RE.search(receipt_name_stem) is not None:
             reject(path, "receipt name names billing or account identifier")
             continue

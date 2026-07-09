@@ -144,6 +144,19 @@ CLAUDE_HASHED_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
     "relay-receipt:unsafe-receipt-name-sha256:0123456789abcdef:",
 )
+CLAUDE_UNSAFE_OBSERVED_AT_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "observed_at:2026-07-08T14:00:00Z:",
+    "observed_at:cus_123:",
+)
+CLAUDE_UNSAFE_FRESH_UNTIL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "fresh_until:2026-07-08T14:15:00Z:",
+    "fresh_until:lane2:",
+)
+CLAUDE_EXTRA_UNSAFE_SEGMENT_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "observed_at:2026-07-08T14:00:00Z:",
+    "billingcus123:observed_at:2026-07-08T14:00:00Z:",
+)
+CLAUDE_PLAIN_UNSAFE_HOLD_EVIDENCE_REF = "claude-billing-cus_123-lane-eta-observed"
 CLAUDE_NOW = datetime(2026, 7, 8, 14, 5, tzinfo=UTC)
 
 
@@ -1690,6 +1703,57 @@ def test_receipt_bounded_route_rejects_hashed_unsafe_claude_receipt_label() -> N
     )
     assert (
         "quota-snapshot:quota-claude-headless-full-hashed-label:untrusted_claude_admission_evidence"
+    ) in refs
+
+
+@pytest.mark.parametrize(
+    "evidence_ref",
+    [
+        CLAUDE_UNSAFE_OBSERVED_AT_EVIDENCE_REF,
+        CLAUDE_UNSAFE_FRESH_UNTIL_EVIDENCE_REF,
+        CLAUDE_EXTRA_UNSAFE_SEGMENT_EVIDENCE_REF,
+    ],
+)
+def test_receipt_bounded_route_rejects_unsafe_claude_admission_fields(
+    evidence_ref: str,
+) -> None:
+    ledger = _claude_ledger(
+        evidence_ref,
+        snapshot_id="quota-claude-headless-full-unsafe-fields",
+        reason="fixture claude unsafe field values",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert evidence_ref not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-unsafe-fields:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_redacts_plain_unsafe_claude_hold_evidence() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_PLAIN_UNSAFE_HOLD_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-plain-unsafe",
+        reason="fixture claude plain unsafe hold evidence",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert CLAUDE_PLAIN_UNSAFE_HOLD_EVIDENCE_REF not in refs
+    assert any(
+        ref.startswith("quota-evidence-ref:redacted-untrusted-claude-admission-sha256:")
+        for ref in refs
+    )
+    assert (
+        "quota-snapshot:quota-claude-headless-full-plain-unsafe:untrusted_claude_admission_evidence"
     ) in refs
 
 

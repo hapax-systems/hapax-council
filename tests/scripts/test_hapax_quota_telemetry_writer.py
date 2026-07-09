@@ -924,6 +924,10 @@ def _assert_claude_admission_ignored(tmp_path: Path, expected_reason: str) -> No
             "claude-subscription-quota-admission-lane2.yaml",
             "receipt-name-names-lane-session-presence",
         ),
+        (
+            "claude-subscription-quota-admission-token.yaml",
+            "receipt-name-names-secretish-value",
+        ),
     ],
 )
 def test_rejected_claude_receipt_name_is_hashed_in_ignored_evidence(
@@ -1189,6 +1193,13 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
                 "name": "claude-subscription-quota-admission-lane2.yaml",
             },
             "receipt-name-names-lane-session-presence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-token.yaml",
+            },
+            "receipt-name-names-secretish-value",
         ),
         (
             {
