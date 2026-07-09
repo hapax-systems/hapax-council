@@ -559,6 +559,14 @@ def _blocked_opus_payload(reason: str) -> dict:
     return payload
 
 
+def _blocked_claude_full_payload(reason: str) -> dict:
+    payload = _fresh_payload()
+    route = _route_in(payload, "claude.headless.full")
+    route["route_state"] = "blocked"
+    route["blocked_reasons"] = [reason]
+    return payload
+
+
 def test_receipts_quota_unobservable_makes_blocked_subscription_route_available() -> None:
     # receipts are keyed by PLATFORM (the real load_platform_capability_receipts shape), with route
     # coverage in receipt.routes — NOT a route_id key.
@@ -615,6 +623,24 @@ def test_receipts_quota_unobservable_makes_blocked_subscription_route_available(
         "claude.headless.opus",
     )
     assert leaf_mixed.d4 is not None and leaf_mixed.d4.available is False
+
+
+def test_edt_does_not_treat_claude_account_live_quota_absence_as_receipt_removable() -> None:
+    receipts = {"claude": _make_receipt("claude.headless.full", "claude")}
+    payload = _blocked_claude_full_payload("account_live_quota_receipt_absent")
+
+    leaf = _leaf_for(
+        score_edt(
+            _registry(payload),
+            knobs_path=_knobs_file(_OBSERVED_MEMBERS),
+            receipts=receipts,
+            now=NOW,
+        ),
+        "claude.headless.full",
+    )
+
+    assert leaf.d4 is not None and leaf.d4.available is False
+    assert leaf.d4.unavailability_reason == "account_live_quota_receipt_absent"
 
 
 # --------------------------------------------------------------------------------------------

@@ -579,7 +579,9 @@ def _removable_quota_reasons(route: PlatformCapabilityRoute) -> frozenset[str]:
     """Mirror of ``_quota_unobservable_removable_reasons``: the blocked_reasons the upstream overlay
     is allowed to clear given a quota-unobservable receipt. A route blocked for ANY OTHER reason
     stays blocked — the quota path must not unblock it."""
-    reasons = {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+    reasons = {"quota_telemetry_unknown"}
+    if route.route_id != "claude.headless.full":
+        reasons.add("account_live_quota_receipt_absent")
     if route.capacity_pool in {CapacityPool.API_PAID_SPEND, CapacityPool.BOOTSTRAP_BUDGET}:
         reasons.add("provider_budget_receipt_absent")
     return frozenset(reasons)
