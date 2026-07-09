@@ -3500,6 +3500,7 @@ class TestHeadBoundRepoRoot:
                             "ratified": "2026-07-09",
                             "authority": "operator",
                             "decision_record": "test",
+                            "class": "operator-privacy-residual",
                             "lenses": ["consent-provenance"],
                             "topics": ["residual"],
                             "files": ["docs/research/x.md"],
