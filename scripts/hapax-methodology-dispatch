@@ -197,8 +197,8 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "full",
         "~/.local/bin/hapax-grok --resume-session <session>",
         "Grok headless full appendix-first SDLC worker",
-        True,
-        "Formal leaf blocked until receipts; interim carrier hapax-grok with Hapax hooks enforced.",
+        False,
+        "Registry route_state=blocked until receipts; not a mutable launch path. Ad-hoc hapax-grok carrier remains; do not methodology-dispatch-mutate via this route yet.",
     ),
     ("api", "headless", "api_frontier"): PlatformPath(
         "api",
