@@ -3038,6 +3038,9 @@ ratifications:
         rt = _load_review_team_module()
         monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
         self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Clean generic research text.\n", encoding="utf-8")
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
         blocking, phantoms = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert blocking == [] and phantoms == []
@@ -3100,6 +3103,38 @@ ratifications:
         reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
         blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
         assert len(blocking) == 1
+
+    def test_enforced_class_regression_in_ratified_file_still_blocks(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The ledger can never waive the ENFORCED class: the ratified file contains a
+        # fresh tier-1 attribution at head, so the (lens+file+topic)-matched finding
+        # stays blocking — it may be reporting exactly that regression.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        # built by concatenation so THIS source file never carries the attribution string
+        doc.write_text("The operator has " + "AD" + "HD and needs support.\n", encoding="utf-8")
+        finding = self._critical()
+        finding["title"] = "residual disclosure regression"
+        reviews = [_review("codex-1", "codex", "block", findings=[finding])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert len(blocking) == 1
+
+    def test_clean_ratified_file_waives(self, tmp_path: Path, monkeypatch) -> None:
+        # Companion: same ledger + finding, but the cited file is CLEAN under the
+        # enforced-class scan -> waived.
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
+        self._ledger(tmp_path)
+        doc = tmp_path / "docs" / "research" / "x.md"
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text("Generic design research grounded in literature.\n", encoding="utf-8")
+        reviews = [_review("codex-1", "codex", "block", findings=[self._critical()])]
+        blocking, _ = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        assert blocking == []
 
     def test_killswitch_disables_ratification_gate(self, tmp_path: Path, monkeypatch) -> None:
         rt = _load_review_team_module()

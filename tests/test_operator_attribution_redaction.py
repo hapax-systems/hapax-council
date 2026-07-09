@@ -2,7 +2,9 @@
 
 The 2026-07-09 privacy redaction removed operator-attributed diagnostic phrasing from
 docs, code constants, prompts, profiles, and fixtures. This scan pins the CLASS at two
-tiers:
+tiers (patterns live in shared/operator_attribution_scan.py — the SAME module the
+review plane's ratification gate uses, so the ledger can never waive what this scan
+enforces):
 
 - Tier 1 (same-sentence attribution): a diagnosis/neurotype term and "operator" in one
   sentence. Never allowlisted — any hit is a regression.
@@ -17,67 +19,27 @@ tracked surface — including axioms/** — is in scope.
 SCOPE OF THE REDACTION CLASS (operator-ratified 2026-07-09, decision-memo item 27,
 disposition accept-residual): the class this guard enforces is diagnostic ATTRIBUTION
 to the operator at the two tiers above. Profile-grounded design research (documents
-whose thesis is designing for a cognitive profile — e.g. content-scheduling,
-apperception, phenomenology, the demo domain corpus) is an operator-accepted residual:
+whose thesis is designing for a cognitive profile) is an operator-accepted residual:
 the privacy owner ratified that such research may ground design in neurotype
 literature without that constituting an operator diagnosis claim, provided no
 tier-1/tier-2 attribution exists. Section- or document-level "linkage" beyond these
 tiers is intentionally OUT of the enforced class by the privacy owner's own decision;
-the hash-pinned ledger below is the standing mechanism if the owner later narrows it.
+the hash-pinned ledger is the standing mechanism if the owner later narrows it.
 """
 
 from __future__ import annotations
 
-import hashlib
-import re
 import subprocess
 from pathlib import Path
 
+from shared.operator_attribution_scan import (
+    PARAGRAPH_PATTERNS,
+    SENTENCE_PATTERNS,
+    load_reviewed_generic,
+    span_digest,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-_DIAGNOSIS = (
-    r"(?:\bADHD\b|\bAuDHD\b|\bautis\w*|\bneurodiverg\w*|\bRSD\b|rejection[- ]sensitiv\w*"
-    r"|\bdysphor\w*|identity\s+diffusion)"
-)
-#: Tier 1 — same-sentence attribution (never allowlisted).
-SENTENCE_PATTERNS = (
-    re.compile(rf"operator\s+(?:has|with|is)\s+{_DIAGNOSIS}", re.IGNORECASE),
-    re.compile(rf"operator'?s\s+(?:specific\s+)?{_DIAGNOSIS}", re.IGNORECASE),
-    re.compile(rf"{_DIAGNOSIS}[^.\n]{{0,60}}\boperator\b", re.IGNORECASE),
-    re.compile(rf"\boperator\b[^.\n]{{0,60}}{_DIAGNOSIS}", re.IGNORECASE),
-)
-#: Tier 2 — paragraph-context co-occurrence (allowlistable when reviewed generic).
-_PARA = r"(?:[^\n]|\n(?!\s*\n)){0,300}?"
-PARAGRAPH_PATTERNS = (
-    re.compile(rf"{_DIAGNOSIS}{_PARA}\boperator(?:'s)?\b", re.IGNORECASE | re.DOTALL),
-    re.compile(rf"\boperator(?:'s)?\b{_PARA}{_DIAGNOSIS}", re.IGNORECASE | re.DOTALL),
-)
-
-#: (repo-relative path, sha256[:12] of the whitespace-normalized matched span).
-#: Reviewed 2026-07-09: generic literature/corpus discussion in the same paragraph as a
-#: system-design "operator" sentence, with no diagnosis attributed to the operator.
-#: Any edit to a pinned span changes its hash and fails the scan closed for re-review.
-REVIEWED_GENERIC: set[tuple[str, str]] = set()  # populated below by _pin()
-
-
-def _pin(path: str, digest: str) -> None:
-    REVIEWED_GENERIC.add((path, digest))
-
-
-def _span_digest(span: str) -> str:
-    normalized = " ".join(span.split()).lower()
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
-
-
-# --- reviewed-generic pins (2026-07-09 sweep) --------------------------------------
-# Populated from the audited sweep; see the PR #4472 round-4 resolution comment.
-_PINS_FILE = Path(__file__).with_name("operator_attribution_reviewed_generic.txt")
-if _PINS_FILE.exists():
-    for _line in _PINS_FILE.read_text(encoding="utf-8").splitlines():
-        _line = _line.strip()
-        if _line and not _line.startswith("#"):
-            _path, _, _digest = _line.partition(" ")
-            _pin(_path, _digest)
 
 TEXT_SUFFIXES = {
     ".py",
@@ -91,9 +53,10 @@ TEXT_SUFFIXES = {
     ".j2",
     ".sh",
 }
-#: Guard machinery that mentions the terms by necessity: this test module, its pins
-#: file, and the operator-ratification ledger (which names the ratified files/topics).
+#: Guard machinery that mentions the terms by necessity: the shared pattern module,
+#: this test module, the pins file, and the operator-ratification ledger.
 SELF_PATHS = {
+    "shared/operator_attribution_scan.py",
     "tests/test_operator_attribution_redaction.py",
     "tests/operator_attribution_reviewed_generic.txt",
     "config/governance/operator-ratifications.yaml",
@@ -116,6 +79,7 @@ def _line_of(text: str, pos: int) -> int:
 
 
 def test_no_operator_attributed_diagnostic_text_on_tracked_surfaces() -> None:
+    reviewed_generic = load_reviewed_generic(REPO_ROOT)
     sentence_offenders: list[str] = []
     paragraph_offenders: list[str] = []
     for rel in _tracked_files():
@@ -138,8 +102,8 @@ def test_no_operator_attributed_diagnostic_text_on_tracked_surfaces() -> None:
         seen_spans: set[str] = set()
         for pattern in PARAGRAPH_PATTERNS:
             for match in pattern.finditer(text):
-                digest = _span_digest(match.group(0))
-                if digest in seen_spans or (rel, digest) in REVIEWED_GENERIC:
+                digest = span_digest(match.group(0))
+                if digest in seen_spans or (rel, digest) in reviewed_generic:
                     continue
                 seen_spans.add(digest)
                 paragraph_offenders.append(

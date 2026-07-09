@@ -40,6 +40,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared import operator_attribution_scan as attribution_scan  # noqa: E402
 from shared.failure_classification import (  # noqa: E402
     STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
     STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES,
@@ -1432,15 +1433,28 @@ def _blocking_criticals(
         kept: list[tuple[str, dict]] = []
         for reviewer_id, finding in criticals:
             ratification_id = _operator_ratification_for(finding, ratifications)
-            if ratification_id is not None:
+            if ratification_id is None:
+                kept.append((reviewer_id, finding))
+                continue
+            # The ledger can never waive the ENFORCED class: if the cited file is not
+            # clean under the shared attribution scan AT HEAD, the finding may be
+            # reporting a real tier-1/tier-2 regression — keep it blocking.
+            if not attribution_scan.file_enforced_class_clean(root, str(finding.get("file", ""))):
                 print(
-                    f"ratification-gate: waived critical {str(finding.get('title'))!r} "
-                    f"({finding.get('file')}) under {ratification_id} — data-owner "
-                    "disposition, receipted",
+                    f"ratification-gate: NOT waiving {str(finding.get('title'))!r} — "
+                    f"{finding.get('file')} is not clean under the enforced-class scan "
+                    "at head (possible regression); ledger cannot waive the enforced class",
                     file=sys.stderr,
                 )
-            else:
                 kept.append((reviewer_id, finding))
+                continue
+            print(
+                f"ratification-gate: waived critical {str(finding.get('title'))!r} "
+                f"({finding.get('file')}) under {ratification_id} — data-owner "
+                "disposition, receipted; cited file verified clean under the "
+                "enforced-class scan at head",
+                file=sys.stderr,
+            )
         criticals = kept
     blocking: list[tuple[str, dict]] = []
     phantom: list[tuple[str, dict]] = []
