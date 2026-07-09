@@ -271,6 +271,20 @@ def test_glmcp_admission_recheck_command_uses_scanner_glob() -> None:
     assert "receipt_dir.glob(GLMCP_ADMISSION_RECEIPT_GLOB)" in SCRIPT.read_text(encoding="utf-8")
 
 
+def test_claude_lane_presence_regex_is_consistent_across_receipt_layers() -> None:
+    telemetry_namespace = runpy.run_path(str(SCRIPT))
+    admission_namespace = runpy.run_path(str(CLAUDE_ADMISSION_SCRIPT))
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import CLAUDE_ADMISSION_LANE_PRESENCE_RE
+
+    assert (
+        telemetry_namespace["CLAUDE_ADMISSION_LANE_PRESENCE_RE"].pattern
+        == admission_namespace["LANE_PRESENCE_RE"].pattern
+        == CLAUDE_ADMISSION_LANE_PRESENCE_RE.pattern
+    )
+
+
 def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None:
     result, out = _run_writer(tmp_path)
 
@@ -1017,6 +1031,28 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
         ),
         (
             {"observed_at": "2026-06-09T23:55:00Z", "evidence_ref": "cx-theta"},
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-session-observed-20260609t2355z",
+            },
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-lane-observed-20260609t2355z",
+            },
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "evidence_ref": "vbe-3-headroom"},
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {"observed_at": "2026-06-09T23:55:00Z", "evidence_ref": "mu-headroom"},
             "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
         ),
         (

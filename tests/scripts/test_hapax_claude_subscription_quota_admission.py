@@ -115,6 +115,10 @@ def test_rejects_lane_presence_evidence_ref(tmp_path: Path, capsys) -> None:  # 
         "theta",
         "cx-eta",
         "cx-theta",
+        "claude-session-observed-20260708t1400z",
+        "claude-lane-observed-20260708t1400z",
+        "vbe-3-headroom",
+        "mu-headroom",
     ):
         rc = _run(["--receipt-dir", str(tmp_path), "--evidence-ref", ref])
         assert rc == 2

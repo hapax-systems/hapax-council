@@ -82,9 +82,11 @@ CLAUDE_ADMISSION_SECRETISH_RE = re.compile(
 )
 CLAUDE_ADMISSION_LANE_PRESENCE_RE = re.compile(
     r"(?:"
-    r"tmux|hapax-claude-[a-z0-9-]+|session-present|lane-present|lane-exists|"
+    r"hapax-claude-[a-z0-9-]+|session-present|lane-present|lane-exists|"
     r"(?:^|[-_.])"
-    r"(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|dev[0-9]+|cx-[a-z0-9-]+)"
+    r"(?:tmux|session|lane|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
+    r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|"
+    r"dev[0-9]*|cx-[a-z0-9-]+|vbe-[0-9]+)"
     r"(?:$|[-_.])"
     r")",
     re.IGNORECASE,
