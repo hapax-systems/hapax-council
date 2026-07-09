@@ -9,7 +9,10 @@ agents/demo_pipeline/domain_corpus/neurodivergent-technology-design.md aeae0e3ed
 agents/hapax_daimonion/proofs/claim-6-bayesian-tools/RESEARCH.md 8ca3270e5c60
 docs/research/2026-03-15-consent-channel-selection-research.md e00e8b0a33d4
 docs/research/2026-03-15-consent-channel-selection-research.md 0d34e2793ebe
-docs/research/apperception-healthy-self-model-research.md 4a0c3b77451f
+# apperception: system-behavior bullets naming rejection-sensitivity feedback shapes
+# (no operator diagnosis) + the system-pathology table (failure modes of the SYSTEM).
+docs/research/apperception-healthy-self-model-research.md ccc6e741f17e
+docs/research/apperception-healthy-self-model-research.md d4d1ed54277c
 docs/research/content-scheduling-research.md b035cb2cac46
 docs/research/content-scheduling-research.md 82cff82efaee
 docs/research/content-scheduling-research.md 2a94b0fe0eee

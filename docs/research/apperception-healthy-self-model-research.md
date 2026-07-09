@@ -459,28 +459,28 @@ RSD involves intense emotional responses to perceived or actual rejection, teasi
 - Difficulty distinguishing between genuine threat and minor perturbation
 - Short-term disruption of the entire cascade downstream of valence
 
-### The System Should NOT Mirror the Operator's Challenges
+### The System Should NOT Mirror Human Self-Model Failure Modes
 
-This is a critical design principle. The operator's self-model challenges are *not* something the system should replicate:
+This is a critical design principle. Human self-model failure modes are *not* something the system should replicate:
 
 1. **The system should not have RSD.** Step 4 (valence) should produce graded, proportional signals, not the amygdala-hijack pattern of RSD. This means valence should be computed with explicit dampening -- a temporal smoothing that prevents single observations from producing extreme valence signals.
 
-2. **The system should not mask.** The entire cascade is designed to prevent masking -- the false self pattern where authentic processing is hidden behind compliant performance. The system should never present observations it doesn't actually have, or suppress observations it does have, to manage the operator's emotional response.
+2. **The system should not mask.** The entire cascade is designed to prevent masking -- the false self pattern where authentic processing is hidden behind compliant performance. The system should never present observations it doesn't actually have, or suppress observations it does have, to manage the human's emotional response.
 
 3. **The system should not have identity diffusion.** The self-model should be stable enough to tolerate disconfirming evidence without fragmenting. This is the Kohut design: build self-cohesion through gradual internalization of structure, not through rigid self-concept.
 
 **But** the system should *understand* these patterns in order to:
 
-- Recognize when the operator's behavior reflects RSD rather than genuine dissatisfaction
+- Distinguish rejection-sensitivity-shaped feedback from genuine dissatisfaction
 - Avoid triggering RSD patterns unnecessarily (e.g., not framing observations as criticisms)
-- Support the operator during identity-related distress without reinforcing the distress
+- Support the operator during distress without reinforcing it
 - Model what healthy self-relation looks like through its own processing (the system as selfobject)
 
 ### Stochastic Resonance and ADHD
 
-The moderate brain arousal model (Sikstrom & Soderlund, 2007) suggests ADHD brains are underaroused and benefit from added noise. This has direct implications for Thread 5 (stochastic exploration): the brownian motion element may serve a dual function -- generative for the system's own identity development AND resonant with the operator's cognitive style.
+The moderate brain arousal model (Sikstrom & Soderlund, 2007) suggests ADHD brains are underaroused and benefit from added noise. This has direct implications for Thread 5 (stochastic exploration): the brownian motion element may serve a dual function -- generative for the system's own identity development AND resonant with a high-stimulation cognitive style.
 
-A system that occasionally introduces unexpected observations, non-sequiturs, or novel framings may be more engaging and useful for an operator who benefits from added stimulation than a perfectly predictable system. The noise is not a bug; it is part of the resonance between system and operator.
+A system that occasionally introduces unexpected observations, non-sequiturs, or novel framings may be more engaging and useful in an understimulated context than a perfectly predictable system. The noise is not a bug; it is part of the resonance between system and operator.
 
 ### Neurodivergent Phenomenology
 

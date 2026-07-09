@@ -215,13 +215,22 @@ class LinkedTask:
 
 # Multi-PR lane opt-out: `close_on_pr_merge: false` in the note frontmatter
 # means the lane owner closes explicitly; the watcher must never auto-close.
-_CLOSE_ON_PR_MERGE_FALSE_RE = re.compile(
-    # YAML-false spellings (false/no/off; bare or MATCHED-quoted) — a round-trip through
-    # a YAML dumper must not silently drop the opt-out — with an optional trailing
-    # comment. Mismatched quotes do NOT match (malformed falls to the close default);
-    # \s* absorbs a trailing \r.
-    r"""^close_on_pr_merge:[ \t]*(?:(?i:false|no|off)|"(?i:false|no|off)"|'(?i:false|no|off)')[ \t]*(?:#[^\r\n]*)?\s*$""",
-    flags=re.MULTILINE,
+# Three-way semantics, fail-closed toward NOT closing: an explicit true-ish value (or
+# the field's absence) keeps the auto-close default; a false-ish value opts out; any
+# OTHER value on the field — malformed quoting, typos, unexpected spellings — is an
+# attempted opt-out we cannot read, so the watcher declines to close and warns rather
+# than proceeding to cc-close (auto-closing on a malformed opt-out is exactly the
+# lane-killing failure this gate exists to stop).
+_CLOSE_ON_PR_MERGE_LINE_RE = re.compile(
+    r"^close_on_pr_merge:[ \t]*(?P<value>[^\r\n]*?)[ \t]*\r?$", flags=re.MULTILINE
+)
+_FALSEISH_RE = re.compile(
+    # YAML-false spellings (false/no/off; bare or MATCHED-quoted), optional trailing
+    # comment — a round-trip through a YAML dumper must not silently drop the opt-out.
+    r"""^(?:(?i:false|no|off)|"(?i:false|no|off)"|'(?i:false|no|off)')[ \t]*(?:#[^\r\n]*)?$"""
+)
+_TRUEISH_RE = re.compile(
+    r"""^(?:(?i:true|yes|on)|"(?i:true|yes|on)"|'(?i:true|yes|on)')[ \t]*(?:#[^\r\n]*)?$"""
 )
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", flags=re.DOTALL)
 
@@ -232,12 +241,27 @@ def declines_close_on_pr_merge(text: str) -> bool:
     Scoped to the leading ``---``-delimited block only: a body or session-log
     line quoting ``close_on_pr_merge: false`` must not opt the task out — the
     fail-safe auto-close default holds for notes without frontmatter or with
-    the field only mentioned in prose.
+    the field only mentioned in prose. When the field IS present but carries a
+    value that is neither true-ish nor false-ish, the watcher fails closed:
+    it declines to close and warns (see the three-way note above).
     """
     frontmatter = _FRONTMATTER_RE.match(text)
     if frontmatter is None:
         return False
-    return bool(_CLOSE_ON_PR_MERGE_FALSE_RE.search(frontmatter.group(1)))
+    line = _CLOSE_ON_PR_MERGE_LINE_RE.search(frontmatter.group(1))
+    if line is None:
+        return False
+    value = line.group("value")
+    if _FALSEISH_RE.match(value):
+        return True
+    if _TRUEISH_RE.match(value):
+        return False
+    LOG.warning(
+        "close_on_pr_merge has unreadable value %r — treating as opt-out (fail closed: "
+        "not auto-closing); fix the note frontmatter to a plain true/false",
+        value,
+    )
+    return True
 
 
 def read_cursor(cursor_path: Path) -> datetime:

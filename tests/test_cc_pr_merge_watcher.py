@@ -582,8 +582,8 @@ class TestCloseOnPrMergeOptOut:
 
     def test_yaml_equivalent_false_spellings_opt_out(self) -> None:
         """A YAML-dumper round-trip may re-serialize false as no/off/quoted forms, and a
-        lane owner may append a YAML comment; all of those keep the opt-out. True-ish
-        values and MALFORMED quoting never do (malformed falls to the close default)."""
+        lane owner may append a YAML comment; all of those keep the opt-out. Explicit
+        true-ish values (or the field's absence) keep the auto-close default."""
         for spelling in (
             "false",
             "no",
@@ -597,9 +597,19 @@ class TestCloseOnPrMergeOptOut:
         ):
             text = f"---\nclose_on_pr_merge: {spelling}\n---\nbody\n"
             assert watcher.declines_close_on_pr_merge(text), spelling
-        for spelling in ("true", "yes", "on", "0", "falsey", '"false', "false'", "\"false'"):
+        for spelling in ("true", "yes", "on", '"true"', "'yes'", "TRUE # note"):
             text = f"---\nclose_on_pr_merge: {spelling}\n---\nbody\n"
             assert not watcher.declines_close_on_pr_merge(text), spelling
+
+    def test_malformed_opt_out_fails_closed_toward_not_closing(self, caplog: Any) -> None:
+        """A present-but-unreadable value is an ATTEMPTED opt-out: the watcher must not
+        proceed to cc-close on it — it declines the close and warns."""
+        for spelling in ('"false', "false'", "\"false'", "0", "falsey", "flase"):
+            text = f"---\nclose_on_pr_merge: {spelling}\n---\nbody\n"
+            with caplog.at_level(logging.WARNING, logger="cc-pr-merge-watcher"):
+                assert watcher.declines_close_on_pr_merge(text), spelling
+            assert "unreadable value" in caplog.text
+            caplog.clear()
 
     def test_note_with_other_value_still_closes(self, tmp_path: Path) -> None:
         """Any value other than false (or absence) keeps the auto-close default."""

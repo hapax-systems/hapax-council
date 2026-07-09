@@ -280,7 +280,7 @@ function as background noise -- it raises baseline arousal toward the optimal
 zone. This is not distraction; it is *functional background stimulation*.
 
 The display should therefore:
-- **Never be empty or static** (confirms the operator's instinct)
+- **Never be empty or static** (the stated design requirement)
 - Maintain **moderate visual complexity** at all times
 - Use **continuous evolution** (shader drift, color evolution) as the base layer
 - Layer discrete content on top of this continuous base
@@ -495,8 +495,8 @@ facts" -- these adjust base weights directly.
 3. **Five notification levels** (Matthews): Most content is change-blind or
    make-aware. Interrupt is rare and earned.
 
-4. **Never empty**: The optimal stimulation model confirms the operator's
-   instinct. Visual emptiness = understimulation = discomfort. The shader base
+4. **Never empty**: The optimal stimulation model supports the stated design
+   requirement. Visual emptiness = understimulation = discomfort. The shader base
    layer is always active.
 
 5. **Respect focus**: During deep work, reduce injection rate, cap notification
@@ -505,8 +505,9 @@ facts" -- these adjust base weights directly.
 6. **Exponential freshness decay**: Prevents repetition naturally. Half-life
    per content type. Profile facts ~2min, alerts ~30s, camera ~5min.
 
-7. **Structure with surprise**: The AuDHD profile wants recognizable patterns
-   with novel content within them. Regular rhythm, varied payload.
+7. **Structure with surprise**: A high-variance attention profile wants
+   recognizable patterns with novel content within them. Regular rhythm,
+   varied payload.
 
 8. **Graduated urgency**: Critical items bypass the sampler. Everything else
    goes through utility scoring. No alert fatigue.

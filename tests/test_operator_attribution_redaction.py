@@ -24,7 +24,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-_DIAGNOSIS = r"(?:ADHD|AuDHD|autis\w*|neurodiverg\w*)"
+_DIAGNOSIS = (
+    r"(?:\bADHD\b|\bAuDHD\b|\bautis\w*|\bneurodiverg\w*|\bRSD\b|rejection[- ]sensitiv\w*"
+    r"|\bdysphor\w*|identity\s+diffusion)"
+)
 #: Tier 1 — same-sentence attribution (never allowlisted).
 SENTENCE_PATTERNS = (
     re.compile(rf"operator\s+(?:has|with|is)\s+{_DIAGNOSIS}", re.IGNORECASE),
