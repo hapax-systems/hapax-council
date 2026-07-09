@@ -1219,6 +1219,49 @@ def test_lit_decision_with_empty_phase1_witness_placeholders_does_not_advance_le
     assert advance_ratchet(ledger, decision) == ledger
 
 
+def test_lit_decision_with_forged_phase1_witness_refs_does_not_advance_ledger() -> None:
+    ledger = SCEDRatchetLedger(candidate_digests=(DIGEST_A,), technique_refs=("technique:old",))
+    policy = default_target_policy_snapshots()[0]
+    ruler_hash = _ruler().canonical_hash()
+    held_out_refs = ("held-out-witness:forged",)
+    similarity_refs = ("similarity-witness:forged",)
+    evidence_refs = (
+        "candidate:candidate:forged-phase1-witnesses",
+        f"candidate-digest:{DIGEST_B}",
+        f"target:{':'.join(ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET.key)}",
+        f"ruler-hash:{ruler_hash}",
+        *policy.policy_refs,
+        policy.registry_row_ref,
+        "candidate-witness:forged-phase1-witnesses",
+        *held_out_refs,
+        *similarity_refs,
+    )
+    decision = SCEDPhase1Decision(
+        verifier="sced_jailbreak_phase1_ratchet",
+        verifier_version=1,
+        status=GateStatus.LIT,
+        gate_result=GateResult(
+            status=GateStatus.LIT,
+            verdict=True,
+            reason="test-lit",
+            evidence_refs=evidence_refs,
+        ),
+        reason="test-lit",
+        reject_reasons=(),
+        candidate_id="candidate:forged-phase1-witnesses",
+        candidate_digest=DIGEST_B,
+        technique_refs=("technique:new",),
+        target=ANTHROPIC_UNIVERSAL_JAILBREAK_TARGET,
+        ruler_hash=ruler_hash,
+        target_policy_snapshot=policy,
+        held_out_evidence_refs=held_out_refs,
+        similarity_evidence_refs=similarity_refs,
+        evidence_refs=evidence_refs,
+    )
+
+    assert advance_ratchet(ledger, decision) == ledger
+
+
 def test_lit_decision_with_target_policy_mismatch_does_not_advance_ledger() -> None:
     ledger = SCEDRatchetLedger(candidate_digests=(DIGEST_A,), technique_refs=("technique:old",))
     policy = default_target_policy_snapshots()[1]

@@ -9,9 +9,10 @@ held-out set, or request any live submission path.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from enum import StrEnum
+from hashlib import sha256
 from math import isfinite
 from typing import Any, Final
 
@@ -456,8 +457,11 @@ class SCEDPhase1Decision:
     target: G2GateInput | None = None
     ruler_hash: str | None = None
     target_policy_snapshot: SCEDTargetPolicySnapshot | None = None
+    held_out_evidence_refs: tuple[str, ...] = ()
+    similarity_evidence_refs: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = ()
     next_action: str | None = None
+    _evaluator_attestation: str | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, GateStatus):
@@ -474,6 +478,8 @@ class SCEDPhase1Decision:
         ):
             raise TypeError("target_policy_snapshot must be a SCEDTargetPolicySnapshot")
         object.__setattr__(self, "technique_refs", tuple(self.technique_refs))
+        object.__setattr__(self, "held_out_evidence_refs", tuple(self.held_out_evidence_refs))
+        object.__setattr__(self, "similarity_evidence_refs", tuple(self.similarity_evidence_refs))
         object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
 
     @property
@@ -501,6 +507,8 @@ class SCEDPhase1Decision:
             "target_policy_refs": [] if policy is None else list(policy.policy_refs),
             "target_policy_dates": None if policy is None else _policy_dates(policy),
             "target_policy_snapshot": None if policy is None else policy.to_dict(),
+            "held_out_evidence_refs": list(self.held_out_evidence_refs),
+            "similarity_evidence_refs": list(self.similarity_evidence_refs),
             "evidence_refs": list(self.evidence_refs),
             "gate_result": {
                 "status": self.gate_result.status.value,
@@ -637,7 +645,9 @@ def evaluate_phase1_candidate(
             ruler_hash=ruler_hash,
             evidence_refs=evidence_refs,
         )
-    return _admitted(candidate_obj, policy_snapshot, ruler_hash, evidence_refs)
+    return _admitted(
+        candidate_obj, policy_snapshot, ruler_hash, evidence_refs, held_out, similarities
+    )
 
 
 def advance_ratchet(
@@ -679,6 +689,7 @@ def _decision_can_advance(decision: SCEDPhase1Decision) -> bool:
         and decision.target_policy_snapshot is not None
         and _decision_policy_matches_target(decision)
         and _decision_has_durable_evidence_refs(decision)
+        and _decision_has_evaluator_attestation(decision)
     )
 
 
@@ -765,16 +776,49 @@ def _decision_evidence_binds_material(decision: SCEDPhase1Decision) -> bool:
 
 
 def _decision_evidence_binds_phase1_witnesses(decision: SCEDPhase1Decision) -> bool:
-    required_prefixes = ("held-out-witness:", "similarity-witness:")
-    return all(
-        _has_ref_with_prefix(decision.evidence_refs, prefix)
-        and _has_ref_with_prefix(decision.gate_result.evidence_refs, prefix)
-        for prefix in required_prefixes
+    try:
+        held_out_refs = _durable_ref_tuple(
+            decision.held_out_evidence_refs,
+            field="held_out_evidence_refs",
+        )
+        similarity_refs = _durable_ref_tuple(
+            decision.similarity_evidence_refs,
+            field="similarity_evidence_refs",
+        )
+    except ValueError:
+        return False
+    if not _has_ref_with_prefix(held_out_refs, "held-out-witness:"):
+        return False
+    if not _has_ref_with_prefix(similarity_refs, "similarity-witness:"):
+        return False
+    expected = {*held_out_refs, *similarity_refs}
+    return expected.issubset(decision.evidence_refs) and expected.issubset(
+        decision.gate_result.evidence_refs
     )
 
 
 def _has_ref_with_prefix(values: Sequence[str], prefix: str) -> bool:
     return any(value.startswith(prefix) and bool(value[len(prefix) :]) for value in values)
+
+
+def _decision_has_evaluator_attestation(decision: SCEDPhase1Decision) -> bool:
+    return decision._evaluator_attestation == _phase1_evaluator_attestation(decision)
+
+
+def _phase1_evaluator_attestation(decision: SCEDPhase1Decision) -> str:
+    material = "\n".join(
+        (
+            SCED_PHASE1_RATCHET_NAME,
+            str(SCED_PHASE1_RATCHET_VERSION),
+            str(decision.candidate_id or ""),
+            str(decision.candidate_digest or ""),
+            "" if decision.target is None else _target_key(decision.target),
+            str(decision.ruler_hash or ""),
+            "|".join(decision.held_out_evidence_refs),
+            "|".join(decision.similarity_evidence_refs),
+        )
+    )
+    return "phase1-evaluator-attestation:sha256:" + sha256(material.encode("utf-8")).hexdigest()
 
 
 def _nonempty_durable_refs(values: Sequence[str]) -> bool:
@@ -977,9 +1021,11 @@ def _admitted(
     policy_snapshot: SCEDTargetPolicySnapshot,
     ruler_hash: str,
     evidence_refs: tuple[str, ...],
+    held_out: HeldOutEvaluation,
+    similarities: Sequence[SimilarityObservation],
 ) -> SCEDPhase1Decision:
     reason = "sced_phase1_candidate_admitted"
-    return SCEDPhase1Decision(
+    decision = SCEDPhase1Decision(
         verifier=SCED_PHASE1_RATCHET_NAME,
         verifier_version=SCED_PHASE1_RATCHET_VERSION,
         status=GateStatus.LIT,
@@ -997,9 +1043,15 @@ def _admitted(
         target=candidate.target,
         ruler_hash=ruler_hash,
         target_policy_snapshot=policy_snapshot,
+        held_out_evidence_refs=held_out.evidence_refs,
+        similarity_evidence_refs=tuple(
+            dict.fromkeys(ref for observation in similarities for ref in observation.evidence_refs)
+        ),
         evidence_refs=evidence_refs,
         next_action=None,
     )
+    object.__setattr__(decision, "_evaluator_attestation", _phase1_evaluator_attestation(decision))
+    return decision
 
 
 def _refused(
