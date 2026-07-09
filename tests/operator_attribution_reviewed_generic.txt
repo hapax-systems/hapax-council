@@ -1,20 +1,20 @@
 # Reviewed-generic paragraph spans (see tests/test_operator_attribution_redaction.py).
 # Format: <repo-relative-path> <sha256[:12] of whitespace-normalized matched span>
-# Reviewed 2026-07-09 (PR #4472 round 4): generic literature/corpus or guest-facing
-# design discussion sharing a paragraph with a system-design "operator" sentence; no
-# diagnosis is attributed to the operator in any pinned span. Editing a pinned
-# paragraph changes its digest and fails the scan closed for re-review.
+# Reviewed 2026-07-09 (PR #4472 rounds 4-6). Every pinned span is generic literature,
+# guest-facing design, or SYSTEM-directed discussion; no diagnosis is attributed to the
+# operator in any pinned span. Editing a pinned paragraph changes its digest and fails
+# the scan closed for re-review; new co-occurrences fail closed.
+#
+# generic CLT literature + system notification design (no operator diagnosis)
 agents/demo_pipeline/domain_corpus/cognitive-load-theory.md 672a202c9646
-agents/demo_pipeline/domain_corpus/neurodivergent-technology-design.md aeae0e3ed77a
+# generic set-shifting literature; the design sentence names the system, not a diagnosis
 agents/hapax_daimonion/proofs/claim-6-bayesian-tools/RESEARCH.md 8ca3270e5c60
+# GUEST-facing consent-channel design (explicitly about guests, not the operator)
 docs/research/2026-03-15-consent-channel-selection-research.md e00e8b0a33d4
 docs/research/2026-03-15-consent-channel-selection-research.md 0d34e2793ebe
-# apperception: system-behavior bullets naming rejection-sensitivity feedback shapes
-# (no operator diagnosis) + the system-pathology table (failure modes of the SYSTEM).
+# system-behavior bullets naming feedback SHAPES + the SYSTEM-pathology table
 docs/research/apperception-healthy-self-model-research.md ccc6e741f17e
 docs/research/apperception-healthy-self-model-research.md d4d1ed54277c
-docs/research/content-scheduling-research.md b035cb2cac46
-docs/research/content-scheduling-research.md 82cff82efaee
-docs/research/content-scheduling-research.md 2a94b0fe0eee
+# fixture embedding of the guest-facing consent-doc sentences above
 tests/shared/fixtures/rerank_eval.jsonl b131871b9172
 tests/shared/fixtures/rerank_eval.jsonl 0d34e2793ebe

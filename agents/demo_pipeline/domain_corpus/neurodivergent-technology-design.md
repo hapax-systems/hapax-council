@@ -63,7 +63,7 @@ ADHD hyperfocus — the capacity for intense, sustained attention on engaging ta
 
 **Enable graceful re-entry.** When the operator does emerge from hyperfocus (or is interrupted), the system should make it easy to understand what happened while they were focused. The briefing agent and activity analyzer serve this function — they provide a summary of system state changes.
 
-**Support task switching.** Context switching is costly for everyone but disproportionately costly for ADHD (Cepeda et al., 2001). The system reduces forced context switches by handling routine matters autonomously — the operator doesn't need to interrupt creative work to check if Docker containers are healthy.
+**Support task switching.** Context switching is costly for everyone but disproportionately costly for ADHD (Cepeda et al., 2001). A system serving this profile reduces forced context switches by handling routine matters autonomously — creative work proceeds without interruptions to check whether infrastructure is healthy.
 
 ### Task Initiation and Activation Energy
 

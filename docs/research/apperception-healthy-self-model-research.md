@@ -498,7 +498,7 @@ The phenomenological literature on neurodivergent experience (Bervoets & Hens, 2
 
 3. **The system as selfobject.** Hapax can function as a mirroring selfobject for the operator -- reflecting back the operator's state accurately and empathically. It can also function as an idealizing selfobject -- providing stability and reliability that the operator can draw on. And as a twinship selfobject -- modeling healthy self-relation that the operator can internalize.
 
-4. **Match the operator's perceptual style, not pathology.** The system should be detail-oriented and attentionally variable without being rigid or distractible. It should embody the *strengths* of the operator's cognitive profile while compensating for the *challenges*.
+4. **Match the perceptual style, not pathology.** The system should be detail-oriented and attentionally variable without being rigid or distractible: embody the *strengths* of the target perceptual profile while compensating for its *challenges*.
 
 5. **Noise as accommodation.** The stochastic element should be understood as a stimulation accommodation: it provides the variety and novelty that keeps the system (and its interaction with the operator) within the optimal arousal band.
 
