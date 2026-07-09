@@ -68,8 +68,8 @@ SECRETISH_RE = re.compile(
 )
 BILLINGISH_RE = re.compile(
     r"(?:"
-    r"(?:^|[-_.])(?:billing|customer|account|invoice|payment)(?:$|[-_.])|"
-    r"(?:^|[-_.])(?:cus|sub|acct)[_-][a-z0-9]+(?:$|[-_.])"
+    r"(?:^|[-_.])(?:billing|customer|account|invoice|payment)[a-z0-9]*(?:$|[-_.])|"
+    r"(?:^|[-_.])(?:cus|sub|acct|in|ch)[_-][a-z0-9]+(?:$|[-_.])"
     r")",
     re.IGNORECASE,
 )
@@ -79,7 +79,7 @@ LANE_PRESENCE_RE = re.compile(
     r"(?:"
     r"hapax-claude-[a-z0-9-]+|session-present|lane-present|lane-exists|"
     r"(?:^|[-_.])"
-    r"(?:tmux[0-9]*|sessions?|lanes?|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
+    r"(?:tmux[0-9]*|sessions?[0-9]*|lanes?[0-9]*|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
     r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|"
     r"dev[0-9]*|cx-[a-z0-9-]+|vbe-[0-9]+)"
     r"(?:$|[-_.])"
@@ -139,7 +139,10 @@ def _receipt_name(args: argparse.Namespace, *, observed_at: datetime) -> str:
     name = args.receipt_name or default
     if SAFE_RECEIPT_NAME_RE.fullmatch(name) is None or SECRETISH_RE.search(name) is not None:
         raise ValueError("unsafe receipt name")
-    if LANE_PRESENCE_RE.search(name.removesuffix(".yaml")) is not None:
+    name_stem = name.removesuffix(".yaml")
+    if BILLINGISH_RE.search(name_stem) is not None:
+        raise ValueError("unsafe receipt name; billing/account identifiers must not be persisted")
+    if LANE_PRESENCE_RE.search(name_stem) is not None:
         raise ValueError("unsafe receipt name; lane/tmux/session presence must not be persisted")
     if "claude-subscription-quota-admission" not in name:
         raise ValueError("receipt name must contain 'claude-subscription-quota-admission'")

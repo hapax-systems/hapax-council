@@ -71,8 +71,8 @@ CLAUDE_ADMISSION_OBSERVATIONS = frozenset(
 CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX = ":account-live-quota:observed"
 CLAUDE_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"\Arelay-receipt:"
-    r"(?:[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml|"
-    r"unsafe-receipt-name-sha256:[0-9a-f]{16})"
+    r"(?P<label>(?:[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml|"
+    r"unsafe-receipt-name-sha256:[0-9a-f]{16}))"
     r":witness:"
 )
 CLAUDE_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
@@ -82,8 +82,8 @@ CLAUDE_ADMISSION_SECRETISH_RE = re.compile(
 )
 CLAUDE_ADMISSION_BILLINGISH_RE = re.compile(
     r"(?:"
-    r"(?:^|[-_.])(?:billing|customer|account|invoice|payment)(?:$|[-_.])|"
-    r"(?:^|[-_.])(?:cus|sub|acct)[_-][a-z0-9]+(?:$|[-_.])"
+    r"(?:^|[-_.])(?:billing|customer|account|invoice|payment)[a-z0-9]*(?:$|[-_.])|"
+    r"(?:^|[-_.])(?:cus|sub|acct|in|ch)[_-][a-z0-9]+(?:$|[-_.])"
     r")",
     re.IGNORECASE,
 )
@@ -91,7 +91,7 @@ CLAUDE_ADMISSION_LANE_PRESENCE_RE = re.compile(
     r"(?:"
     r"hapax-claude-[a-z0-9-]+|session-present|lane-present|lane-exists|"
     r"(?:^|[-_.])"
-    r"(?:tmux[0-9]*|sessions?|lanes?|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
+    r"(?:tmux[0-9]*|sessions?[0-9]*|lanes?[0-9]*|alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
     r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|"
     r"dev[0-9]*|cx-[a-z0-9-]+|vbe-[0-9]+)"
     r"(?:$|[-_.])"
@@ -1473,7 +1473,7 @@ def _is_agy_admission_evidence_ref(ref: str) -> bool:
 
 def _is_claude_admission_evidence_ref(ref: str) -> bool:
     return (
-        CLAUDE_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
+        _has_safe_claude_admission_receipt_label(ref)
         and _has_safe_claude_admission_witness(ref)
         and any(
             f":observation:{observation}:" in ref for observation in CLAUDE_ADMISSION_OBSERVATIONS
@@ -1481,6 +1481,19 @@ def _is_claude_admission_evidence_ref(ref: str) -> bool:
         and ":observed_at:" in ref
         and ":fresh_until:" in ref
         and ref.endswith(CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX)
+    )
+
+
+def _has_safe_claude_admission_receipt_label(ref: str) -> bool:
+    label_match = CLAUDE_ADMISSION_RECEIPT_LABEL_RE.match(ref)
+    if label_match is None:
+        return False
+    label = label_match.group("label")
+    label_stem = label.removesuffix(".yaml")
+    return (
+        CLAUDE_ADMISSION_SECRETISH_RE.search(label_stem) is None
+        and CLAUDE_ADMISSION_BILLINGISH_RE.search(label_stem) is None
+        and CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(label_stem) is None
     )
 
 

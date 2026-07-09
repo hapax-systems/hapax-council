@@ -1083,6 +1083,13 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
         (
             {
                 "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-session2-observed-20260609t2355z",
+            },
+            "evidence-ref-names-lane-session-presence-not-account-live-quota-evidence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
                 "evidence_ref": "claude-billing-cus_123-headroom-20260609",
             },
             "evidence-ref-names-billing-or-account-identifier",
@@ -1091,6 +1098,20 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
             {
                 "observed_at": "2026-06-09T23:55:00Z",
                 "evidence_ref": "claude-subscription-sub_123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-billingcus123-headroom-20260609",
+            },
+            "evidence-ref-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "evidence_ref": "claude-in_123-headroom-20260609",
             },
             "evidence-ref-names-billing-or-account-identifier",
         ),
@@ -1114,6 +1135,27 @@ def test_claude_admission_rejects_secret_persistence(tmp_path: Path) -> None:
                 "name": "eta-claude-subscription-quota-admission.yaml",
             },
             "receipt-name-names-lane-session-presence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-lane2.yaml",
+            },
+            "receipt-name-names-lane-session-presence",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-cus_123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
+        ),
+        (
+            {
+                "observed_at": "2026-06-09T23:55:00Z",
+                "name": "claude-subscription-quota-admission-billingcus123.yaml",
+            },
+            "receipt-name-names-billing-or-account-identifier",
         ),
     ],
 )

@@ -132,6 +132,14 @@ CLAUDE_BILLING_WITNESS_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
     "witness:claude-subscription-headroom-observed-20260708t1400z:",
     "witness:claude-billing-cus_123-headroom-20260708:",
 )
+CLAUDE_BILLING_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-cus_123.yaml:",
+)
+CLAUDE_LANE_RECEIPT_LABEL_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:",
+    "relay-receipt:claude-subscription-quota-admission-lane2.yaml:",
+)
 CLAUDE_NOW = datetime(2026, 7, 8, 14, 5, tzinfo=UTC)
 
 
@@ -1607,6 +1615,37 @@ def test_receipt_bounded_route_rejects_billing_identifier_claude_witness() -> No
     assert (
         "quota-snapshot:quota-claude-headless-full-billing-witness:"
         "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_billing_identifier_claude_receipt_label() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_BILLING_RECEIPT_LABEL_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-billing-label",
+        reason="fixture claude billing-shaped receipt label",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-claude-headless-full-billing-label:"
+        "untrusted_claude_admission_evidence"
+    ) in refs
+
+
+def test_receipt_bounded_route_rejects_lane_presence_claude_receipt_label() -> None:
+    ledger = _claude_ledger(
+        CLAUDE_LANE_RECEIPT_LABEL_EVIDENCE_REF,
+        snapshot_id="quota-claude-headless-full-lane-label",
+        reason="fixture claude lane-shaped receipt label",
+    )
+
+    state, refs = subscription_quota_state_for_route(ledger, "claude.headless.full", now=CLAUDE_NOW)
+
+    assert state is SubscriptionQuotaState.UNKNOWN
+    assert (
+        "quota-snapshot:quota-claude-headless-full-lane-label:untrusted_claude_admission_evidence"
     ) in refs
 
 

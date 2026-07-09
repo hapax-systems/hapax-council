@@ -111,6 +111,10 @@ def test_rejects_billing_identifier_evidence_ref(tmp_path: Path, capsys) -> None
         "claude-billing-cus_123-headroom-20260708",
         "claude-subscription-sub_123-headroom-20260708",
         "claude-account-acct_123-headroom-20260708",
+        "claude-invoice7-headroom-20260708",
+        "claude-billingcus123-headroom-20260708",
+        "claude-in_123-headroom-20260708",
+        "claude-ch_123-headroom-20260708",
     ):
         rc = _run(["--receipt-dir", str(tmp_path), "--evidence-ref", ref])
         assert rc == 2
@@ -131,6 +135,8 @@ def test_rejects_lane_presence_evidence_ref(tmp_path: Path, capsys) -> None:  # 
         "claude-lane-observed-20260708t1400z",
         "claude-sessions-observed-20260708t1400z",
         "claude-lanes-observed-20260708t1400z",
+        "claude-session2-observed-20260708t1400z",
+        "claude-lane2-observed-20260708t1400z",
         "tmux2-headroom",
         "vbe-3-headroom",
         "mu-headroom",
@@ -209,20 +215,48 @@ def test_rejects_unsafe_receipt_name(tmp_path: Path, capsys) -> None:  # noqa: A
     assert not any(tmp_path.glob("*.yaml"))
 
 
-def test_rejects_lane_presence_receipt_name(tmp_path: Path, capsys) -> None:  # noqa: ANN001
-    rc = _run(
-        [
-            "--receipt-dir",
-            str(tmp_path),
-            "--receipt-name",
-            "eta-claude-subscription-quota-admission.yaml",
-            "--evidence-ref",
-            "claude-subscription-headroom-observed-20260708t1400z",
-        ]
-    )
+def test_rejects_billing_identifier_receipt_name(tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    for name in (
+        "claude-subscription-quota-admission-cus_123.yaml",
+        "claude-subscription-quota-admission-invoice7.yaml",
+        "claude-subscription-quota-admission-billingcus123.yaml",
+        "claude-subscription-quota-admission-ch_123.yaml",
+    ):
+        rc = _run(
+            [
+                "--receipt-dir",
+                str(tmp_path),
+                "--receipt-name",
+                name,
+                "--evidence-ref",
+                "claude-subscription-headroom-observed-20260708t1400z",
+            ]
+        )
 
-    assert rc == 2
-    assert "receipt name" in capsys.readouterr().err
+        assert rc == 2
+        assert "billing/account identifiers must not be persisted" in capsys.readouterr().err
+    assert not any(tmp_path.glob("*.yaml"))
+
+
+def test_rejects_lane_presence_receipt_name(tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    for name in (
+        "eta-claude-subscription-quota-admission.yaml",
+        "claude-subscription-quota-admission-session2.yaml",
+        "claude-subscription-quota-admission-lane2.yaml",
+    ):
+        rc = _run(
+            [
+                "--receipt-dir",
+                str(tmp_path),
+                "--receipt-name",
+                name,
+                "--evidence-ref",
+                "claude-subscription-headroom-observed-20260708t1400z",
+            ]
+        )
+
+        assert rc == 2
+        assert "receipt name" in capsys.readouterr().err
     assert not any(tmp_path.glob("*.yaml"))
 
 
