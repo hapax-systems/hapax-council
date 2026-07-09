@@ -1,0 +1,1122 @@
+# Value-proposition registry (seed).
+# source: value-prop mapping re-evaluation 2026-07-09, workflow wf_545c8c48-dd2
+# status: active_control_seed; SSOT question deferred — council holds the seed.
+# checker: scripts/check-value-prop-registry.py (v1 structural checks C1/C2/C3/C6/C8),
+#   wired into the ci.yml public_surface_freshness job.
+# normalization from the draft:
+#   - row semantic-visual-grammar-air carried `competitive_claims`; renamed to
+#     `comparative_claims` to match the field name every other row uses.
+#   - row composite-capability-assembly (evidence_visibility=vault) listed
+#     org-profile/readme target surfaces; moved to maturity_note as deferred placements
+#     (C6: vault evidence bars readme/profile/weblog placement until a public projection).
+schema_version: 1
+status: proposed_value_prop_registry_draft
+date: "2026-07-08"
+supersedes: 'matrix plan "Value Propositions" table (19 rows) + Feature-To-Benefit schema (0 populated rows)'
+join_keys:
+  surface_ids: docs/repo-pres/public-surface-registry.yaml
+  repo_rows: hapax-constitution sdlc/render/repos.yaml
+  license_pins: docs/repo-pres/repo-registry.yaml (expected_github_license_detection precedent)
+maturity_semantics: >-
+  Binary present|planned; maturity_note carries mixed states. planned->present flips ride
+  freshness_source trigger predicates registered here, never prose edits.
+defaults: {freshness_ttl_s: 1800, stale_behavior: block_public_current, evidence_visibility: public}
+
+audiences:  # weights judgment-ranked until an audience-signal source is wired
+  hn_technical: {weight: 100, tone: "skeptical, concrete, numbers-with-caveats"}
+  directors: {weight: 95, tone: "operational, sober; pilot over platform promise"}
+  oss_adopters: {weight: 90, tone: "narrow and practical"}
+  harness_builders: {weight: 88, tone: "inspectable mechanism, not generic framework"}
+  compliance_reviewers: {weight: 85, note: "split from extant enterprise-92; owed procurement benefit (SBOM/provenance mapping) currently expressed nowhere", tone: "procurement-clean; no certification/warranty"}
+  researchers: {weight: 85, tone: "precise, caveated, n=1 honest"}
+  privacy_ai_safety_auditors: {weight: 82, tone: "no impossible-to-leak or truth-oracle claims"}
+  technical_auditors: {weight: 82}
+  governance_auditors: {weight: 82}
+  license_auditors: {weight: 82}
+  system_integrators: {weight: 80}
+  capability_routing_researchers: {weight: 80, status: added, note: "created by assembly annex + harness-capability-contract-v2 + 182/182 asserted-scores finding; NO public landing surface — not claimable until a docs projection exists"}
+  bsl_evaluators: {weight: 78, note: "split from extant enterprise-92; served by license mechanics + reins --demo"}
+  funders: {weight: 72, note: "raised from 65: DOI live, CC0 ledger, no-perk FUNDING.yml, docs/applications/"}
+  second_operator_pilot_candidates: {weight: 68, status: added_planned, note: "moat T8 falsifier structurally requires one; no surface recruits them"}
+  mcp_integrators: {weight: 65, note: "lowered from 70; P2 bridge fully served by rendered preamble"}
+  skeptical_readers: {weight: 100, note: "alias of hn_technical for START_HERE routing"}
+  downstream_web: {weight: 50}
+  operators: {weight: 40}
+  management_reviewers: {weight: 40}
+
+constraints:  # registry-level bindings; check script enforces on rows AND rendered surfaces
+  - id: banned-absolutes
+    rule: >-
+      'cannot lie' / 'structurally impossible' / 'structurally cannot' / 'proves what happens' /
+      product-negation-as-pitch banned on all surfaces (matrix plan council language ban);
+      applies to registry prose itself.
+  - id: benchmark-release-language
+    rule: >-
+      BINDING (reins-competitive-preference-benchmark-2026-06-30): no superiority-form public
+      claim ('exceeds', 'leads the field', 'un-beaten') until the first-run preference runbook
+      executes with a fresh user/agent and copy cites the resulting receipts; DC/RM/DS cells
+      never quotable as superiority; design-stage cells never 'exceed'.
+  - id: anti-descope
+    rule: >-
+      BINDING: registry rows and fold policy must not trim own-paradigm scope to the
+      comparator-intersection feature set (benchmark Anti-Descope Language).
+  - id: anti-mimicry
+    rule: "No category-membership framing ('like X but governed'); continuity never phrased in standards-injection vocabulary."
+  - id: comparative-claim-hygiene
+    rule: >-
+      Every comparative-absence claim carries evidence_level + scout_date + pinned comparator
+      versions, else status=docs_internal — symmetric with the CVC/OKF discipline. Stale scout
+      pin => hold_docs_internal. (Spec Kit releases near-daily; benchmark cells 1/2/5 already stale.)
+  - id: embargo-lexicon
+    terms:
+      measured: "embargoed on capability/routing copy until learning-eligible outcomes move posteriors"
+      signed_tamper_evident: "embargoed on evidence/receipt copy until receipt-integrity lands (AVSDLC receipts unsigned+expired; three panes share one intent_hash)"
+      stranger_usable: "embargoed; say '<1s fixture render [SV]' + Gate-13 sec-6 bounded statement (MIXED ~55-60% vocabulary recovery)"
+      algebraically_verifiable: "dropped unless bound to a named test mechanism"
+      cost_savings: "never without ValueEvent oracle join (outcome-ledger T5/T6 shadow embargo)"
+      leads_the_field: "docs-internal until preference-runbook receipt exists"
+  - id: org-link-lint
+    rule: "hapax-systems org links only; ryanklee paths never seed copy (non-negotiable rule 1) — machine-checked, not prose"
+  - id: vault-evidence
+    rule: >-
+      evidence_visibility=vault artifacts (preference benchmark, Gate-13 receipt, assembly annex)
+      are not citable in public copy until a public projection exists — applied uniformly.
+  - id: pii-screen
+    rule: >-
+      Any copy quoting axioms/registry.yaml or frozen axiom snapshots (hapax-axioms,
+      hapax-refusals) requires a PII-screen receipt first: executive_function axiom text
+      contains operator medical details.
+  - id: spine-copy-gate
+    rule: >-
+      ALL spine copy placements estate-wide (including rows witnessed-only-learning,
+      edt-fairness) inherit the hapax-spine row gate: D1 fix + public-posture decision +
+      P1 README rewrite BEFORE public exposure.
+
+registry:
+  - value_proposition_id: evidence-bound-portfolio
+    rank: 1
+    implementation_maturity: present
+    tangible_benefit: "Readers see what is shipped, reserved, and evidence-gated — and what evidence a stronger claim would require"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, compliance_reviewers: 85, privacy_ai_safety_auditors: 82, funders: 72}
+    technical_items:
+      - "hapax-systems org profile (registry-rendered rows)"
+      - "constitution sdlc/render/repos.yaml (14 repos: reader_promise/reader_value/claim_ceiling/primary_audience)"
+      - "docs/repo-pres/public-surface-registry.yaml + merge-blocking public_surface_freshness gate (ci.yml:175; all-green needs; gate-manifest.yaml:230)"
+      - "publication hardening lint"
+    claim_ceiling_ref: ceiling.portfolio_not_validity
+    claim_ceiling: >-
+      No full-system-validity or open-source-portfolio implication. 'Signed/tamper-evident'
+      adjectives EMBARGOED until receipt-integrity lands.
+    required_pairings:
+      - "'no false green' ships with merge-gate scoping disclosure (blockers render visibly; gates fail closed on the SDLC merge path — not an all-claims guarantee)"
+    evidence_level: SV
+    competitive_position: "SDLC automation/policy-as-code comparator: visible blockers + disconfirmation + scoped no-false-green; avoid compliance theater"
+    target_surfaces: [org-profile-lede, council-readme, council-docs]
+    freshness_source: "scripts/github-public-surface-reconcile.py receipt generated_at (must include every intended public repo)"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: honest-dark-observability
+    rank: 2
+    implementation_maturity: present
+    tangible_benefit: "Absence renders as absence — no fabricated data, no display scalars, unmeasured shows as unmeasured"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, directors: 95, harness_builders: 88, privacy_ai_safety_auditors: 82}
+    technical_items:
+      - "16 /read/* routes render absence as absence, never fabricated [SV, guard-tested]"
+      - "no display scalars (reins internal/model/dispatch_no_scalar_test.go)"
+      - "value_status three-state honesty (measured/projected/absent)"
+      - "preference benchmark 2026-06-30 [vault-private — NOT citable in public copy]"
+    claim_ceiling_ref: ceiling.per_surface_honesty
+    claim_ceiling: >-
+      Per-surface honesty, not a system-wide truth guarantee. Required caveats: turn feed
+      fixture-only, blocks always dark, :dynamics hand-seeded, :traces ~10s latency.
+      BINDING (benchmark Release/Public-Claim Language): no superiority form on any public
+      surface until the first-run preference runbook executes (fresh user/agent) and copy cites
+      its receipts — public copy limited to capability-descriptive evidence-tagged language
+      ('renders absence as absence [SV, guard-tested]').
+    evidence_level: SV
+    evidence_visibility: mixed_public_guards_vault_benchmark
+    comparative_claims:
+      - {claim: "only un-beaten shared dimension in the 2026-06-30 preference benchmark", evidence_level: DC, scout_date: "2026-06-30", status: docs_internal, flip_trigger: "preference-runbook receipt + public projection of the benchmark"}
+    competitive_position: >-
+      The plan-named differentiator vs Reins-like dashboards ('honest-dark projection cockpit')
+      and vs SDLC/policy-as-code (scoped 'no false green'). Never glossy command-center or
+      fake-action language.
+    target_surfaces: [reins-readme-one-benefit, org-profile-portfolio-line, council-docs]
+    freshness_source: "CI green on absence-guard tests + dispatch_no_scalar_test.go at HEAD; superiority claims gated on preference-runbook receipt"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: reins-cockpit
+    rank: 3
+    implementation_maturity: present
+    tangible_benefit: "Operators inspect estate state and command previews before granting authority; staged write roadmap with machine-checkable triggers"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, directors: 95, harness_builders: 88, bsl_evaluators: 78}
+    technical_items:
+      - "Reins read paths, cell grammar, smoke tests"
+      - "reins --demo v0.1.0: <1s fixture render [SV] (legibility only per Gate-13 sec-6 bounded statement — MIXED, ~55-60% vocabulary recovery)"
+      - "M0 governed-verb witnessed-apply seam landed (reins-dev#5, 7 verbs); provider send STUBBED, COMMAND app unmounted — stub named in any copy"
+      - "estate-wide multi-layer read fold; staged M0/M1/M2 roadmap with machine-checkable triggers"
+    claim_ceiling_ref: ceiling.read_preview_only
+    claim_ceiling: >-
+      Read/preview cockpit, not a mutating lifecycle system. Council README 'selected control
+      paths' claim RETRACTED to ceiling (defect D3). M0 seam describable as landed mechanism
+      with the stub named; M1/M2 statable as planned with named triggers. 'Stranger-usable'
+      embargoed.
+    evidence_level: SV
+    competitive_position: >-
+      Reins-like dashboards comparator; closest structural analog Gas Town; anti-mimicry
+      binding — no category-membership framing; vendor-native absorption (CC teams / Codex
+      subagents) is the named threat.
+    target_surfaces: [reins-readme, org-profile-entry, reins-docs, release-notes-m0-seam]
+    freshness_source: "reins smoke tests + --demo render receipt; M-flips = M1/M2 receipt paths (registered trigger predicates)"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: governed-public-copy-system
+    rank: 4
+    implementation_maturity: present
+    maturity_note: "structure validation present + merge-blocking; stale-predicate ENFORCEMENT planned (control increment 5)"
+    tangible_benefit: "Public copy itself rides claim ceilings and freshness witnesses — the copy system describes itself"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, compliance_reviewers: 85, privacy_ai_safety_auditors: 82, funders: 72}
+    technical_items:
+      - "shared/publication_freshness.py (CLAIM_CEILING='freshness_witness_only' coded as data; TTL cap 1800s)"
+      - "scripts/check-public-surface-claims.py"
+      - "docs/repo-pres/public-surface-registry.yaml (claim_ceiling_ref, stale_behavior=block_public_current)"
+      - "public_surface_freshness merge-blocking (all-green aggregate + gate-manifest ci.jobs)"
+    claim_ceiling_ref: ceiling.freshness_witness_only
+    claim_ceiling: >-
+      Witnesses grant no truth/rights/privacy/egress/support/monetization/research validity
+      (coded verbatim). PRESENT: TTL-capped envelopes, block_public_current coded as data,
+      merge-blocking registry STRUCTURE validation. PLANNED: registry-driven stale predicates
+      in the CI gate (increment 5) and claim scans on docs-only paths — enforcement beyond
+      structure is never stated as present. Claim staleness-detection design, never
+      'copy cannot go stale'.
+    evidence_level: SV
+    comparative_claims:
+      - {claim: "no comparator ships self-governing copy", evidence_level: DS, scout_date: "2026-07-08", status: docs_internal, note: "pin comparator versions or keep docs-internal"}
+    competitive_position: "The plan's own throughline ('authority and evidence are the surface') made demonstrable"
+    target_surfaces: [council-readme-one-benefit, org-profile-portfolio-line, council-docs-mechanics]
+    freshness_source: "public_surface_freshness job green at HEAD; enforcement claims flip on control-increment-5 landing"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: agentgov
+    rank: 5
+    implementation_maturity: present
+    tangible_benefit: "Teams pilot MIT governance hooks for AI coding agents without adopting the estate"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, oss_adopters: 90, directors: 95}
+    technical_items:
+      - "hook registry, CLI, tests, PyPI metadata"
+      - "'47 hooks across 200+ agents' numerics UNWITNESSED — pin via test or drop (pinned_counts)"
+    claim_ceiling_ref: ceiling.mit_hooks_no_estate_rights
+    claim_ceiling: >-
+      MIT hook toolkit, not certification or support; never imply Reins/spine/council/Officium/
+      phone/watch/coord rights from adoption copy. 'Algebraically verifiable' dropped unless
+      bound to a named test mechanism.
+    evidence_level: SV
+    competitive_position: >-
+      Autonomous-coding-agents comparator: govern, don't replace; the ONLY surface where the
+      'pilot without adopting the estate' angle is allowed. Show HN launch-first artifact,
+      release-note grade, with evidence.
+    target_surfaces: [agentgov-readme, agentgov-package-metadata, org-profile-entry, show-hn-launch]
+    freshness_source: "package tests green + pinned-count test for every quoted numeric + PyPI metadata reconcile"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: review-team-quorum
+    rank: 6
+    implementation_maturity: present
+    tangible_benefit: "No quorum, no merge: blind cross-family LLM review verdicts gate merges as an evidence-adequacy check"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, directors: 95, harness_builders: 88, compliance_reviewers: 85}
+    technical_items:
+      - "scripts/review_team.py (lens charters; writer's family never holds majority alone; blind verdicts -> quorum)"
+      - "review_team_verdict_blockers -> cc-pr-autoqueue (no quorum no merge)"
+      - "config/review-lenses/registry.yaml; anti-forge bare-fence parser; degraded-mode t2 seals verified 2026-06"
+    claim_ceiling_ref: ceiling.evidence_adequacy_not_certification
+    claim_ceiling: >-
+      Reviewers are LLMs in a single-operator estate — quorum is an evidence-adequacy gate,
+      not certification or human review.
+    required_pairings:
+      - "'no quorum no merge' ships with the HAPAX_REVIEW_TEAM_GATE_OFF receipted-bypass disclosure — governed escape, not hidden"
+    evidence_level: SV
+    competitive_position: "Distinct from the Model-councils comparator: gates MERGES, not claims; serves directors' explicit review-gates evidence demand"
+    target_surfaces: [council-readme, council-docs]
+    freshness_source: "review_team wiring tests + autoqueue blocker test green at HEAD"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: hapax-council
+    rank: 7
+    implementation_maturity: present
+    tangible_benefit: "Researchers/auditors inspect real claim authority, refusal, egress, and coordination mechanisms under operational pressure"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, directors: 95, researchers: 85, privacy_ai_safety_auditors: 82}
+    technical_items:
+      - "council source, citations, public bus, receipts"
+      - "README preamble registry-render verified verbatim (N1)"
+    claim_ceiling_ref: ceiling.source_visible_research_runtime
+    claim_ceiling: >-
+      Source-visible research/runtime artifact and current case study — not product, framework,
+      or support surface. Language ban: 'cannot lie', 'structurally impossible', 'proves what
+      happens', product-negation-as-pitch.
+    evidence_level: SV
+    competitive_position: "Own-paradigm voice; buyer-question parity frame (route/preserve/review/gate/show/produce) without category membership"
+    target_surfaces: [council-readme, council-start-here, org-profile-entry]
+    freshness_source: "constitution renderer preamble verify + github reconcile receipt"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: refusal-as-data
+    rank: 8
+    implementation_maturity: present
+    tangible_benefit: "What the system refused is inspectable, typed, and citable data"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, oss_adopters: 90, researchers: 85, privacy_ai_safety_auditors: 82}
+    technical_items:
+      - "packages/hapax-refusals (RefusalGate, per-surface posterior floors 0.60-0.90, CITATION.cff, tests)"
+      - "shared/refusal_registry.py (47 typed briefs — docstring-asserted; pin via test before quoting)"
+      - "agents/publication_bus/refusal_brief_publisher.py (per-brief Zenodo deposits as DataCite graph nodes, --commit opt-in)"
+    claim_ceiling_ref: ceiling.refusals_are_records_not_proofs
+    claim_ceiling: >-
+      Refusals are governance-decision records, not proofs of safety or completeness; floors
+      are calibrated heuristics. Package adoption copy blocked on the packages/* boundary open
+      question. Frozen-snapshot quoting requires PII screen (constraint pii-screen).
+    evidence_level: SV
+    comparative_claims:
+      - {claim: "no comparator ships citable refusal artifacts", evidence_level: DS, scout_date: "2026-07-08", status: docs_internal}
+    competitive_position: "Reinforces 'CVC is not a truth oracle' while differentiating: refusal artifacts as citable data"
+    target_surfaces: [council-readme-line, auditor-docs, weblog-witnessed-refusal-cases, second-adoption-wedge-BLOCKED]
+    freshness_source: "pytest pin on brief count + package tests + Zenodo deposit receipts"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: claim-verification-council
+    rank: 9
+    implementation_maturity: present
+    tangible_benefit: "Claims and requests are decomposed, checked, and refused before action"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, compliance_reviewers: 85, researchers: 85}
+    technical_items: ["rubrics, intake gate design, request gate (operational plus designed)"]
+    claim_ceiling_ref: ceiling.evidence_layer_not_truth_oracle
+    claim_ceiling: "Evidence layer, not truth oracle."
+    evidence_level: SV
+    competitive_position: >-
+      Model-councils comparator row has NO audited evidence register — comparative framing
+      stays docs-internal until a council-side audit at SV/DC/RM/DS discipline runs.
+    target_surfaces: [org-profile-public-name, council-readme-body-CURRENTLY-ABSENT-D7, council-docs]
+    freshness_source: "rubric/gate tests; comparator framing gated on council-side audit receipt"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: capability-frontier
+    rank: 10
+    implementation_maturity: present
+    tangible_benefit: "Routing rides a capability registry with quota/authority ceilings and route receipts"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, directors: 95, harness_builders: 88}
+    technical_items:
+      - "capability registry, route receipts, route schema"
+      - "182/182 capability scores hand-authored (self-citing); EDT scorer merged #4331 with 0 callers; gate_outcome_producer unwired"
+    claim_ceiling_ref: ceiling.registry_not_measured
+    claim_ceiling: >-
+      No universal benchmark or leaderboard. 'Measured' EMBARGOED: say 'capability registry +
+      quota/authority ceilings + route receipts' until posteriors actually move on
+      learning-eligible outcomes. Asserted-vs-measured disclosure explicit in any README line.
+    evidence_level: SV
+    competitive_position: >-
+      Harness-lists comparator: authority/quota ceilings and receipts, never inventory breadth
+      ('N harnesses, M models' banned). The comparator row's own 'measured authority' wording
+      inherits the embargo.
+    target_surfaces: [council-docs, council-readme-line-with-asserted-vs-measured-disclosure]
+    freshness_source: "embargo flip trigger = first learning-eligible outcome moving a posterior (gate_event join receipt)"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: bsl-change-date
+    rank: 11
+    implementation_maturity: present
+    tangible_benefit: "Dated credible commitment: BUSL-1.1 today, Apache-2.0 on 2030-07-03, verifiable from the LICENSE file itself"
+    priority_weight: 90
+    audience_ids: {oss_adopters: 90, directors: 95, compliance_reviewers: 85, bsl_evaluators: 78}
+    technical_items:
+      - "reins/LICENSE:21-22 and hapax-spine/LICENSE:23-24: Change Date 2030-07-03, Change License Apache-2.0 (verified)"
+      - "expected_github_license_detection: NOASSERTION pinned (repo-registry.yaml)"
+    claim_ceiling_ref: ceiling.source_available_not_open_source
+    claim_ceiling: >-
+      Never 'open source'; source-available under BUSL-1.1 with dated Apache-2.0 conversion;
+      self-hosted evaluation invited, hosted-service rights reserved. Spine copy only after
+      the public-exposure decision (constraint spine-copy-gate).
+    evidence_level: SV
+    comparative_claims:
+      - {claim: "absent from all comparator framing — unclaimed ground", evidence_level: DS, scout_date: "2026-07-08", status: docs_internal}
+    competitive_position: "Procurement-clean credible commitment"
+    target_surfaces: [reins-readme-license-section-EVAL-GRANT-MISSING, org-profile-license-posture-add-date, council-docs]
+    freshness_source: "authority-file presence check (shared/github_public_surface.py) + LICENSE content pin"
+    freshness_ttl_s: 2592000
+    stale_behavior: block_public_current
+
+  - value_proposition_id: hapax-spine
+    rank: 12
+    implementation_maturity: present
+    maturity_note: "private alpha; public posture undecided; extant rank 3 demoted for honesty"
+    tangible_benefit: "Reconstruct and govern delivery state from append-only events and policy evaluators"
+    priority_weight: 88
+    audience_ids: {harness_builders: 88, technical_auditors: 82, system_integrators: 80}
+    technical_items:
+      - "event log, dispatcher policy, route metadata (alpha)"
+      - "spine wheel ships gate_log/sdlc_router/edt_measure/gate_event_producer — mechanism front door for witnessed-only-learning + edt-fairness"
+    claim_ceiling_ref: ceiling.mechanism_not_kernel
+    claim_ceiling: >-
+      Mechanism, not full portable kernel; not instance-agnostic until configuration injection
+      completes. Repo is PRIVATE: org-profile 'source-available' wording is a live defect (D1)
+      — fix before ANY spine copy. All spine placements estate-wide inherit this gate.
+    evidence_level: SV
+    evidence_visibility: private_repo
+    competitive_position: "Agent-orchestration comparator: governed dispatch/ledger mechanics, not generic workflow diagrams"
+    target_surfaces: [spine-readme-P1-GATED, org-profile-only-after-posture-decision]
+    freshness_source: "posture decision record + D1 fix; until then all placements blocked"
+    freshness_ttl_s: 1800
+    stale_behavior: block_placement
+
+  - value_proposition_id: constitution-sdlc
+    rank: 13
+    implementation_maturity: present
+    tangible_benefit: "Governance and repo metadata become inspectable and renderable"
+    priority_weight: 85
+    audience_ids: {researchers: 85, compliance_reviewers: 85}
+    technical_items:
+      - "axioms, implications, renderers, tests"
+      - "BLOCKER: split CC-BY-NC-ND/Apache posture asserted while remote main root LICENSE is Apache-2.0; hardcoded non-expiring waiver in check-public-surface-claims.py (delete WITH the split-license implementation)"
+    claim_ceiling_ref: ceiling.spec_not_runtime_proof
+    claim_ceiling: >-
+      Spec and gates, not runtime proof. Never blanket Apache. Downstream copy must not trust
+      the split posture until the authority is implemented, not described.
+    evidence_level: SV
+    competitive_position: "n/a (authority repo)"
+    target_surfaces: [constitution-readme-docs-P0, org-profile-only-after-split-license-lands]
+    freshness_source: "trigger = split-license landing + deletion of the hardcoded waiver in check-public-surface-claims.py"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: continuity-context-substrate
+    rank: 14
+    implementation_maturity: present
+    maturity_note: "partial present (P0 + fail-closed scrubber landed); distillation P1 + doc-ingestion planned"
+    tangible_benefit: "Context capture-at-source with re-fold-not-summarize and supersession semantics — the re-teaching problem addressed by mechanism"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, oss_adopters: 90, harness_builders: 88, researchers: 85}
+    technical_items:
+      - "continuity P0 landed; fail-closed transcript scrubber merged #4256"
+      - "HKP read-only projections shipped (may_authorize=False at shared/hkp_bundle_schema.py:426)"
+      - "capture-at-source + re-fold-not-summarize + supersession semantics (design + partial)"
+    claim_ceiling_ref: ceiling.mechanism_not_benchmarked_memory
+    claim_ceiling: >-
+      Mechanisms shipped in parts; distillation P1 and doc-ingestion planned; NOT a benchmarked
+      memory system (zero memory benchmarks run); state mechanism + design direction, never
+      superiority over Agent OS.
+    evidence_level: SV
+    competitive_position: >-
+      THE head-to-head buyer question vs the named competitor (Agent OS's problem statement is
+      re-teaching context) — biggest hole in the extant table; anti-mimicry: never phrased in
+      standards-injection vocabulary.
+    target_surfaces: [council-readme, org-profile-buyer-question-frame, council-docs]
+    freshness_source: "P0/scrubber merge receipts present; fuller claims flip on P1 distillation receipts"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: publication-bus
+    rank: 15
+    implementation_maturity: present
+    tangible_benefit: "Public claims and egress are routed, refused, and reconciled through governed channels with receipts"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, privacy_ai_safety_auditors: 82, funders: 72}
+    technical_items:
+      - "surface registry (55 surfaces, 3 tiers), allowlist, public event witness, published artifacts"
+      - "visibility-engine expansion (multi-channel fanout + readback receipts) PLANNED, deferred"
+    claim_ceiling_ref: ceiling.events_do_not_publish
+    claim_ceiling: >-
+      Events do not themselves publish; credentials and receipts matter. Automation breadth
+      planned only. Canonical domain UNSETTLED (hapax.research does not resolve) — blocks
+      citable-nexus placements.
+    evidence_level: SV
+    comparative_claims:
+      - {claim: "no comparator treats public egress as governed channels with receipts", evidence_level: DS, scout_date: "2026-07-08", status: docs_internal}
+    competitive_position: "Governed egress with receipts"
+    target_surfaces: [council-docs, council-readme, weblog-witnessed-cases-only]
+    freshness_source: "bus registry + witness tests; breadth claims flip on visibility-engine landing"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: semantic-visual-grammar-air
+    rank: 16
+    implementation_maturity: present
+    maturity_note: "supersedes/extends extant row 19 (air-posture, ranked last); raised — only field-uncontested SV differentiator family"
+    tangible_benefit: "A testable visual grammar with broadcast safety encoded in resolution (AIR clamps on-air imagery to half-block)"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, privacy_ai_safety_auditors: 82}
+    technical_items:
+      - "6 frozen channel bindings, closed glyph alphabet, disjoint-hue tests [SV]"
+      - "AIR hard ceiling; cell grammar survives monochrome/16-color/screen-reader"
+      - "Gate-13 stranger run 2026-07-05: MIXED (~55-60% vocabulary recovery), release-lock holding [vault receipt]"
+    claim_ceiling_ref: ceiling.testable_grammar_no_superiority
+    claim_ceiling: >-
+      'Testable, stranger-piloted visual grammar' with the Gate-13 receipt cited; NO legibility
+      superiority; quote the receipt's sec-6 bounded statement verbatim before drafting; fresh
+      witness evidence required; no broad privacy guarantee. A MIXED verdict licenses zero 'exceeds'.
+    evidence_level: SV
+    evidence_visibility: mixed_public_tests_vault_receipt
+    comparative_claims:
+      - {claim: "no competitor has a testable visual grammar with broadcast-safety in resolution", evidence_level: DC, scout_date: "2026-06-30", status: docs_internal}
+    competitive_position: "Field-uncontested SV family; MIXED verdict caps all comparative wording"
+    target_surfaces: [reins-readme-air-section-exists, council-docs, weblog-only-after-passing-rerun]
+    freshness_source: "disjoint-hue tests green; weblog placement trigger = passing Gate-13 re-run (>=3 strangers/condition + fresh human)"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: witnessed-only-learning
+    rank: 17
+    implementation_maturity: present
+    tangible_benefit: "Only witnessed gate/CI/review verdicts move routing posteriors — assertion and measurement are typed apart"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, harness_builders: 88, researchers: 85}
+    technical_items:
+      - "shared/gate_log.py:41-69 Provenance Literal — only 'witnessed' may move a posterior"
+      - "shared/sdlc_router.py exceptionless guard; anti-laundering blocker on asserted-not-measured scores"
+      - "shipped in the spine BSL wheel (hapax-spine repo PRIVATE; wheels in local dist/ only — no public-exposure claim)"
+    claim_ceiling_ref: ceiling.integrity_rule_not_measurement
+    claim_ceiling: >-
+      Prevents laundering asserted scores into learned rankings; does NOT supply independent
+      measurements. Claim: assertion and measurement are typed apart and unmeasured shows as
+      unmeasured.
+    evidence_level: SV
+    competitive_position: "Anti-Goodhart integrity rule pairing with scoped 'no false green'; learning integrity, distinct from Capability Frontier routing"
+    target_surfaces: [council-docs, research-audience-copy, spine-docs-GATED-on-spine-row]
+    freshness_source: "Provenance-literal + router-guard tests green at HEAD"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: authority-cased-dispatch
+    rank: 18
+    implementation_maturity: present
+    tangible_benefit: "Agents get authority cases, not standing write access — routing is also a refusal surface"
+    priority_weight: 95
+    audience_ids: {directors: 95, harness_builders: 88, compliance_reviewers: 85}
+    technical_items:
+      - "scripts/hapax-methodology-dispatch: lanes refused without explicit AuthorityCase/ISAP"
+      - "shared/dispatcher_policy.py deny-wins ladder (launch|hold|support_only|refuse)"
+      - "route-envelope gate SHADOW-default with observable would-have-held"
+    claim_ceiling_ref: ceiling.governed_escape_disclosed
+    claim_ceiling: >-
+      Single-operator estate with a signed EscapeGrant bypass (~340x/day, verified
+      reversible-fail-open) — DISCLOSE as governed escape; envelope gate has not flipped to enforce.
+    evidence_level: SV
+    competitive_position: "Refines Capability Frontier as a refusal surface"
+    target_surfaces: [council-readme-directors-line, council-docs-shadow-enforce-state-held-honestly]
+    freshness_source: "dispatcher-policy tests; stronger claims flip on envelope-gate enforce-flip receipt"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: edt-fairness
+    rank: 19
+    implementation_maturity: present
+    tangible_benefit: "Equal-depth-of-treatment receipts print their own limits — an n=1-honest fairness floor"
+    priority_weight: 88
+    audience_ids: {harness_builders: 88, researchers: 85, privacy_ai_safety_auditors: 82}
+    technical_items:
+      - "shared/edt_measure.py (conjunctive pass gate; defense_caveat in every receipt; inert defenses SURFACED)"
+      - "hapax-spine/src/hapax/spine/edt_measure.py — named in spine README as a core mechanism"
+      - "v1 scorer merged #4331; 0 callers; STEP-0 plumbing pending"
+    claim_ceiling_ref: ceiling.descriptive_floor_not_pipeline
+    claim_ceiling: >-
+      Descriptive supply-side health floor over largely self-attested descriptors; explicitly
+      NOT a routing input; its own limits print on the receipt. MERGED, NOT YET WIRED: 0 callers,
+      STEP-0 pending — describe as shipped mechanism awaiting wiring, never an operating
+      measurement pipeline.
+    evidence_level: SV
+    comparative_claims:
+      - {claim: "no comparator analogue", evidence_level: DS, scout_date: "2026-07-08", status: docs_internal}
+    competitive_position: "'n=1 honest' fairness measurement artifact"
+    target_surfaces: [spine-readme-GATED-on-spine-row, council-docs, researcher-facing-copy]
+    freshness_source: "operating-pipeline claims flip on STEP-0 plumbing + first caller receipt"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: default-deny-egress-redaction
+    rank: 20
+    implementation_maturity: present
+    maturity_note: "NEW row (verdict-1): the privacy-auditor-82 plan trigger ('AIR/default-deny redaction') previously joined no row"
+    tangible_benefit: "Egress is default-deny: fail-closed consent gate, allowlist + legal-name guard on all 55 bus surfaces, PII wards, face privacy at egress"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, privacy_ai_safety_auditors: 82}
+    technical_items:
+      - "shared/governance/consent.py fail-closed control law (verified: 'Contract loading failed 3 times — fail-closed active')"
+      - "pii-guard hook; publisher-superclass AllowlistGate + legal-name guard on all 55 bus surfaces; face-privacy at egress (#129)"
+      - "Open Garage Door ward discipline (allowlist-render + verify-before-air + hold-buffer + default-deny)"
+      - "fail-closed transcript scrubber #4256"
+    claim_ceiling_ref: ceiling.per_surface_mechanisms_no_leak_guarantee
+    claim_ceiling: >-
+      Plan tone constraint verbatim: no 'impossible to leak' or truth-oracle claims. Ward safety
+      is CONDITIONAL on the four-part discipline (quote the condition). Per-surface mechanisms,
+      never an estate-wide privacy guarantee. Fresh witness evidence (AIR tests/screenshots)
+      required per plan VP row 19.
+    evidence_level: SV
+    competitive_position: "Serves the audience-82 owed evidence bundle (refusal records, source reconcile, AIR tests/screenshots) as one join point"
+    target_surfaces: [council-docs-auditor-bundle, reins-readme-air-adjacent-line, council-readme-line]
+    freshness_source: "consent fail-closed tests + pii-guard registration check + publisher superclass tests + fresh AIR witness evidence"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: audio-broadcast-instrument
+    rank: 21
+    implementation_maturity: present
+    maturity_note: "NEW row (verdict-1)"
+    tangible_benefit: "An agent estate whose live voice passes through analog hardware behind a fail-closed routing gate, with A/V releases gated on witness receipts"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, researchers: 85, privacy_ai_safety_auditors: 82}
+    technical_items:
+      - "docs/audio-topology-reference.md (SSOT); scripts/hapax-audio-routing-check verified fail-closed (set -euo pipefail; private/notification/PC -> no broadcast egress; RED-fixture canaries per the 2026-06-13 correction)"
+      - "lufs_panic_cap.py supervisor; TTS voice via Torso S-4 analog insert on the MOTU mk5 hub"
+      - "AVSDLC release gating + Tier-C AVWitnessReceipt (#4254/#4258); DarkPlaces 1080p60 compositor path"
+    claim_ceiling_ref: ceiling.instrument_not_product
+    claim_ceiling: >-
+      Single-operator instrument and case study, not a product or adoptable stack; segment
+      go-live still MVP with open REDs; AVSDLC receipts inherit the 'signed' embargo; no
+      broadcast-grade/audio-quality claims; audio invariants are protected internals — describe
+      the governance discipline, not the topology as offer.
+    evidence_level: SV
+    competitive_position: "Broadcast egress is the forcing function for AIR/consent machinery — operational-pressure case study"
+    target_surfaces: [council-docs, weblog-avsdlc-self-rejection-witnessed-case]
+    freshness_source: "hapax-audio-routing-check RED-fixture canaries green + AVWitnessReceipt freshness"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: operational-resilience
+    rank: 22
+    implementation_maturity: present
+    maturity_note: "NEW row (verdict-1)"
+    tangible_benefit: "Designed for unattended recovery — with a published gap register instead of an uptime claim"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, technical_auditors: 82, system_integrators: 80, directors: 95}
+    technical_items:
+      - "systemd/README.md marker-witnessed topology inventory (292 services / 141 timers in <!-- topology-inventory --> markers; scripts/hapax_topology_inventory.py --check)"
+      - "read-only runtime reconciler (hapax-systemd-inventory-reconcile) with its own honesty rule: source topology counts are not runtime-state claims"
+      - "kernel-panic auto-reboot + lingering + greetd autologin; VRAM watchdog / health-monitor timers; camera-resilience 5-state FSM WatchdogSec=60"
+    claim_ceiling_ref: ceiling.gap_register_not_uptime
+    claim_ceiling: >-
+      SP5100-TCO hardware watchdog DISARMED on both hosts (no kernel-hard-hang reset path);
+      production substrate on a single-disk SPOF; 2026-06-08 UPS power-off incident. Claim
+      'designed for unattended recovery with a published gap register' — never uptime/HA
+      guarantees. Runtime-state claims only with a fresh reconciler receipt.
+    evidence_level: SV
+    competitive_position: "Secondary evidence for directors' 'runs under operational pressure'"
+    target_surfaces: [council-docs-mechanics, council-readme-supporting-line]
+    freshness_source: "hapax_topology_inventory.py --check green + fresh hapax-systemd-inventory-reconcile receipt for any runtime claim"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: research-ledger
+    rank: 23
+    implementation_maturity: present
+    tangible_benefit: "Early observations, nulls, and caveats remain inspectable — CC0, DOI-anchored"
+    priority_weight: 100
+    audience_ids: {skeptical_readers: 100, researchers: 85, funders: 72}
+    technical_items: ["ledger README, schema, data; CC0; DOI 10.5281/zenodo.20113515 live"]
+    claim_ceiling_ref: ceiling.observations_not_results
+    claim_ceiling: "Observations only, not adjudicated results; numeric-only, caveats preserved."
+    evidence_level: SV
+    competitive_position: "Evidence-artifact posture nobody in the comparator set publishes (docs-internal until pinned)"
+    target_surfaces: [ledger-readme-P1, council-start-here, org-profile-entry]
+    freshness_source: "DOI resolve check + rendered preamble verify"
+    freshness_ttl_s: 2592000
+    stale_behavior: block_public_current
+
+  - value_proposition_id: cross-runtime-gate-symmetry
+    rank: 24
+    implementation_maturity: present
+    tangible_benefit: "One drift-pinned gate manifest across claude/codex/vibe/ci — symmetry or declared degradation"
+    priority_weight: 95
+    audience_ids: {directors: 95, harness_builders: 88, compliance_reviewers: 85}
+    technical_items:
+      - "hooks/gate-manifest.yaml — single source of truth for gate wiring, drift-pinned"
+      - "symmetry-or-declared-degradation as standing law (annex L11)"
+    claim_ceiling_ref: ceiling.internal_control_surface
+    claim_ceiling: >-
+      Council-internal control surface, not a portable product; wiring hand-maintained (the file
+      says so); claim symmetry-or-declared-degradation, never blanket symmetry.
+    evidence_level: SV
+    competitive_position: "Answers 'what happens when you run multiple agent vendors' — no comparator row covers it; hedges the vendor-native-absorption threat"
+    target_surfaces: [council-docs, agentgov-adjacent-line]
+    freshness_source: "gate-manifest drift-pin checks green"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: outcome-ledger-moat
+    rank: 25
+    implementation_maturity: present
+    maturity_note: "T4 provenance veto + T1 non-compensatory floor present structural (day-1 claimable); T5/T6 measured value numerator planned (SHADOW-ONLY)"
+    tangible_benefit: "Self-referential evidence fails validation (T4); cost is admitted only after a quality floor (T1, NB-form not ratio)"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, directors: 95, bsl_evaluators: 78, funders: 72}
+    technical_items:
+      - "T4: self-referential evidence fails validation (architectural) — LEAD with this formulation, never the 'cannot cite itself' absolute"
+      - "T1: quality floor before cost, NB-form (vs RouteLLM et al.)"
+      - "gate-event task-hash receipts landed #4467; judge false-accept 8.9% > false-reject 5.4%; market_fit_claim_authorized:false"
+    claim_ceiling_ref: ceiling.claims_ladder_is_the_schedule
+    claim_ceiling: >-
+      The cold-start claims ladder (moat doc sec-8) IS the copy schedule. NEVER 'cost savings'
+      without a ValueEvent oracle join; NEVER lead with commodity pieces. Cold-start inversion
+      honestly statable.
+    required_pairings:
+      - "'no false green' pairing as in evidence-bound-portfolio"
+    evidence_level: SV
+    comparative_claims:
+      - {claim: "market survey: nobody ships the T4 veto", evidence_level: DS, scout_date: "2026-07-08", status: docs_internal}
+    competitive_position: "Moat = outcome-ledger numerator; T4/T1 structural claims are the only comparative-adjacent statements licensed today"
+    target_surfaces: [council-docs, one-structural-line-reins-or-council-readme, weblog-only-after-second-operator-3-arm-falsifier]
+    freshness_source: "T4 validation test + #4467 receipts; T5/T6 flip = ValueEvent oracle join + second-operator falsifier receipts"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: single-operator-empiricism
+    rank: 26
+    implementation_maturity: present
+    maturity_note: "NEW row (verdict-1); cross-cutting stance row — governs voice on every surface more than it ranks"
+    cross_cutting: true
+    tangible_benefit: "n=1 scope is typed and enforced in code (single_user axiom, weight 100, constitutional), not disclaimed in fine print"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, researchers: 85, compliance_reviewers: 85, funders: 72}
+    technical_items:
+      - "axioms/registry.yaml single_user axiom: weight 100, hardcoded, constitutional"
+      - "research-ledger no-user-study disclosure; EDT receipts branded 'n=1 honest'"
+    claim_ceiling_ref: ceiling.scope_declaration_not_validation
+    claim_ceiling: >-
+      Scope declaration is not validation — zero generalization claims. CRITICAL PII: the
+      adjacent executive_function axiom text contains operator medical details — public n=1
+      copy cites single_user mechanics ONLY and never surfaces operator-health axiom text;
+      audit hapax-refusals/hapax-axioms frozen snapshots before quoting registry text
+      (constraint pii-screen).
+    evidence_level: SV
+    competitive_position: "The plan's 'claim ceilings are part of the value proposition' made concrete"
+    target_surfaces: [registry-voice-row-all-surfaces, council-start-here-skeptic-paragraph, ledger-framing]
+    freshness_source: "axiom presence test + PII-screen receipt required before any registry-text quote"
+    freshness_ttl_s: 2592000
+    stale_behavior: block_public_current
+
+  - value_proposition_id: local-inference-sovereignty
+    rank: 27
+    implementation_maturity: present
+    maturity_note: "NEW row (verdict-1)"
+    tangible_benefit: "A local inference path exists for bounded slices at held quality — capability + quality + routing, explicitly not savings"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, harness_builders: 88, privacy_ai_safety_auditors: 82}
+    technical_items:
+      - "TabbyAPI serving Command-R 35B EXL3 on :5000 across the dual-rig fleet; LiteLLM routing incl. appendix-fast grounding route"
+      - "ornith-35b bounded-slice routing with mandatory verification; grounding-fitness G1-G12 gated-then-additive"
+      - "cost-offload reframe: objective = capability + held quality + routing, NOT savings, no budget cap"
+    claim_ceiling_ref: ceiling.narrow_slices_no_savings_claims
+    claim_ceiling: >-
+      'Cost savings' NEVER claimable without the ValueEvent oracle join (T5/T6 embargo); no
+      model-quality benchmark claims; slices are narrow with held-quality verification, never
+      blanket local; grounding-model choice open per the Resource Constitution, which is
+      home-dir private — docs-internal until a public projection exists.
+    evidence_level: SV
+    evidence_visibility: mixed_public_config_private_constitution
+    competitive_position: "Local-first affinity for HN; bounded, verified offload"
+    target_surfaces: [council-docs-mechanics, at-most-one-readme-line]
+    freshness_source: "LiteLLM route config presence + grounding-fitness receipts; public claims gated on Resource Constitution public projection"
+    freshness_ttl_s: 1800
+    stale_behavior: hold_docs_internal
+
+  - value_proposition_id: hkp
+    rank: 28
+    implementation_maturity: present
+    maturity_note: "extant rank 9 demoted: zero public placement + assertion-only comparator backing"
+    tangible_benefit: "Knowledge projections support context without authorizing mutation"
+    priority_weight: 88
+    audience_ids: {harness_builders: 88, researchers: 85}
+    technical_items: ["bundle schema, may_authorize=False non-authority rules, cache-only never-mutate exporter"]
+    claim_ceiling_ref: ceiling.read_only_projection
+    claim_ceiling: "Read-only support projection; no source-of-truth claim; never authorizes mutation."
+    evidence_level: SV
+    competitive_position: >-
+      Google-OKF comparator row has NO audited evidence register — comparator framing
+      docs-internal until a council-side audit runs.
+    target_surfaces: [council-docs-CURRENTLY-ZERO-PLACEMENT-D7, council-readme-line]
+    freshness_source: "may_authorize=False schema test; placement flip = docs mechanics home + comparator audit receipt"
+    freshness_ttl_s: 1800
+    stale_behavior: hold_docs_internal
+
+  - value_proposition_id: recursive-system-ingestion
+    rank: 29
+    implementation_maturity: present
+    tangible_benefit: "The cockpit is built to audit its own coverage (111-element/13-program machine-checkable matrix; orphan = leak) — no completed self-audit yet exists"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, researchers: 85}
+    technical_items: ["401-line re-runnable purview engine; 111-element coverage matrix"]
+    claim_ceiling_ref: ceiling.capability_tense_only
+    claim_ceiling: >-
+      State machinery, not completed self-audit — the ingestion-turned-on-itself audit phase
+      was killed and never produced. ALL copy capability-tense ('built to audit'), never
+      present/ongoing tense.
+    evidence_level: SV
+    comparative_claims:
+      - {claim: "no competitor analogue (benchmark Layer-2 dim 2)", evidence_level: DC, scout_date: "2026-06-30", status: docs_internal}
+    competitive_position: "HN-legible once a self-audit actually runs"
+    target_surfaces: [council-docs, weblog-case-once-self-audit-runs]
+    freshness_source: "trigger = completed self-audit run receipt"
+    freshness_ttl_s: 1800
+    stale_behavior: revert_to_planned
+
+  - value_proposition_id: measured-routing-calibration
+    rank: 30
+    implementation_maturity: planned
+    tangible_benefit: "Routing calibration is planned; scores today are asserted, and the surface says so"
+    priority_weight: 88
+    audience_ids: {harness_builders: 88, researchers: 85, capability_routing_researchers: 80}
+    technical_items:
+      - "dev2 STEP-7 v-hat producer (#4338 chain) + Stage-3 gate_event_join warm loop = triggers"
+      - "no-scalar/honest-absent guards SHIPPED (claimable now as mechanism)"
+      - "operator-neutrality CI predicate currently FAILS (cold_start_no_measured_overlay)"
+    claim_ceiling_ref: ceiling.planned_with_honest_present
+    claim_ceiling: "Flip to present only when learning-eligible outcomes move posteriors; until then only the honesty guards are claimable."
+    evidence_level: SV
+    competitive_position: "Harness-lists comparator end-state"
+    target_surfaces: [council-docs-planned-section, readme-one-liner-as-planned]
+    freshness_source: "trigger = STEP-7 v-hat producer + Stage-3 gate_event_join receipts (posteriors move)"
+    freshness_ttl_s: 1800
+    stale_behavior: revert_to_planned
+
+  - value_proposition_id: composite-capability-assembly
+    rank: 31
+    implementation_maturity: planned
+    maturity_note: >-
+      org-profile design-direction line + any README mention are DEFERRED placements
+      (removed from target_surfaces per C6: vault evidence bars readme/profile/weblog
+      placement) until S3 lands and the annex has a public projection.
+    tangible_benefit: "Typed composition over governed capability leaves — shipped subsystems already follow the discipline being formalized"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, harness_builders: 88, capability_routing_researchers: 80}
+    technical_items:
+      - "assembly-calculus annex 2026-07-08 [vault-private — needs public projection before citation]: leaf/recipe model, deny-wins, narrowing-only envelopes, derived clocks, sec-12 falsifier"
+      - "present-tense INSTANCES shipped: publisher_kit/base.py baked invariants, review quorum, grounding parallel_any failover"
+    claim_ceiling_ref: ceiling.unbuilt_quote_own_falsifier
+    claim_ceiling: >-
+      Cannot be claimed as shipped (S1-S6 unbuilt, zero code landed). Quote the annex's own
+      sec-12 falsifier as the ceiling-honest copy. Safe present-tense claim: shipped subsystems
+      already follow the composition discipline being formalized.
+    evidence_level: DS
+    evidence_visibility: vault
+    competitive_position: "Unclaimed ground; shadow-first with written enforce-flip criteria"
+    target_surfaces: [docs-research-surface-NEEDS-PUBLIC-PROJECTION-FIRST]
+    freshness_source: "trigger = S3 landing + public annex projection"
+    freshness_ttl_s: 1800
+    stale_behavior: revert_to_planned
+
+  - value_proposition_id: council-packages-family
+    rank: 32
+    implementation_maturity: present
+    maturity_note: "NEW row (verdict-1); all placement gated on the packages/* boundary open question"
+    tangible_benefit: "Filesystem-as-bus multi-session coordination (hapax-swarm) paired with the instrument that could witness its throughput claim (hapax-velocity-meter)"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, oss_adopters: 90, harness_builders: 88}
+    technical_items:
+      - "packages/hapax-swarm ('past 30 PRs/day' — UNWITNESSED numeric: pin via velocity-meter receipt or drop)"
+      - "packages/hapax-velocity-meter (velocity from any git history) — the velocity-evidence pair"
+      - "packages/hapax-axioms (axiom gates), m8c-hapax (SHM-bridge carry-fork)"
+    claim_ceiling_ref: ceiling.polyform_strict_not_adoption_wedge
+    claim_ceiling: >-
+      PolyForm Strict noncommercial (a fifth license flavor the plan's four buckets do not name
+      — open question); must NOT blur into the agentgov MIT adoption wedge (non-negotiable
+      rule); numerics pinned-or-dropped; placement gated on the packages/* boundary decision.
+    evidence_level: SV
+    competitive_position: "Measurement-loop angle: the pair closes its own witness gap"
+    target_surfaces: [BLOCKED-on-packages-boundary-decision]
+    freshness_source: "packages boundary decision + velocity-meter receipt for any throughput numeric"
+    freshness_ttl_s: 1800
+    stale_behavior: block_placement
+
+  - value_proposition_id: mcp-bridge
+    rank: 33
+    implementation_maturity: present
+    tangible_benefit: "MCP clients reach Hapax APIs without becoming the authority source"
+    priority_weight: 82
+    audience_ids: {technical_auditors: 82, mcp_integrators: 65}
+    technical_items: ["hapax-mcp README + API tests; rendered preamble expresses the prop"]
+    claim_ceiling_ref: ceiling.bounded_bridge
+    claim_ceiling: "Hapax Logos MCP Bridge only; not a general MCP framework; authority stays with underlying APIs."
+    evidence_level: SV
+    competitive_position: "Bounded-bridge posture; integration-focused tone"
+    target_surfaces: [hapax-mcp-readme-adequate-P2]
+    freshness_source: "API tests + rendered preamble verify"
+    freshness_ttl_s: 2592000
+    stale_behavior: block_public_current
+
+  - value_proposition_id: dynamics-lenses-estate-fold
+    rank: 34
+    implementation_maturity: present
+    maturity_note: "extends extant row 17 with the estate-wide read fold"
+    tangible_benefit: "One read model folds coord ledger/Langfuse/HKP/vault/intake — a read fold over named planes"
+    priority_weight: 95
+    audience_ids: {directors: 95, harness_builders: 88}
+    technical_items:
+      - "dynamics docs, Reins lens, read API"
+      - "estate-wide multi-layer /read/* fold [SV read-side]"
+    claim_ceiling_ref: ceiling.projection_not_completeness
+    claim_ceiling: >-
+      Projection, not proof of completeness; 'read fold over named planes, not a complete
+      estate model' (HOS event-spine producer pending); :dynamics hand-seeded.
+    evidence_level: SV
+    comparative_claims:
+      - {claim: "nothing scouted folds systemd/GPU/inference/vault/coord planes into one read model", evidence_level: DC, scout_date: "2026-06-30", status: docs_internal}
+    competitive_position: "Read-side estate fold"
+    target_surfaces: [reins-council-docs-CURRENTLY-ZERO-PLACEMENT-D7, reins-readme-supporting-line]
+    freshness_source: "read API tests green"
+    freshness_ttl_s: 1800
+    stale_behavior: block_public_current
+
+  - value_proposition_id: govern-surface
+    rank: 35
+    implementation_maturity: planned
+    tangible_benefit: "Gates as queryable state — the 4th unified-API verb; observability only, never-mint"
+    priority_weight: 88
+    audience_ids: {harness_builders: 88, compliance_reviewers: 85, privacy_ai_safety_auditors: 82}
+    technical_items:
+      - "E6.3 confirmed unbuilt: reins/api holds nine modules (reins_read, reins_command, reins_context, reins_context_correlation, reins_generation, reins_ledger, reins_route, reins_serve, facet_registry) — none is a GOVERN module (grounding corrected per verdict-2; conclusion holds); an M1 line item"
+    claim_ceiling_ref: ceiling.observability_never_mint
+    claim_ceiling: "Observability only, never-mint; UI state is not authority. Planned until the GOVERN API module + :GOVERN surface land."
+    evidence_level: SV
+    competitive_position: "Most literal instantiation of 'authority and evidence are the surface' once live"
+    target_surfaces: [reins-readme-planned-section, council-docs, org-profile-once-live]
+    freshness_source: "trigger = GOVERN API module + :GOVERN surface landing receipts"
+    freshness_ttl_s: 1800
+    stale_behavior: revert_to_planned
+
+  - value_proposition_id: coordinator-hot-swap
+    rank: 36
+    implementation_maturity: planned
+    maturity_note: "decision core landed + tested; live re-hydration gated on CapabilityIO Phase-1/3 (#4338)"
+    tangible_benefit: "Session context survives a coordinator swap — a capability contrast with single-session native clients (no universal negatives)"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, harness_builders: 88, mcp_integrators: 65}
+    technical_items:
+      - "internal/coordswap decision core LANDED + tested (SessionFloor, ResolveCapabilitySwap, never-mint/fail-closed)"
+      - "live re-hydration GATED on CapabilityIO Phase-1/3 (#4338)"
+    claim_ceiling_ref: ceiling.mechanism_with_named_gate
+    claim_ceiling: >-
+      State the gate explicitly; the tested core is claimable as mechanism-with-named-gate;
+      'swap without losing context' planned until exercised against a real harness swap.
+      BANNED: 'structurally cannot' formulations (plan absolute-language ban) — reworded as a
+      capability contrast, no universal negative about competitor clients.
+    evidence_level: SV
+    competitive_position: "Distinctive HN-grade planned feature; provenance stays 'x via y' legible"
+    target_surfaces: [reins-docs, readme-planned-bullet]
+    freshness_source: "trigger = CapabilityIO Phase-1/3 merge + first real harness-swap receipt"
+    freshness_ttl_s: 1800
+    stale_behavior: revert_to_planned
+
+  - value_proposition_id: portable-kernel-kit
+    rank: 37
+    implementation_maturity: planned
+    maturity_note: "reins --demo + formats.toml + install kit v0.1.0 present; kernel extraction/kit/release channel planned"
+    tangible_benefit: "reins --demo renders a fixture cockpit with no estate in <1s [SV]; the kit closes the installability bar"
+    priority_weight: 100
+    audience_ids: {hn_technical: 100, oss_adopters: 90, directors: 95, harness_builders: 88}
+    technical_items:
+      - "reins --demo: <1s fixture render [SV] ('stranger-usable' embargoed; cite Gate-13 sec-6 bounded statement)"
+      - "install-bar-5min: shipped, UNMEASURED; ~70% generic kernel extraction estimated, engine/instance guard pending"
+    claim_ceiling_ref: ceiling.no_minutes_to_value_until_measured
+    claim_ceiling: >-
+      No minutes-to-value claims until measured on a fresh box; no 'works with any agent' until
+      multi-backend live; spine ceiling holds until extraction lands; packaging copy waits for
+      the flip decision.
+    evidence_level: SV
+    competitive_position: "Parity-first doctrine: Agent OS/Spec Kit set the installability bar; --demo answers it today"
+    target_surfaces: [reins-readme-demo-claimable-NOW-kit-as-planned, org-profile-portfolio-partition]
+    freshness_source: "kit flip trigger = fresh-box measured install receipt + multi-backend live"
+    freshness_ttl_s: 1800
+    stale_behavior: revert_to_planned
+
+  - value_proposition_id: honesty-of-surface-benchmark
+    rank: 38
+    implementation_maturity: planned
+    tangible_benefit: "Measure CORRESPONDENCE (not resemblance) of the human-LLM integration surface"
+    priority_weight: 85
+    audience_ids: {researchers: 85, privacy_ai_safety_auditors: 82, funders: 72}
+    technical_items: ["benchmark-construct-anchor 2026-06-14; pilot numbers stale (old surface version)"]
+    claim_ceiling_ref: ceiling.construct_under_validation
+    claim_ceiling: "Construct-under-validation only; no scores, no leaderboard, no consciousness/experience framing."
+    evidence_level: DS
+    competitive_position: "Novel anchor — the field anti-measures this; publication-facing, not product copy"
+    target_surfaces: [research-ledger-docs-publication-drafts-only]
+    freshness_source: "trigger = construct validation study on current surface version"
+    freshness_ttl_s: 1800
+    stale_behavior: revert_to_planned
+
+  - value_proposition_id: labrack-rdlc-research-program
+    rank: 39
+    implementation_maturity: planned
+    maturity_note: "widened from extant custody/disposition row to the full RDLC/NDCVB/SCED ladder with per-block lit/dark status"
+    tangible_benefit: "A research-lifecycle regulator whose dark blocks say they are dark — the dark-honest rendering rule IS the value proposition"
+    priority_weight: 85
+    audience_ids: {researchers: 85, privacy_ai_safety_auditors: 82, funders: 72}
+    technical_items:
+      - "R0-R5 validity-gate ladder; R5 freeze-lock NEVER fired; G6 gate vapor; Labrack face deliberately dark"
+      - "research ledger public artifact exists"
+    claim_ceiling_ref: ceiling.lit_dark_status_per_block
+    claim_ceiling: >-
+      Planned unless receipts/model layer land; each block states lit/dark status; never claim
+      gates protect anything that has not fired.
+    evidence_level: SV
+    competitive_position: "RDLC mirrors SDLC as a second witness of the DLC functor; no comparator has a research-lifecycle regulator (docs-internal)"
+    target_surfaces: [research-ledger-readme, council-docs-publication-drafts, weblog-after-witnessed-runs]
+    freshness_source: "trigger = R5 freeze-lock first firing / receipts layer landing"
+    freshness_ttl_s: 1800
+    stale_behavior: revert_to_planned
+
+  - value_proposition_id: phone-watch
+    rank: 40
+    implementation_maturity: present
+    tangible_benefit: "Context/biometric ingestion is inspectable with explicit exclusions"
+    priority_weight: 82
+    audience_ids: {privacy_ai_safety_auditors: 82, technical_auditors: 82}
+    technical_items: ["payload schemas, permission boundaries, explicit exclusions"]
+    claim_ceiling_ref: ceiling.not_health_products
+    claim_ceiling: >-
+      Not health products; no diagnosis/efficacy claims; degradation without health claims.
+      LICENSE CAVEAT (verdict-2): watch Apache-vs-PolyForm root LICENSE and phone missing root
+      LICENSE are rebase/merge verification blockers — P2 license reconciliation required
+      before copy trusts the posture.
+    evidence_level: SV
+    competitive_position: "Boundary artifacts; privacy-scoped signal paths"
+    target_surfaces: [phone-watch-readmes-P2-rendered-preambles-adequate]
+    freshness_source: "default-branch license reconciliation verify + rendered preambles"
+    freshness_ttl_s: 2592000
+    stale_behavior: block_public_current
+
+  - value_proposition_id: officium
+    rank: 41
+    implementation_maturity: present
+    tangible_benefit: "Management context prepared without people-evaluation claims"
+    priority_weight: 82
+    audience_ids: {governance_auditors: 82, management_reviewers: 40}
+    technical_items: ["Officium README, codemeta, boundary docs"]
+    claim_ceiling_ref: ceiling.not_hr_saas
+    claim_ceiling: "Not HR SaaS, advice engine, or adoption surface; single-operator apparatus."
+    evidence_level: SV
+    competitive_position: "Boundary-discipline exhibit only"
+    target_surfaces: [officium-readme-P1-rendered-preamble-adequate]
+    freshness_source: "rendered preamble verify"
+    freshness_ttl_s: 2592000
+    stale_behavior: block_public_current
+
+  - value_proposition_id: assets-mirror
+    rank: 42
+    implementation_maturity: present
+    tangible_benefit: "Public pages reuse approved assets with stable URLs and notices"
+    priority_weight: 82
+    audience_ids: {license_auditors: 82, downstream_web: 50}
+    technical_items: ["_manifest.yaml, _NOTICES.md, Pages mirror"]
+    claim_ceiling_ref: ceiling.per_asset_rights
+    claim_ceiling: "Per-asset rights only; mirror is not source of truth."
+    evidence_level: SV
+    competitive_position: "n/a"
+    target_surfaces: [assets-readme-notices-P1]
+    freshness_source: "_manifest.yaml validation"
+    freshness_ttl_s: 2592000
+    stale_behavior: block_public_current
+
+  - value_proposition_id: tri-audience-projection
+    rank: 43
+    implementation_maturity: planned
+    tangible_benefit: "One substrate projected to multiple consent-bounded constituencies (operator/yard/substrate)"
+    priority_weight: 85
+    audience_ids: {researchers: 85, privacy_ai_safety_auditors: 82}
+    technical_items: ["1.5 of 3 projections shipped; invariant checked on every decision"]
+    claim_ceiling_ref: ceiling.docs_level_until_two_projections
+    claim_ceiling: "Docs-level only until >=2 projections ship; a design-stage cell can never 'exceed'."
+    evidence_level: DC
+    comparative_claims:
+      - {claim: "no competitor projects one state to multiple consent-bounded constituencies (benchmark Layer-2 dim 1)", evidence_level: DC, scout_date: "2026-06-30", status: docs_internal}
+    competitive_position: "Docs-internal until pinned"
+    target_surfaces: [docs-only]
+    freshness_source: "trigger = second projection shipped"
+    freshness_ttl_s: 1800
+    stale_behavior: revert_to_planned
+
+  - value_proposition_id: coord-dashboard
+    rank: 44
+    implementation_maturity: present
+    tangible_benefit: "Readiness and receipts inspectable without treating UI as authority (private/V0)"
+    priority_weight: 82
+    audience_ids: {technical_auditors: 82, operators: 40}
+    technical_items: ["coord README + source labels"]
+    claim_ceiling_ref: ceiling.ui_not_authority
+    claim_ceiling: "UI state is not authority; mutating controls route through governed dispatch/claim paths."
+    evidence_level: SV
+    evidence_visibility: private_repo
+    competitive_position: "n/a (private)"
+    target_surfaces: [NONE-public-until-readiness-cleanup-P2, correctly-omitted-from-org-profile-spine-should-match-D9]
+    freshness_source: "readiness cleanup decision"
+    freshness_ttl_s: 1800
+    stale_behavior: block_placement
+
+  - value_proposition_id: n-dlc-generality
+    rank: 45
+    implementation_maturity: planned
+    tangible_benefit: "Two lifecycles instantiated (SDLC+RDLC); the set is open; honest-dark-per-tenant law shipped as guards"
+    priority_weight: 88
+    audience_ids: {harness_builders: 88, researchers: 85}
+    technical_items: ["DLC-essence functor + 9 invariants; LDLC design-only; MDLC dark until M-instrument"]
+    claim_ceiling_ref: ceiling.no_lifecycle_generality
+    claim_ceiling: >-
+      Non-negotiable: no full-lifecycle-generality claims. Claimable: 'two lifecycles
+      instantiated; the set is open'; the honest-dark-per-tenant law is describable now.
+    evidence_level: DS
+    competitive_position: "Own-paradigm generality thesis; minimal evidence = a second n-DLC end-to-end"
+    target_surfaces: [docs-research-surfaces-only]
+    freshness_source: "trigger = second n-DLC running end-to-end"
+    freshness_ttl_s: 1800
+    stale_behavior: revert_to_planned
+
+  - value_proposition_id: hrl-commercial-ladder
+    rank: 46
+    implementation_maturity: planned
+    tangible_benefit: "Dependency-ordered commercialization rungs behind a fail-closed bridge"
+    priority_weight: 95
+    audience_ids: {directors: 95, bsl_evaluators: 78, funders: 72}
+    technical_items: ["hrl-commercialization-option-matrix-2026-06-11 (private_planning); 7 rungs; HRL/Alliant bridge manual fail-closed"]
+    claim_ceiling_ref: ceiling.free_rungs_only
+    claim_ceiling: >-
+      Only free rungs (agentgov package, spec/templates) as current copy; paid offers as
+      planned ONLY after the sales/support workflow decision; Alliant NEVER named or implied;
+      no staffed-support claims.
+    evidence_level: DS
+    evidence_visibility: vault
+    competitive_position: "Vibe Kanban shutdown supports the fail-closed monetization posture"
+    target_surfaces: [essentially-none-now-offer-rail-governance-owns-future-placement]
+    freshness_source: "sales/support workflow decision"
+    freshness_ttl_s: 1800
+    stale_behavior: block_placement
+
+  - value_proposition_id: mondlc-money-paths
+    rank: 47
+    implementation_maturity: planned
+    tangible_benefit: "Explicit exclusion row: monetization copy routes to offer-rail governance — registry completeness without forbidden copy"
+    priority_weight: 72
+    audience_ids: {funders: 72}
+    technical_items: ["all REQs status:captured; standing DO-NOT-ACTIVATE-EXTERNAL critic; may_monetize:false gate posture"]
+    claim_ceiling_ref: ceiling.no_public_copy
+    claim_ceiling: "NO public copy. The no-perk support page is the only public artifact."
+    evidence_level: DS
+    competitive_position: "n/a"
+    target_surfaces: [NONE]
+    freshness_source: "offer-rail governance decision"
+    freshness_ttl_s: 1800
+    stale_behavior: block_placement
