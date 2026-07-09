@@ -546,8 +546,12 @@ def _parse_utc(value: str) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def _utc_seconds(value: datetime) -> datetime:
+    return value.astimezone(UTC).replace(microsecond=0)
+
+
 def _iso_z_seconds(value: datetime) -> str:
-    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return _utc_seconds(value).isoformat().replace("+00:00", "Z")
 
 
 def _reason_code(reason: str) -> str:
@@ -997,6 +1001,7 @@ def active_claude_admission_receipts(
         if observed_at > now:
             reject(path, "observed_at is in the future")
             continue
+        observed_at = _utc_seconds(observed_at)
         try:
             stale_after_seconds = int(fields.get("stale_after_seconds", "").strip())
         except ValueError:

@@ -313,6 +313,22 @@ def test_claude_secretish_regex_is_consistent_across_receipt_layers() -> None:
     )
 
 
+def test_claude_account_live_quota_suffix_tokens_are_consistent_across_layers() -> None:
+    telemetry_namespace = runpy.run_path(str(SCRIPT))
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.platform_capability_registry import _ref_tokens
+    from shared.quota_spend_ledger import (
+        CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX as LEDGER_SUFFIX,
+    )
+
+    suffix_tokens = ("account", "live", "quota", "observed")
+    assert _ref_tokens(telemetry_namespace["CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX"]) == (
+        suffix_tokens
+    )
+    assert _ref_tokens(LEDGER_SUFFIX) == suffix_tokens
+
+
 def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None:
     result, out = _run_writer(tmp_path)
 
@@ -1050,6 +1066,24 @@ def test_fractional_second_claude_admission_ref_is_normalized_for_ledger(
     from shared.quota_spend_ledger import _is_claude_admission_evidence_ref
 
     assert _is_claude_admission_evidence_ref(ref) is True
+
+
+def test_fractional_second_claude_admission_expires_at_normalized_boundary(
+    tmp_path: Path,
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, observed_at="2026-06-09T23:55:00.123Z")
+
+    result, out = _run_writer(tmp_path, now="2026-06-10T00:10:00Z")
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "unknown"
+    assert any(":ignored:receipt-expired" in ref for ref in snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["claude_admissions"] == 0
+    assert summary["claude_ignored_admissions"] == 1
 
 
 def test_claude_admission_rejects_lane_presence_evidence_ref(tmp_path: Path) -> None:
