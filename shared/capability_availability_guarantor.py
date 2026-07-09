@@ -31,6 +31,7 @@ from shared.platform_capability_registry import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID = "claude.headless.full"
 
 
 class _AvailabilityModel(BaseModel):
@@ -323,8 +324,92 @@ class CodexOAuthRefreshStrategy:
         )
 
 
+class SubscriptionRefreshStrategy:
+    """Explicit non-refreshable strategy for ``auth_surface=subscription`` routes.
+
+    Subscription quota is NOT a programmatically refreshable credential like an OAuth token — no
+    call mints headroom, and
+    account-live subscription telemetry (OTel usage/cost) is not yet wired
+    (CASE-CAPACITY-ROUTING-001 R2, "use receipts and manual refresh until observable"). Account-live
+    quota for ``claude.headless.full`` is proven ONLY by a short-lived, sanitized admission receipt
+    (``scripts/hapax-claude-subscription-quota-admission`` folded into the quota-spend ledger by
+    ``scripts/hapax-quota-telemetry-writer``), NEVER inferred from a running lane's tmux/session
+    presence. Other subscription routes must register their own provider/route-specific admission
+    writer before this strategy can name an executable remediation.
+
+    So this strategy is deliberately DEFERRED-only: it never executes a side effect and never
+    attests on its own (attestation stays with ``_account_live_quota_attested`` reading the ledger's
+    ``account-live-quota:observed`` evidence ref). Its whole job is to replace the bare
+    ``refresh_strategy_absent:subscription`` with a typed, governed remediation naming the receipt
+    path. Fail-closed: absent a fresh admission receipt the route stays degraded with these typed
+    reasons rather than a missing-strategy hole.
+    """
+
+    auth_surface = AuthSurface.SUBSCRIPTION
+    strategy_id = "subscription-account-live-quota-admission"
+
+    def refresh(
+        self,
+        route: PlatformCapabilityRoute,
+        freshness: RouteFreshnessCheck,
+        *,
+        now: datetime,
+    ) -> RefreshOutcome:
+        if route.route_id != CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID:
+            return RefreshOutcome(
+                status=RefreshStatus.DEFERRED,
+                strategy_id=self.strategy_id,
+                reason_codes=(
+                    "subscription_quota_not_programmatically_refreshable",
+                    "subscription_admission_writer_route_unsupported",
+                    "provider_specific_subscription_admission_required",
+                ),
+                evidence_refs=tuple(
+                    dict.fromkeys(
+                        [
+                            f"platform-capability-registry:{route.route_id}:auth_surface:subscription",
+                            f"policy:subscription_admission_writer_route_unsupported:{route.platform.value}",
+                            *freshness.evidence_refs,
+                        ]
+                    )
+                ),
+                remediation_commands=(
+                    f"register subscription quota admission writer for {route.route_id}",
+                    "scripts/hapax-quota-telemetry-writer --json",
+                ),
+            )
+
+        admission_command = (
+            "scripts/hapax-claude-subscription-quota-admission "
+            "--evidence-ref claude-subscription-headroom-observed-$(date -u +%Y%m%dt%H%M%Sz) "
+            "--json"
+        )
+        telemetry_command = "scripts/hapax-quota-telemetry-writer --json"
+        return RefreshOutcome(
+            status=RefreshStatus.DEFERRED,
+            strategy_id=self.strategy_id,
+            reason_codes=(
+                "subscription_quota_not_programmatically_refreshable",
+                "account_live_quota_requires_admission_receipt",
+                "account_live_subscription_quota_not_lane_presence",
+                "availability_recheck_required_after_admission_receipt",
+            ),
+            evidence_refs=tuple(
+                dict.fromkeys(
+                    [
+                        f"platform-capability-registry:{route.route_id}:auth_surface:subscription",
+                        "policy:account_live_subscription_quota_not_lane_presence",
+                        f"script:{admission_command}",
+                        *freshness.evidence_refs,
+                    ]
+                )
+            ),
+            remediation_commands=(admission_command, telemetry_command),
+        )
+
+
 def default_refresh_strategy_registry() -> RefreshStrategyRegistry:
-    return RefreshStrategyRegistry((CodexOAuthRefreshStrategy(),))
+    return RefreshStrategyRegistry((CodexOAuthRefreshStrategy(), SubscriptionRefreshStrategy()))
 
 
 def evaluate_registry_availability(
@@ -512,11 +597,12 @@ def _account_live_quota_attested(
     if route.capacity_pool is not CapacityPool.SUBSCRIPTION_QUOTA:
         return True
     return any(
-        _account_live_quota_observed_ref(ref) for ref in freshness.evidence_refs
+        _account_live_quota_observed_ref(ref, route_id=route.route_id)
+        for ref in freshness.evidence_refs
     ) or _current_session_subscription_quota_attested(route, freshness)
 
 
-def _account_live_quota_observed_ref(ref: str) -> bool:
+def _account_live_quota_observed_ref(ref: str, *, route_id: str | None = None) -> bool:
     tokens = _ref_tokens(ref)
     if not tokens:
         return False
@@ -539,10 +625,9 @@ def _account_live_quota_observed_ref(ref: str) -> bool:
     }
     if any(token in negative_tokens for token in tokens):
         return False
-    allowed_suffixes = (
-        ("account", "live", "quota", "observed"),
-        ("quota", "status", "observed"),
-    )
+    allowed_suffixes = [("account", "live", "quota", "observed")]
+    if normalize_route_id(route_id or "") != CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID:
+        allowed_suffixes.append(("quota", "status", "observed"))
     return any(tokens[-len(suffix) :] == suffix for suffix in allowed_suffixes)
 
 
@@ -703,6 +788,7 @@ __all__ = [
     "RefreshStrategy",
     "RefreshStrategyRegistry",
     "RegistryAvailabilityCheck",
+    "SubscriptionRefreshStrategy",
     "availability_dispatch_reason_codes",
     "default_refresh_strategy_registry",
     "evaluate_registry_availability",
