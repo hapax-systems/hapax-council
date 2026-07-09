@@ -1339,3 +1339,78 @@ def test_haiku_and_local_tool_routes_are_required_and_routable() -> None:
     leaves = materialize_descriptor_leaves(registry)
     variant_leaf = leaves["local_tool.local.worker#worker@quantization_exl3_5_0bpw"]
     assert variant_leaf.quantization.value == "exl3_5_0bpw"
+
+
+def test_every_m_crossing_variant_with_inherited_scores_carries_the_boundary_blocker() -> None:
+    # Class-level pin, not a name list: any variant whose knobs_override touches the model
+    # axis while inheriting route scores must carry the explicit blocker, so a new variant
+    # cannot re-arm the silent-downgrade path.
+    from shared.platform_capability_registry import (
+        _MODEL_BOUNDARY_KNOBS,
+        SCORES_INHERITED_ACROSS_MODEL_BOUNDARY,
+    )
+
+    registry = load_platform_capability_registry()
+    crossing_with_inheritance = [
+        variant
+        for route in registry.routes
+        for variant in route.descriptor_variants
+        if variant.knobs_override.keys() & _MODEL_BOUNDARY_KNOBS
+        and variant.scores_inherited_from is not None
+    ]
+    # the seed registry's known M-crossing variants — the armed-path population
+    assert {v.variant_id for v in crossing_with_inheritance} >= {
+        "agy@claude-sonnet-4.6-thinking",
+        "agy@claude-opus-4.6-thinking",
+        "agy@gpt-oss-120b-medium",
+        "agy@gemini-3.5-flash-low",
+        "agy@gemini-3.5-flash-medium",
+        "agy@gemini-3.5-flash-high",
+        "worker@quantization_exl3_5_0bpw",
+    }
+    for variant in crossing_with_inheritance:
+        assert SCORES_INHERITED_ACROSS_MODEL_BOUNDARY in variant.blocked_reasons, variant.variant_id
+
+
+def test_variant_inheriting_scores_across_model_boundary_requires_blocker() -> None:
+    from shared.platform_capability_registry import (
+        SCORES_INHERITED_ACROSS_MODEL_BOUNDARY,
+        DescriptorVariant,
+    )
+
+    # RED: M-crossing inheritance without the blocker fails validation (fail-closed)
+    with pytest.raises(ValidationError, match="model boundary"):
+        DescriptorVariant(
+            variant_id="route@other-model",
+            knobs_override={"model_id": "other-model"},
+            scores_inherited_from="some.route",
+        )
+    with pytest.raises(ValidationError, match="model boundary"):
+        DescriptorVariant(
+            variant_id="route@requantized",
+            knobs_override={"quantization": "exl3_5_0bpw"},
+            scores_inherited_from="some.route",
+        )
+
+    # GREEN: the blocker satisfies the guard
+    blocked = DescriptorVariant(
+        variant_id="route@other-model",
+        knobs_override={"model_id": "other-model"},
+        scores_inherited_from="some.route",
+        blocked_reasons=[SCORES_INHERITED_ACROSS_MODEL_BOUNDARY],
+    )
+    assert SCORES_INHERITED_ACROSS_MODEL_BOUNDARY in blocked.blocked_reasons
+
+    # GREEN: M-crossing without inheritance needs no blocker (per-leaf scores are legal)
+    DescriptorVariant(
+        variant_id="route@other-model-scored",
+        knobs_override={"model_id": "other-model"},
+        score_delta={"implementation": 3},
+    )
+
+    # GREEN: inheritance without an M-crossing knob stays legal (same-model leaves)
+    DescriptorVariant(
+        variant_id="route@effort_low",
+        knobs_override={"effort": "low"},
+        scores_inherited_from="some.route",
+    )

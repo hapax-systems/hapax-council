@@ -3353,7 +3353,10 @@
           },
           "score_delta": {},
           "scores_inherited_from": "agy.review.direct",
-          "blocked_reasons": ["engine_exact_token_smoke_failed"]
+          "blocked_reasons": [
+            "engine_exact_token_smoke_failed",
+            "scores_inherited_across_model_boundary"
+          ]
         },
         {
           "variant_id": "agy@gemini-3.5-flash-medium",
@@ -3363,7 +3366,10 @@
           },
           "score_delta": {},
           "scores_inherited_from": "agy.review.direct",
-          "blocked_reasons": ["engine_exact_token_smoke_failed"]
+          "blocked_reasons": [
+            "engine_exact_token_smoke_failed",
+            "scores_inherited_across_model_boundary"
+          ]
         },
         {
           "variant_id": "agy@gemini-3.5-flash-high",
@@ -3373,7 +3379,10 @@
           },
           "score_delta": {},
           "scores_inherited_from": "agy.review.direct",
-          "blocked_reasons": ["engine_exact_token_smoke_failed"]
+          "blocked_reasons": [
+            "engine_exact_token_smoke_failed",
+            "scores_inherited_across_model_boundary"
+          ]
         },
         {
           "variant_id": "agy@gemini-3.1-pro-high",
@@ -3392,7 +3401,7 @@
           },
           "score_delta": {},
           "scores_inherited_from": "agy.review.direct",
-          "blocked_reasons": []
+          "blocked_reasons": ["scores_inherited_across_model_boundary"]
         },
         {
           "variant_id": "agy@claude-opus-4.6-thinking",
@@ -3402,7 +3411,7 @@
           },
           "score_delta": {},
           "scores_inherited_from": "agy.review.direct",
-          "blocked_reasons": []
+          "blocked_reasons": ["scores_inherited_across_model_boundary"]
         },
         {
           "variant_id": "agy@gpt-oss-120b-medium",
@@ -3412,7 +3421,7 @@
           },
           "score_delta": {},
           "scores_inherited_from": "agy.review.direct",
-          "blocked_reasons": []
+          "blocked_reasons": ["scores_inherited_across_model_boundary"]
         }
       ],
       "auth_surface": "operator_session",
@@ -4262,7 +4271,7 @@
           },
           "score_delta": {},
           "scores_inherited_from": "local_tool.local.worker",
-          "blocked_reasons": []
+          "blocked_reasons": ["scores_inherited_across_model_boundary"]
         }
       ],
       "auth_surface": "local",

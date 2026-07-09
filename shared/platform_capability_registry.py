@@ -82,6 +82,12 @@ ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     AGY_REVIEW_ROUTE_ID: AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER,
     GLMCP_REVIEW_ROUTE_ID: GLMCP_REVIEW_ADMISSION_BLOCKER,
 }
+SCORES_INHERITED_ACROSS_MODEL_BOUNDARY = "scores_inherited_across_model_boundary"
+#: knobs_override keys that change the model axis of the subject tuple. Route-level scores
+#: describe the route's default model; a leaf that swaps the model (or its quantization)
+#: cannot inherit them — selection on inherited scores would execute a different model than
+#: the one that earned them (the silent-downgrade path).
+_MODEL_BOUNDARY_KNOBS = frozenset({"model_id", "quantization"})
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
 
 
@@ -385,6 +391,26 @@ class DescriptorVariant(StrictModel):
     score_delta: dict[str, int] = Field(default_factory=dict)
     scores_inherited_from: str | None = None
     blocked_reasons: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _no_score_inheritance_across_model_boundary(self) -> Self:
+        # Route-level scores describe the route's default model; a leaf whose
+        # knobs_override swaps the model axis cannot inherit them — leaf selection would
+        # score one model and execute another (the silent-downgrade path). Fail closed:
+        # the validator demands the explicit blocker, it never writes one.
+        crossing = self.knobs_override.keys() & _MODEL_BOUNDARY_KNOBS
+        if (
+            crossing
+            and self.scores_inherited_from is not None
+            and SCORES_INHERITED_ACROSS_MODEL_BOUNDARY not in self.blocked_reasons
+        ):
+            raise ValueError(
+                f"variant {self.variant_id!r} inherits scores across a model boundary "
+                f"(knobs_override touches {sorted(crossing)}); it must carry the "
+                f"{SCORES_INHERITED_ACROSS_MODEL_BOUNDARY!r} blocked_reason until "
+                "witnessed per-leaf deltas exist"
+            )
+        return self
 
 
 class CapabilityShapeDescriptor(StrictModel):

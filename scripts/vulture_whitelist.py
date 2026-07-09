@@ -4458,6 +4458,11 @@ from shared.platform_capability_registry import (  # noqa: E402
 
 _capadapter_descriptor_variant
 
+# Silent-downgrade disarm (harness-implications rank 7, 2026-07-09): the rule-1
+# inheritance guard is a Pydantic model_validator hook invoked at construction;
+# vulture cannot see model_validator invocation.
+_capadapter_descriptor_variant._no_score_inheritance_across_model_boundary
+
 # hooks/scripts/no-dev-on-podium-guard.sh invokes decide_block via an inline
 # `python3 -c` dynamic entrypoint outside vulture's scanned call graph
 # (the PreToolUse no-dev-on-podium enforcement). D-migration-20260619.
