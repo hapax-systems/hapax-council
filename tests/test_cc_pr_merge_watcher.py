@@ -544,6 +544,32 @@ class TestCloseOnPrMergeOptOut:
         # The skip is intentional, not a failure: the cursor still advances.
         assert watcher.read_cursor(cursor) == datetime(2026, 4, 26, 12, tzinfo=UTC)
 
+    def test_body_only_mention_does_not_opt_out(self, tmp_path: Path) -> None:
+        """The opt-out is a FRONTMATTER contract: a body/session-log line quoting
+        `close_on_pr_merge: false` must not skip the close (parser scoped to the
+        leading --- block; fail-safe default preserved)."""
+        vault = _make_vault(tmp_path)
+        note = _write_note(vault, task_id="task-A", pr=100)
+        body_mention = note.read_text() + "\n- note: set close_on_pr_merge: false next time\n"
+        note.write_text(body_mention)
+        assert not watcher.declines_close_on_pr_merge(body_mention)
+        cursor = tmp_path / "cursor.txt"
+        watcher.write_cursor(cursor, datetime(2026, 4, 26, 0, tzinfo=UTC))
+        _make_cc_close(tmp_path)
+
+        runner = _FakeRunner()
+        runner.gh_payload = [
+            {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/a"},
+        ]
+
+        counters = watcher.run_watcher(
+            cursor_path=cursor,
+            vault_root=vault,
+            repo_root=tmp_path,
+            runner=runner,
+        )
+        assert counters == {"merged": 1, "linked": 1, "closed": 1, "failed": 0, "skipped": 0}
+
     def test_note_with_other_value_still_closes(self, tmp_path: Path) -> None:
         """Any value other than false (or absence) keeps the auto-close default."""
         vault = _make_vault(tmp_path)

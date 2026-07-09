@@ -218,11 +218,21 @@ class LinkedTask:
 _CLOSE_ON_PR_MERGE_FALSE_RE = re.compile(
     r"^close_on_pr_merge:\s*(?i:false)\s*$", flags=re.MULTILINE
 )
+_FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---(?:\n|\Z)", flags=re.DOTALL)
 
 
 def declines_close_on_pr_merge(text: str) -> bool:
-    """True when the note frontmatter opts out of merge-triggered auto-close."""
-    return bool(_CLOSE_ON_PR_MERGE_FALSE_RE.search(text))
+    """True when the note FRONTMATTER opts out of merge-triggered auto-close.
+
+    Scoped to the leading ``---``-delimited block only: a body or session-log
+    line quoting ``close_on_pr_merge: false`` must not opt the task out — the
+    fail-safe auto-close default holds for notes without frontmatter or with
+    the field only mentioned in prose.
+    """
+    frontmatter = _FRONTMATTER_RE.match(text)
+    if frontmatter is None:
+        return False
+    return bool(_CLOSE_ON_PR_MERGE_FALSE_RE.search(frontmatter.group(1)))
 
 
 def read_cursor(cursor_path: Path) -> datetime:

@@ -500,7 +500,7 @@ The phenomenological literature on neurodivergent experience (Bervoets & Hens, 2
 
 4. **Match the operator's perceptual style, not pathology.** The system should be detail-oriented and attentionally variable without being rigid or distractible. It should embody the *strengths* of the operator's cognitive profile while compensating for the *challenges*.
 
-5. **Noise as accommodation.** The stochastic element should be understood as an ADHD accommodation: it provides the variety and novelty that keeps the system (and its interaction with the operator) within the optimal arousal band.
+5. **Noise as accommodation.** The stochastic element should be understood as a stimulation accommodation: it provides the variety and novelty that keeps the system (and its interaction with the operator) within the optimal arousal band.
 
 ---
 
