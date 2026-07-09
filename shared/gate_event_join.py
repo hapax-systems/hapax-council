@@ -17,7 +17,7 @@ from typing import Any
 
 from shared.gate_log import DEFAULT_GATE_LOG, GateEvent, GateResult, GateType, append_gate_event
 from shared.gate_outcome_producer import build_outcome_gate_event
-from shared.route_metadata_schema import stable_payload_hash
+from shared.route_metadata_schema import DemandVector, stable_payload_hash
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,7 @@ def emit_witnessed_outcome(
     *,
     gate_result: GateResult,
     gate_type: GateType,
+    demand_vector: DemandVector | None = None,
     p_correct: float | None = None,
     path: Path | str | None = None,
 ) -> GateEvent | None:
@@ -67,7 +68,7 @@ def emit_witnessed_outcome(
     class, and requirement vector, then appends to ``gate-events.jsonl`` via the
     shared gate log writer.
     """
-    task_hash = stable_payload_hash(dict(task_fields))
+    task_hash = _join_task_hash(task_fields, demand_vector)
     context = recover_admission_context(task_hash, path=path)
     if context is None:
         return None
@@ -77,6 +78,7 @@ def emit_witnessed_outcome(
         route=context.route,
         gate_result=gate_result,
         gate_type=gate_type,
+        demand_vector=demand_vector,
         p_correct=p_correct,
     ).model_copy(
         update={
@@ -87,6 +89,14 @@ def emit_witnessed_outcome(
     )
     append_gate_event(event, path=path)
     return event
+
+
+def _join_task_hash(task_fields: Mapping[str, Any], demand_vector: DemandVector | None) -> str:
+    return (
+        demand_vector.work_item.frontmatter_hash
+        if demand_vector is not None
+        else stable_payload_hash(dict(task_fields))
+    )
 
 
 def _iter_gate_payloads(*, path: Path | str | None = None) -> Iterator[Mapping[str, Any]]:

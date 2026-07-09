@@ -65,13 +65,51 @@ present, else `stable_payload_hash(dict(task_fields))` — `gate_event_producer.
 same hash and joins cleanly. The admission event already carries the route, routing_class, and
 requirement_vector the outcome event must mirror.
 
-**Verified against the live log** (`~/.cache/hapax/sdlc-routing/gate-events.jsonl`, 228 events):
-every admission event carries exactly the four recoverable fields — `route`, `routing_class`,
-`requirement_vector`, `task_hash` — plus `fit_score`, `gate_type`, `gate_result`, `provenance`,
-`p_correct`, `learning_eligibility`, `ts`. ALL 228 are `gate_type="none"` / `provenance!="witnessed"`
-(224 `"unknown"` from the hapax-methodology-dispatch path + 4 null), confirming the plan's central
-premise: zero learning-eligible outcomes today, and every admission event is a recoverable join
-target.
+**Verified against the live log** (`~/.cache/hapax/sdlc-routing/gate-events.jsonl`, point-in-time
+recheck during 2026-07-09 PR recovery): the log had 812 rows, all `gate_type="none"` /
+`provenance!="witnessed"` (808 `"unknown"` from the hapax-methodology-dispatch path + 4 null), and
+zero witnessed outcomes. The number will drift because the SDLC loop is always running; the durable
+claim is that the plane is producing admission observations but no learning-eligible outcome events
+yet. That recheck also found 790 full join contexts and 22 legacy/incomplete admission rows with an
+empty requirement vector (2 of those also lack `task_hash`), so the helper must tolerate incomplete
+rows and recover only full join contexts instead of assuming every live row is usable.
+
+Recheck the live-log census with:
+
+```
+python - <<'PY'
+import json
+from collections import Counter
+from pathlib import Path
+
+rows = [
+    json.loads(line)
+    for line in Path("~/.cache/hapax/sdlc-routing/gate-events.jsonl").expanduser().read_text().splitlines()
+    if line.strip()
+]
+print("events", len(rows))
+print("gate_type", Counter(row.get("gate_type") for row in rows))
+print("provenance", Counter(row.get("provenance") for row in rows))
+print("witnessed", sum(row.get("provenance") == "witnessed" for row in rows))
+incomplete = Counter(
+    tuple(
+        field
+        for field in ("route", "routing_class", "requirement_vector", "task_hash")
+        if not row.get(field)
+    )
+    for row in rows
+)
+print("full_join_contexts", incomplete.pop((), 0))
+print("incomplete_join_contexts", incomplete)
+PY
+```
+
+Recheck the producer caller surface with:
+
+```
+rg -n "emit_witnessed_outcome|build_outcome_gate_event|emit_outcome_gate_event" \
+  --glob '*.py' --glob '!tests/**'
+```
 
 **The admission↔outcome discriminator (pinned from the live data):** once the outcome producer is
 live, BOTH event kinds share the same `task_hash`, so `recover_admission_context` cannot match on
