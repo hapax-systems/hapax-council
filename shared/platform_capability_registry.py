@@ -69,6 +69,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "glmcp.review.direct",
         "local_tool.local.worker",
         "vibe.headless.full",
+        "grok.headless.full",
     }
 )
 
@@ -103,6 +104,7 @@ class Platform(StrEnum):
     GLMCP = "glmcp"
     LOCAL_TOOL = "local_tool"
     VIBE = "vibe"
+    GROK = "grok"
 
 
 class Mode(StrEnum):
@@ -188,6 +190,7 @@ class ModelId(StrEnum):
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
+    GROK_BUILD = "grok-build"
     UNKNOWN = "unknown"
 
 

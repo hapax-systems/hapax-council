@@ -44,7 +44,7 @@
   },
   "$defs": {
     "platform": {
-      "enum": ["agy", "api", "claude", "codex", "gemini", "glmcp", "local_tool", "vibe"]
+      "enum": ["agy", "api", "claude", "codex", "gemini", "glmcp", "grok", "local_tool", "vibe"]
     },
     "mode": {
       "enum": ["headless", "interactive", "local", "receipt_only", "review"]
@@ -470,7 +470,7 @@
         "gemini-3.5-flash",
         "z_ai-glm-5",
         "z_ai-glm-5.2",
-        "unknown"
+        "grok-build", "unknown"
       ]
     },
     "effort": {
