@@ -147,6 +147,9 @@ SUBSCRIPTION_ROUTES = {
     "glmcp": "glmcp.review.direct",
 }
 CLAUDE_SUBSCRIPTION_ROUTES = ("claude.headless.full", "claude.review.opus")
+CLAUDE_HEADLESS_ROLES = frozenset(
+    {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
+)
 
 SUBSCRIPTION_PROVIDERS = {
     "agy": "google-antigravity-cli-agy",
@@ -493,6 +496,7 @@ class AgyAdmissionScan:
 class ClaudeAdmission:
     route_id: str
     evidence_ref: str
+    observed_at: datetime
     fresh_until: datetime
 
 
@@ -520,6 +524,8 @@ class QuotaWall:
     receipt_label: str
     failure_class: str
     rate_limit_type: str
+    detected_at: datetime | None
+    resets_at: datetime | None
     route_id: str | None = None
 
 
@@ -560,6 +566,13 @@ def role_platform(role: str) -> str:
     if normalized.startswith("vbe-") or normalized.startswith("vibe"):
         return "vibe"
     return "claude"
+
+
+def claude_wall_route_id_for_role(role: str) -> str | None:
+    normalized = role.lower().replace("_", "-")
+    if normalized in CLAUDE_HEADLESS_ROLES:
+        return SUBSCRIPTION_ROUTES["claude"]
+    return None
 
 
 def _parse_flat_yaml(text: str) -> dict[str, str]:
@@ -810,11 +823,11 @@ def active_quota_walls(
             continue
         role = fields.get("role") or path.name.removesuffix("-quota-wall.yaml")
         resets_at = _parse_utc(fields.get("resets_at", ""))
+        detected_at = _parse_utc(fields.get("detected_at", ""))
         if resets_at is not None:
             if resets_at <= now:
                 continue
         else:
-            detected_at = _parse_utc(fields.get("detected_at", ""))
             if detected_at is None or now - detected_at > WALL_WITHOUT_RESET_TTL:
                 continue
         platform = role_platform(role)
@@ -829,7 +842,10 @@ def active_quota_walls(
         rate_limit_type = fields.get("rate_limit_type") or "unknown"
         route_id = fields.get("route_id") or None
         if platform == "claude":
-            if route_id and route_id not in CLAUDE_SUBSCRIPTION_ROUTES:
+            derived_route_id = claude_wall_route_id_for_role(role)
+            if derived_route_id is not None:
+                route_id = derived_route_id
+            elif route_id and route_id not in CLAUDE_SUBSCRIPTION_ROUTES:
                 route_id = None
         elif route_id and route_id != SUBSCRIPTION_ROUTES.get(platform):
             route_id = None
@@ -844,6 +860,8 @@ def active_quota_walls(
                 receipt_label=path.name,
                 failure_class=failure_class,
                 rate_limit_type=rate_limit_type,
+                detected_at=detected_at,
+                resets_at=resets_at,
                 route_id=route_id,
             )
         )
@@ -1005,18 +1023,49 @@ def _ref_tokens(evidence_ref: str) -> tuple[str, ...]:
     return tuple(token for token in normalized.split("-") if token)
 
 
-def _quota_walls_for_route(walls: list[QuotaWall], route_id: str) -> list[QuotaWall]:
-    """Claude subscription walls are shared-pool evidence across Claude routes.
+def _active_quota_wall(wall: QuotaWall, *, now: datetime) -> bool:
+    if wall.resets_at is not None:
+        return wall.resets_at > now
+    return wall.detected_at is not None and now - wall.detected_at <= WALL_WITHOUT_RESET_TTL
 
-    ``route_id`` remains in the evidence ref to preserve where the wall was
-    observed, but the Anthropic subscription quota pool is account-level: a
-    live wall on one Claude subscription route inhibits every route in that
-    provider pool until the wall expires or a new account-live headroom receipt
-    is minted after the wall.
+
+def _claude_shared_pool_quota_walls(
+    walls: list[QuotaWall],
+    *,
+    now: datetime,
+) -> list[QuotaWall]:
+    """Return active Claude subscription walls that inhibit the shared Claude pool.
+
+    A wall's ``route_id`` remains in the evidence ref to preserve where it was
+    observed, but the Anthropic subscription quota pool is account-level: a live
+    wall on one Claude subscription route inhibits every route in that provider
+    pool until the wall expires or a new account-live headroom receipt is minted
+    after the wall.
     """
 
-    _ = route_id
-    return walls
+    return [wall for wall in walls if _active_quota_wall(wall, now=now)]
+
+
+def _claude_after_wall_admissions(
+    admissions: list[ClaudeAdmission],
+    walls: list[QuotaWall],
+) -> list[ClaudeAdmission]:
+    """Return admissions observed after every active shared-pool wall."""
+
+    if not admissions or not walls:
+        return []
+    wall_recovery_times: list[datetime] = []
+    for wall in walls:
+        if wall.resets_at is not None:
+            wall_recovery_times.append(wall.resets_at)
+        elif wall.detected_at is not None:
+            wall_recovery_times.append(wall.detected_at)
+        else:
+            return []
+    latest_wall_recovery_at = max(wall_recovery_times)
+    return [
+        admission for admission in admissions if admission.observed_at > latest_wall_recovery_at
+    ]
 
 
 def _claude_ignored_receipts_for_route(ignored_refs: list[str], route_id: str) -> list[str]:
@@ -1305,6 +1354,7 @@ def active_claude_admission_receipts(
                     f"fresh_until:{_iso_z_seconds(fresh_until)}:"
                     f"{CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX}"
                 ),
+                observed_at=observed_at,
                 fresh_until=fresh_until,
             )
         )
@@ -1872,18 +1922,22 @@ def build_live_ledger(
                 )
         elif platform == "claude":
             for claude_route_id in CLAUDE_SUBSCRIPTION_ROUTES:
-                route_walls = _quota_walls_for_route(platform_walls, claude_route_id)
+                route_walls = _claude_shared_pool_quota_walls(platform_walls, now=now)
                 route_wall_evidence = [wall.evidence_ref for wall in route_walls]
                 route_admissions = [
                     admission
                     for admission in claude_platform_admissions
                     if admission.route_id == claude_route_id
                 ]
+                after_wall_admissions = _claude_after_wall_admissions(
+                    route_admissions,
+                    route_walls,
+                )
                 route_ignored = _claude_ignored_receipts_for_route(
                     claude_ignored_receipts,
                     claude_route_id,
                 )
-                if route_walls:
+                if route_walls and not after_wall_admissions:
                     state = "exhausted"
                     evidence = [*route_wall_evidence, writer_ref]
                     fresh_until = None
@@ -1893,17 +1947,27 @@ def build_live_ledger(
                         "evidence outranks stale or earlier positive headroom receipts"
                     )
                 elif route_admissions:
+                    accepted_admissions = after_wall_admissions or route_admissions
                     state = "fresh"
                     evidence = [
-                        *(admission.evidence_ref for admission in route_admissions),
+                        *(admission.evidence_ref for admission in accepted_admissions),
                         writer_ref,
                     ]
-                    fresh_until = max(admission.fresh_until for admission in route_admissions)
-                    reason = (
-                        "fresh claude subscription-quota admission receipt present; "
-                        f"{claude_route_id} account-live quota is receipt-bounded, "
-                        "not lane/session presence"
-                    )
+                    fresh_until = max(admission.fresh_until for admission in accepted_admissions)
+                    if after_wall_admissions:
+                        evidence.extend(route_wall_evidence)
+                        reason = (
+                            "fresh claude subscription-quota admission receipt observed after "
+                            "the active shared-pool wall; "
+                            f"{claude_route_id} account-live quota is receipt-bounded, "
+                            "not lane/session presence"
+                        )
+                    else:
+                        reason = (
+                            "fresh claude subscription-quota admission receipt present; "
+                            f"{claude_route_id} account-live quota is receipt-bounded, "
+                            "not lane/session presence"
+                        )
                 else:
                     state = "unknown"
                     evidence = (

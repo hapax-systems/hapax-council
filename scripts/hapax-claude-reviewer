@@ -142,10 +142,14 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
         print(
-            "hapax-claude-reviewer: claude exited nonzero; stdout omitted so quota "
-            "walls cannot be laundered into an invalid review; next action: inspect "
-            "preserved stderr/stdout diagnostics, then refresh the route-specific "
-            "Claude admission receipt if account-live quota is observed",
+            "hapax-claude-reviewer: claude exited nonzero; stdout omitted from "
+            "review output so quota walls cannot be laundered into an invalid "
+            "review; stderr above is preserved when emitted, single-line stdout "
+            "is copied only as the classifier diagnostic line above, and multiline "
+            "stdout is intentionally not preserved by this process; next action: "
+            "inspect preserved stderr and any classifier diagnostic line, then "
+            "refresh the route-specific Claude admission receipt if account-live "
+            "quota is observed",
             file=sys.stderr,
         )
         return result.returncode

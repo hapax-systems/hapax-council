@@ -1576,10 +1576,15 @@ def dispatch_reviews(
             process_output = f"reviewer process failed rc={exc.returncode}; output omitted"
             runner_stderr_excerpt = process_output
             if exc.stderr.strip():
-                quota_wall_output = reviewer_stdout_classifier_diagnostic(exc.stderr) or exc.stderr
-                quota_wall_stdout = exc.stdout
+                wrapper_stdout_diagnostic = reviewer_stdout_classifier_diagnostic(exc.stderr)
+                if wrapper_stdout_diagnostic:
+                    quota_wall_output = ""
+                    quota_wall_stdout = wrapper_stdout_diagnostic
+                    diagnostic_stdout = wrapper_stdout_diagnostic
+                else:
+                    quota_wall_output = exc.stderr
+                    quota_wall_stdout = exc.stdout
                 diagnostic_output = exc.stderr
-                diagnostic_stdout = exc.stdout
             else:
                 stdout = exc.stdout.strip()
                 quota_wall_output = stdout if stdout and "\n" not in stdout else ""

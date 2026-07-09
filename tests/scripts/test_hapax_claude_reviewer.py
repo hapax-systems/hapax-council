@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -114,6 +115,52 @@ def test_claude_reviewer_rejects_model_override(tmp_path: Path) -> None:
     assert "with --model opus" in result.stderr
 
 
+def test_claude_reviewer_missing_binary_path_is_legible(tmp_path: Path) -> None:
+    missing = tmp_path / "missing-claude"
+
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER), "--claude-bin", str(missing)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "failed to launch" in result.stderr
+    assert str(missing) in result.stderr
+    assert "HAPAX_CLAUDE_BIN" in result.stderr
+    assert "rerun the review dispatch" in result.stderr
+
+
+def test_local_claude_cli_help_documents_no_tools_surface() -> None:
+    claude_bin = os.environ.get("HAPAX_CLAUDE_BIN") or os.environ.get("CLAUDE_BIN") or "claude"
+    if shutil.which(claude_bin) is None and not Path(claude_bin).exists():
+        pytest.skip("local Claude CLI is not installed")
+
+    result = subprocess.run(
+        [claude_bin, "--help"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    help_text = result.stdout
+    normalized_help = " ".join(help_text.split())
+    assert "--tools <tools...>" in help_text
+    assert 'Use "" to disable all tools' in normalized_help
+    assert "--allowedTools" in help_text
+    assert "--disallowedTools" in help_text
+    assert "--safe-mode" in help_text
+    assert "--disable-slash-commands" in help_text
+    assert "--no-session-persistence" in help_text
+    assert "--strict-mcp-config" in help_text
+    assert '"manual"' in help_text
+
+
 def test_claude_reviewer_omits_child_stdout_on_nonzero_exit(tmp_path: Path) -> None:
     fake = tmp_path / "claude"
     fake.write_text(
@@ -139,6 +186,7 @@ def test_claude_reviewer_omits_child_stdout_on_nonzero_exit(tmp_path: Path) -> N
     assert "rate limited" in result.stderr
     assert "claude stdout diagnostic for classifier" in result.stderr
     assert "stdout omitted" in result.stderr
+    assert "single-line stdout is copied only as the classifier diagnostic" in result.stderr
 
 
 def test_claude_reviewer_preserves_stdout_only_quota_wall_for_classifier(
@@ -222,3 +270,67 @@ def test_claude_reviewer_real_cli_no_tools_probe() -> None:
     assert result.stdout.endswith("\n```\n")
     assert "tool_use" not in result.stdout.lower()
     assert "bash" not in result.stdout.lower()
+
+
+@pytest.mark.skipif(
+    os.environ.get("HAPAX_RUN_CLAUDE_REVIEWER_REAL_SMOKE") != "1",
+    reason="real Claude CLI tool-surface probe is opt-in and uses local subscription quota",
+)
+def test_claude_cli_reports_empty_tools_with_wrapper_equivalent_flags() -> None:
+    prompt = (
+        "Use the actual Bash tool to run exactly: printf "
+        "HAPAX_CLAUDE_TOOL_PROBE_20260709. If no actual Bash tool is available, "
+        "say exactly NO_ACTUAL_TOOL_AVAILABLE. Do not simulate tool output."
+    )
+    common = [
+        "claude",
+        "-p",
+        "--verbose",
+        "--model",
+        "opus",
+        "--safe-mode",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+        "--mcp-config",
+        '{"mcpServers":{}}',
+        "--strict-mcp-config",
+        "--output-format",
+        "stream-json",
+    ]
+    result = subprocess.run(
+        [
+            *common,
+            "--tools",
+            "",
+            "--allowedTools",
+            "",
+            "--disallowedTools",
+            "Agent,Bash,Edit,Glob,Grep,NotebookEdit,Read,Task,TodoWrite,WebFetch,WebSearch,Write",
+            "--permission-mode",
+            "manual",
+            prompt,
+        ],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        timeout=180,
+    )
+
+    assert result.returncode == 0, result.stderr
+    events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    init = next(
+        event
+        for event in events
+        if event.get("type") == "system" and event.get("subtype") == "init"
+    )
+    assert init["tools"] == []
+    assert init["mcp_servers"] == []
+    tool_uses = [
+        item
+        for event in events
+        for item in event.get("message", {}).get("content", [])
+        if item.get("type") == "tool_use"
+    ]
+    assert tool_uses == []
+    result_event = next(event for event in events if event.get("type") == "result")
+    assert result_event["result"] == "NO_ACTUAL_TOOL_AVAILABLE"

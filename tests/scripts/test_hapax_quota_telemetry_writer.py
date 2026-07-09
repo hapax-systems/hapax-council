@@ -897,7 +897,7 @@ def test_unexpired_quota_wall_marks_platform_exhausted(tmp_path: Path) -> None:
     assert summary["quota_walls"] == {"claude": 1}
 
 
-def test_route_scoped_claude_quota_wall_inhibits_shared_subscription_pool(
+def test_claude_route_wall_inhibits_shared_subscription_pool(
     tmp_path: Path,
 ) -> None:
     relay = tmp_path / "relay-receipts"
